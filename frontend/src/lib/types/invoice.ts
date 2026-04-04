@@ -42,6 +42,7 @@ export const EMPTY_ADVANCED_FILTERS: AdvancedSearchFilters = {
 
 export interface Invoice {
 	id: string;
+	correlation_id: string;
 	vendor: string;
 	invoice_number: string;
 	amount: number;

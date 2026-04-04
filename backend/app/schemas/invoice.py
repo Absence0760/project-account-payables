@@ -68,6 +68,7 @@ class InvoiceResponse(BaseModel):
     """Matches the frontend Invoice TypeScript interface exactly."""
 
     id: str
+    correlation_id: str
     vendor: str
     invoice_number: str
     amount: float
@@ -99,6 +100,7 @@ class InvoiceResponse(BaseModel):
     def from_db(cls, inv) -> "InvoiceResponse":
         return cls(
             id=str(inv.id),
+            correlation_id=str(inv.correlation_id),
             vendor=inv.vendor_name,
             invoice_number=inv.invoice_number,
             amount=float(inv.amount),
