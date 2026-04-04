@@ -95,8 +95,9 @@ PUBLIC_API_URL=https://api.example.com pnpm build
 ## Development
 
 ```bash
-pnpm i          # Install dependencies
-pnpm dev        # Dev server on :7777
+pnpm i                    # Install dependencies
+cp .env.example .env      # First time — set API URL
+pnpm dev                  # Dev server on :7777
 pnpm build      # Production build
 pnpm preview    # Preview build on :8888
 pnpm check      # Type-check

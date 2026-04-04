@@ -40,7 +40,8 @@ python main.py
 
 ```bash
 cd frontend
-pnpm i          # first time only
+pnpm i                    # first time only
+cp .env.example .env      # first time only
 pnpm dev
 ```
 
