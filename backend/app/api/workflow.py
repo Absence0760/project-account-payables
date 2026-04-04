@@ -1,6 +1,5 @@
 """Workflow action endpoints — upload, review, ERP, and read endpoints."""
 
-import asyncio
 import uuid
 from decimal import Decimal
 
@@ -23,7 +22,7 @@ from app.schemas.workflow import (
 )
 from app.services import review as review_svc
 from app.services import erp as erp_svc
-from app.services.extraction import run_extraction
+from app.services.extraction_dispatch import dispatch_extraction
 from app.services.storage import upload_invoice_file
 from app.services.workflow_engine import (
     create_workflow_instance,
@@ -84,10 +83,8 @@ async def upload_invoice(
         await db.commit()
         await db.refresh(invoice)
 
-        # Trigger extraction in the background
-        asyncio.create_task(
-            _run_extraction_background(invoice.id, org_id, user.id)
-        )
+        # Trigger extraction — local background task or SQS depending on config
+        await dispatch_extraction(invoice.id, org_id, user.id)
 
         return {
             "id": str(invoice.id),
@@ -98,45 +95,6 @@ async def upload_invoice(
 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-
-async def _run_extraction_background(
-    invoice_id: uuid.UUID,
-    org_id: uuid.UUID,
-    actor_id: uuid.UUID,
-) -> None:
-    """Run extraction in a separate DB session (background task)."""
-    from app.database import get_tenant_engine
-    from app.models.organization import Organization
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
-
-    from app.database import control_session_factory
-
-    # Look up the tenant DB name
-    async with control_session_factory() as ctrl_db:
-        result = await ctrl_db.execute(
-            select(Organization).where(Organization.id == org_id)
-        )
-        org = result.scalar_one_or_none()
-        if not org:
-            return
-
-    engine = get_tenant_engine(org.db_name)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with factory() as db:
-        try:
-            result = await db.execute(
-                select(Invoice).where(Invoice.id == invoice_id)
-            )
-            invoice = result.scalar_one_or_none()
-            if not invoice:
-                return
-
-            await run_extraction(db, invoice, actor_id=actor_id)
-        except Exception:
-            await db.rollback()
 
 
 # ---------- Stage 2: Review ----------
