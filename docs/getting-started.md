@@ -1,6 +1,6 @@
 # Getting Started
 
-Full-stack accounts payable application. Everything runs locally for development.
+Full-stack accounts payable application with multi-tenant support. Everything runs locally for development.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ docker compose up -d
 ```
 
 This starts:
-- **PostgreSQL 16** on `localhost:5432`
+- **PostgreSQL 16** on `localhost:5432` (includes `account_payables`, `ap_acme`, `ap_techflow` databases)
 - **Redis 7** on `localhost:6379`
 - **MinIO** on `localhost:9000` (console: `localhost:9001`)
 
@@ -32,7 +32,7 @@ cd backend
 python3 -m venv .venv        # first time only
 source .venv/bin/activate
 pip install -e ".[dev]"       # first time only
-python scripts/seed.py        # first time only — creates tables + demo data
+python scripts/seed.py        # first time only — seeds control plane + 2 tenants
 python main.py
 ```
 
@@ -47,20 +47,27 @@ pnpm dev
 
 ### 4. Open the app
 
-Go to http://localhost:7777 and sign in with the demo credentials.
+Access the app via a tenant subdomain:
 
-## Demo Login
+- **Acme Corp:** http://acme.localhost:7777
+- **TechFlow Inc:** http://techflow.localhost:7777
 
-- **Email:** `demo@acme.com`
-- **Password:** `demo`
+> `*.localhost` works natively in Chrome, Firefox, and Edge. See [multi-tenancy.md](multi-tenancy.md) for Safari setup.
 
-The demo user is created by `seed.py` along with an organization (Acme Corp), 8 vendors, and 12 sample invoices.
+## Demo Logins
+
+| Tenant    | URL                            | Email                  | Password |
+|-----------|--------------------------------|------------------------|----------|
+| Acme Corp | http://acme.localhost:7777     | `demo@acme.com`        | `demo`   |
+| TechFlow  | http://techflow.localhost:7777 | `admin@techflow.com`   | `demo`   |
+
+The seed script creates 2 organizations, 2 users, 4 roles, 8 vendors, and 8 invoices per tenant.
 
 ## What's Running Where
 
 | Service        | URL                       |
 |----------------|---------------------------|
-| Frontend       | http://localhost:7777      |
+| Frontend       | http://acme.localhost:7777 (or any tenant subdomain) |
 | Backend API    | http://localhost:8000      |
 | Swagger docs   | http://localhost:8000/docs |
 | MinIO console  | http://localhost:9001      |

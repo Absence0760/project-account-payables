@@ -1,6 +1,6 @@
 # Frontend
 
-SvelteKit 2 + Svelte 5 single-page application.
+SvelteKit 2 + Svelte 5 single-page application with multi-tenant subdomain routing.
 
 ## Stack
 
@@ -17,7 +17,8 @@ SvelteKit 2 + Svelte 5 single-page application.
 ```
 src/
   lib/
-    api.ts              # API client — fetch wrapper with JWT auth
+    api.ts              # API client — fetch wrapper with JWT auth + tenant header
+    tenant.ts           # Subdomain extraction (getTenantSlug)
     components/         # Svelte components
       Sidebar.svelte
       StatusBadge.svelte
@@ -30,7 +31,7 @@ src/
     types/
       invoice.ts        # Invoice interface, status types, filter types
   routes/
-    +layout.svelte      # App shell — sidebar + auth guard
+    +layout.svelte      # App shell — sidebar + auth guard + tenant check
     +page.svelte        # Dashboard — fetches GET /api/dashboard
     invoices/
       +page.svelte      # Invoice list — fetches GET /api/invoices
@@ -41,9 +42,23 @@ src/
   app.d.ts              # App-level TypeScript declarations
 ```
 
-## API Connection
+## Multi-Tenant Routing
 
-The frontend communicates with the FastAPI backend via a single API client (`src/lib/api.ts`).
+The frontend uses **subdomain-based tenant routing**:
+
+1. `src/lib/tenant.ts` extracts the subdomain from `window.location.hostname`:
+   - `acme.localhost:7777` → `"acme"`
+   - `techflow.app.com` → `"techflow"`
+   - `localhost:7777` → `null` (no tenant)
+
+2. `src/lib/api.ts` includes the `X-Tenant-Slug` header on every API request
+
+3. `src/routes/+layout.svelte` checks for a tenant:
+   - No tenant → shows a "no tenant" page with links to available tenants
+   - Has tenant, not logged in → redirects to `/login`
+   - Has tenant, logged in → renders the app shell with sidebar
+
+## API Connection
 
 The backend URL is set via the `PUBLIC_API_URL` environment variable in `.env`:
 
@@ -51,22 +66,17 @@ The backend URL is set via the `PUBLIC_API_URL` environment variable in `.env`:
 PUBLIC_API_URL=http://localhost:8000
 ```
 
-This uses SvelteKit's `$env/static/public`, which embeds the value at **build time**. To deploy to different environments:
-
-```bash
-PUBLIC_API_URL=https://api-qa.example.com pnpm build    # QA
-PUBLIC_API_URL=https://api.example.com pnpm build        # Prod
-```
+This uses SvelteKit's `$env/static/public`, which embeds the value at **build time**. All tenants share the same backend URL — tenant routing is handled via the `X-Tenant-Slug` header, not separate backend URLs.
 
 ## API Endpoints Used
 
-| Frontend page  | API endpoint          | Method |
-|----------------|-----------------------|--------|
-| Login          | `/api/auth/login`     | POST   |
-| Layout (user)  | `/api/auth/me`        | GET    |
-| Dashboard      | `/api/dashboard`      | GET    |
-| Invoice list   | `/api/invoices`       | GET    |
-| Invoice edit   | `/api/invoices/{id}`  | PATCH  |
+| Frontend page  | API endpoint          | Method | Database      |
+|----------------|-----------------------|--------|---------------|
+| Login          | `/api/auth/login`     | POST   | Control plane |
+| Layout (user)  | `/api/auth/me`        | GET    | Control plane |
+| Dashboard      | `/api/dashboard`      | GET    | Tenant DB     |
+| Invoice list   | `/api/invoices`       | GET    | Tenant DB     |
+| Invoice edit   | `/api/invoices/{id}`  | PATCH  | Tenant DB     |
 
 ## Stores
 
@@ -84,6 +94,17 @@ pnpm build                # Production build
 pnpm preview              # Preview build on :8888
 pnpm check                # Type-check
 ```
+
+## Local Dev URLs
+
+Access the app via tenant subdomains:
+
+| Tenant    | URL                            | Login                        |
+|-----------|--------------------------------|------------------------------|
+| Acme      | http://acme.localhost:7777     | `demo@acme.com` / `demo`    |
+| TechFlow  | http://techflow.localhost:7777 | `admin@techflow.com` / `demo`|
+
+`*.localhost` resolves natively in Chrome, Firefox, and Edge. See [multi-tenancy.md](multi-tenancy.md) for Safari setup.
 
 ## Conventions
 

@@ -21,7 +21,7 @@ pnpm i && cp .env.example .env
 pnpm dev
 ```
 
-Open http://localhost:7777 — login with `demo@acme.com` / `demo`
+Open http://acme.localhost:7777 — login with `demo@acme.com` / `demo`
 
 ## Documentation
 
@@ -40,5 +40,6 @@ All documentation lives in the [`/docs`](docs/) folder:
 | [Authentication](docs/authentication.md) | JWT auth flow, RBAC, frontend/backend integration |
 | [Docker](docs/docker.md) | Docker Compose services, commands, health checks |
 | [Environment Variables](docs/environment.md) | Frontend and backend configuration |
+| [Multi-Tenancy](docs/multi-tenancy.md) | Subdomain routing, DB-per-tenant, provisioning |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 | [Implementation Plan](docs/plan.md) | 5-phase delivery roadmap |

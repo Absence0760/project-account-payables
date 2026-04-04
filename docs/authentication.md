@@ -4,18 +4,23 @@ JWT-based authentication using `python-jose` for token handling and `passlib` wi
 
 ## Auth Flow
 
-1. User submits email/password at `/login`
-2. Frontend POSTs `{ email, password }` to `/api/auth/login`
-3. Backend validates credentials and returns `{ access_token, token_type }`
-4. Frontend stores the JWT in `localStorage`
-5. All subsequent API requests include `Authorization: Bearer <token>` header
-6. On 401 responses, the token is cleared and the user is redirected to `/login`
+1. User visits a tenant subdomain (e.g., `acme.localhost:7777`)
+2. Frontend extracts the tenant slug from the subdomain
+3. User submits email/password at `/login`
+4. Frontend POSTs `{ email, password }` to `/api/auth/login`
+5. Backend validates credentials against the **control-plane DB** (where users live)
+6. Backend returns `{ access_token, token_type }` (JWT)
+7. Frontend stores the JWT in `localStorage`
+8. All subsequent requests include both:
+   - `Authorization: Bearer <token>` header
+   - `X-Tenant-Slug: <slug>` header
+9. On 401 responses, the token is cleared and the user is redirected to `/login`
 
 ## Backend Implementation
 
 ### Login endpoint
 
-`POST /api/auth/login` — accepts email and password, verifies against the hashed password in the database, and returns a signed JWT.
+`POST /api/auth/login` — accepts email and password, verifies against the hashed password in the **control-plane database**, and returns a signed JWT. This endpoint uses `get_control_db` (not the tenant DB).
 
 ### Current user endpoint
 
@@ -25,11 +30,18 @@ JWT-based authentication using `python-jose` for token handling and `passlib` wi
 
 All endpoints except `/api/auth/login` and `/api/health` require a valid Bearer token. Authentication is enforced via FastAPI dependencies in `app/api/deps.py`.
 
+### Database separation
+
+- **Auth routes** (`/api/auth/*`) read from the control-plane DB (`account_payables`) — this is where `users`, `organizations`, and `roles` tables live
+- **Business routes** (`/api/invoices`, `/api/vendors`, `/api/dashboard`) read from the tenant DB (`ap_<slug>`) — resolved via the `X-Tenant-Slug` header
+
 ## Frontend Implementation
 
 - Auth state is managed in `src/lib/stores/auth.svelte.ts` (Svelte 5 runes)
-- API client (`src/lib/api.ts`) automatically attaches the Bearer token to every request
+- Tenant slug is extracted by `src/lib/tenant.ts` from the subdomain
+- API client (`src/lib/api.ts`) automatically attaches both the Bearer token and the `X-Tenant-Slug` header to every request
 - The root `+layout.svelte` guards all routes — unauthenticated users are redirected to `/login`
+- If no tenant subdomain is detected, a "no tenant" page is shown instead
 - The login page has its own layout without the sidebar
 
 ## Configuration
@@ -59,11 +71,13 @@ TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
   -d '{"email":"demo@acme.com","password":"demo"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-# Use the token
+# Use the token (include tenant slug header)
 curl http://localhost:8000/api/invoices \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Slug: acme"
 
 # Get current user
 curl http://localhost:8000/api/auth/me \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-Slug: acme"
 ```
