@@ -1,19 +1,33 @@
-export type InvoiceStatus = 'new' | 'pending' | 'ready_for_review' | 'failed' | 'sent_to_erp';
+export type InvoiceStatus =
+	| 'new'
+	| 'pending'
+	| 'ready_for_review'
+	| 'approved'
+	| 'rejected'
+	| 'sending_to_erp'
+	| 'sent_to_erp'
+	| 'failed';
 
 export const INVOICE_STATUSES: InvoiceStatus[] = [
 	'new',
 	'pending',
 	'ready_for_review',
-	'failed',
-	'sent_to_erp'
+	'approved',
+	'rejected',
+	'sending_to_erp',
+	'sent_to_erp',
+	'failed'
 ];
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
 	new: 'New',
 	pending: 'Pending',
 	ready_for_review: 'Ready for Review',
-	failed: 'Failed',
-	sent_to_erp: 'Sent to ERP'
+	approved: 'Approved',
+	rejected: 'Rejected',
+	sending_to_erp: 'Sending to ERP',
+	sent_to_erp: 'Sent to ERP',
+	failed: 'Failed'
 };
 
 export interface AdvancedSearchFilters {

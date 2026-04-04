@@ -24,8 +24,11 @@ class InvoiceStatus(str, enum.Enum):
     new = "new"
     pending = "pending"
     ready_for_review = "ready_for_review"
-    failed = "failed"
+    approved = "approved"
+    rejected = "rejected"
+    sending_to_erp = "sending_to_erp"
     sent_to_erp = "sent_to_erp"
+    failed = "failed"
 
 
 class Invoice(Base, TimestampMixin):

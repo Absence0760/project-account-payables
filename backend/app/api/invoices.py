@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tenant import get_tenant_db
 from app.models.invoice import Invoice, InvoiceStatus as DBInvoiceStatus
+
+IMMUTABLE_STATUSES = {DBInvoiceStatus.sent_to_erp, DBInvoiceStatus.sending_to_erp}
 from app.schemas.invoice import (
     InvoiceCreate,
     InvoiceListResponse,
@@ -144,6 +146,8 @@ async def update_invoice(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status in IMMUTABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="Cannot update invoice in this status")
 
     update_data = body.model_dump(exclude_unset=True)
     # Map frontend field name to DB column
@@ -171,4 +175,6 @@ async def delete_invoice(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status in IMMUTABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="Cannot delete invoice in this status")
     await db.delete(invoice)
