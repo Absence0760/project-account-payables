@@ -5,8 +5,9 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+import asyncpg
 from passlib.context import CryptContext
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.config import settings
@@ -28,21 +29,29 @@ TECH_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
 CONTROL_TABLES = {"organizations", "users", "roles", "user_roles"}
 
 
-def create_database(db_name: str) -> None:
+async def create_database(db_name: str) -> None:
     """Create a PostgreSQL database if it doesn't exist."""
-    sync_url = settings.database_url.replace("+asyncpg", "").rsplit("/", 1)[0] + "/postgres"
-    engine = create_engine(sync_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT 1 FROM pg_database WHERE datname = :name"),
-            {"name": db_name},
-        )
-        if not result.scalar():
-            conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+    # Parse connection info from the async URL
+    url = settings.database_url.replace("postgresql+asyncpg://", "")
+    userpass, hostdb = url.split("@", 1)
+    user, password = userpass.split(":", 1)
+    host_port, _ = hostdb.rsplit("/", 1)
+    if ":" in host_port:
+        host, port = host_port.split(":", 1)
+        port = int(port)
+    else:
+        host, port = host_port, 5432
+
+    conn = await asyncpg.connect(host=host, port=port, user=user, password=password, database="postgres")
+    try:
+        exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
+        if not exists:
+            await conn.execute(f'CREATE DATABASE "{db_name}"')
             print(f"  Created database: {db_name}")
         else:
             print(f"  Database already exists: {db_name}")
-    engine.dispose()
+    finally:
+        await conn.close()
 
 
 async def create_control_tables():
@@ -56,13 +65,14 @@ async def create_tenant_tables(db_name: str):
     """Create tenant-scoped tables in a tenant database."""
     tenant_url = _make_tenant_url(db_name)
     engine = create_async_engine(tenant_url)
+    tenant_tables = [
+        table for name, table in Base.metadata.tables.items()
+        if name not in CONTROL_TABLES
+    ]
     async with engine.begin() as conn:
-        tenant_tables = [
-            table for name, table in Base.metadata.tables.items()
-            if name not in CONTROL_TABLES
-        ]
-        for table in tenant_tables:
-            await conn.run_sync(table.create, checkfirst=True)
+        await conn.run_sync(
+            lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tenant_tables, checkfirst=True)
+        )
     await engine.dispose()
     print(f"  Tenant tables ready in: {db_name}")
 
@@ -161,7 +171,7 @@ async def seed():
         ("ap_techflow", TECH_ORG_ID, "TechFlow Inc"),
     ]:
         print(f"\n=== Seeding tenant: {label} ({db_name}) ===")
-        create_database(db_name)
+        await create_database(db_name)
         await create_tenant_tables(db_name)
         await seed_tenant(db_name, org_id, label)
 
