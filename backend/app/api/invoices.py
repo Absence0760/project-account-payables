@@ -110,9 +110,21 @@ async def create_invoice(
         description=body.description,
         amount=body.amount,
         currency=body.currency,
+        invoice_date=body.invoice_date,
+        received_date=body.received_date,
         due_date=body.due_date,
+        payment_terms=body.payment_terms,
         status=body.status.value,
         po_number=body.po_number,
+        subtotal=body.subtotal,
+        tax_amount=body.tax_amount,
+        discount_amount=body.discount_amount,
+        shipping_amount=body.shipping_amount,
+        remit_to_address=body.remit_to_address,
+        bill_to_address=body.bill_to_address,
+        notes=body.notes,
+        gl_account=body.gl_account,
+        cost_center=body.cost_center,
     )
     db.add(invoice)
     await db.flush()

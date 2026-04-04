@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     Text,
@@ -38,12 +39,26 @@ class Invoice(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
+    invoice_date: Mapped[date | None] = mapped_column(Date)
+    received_date: Mapped[date | None] = mapped_column(Date)
     due_date: Mapped[date | None] = mapped_column(Date)
+    payment_terms: Mapped[str | None] = mapped_column(String(50))
     status: Mapped[InvoiceStatus] = mapped_column(
         Enum(InvoiceStatus, native_enum=False, length=30),
         default=InvoiceStatus.new,
     )
     po_number: Mapped[str | None] = mapped_column(String(100))
+    subtotal: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    shipping_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    remit_to_address: Mapped[str | None] = mapped_column(Text)
+    bill_to_address: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    approval_date: Mapped[date | None] = mapped_column(Date)
+    approved_by: Mapped[str | None] = mapped_column(String(255))
+    gl_account: Mapped[str | None] = mapped_column(String(100))
+    cost_center: Mapped[str | None] = mapped_column(String(100))
     file_url: Mapped[str | None] = mapped_column(String(1024))
     file_key: Mapped[str | None] = mapped_column(String(512))
 
@@ -72,11 +87,14 @@ class InvoiceLineItem(Base, TimestampMixin):
     invoice_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
     )
+    line_number: Mapped[int | None] = mapped_column(Integer)
+    item_code: Mapped[str | None] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     tax: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     total: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    gl_account: Mapped[str | None] = mapped_column(String(100))
 
     invoice: Mapped[Invoice] = relationship(back_populates="line_items")
 

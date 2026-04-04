@@ -46,10 +46,24 @@ export interface Invoice {
 	invoice_number: string;
 	amount: number;
 	currency: string;
-	due_date: string;
+	invoice_date: string | null;
+	received_date: string | null;
+	due_date: string | null;
+	payment_terms: string | null;
 	status: InvoiceStatus;
 	po_number: string;
+	subtotal: number | null;
+	tax_amount: number | null;
+	discount_amount: number | null;
+	shipping_amount: number | null;
+	remit_to_address: string | null;
+	bill_to_address: string | null;
 	description: string;
+	notes: string | null;
+	approval_date: string | null;
+	approved_by: string | null;
+	gl_account: string | null;
+	cost_center: string | null;
 	created_at: string;
 	file_url: string | null;
 }
