@@ -9,7 +9,9 @@ cd backend
 docker compose up -d
 ```
 
-This starts all three services in the background. To start individual services:
+This starts all three services in the background. On first run, PostgreSQL automatically creates three databases: `account_payables` (control plane), `ap_acme`, and `ap_techflow` (dev tenants) via the mounted `init-tenants.sql`.
+
+To start individual services:
 
 ```bash
 docker compose up -d postgres
@@ -21,7 +23,7 @@ docker compose up -d minio
 
 | Service    | Image              | Port(s)         | Description               |
 |------------|--------------------|-----------------|---------------------------|
-| PostgreSQL | `postgres:16-alpine` | `5432`        | Primary database          |
+| PostgreSQL | `postgres:16-alpine` | `5432`        | Primary database (multi-DB)|
 | Redis      | `redis:7-alpine`     | `6379`        | Cache / task queue        |
 | MinIO      | `minio/minio:latest` | `9000`, `9001`| S3-compatible storage     |
 
@@ -32,6 +34,18 @@ docker compose up -d minio
 | PostgreSQL | `postgres`    | `postgres`    |
 | MinIO      | `minioadmin`  | `minioadmin`  |
 | Redis      | (none)        | (none)        |
+
+## Databases
+
+PostgreSQL hosts multiple databases for the multi-tenant architecture:
+
+| Database           | Purpose              |
+|--------------------|----------------------|
+| `account_payables` | Control plane (orgs, users, roles) |
+| `ap_acme`          | Acme Corp tenant data |
+| `ap_techflow`      | TechFlow tenant data  |
+
+The `init-tenants.sql` file is mounted at `docker-entrypoint-initdb.d/` and runs on first startup only. Additional tenant databases are created by `scripts/create_tenant.py`.
 
 ## Common Commands
 
@@ -52,7 +66,7 @@ docker compose restart postgres
 # Check status
 docker compose ps
 
-# Full reset (removes all data)
+# Full reset (removes all data including tenant DBs)
 docker compose down -v
 docker compose up -d
 ```
@@ -71,7 +85,7 @@ Data is persisted in Docker volumes:
 
 | Volume      | Service    | Description            |
 |-------------|------------|------------------------|
-| `pgdata`    | PostgreSQL | Database files         |
+| `pgdata`    | PostgreSQL | Database files (all DBs)|
 | `miniodata` | MinIO      | Uploaded files/objects |
 
 Redis is in-memory only (no persistence in dev).
