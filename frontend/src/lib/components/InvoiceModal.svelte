@@ -27,17 +27,28 @@
 		fullscreen = !fullscreen;
 	}
 
-	function save() {
-		invoiceStore.update(invoice.id, {
-			vendor,
-			invoice_number,
-			amount,
-			due_date,
-			status,
-			po_number,
-			description,
-		});
-		onclose();
+	let saving = $state(false);
+	let error = $state('');
+
+	async function save() {
+		saving = true;
+		error = '';
+		try {
+			await invoiceStore.update(invoice.id, {
+				vendor,
+				invoice_number,
+				amount,
+				due_date,
+				status,
+				po_number,
+				description,
+			});
+			onclose();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Save failed';
+		} finally {
+			saving = false;
+		}
 	}
 
 	function handleBackdrop(e: MouseEvent) {
@@ -127,9 +138,15 @@
 						</label>
 					</div>
 
+					{#if error}
+						<div class="save-error">{error}</div>
+					{/if}
+
 					<footer>
 						<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
-						<button type="submit" class="btn-save">Save</button>
+						<button type="submit" class="btn-save" disabled={saving}>
+							{saving ? 'Saving...' : 'Save'}
+						</button>
 					</footer>
 				</form>
 			</div>
@@ -340,8 +357,23 @@
 		border-color: var(--accent);
 	}
 
-	.btn-save:hover {
+	.btn-save:hover:not(:disabled) {
 		opacity: 0.9;
+	}
+
+	.btn-save:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.save-error {
+		background: rgba(224, 64, 64, 0.1);
+		border: 1px solid rgba(224, 64, 64, 0.3);
+		color: #e04040;
+		padding: 8px 12px;
+		border-radius: 4px;
+		font-size: 0.82rem;
+		margin-top: 8px;
 	}
 
 	/* --- Responsive: stack on narrow screens --- */

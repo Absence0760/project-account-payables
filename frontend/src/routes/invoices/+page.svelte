@@ -12,6 +12,45 @@
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
 
+	// Build query params from current filters and fetch from API
+	function buildParams(): Record<string, string> {
+		const params: Record<string, string> = { page_size: '100' };
+		if (activeStatus !== 'all') params.status = activeStatus;
+		if (search.trim()) params.search = search.trim();
+		const af = advancedFilters;
+		if (af.vendor) params.vendor = af.vendor;
+		if (af.invoice_number) params.invoice_number = af.invoice_number;
+		if (af.po_number) params.po_number = af.po_number;
+		if (af.description) params.description = af.description;
+		if (af.amount_min) params.amount_min = af.amount_min;
+		if (af.amount_max) params.amount_max = af.amount_max;
+		if (af.due_date_from) params.due_date_from = af.due_date_from;
+		if (af.due_date_to) params.due_date_to = af.due_date_to;
+		if (af.statuses.length > 0) params.status = af.statuses.join(',');
+		return params;
+	}
+
+	// Debounce timer for search input
+	let searchTimer: ReturnType<typeof setTimeout>;
+	function debouncedFetch() {
+		clearTimeout(searchTimer);
+		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()), 300);
+	}
+
+	// Re-fetch when status tab or advanced filters change
+	$effect(() => {
+		// Touch reactive deps
+		activeStatus;
+		advancedFilters;
+		invoiceStore.fetch(buildParams());
+	});
+
+	// Re-fetch on search input (debounced)
+	$effect(() => {
+		search;
+		debouncedFetch();
+	});
+
 	let hasAdvancedFilters = $derived(
 		advancedFilters.vendor !== '' ||
 		advancedFilters.invoice_number !== '' ||
@@ -23,38 +62,6 @@
 		advancedFilters.due_date_to !== '' ||
 		advancedFilters.statuses.length > 0
 	);
-
-	let filtered = $derived.by(() => {
-		let list = invoiceStore.all;
-
-		if (activeStatus !== 'all') {
-			list = list.filter((inv) => inv.status === activeStatus);
-		}
-
-		if (search.trim()) {
-			const q = search.toLowerCase();
-			list = list.filter(
-				(inv) =>
-					inv.vendor.toLowerCase().includes(q) ||
-					inv.invoice_number.toLowerCase().includes(q) ||
-					inv.po_number.toLowerCase().includes(q) ||
-					inv.description.toLowerCase().includes(q)
-			);
-		}
-
-		const af = advancedFilters;
-		if (af.vendor) list = list.filter((inv) => inv.vendor.toLowerCase().includes(af.vendor.toLowerCase()));
-		if (af.invoice_number) list = list.filter((inv) => inv.invoice_number.toLowerCase().includes(af.invoice_number.toLowerCase()));
-		if (af.po_number) list = list.filter((inv) => inv.po_number.toLowerCase().includes(af.po_number.toLowerCase()));
-		if (af.description) list = list.filter((inv) => inv.description.toLowerCase().includes(af.description.toLowerCase()));
-		if (af.amount_min) list = list.filter((inv) => inv.amount >= Number(af.amount_min));
-		if (af.amount_max) list = list.filter((inv) => inv.amount <= Number(af.amount_max));
-		if (af.due_date_from) list = list.filter((inv) => inv.due_date >= af.due_date_from);
-		if (af.due_date_to) list = list.filter((inv) => inv.due_date <= af.due_date_to);
-		if (af.statuses.length > 0) list = list.filter((inv) => af.statuses.includes(inv.status));
-
-		return list;
-	});
 
 	function statusCount(status: InvoiceStatus): number {
 		return invoiceStore.all.filter((inv) => inv.status === status).length;
@@ -120,7 +127,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each filtered as invoice (invoice.id)}
+				{#each invoiceStore.all as invoice (invoice.id)}
 					<tr>
 						<td class="mono">{invoice.invoice_number}</td>
 						<td>{invoice.vendor}</td>

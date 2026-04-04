@@ -1,14 +1,49 @@
 <script lang="ts">
-	import { invoiceStore } from '$lib/stores/invoices.svelte';
+	import { api } from '$lib/api';
 
-	let total = $derived(invoiceStore.all.length);
-	let newCount = $derived(invoiceStore.all.filter((i) => i.status === 'new').length);
-	let pendingCount = $derived(invoiceStore.all.filter((i) => i.status === 'pending').length);
-	let reviewCount = $derived(invoiceStore.all.filter((i) => i.status === 'ready_for_review').length);
-	let failedCount = $derived(invoiceStore.all.filter((i) => i.status === 'failed').length);
-	let totalAmount = $derived(
-		invoiceStore.all.reduce((sum, inv) => sum + inv.amount, 0)
-	);
+	interface StatusCount {
+		status: string;
+		count: number;
+	}
+
+	interface DashboardData {
+		total_invoices: number;
+		total_amount: number;
+		status_counts: StatusCount[];
+	}
+
+	let data = $state<DashboardData | null>(null);
+	let loading = $state(true);
+
+	$effect(() => {
+		api.get<DashboardData>('/api/dashboard').then((res) => {
+			data = res;
+			loading = false;
+		}).catch(() => {
+			loading = false;
+		});
+	});
+
+	function statusLabel(s: string): string {
+		const labels: Record<string, string> = {
+			new: 'New',
+			pending: 'Pending',
+			ready_for_review: 'Ready for Review',
+			failed: 'Failed',
+			sent_to_erp: 'Sent to ERP',
+		};
+		return labels[s] || s;
+	}
+
+	function statusAccent(s: string): string {
+		const accents: Record<string, string> = {
+			new: 'accent-blue',
+			pending: 'accent-yellow',
+			ready_for_review: 'accent-green',
+			failed: 'accent-red',
+		};
+		return accents[s] || '';
+	}
 
 	function fmt(n: number): string {
 		return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
@@ -18,32 +53,26 @@
 <div class="dashboard">
 	<h1>Dashboard</h1>
 
-	<div class="kpi-grid">
-		<div class="kpi-card">
-			<span class="kpi-label">Total Invoices</span>
-			<span class="kpi-value">{total}</span>
+	{#if loading}
+		<p class="loading">Loading...</p>
+	{:else if data}
+		<div class="kpi-grid">
+			<div class="kpi-card">
+				<span class="kpi-label">Total Invoices</span>
+				<span class="kpi-value">{data.total_invoices}</span>
+			</div>
+			<div class="kpi-card">
+				<span class="kpi-label">Total Amount</span>
+				<span class="kpi-value">{fmt(data.total_amount)}</span>
+			</div>
+			{#each data.status_counts as sc}
+				<div class="kpi-card {statusAccent(sc.status)}">
+					<span class="kpi-label">{statusLabel(sc.status)}</span>
+					<span class="kpi-value">{sc.count}</span>
+				</div>
+			{/each}
 		</div>
-		<div class="kpi-card">
-			<span class="kpi-label">Total Amount</span>
-			<span class="kpi-value">{fmt(totalAmount)}</span>
-		</div>
-		<div class="kpi-card accent-blue">
-			<span class="kpi-label">New</span>
-			<span class="kpi-value">{newCount}</span>
-		</div>
-		<div class="kpi-card accent-yellow">
-			<span class="kpi-label">Pending</span>
-			<span class="kpi-value">{pendingCount}</span>
-		</div>
-		<div class="kpi-card accent-green">
-			<span class="kpi-label">Ready for Review</span>
-			<span class="kpi-value">{reviewCount}</span>
-		</div>
-		<div class="kpi-card accent-red">
-			<span class="kpi-label">Failed</span>
-			<span class="kpi-value">{failedCount}</span>
-		</div>
-	</div>
+	{/if}
 </div>
 
 <style>
@@ -57,6 +86,11 @@
 		font-size: 1.4rem;
 		font-weight: 700;
 		color: var(--text);
+	}
+
+	.loading {
+		color: var(--text-muted);
+		font-size: 0.9rem;
 	}
 
 	.kpi-grid {
