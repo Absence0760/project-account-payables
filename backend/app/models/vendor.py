@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import String
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,8 +22,7 @@ class Vendor(Base, TimestampMixin):
     bank_details: Mapped[dict | None] = mapped_column(JSONB)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False, index=True
     )
 
-    organization: Mapped["Organization"] = relationship(back_populates="vendors")  # noqa: F821
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="vendor_rel")  # noqa: F821

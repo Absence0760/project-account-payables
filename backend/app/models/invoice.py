@@ -48,13 +48,12 @@ class Invoice(Base, TimestampMixin):
     file_key: Mapped[str | None] = mapped_column(String(512))
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False, index=True
     )
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("vendors.id")
     )
 
-    organization: Mapped["Organization"] = relationship(back_populates="invoices")  # noqa: F821
     vendor_rel: Mapped["Vendor | None"] = relationship(back_populates="invoices")  # noqa: F821
     line_items: Mapped[list["InvoiceLineItem"]] = relationship(
         back_populates="invoice", cascade="all, delete-orphan"

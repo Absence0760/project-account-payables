@@ -1,4 +1,5 @@
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -9,7 +10,15 @@ from app.config import settings
 from app.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+
+# Support per-tenant migrations via AP_MIGRATE_TENANT env var
+tenant_db = os.environ.get("AP_MIGRATE_TENANT")
+if tenant_db:
+    url = settings.database_url.rsplit("/", 1)[0] + "/" + tenant_db
+else:
+    url = settings.database_url
+
+config.set_main_option("sqlalchemy.url", url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

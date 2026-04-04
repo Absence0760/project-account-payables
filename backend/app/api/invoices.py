@@ -8,8 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.api.deps import get_org_id
+from app.tenant import get_tenant_db
 from app.models.invoice import Invoice, InvoiceStatus as DBInvoiceStatus
 from app.schemas.invoice import (
     InvoiceCreate,
@@ -35,10 +34,9 @@ async def list_invoices(
     due_date_from: date | None = None,
     due_date_to: date | None = None,
     search: str | None = None,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
-    query = select(Invoice).where(Invoice.organization_id == org_id)
+    query = select(Invoice)
 
     # Filters
     if status:
@@ -90,11 +88,10 @@ async def list_invoices(
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
 async def get_invoice(
     invoice_id: uuid.UUID,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id, Invoice.organization_id == org_id)
+        select(Invoice).where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -105,11 +102,9 @@ async def get_invoice(
 @router.post("", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED)
 async def create_invoice(
     body: InvoiceCreate,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     invoice = Invoice(
-        organization_id=org_id,
         invoice_number=body.invoice_number,
         vendor_name=body.vendor,
         description=body.description,
@@ -129,11 +124,10 @@ async def create_invoice(
 async def update_invoice(
     invoice_id: uuid.UUID,
     body: InvoiceUpdate,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id, Invoice.organization_id == org_id)
+        select(Invoice).where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -157,11 +151,10 @@ async def update_invoice(
 @router.delete("/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_invoice(
     invoice_id: uuid.UUID,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id, Invoice.organization_id == org_id)
+        select(Invoice).where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
     if not invoice:

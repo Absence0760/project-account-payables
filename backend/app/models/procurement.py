@@ -23,7 +23,7 @@ class PurchaseOrder(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), default="open")
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False, index=True
     )
 
     line_items: Mapped[list["POLineItem"]] = relationship(
@@ -62,7 +62,7 @@ class GoodsReceipt(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), default="received")
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False, index=True
     )
 
     line_items: Mapped[list["GRLineItem"]] = relationship(

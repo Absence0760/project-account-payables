@@ -21,7 +21,7 @@ class PaymentRun(Base, TimestampMixin):
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False, index=True
     )
 
 

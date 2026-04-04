@@ -6,8 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.api.deps import get_org_id
+from app.tenant import get_tenant_db
 from app.models.vendor import Vendor
 from app.schemas.vendor import VendorCreate, VendorResponse, VendorUpdate
 
@@ -19,10 +18,9 @@ async def list_vendors(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     search: str | None = None,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
-    query = select(Vendor).where(Vendor.organization_id == org_id)
+    query = select(Vendor)
     if search:
         pattern = f"%{search}%"
         query = query.where(
@@ -47,11 +45,10 @@ async def list_vendors(
 @router.get("/{vendor_id}", response_model=VendorResponse)
 async def get_vendor(
     vendor_id: uuid.UUID,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id, Vendor.organization_id == org_id)
+        select(Vendor).where(Vendor.id == vendor_id)
     )
     vendor = result.scalar_one_or_none()
     if not vendor:
@@ -62,10 +59,9 @@ async def get_vendor(
 @router.post("", response_model=VendorResponse, status_code=status.HTTP_201_CREATED)
 async def create_vendor(
     body: VendorCreate,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
-    vendor = Vendor(organization_id=org_id, **body.model_dump())
+    vendor = Vendor(**body.model_dump())
     db.add(vendor)
     await db.flush()
     await db.refresh(vendor)
@@ -76,11 +72,10 @@ async def create_vendor(
 async def update_vendor(
     vendor_id: uuid.UUID,
     body: VendorUpdate,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id, Vendor.organization_id == org_id)
+        select(Vendor).where(Vendor.id == vendor_id)
     )
     vendor = result.scalar_one_or_none()
     if not vendor:
@@ -97,11 +92,10 @@ async def update_vendor(
 @router.delete("/{vendor_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_vendor(
     vendor_id: uuid.UUID,
-    org_id: uuid.UUID = Depends(get_org_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id, Vendor.organization_id == org_id)
+        select(Vendor).where(Vendor.id == vendor_id)
     )
     vendor = result.scalar_one_or_none()
     if not vendor:

@@ -23,5 +23,5 @@ class Exception(Base, TimestampMixin):
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False, index=True
     )

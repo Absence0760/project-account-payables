@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import get_db
+from app.database import get_control_db
 from app.models.user import User
 
 ALGORITHM = "HS256"
@@ -27,7 +27,7 @@ def create_access_token(user_id: uuid.UUID, org_id: uuid.UUID) -> str:
 
 async def get_current_user(
     authorization: str | None = Header(default=None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_control_db),
 ) -> User:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")

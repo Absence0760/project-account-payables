@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables"
+    tenant_db_prefix: str = "ap_"
 
     # Auth / JWT
     secret_key: str = "change-me-in-production"

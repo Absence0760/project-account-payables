@@ -17,8 +17,7 @@ class Organization(Base, TimestampMixin):
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     settings: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     plan: Mapped[str] = mapped_column(String(50), default="free")
+    db_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
 
-    # Relationships
+    # Relationships (only users live in control-plane DB alongside orgs)
     users: Mapped[list["User"]] = relationship(back_populates="organization")  # noqa: F821
-    vendors: Mapped[list["Vendor"]] = relationship(back_populates="organization")  # noqa: F821
-    invoices: Mapped[list["Invoice"]] = relationship(back_populates="organization")  # noqa: F821

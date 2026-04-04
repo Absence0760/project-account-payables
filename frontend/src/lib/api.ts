@@ -1,4 +1,5 @@
 import { PUBLIC_API_URL } from '$env/static/public';
+import { getTenantSlug } from '$lib/tenant';
 
 const BASE = PUBLIC_API_URL.replace(/\/+$/, '');
 
@@ -27,6 +28,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	};
 	if (token) {
 		headers['Authorization'] = `Bearer ${token}`;
+	}
+	const tenant = getTenantSlug();
+	if (tenant) {
+		headers['X-Tenant-Slug'] = tenant;
 	}
 
 	const res = await fetch(`${BASE}${path}`, { ...init, headers });

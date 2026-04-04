@@ -3,18 +3,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
 from app.api import auth, dashboard, invoices, vendors
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     yield
-    # Shutdown
-    from app.database import engine
+    from app.database import dispose_all_engines
 
-    await engine.dispose()
+    await dispose_all_engines()
 
 
 app = FastAPI(
@@ -23,10 +20,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — allow any subdomain of localhost or the production domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origin_regex=r"https?://([\w-]+\.)?(localhost(:\d+)?|app\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
