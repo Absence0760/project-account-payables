@@ -9,11 +9,14 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tenant import get_tenant_db
-from app.models.invoice import Invoice, InvoiceStatus as DBInvoiceStatus
+from app.models.invoice import Invoice, InvoiceLineItem, InvoiceExtractionResult, InvoiceStatus as DBInvoiceStatus
+from app.models.payment import PaymentSchedule, Payment
+from app.models.workflow import WorkflowInstance, WorkflowStep
+from app.models.exception import Exception as ExceptionModel
 from app.services.invoice_warnings import refresh_warnings
 
 IMMUTABLE_STATUSES = {DBInvoiceStatus.sent_to_erp, DBInvoiceStatus.sending_to_erp, DBInvoiceStatus.done}
@@ -194,7 +197,22 @@ async def delete_invoice(
         raise HTTPException(status_code=404, detail="Invoice not found")
     if invoice.status in IMMUTABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot delete invoice in this status")
-    await db.delete(invoice)
+    await _delete_invoice_cascade(db, invoice_id)
+    await db.commit()
+
+
+# ---------- Helpers ----------
+
+
+async def _delete_invoice_cascade(db: AsyncSession, invoice_id: uuid.UUID) -> None:
+    """Delete an invoice and all related records across tables."""
+    # Delete workflow steps (child of workflow_instances)
+    wf_ids_q = select(WorkflowInstance.id).where(WorkflowInstance.invoice_id == invoice_id)
+    await db.execute(sa_delete(WorkflowStep).where(WorkflowStep.instance_id.in_(wf_ids_q)))
+    # Delete direct children of invoices
+    for model in (ExceptionModel, Payment, PaymentSchedule, WorkflowInstance, InvoiceExtractionResult, InvoiceLineItem):
+        await db.execute(sa_delete(model).where(model.invoice_id == invoice_id))
+    await db.execute(sa_delete(Invoice).where(Invoice.id == invoice_id))
 
 
 # ---------- Bulk operations ----------
@@ -233,9 +251,10 @@ async def bulk_delete(
         if inv.status in IMMUTABLE_STATUSES:
             skipped.append(str(inv.id))
         else:
-            await db.delete(inv)
+            await _delete_invoice_cascade(db, inv.id)
             deleted += 1
 
+    await db.commit()
     return BulkDeleteResponse(deleted=deleted, skipped=skipped)
 
 
@@ -257,6 +276,7 @@ async def bulk_status_change(
             inv.status = body.status.value
             await refresh_warnings(db, inv)
             updated += 1
+    await db.commit()
 
     return BulkStatusResponse(updated=updated, skipped=skipped)
 
