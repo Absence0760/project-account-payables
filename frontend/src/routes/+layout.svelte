@@ -6,8 +6,15 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { getTenantSlug } from '$lib/tenant';
+	import { browser } from '$app/environment';
 
-	const tenant = getTenantSlug();
+	let tenant = $state<string | null | undefined>(undefined);
+
+	$effect(() => {
+		if (browser) {
+			tenant = getTenantSlug();
+		}
+	});
 
 	$effect(() => {
 		if (tenant && !auth.loggedIn && $page.url.pathname !== '/login') {
@@ -19,7 +26,9 @@
 	});
 </script>
 
-{#if !tenant}
+{#if tenant === undefined}
+	<!-- SSR / hydration: tenant not resolved yet, render nothing to avoid flash -->
+{:else if tenant === null}
 	<div class="no-tenant">
 		<h1>No tenant found</h1>
 		<p>Access the app via a subdomain, e.g.:</p>
