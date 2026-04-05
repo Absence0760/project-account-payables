@@ -45,6 +45,7 @@ class WorkflowInstance(Base, TimestampMixin):
     current_step: Mapped[int] = mapped_column(default=0)
     state: Mapped[str] = mapped_column(String(30), default="active")
     state_data: Mapped[dict | None] = mapped_column(JSONB)
+    steps_config_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
     definition: Mapped[WorkflowDefinition] = relationship(back_populates="instances")
     steps: Mapped[list["WorkflowStep"]] = relationship(

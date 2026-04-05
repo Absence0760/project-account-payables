@@ -68,15 +68,30 @@ DEFAULT_STEPS_CONFIG = {
 }
 
 
-async def is_step_enabled(
-    db: AsyncSession, organization_id: uuid.UUID, step_type: str,
-) -> bool:
-    """Check if a step type is enabled in the org's active workflow definition."""
-    defn = await get_or_create_workflow_definition(db, organization_id)
-    for step in defn.steps_config.get("steps", []):
+def _check_step_enabled(steps_config: dict, step_type: str) -> bool:
+    """Check if a step type is enabled in a steps_config dict."""
+    for step in steps_config.get("steps", []):
         if step.get("type") == step_type:
             return step.get("enabled", True)
     return True  # enabled by default if not configured
+
+
+async def is_step_enabled(
+    db: AsyncSession, organization_id: uuid.UUID, step_type: str,
+    *, invoice_id: uuid.UUID | None = None,
+) -> bool:
+    """Check if a step type is enabled.
+
+    If invoice_id is provided, reads from the instance's frozen snapshot.
+    Otherwise reads from the org's active workflow definition.
+    """
+    if invoice_id:
+        instance = await get_workflow_instance(db, invoice_id)
+        if instance and instance.steps_config_snapshot:
+            return _check_step_enabled(instance.steps_config_snapshot, step_type)
+
+    defn = await get_or_create_workflow_definition(db, organization_id)
+    return _check_step_enabled(defn.steps_config, step_type)
 
 
 def validate_transition(current: InvoiceStatus, target: InvoiceStatus) -> None:
@@ -166,6 +181,7 @@ async def create_workflow_instance(
         invoice_id=invoice.id,
         current_step=0,
         state="active",
+        steps_config_snapshot=defn.steps_config,
     )
     db.add(instance)
     await db.flush()

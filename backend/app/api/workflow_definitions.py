@@ -59,11 +59,12 @@ async def create_workflow(
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     steps_config = {"steps": [s.model_dump() for s in body.steps]}
+    # New workflows start inactive — user must explicitly activate
     defn = WorkflowDefinition(
         name=body.name,
         description=body.description,
         steps_config=steps_config,
-        is_active=True,
+        is_active=False,
         is_default=False,
         organization_id=org_id,
     )
@@ -115,6 +116,25 @@ async def update_workflow(
     if body.description is not None:
         defn.description = body.description
     if body.is_active is not None:
+        if body.is_active and not defn.is_active:
+            # Deactivate all other workflows for this org
+            await db.execute(
+                select(WorkflowDefinition)
+                .where(
+                    WorkflowDefinition.organization_id == org_id,
+                    WorkflowDefinition.id != workflow_id,
+                    WorkflowDefinition.is_active == True,  # noqa: E712
+                )
+            )
+            from sqlalchemy import update as sql_update
+            await db.execute(
+                sql_update(WorkflowDefinition)
+                .where(
+                    WorkflowDefinition.organization_id == org_id,
+                    WorkflowDefinition.id != workflow_id,
+                )
+                .values(is_active=False)
+            )
         defn.is_active = body.is_active
     if body.steps is not None:
         defn.steps_config = {"steps": [s.model_dump() for s in body.steps]}
