@@ -33,6 +33,37 @@ export const STATUS_LABELS: Record<InvoiceStatus, string> = {
 	failed: 'Failed'
 };
 
+/** Statuses managed by the system — users should not select or bulk-act on these. */
+export const SYSTEM_MANAGED_STATUSES: Set<InvoiceStatus> = new Set([
+	'pending',
+	'sending_to_erp',
+	'sent_to_erp',
+	'done'
+]);
+
+/** Valid manual status transitions per source status. */
+export const VALID_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
+	new: ['ready_for_review', 'rejected', 'done'],
+	pending: [],
+	ready_for_review: ['approved', 'rejected'],
+	approved: ['rejected', 'done'],
+	rejected: ['new', 'ready_for_review'],
+	sending_to_erp: [],
+	sent_to_erp: [],
+	done: [],
+	failed: ['new', 'pending'],
+};
+
+/**
+ * Given a set of source statuses, return the status targets valid for ALL of them.
+ */
+export function commonTransitions(statuses: InvoiceStatus[]): InvoiceStatus[] {
+	if (statuses.length === 0) return [];
+	const sets = statuses.map((s) => new Set(VALID_TRANSITIONS[s]));
+	const first = sets[0];
+	return [...first].filter((t) => sets.every((s) => s.has(t)));
+}
+
 export interface AdvancedSearchFilters {
 	vendor: string;
 	invoice_number: string;

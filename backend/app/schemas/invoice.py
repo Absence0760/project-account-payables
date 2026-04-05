@@ -165,6 +165,30 @@ class InvoiceListResponse(BaseModel):
     page_size: int
 
 
+class BulkDeleteRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted: int
+    skipped: list[str] = []
+
+
+class BulkStatusRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+    status: InvoiceStatus
+
+
+class BulkStatusResponse(BaseModel):
+    updated: int
+    skipped: list[str] = []
+
+
+class BulkExportRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+    format: str = Field(default="csv", pattern=r"^(csv|json|xml)$")
+
+
 class InvoiceLineItemResponse(BaseModel):
     id: str
     line_number: int | None

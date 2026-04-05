@@ -1,10 +1,14 @@
 """Invoice CRUD endpoints."""
 
+import csv
+import io
 import uuid
+import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +18,11 @@ from app.services.invoice_warnings import refresh_warnings
 
 IMMUTABLE_STATUSES = {DBInvoiceStatus.sent_to_erp, DBInvoiceStatus.sending_to_erp, DBInvoiceStatus.done}
 from app.schemas.invoice import (
+    BulkDeleteRequest,
+    BulkDeleteResponse,
+    BulkExportRequest,
+    BulkStatusRequest,
+    BulkStatusResponse,
     InvoiceCreate,
     InvoiceListResponse,
     InvoiceResponse,
@@ -186,3 +195,110 @@ async def delete_invoice(
     if invoice.status in IMMUTABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot delete invoice in this status")
     await db.delete(invoice)
+
+
+# ---------- Bulk operations ----------
+
+
+def _invoice_to_export_dict(inv: Invoice) -> dict:
+    return {
+        "invoice_number": inv.invoice_number,
+        "vendor": inv.vendor_name,
+        "amount": str(inv.amount),
+        "currency": inv.currency,
+        "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
+        "due_date": inv.due_date.isoformat() if inv.due_date else None,
+        "po_number": inv.po_number,
+        "description": inv.description,
+        "subtotal": str(inv.subtotal) if inv.subtotal else None,
+        "tax_amount": str(inv.tax_amount) if inv.tax_amount else None,
+        "gl_account": inv.gl_account,
+        "cost_center": inv.cost_center,
+        "correlation_id": str(inv.correlation_id),
+    }
+
+
+@router.post("/bulk/delete", response_model=BulkDeleteResponse)
+async def bulk_delete(
+    body: BulkDeleteRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    ids = [uuid.UUID(i) for i in body.ids]
+    result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
+    invoices = result.scalars().all()
+
+    deleted = 0
+    skipped: list[str] = []
+    for inv in invoices:
+        if inv.status in IMMUTABLE_STATUSES:
+            skipped.append(str(inv.id))
+        else:
+            await db.delete(inv)
+            deleted += 1
+
+    return BulkDeleteResponse(deleted=deleted, skipped=skipped)
+
+
+@router.post("/bulk/status", response_model=BulkStatusResponse)
+async def bulk_status_change(
+    body: BulkStatusRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    ids = [uuid.UUID(i) for i in body.ids]
+    result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
+    invoices = result.scalars().all()
+
+    updated = 0
+    skipped: list[str] = []
+    for inv in invoices:
+        if inv.status in IMMUTABLE_STATUSES:
+            skipped.append(str(inv.id))
+        else:
+            inv.status = body.status.value
+            await refresh_warnings(db, inv)
+            updated += 1
+
+    return BulkStatusResponse(updated=updated, skipped=skipped)
+
+
+@router.post("/bulk/export")
+async def bulk_export(
+    body: BulkExportRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    ids = [uuid.UUID(i) for i in body.ids]
+    result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
+    invoices = result.scalars().all()
+
+    if not invoices:
+        raise HTTPException(status_code=404, detail="No invoices found")
+
+    rows = [_invoice_to_export_dict(inv) for inv in invoices]
+
+    if body.format == "xml":
+        root = ET.Element("Invoices")
+        for row in rows:
+            inv_el = ET.SubElement(root, "Invoice")
+            for key, value in row.items():
+                child = ET.SubElement(inv_el, key)
+                child.text = value if value is not None else ""
+        content = ET.tostring(root, encoding="unicode", xml_declaration=True)
+        return Response(
+            content=content,
+            media_type="application/xml",
+            headers={"Content-Disposition": 'attachment; filename="invoices-export.xml"'},
+        )
+
+    elif body.format == "csv":
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="invoices-export.csv"'},
+        )
+
+    else:
+        return rows

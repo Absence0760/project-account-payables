@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Invoice, InvoiceStatus, AdvancedSearchFilters } from '$lib/types/invoice';
-	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS } from '$lib/types/invoice';
+	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, commonTransitions } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { api } from '$lib/api';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
@@ -118,8 +118,141 @@
 		return invoiceStore.statusCounts[status] ?? 0;
 	}
 
+	// --- Selection & bulk ops ---
+	let selected = $state<Set<string>>(new Set());
+	let bulkBusy = $state(false);
+	let bulkStatusValue = $state<InvoiceStatus>('approved');
+	let showBulkStatusSelect = $state(false);
+
+	let selectableInvoices = $derived(
+		invoiceStore.all.filter((inv) => !SYSTEM_MANAGED_STATUSES.has(inv.status))
+	);
+
+	let allSelected = $derived(
+		selectableInvoices.length > 0 && selectableInvoices.every((inv) => selected.has(inv.id))
+	);
+
+	let selectedStatuses = $derived.by(() => {
+		const statuses = new Set<InvoiceStatus>();
+		for (const inv of invoiceStore.all) {
+			if (selected.has(inv.id)) statuses.add(inv.status);
+		}
+		return [...statuses];
+	});
+
+	let validBulkTransitions = $derived(commonTransitions(selectedStatuses));
+
+	// Reset bulkStatusValue when the valid options change
+	$effect(() => {
+		if (validBulkTransitions.length > 0 && !validBulkTransitions.includes(bulkStatusValue)) {
+			bulkStatusValue = validBulkTransitions[0];
+		}
+	});
+
+	// Whether any selected invoice is in an immutable status (for delete)
+	let hasImmutableSelected = $derived(
+		selectedStatuses.some((s) => SYSTEM_MANAGED_STATUSES.has(s))
+	);
+
+	function toggleSelect(id: string) {
+		const next = new Set(selected);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selected = next;
+	}
+
+	function toggleSelectAll() {
+		if (allSelected) {
+			selected = new Set();
+		} else {
+			selected = new Set(selectableInvoices.map((inv) => inv.id));
+		}
+	}
+
+	async function bulkDelete() {
+		bulkBusy = true;
+		try {
+			const res = await api.post('/api/invoices/bulk/delete', { ids: [...selected] }) as { deleted: number; skipped: string[] };
+			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetchCounts();
+			selected = new Set();
+			const msg = res.skipped?.length
+				? `Deleted ${res.deleted}, skipped ${res.skipped.length} (immutable)`
+				: `Deleted ${res.deleted} invoice(s)`;
+			toast(msg, 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk delete failed', 'error');
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
+	async function bulkStatusChange() {
+		bulkBusy = true;
+		try {
+			const res = await api.post('/api/invoices/bulk/status', {
+				ids: [...selected],
+				status: bulkStatusValue,
+			}) as { updated: number; skipped: string[] };
+			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetchCounts();
+			selected = new Set();
+			showBulkStatusSelect = false;
+			const msg = res.skipped?.length
+				? `Updated ${res.updated}, skipped ${res.skipped.length} (immutable)`
+				: `Updated ${res.updated} invoice(s)`;
+			toast(msg, 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk status change failed', 'error');
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
+	async function bulkExport(format: string) {
+		bulkBusy = true;
+		try {
+			const { PUBLIC_API_URL } = await import('$env/static/public');
+			const base = PUBLIC_API_URL.replace(/\/+$/, '');
+			const token = localStorage.getItem('auth_token');
+			const res = await fetch(`${base}/api/invoices/bulk/export`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(token ? { Authorization: `Bearer ${token}` } : {}),
+					'X-Tenant-Slug': document.location.hostname.split('.')[0],
+				},
+				body: JSON.stringify({ ids: [...selected], format }),
+			});
+			if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+			if (format === 'json') {
+				const data = await res.json();
+				const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+				triggerDownload(blob, `invoices-export.json`);
+			} else {
+				const blob = await res.blob();
+				triggerDownload(blob, `invoices-export.${format}`);
+			}
+			toast(`Exported ${selected.size} invoice(s)`, 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk export failed', 'error');
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
+	function triggerDownload(blob: Blob, filename: string) {
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
 	let deletingId = $state<string | null>(null);
 	let confirmDeleteId = $state<string | null>(null);
+	let confirmBulkDelete = $state(false);
 
 	const IMMUTABLE_STATUSES = new Set(['done', 'sent_to_erp', 'sending_to_erp']);
 
@@ -139,8 +272,15 @@
 	}
 
 	function handleWindowClick(e: MouseEvent) {
-		if (confirmDeleteId && !(e.target as HTMLElement).closest('.delete-btn')) {
+		const target = e.target as HTMLElement;
+		if (confirmDeleteId && !target.closest('.delete-btn')) {
 			confirmDeleteId = null;
+		}
+		if (confirmBulkDelete && !target.closest('.bulk-delete-btn')) {
+			confirmBulkDelete = false;
+		}
+		if (showBulkStatusSelect && !target.closest('.bulk-status-wrapper')) {
+			showBulkStatusSelect = false;
 		}
 	}
 
@@ -194,10 +334,74 @@
 		{/each}
 	</nav>
 
+	{#if selected.size > 0}
+		<div class="bulk-bar">
+			<span class="bulk-count">{selected.size} selected</span>
+			<button class="bulk-clear" onclick={() => (selected = new Set())}>Clear</button>
+			<div class="bulk-divider"></div>
+
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<span class="bulk-btn-wrap" title={hasImmutableSelected ? 'Cannot delete invoices in system-managed statuses' : ''}>
+				<button
+					class="bulk-delete-btn"
+					class:armed={confirmBulkDelete}
+					disabled={bulkBusy || hasImmutableSelected}
+					onclick={(e) => {
+						e.stopPropagation();
+						if (confirmBulkDelete) {
+							bulkDelete();
+						} else {
+							confirmBulkDelete = true;
+						}
+					}}
+				>
+					{#if confirmBulkDelete}
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+						Confirm Delete
+					{:else}
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+						Delete
+					{/if}
+				</button>
+			</span>
+
+			<div class="bulk-status-wrapper">
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<span class="bulk-btn-wrap" title={validBulkTransitions.length === 0 ? 'No common status transitions for the selected invoices' : ''}>
+					<button
+						class="bulk-action-btn"
+						disabled={bulkBusy || validBulkTransitions.length === 0}
+						onclick={(e) => { e.stopPropagation(); showBulkStatusSelect = !showBulkStatusSelect; }}
+					>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+						Change Status
+					</button>
+				</span>
+				{#if showBulkStatusSelect && validBulkTransitions.length > 0}
+					<div class="bulk-status-dropdown">
+						<select bind:value={bulkStatusValue}>
+							{#each validBulkTransitions as s}
+								<option value={s}>{STATUS_LABELS[s]}</option>
+							{/each}
+						</select>
+						<button class="bulk-apply-btn" disabled={bulkBusy} onclick={bulkStatusChange}>Apply</button>
+					</div>
+				{/if}
+			</div>
+
+			<div class="bulk-divider"></div>
+
+			<button class="bulk-action-btn" disabled={bulkBusy} onclick={() => bulkExport('csv')}>CSV</button>
+			<button class="bulk-action-btn" disabled={bulkBusy} onclick={() => bulkExport('json')}>JSON</button>
+			<button class="bulk-action-btn" disabled={bulkBusy} onclick={() => bulkExport('xml')}>XML</button>
+		</div>
+	{/if}
+
 	<div class="grid-container">
 		<table>
 			<thead>
 				<tr>
+					<th class="checkbox-col"><input type="checkbox" checked={allSelected} onchange={toggleSelectAll} /></th>
 					<th>Invoice #</th>
 					<th>Vendor</th>
 					<th>Description</th>
@@ -210,7 +414,8 @@
 			</thead>
 			<tbody>
 				{#each invoiceStore.all as invoice (invoice.id)}
-					<tr>
+					<tr class:row-selected={selected.has(invoice.id)}>
+						<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
 						<td class="mono">
 							{invoice.invoice_number || '—'}
 							{#if invoice.warnings?.length}
@@ -256,7 +461,7 @@
 					</tr>
 				{:else}
 					<tr>
-						<td colspan="8" class="empty">No invoices match your filters.</td>
+						<td colspan="9" class="empty">No invoices match your filters.</td>
 					</tr>
 				{/each}
 			</tbody>
@@ -558,5 +763,179 @@
 		background: rgba(224, 64, 64, 0.12);
 		color: #e04040;
 		font-size: 0.85rem;
+	}
+
+	/* --- Checkbox column --- */
+
+	.checkbox-col {
+		width: 36px;
+		text-align: center;
+		padding-left: 10px;
+		padding-right: 4px;
+	}
+
+	.checkbox-col input[type='checkbox'] {
+		cursor: pointer;
+		accent-color: var(--accent);
+	}
+
+	.row-selected {
+		background: rgba(99, 140, 255, 0.08);
+	}
+
+	/* --- Bulk action bar --- */
+
+	.bulk-bar {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 10px 16px;
+		background: var(--surface);
+		border: 1px solid var(--accent);
+		border-radius: 8px;
+		flex-wrap: wrap;
+	}
+
+	.bulk-count {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--accent);
+		white-space: nowrap;
+	}
+
+	.bulk-clear {
+		padding: 4px 10px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.bulk-clear:hover {
+		color: var(--text);
+		background: var(--bg);
+	}
+
+	.bulk-btn-wrap {
+		display: inline-flex;
+	}
+
+	.bulk-divider {
+		width: 1px;
+		height: 20px;
+		background: var(--border);
+	}
+
+	.bulk-action-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 5px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.bulk-action-btn:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.bulk-action-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.bulk-delete-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 5px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+		transition: all 0.15s;
+	}
+
+	.bulk-delete-btn:hover {
+		border-color: #e04040;
+		color: #e04040;
+	}
+
+	.bulk-delete-btn.armed {
+		border-color: #e04040;
+		background: rgba(224, 64, 64, 0.1);
+		color: #e04040;
+	}
+
+	.bulk-delete-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	/* --- Bulk status dropdown --- */
+
+	.bulk-status-wrapper {
+		position: relative;
+	}
+
+	.bulk-status-dropdown {
+		position: absolute;
+		bottom: calc(100% + 6px);
+		left: 0;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 8px 10px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+		z-index: 20;
+		white-space: nowrap;
+	}
+
+	.bulk-status-dropdown select {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 5px 8px;
+		font-size: 0.82rem;
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.bulk-apply-btn {
+		padding: 5px 12px;
+		border-radius: 4px;
+		border: none;
+		background: var(--accent);
+		color: #fff;
+		font-size: 0.8rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.bulk-apply-btn:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.bulk-apply-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 </style>
