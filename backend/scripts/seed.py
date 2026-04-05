@@ -73,6 +73,12 @@ async def create_tenant_tables(db_name: str):
         await conn.run_sync(
             lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tenant_tables, checkfirst=True)
         )
+        # Add columns that may be missing on existing tables
+        for stmt in [
+            "ALTER TABLE workflow_definitions ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE workflow_instances ADD COLUMN IF NOT EXISTS steps_config_snapshot JSONB",
+        ]:
+            await conn.execute(text(stmt))
     await engine.dispose()
     print(f"  Tenant tables ready in: {db_name}")
 
