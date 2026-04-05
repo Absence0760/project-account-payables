@@ -6,6 +6,71 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 
+# ---------- workflow definition schemas ----------
+
+
+class ExtractionStepConfig(BaseModel):
+    auto_approve_enabled: bool = False
+    auto_approve_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
+
+
+class ApprovalStepConfig(BaseModel):
+    required: bool = True
+    approver_id: str | None = None
+    approver_strategy: str = "manual"  # "manual", "specific", "auto"
+
+
+class ErpExportStepConfig(BaseModel):
+    erp_system: str = "default"
+    export_format: str = "json"  # "json", "xml", "csv", "cxml", "edi"
+    endpoint_url: str = ""
+
+
+class WorkflowStepConfig(BaseModel):
+    number: int
+    type: str  # "extraction", "approval", "erp_export"
+    name: str
+    enabled: bool = True
+    config: ExtractionStepConfig | ApprovalStepConfig | ErpExportStepConfig | dict = Field(default_factory=dict)
+
+
+class WorkflowDefinitionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    steps: list[WorkflowStepConfig]
+
+
+class WorkflowDefinitionUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    description: str | None = None
+    is_active: bool | None = None
+    steps: list[WorkflowStepConfig] | None = None
+
+
+class WorkflowDefinitionResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None
+    steps_config: dict
+    is_active: bool
+    is_default: bool
+    created_at: str
+    updated_at: str | None
+
+    @classmethod
+    def from_db(cls, defn) -> "WorkflowDefinitionResponse":
+        return cls(
+            id=str(defn.id),
+            name=defn.name,
+            description=defn.description,
+            steps_config=defn.steps_config,
+            is_active=defn.is_active,
+            is_default=defn.is_default,
+            created_at=defn.created_at.isoformat() if defn.created_at else "",
+            updated_at=defn.updated_at.isoformat() if defn.updated_at else None,
+        )
+
+
 # ---------- request schemas ----------
 
 

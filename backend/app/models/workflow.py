@@ -18,6 +18,7 @@ class WorkflowDefinition(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     steps_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
+    is_default: Mapped[bool] = mapped_column(default=False)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True

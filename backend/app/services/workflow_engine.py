@@ -25,15 +25,46 @@ VALID_TRANSITIONS: dict[InvoiceStatus, set[InvoiceStatus]] = {
 }
 
 # Map step index → step type
-STEP_TYPES = ["upload", "review", "erp_push", "done"]
+STEP_TYPES = ["extraction", "approval", "erp_export", "done"]
+
+# Backwards-compatible aliases for old step type names
+_STEP_TYPE_ALIASES = {"upload": "extraction", "review": "approval", "erp_push": "erp_export"}
 
 DEFAULT_STEPS_CONFIG = {
     "steps": [
-        {"number": 1, "type": "upload", "name": "Upload & Extract"},
-        {"number": 2, "type": "review", "name": "Human Review"},
-        {"number": 3, "type": "erp_push", "name": "Send to ERP"},
-        {"number": 4, "type": "done", "name": "Complete"},
-    ]
+        {
+            "number": 1,
+            "type": "extraction",
+            "name": "Data Extraction",
+            "enabled": True,
+            "config": {
+                "auto_approve_enabled": False,
+                "auto_approve_threshold": 0.95,
+            },
+        },
+        {
+            "number": 2,
+            "type": "approval",
+            "name": "Manager Approval",
+            "enabled": True,
+            "config": {
+                "required": True,
+                "approver_id": None,
+                "approver_strategy": "manual",
+            },
+        },
+        {
+            "number": 3,
+            "type": "erp_export",
+            "name": "Send to ERP",
+            "enabled": True,
+            "config": {
+                "erp_system": "default",
+                "export_format": "json",
+                "endpoint_url": "",
+            },
+        },
+    ],
 }
 
 
@@ -146,7 +177,8 @@ async def create_workflow_step(
     *,
     assigned_to: uuid.UUID | None = None,
 ) -> WorkflowStep:
-    step_number = STEP_TYPES.index(step_type) + 1
+    resolved = _STEP_TYPE_ALIASES.get(step_type, step_type)
+    step_number = STEP_TYPES.index(resolved) + 1
     step = WorkflowStep(
         correlation_id=instance.correlation_id,
         instance_id=instance.id,
@@ -191,7 +223,8 @@ async def advance_workflow(
 ) -> WorkflowStep:
     """Complete the current step and create the next one."""
     await complete_current_step(db, instance, action)
-    next_index = STEP_TYPES.index(next_step_type)
+    resolved_next = _STEP_TYPE_ALIASES.get(next_step_type, next_step_type)
+    next_index = STEP_TYPES.index(resolved_next)
     instance.current_step = next_index
     new_step = await create_workflow_step(
         db, instance, next_step_type, assigned_to=assigned_to
