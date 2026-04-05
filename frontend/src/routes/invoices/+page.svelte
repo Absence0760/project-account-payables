@@ -2,6 +2,7 @@
 	import type { Invoice, InvoiceStatus, AdvancedSearchFilters } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS, SYSTEM_MANAGED_STATUSES, commonTransitions } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
@@ -340,54 +341,56 @@
 			<button class="bulk-clear" onclick={() => (selected = new Set())}>Clear</button>
 			<div class="bulk-divider"></div>
 
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<span class="bulk-btn-wrap" title={hasImmutableSelected ? 'Cannot delete invoices in system-managed statuses' : ''}>
-				<button
-					class="bulk-delete-btn"
-					class:armed={confirmBulkDelete}
-					disabled={bulkBusy || hasImmutableSelected}
-					onclick={(e) => {
-						e.stopPropagation();
-						if (confirmBulkDelete) {
-							bulkDelete();
-						} else {
-							confirmBulkDelete = true;
-						}
-					}}
-				>
-					{#if confirmBulkDelete}
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-						Confirm Delete
-					{:else}
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-						Delete
-					{/if}
-				</button>
-			</span>
-
-			<div class="bulk-status-wrapper">
+			{#if !auth.isClerkOnly}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<span class="bulk-btn-wrap" title={validBulkTransitions.length === 0 ? 'No common status transitions for the selected invoices' : ''}>
+				<span class="bulk-btn-wrap" title={hasImmutableSelected ? 'Cannot delete invoices in system-managed statuses' : ''}>
 					<button
-						class="bulk-action-btn"
-						disabled={bulkBusy || validBulkTransitions.length === 0}
-						onclick={(e) => { e.stopPropagation(); showBulkStatusSelect = !showBulkStatusSelect; }}
+						class="bulk-delete-btn"
+						class:armed={confirmBulkDelete}
+						disabled={bulkBusy || hasImmutableSelected}
+						onclick={(e) => {
+							e.stopPropagation();
+							if (confirmBulkDelete) {
+								bulkDelete();
+							} else {
+								confirmBulkDelete = true;
+							}
+						}}
 					>
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-						Change Status
+						{#if confirmBulkDelete}
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+							Confirm Delete
+						{:else}
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+							Delete
+						{/if}
 					</button>
 				</span>
-				{#if showBulkStatusSelect && validBulkTransitions.length > 0}
-					<div class="bulk-status-dropdown">
-						<select bind:value={bulkStatusValue}>
-							{#each validBulkTransitions as s}
-								<option value={s}>{STATUS_LABELS[s]}</option>
-							{/each}
-						</select>
-						<button class="bulk-apply-btn" disabled={bulkBusy} onclick={bulkStatusChange}>Apply</button>
-					</div>
-				{/if}
-			</div>
+
+				<div class="bulk-status-wrapper">
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<span class="bulk-btn-wrap" title={validBulkTransitions.length === 0 ? 'No common status transitions for the selected invoices' : ''}>
+						<button
+							class="bulk-action-btn"
+							disabled={bulkBusy || validBulkTransitions.length === 0}
+							onclick={(e) => { e.stopPropagation(); showBulkStatusSelect = !showBulkStatusSelect; }}
+						>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+							Change Status
+						</button>
+					</span>
+					{#if showBulkStatusSelect && validBulkTransitions.length > 0}
+						<div class="bulk-status-dropdown">
+							<select bind:value={bulkStatusValue}>
+								{#each validBulkTransitions as s}
+									<option value={s}>{STATUS_LABELS[s]}</option>
+								{/each}
+							</select>
+							<button class="bulk-apply-btn" disabled={bulkBusy} onclick={bulkStatusChange}>Apply</button>
+						</div>
+					{/if}
+				</div>
+			{/if}
 
 			<div class="bulk-divider"></div>
 
@@ -434,7 +437,7 @@
 						<td><StatusBadge status={invoice.status} /></td>
 						<td class="actions">
 							<button class="edit-btn" onclick={() => (editing = invoice)}>Edit</button>
-							{#if !IMMUTABLE_STATUSES.has(invoice.status)}
+							{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
 								<button
 									class="delete-btn"
 									class:armed={confirmDeleteId === invoice.id}

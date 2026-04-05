@@ -44,15 +44,20 @@ async def logout(authorization: str = Header()):
         await block_token(jti, ttl)
 
 
-@router.get("/me", response_model=UserResponse)
-async def get_me(user: User = Depends(get_current_user)):
+def _user_response(user: User) -> UserResponse:
     return UserResponse(
         id=str(user.id),
         email=user.email,
         full_name=user.full_name,
         organization_id=str(user.organization_id),
         is_active=user.is_active,
+        roles=[r.name for r in user.roles],
     )
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(user: User = Depends(get_current_user)):
+    return _user_response(user)
 
 
 @router.patch("/me", response_model=UserResponse)
@@ -72,10 +77,4 @@ async def update_me(
         user.hashed_password = pwd_context.hash(body.password)
 
     await db.commit()
-    return UserResponse(
-        id=str(user.id),
-        email=user.email,
-        full_name=user.full_name,
-        organization_id=str(user.organization_id),
-        is_active=user.is_active,
-    )
+    return _user_response(user)

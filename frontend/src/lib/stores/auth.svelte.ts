@@ -5,6 +5,7 @@ interface User {
 	email: string;
 	full_name: string;
 	organization_id: string;
+	roles: string[];
 }
 
 interface TokenResponse {
@@ -43,12 +44,26 @@ function createAuthStore() {
 		window.location.href = '/login';
 	}
 
+	function hasRole(role: string): boolean {
+		return user?.roles.includes(role) ?? false;
+	}
+
+	function hasAnyRole(...roles: string[]): boolean {
+		return roles.some((r) => hasRole(r));
+	}
+
 	return {
 		get user() { return user; },
 		get loggedIn() { return loggedIn; },
+		get isAdmin() { return hasRole('admin'); },
+		get isManager() { return hasAnyRole('admin', 'ap_manager'); },
+		get isCfo() { return hasAnyRole('admin', 'cfo'); },
+		get isClerkOnly() { return user?.roles.length === 1 && hasRole('ap_clerk'); },
 		login,
 		logout,
 		fetchUser,
+		hasRole,
+		hasAnyRole,
 	};
 }
 

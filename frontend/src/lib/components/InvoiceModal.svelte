@@ -71,14 +71,19 @@
 	let showRejectForm = $state(false);
 	let rejectReason = $state('');
 
+	let isClerkOnly = $derived(auth.isClerkOnly);
 	let isDone = $derived(status === 'done' || status === 'sent_to_erp');
-	let canDelete = $derived(status !== 'done' && status !== 'sent_to_erp' && status !== 'sending_to_erp');
+	let canDelete = $derived(
+		!isClerkOnly && status !== 'done' && status !== 'sent_to_erp' && status !== 'sending_to_erp'
+	);
 	let isReadyForReview = $derived(status === 'ready_for_review');
-	let canReview = $derived(isReadyForReview && (
+	let canReview = $derived(isReadyForReview && !isClerkOnly && (
 		!invoice.assigned_to_id || invoice.assigned_to_id === auth.user?.id
 	));
 	let canSubmitStatus = $derived(
-		status === 'new' || status === 'approved'
+		isClerkOnly
+			? status === 'new'
+			: status === 'new' || status === 'approved'
 	);
 
 	let submitLabel = $derived.by(() => {
@@ -333,14 +338,21 @@
 							<span>PO Number</span>
 							<input type="text" bind:value={po_number} />
 						</label>
-						<label>
-							<span>Status</span>
-							<select bind:value={status}>
-								{#each INVOICE_STATUSES as s}
-									<option value={s}>{STATUS_LABELS[s]}</option>
-								{/each}
-							</select>
-						</label>
+						{#if !isClerkOnly}
+							<label>
+								<span>Status</span>
+								<select bind:value={status}>
+									{#each INVOICE_STATUSES as s}
+										<option value={s}>{STATUS_LABELS[s]}</option>
+									{/each}
+								</select>
+							</label>
+						{:else}
+							<label>
+								<span>Status</span>
+								<input type="text" value={STATUS_LABELS[status]} disabled />
+							</label>
+						{/if}
 						<label>
 							<span>Reference #</span>
 							<input type="text" bind:value={reference_number} />

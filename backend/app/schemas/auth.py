@@ -17,6 +17,7 @@ class UserResponse(BaseModel):
     full_name: str
     organization_id: str
     is_active: bool
+    roles: list[str] = []
 
     model_config = {"from_attributes": True}
 

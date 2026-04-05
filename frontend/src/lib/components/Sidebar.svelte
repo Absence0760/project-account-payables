@@ -50,6 +50,8 @@
 		label: string;
 		href: string;
 		icon: string;
+		/** If set, user must have at least one of these roles to see this item. */
+		requiredRoles?: string[];
 	}
 
 	interface NavGroup {
@@ -68,24 +70,29 @@
 			title: 'Payables',
 			items: [
 				{ label: 'Invoices', href: '/invoices', icon: 'invoices' },
-				{ label: 'Payments', href: '/payments', icon: 'payments' },
-				{ label: 'Vendors', href: '/vendors', icon: 'vendors' },
+				{ label: 'Payments', href: '/payments', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
+				{ label: 'Vendors', href: '/vendors', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 			],
 		},
 		{
 			title: 'Processing',
 			items: [
-				{ label: 'Workflows', href: '/workflows', icon: 'workflows' },
+				{ label: 'Workflows', href: '/workflows', icon: 'workflows', requiredRoles: ['admin'] },
 			],
 		},
 		{
 			title: 'Settings',
 			items: [
-				{ label: 'Organization', href: '/organization', icon: 'organization' },
-				{ label: 'Admin', href: '/admin', icon: 'admin' },
+				{ label: 'Organization', href: '/organization', icon: 'organization', requiredRoles: ['admin'] },
+				{ label: 'Admin', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
 			],
 		},
 	];
+
+	function canSeeItem(item: NavItem): boolean {
+		if (!item.requiredRoles) return true;
+		return auth.hasAnyRole(...item.requiredRoles);
+	}
 
 	function isActive(href: string): boolean {
 		if (href === '/') return page.url.pathname === '/';
@@ -105,13 +112,15 @@
 
 	<nav class="nav-main">
 		{#each navGroups as group}
-			{#if !collapsed}
-				<div class="nav-group-title">{group.title}</div>
-			{:else}
-				<div class="nav-group-divider"></div>
-			{/if}
-			{#each group.items as item}
-				<a href={item.href} class="nav-item" class:active={isActive(item.href)} title={collapsed ? item.label : ''}>
+			{@const visibleItems = group.items.filter(canSeeItem)}
+			{#if visibleItems.length > 0}
+				{#if !collapsed}
+					<div class="nav-group-title">{group.title}</div>
+				{:else}
+					<div class="nav-group-divider"></div>
+				{/if}
+				{#each visibleItems as item}
+					<a href={item.href} class="nav-item" class:active={isActive(item.href)} title={collapsed ? item.label : ''}>
 					<span class="nav-icon">
 						{#if item.icon === 'dashboard'}
 							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
@@ -134,6 +143,7 @@
 					{/if}
 				</a>
 			{/each}
+			{/if}
 		{/each}
 	</nav>
 
