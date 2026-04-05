@@ -68,6 +68,7 @@ class Invoice(Base, TimestampMixin):
     cost_center: Mapped[str | None] = mapped_column(String(100))
     file_url: Mapped[str | None] = mapped_column(String(1024))
     file_key: Mapped[str | None] = mapped_column(String(512))
+    warnings: Mapped[list | None] = mapped_column(JSONB)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True

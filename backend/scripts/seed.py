@@ -77,6 +77,7 @@ async def create_tenant_tables(db_name: str):
         for stmt in [
             "ALTER TABLE workflow_definitions ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE",
             "ALTER TABLE workflow_instances ADD COLUMN IF NOT EXISTS steps_config_snapshot JSONB",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS warnings JSONB",
         ]:
             await conn.execute(text(stmt))
 

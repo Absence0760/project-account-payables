@@ -24,6 +24,7 @@ from app.services import review as review_svc
 from app.services import erp as erp_svc
 from app.services.erp_dispatch import dispatch_erp
 from app.services.extraction_dispatch import dispatch_extraction
+from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import get_file, upload_invoice_file
 from app.services.workflow_engine import (
     create_workflow_instance,
@@ -98,6 +99,7 @@ async def upload_invoice(
         else:
             # No extraction — leave as new for manual entry
             await create_workflow_step(db, instance, "upload")
+            await refresh_warnings(db, invoice)
             await db.commit()
             await db.refresh(invoice)
 
@@ -283,6 +285,8 @@ async def complete_invoice(
     erp_enabled = await is_step_enabled(
         db, org_id, "erp_export", invoice_id=invoice.id
     )
+
+    await refresh_warnings(db, invoice)
 
     if invoice.status == InvoiceStatus.new and approval_enabled:
         # Submit for review
