@@ -115,10 +115,15 @@
 		</button>
 	</div>
 
-	<button class="collapse-btn" onclick={() => sidebar.toggle()} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
-		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:flipped={collapsed}>
-			<polyline points="15 18 9 12 15 6" />
-		</svg>
+	<button class="collapse-btn" class:collapsed onclick={() => sidebar.toggle()} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+		<span class="nav-icon">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:flipped={collapsed}>
+				<polyline points="15 18 9 12 15 6" />
+			</svg>
+		</span>
+		{#if !collapsed}
+			<span class="collapse-label">Collapse</span>
+		{/if}
 	</button>
 </aside>
 
@@ -332,20 +337,37 @@
 	}
 
 	.collapse-btn {
-		display: grid;
-		place-items: center;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
 		margin-top: 8px;
-		padding: 8px;
+		padding: 9px 10px;
 		border-radius: 6px;
 		border: none;
 		background: none;
 		color: var(--text-muted);
 		cursor: pointer;
+		font-family: inherit;
+		transition: all 0.12s;
+	}
+
+	.collapse-btn.collapsed {
+		justify-content: center;
+		padding: 9px 0;
 	}
 
 	.collapse-btn:hover {
 		background: rgba(99, 140, 255, 0.08);
 		color: var(--text);
+	}
+
+	.collapse-label {
+		font-size: 0.88rem;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.collapse-btn svg {
