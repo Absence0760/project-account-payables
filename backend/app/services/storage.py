@@ -59,5 +59,15 @@ async def upload_invoice_file(
         ContentType=content_type,
     )
 
-    file_url = f"{settings.s3_endpoint_url}/{settings.s3_bucket}/{file_key}"
+    # Store an API-relative URL — the file endpoint generates a presigned URL on demand
+    file_url = f"/api/invoices/file/{file_key}"
     return file_key, file_url
+
+
+def get_file(file_key: str) -> tuple[bytes, str]:
+    """Download a file from S3 and return (content, content_type)."""
+    client = _get_client()
+    response = client.get_object(Bucket=settings.s3_bucket, Key=file_key)
+    content = response["Body"].read()
+    content_type = response.get("ContentType", "application/octet-stream")
+    return content, content_type

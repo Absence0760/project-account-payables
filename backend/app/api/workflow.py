@@ -24,7 +24,7 @@ from app.services import review as review_svc
 from app.services import erp as erp_svc
 from app.services.erp_dispatch import dispatch_erp
 from app.services.extraction_dispatch import dispatch_extraction
-from app.services.storage import upload_invoice_file
+from app.services.storage import get_file, upload_invoice_file
 from app.services.workflow_engine import (
     create_workflow_instance,
     create_workflow_step,
@@ -352,6 +352,22 @@ async def export_invoice(
     else:
         # JSON (default)
         return data
+
+
+# ---------- File access ----------
+
+
+@router.get("/file/{file_key:path}")
+async def get_invoice_file(file_key: str):
+    """Proxy the file from S3 to the browser."""
+    from fastapi.responses import Response
+
+    try:
+        content, content_type = get_file(file_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return Response(content=content, media_type=content_type)
 
 
 # ---------- Read endpoints ----------

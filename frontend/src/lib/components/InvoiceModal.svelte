@@ -3,6 +3,9 @@
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { api } from '$lib/api';
+	import { PUBLIC_API_URL } from '$env/static/public';
+
+	const apiBase = PUBLIC_API_URL.replace(/\/+$/, '');
 
 	let {
 		invoice,
@@ -167,7 +170,7 @@
 		<div class="split">
 			<div class="pdf-pane">
 				{#if invoice.file_url}
-					<iframe src={invoice.file_url} title="Invoice PDF — {invoice.invoice_number}"></iframe>
+					<iframe src={`${apiBase}${invoice.file_url}`} title="Invoice PDF — {invoice.invoice_number}"></iframe>
 				{:else}
 					<div class="no-pdf">
 						<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
