@@ -2,6 +2,7 @@
 	import type { Invoice, InvoiceStatus, AdvancedSearchFilters } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS, EMPTY_ADVANCED_FILTERS } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
+	import { api } from '$lib/api';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
@@ -11,6 +12,26 @@
 	let editing = $state<Invoice | null>(null);
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
+	let uploading = $state(false);
+	let uploadError = $state('');
+	let fileInput: HTMLInputElement;
+
+	async function handleUpload(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		uploading = true;
+		uploadError = '';
+		try {
+			await api.upload('/api/invoices/upload', file);
+			await invoiceStore.fetch(buildParams());
+		} catch (err: unknown) {
+			uploadError = err instanceof Error ? err.message : 'Upload failed';
+		} finally {
+			uploading = false;
+			input.value = '';
+		}
+	}
 
 	// Build query params from current filters and fetch from API
 	function buildParams(): Record<string, string> {
@@ -98,7 +119,14 @@
 				{/if}
 			</button>
 		</div>
+		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" bind:this={fileInput} onchange={handleUpload} hidden />
+		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
+			{uploading ? 'Uploading...' : '+ Upload Invoice'}
+		</button>
 	</header>
+	{#if uploadError}
+		<div class="upload-error">{uploadError}</div>
+	{/if}
 
 	<nav class="filters">
 		<button class="filter-chip" class:active={activeStatus === 'all'} onclick={() => (activeStatus = 'all')}>
@@ -367,5 +395,37 @@
 		text-align: center;
 		padding: 40px 14px;
 		color: var(--text-muted);
+	}
+
+	.btn-upload {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: none;
+		background: var(--accent);
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		transition: opacity 0.15s;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	.btn-upload:hover {
+		opacity: 0.85;
+	}
+
+	.btn-upload:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.upload-error {
+		padding: 10px 14px;
+		border-radius: 6px;
+		background: rgba(224, 64, 64, 0.12);
+		color: #e04040;
+		font-size: 0.85rem;
 	}
 </style>

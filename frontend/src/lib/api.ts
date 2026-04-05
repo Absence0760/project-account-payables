@@ -22,9 +22,10 @@ export function hasToken(): boolean {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const token = getToken();
+	const inHeaders = (init?.headers ?? {}) as Record<string, string>;
 	const headers: Record<string, string> = {
-		'Content-Type': 'application/json',
-		...(init?.headers as Record<string, string>),
+		...( init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+		...inHeaders,
 	};
 	if (token) {
 		headers['Authorization'] = `Bearer ${token}`;
@@ -56,4 +57,13 @@ export const api = {
 	post: <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
 	patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
 	delete: (path: string) => request<void>(path, { method: 'DELETE' }),
+	upload: <T>(path: string, file: File) => {
+		const form = new FormData();
+		form.append('file', file);
+		return request<T>(path, {
+			method: 'POST',
+			body: form,
+			headers: {},  // let browser set Content-Type with boundary
+		});
+	},
 };
