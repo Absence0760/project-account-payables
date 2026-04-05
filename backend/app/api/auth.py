@@ -1,13 +1,14 @@
 """Auth endpoints — login, token refresh, current user."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_control_db
-from app.api.deps import create_access_token, get_current_user
+from app.api.deps import create_access_token, decode_token, get_current_user
 from app.models.user import User
+from app.redis import block_token
 from app.schemas.auth import LoginRequest, TokenResponse, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -27,6 +28,20 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_control_db)):
 
     token = create_access_token(user.id, user.organization_id)
     return TokenResponse(access_token=token)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(authorization: str = Header()):
+    """Revoke the current token by adding it to the Redis blocklist."""
+    token = authorization.removeprefix("Bearer ")
+    payload = decode_token(token)
+    jti = payload.get("jti")
+    if jti:
+        exp = payload.get("exp", 0)
+        # Block for the remaining lifetime of the token
+        import time
+        ttl = max(int(exp - time.time()), 1)
+        await block_token(jti, ttl)
 
 
 @router.get("/me", response_model=UserResponse)

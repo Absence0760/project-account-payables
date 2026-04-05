@@ -31,7 +31,12 @@ function createAuthStore() {
 		}
 	}
 
-	function logout() {
+	async function logout() {
+		try {
+			await api.post('/api/auth/logout', {});
+		} catch {
+			// Proceed with client-side logout even if server call fails
+		}
 		clearToken();
 		user = null;
 		loggedIn = false;

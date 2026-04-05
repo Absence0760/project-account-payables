@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     audit_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_audit_queue_url: str = ""  # required when audit_mode = "lambda"
 
+    # Redis
+    redis_url: str = "redis://localhost:6379"
+
     # CORS
     cors_origins: list[str] = ["http://localhost:7777", "http://localhost:5173"]
 
