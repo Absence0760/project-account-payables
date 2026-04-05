@@ -34,9 +34,19 @@
 	let error = $state('');
 
 	let isDone = $derived(status === 'sent_to_erp');
-	let canSubmit = $derived(
+	let canSubmitStatus = $derived(
 		status === 'new' || status === 'ready_for_review' || status === 'approved'
 	);
+
+	let missingFields = $derived.by(() => {
+		const missing: string[] = [];
+		if (!vendor.trim()) missing.push('Vendor');
+		if (!invoice_number.trim()) missing.push('Invoice #');
+		if (!amount || amount <= 0) missing.push('Amount');
+		return missing;
+	});
+
+	let canSubmit = $derived(canSubmitStatus && missingFields.length === 0);
 
 	async function save() {
 		saving = true;
@@ -173,17 +183,17 @@
 			<div class="form-pane">
 				<form onsubmit={(e) => { e.preventDefault(); save(); }}>
 					<div class="form-grid">
-						<label>
-							<span>Vendor</span>
-							<input type="text" bind:value={vendor} />
+						<label class:field-error={canSubmitStatus && !vendor.trim()}>
+							<span>Vendor <em class="required">*</em></span>
+							<input type="text" bind:value={vendor} required />
 						</label>
-						<label>
-							<span>Invoice #</span>
-							<input type="text" bind:value={invoice_number} />
+						<label class:field-error={canSubmitStatus && !invoice_number.trim()}>
+							<span>Invoice # <em class="required">*</em></span>
+							<input type="text" bind:value={invoice_number} required />
 						</label>
-						<label>
-							<span>Amount</span>
-							<input type="number" step="0.01" bind:value={amount} />
+						<label class:field-error={canSubmitStatus && (!amount || amount <= 0)}>
+							<span>Amount <em class="required">*</em></span>
+							<input type="number" step="0.01" bind:value={amount} required />
 						</label>
 						<label>
 							<span>Due Date</span>
@@ -209,6 +219,10 @@
 
 					{#if error}
 						<div class="save-error">{error}</div>
+					{/if}
+
+					{#if canSubmitStatus && missingFields.length > 0}
+						<div class="validation-hint">Required: {missingFields.join(', ')}</div>
 					{/if}
 
 					<footer>
@@ -542,6 +556,26 @@
 	.export-menu button:hover {
 		background: rgba(99, 140, 255, 0.1);
 		color: var(--accent);
+	}
+
+	.required {
+		color: #e04040;
+		font-style: normal;
+	}
+
+	.field-error input,
+	.field-error select {
+		border-color: #e04040;
+	}
+
+	.field-error span {
+		color: #e04040;
+	}
+
+	.validation-hint {
+		font-size: 0.8rem;
+		color: #d4940a;
+		margin-top: 8px;
 	}
 
 	.save-error {

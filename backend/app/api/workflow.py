@@ -255,6 +255,20 @@ async def complete_invoice(
     """Mark an invoice as done (sent_to_erp). Used when manual ERP upload is the workflow."""
     invoice = await get_invoice_for_update(db, invoice_id)
 
+    # Validate required fields
+    missing = []
+    if not invoice.vendor_name or not invoice.vendor_name.strip():
+        missing.append("vendor")
+    if not invoice.invoice_number or not invoice.invoice_number.strip():
+        missing.append("invoice_number")
+    if invoice.amount is None or invoice.amount <= 0:
+        missing.append("amount")
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Required fields missing: {', '.join(missing)}",
+        )
+
     await transition_invoice(
         db,
         invoice,
