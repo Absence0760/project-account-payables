@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 
 	let collapsed = $derived(sidebar.collapsed);
+	let showProfile = $state(false);
 
 	interface NavItem {
 		label: string;
@@ -96,9 +98,22 @@
 
 	<div class="nav-spacer"></div>
 
-	<a href="/profile" class="profile-btn" class:active={isActive('/profile')} title="Profile">
-		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-	</a>
+	<div class="profile-wrapper">
+		{#if showProfile}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div class="profile-backdrop" onclick={() => (showProfile = false)} onkeydown={() => {}}></div>
+			<div class="profile-popover">
+				<div class="profile-info">
+					<div class="profile-name">{auth.user?.full_name ?? '—'}</div>
+					<div class="profile-email">{auth.user?.email ?? '—'}</div>
+				</div>
+				<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
+			</div>
+		{/if}
+		<button class="profile-btn" title="Profile" onclick={() => (showProfile = !showProfile)}>
+			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+		</button>
+	</div>
 
 	<button class="collapse-btn" onclick={() => sidebar.toggle()} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
 		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:flipped={collapsed}>
@@ -155,16 +170,24 @@
 		gap: 2px;
 	}
 
+	.profile-wrapper {
+		position: relative;
+		display: flex;
+		justify-content: center;
+		margin-bottom: 4px;
+	}
+
 	.profile-btn {
 		display: grid;
 		place-items: center;
 		width: 36px;
 		height: 36px;
 		border-radius: 50%;
+		border: none;
+		background: none;
 		color: var(--text-muted);
-		text-decoration: none;
+		cursor: pointer;
 		transition: all 0.12s;
-		margin: 0 auto 4px;
 	}
 
 	.profile-btn:hover {
@@ -172,9 +195,60 @@
 		color: var(--text);
 	}
 
-	.profile-btn.active {
-		background: rgba(99, 140, 255, 0.12);
-		color: var(--accent);
+	.profile-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 60;
+	}
+
+	.profile-popover {
+		position: absolute;
+		bottom: 100%;
+		left: 8px;
+		margin-bottom: 8px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+		padding: 12px;
+		min-width: 200px;
+		z-index: 61;
+	}
+
+	.profile-info {
+		padding-bottom: 10px;
+		border-bottom: 1px solid var(--border);
+		margin-bottom: 10px;
+	}
+
+	.profile-name {
+		font-size: 0.88rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.profile-email {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		margin-top: 2px;
+	}
+
+	.profile-logout {
+		width: 100%;
+		padding: 7px 12px;
+		border-radius: 5px;
+		border: 1px solid #e04040;
+		background: rgba(224, 64, 64, 0.1);
+		color: #e04040;
+		font-size: 0.82rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		transition: background 0.15s;
+	}
+
+	.profile-logout:hover {
+		background: rgba(224, 64, 64, 0.2);
 	}
 
 	.nav-group-title {
