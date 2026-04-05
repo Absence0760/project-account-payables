@@ -8,7 +8,7 @@
 	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
 
 	let search = $state('');
-	let activeStatus = $state<InvoiceStatus | 'all'>('all');
+	let activeStatuses = $state<InvoiceStatus[]>([]);
 	let editing = $state<Invoice | null>(null);
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
@@ -35,9 +35,17 @@
 	}
 
 	// Build query params from current filters and fetch from API
+	function toggleStatus(s: InvoiceStatus) {
+		if (activeStatuses.includes(s)) {
+			activeStatuses = activeStatuses.filter((x) => x !== s);
+		} else {
+			activeStatuses = [...activeStatuses, s];
+		}
+	}
+
 	function buildParams(): Record<string, string> {
 		const params: Record<string, string> = { page_size: '100' };
-		if (activeStatus !== 'all') params.status = activeStatus;
+		if (activeStatuses.length > 0) params.status = activeStatuses.join(',');
 		if (search.trim()) params.search = search.trim();
 		const af = advancedFilters;
 		if (af.vendor) params.vendor = af.vendor;
@@ -64,10 +72,9 @@
 		invoiceStore.fetchCounts();
 	});
 
-	// Re-fetch when status tab or advanced filters change
+	// Re-fetch when status filters or advanced filters change
 	$effect(() => {
-		// Touch reactive deps
-		activeStatus;
+		activeStatuses;
 		advancedFilters;
 		invoiceStore.fetch(buildParams());
 	});
@@ -139,11 +146,11 @@
 	{/if}
 
 	<nav class="filters">
-		<button class="filter-chip" class:active={activeStatus === 'all'} onclick={() => (activeStatus = 'all')}>
+		<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
 			All <span class="count">{totalCount}</span>
 		</button>
 		{#each INVOICE_STATUSES as s}
-			<button class="filter-chip" class:active={activeStatus === s} onclick={() => (activeStatus = s)}>
+			<button class="filter-chip" class:active={activeStatuses.includes(s)} onclick={() => toggleStatus(s)}>
 				{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
 			</button>
 		{/each}
