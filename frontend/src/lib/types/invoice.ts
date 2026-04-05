@@ -57,6 +57,12 @@ export const EMPTY_ADVANCED_FILTERS: AdvancedSearchFilters = {
 	statuses: [],
 };
 
+export interface InvoiceWarning {
+	type: string;
+	severity: 'error' | 'warning' | 'info';
+	message: string;
+}
+
 export interface Invoice {
 	id: string;
 	correlation_id: string;
@@ -84,4 +90,5 @@ export interface Invoice {
 	cost_center: string | null;
 	created_at: string;
 	file_url: string | null;
+	warnings: InvoiceWarning[] | null;
 }

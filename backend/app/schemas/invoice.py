@@ -97,11 +97,12 @@ class InvoiceResponse(BaseModel):
     cost_center: str | None
     created_at: str
     file_url: str | None
+    warnings: list[dict] | None = None
 
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_db(cls, inv) -> "InvoiceResponse":
+    def from_db(cls, inv, warnings: list[dict] | None = None) -> "InvoiceResponse":
         return cls(
             id=str(inv.id),
             correlation_id=str(inv.correlation_id),
@@ -129,6 +130,7 @@ class InvoiceResponse(BaseModel):
             cost_center=inv.cost_center,
             created_at=inv.created_at.isoformat() if inv.created_at else "",
             file_url=inv.file_url,
+            warnings=warnings,
         )
 
 

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tenant import get_tenant_db
 from app.models.invoice import Invoice, InvoiceStatus as DBInvoiceStatus
+from app.services.invoice_warnings import compute_warnings
 
 IMMUTABLE_STATUSES = {DBInvoiceStatus.sent_to_erp, DBInvoiceStatus.sending_to_erp, DBInvoiceStatus.done}
 from app.schemas.invoice import (
@@ -79,8 +80,10 @@ async def list_invoices(
     result = await db.execute(query)
     invoices = result.scalars().all()
 
+    warnings_map = await compute_warnings(db, list(invoices))
+
     return InvoiceListResponse(
-        items=[InvoiceResponse.from_db(inv) for inv in invoices],
+        items=[InvoiceResponse.from_db(inv, warnings=warnings_map.get(str(inv.id))) for inv in invoices],
         total=total,
         page=page,
         page_size=page_size,
