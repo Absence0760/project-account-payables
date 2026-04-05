@@ -56,12 +56,25 @@ Access the app via a tenant subdomain:
 
 ## Demo Logins
 
-| Tenant    | URL                            | Email                  | Password |
-|-----------|--------------------------------|------------------------|----------|
-| Acme Corp | http://acme.localhost:7777     | `demo@acme.com`        | `demo`   |
-| TechFlow  | http://techflow.localhost:7777 | `admin@techflow.com`   | `demo`   |
+All demo accounts use password `demo`.
 
-The seed script creates 2 organizations, 2 users, 4 roles, 8 vendors, and 8 invoices per tenant.
+**Acme Corp** (http://acme.localhost:7777):
+
+| Email                      | Name            | Role       |
+|----------------------------|-----------------|------------|
+| `demo@acme.com`            | Alice Admin     | Admin      |
+| `demo+apmanager@acme.com`  | Marcus Manager  | AP Manager |
+| `demo+apclerk@acme.com`    | Clara Clerk     | AP Clerk   |
+| `demo+cfo@acme.com`        | Frank CFO       | CFO        |
+
+**TechFlow Inc** (http://techflow.localhost:7777):
+
+| Email                   | Name           | Role     |
+|-------------------------|----------------|----------|
+| `admin@techflow.com`    | Tina TechAdmin | Admin    |
+| `clerk@techflow.com`    | Carlos Clerk   | AP Clerk |
+
+The seed script creates 2 organizations, 6 users, 4 roles, 8 vendors, and 8 invoices per tenant.
 
 ## What's Running Where
 

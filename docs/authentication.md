@@ -28,7 +28,9 @@ JWT-based authentication using `python-jose` for token handling and `passlib` wi
 
 ### Current user endpoint
 
-`GET /api/auth/me` — returns the authenticated user's profile. Used by the frontend layout to validate the session on page load.
+`GET /api/auth/me` — returns the authenticated user's profile including their roles (e.g. `["admin", "ap_manager"]`). Used by the frontend layout to validate the session on page load and determine role-based UI visibility.
+
+`PATCH /api/auth/me` — self-service endpoint for updating name and password (requires current password).
 
 ### Protected routes
 
@@ -90,12 +92,14 @@ Set `AP_SECRET_KEY` to a strong, random value in production.
 ## RBAC (Role-Based Access Control)
 
 The database supports four roles:
-- **admin** — full access
-- **ap_manager** — manage invoices and approvals
-- **ap_clerk** — create and edit invoices
-- **cfo** — view and approve
+- **admin** — full access to all features, user management, workflow configuration
+- **ap_manager** — review and approve invoices, manage vendors and payments
+- **ap_clerk** — upload and edit invoices, submit for review (cannot approve, delete, or change status)
+- **cfo** — approve high-value invoices, view reports, manage vendors and payments
 
-RBAC enforcement via FastAPI dependencies (`Depends(require_role("manager"))`) is planned for future phases.
+Roles are returned by `GET /api/auth/me` in the `roles` array. The frontend uses these to control sidebar navigation visibility, button visibility, and action availability (see [user-management.md](user-management.md) for the full matrix).
+
+Backend API-level role enforcement (`Depends(require_role("admin"))`) is planned for a future phase — currently enforcement is UI-only.
 
 ## Testing Auth via curl
 

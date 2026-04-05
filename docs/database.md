@@ -40,7 +40,7 @@ postgresql+asyncpg://postgres:postgres@localhost:5432/ap_acme
 ### Tenant Tables
 
 #### Invoice Pipeline
-- `invoices` — master record (invoice_number, vendor_name, amount, currency, due_date, status, file_url)
+- `invoices` — master record (invoice_number, vendor_name, amount, currency, due_date, status, file_url, vendor_address, vendor_tax_id, ship_to_address, tax_rate, payment_method, reference_number, assigned_to_id, assigned_to, approved_by, rejected_by)
 - `invoice_line_items` — individual lines (description, qty, unit_price, tax, total)
 - `invoice_extraction_results` — AI extraction output per attempt (method, confidence, raw JSON)
 
@@ -108,7 +108,9 @@ Seed the control plane and both demo tenants:
 python scripts/seed.py
 ```
 
-This creates databases, tables, and inserts demo data. Safe to re-run (idempotent).
+This creates databases, tables, and inserts demo data. Safe to re-run (idempotent). Seeds 6 users across 2 orgs with different roles (admin, AP manager, AP clerk, CFO).
+
+To re-seed from scratch, drop the Docker volumes first: `docker compose down -v && docker compose up -d`
 
 ## Provisioning New Tenants
 

@@ -15,7 +15,24 @@ Four roles are available. Users can have multiple roles.
 | **AP Clerk** | Upload invoices and enter data |
 | **CFO** | Approve high-value invoices and view reports |
 
-Roles are currently informational — they appear in the UI and can be assigned, but role-based access control (RBAC) enforcement on API endpoints is not yet implemented.
+Roles are enforced in the frontend UI. The `/api/auth/me` endpoint returns the user's roles, and the frontend restricts visibility and actions based on them.
+
+### Role-Based UI Restrictions
+
+| Feature | Admin | AP Manager | AP Clerk | CFO |
+|---|---|---|---|---|
+| Sidebar: Invoices, Dashboard | Yes | Yes | Yes | Yes |
+| Sidebar: Payments, Vendors | Yes | Yes | No | Yes |
+| Sidebar: Workflows, Admin, Org | Yes | No | No | No |
+| Invoice: edit fields | Yes | Yes | Yes | Yes |
+| Invoice: change status dropdown | Yes | Yes | No | Yes |
+| Invoice: submit for review (new) | Yes | Yes | Yes | Yes |
+| Invoice: approve/reject | Yes | Yes | No | No |
+| Invoice: delete | Yes | Yes | No | Yes |
+| Bulk: delete, status change | Yes | Yes | No | Yes |
+| Bulk: export | Yes | Yes | Yes | Yes |
+
+Backend API endpoints are not yet role-gated — enforcement is UI-only for now.
 
 ## Invite Flow
 
@@ -142,7 +159,7 @@ organizations
 
 ## Future Considerations
 
-- **RBAC enforcement**: Check roles in API middleware to restrict endpoints (e.g., only admins can access `/api/admin/*`, only AP Managers can approve)
+- **Backend RBAC enforcement**: Check roles in API middleware to restrict endpoints (e.g., only admins can access `/api/admin/*`, only AP Managers can approve). Currently enforcement is UI-only.
 - **Email invitations**: Send invite emails with a magic link or temp password via SMTP
 - **SSO integration**: The `sso_provider` and `sso_provider_id` fields exist but are not yet implemented
 - **Password reset**: Self-service password reset via email (currently requires admin to reset)
