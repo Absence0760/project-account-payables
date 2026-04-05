@@ -169,7 +169,11 @@
 			toast('Invoice submitted', 'success');
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Submit failed', 'error');
+			const msg = err instanceof Error ? err.message : 'Submit failed';
+			// Don't toast field validation errors — the form highlights them already
+			if (!msg.toLowerCase().includes('missing') && !msg.toLowerCase().includes('required field')) {
+				toast(msg, 'error');
+			}
 		} finally {
 			submitting = false;
 		}
@@ -407,9 +411,9 @@
 						</label>
 					</div>
 
-					{#if invoice.warnings?.length}
+					{#if invoice.warnings?.filter(w => w.type !== 'missing_field').length}
 						<div class="warnings-list">
-							{#each invoice.warnings as w}
+							{#each invoice.warnings.filter(w => w.type !== 'missing_field') as w}
 								<div class="warning-item {w.severity}">
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 										<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -511,47 +515,6 @@
 					{/if}
 
 					<footer>
-						<div class="footer-left">
-							<div class="export-wrapper">
-								<button type="button" class="btn-export" onclick={() => (showExportMenu = !showExportMenu)}>
-									Download
-									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-								</button>
-								{#if showExportMenu}
-									<div class="export-menu">
-										<button onclick={() => downloadExport('json')}>JSON</button>
-										<button onclick={() => downloadExport('xml')}>XML</button>
-										<button onclick={() => downloadExport('csv')}>CSV</button>
-									</div>
-								{/if}
-							</div>
-							{#if canDelete}
-								<button
-									type="button"
-									class="btn-delete-outline"
-									class:armed={confirmDelete}
-									disabled={deleting}
-									onclick={() => {
-										if (confirmDelete) {
-											deleteInvoice();
-										} else {
-											confirmDelete = true;
-										}
-									}}
-								>
-									{#if deleting}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
-										Deleting...
-									{:else if confirmDelete}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-										Confirm
-									{:else}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-										Delete
-									{/if}
-								</button>
-							{/if}
-						</div>
 						<div class="footer-right">
 							<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
 							{#if !isDone}
