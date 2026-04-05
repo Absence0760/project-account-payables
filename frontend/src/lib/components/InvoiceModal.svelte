@@ -446,6 +446,7 @@
 		width: 380px;
 		flex-shrink: 0;
 		overflow-y: auto;
+		overflow-x: hidden;
 		display: flex;
 		flex-direction: column;
 	}
@@ -455,12 +456,14 @@
 		display: flex;
 		flex-direction: column;
 		flex: 1;
+		min-width: 0;
 	}
 
 	.form-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 14px;
+		min-width: 0;
 	}
 
 	.full-width {
@@ -471,6 +474,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+		min-width: 0;
 	}
 
 	label span {
@@ -490,6 +494,9 @@
 		font-size: 0.88rem;
 		color: var(--text);
 		font-family: inherit;
+		min-width: 0;
+		width: 100%;
+		box-sizing: border-box;
 	}
 
 	input:focus,
@@ -501,6 +508,7 @@
 
 	footer {
 		display: flex;
+		flex-wrap: wrap;
 		justify-content: space-between;
 		align-items: center;
 		gap: 10px;
@@ -518,19 +526,21 @@
 	.footer-right {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: 8px;
 	}
 
 	.btn-cancel,
 	.btn-save,
 	.btn-submit {
-		padding: 8px 18px;
+		padding: 8px 14px;
 		border-radius: 4px;
 		font-size: 0.85rem;
 		font-weight: 500;
 		cursor: pointer;
 		border: 1px solid var(--border);
 		font-family: inherit;
+		white-space: nowrap;
 	}
 
 	.btn-cancel {
