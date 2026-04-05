@@ -78,6 +78,12 @@ async def create_tenant_tables(db_name: str):
             "ALTER TABLE workflow_definitions ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE",
             "ALTER TABLE workflow_instances ADD COLUMN IF NOT EXISTS steps_config_snapshot JSONB",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS warnings JSONB",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS vendor_address TEXT",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS vendor_tax_id VARCHAR(50)",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS ship_to_address TEXT",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_rate NUMERIC(5,2)",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50)",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reference_number VARCHAR(100)",
         ]:
             await conn.execute(text(stmt))
 

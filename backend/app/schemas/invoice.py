@@ -35,6 +35,12 @@ class InvoiceBase(BaseModel):
     shipping_amount: Decimal | None = Field(default=None, ge=0)
     remit_to_address: str | None = None
     bill_to_address: str | None = None
+    vendor_address: str | None = None
+    vendor_tax_id: str | None = Field(default=None, max_length=50)
+    ship_to_address: str | None = None
+    tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    payment_method: str | None = Field(default=None, max_length=50)
+    reference_number: str | None = Field(default=None, max_length=100)
     description: str | None = None
     notes: str | None = None
     gl_account: str | None = Field(default=None, max_length=100)
@@ -62,6 +68,12 @@ class InvoiceUpdate(BaseModel):
     shipping_amount: Decimal | None = Field(default=None, ge=0)
     remit_to_address: str | None = None
     bill_to_address: str | None = None
+    vendor_address: str | None = None
+    vendor_tax_id: str | None = Field(default=None, max_length=50)
+    ship_to_address: str | None = None
+    tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    payment_method: str | None = Field(default=None, max_length=50)
+    reference_number: str | None = Field(default=None, max_length=100)
     description: str | None = None
     notes: str | None = None
     gl_account: str | None = Field(default=None, max_length=100)
@@ -89,6 +101,12 @@ class InvoiceResponse(BaseModel):
     shipping_amount: float | None
     remit_to_address: str | None
     bill_to_address: str | None
+    vendor_address: str | None
+    vendor_tax_id: str | None
+    ship_to_address: str | None
+    tax_rate: float | None
+    payment_method: str | None
+    reference_number: str | None
     description: str
     notes: str | None
     approval_date: str | None
@@ -122,6 +140,12 @@ class InvoiceResponse(BaseModel):
             shipping_amount=float(inv.shipping_amount) if inv.shipping_amount is not None else None,
             remit_to_address=inv.remit_to_address,
             bill_to_address=inv.bill_to_address,
+            vendor_address=inv.vendor_address,
+            vendor_tax_id=inv.vendor_tax_id,
+            ship_to_address=inv.ship_to_address,
+            tax_rate=float(inv.tax_rate) if inv.tax_rate is not None else None,
+            payment_method=inv.payment_method,
+            reference_number=inv.reference_number,
             description=inv.description or "",
             notes=inv.notes,
             approval_date=inv.approval_date.isoformat() if inv.approval_date else None,

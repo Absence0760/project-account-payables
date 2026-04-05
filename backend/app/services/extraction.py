@@ -41,6 +41,11 @@ async def run_extraction(
         invoice.subtotal = extracted.get("subtotal")
         invoice.tax_amount = extracted.get("tax_amount")
         invoice.payment_terms = extracted.get("payment_terms")
+        invoice.vendor_address = extracted.get("vendor_address")
+        invoice.vendor_tax_id = extracted.get("vendor_tax_id")
+        invoice.tax_rate = extracted.get("tax_rate")
+        invoice.payment_method = extracted.get("payment_method")
+        invoice.reference_number = extracted.get("reference_number")
         invoice.description = extracted.get("description", "")
 
         # Save extraction result
@@ -104,5 +109,10 @@ async def _mock_extract(invoice: Invoice) -> dict:
         "invoice_date": today.isoformat(),
         "due_date": (today + timedelta(days=30)).isoformat(),
         "payment_terms": "Net 30",
+        "vendor_address": "123 Vendor St, Suite 200, Austin, TX 78701",
+        "vendor_tax_id": "12-3456789",
+        "tax_rate": "10.00",
+        "payment_method": "ach",
+        "reference_number": f"REF-{uuid.uuid4().hex[:6].upper()}",
         "description": f"Extracted from file: {invoice.file_key or 'unknown'}",
     }

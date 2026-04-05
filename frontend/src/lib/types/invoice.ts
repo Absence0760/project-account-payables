@@ -82,6 +82,12 @@ export interface Invoice {
 	shipping_amount: number | null;
 	remit_to_address: string | null;
 	bill_to_address: string | null;
+	vendor_address: string | null;
+	vendor_tax_id: string | null;
+	ship_to_address: string | null;
+	tax_rate: number | null;
+	payment_method: string | null;
+	reference_number: string | null;
 	description: string;
 	notes: string | null;
 	approval_date: string | null;

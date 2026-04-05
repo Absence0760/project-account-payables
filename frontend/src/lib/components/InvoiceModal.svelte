@@ -27,6 +27,12 @@
 	let status = $state(invoice.status);
 	let po_number = $state(invoice.po_number);
 	let description = $state(invoice.description);
+	let vendor_address = $state(invoice.vendor_address ?? '');
+	let vendor_tax_id = $state(invoice.vendor_tax_id ?? '');
+	let ship_to_address = $state(invoice.ship_to_address ?? '');
+	let tax_rate = $state(invoice.tax_rate);
+	let payment_method = $state(invoice.payment_method ?? '');
+	let reference_number = $state(invoice.reference_number ?? '');
 	/* eslint-enable svelte/state-referenced-locally */
 
 	let fullscreen = $state(false);
@@ -71,6 +77,12 @@
 				status,
 				po_number,
 				description,
+				vendor_address: vendor_address || null,
+				vendor_tax_id: vendor_tax_id || null,
+				ship_to_address: ship_to_address || null,
+				tax_rate,
+				payment_method: payment_method || null,
+				reference_number: reference_number || null,
 			});
 			toast('Invoice saved', 'success');
 			onclose();
@@ -92,6 +104,12 @@
 				due_date,
 				po_number,
 				description,
+				vendor_address: vendor_address || null,
+				vendor_tax_id: vendor_tax_id || null,
+				ship_to_address: ship_to_address || null,
+				tax_rate,
+				payment_method: payment_method || null,
+				reference_number: reference_number || null,
 			});
 			await api.post(`/api/invoices/${invoice.id}/complete`, {});
 			await invoiceStore.fetch();
@@ -222,6 +240,37 @@
 									<option value={s}>{STATUS_LABELS[s]}</option>
 								{/each}
 							</select>
+						</label>
+						<label>
+							<span>Reference #</span>
+							<input type="text" bind:value={reference_number} />
+						</label>
+						<label>
+							<span>Payment Method</span>
+							<select bind:value={payment_method}>
+								<option value="">—</option>
+								<option value="ach">ACH</option>
+								<option value="wire">Wire Transfer</option>
+								<option value="check">Check</option>
+								<option value="credit_card">Credit Card</option>
+								<option value="other">Other</option>
+							</select>
+						</label>
+						<label>
+							<span>Tax Rate (%)</span>
+							<input type="number" step="0.01" min="0" max="100" bind:value={tax_rate} />
+						</label>
+						<label>
+							<span>Vendor Tax ID</span>
+							<input type="text" bind:value={vendor_tax_id} placeholder="EIN / VAT #" />
+						</label>
+						<label class="full-width">
+							<span>Vendor Address</span>
+							<input type="text" bind:value={vendor_address} />
+						</label>
+						<label class="full-width">
+							<span>Ship-to Address</span>
+							<input type="text" bind:value={ship_to_address} />
 						</label>
 						<label class="full-width">
 							<span>Description</span>
