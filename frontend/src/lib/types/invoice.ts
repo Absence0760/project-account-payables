@@ -123,6 +123,9 @@ export interface Invoice {
 	notes: string | null;
 	approval_date: string | null;
 	approved_by: string | null;
+	rejected_by: string | null;
+	assigned_to_id: string | null;
+	assigned_to: string | null;
 	gl_account: string | null;
 	cost_center: string | null;
 	created_at: string;

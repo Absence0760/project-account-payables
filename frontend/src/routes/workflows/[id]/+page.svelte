@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { adminStore } from '$lib/stores/admin.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 	import type {
 		WorkflowDefinition,
@@ -33,6 +34,7 @@
 
 	$effect(() => {
 		if (id) loadWorkflow(id);
+		adminStore.fetchUsers();
 	});
 
 	async function loadWorkflow(wfId: string) {
@@ -335,14 +337,31 @@
 
 							{#if cfg.approver_strategy === 'specific'}
 								<div class="field">
-									<label for="approver-id">Approver User ID</label>
-									<input
-										id="approver-id"
-										type="text"
-										placeholder="Enter user ID..."
-										value={cfg.approver_id ?? ''}
-										oninput={(e) => updateStepConfig(selectedIndex, 'approver_id', e.currentTarget.value || null)}
-									/>
+									<label>Approvers</label>
+									<div class="approver-checks">
+										{#each adminStore.users.filter(u => u.is_active) as user}
+											<label class="approver-check">
+												<input
+													type="checkbox"
+													checked={(cfg.approver_ids ?? []).includes(user.id)}
+													onchange={() => {
+														const ids = cfg.approver_ids ?? [];
+														const next = ids.includes(user.id)
+															? ids.filter((id: string) => id !== user.id)
+															: [...ids, user.id];
+														updateStepConfig(selectedIndex, 'approver_ids', next);
+													}}
+												/>
+												<span class="approver-name">{user.full_name}</span>
+												<span class="approver-email">{user.email}</span>
+											</label>
+										{/each}
+									</div>
+									{#if (cfg.approver_ids ?? []).length > 0}
+										<p class="field-hint">Invoices will be round-robin assigned to the {cfg.approver_ids.length} selected approver{cfg.approver_ids.length > 1 ? 's' : ''}.</p>
+									{:else}
+										<p class="field-hint warning">No approvers selected. Select at least one user.</p>
+									{/if}
 								</div>
 							{/if}
 
@@ -821,6 +840,43 @@
 
 	.field-hint.warning {
 		color: #d4940a;
+	}
+
+	.approver-checks {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		max-height: 200px;
+		overflow-y: auto;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 8px 10px;
+		background: var(--bg);
+	}
+
+	.approver-check {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 0.85rem;
+		cursor: pointer;
+		padding: 4px 0;
+	}
+
+	.approver-check input[type='checkbox'] {
+		accent-color: var(--accent);
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.approver-name {
+		font-weight: 500;
+		color: var(--text);
+	}
+
+	.approver-email {
+		color: var(--text-muted);
+		font-size: 0.78rem;
 	}
 
 	/* Toggle switch */

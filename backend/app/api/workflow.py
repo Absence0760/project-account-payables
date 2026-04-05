@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_org_id
+from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceStatus, InvoiceExtractionResult
 from app.models.user import User
 from app.models.workflow import AuditLog, WorkflowInstance, WorkflowStep
@@ -122,17 +123,25 @@ async def assign_reviewer(
     invoice_id: uuid.UUID,
     body: AssignReviewerRequest,
     db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(get_current_user),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
     if invoice.status != InvoiceStatus.ready_for_review:
         raise HTTPException(status_code=409, detail="Invoice must be in 'ready_for_review' to assign a reviewer")
 
+    reviewer_id = uuid.UUID(body.user_id)
+    result = await control_db.execute(select(User).where(User.id == reviewer_id))
+    reviewer = result.scalar_one_or_none()
+    if not reviewer:
+        raise HTTPException(status_code=404, detail="Reviewer not found")
+
     await review_svc.assign_reviewer(
         db,
         invoice,
         actor_id=user.id,
-        reviewer_id=uuid.UUID(body.user_id),
+        reviewer_id=reviewer_id,
+        reviewer_name=reviewer.full_name,
     )
     return InvoiceResponse.from_db(invoice)
 
@@ -170,6 +179,7 @@ async def reject_invoice(
         db,
         invoice,
         actor_id=user.id,
+        actor_name=user.full_name,
         reason=body.reason,
     )
     return InvoiceResponse.from_db(invoice)
@@ -446,6 +456,8 @@ async def get_workflow(
 async def get_audit_log(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(get_current_user),
 ):
     # Get the invoice's correlation_id
     result = await db.execute(
@@ -462,7 +474,15 @@ async def get_audit_log(
     )
     entries = result.scalars().all()
 
-    return [AuditLogEntryResponse.from_db(e) for e in entries]
+    # Resolve actor names from control DB
+    actor_ids = {e.actor_id for e in entries if e.actor_id}
+    actor_names: dict[str, str] = {}
+    if actor_ids:
+        result = await control_db.execute(select(User).where(User.id.in_(actor_ids)))
+        for u in result.scalars().all():
+            actor_names[str(u.id)] = u.full_name
+
+    return [AuditLogEntryResponse.from_db(e, actor_names) for e in entries]
 
 
 @router.get("/{invoice_id}/extraction")

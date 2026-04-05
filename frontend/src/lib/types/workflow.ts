@@ -20,6 +20,7 @@ export interface ExtractionStepConfig {
 export interface ApprovalStepConfig {
 	required: boolean;
 	approver_id: string | null;
+	approver_ids: string[];
 	approver_strategy: 'manual' | 'specific' | 'auto';
 }
 
@@ -68,6 +69,7 @@ export const DEFAULT_EXTRACTION_CONFIG: ExtractionStepConfig = {
 export const DEFAULT_APPROVAL_CONFIG: ApprovalStepConfig = {
 	required: true,
 	approver_id: null,
+	approver_ids: [],
 	approver_strategy: 'manual',
 };
 

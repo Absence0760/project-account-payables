@@ -16,7 +16,8 @@ class ExtractionStepConfig(BaseModel):
 
 class ApprovalStepConfig(BaseModel):
     required: bool = True
-    approver_id: str | None = None
+    approver_id: str | None = None  # deprecated, use approver_ids
+    approver_ids: list[str] = []
     approver_strategy: str = "manual"  # "manual", "specific", "auto"
 
 
@@ -149,6 +150,7 @@ class AuditLogEntryResponse(BaseModel):
     id: str
     correlation_id: str
     actor_id: str | None
+    actor_name: str | None = None
     action: str
     entity_type: str
     entity_id: str | None
@@ -156,11 +158,13 @@ class AuditLogEntryResponse(BaseModel):
     created_at: str
 
     @classmethod
-    def from_db(cls, entry) -> "AuditLogEntryResponse":
+    def from_db(cls, entry, actor_names: dict[str, str] | None = None) -> "AuditLogEntryResponse":
+        actor_id_str = str(entry.actor_id) if entry.actor_id else None
         return cls(
             id=str(entry.id),
             correlation_id=str(entry.correlation_id) if entry.correlation_id else "",
-            actor_id=str(entry.actor_id) if entry.actor_id else None,
+            actor_id=actor_id_str,
+            actor_name=(actor_names or {}).get(actor_id_str, None) if actor_id_str else None,
             action=entry.action,
             entity_type=entry.entity_type,
             entity_id=str(entry.entity_id) if entry.entity_id else None,

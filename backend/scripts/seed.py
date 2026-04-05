@@ -84,6 +84,9 @@ async def create_tenant_tables(db_name: str):
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_rate NUMERIC(5,2)",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50)",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reference_number VARCHAR(100)",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS rejected_by VARCHAR(255)",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS assigned_to_id UUID",
+            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(255)",
         ]:
             await conn.execute(text(stmt))
 

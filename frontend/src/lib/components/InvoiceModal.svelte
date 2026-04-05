@@ -2,12 +2,33 @@
 	import type { Invoice } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
 	import { PUBLIC_API_URL } from '$env/static/public';
 	import { toast } from '$lib/components/Toast.svelte';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
+	interface AuditEntry {
+		id: string;
+		actor_name: string | null;
+		action: string;
+		details: Record<string, unknown> | null;
+		created_at: string;
+	}
+
 	const apiBase = PUBLIC_API_URL.replace(/\/+$/, '');
+	const ACTION_LABELS: Record<string, string> = {
+		'invoice.uploaded': 'Uploaded invoice',
+		'invoice.submitted_for_review': 'Submitted for review',
+		'invoice.approved': 'Approved',
+		'invoice.rejected': 'Rejected',
+		'invoice.resubmitted': 'Resubmitted for review',
+		'invoice.assigned_for_review': 'Assigned for review',
+		'invoice.erp_submitted': 'Sent to ERP',
+		'invoice.extraction_completed': 'Extraction completed',
+		'invoice.extraction_failed': 'Extraction failed',
+		'invoice.completed': 'Marked complete',
+	};
 
 	let {
 		invoice,
@@ -46,9 +67,16 @@
 	let submitting = $state(false);
 	let deleting = $state(false);
 	let confirmDelete = $state(false);
+	let reviewing = $state(false);
+	let showRejectForm = $state(false);
+	let rejectReason = $state('');
 
 	let isDone = $derived(status === 'done' || status === 'sent_to_erp');
 	let canDelete = $derived(status !== 'done' && status !== 'sent_to_erp' && status !== 'sending_to_erp');
+	let isReadyForReview = $derived(status === 'ready_for_review');
+	let canReview = $derived(isReadyForReview && (
+		!invoice.assigned_to_id || invoice.assigned_to_id === auth.user?.id
+	));
 	let canSubmitStatus = $derived(
 		status === 'new' || status === 'approved'
 	);
@@ -125,6 +153,35 @@
 		}
 	}
 
+	async function handleApprove() {
+		reviewing = true;
+		try {
+			await api.post(`/api/invoices/${invoice.id}/approve`, {});
+			await invoiceStore.fetch();
+			toast('Invoice approved', 'success');
+			onclose();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
+		} finally {
+			reviewing = false;
+		}
+	}
+
+	async function handleReject() {
+		if (!rejectReason.trim()) return;
+		reviewing = true;
+		try {
+			await api.post(`/api/invoices/${invoice.id}/reject`, { reason: rejectReason.trim() });
+			await invoiceStore.fetch();
+			toast('Invoice rejected', 'success');
+			onclose();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
+		} finally {
+			reviewing = false;
+		}
+	}
+
 	async function deleteInvoice() {
 		deleting = true;
 		try {
@@ -176,6 +233,31 @@
 		a.download = filename;
 		a.click();
 		URL.revokeObjectURL(url);
+	}
+
+	let auditLog = $state<AuditEntry[]>([]);
+	let auditLoading = $state(false);
+
+	$effect(() => {
+		loadAuditLog();
+	});
+
+	async function loadAuditLog() {
+		auditLoading = true;
+		try {
+			auditLog = await api.get<AuditEntry[]>(`/api/invoices/${invoice.id}/audit-log`);
+		} catch {
+			// non-critical
+		} finally {
+			auditLoading = false;
+		}
+	}
+
+	function formatAuditDate(iso: string): string {
+		if (!iso) return '';
+		const d = new Date(iso);
+		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+			' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 	}
 
 	function handleBackdrop(e: MouseEvent) {
@@ -311,6 +393,92 @@
 
 					{#if canSubmitStatus && missingFields.length > 0}
 						<div class="validation-hint">Required: {missingFields.join(', ')}</div>
+					{/if}
+
+					{#if invoice.approved_by || invoice.rejected_by || invoice.assigned_to}
+						<div class="meta-section">
+							{#if invoice.assigned_to}
+								<div class="meta-item">
+									<span class="meta-label">Assigned to</span>
+									<span class="meta-value">{invoice.assigned_to}</span>
+								</div>
+							{/if}
+							{#if invoice.approved_by}
+								<div class="meta-item">
+									<span class="meta-label">Approved by</span>
+									<span class="meta-value approved">{invoice.approved_by}</span>
+									{#if invoice.approval_date}
+										<span class="meta-date">{invoice.approval_date}</span>
+									{/if}
+								</div>
+							{/if}
+							{#if invoice.rejected_by}
+								<div class="meta-item">
+									<span class="meta-label">Rejected by</span>
+									<span class="meta-value rejected">{invoice.rejected_by}</span>
+								</div>
+							{/if}
+						</div>
+					{/if}
+
+					{#if auditLog.length > 0}
+						<div class="activity-section">
+							<div class="activity-title">Activity</div>
+							<div class="activity-list">
+								{#each auditLog as entry}
+									<div class="activity-item">
+										<div class="activity-dot"></div>
+										<div class="activity-content">
+											<span class="activity-action">{ACTION_LABELS[entry.action] ?? entry.action}</span>
+											{#if entry.actor_name}
+												<span class="activity-actor">by {entry.actor_name}</span>
+											{/if}
+											{#if entry.details?.reason}
+												<span class="activity-detail">— {entry.details.reason}</span>
+											{/if}
+										</div>
+										<span class="activity-time">{formatAuditDate(entry.created_at)}</span>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					{#if canReview}
+						<div class="review-section">
+							<div class="review-title">Review</div>
+							{#if showRejectForm}
+								<div class="reject-form">
+									<textarea
+										class="reject-input"
+										placeholder="Reason for rejection..."
+										bind:value={rejectReason}
+										rows="2"
+									></textarea>
+									<div class="reject-actions">
+										<button type="button" class="btn-cancel-sm" onclick={() => { showRejectForm = false; rejectReason = ''; }}>Cancel</button>
+										<button type="button" class="btn-reject" disabled={reviewing || !rejectReason.trim()} onclick={handleReject}>
+											{reviewing ? 'Rejecting...' : 'Confirm Reject'}
+										</button>
+									</div>
+								</div>
+							{:else}
+								<div class="review-actions">
+									<button type="button" class="btn-approve" disabled={reviewing} onclick={handleApprove}>
+										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+										{reviewing ? 'Approving...' : 'Approve'}
+									</button>
+									<button type="button" class="btn-reject-outline" disabled={reviewing} onclick={() => (showRejectForm = true)}>
+										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+										Reject
+									</button>
+								</div>
+							{/if}
+						</div>
+					{:else if isReadyForReview && invoice.assigned_to}
+						<div class="review-section">
+							<p class="review-assigned-hint">Assigned to <strong>{invoice.assigned_to}</strong> for review.</p>
+						</div>
 					{/if}
 
 					<footer>
@@ -764,6 +932,267 @@
 		font-size: 0.8rem;
 		color: #d4940a;
 		margin-top: 8px;
+	}
+
+	/* --- Approval/assignment meta --- */
+
+	.meta-section {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin-top: 12px;
+		padding: 10px 12px;
+		background: var(--bg);
+		border-radius: 6px;
+		border: 1px solid var(--border);
+	}
+
+	.meta-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.8rem;
+	}
+
+	.meta-label {
+		color: var(--text-muted);
+		min-width: 80px;
+	}
+
+	.meta-value {
+		font-weight: 500;
+		color: var(--text);
+	}
+
+	.meta-value.approved {
+		color: #1fa86a;
+	}
+
+	.meta-value.rejected {
+		color: #e04040;
+	}
+
+	.meta-date {
+		color: var(--text-muted);
+		font-size: 0.75rem;
+	}
+
+	/* --- Activity log --- */
+
+	.activity-section {
+		margin-top: 14px;
+	}
+
+	.activity-title {
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin-bottom: 8px;
+	}
+
+	.activity-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+		border-left: 2px solid var(--border);
+		margin-left: 4px;
+		padding-left: 12px;
+	}
+
+	.activity-item {
+		display: flex;
+		align-items: flex-start;
+		gap: 6px;
+		padding: 5px 0;
+		position: relative;
+		font-size: 0.78rem;
+	}
+
+	.activity-dot {
+		position: absolute;
+		left: -17px;
+		top: 10px;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--text-muted);
+	}
+
+	.activity-content {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.activity-action {
+		color: var(--text);
+		font-weight: 500;
+	}
+
+	.activity-actor {
+		color: var(--text-muted);
+	}
+
+	.activity-detail {
+		color: var(--text-muted);
+		font-style: italic;
+	}
+
+	.activity-time {
+		color: var(--text-muted);
+		font-size: 0.72rem;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	/* --- Review section --- */
+
+	.review-section {
+		margin-top: 14px;
+		padding: 12px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+	}
+
+	.review-title {
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin-bottom: 10px;
+	}
+
+	.review-actions {
+		display: flex;
+		gap: 8px;
+	}
+
+	.btn-approve {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 18px;
+		border-radius: 4px;
+		border: none;
+		background: #1fa86a;
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		flex: 1;
+		justify-content: center;
+	}
+
+	.btn-approve:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.btn-approve:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.btn-reject-outline {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 18px;
+		border-radius: 4px;
+		border: 1px solid #e04040;
+		background: var(--surface);
+		color: #e04040;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		flex: 1;
+		justify-content: center;
+	}
+
+	.btn-reject-outline:hover:not(:disabled) {
+		background: rgba(224, 64, 64, 0.1);
+	}
+
+	.btn-reject-outline:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.reject-form {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.reject-input {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 8px 10px;
+		font-size: 0.85rem;
+		color: var(--text);
+		font-family: inherit;
+		resize: vertical;
+		width: 100%;
+		box-sizing: border-box;
+	}
+
+	.reject-input:focus {
+		outline: none;
+		border-color: #e04040;
+		box-shadow: 0 0 0 2px rgba(224, 64, 64, 0.15);
+	}
+
+	.reject-actions {
+		display: flex;
+		gap: 8px;
+		justify-content: flex-end;
+	}
+
+	.btn-cancel-sm {
+		padding: 6px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.82rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-cancel-sm:hover {
+		background: var(--bg);
+	}
+
+	.btn-reject {
+		padding: 6px 14px;
+		border-radius: 4px;
+		border: none;
+		background: #e04040;
+		color: #fff;
+		font-size: 0.82rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-reject:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.btn-reject:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.review-assigned-hint {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		margin: 0;
 	}
 
 	.save-error {

@@ -56,8 +56,10 @@ async def reject_invoice(
     invoice: Invoice,
     *,
     actor_id: uuid.UUID,
+    actor_name: str,
     reason: str,
 ) -> Invoice:
+    invoice.rejected_by = actor_name
     await transition_invoice(
         db,
         invoice,
@@ -116,7 +118,10 @@ async def assign_reviewer(
     *,
     actor_id: uuid.UUID,
     reviewer_id: uuid.UUID,
+    reviewer_name: str,
 ) -> None:
+    invoice.assigned_to_id = reviewer_id
+    invoice.assigned_to = reviewer_name
     from app.services.audit_dispatch import dispatch_audit
 
     instance = await get_workflow_instance(db, invoice.id)

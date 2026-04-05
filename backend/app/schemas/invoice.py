@@ -111,6 +111,9 @@ class InvoiceResponse(BaseModel):
     notes: str | None
     approval_date: str | None
     approved_by: str | None
+    rejected_by: str | None
+    assigned_to_id: str | None
+    assigned_to: str | None
     gl_account: str | None
     cost_center: str | None
     created_at: str
@@ -150,6 +153,9 @@ class InvoiceResponse(BaseModel):
             notes=inv.notes,
             approval_date=inv.approval_date.isoformat() if inv.approval_date else None,
             approved_by=inv.approved_by,
+            rejected_by=inv.rejected_by,
+            assigned_to_id=str(inv.assigned_to_id) if inv.assigned_to_id else None,
+            assigned_to=inv.assigned_to,
             gl_account=inv.gl_account,
             cost_center=inv.cost_center,
             created_at=inv.created_at.isoformat() if inv.created_at else "",
