@@ -29,6 +29,8 @@
 	let editingName = $state(false);
 	let nameInput = $state('');
 	let descInput = $state('');
+	let approverSearch = $state('');
+	let approverDropdownOpen = $state(false);
 
 	const id = $derived($page.params.id ?? '');
 
@@ -100,6 +102,12 @@
 		dirty = true;
 	}
 
+	function handleWindowClick(e: MouseEvent) {
+		if (approverDropdownOpen && !(e.target as HTMLElement).closest('.approver-search-wrap')) {
+			approverDropdownOpen = false;
+		}
+	}
+
 	async function handleSave() {
 		if (!workflow) return;
 		saving = true;
@@ -140,6 +148,8 @@
 		return icons[type];
 	}
 </script>
+
+<svelte:window onclick={handleWindowClick} />
 
 <div class="workspace">
 	{#if !workflow}
@@ -336,29 +346,70 @@
 							</div>
 
 							{#if cfg.approver_strategy === 'specific'}
+								{@const ids = cfg.approver_ids ?? []}
+								{@const selectedUsers = ids.map((id: string) => adminStore.users.find(u => u.id === id)).filter(Boolean)}
+								{@const availableUsers = adminStore.users.filter(u => u.is_active && !ids.includes(u.id))}
+								{@const query = approverSearch.toLowerCase().trim()}
+								{@const filteredUsers = query
+									? availableUsers.filter(u =>
+										u.full_name.toLowerCase().includes(query) ||
+										u.email.toLowerCase().includes(query)
+									)
+									: availableUsers}
 								<div class="field">
 									<label>Approvers</label>
-									<div class="approver-checks">
-										{#each adminStore.users.filter(u => u.is_active) as user}
-											<label class="approver-check">
-												<input
-													type="checkbox"
-													checked={(cfg.approver_ids ?? []).includes(user.id)}
-													onchange={() => {
-														const ids = cfg.approver_ids ?? [];
-														const next = ids.includes(user.id)
-															? ids.filter((id: string) => id !== user.id)
-															: [...ids, user.id];
-														updateStepConfig(selectedIndex, 'approver_ids', next);
-													}}
-												/>
-												<span class="approver-name">{user.full_name}</span>
-												<span class="approver-email">{user.email}</span>
-											</label>
-										{/each}
+
+									{#if selectedUsers.length > 0}
+										<div class="approver-chips">
+											{#each selectedUsers as user}
+												<span class="approver-chip">
+													{user?.full_name}
+													<button
+														type="button"
+														class="chip-remove"
+														onclick={(e) => {
+															e.stopPropagation();
+															updateStepConfig(selectedIndex, 'approver_ids', ids.filter((id: string) => id !== user?.id));
+														}}
+													>&times;</button>
+												</span>
+											{/each}
+										</div>
+									{/if}
+
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div class="approver-search-wrap" onclick={() => (approverDropdownOpen = true)}>
+										<input
+											type="text"
+											class="approver-search"
+											placeholder="Search users to add..."
+											bind:value={approverSearch}
+											onfocus={() => (approverDropdownOpen = true)}
+										/>
+										{#if approverDropdownOpen && filteredUsers.length > 0}
+											<div class="approver-dropdown">
+												{#each filteredUsers as user}
+													<button
+														type="button"
+														class="approver-option"
+														onclick={() => {
+															updateStepConfig(selectedIndex, 'approver_ids', [...ids, user.id]);
+														}}
+													>
+														<span class="approver-name">{user.full_name}</span>
+														<span class="approver-email">{user.email}</span>
+													</button>
+												{/each}
+											</div>
+										{:else if approverDropdownOpen && query && filteredUsers.length === 0}
+											<div class="approver-dropdown">
+												<div class="approver-empty">No matching users</div>
+											</div>
+										{/if}
 									</div>
-									{#if (cfg.approver_ids ?? []).length > 0}
-										<p class="field-hint">Invoices will be round-robin assigned to the {cfg.approver_ids.length} selected approver{cfg.approver_ids.length > 1 ? 's' : ''}.</p>
+
+									{#if ids.length > 0}
+										<p class="field-hint">Invoices will be round-robin assigned to the {ids.length} selected approver{ids.length > 1 ? 's' : ''}.</p>
 									{:else}
 										<p class="field-hint warning">No approvers selected. Select at least one user.</p>
 									{/if}
@@ -842,31 +893,87 @@
 		color: #d4940a;
 	}
 
-	.approver-checks {
+	.approver-chips {
 		display: flex;
-		flex-direction: column;
+		flex-wrap: wrap;
 		gap: 6px;
-		max-height: 200px;
-		overflow-y: auto;
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 8px 10px;
-		background: var(--bg);
+		margin-bottom: 8px;
 	}
 
-	.approver-check {
+	.approver-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 8px 3px 10px;
+		border-radius: 14px;
+		background: rgba(99, 140, 255, 0.12);
+		color: var(--accent);
+		font-size: 0.78rem;
+		font-weight: 500;
+	}
+
+	.chip-remove {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 16px;
+		height: 16px;
+		border: none;
+		background: none;
+		color: var(--accent);
+		font-size: 1rem;
+		line-height: 1;
+		cursor: pointer;
+		border-radius: 50%;
+		padding: 0;
+	}
+
+	.chip-remove:hover {
+		background: rgba(99, 140, 255, 0.2);
+		color: var(--text);
+	}
+
+	.approver-search-wrap {
+		position: relative;
+	}
+
+	.approver-search {
+		width: 100%;
+		box-sizing: border-box;
+	}
+
+	.approver-dropdown {
+		position: absolute;
+		top: 100%;
+		left: 0;
+		right: 0;
+		max-height: 180px;
+		overflow-y: auto;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+		z-index: 20;
+		margin-top: 4px;
+	}
+
+	.approver-option {
 		display: flex;
 		align-items: center;
 		gap: 8px;
+		width: 100%;
+		padding: 8px 12px;
+		border: none;
+		background: none;
+		color: var(--text);
 		font-size: 0.85rem;
 		cursor: pointer;
-		padding: 4px 0;
+		text-align: left;
+		font-family: inherit;
 	}
 
-	.approver-check input[type='checkbox'] {
-		accent-color: var(--accent);
-		cursor: pointer;
-		flex-shrink: 0;
+	.approver-option:hover {
+		background: rgba(99, 140, 255, 0.08);
 	}
 
 	.approver-name {
@@ -877,6 +984,13 @@
 	.approver-email {
 		color: var(--text-muted);
 		font-size: 0.78rem;
+	}
+
+	.approver-empty {
+		padding: 10px 12px;
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		text-align: center;
 	}
 
 	/* Toggle switch */
