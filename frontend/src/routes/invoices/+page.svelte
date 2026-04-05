@@ -118,10 +118,38 @@
 		return invoiceStore.statusCounts[status] ?? 0;
 	}
 
+	let deletingId = $state<string | null>(null);
+	let confirmDeleteId = $state<string | null>(null);
+
+	const IMMUTABLE_STATUSES = new Set(['done', 'sent_to_erp', 'sending_to_erp']);
+
+	async function deleteInvoice(id: string) {
+		deletingId = id;
+		try {
+			await api.delete(`/api/invoices/${id}`);
+			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetchCounts();
+			toast('Invoice deleted', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+		} finally {
+			deletingId = null;
+			confirmDeleteId = null;
+		}
+	}
+
+	function handleWindowClick(e: MouseEvent) {
+		if (confirmDeleteId && !(e.target as HTMLElement).closest('.delete-btn')) {
+			confirmDeleteId = null;
+		}
+	}
+
 	function formatCurrency(amount: number, currency: string): string {
 		return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
 	}
 </script>
+
+<svelte:window onclick={handleWindowClick} />
 
 <div class="workspace">
 	<header class="toolbar">
@@ -199,8 +227,31 @@
 						<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
 						<td>{invoice.due_date}</td>
 						<td><StatusBadge status={invoice.status} /></td>
-						<td>
+						<td class="actions">
 							<button class="edit-btn" onclick={() => (editing = invoice)}>Edit</button>
+							{#if !IMMUTABLE_STATUSES.has(invoice.status)}
+								<button
+									class="delete-btn"
+									class:armed={confirmDeleteId === invoice.id}
+									disabled={deletingId === invoice.id}
+									onclick={(e) => {
+										e.stopPropagation();
+										if (confirmDeleteId === invoice.id) {
+											deleteInvoice(invoice.id);
+										} else {
+											confirmDeleteId = invoice.id;
+										}
+									}}
+								>
+									{#if deletingId === invoice.id}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+									{:else if confirmDeleteId === invoice.id}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+									{:else}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+									{/if}
+								</button>
+							{/if}
 						</td>
 					</tr>
 				{:else}
@@ -425,6 +476,42 @@
 	.edit-btn:hover {
 		border-color: var(--accent);
 		color: var(--accent);
+	}
+
+	.actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		white-space: nowrap;
+	}
+
+	.delete-btn {
+		display: grid;
+		place-items: center;
+		width: 30px;
+		height: 28px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+
+	.delete-btn:hover {
+		border-color: #e04040;
+		color: #e04040;
+	}
+
+	.delete-btn.armed {
+		border-color: #e04040;
+		background: rgba(224, 64, 64, 0.1);
+		color: #e04040;
+	}
+
+	.delete-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.empty {

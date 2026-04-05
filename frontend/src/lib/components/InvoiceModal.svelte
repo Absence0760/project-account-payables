@@ -44,8 +44,11 @@
 
 	let saving = $state(false);
 	let submitting = $state(false);
+	let deleting = $state(false);
+	let confirmDelete = $state(false);
 
 	let isDone = $derived(status === 'done' || status === 'sent_to_erp');
+	let canDelete = $derived(status !== 'done' && status !== 'sent_to_erp' && status !== 'sending_to_erp');
 	let canSubmitStatus = $derived(
 		status === 'new' || status === 'approved'
 	);
@@ -119,6 +122,21 @@
 			toast(err instanceof Error ? err.message : 'Submit failed', 'error');
 		} finally {
 			submitting = false;
+		}
+	}
+
+	async function deleteInvoice() {
+		deleting = true;
+		try {
+			await api.delete(`/api/invoices/${invoice.id}`);
+			await invoiceStore.fetch();
+			toast('Invoice deleted', 'success');
+			onclose();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+		} finally {
+			deleting = false;
+			confirmDelete = false;
 		}
 	}
 
@@ -310,6 +328,32 @@
 									</div>
 								{/if}
 							</div>
+							{#if canDelete}
+								<button
+									type="button"
+									class="btn-delete-outline"
+									class:armed={confirmDelete}
+									disabled={deleting}
+									onclick={() => {
+										if (confirmDelete) {
+											deleteInvoice();
+										} else {
+											confirmDelete = true;
+										}
+									}}
+								>
+									{#if deleting}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+										Deleting...
+									{:else if confirmDelete}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+										Confirm
+									{:else}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+										Delete
+									{/if}
+								</button>
+							{/if}
 						</div>
 						<div class="footer-right">
 							<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
@@ -550,6 +594,39 @@
 
 	.btn-cancel:hover {
 		background: var(--bg);
+	}
+
+	.btn-delete-outline {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 14px;
+		border-radius: 4px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+		background: var(--surface);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		transition: all 0.15s;
+	}
+
+	.btn-delete-outline:hover {
+		border-color: #e04040;
+		color: #e04040;
+	}
+
+	.btn-delete-outline.armed {
+		border-color: #e04040;
+		background: rgba(224, 64, 64, 0.1);
+		color: #e04040;
+	}
+
+	.btn-delete-outline:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.btn-save {
