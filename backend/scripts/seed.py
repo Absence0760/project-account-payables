@@ -73,13 +73,33 @@ async def create_tenant_tables(db_name: str):
         await conn.run_sync(
             lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tenant_tables, checkfirst=True)
         )
-        # Add columns/enum values that may be missing on existing tables
+        # Add columns that may be missing on existing tables
         for stmt in [
             "ALTER TABLE workflow_definitions ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE",
             "ALTER TABLE workflow_instances ADD COLUMN IF NOT EXISTS steps_config_snapshot JSONB",
-            "ALTER TYPE invoicestatus ADD VALUE IF NOT EXISTS 'done'",
         ]:
             await conn.execute(text(stmt))
+
+    # ALTER TYPE ... ADD VALUE cannot run inside a transaction, so use a separate connection
+    raw_url = tenant_url.replace("postgresql+asyncpg://", "")
+    userpass, hostdb = raw_url.split("@", 1)
+    pg_user, pg_pass = userpass.split(":", 1)
+    host_port, db_name_parsed = hostdb.rsplit("/", 1)
+    pg_host = host_port.split(":")[0]
+    pg_port = int(host_port.split(":")[1]) if ":" in host_port else 5432
+    try:
+        conn = await asyncpg.connect(
+            user=pg_user, password=pg_pass,
+            host=pg_host, port=pg_port, database=db_name_parsed,
+        )
+        try:
+            await conn.execute("ALTER TYPE invoicestatus ADD VALUE IF NOT EXISTS 'done'")
+        except asyncpg.exceptions.DuplicateObjectError:
+            pass
+        finally:
+            await conn.close()
+    except Exception:
+        pass  # enum may not exist yet on fresh DB (create_all already created it with 'done')
     await engine.dispose()
     print(f"  Tenant tables ready in: {db_name}")
 
