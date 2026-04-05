@@ -14,7 +14,7 @@ from app.services.audit_dispatch import dispatch_audit
 # ---------- valid status transitions ----------
 
 VALID_TRANSITIONS: dict[InvoiceStatus, set[InvoiceStatus]] = {
-    InvoiceStatus.new: {InvoiceStatus.pending},
+    InvoiceStatus.new: {InvoiceStatus.pending, InvoiceStatus.sent_to_erp},
     InvoiceStatus.pending: {InvoiceStatus.ready_for_review, InvoiceStatus.failed},
     InvoiceStatus.ready_for_review: {InvoiceStatus.approved, InvoiceStatus.rejected},
     InvoiceStatus.approved: {InvoiceStatus.sending_to_erp},
@@ -36,7 +36,7 @@ DEFAULT_STEPS_CONFIG = {
             "number": 1,
             "type": "extraction",
             "name": "Data Extraction",
-            "enabled": True,
+            "enabled": False,
             "config": {
                 "auto_approve_enabled": False,
                 "auto_approve_threshold": 0.95,
@@ -46,9 +46,9 @@ DEFAULT_STEPS_CONFIG = {
             "number": 2,
             "type": "approval",
             "name": "Manager Approval",
-            "enabled": True,
+            "enabled": False,
             "config": {
-                "required": True,
+                "required": False,
                 "approver_id": None,
                 "approver_strategy": "manual",
             },
@@ -56,7 +56,7 @@ DEFAULT_STEPS_CONFIG = {
         {
             "number": 3,
             "type": "erp_export",
-            "name": "Send to ERP",
+            "name": "ERP Export",
             "enabled": True,
             "config": {
                 "erp_system": "default",
@@ -66,6 +66,17 @@ DEFAULT_STEPS_CONFIG = {
         },
     ],
 }
+
+
+async def is_step_enabled(
+    db: AsyncSession, organization_id: uuid.UUID, step_type: str,
+) -> bool:
+    """Check if a step type is enabled in the org's active workflow definition."""
+    defn = await get_or_create_workflow_definition(db, organization_id)
+    for step in defn.steps_config.get("steps", []):
+        if step.get("type") == step_type:
+            return step.get("enabled", True)
+    return True  # enabled by default if not configured
 
 
 def validate_transition(current: InvoiceStatus, target: InvoiceStatus) -> None:

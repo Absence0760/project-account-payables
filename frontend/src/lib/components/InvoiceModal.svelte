@@ -2,6 +2,7 @@
 	import type { Invoice } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
+	import { api } from '$lib/api';
 
 	let {
 		invoice,
@@ -22,13 +23,20 @@
 	/* eslint-enable svelte/state-referenced-locally */
 
 	let fullscreen = $state(false);
+	let showExportMenu = $state(false);
 
 	function toggleFullscreen() {
 		fullscreen = !fullscreen;
 	}
 
 	let saving = $state(false);
+	let submitting = $state(false);
 	let error = $state('');
+
+	let isDone = $derived(status === 'sent_to_erp');
+	let canSubmit = $derived(
+		status === 'new' || status === 'ready_for_review' || status === 'approved'
+	);
 
 	async function save() {
 		saving = true;
@@ -49,6 +57,67 @@
 		} finally {
 			saving = false;
 		}
+	}
+
+	async function submitDone() {
+		submitting = true;
+		error = '';
+		try {
+			// Save fields first, then mark complete
+			await invoiceStore.update(invoice.id, {
+				vendor,
+				invoice_number,
+				amount,
+				due_date,
+				po_number,
+				description,
+			});
+			await api.post(`/api/invoices/${invoice.id}/complete`, {});
+			await invoiceStore.fetch();
+			onclose();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Submit failed';
+		} finally {
+			submitting = false;
+		}
+	}
+
+	async function downloadExport(format: string) {
+		showExportMenu = false;
+		try {
+			const url = `/api/invoices/${invoice.id}/export?format=${format}`;
+			if (format === 'json') {
+				const data = await api.get(url);
+				const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.json`);
+			} else {
+				// For XML/CSV, fetch raw response
+				const { PUBLIC_API_URL } = await import('$env/static/public');
+				const base = PUBLIC_API_URL.replace(/\/+$/, '');
+				const token = localStorage.getItem('auth_token');
+				const res = await fetch(`${base}${url}`, {
+					headers: {
+						...(token ? { Authorization: `Bearer ${token}` } : {}),
+						'X-Tenant-Slug': document.location.hostname.split('.')[0],
+					},
+				});
+				if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+				const blob = await res.blob();
+				const ext = format === 'xml' ? 'xml' : 'csv';
+				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.${ext}`);
+			}
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Export failed';
+		}
+	}
+
+	function triggerDownload(blob: Blob, filename: string) {
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		a.click();
+		URL.revokeObjectURL(url);
 	}
 
 	function handleBackdrop(e: MouseEvent) {
@@ -143,10 +212,34 @@
 					{/if}
 
 					<footer>
-						<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
-						<button type="submit" class="btn-save" disabled={saving}>
-							{saving ? 'Saving...' : 'Save'}
-						</button>
+						<div class="footer-left">
+							<div class="export-wrapper">
+								<button type="button" class="btn-export" onclick={() => (showExportMenu = !showExportMenu)}>
+									Download
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+								</button>
+								{#if showExportMenu}
+									<div class="export-menu">
+										<button onclick={() => downloadExport('json')}>JSON</button>
+										<button onclick={() => downloadExport('xml')}>XML</button>
+										<button onclick={() => downloadExport('csv')}>CSV</button>
+									</div>
+								{/if}
+							</div>
+						</div>
+						<div class="footer-right">
+							<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
+							{#if !isDone}
+								<button type="submit" class="btn-save" disabled={saving}>
+									{saving ? 'Saving...' : 'Save'}
+								</button>
+							{/if}
+							{#if canSubmit}
+								<button type="button" class="btn-submit" disabled={submitting} onclick={submitDone}>
+									{submitting ? 'Submitting...' : 'Submit'}
+								</button>
+							{/if}
+						</div>
 					</footer>
 				</form>
 			</div>
@@ -324,22 +417,36 @@
 
 	footer {
 		display: flex;
-		justify-content: flex-end;
+		justify-content: space-between;
+		align-items: center;
 		gap: 10px;
 		padding-top: 18px;
 		border-top: 1px solid var(--border);
 		margin-top: auto;
-		padding-top: 18px;
+	}
+
+	.footer-left {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.footer-right {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.btn-cancel,
-	.btn-save {
+	.btn-save,
+	.btn-submit {
 		padding: 8px 18px;
 		border-radius: 4px;
 		font-size: 0.85rem;
 		font-weight: 500;
 		cursor: pointer;
 		border: 1px solid var(--border);
+		font-family: inherit;
 	}
 
 	.btn-cancel {
@@ -364,6 +471,77 @@
 	.btn-save:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.btn-submit {
+		background: #1fa86a;
+		color: #fff;
+		border-color: #1fa86a;
+	}
+
+	.btn-submit:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.btn-submit:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	/* Export dropdown */
+	.export-wrapper {
+		position: relative;
+	}
+
+	.btn-export {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 8px 14px;
+		border-radius: 4px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-family: inherit;
+	}
+
+	.btn-export:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.export-menu {
+		position: absolute;
+		bottom: 100%;
+		left: 0;
+		margin-bottom: 4px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+		overflow: hidden;
+		z-index: 10;
+	}
+
+	.export-menu button {
+		display: block;
+		width: 100%;
+		padding: 8px 20px;
+		border: none;
+		background: none;
+		color: var(--text);
+		font-size: 0.85rem;
+		cursor: pointer;
+		text-align: left;
+		font-family: inherit;
+	}
+
+	.export-menu button:hover {
+		background: rgba(99, 140, 255, 0.1);
+		color: var(--accent);
 	}
 
 	.save-error {

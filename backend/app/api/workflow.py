@@ -29,6 +29,7 @@ from app.services.workflow_engine import (
     create_workflow_instance,
     create_workflow_step,
     get_invoice_for_update,
+    is_step_enabled,
     transition_invoice,
 )
 from app.tenant import get_tenant_db
@@ -46,13 +47,12 @@ async def upload_invoice(
     user: User = Depends(get_current_user),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    """Upload an invoice file, create the invoice, and trigger AI extraction."""
-    # Validate file
+    """Upload an invoice file, create the invoice, and optionally trigger extraction."""
     try:
-        # Create invoice with placeholder fields
+        # Create invoice with blank fields
         invoice = Invoice(
-            invoice_number="PENDING",
-            vendor_name="PENDING",
+            invoice_number="",
+            vendor_name="",
             description="",
             amount=Decimal("0"),
             currency="USD",
@@ -67,32 +67,46 @@ async def upload_invoice(
         invoice.file_key = file_key
         invoice.file_url = file_url
 
-        # Transition new → pending
-        await transition_invoice(
-            db,
-            invoice,
-            InvoiceStatus.pending,
-            actor_id=user.id,
-            action_name="invoice.uploaded",
-            details={"filename": file.filename, "content_type": file.content_type},
-        )
-
-        # Create workflow instance and first step
+        # Create workflow instance
         instance = await create_workflow_instance(db, invoice)
-        await create_workflow_step(db, instance, "upload")
 
-        await db.commit()
-        await db.refresh(invoice)
+        # Check if extraction is enabled in the active workflow
+        extraction_enabled = await is_step_enabled(db, org_id, "extraction")
 
-        # Trigger extraction — local background task or SQS depending on config
-        await dispatch_extraction(invoice.id, org_id, user.id)
+        if extraction_enabled:
+            # Transition new → pending and trigger extraction
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.pending,
+                actor_id=user.id,
+                action_name="invoice.uploaded",
+                details={"filename": file.filename, "content_type": file.content_type},
+            )
+            await create_workflow_step(db, instance, "upload")
+            await db.commit()
+            await db.refresh(invoice)
 
-        return {
-            "id": str(invoice.id),
-            "correlation_id": str(invoice.correlation_id),
-            "status": invoice.status.value,
-            "message": "Invoice uploaded. Extraction in progress.",
-        }
+            await dispatch_extraction(invoice.id, org_id, user.id)
+
+            return {
+                "id": str(invoice.id),
+                "correlation_id": str(invoice.correlation_id),
+                "status": invoice.status.value,
+                "message": "Invoice uploaded. Extraction in progress.",
+            }
+        else:
+            # No extraction — leave as new for manual entry
+            await create_workflow_step(db, instance, "upload")
+            await db.commit()
+            await db.refresh(invoice)
+
+            return {
+                "id": str(invoice.id),
+                "correlation_id": str(invoice.correlation_id),
+                "status": invoice.status.value,
+                "message": "Invoice uploaded. Ready for manual entry.",
+            }
 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -227,6 +241,103 @@ async def retry_erp(
         "correlation_id": str(invoice.correlation_id),
         "status": invoice.status.value,
     }
+
+
+# ---------- Stage 4: Complete ----------
+
+
+@router.post("/{invoice_id}/complete", status_code=status.HTTP_200_OK)
+async def complete_invoice(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    """Mark an invoice as done (sent_to_erp). Used when manual ERP upload is the workflow."""
+    invoice = await get_invoice_for_update(db, invoice_id)
+
+    await transition_invoice(
+        db,
+        invoice,
+        InvoiceStatus.sent_to_erp,
+        actor_id=user.id,
+        action_name="invoice.completed",
+    )
+    await db.commit()
+    await db.refresh(invoice)
+
+    return {
+        "id": str(invoice.id),
+        "correlation_id": str(invoice.correlation_id),
+        "status": invoice.status.value,
+    }
+
+
+@router.get("/{invoice_id}/export")
+async def export_invoice(
+    invoice_id: uuid.UUID,
+    format: str = "json",
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    """Export invoice data in the requested format for ERP upload."""
+    result = await db.execute(
+        select(Invoice).where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    data = {
+        "invoice_number": invoice.invoice_number,
+        "vendor": invoice.vendor_name,
+        "amount": str(invoice.amount),
+        "currency": invoice.currency,
+        "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+        "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
+        "po_number": invoice.po_number,
+        "description": invoice.description,
+        "subtotal": str(invoice.subtotal) if invoice.subtotal else None,
+        "tax_amount": str(invoice.tax_amount) if invoice.tax_amount else None,
+        "gl_account": invoice.gl_account,
+        "cost_center": invoice.cost_center,
+        "correlation_id": str(invoice.correlation_id),
+    }
+
+    if format == "xml":
+        import xml.etree.ElementTree as ET
+
+        root = ET.Element("Invoice")
+        for key, value in data.items():
+            child = ET.SubElement(root, key)
+            child.text = value if value is not None else ""
+        content = ET.tostring(root, encoding="unicode", xml_declaration=True)
+
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="application/xml",
+            headers={"Content-Disposition": f'attachment; filename="invoice-{invoice.invoice_number or invoice_id}.xml"'},
+        )
+
+    elif format == "csv":
+        import csv
+        import io
+
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=data.keys())
+        writer.writeheader()
+        writer.writerow(data)
+
+        from fastapi.responses import Response
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="invoice-{invoice.invoice_number or invoice_id}.csv"'},
+        )
+
+    else:
+        # JSON (default)
+        return data
 
 
 # ---------- Read endpoints ----------
