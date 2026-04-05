@@ -70,7 +70,14 @@
 
 <div class="workspace">
 	<header class="toolbar">
-		<h1>Payments</h1>
+		<div class="search-group">
+			<div class="search-box">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+				</svg>
+				<input type="text" placeholder="Search payments..." bind:value={search} />
+			</div>
+		</div>
 	</header>
 
 	<div class="summary-cards">
@@ -101,14 +108,6 @@
 				{PAYMENT_STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
 			</button>
 		{/each}
-		<div class="search-group">
-			<div class="search-box">
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
-				</svg>
-				<input type="text" placeholder="Search payments..." bind:value={search} />
-			</div>
-		</div>
 	</nav>
 
 	<div class="grid-container">
@@ -158,16 +157,8 @@
 
 	.toolbar {
 		display: flex;
-		justify-content: space-between;
 		align-items: center;
 		gap: 16px;
-	}
-
-	h1 {
-		margin: 0;
-		font-size: 1.4rem;
-		font-weight: 700;
-		color: var(--text);
 	}
 
 	/* Summary cards */
@@ -206,7 +197,7 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		margin-left: auto;
+		flex: 1;
 	}
 
 	.search-box {
@@ -216,8 +207,9 @@
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 20px;
-		padding: 6px 12px;
-		width: min(300px, 40vw);
+		padding: 8px 14px;
+		flex: 1;
+		max-width: 480px;
 		color: var(--text-muted);
 	}
 

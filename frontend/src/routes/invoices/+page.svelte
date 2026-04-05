@@ -74,18 +74,6 @@
 
 <div class="workspace">
 	<header class="toolbar">
-		<h1>Invoices</h1>
-	</header>
-
-	<nav class="filters">
-		<button class="filter-chip" class:active={activeStatus === 'all'} onclick={() => (activeStatus = 'all')}>
-			All <span class="count">{invoiceStore.all.length}</span>
-		</button>
-		{#each INVOICE_STATUSES as s}
-			<button class="filter-chip" class:active={activeStatus === s} onclick={() => (activeStatus = s)}>
-				{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
-			</button>
-		{/each}
 		<div class="search-group">
 			<div class="search-box">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -110,6 +98,17 @@
 				{/if}
 			</button>
 		</div>
+	</header>
+
+	<nav class="filters">
+		<button class="filter-chip" class:active={activeStatus === 'all'} onclick={() => (activeStatus = 'all')}>
+			All <span class="count">{invoiceStore.all.length}</span>
+		</button>
+		{#each INVOICE_STATUSES as s}
+			<button class="filter-chip" class:active={activeStatus === s} onclick={() => (activeStatus = s)}>
+				{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
+			</button>
+		{/each}
 	</nav>
 
 	<div class="grid-container">
@@ -175,23 +174,15 @@
 
 	.toolbar {
 		display: flex;
-		justify-content: space-between;
 		align-items: center;
 		gap: 16px;
-	}
-
-	h1 {
-		margin: 0;
-		font-size: 1.4rem;
-		font-weight: 700;
-		color: var(--text);
 	}
 
 	.search-group {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		margin-left: auto;
+		flex: 1;
 	}
 
 	.search-box {
@@ -201,8 +192,9 @@
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 20px;
-		padding: 6px 12px;
-		width: min(300px, 40vw);
+		padding: 8px 14px;
+		flex: 1;
+		max-width: 480px;
 		color: var(--text-muted);
 	}
 
