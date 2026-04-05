@@ -110,8 +110,11 @@
 				<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
 			</div>
 		{/if}
-		<button class="profile-btn" title="Profile" onclick={() => (showProfile = !showProfile)}>
+		<button class="profile-btn" class:collapsed title={collapsed ? 'Profile' : ''} onclick={() => (showProfile = !showProfile)}>
 			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+			{#if !collapsed}
+				<span class="profile-label">{auth.user?.full_name ?? 'Profile'}</span>
+			{/if}
 		</button>
 	</div>
 
@@ -172,27 +175,40 @@
 
 	.profile-wrapper {
 		position: relative;
-		display: flex;
-		justify-content: center;
 		margin-bottom: 4px;
 	}
 
 	.profile-btn {
-		display: grid;
-		place-items: center;
-		width: 36px;
-		height: 36px;
-		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		padding: 9px 10px;
+		border-radius: 6px;
 		border: none;
 		background: none;
 		color: var(--text-muted);
 		cursor: pointer;
+		font-family: inherit;
 		transition: all 0.12s;
+	}
+
+	.profile-btn.collapsed {
+		justify-content: center;
+		padding: 9px 0;
 	}
 
 	.profile-btn:hover {
 		background: rgba(99, 140, 255, 0.08);
 		color: var(--text);
+	}
+
+	.profile-label {
+		font-size: 0.88rem;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.profile-backdrop {
