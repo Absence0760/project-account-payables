@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowStep
-from app.services.audit import log_action
+from app.services.audit_dispatch import dispatch_audit
 
 # ---------- valid status transitions ----------
 
@@ -73,7 +73,7 @@ async def transition_invoice(
     old_status = invoice.status.value
     invoice.status = target_status
 
-    await log_action(
+    await dispatch_audit(
         db,
         correlation_id=invoice.correlation_id,
         organization_id=invoice.organization_id,

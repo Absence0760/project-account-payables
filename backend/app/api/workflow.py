@@ -22,6 +22,7 @@ from app.schemas.workflow import (
 )
 from app.services import review as review_svc
 from app.services import erp as erp_svc
+from app.services.erp_dispatch import dispatch_erp
 from app.services.extraction_dispatch import dispatch_extraction
 from app.services.storage import upload_invoice_file
 from app.services.workflow_engine import (
@@ -182,12 +183,22 @@ async def send_to_erp(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
 
-    # send_to_erp handles its own commits (for retry logic)
-    await erp_svc.send_to_erp(db, invoice, actor_id=user.id)
-    await db.refresh(invoice)
+    # Transition to sending_to_erp before dispatching
+    await transition_invoice(
+        db,
+        invoice,
+        InvoiceStatus.sending_to_erp,
+        actor_id=user.id,
+        action_name="invoice.erp_submitted",
+    )
+    await db.commit()
+
+    # Dispatch ERP call — local background task or SQS depending on config
+    await dispatch_erp(invoice.id, org_id, user.id)
 
     return {
         "id": str(invoice.id),
@@ -201,11 +212,15 @@ async def retry_erp(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
 
     await erp_svc.retry_erp(db, invoice, actor_id=user.id)
-    await db.refresh(invoice)
+    await db.commit()
+
+    # Dispatch the retried ERP call
+    await dispatch_erp(invoice.id, org_id, user.id)
 
     return {
         "id": str(invoice.id),

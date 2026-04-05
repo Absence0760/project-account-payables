@@ -117,7 +117,7 @@ async def assign_reviewer(
     actor_id: uuid.UUID,
     reviewer_id: uuid.UUID,
 ) -> None:
-    from app.services.audit import log_action
+    from app.services.audit_dispatch import dispatch_audit
 
     instance = await get_workflow_instance(db, invoice.id)
     if not instance:
@@ -141,7 +141,7 @@ async def assign_reviewer(
     if step:
         step.assigned_to = reviewer_id
 
-    await log_action(
+    await dispatch_audit(
         db,
         correlation_id=invoice.correlation_id,
         organization_id=invoice.organization_id,

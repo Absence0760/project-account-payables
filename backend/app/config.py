@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     extraction_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_extraction_queue_url: str = ""  # required when extraction_mode = "lambda"
 
+    # ERP
+    erp_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
+    sqs_erp_queue_url: str = ""  # required when erp_mode = "lambda"
+
+    # Audit
+    audit_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
+    sqs_audit_queue_url: str = ""  # required when audit_mode = "lambda"
+
     # CORS
     cors_origins: list[str] = ["http://localhost:7777", "http://localhost:5173"]
 
