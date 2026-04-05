@@ -5,15 +5,18 @@
 	import { api } from '$lib/api';
 	import { PUBLIC_API_URL } from '$env/static/public';
 	import { toast } from '$lib/components/Toast.svelte';
+	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
 	const apiBase = PUBLIC_API_URL.replace(/\/+$/, '');
 
 	let {
 		invoice,
 		onclose,
+		activeSteps,
 	}: {
 		invoice: Invoice;
 		onclose: () => void;
+		activeSteps: ActiveSteps;
 	} = $props();
 
 	/* eslint-disable svelte/state-referenced-locally -- modal receives a snapshot, intentional */
@@ -36,10 +39,16 @@
 	let saving = $state(false);
 	let submitting = $state(false);
 
-	let isDone = $derived(status === 'sent_to_erp');
+	let isDone = $derived(status === 'done' || status === 'sent_to_erp');
 	let canSubmitStatus = $derived(
-		status === 'new' || status === 'ready_for_review' || status === 'approved'
+		status === 'new' || status === 'approved'
 	);
+
+	let submitLabel = $derived.by(() => {
+		if (status === 'new' && activeSteps.approval) return 'Submit for Review';
+		if (status === 'approved' && activeSteps.erp_export) return 'Send to ERP';
+		return 'Mark Complete';
+	});
 
 	let missingFields = $derived.by(() => {
 		const missing: string[] = [];
@@ -249,7 +258,7 @@
 							{/if}
 							{#if canSubmit}
 								<button type="button" class="btn-submit" disabled={submitting} onclick={submitDone}>
-									{submitting ? 'Submitting...' : 'Submit'}
+									{submitting ? 'Submitting...' : submitLabel}
 								</button>
 							{/if}
 						</div>

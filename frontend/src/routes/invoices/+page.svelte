@@ -7,6 +7,7 @@
 	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
+	import { workflowStore } from '$lib/stores/workflows.svelte';
 
 	let search = $state('');
 	let activeStatuses = $state<InvoiceStatus[]>([]);
@@ -67,9 +68,10 @@
 		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()), 300);
 	}
 
-	// Fetch status counts on mount
+	// Fetch status counts and active workflow on mount
 	$effect(() => {
 		invoiceStore.fetchCounts();
+		workflowStore.fetchActiveSteps();
 	});
 
 	// Re-fetch when status filters or advanced filters change
@@ -100,6 +102,17 @@
 	let totalCount = $derived(
 		Object.values(invoiceStore.statusCounts).reduce((a, b) => a + b, 0)
 	);
+
+	// Only show statuses relevant to the active workflow
+	let visibleStatuses = $derived.by(() => {
+		const s = workflowStore.activeSteps;
+		const visible: InvoiceStatus[] = ['new'];
+		if (s.extraction) visible.push('pending');
+		if (s.approval) visible.push('ready_for_review', 'approved', 'rejected');
+		if (s.erp_export) visible.push('sending_to_erp', 'sent_to_erp');
+		visible.push('done', 'failed');
+		return visible;
+	});
 
 	function statusCount(status: InvoiceStatus): number {
 		return invoiceStore.statusCounts[status] ?? 0;
@@ -146,7 +159,7 @@
 		<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
 			All <span class="count">{totalCount}</span>
 		</button>
-		{#each INVOICE_STATUSES as s}
+		{#each visibleStatuses as s}
 			<button class="filter-chip" class:active={activeStatuses.includes(s)} onclick={() => toggleStatus(s)}>
 				{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
 			</button>
@@ -192,7 +205,7 @@
 </div>
 
 {#if editing}
-	<InvoiceModal invoice={editing} onclose={() => (editing = null)} />
+	<InvoiceModal invoice={editing} onclose={() => (editing = null)} activeSteps={workflowStore.activeSteps} />
 {/if}
 
 {#if showAdvancedSearch}

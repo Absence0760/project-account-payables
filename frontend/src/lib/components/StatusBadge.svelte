@@ -43,4 +43,9 @@
 		background: rgba(140, 100, 240, 0.15);
 		color: #8c64f0;
 	}
+
+	.done {
+		background: rgba(31, 168, 106, 0.15);
+		color: #1fa86a;
+	}
 </style>

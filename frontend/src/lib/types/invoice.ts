@@ -6,6 +6,7 @@ export type InvoiceStatus =
 	| 'rejected'
 	| 'sending_to_erp'
 	| 'sent_to_erp'
+	| 'done'
 	| 'failed';
 
 export const INVOICE_STATUSES: InvoiceStatus[] = [
@@ -16,6 +17,7 @@ export const INVOICE_STATUSES: InvoiceStatus[] = [
 	'rejected',
 	'sending_to_erp',
 	'sent_to_erp',
+	'done',
 	'failed'
 ];
 
@@ -27,6 +29,7 @@ export const STATUS_LABELS: Record<InvoiceStatus, string> = {
 	rejected: 'Rejected',
 	sending_to_erp: 'Sending to ERP',
 	sent_to_erp: 'Sent to ERP',
+	done: 'Done',
 	failed: 'Failed'
 };
 

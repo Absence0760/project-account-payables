@@ -1,9 +1,22 @@
 import type { WorkflowDefinition, WorkflowStep } from '$lib/types/workflow';
 import { api } from '$lib/api';
 
+export interface ActiveSteps {
+	extraction: boolean;
+	approval: boolean;
+	erp_export: boolean;
+}
+
+const DEFAULT_ACTIVE_STEPS: ActiveSteps = {
+	extraction: false,
+	approval: false,
+	erp_export: false,
+};
+
 function createWorkflowStore() {
 	let workflows = $state<WorkflowDefinition[]>([]);
 	let loading = $state(false);
+	let activeSteps = $state<ActiveSteps>({ ...DEFAULT_ACTIVE_STEPS });
 
 	async function fetch() {
 		loading = true;
@@ -42,6 +55,19 @@ function createWorkflowStore() {
 		workflows = workflows.filter((w) => w.id !== id);
 	}
 
+	async function fetchActiveSteps() {
+		try {
+			const data = await api.get<Record<string, boolean>>('/api/workflows/active/steps');
+			activeSteps = {
+				extraction: data.extraction ?? false,
+				approval: data.approval ?? false,
+				erp_export: data.erp_export ?? false,
+			};
+		} catch {
+			activeSteps = { ...DEFAULT_ACTIVE_STEPS };
+		}
+	}
+
 	return {
 		get all() {
 			return workflows;
@@ -49,7 +75,11 @@ function createWorkflowStore() {
 		get loading() {
 			return loading;
 		},
+		get activeSteps() {
+			return activeSteps;
+		},
 		fetch,
+		fetchActiveSteps,
 		getById,
 		create,
 		update,

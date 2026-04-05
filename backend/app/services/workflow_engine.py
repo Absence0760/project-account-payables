@@ -14,13 +14,14 @@ from app.services.audit_dispatch import dispatch_audit
 # ---------- valid status transitions ----------
 
 VALID_TRANSITIONS: dict[InvoiceStatus, set[InvoiceStatus]] = {
-    InvoiceStatus.new: {InvoiceStatus.pending, InvoiceStatus.sent_to_erp},
+    InvoiceStatus.new: {InvoiceStatus.pending, InvoiceStatus.ready_for_review, InvoiceStatus.done},
     InvoiceStatus.pending: {InvoiceStatus.ready_for_review, InvoiceStatus.failed},
     InvoiceStatus.ready_for_review: {InvoiceStatus.approved, InvoiceStatus.rejected},
-    InvoiceStatus.approved: {InvoiceStatus.sending_to_erp},
+    InvoiceStatus.approved: {InvoiceStatus.sending_to_erp, InvoiceStatus.done},
     InvoiceStatus.rejected: {InvoiceStatus.ready_for_review, InvoiceStatus.new},
     InvoiceStatus.sending_to_erp: {InvoiceStatus.sent_to_erp, InvoiceStatus.failed},
-    InvoiceStatus.sent_to_erp: set(),  # terminal
+    InvoiceStatus.sent_to_erp: {InvoiceStatus.done},
+    InvoiceStatus.done: set(),  # terminal
     InvoiceStatus.failed: {InvoiceStatus.pending, InvoiceStatus.sending_to_erp},
 }
 
@@ -57,7 +58,7 @@ DEFAULT_STEPS_CONFIG = {
             "number": 3,
             "type": "erp_export",
             "name": "ERP Export",
-            "enabled": True,
+            "enabled": False,
             "config": {
                 "erp_system": "default",
                 "export_format": "json",

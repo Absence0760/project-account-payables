@@ -251,8 +251,15 @@ async def complete_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
-    """Mark an invoice as done (sent_to_erp). Used when manual ERP upload is the workflow."""
+    """Advance an invoice to the next logical step based on the workflow.
+
+    - new + approval enabled → ready_for_review
+    - new + no approval → done
+    - approved + ERP enabled → triggers ERP dispatch
+    - approved + no ERP → done
+    """
     invoice = await get_invoice_for_update(db, invoice_id)
 
     # Validate required fields
@@ -269,20 +276,56 @@ async def complete_invoice(
             detail=f"Required fields missing: {', '.join(missing)}",
         )
 
+    # Check workflow config for this invoice
+    approval_enabled = await is_step_enabled(
+        db, org_id, "approval", invoice_id=invoice.id
+    )
+    erp_enabled = await is_step_enabled(
+        db, org_id, "erp_export", invoice_id=invoice.id
+    )
+
+    if invoice.status == InvoiceStatus.new and approval_enabled:
+        # Submit for review
+        await transition_invoice(
+            db, invoice, InvoiceStatus.ready_for_review,
+            actor_id=user.id, action_name="invoice.submitted_for_review",
+        )
+        await db.commit()
+        await db.refresh(invoice)
+        return {
+            "id": str(invoice.id),
+            "correlation_id": str(invoice.correlation_id),
+            "status": invoice.status.value,
+            "message": "Submitted for review.",
+        }
+
+    if invoice.status == InvoiceStatus.approved and erp_enabled:
+        # Trigger ERP dispatch
+        await transition_invoice(
+            db, invoice, InvoiceStatus.sending_to_erp,
+            actor_id=user.id, action_name="invoice.erp_submitted",
+        )
+        await db.commit()
+        await dispatch_erp(invoice.id, org_id, user.id)
+        return {
+            "id": str(invoice.id),
+            "correlation_id": str(invoice.correlation_id),
+            "status": invoice.status.value,
+            "message": "Sending to ERP.",
+        }
+
+    # Default: mark as done
     await transition_invoice(
-        db,
-        invoice,
-        InvoiceStatus.sent_to_erp,
-        actor_id=user.id,
-        action_name="invoice.completed",
+        db, invoice, InvoiceStatus.done,
+        actor_id=user.id, action_name="invoice.completed",
     )
     await db.commit()
     await db.refresh(invoice)
-
     return {
         "id": str(invoice.id),
         "correlation_id": str(invoice.correlation_id),
         "status": invoice.status.value,
+        "message": "Invoice complete.",
     }
 
 

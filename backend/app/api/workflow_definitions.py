@@ -20,6 +20,23 @@ from app.tenant import get_tenant_db
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 
+@router.get("/active/steps")
+async def get_active_steps(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Return which steps are enabled in the active workflow."""
+    from app.services.workflow_engine import get_or_create_workflow_definition
+
+    defn = await get_or_create_workflow_definition(db, org_id)
+    steps = defn.steps_config.get("steps", [])
+    return {
+        step["type"]: step.get("enabled", True)
+        for step in steps
+    }
+
+
 @router.get("", response_model=list[WorkflowDefinitionResponse])
 async def list_workflows(
     db: AsyncSession = Depends(get_tenant_db),

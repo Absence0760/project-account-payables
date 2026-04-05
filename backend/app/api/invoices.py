@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.tenant import get_tenant_db
 from app.models.invoice import Invoice, InvoiceStatus as DBInvoiceStatus
 
-IMMUTABLE_STATUSES = {DBInvoiceStatus.sent_to_erp, DBInvoiceStatus.sending_to_erp}
+IMMUTABLE_STATUSES = {DBInvoiceStatus.sent_to_erp, DBInvoiceStatus.sending_to_erp, DBInvoiceStatus.done}
 from app.schemas.invoice import (
     InvoiceCreate,
     InvoiceListResponse,

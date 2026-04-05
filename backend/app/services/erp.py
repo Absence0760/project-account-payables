@@ -42,7 +42,7 @@ async def send_to_erp(
         try:
             erp_ref = await _call_erp(invoice)
 
-            # Success → sent_to_erp
+            # Success → sent_to_erp → done
             await transition_invoice(
                 db,
                 invoice,
@@ -50,6 +50,13 @@ async def send_to_erp(
                 actor_id=actor_id,
                 action_name="invoice.erp_confirmed",
                 details={"erp_reference": erp_ref},
+            )
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.done,
+                actor_id=actor_id,
+                action_name="invoice.completed",
             )
 
             if instance:
@@ -151,6 +158,13 @@ async def send_to_erp_internal(
             actor_id=actor_id,
             action_name="invoice.erp_confirmed",
             details={"erp_reference": erp_ref},
+        )
+        await transition_invoice(
+            db,
+            invoice,
+            InvoiceStatus.done,
+            actor_id=actor_id,
+            action_name="invoice.completed",
         )
 
         if instance:

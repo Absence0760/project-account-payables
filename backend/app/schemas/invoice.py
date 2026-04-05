@@ -14,6 +14,7 @@ class InvoiceStatus(str, Enum):
     rejected = "rejected"
     sending_to_erp = "sending_to_erp"
     sent_to_erp = "sent_to_erp"
+    done = "done"
     failed = "failed"
 
 
