@@ -25,6 +25,7 @@
 		try {
 			await api.upload('/api/invoices/upload', file);
 			await invoiceStore.fetch(buildParams());
+			await invoiceStore.fetchCounts();
 		} catch (err: unknown) {
 			uploadError = err instanceof Error ? err.message : 'Upload failed';
 		} finally {
@@ -58,6 +59,11 @@
 		searchTimer = setTimeout(() => invoiceStore.fetch(buildParams()), 300);
 	}
 
+	// Fetch status counts on mount
+	$effect(() => {
+		invoiceStore.fetchCounts();
+	});
+
 	// Re-fetch when status tab or advanced filters change
 	$effect(() => {
 		// Touch reactive deps
@@ -84,8 +90,12 @@
 		advancedFilters.statuses.length > 0
 	);
 
+	let totalCount = $derived(
+		Object.values(invoiceStore.statusCounts).reduce((a, b) => a + b, 0)
+	);
+
 	function statusCount(status: InvoiceStatus): number {
-		return invoiceStore.all.filter((inv) => inv.status === status).length;
+		return invoiceStore.statusCounts[status] ?? 0;
 	}
 
 	function formatCurrency(amount: number, currency: string): string {
@@ -130,7 +140,7 @@
 
 	<nav class="filters">
 		<button class="filter-chip" class:active={activeStatus === 'all'} onclick={() => (activeStatus = 'all')}>
-			All <span class="count">{invoiceStore.all.length}</span>
+			All <span class="count">{totalCount}</span>
 		</button>
 		{#each INVOICE_STATUSES as s}
 			<button class="filter-chip" class:active={activeStatus === s} onclick={() => (activeStatus = s)}>
