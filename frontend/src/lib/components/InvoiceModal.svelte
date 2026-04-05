@@ -3,6 +3,7 @@
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
 	import { PUBLIC_API_URL } from '$env/static/public';
 	import { toast } from '$lib/components/Toast.svelte';
@@ -70,6 +71,18 @@
 	let reviewing = $state(false);
 	let showRejectForm = $state(false);
 	let rejectReason = $state('');
+	let selectedApproverId = $state('');
+
+	// Whether to show the approver picker on submit
+	let needsApproverSelect = $derived(
+		status === 'new' &&
+		activeSteps.approval &&
+		activeSteps.approval_config?.approver_strategy === 'manual'
+	);
+
+	$effect(() => {
+		if (needsApproverSelect) adminStore.fetchUsers();
+	});
 
 	let isClerkOnly = $derived(auth.isClerkOnly);
 	let isDone = $derived(status === 'done' || status === 'sent_to_erp');
@@ -147,7 +160,11 @@
 				payment_method: payment_method || null,
 				reference_number: reference_number || null,
 			});
-			await api.post(`/api/invoices/${invoice.id}/complete`, {});
+			const result = await api.post<{ id: string; status: string }>(`/api/invoices/${invoice.id}/complete`, {});
+			// If manually assigning an approver and invoice moved to ready_for_review
+			if (selectedApproverId && result.status === 'ready_for_review') {
+				await api.post(`/api/invoices/${invoice.id}/assign`, { user_id: selectedApproverId });
+			}
 			await invoiceStore.fetch();
 			toast('Invoice submitted', 'success');
 			onclose();
@@ -543,7 +560,15 @@
 								</button>
 							{/if}
 							{#if canSubmit}
-								<button type="button" class="btn-submit" disabled={submitting} onclick={submitDone}>
+								{#if needsApproverSelect}
+									<select class="approver-select" bind:value={selectedApproverId}>
+										<option value="">Approver...</option>
+										{#each adminStore.users.filter(u => u.is_active && u.id !== auth.user?.id) as user}
+											<option value={user.id}>{user.full_name}</option>
+										{/each}
+									</select>
+								{/if}
+								<button type="button" class="btn-submit" disabled={submitting || (needsApproverSelect && !selectedApproverId)} onclick={submitDone}>
 									{submitting ? 'Submitting...' : submitLabel}
 								</button>
 							{/if}
@@ -837,6 +862,22 @@
 	.btn-submit:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.approver-select {
+		padding: 8px 10px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--bg);
+		color: var(--text);
+		font-size: 0.82rem;
+		font-family: inherit;
+		max-width: 140px;
+	}
+
+	.approver-select:focus {
+		outline: none;
+		border-color: var(--accent);
 	}
 
 	/* Export dropdown */

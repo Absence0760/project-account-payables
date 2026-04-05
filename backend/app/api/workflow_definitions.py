@@ -31,10 +31,17 @@ async def get_active_steps(
 
     defn = await get_or_create_workflow_definition(db, org_id)
     steps = defn.steps_config.get("steps", [])
-    return {
-        step["type"]: step.get("enabled", True)
-        for step in steps
-    }
+    result: dict = {}
+    for step in steps:
+        step_type = step["type"]
+        result[step_type] = step.get("enabled", True)
+        if step_type == "approval" and step.get("enabled", True):
+            cfg = step.get("config", {})
+            result["approval_config"] = {
+                "approver_strategy": cfg.get("approver_strategy", "manual"),
+                "approver_ids": cfg.get("approver_ids", []),
+            }
+    return result
 
 
 @router.get("", response_model=list[WorkflowDefinitionResponse])

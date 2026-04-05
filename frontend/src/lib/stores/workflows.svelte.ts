@@ -1,16 +1,23 @@
 import type { WorkflowDefinition, WorkflowStep } from '$lib/types/workflow';
 import { api } from '$lib/api';
 
+export interface ApprovalConfig {
+	approver_strategy: 'manual' | 'specific' | 'auto';
+	approver_ids: string[];
+}
+
 export interface ActiveSteps {
 	extraction: boolean;
 	approval: boolean;
 	erp_export: boolean;
+	approval_config: ApprovalConfig | null;
 }
 
 const DEFAULT_ACTIVE_STEPS: ActiveSteps = {
 	extraction: false,
 	approval: false,
 	erp_export: false,
+	approval_config: null,
 };
 
 function createWorkflowStore() {
@@ -57,11 +64,12 @@ function createWorkflowStore() {
 
 	async function fetchActiveSteps() {
 		try {
-			const data = await api.get<Record<string, boolean>>('/api/workflows/active/steps');
+			const data = await api.get<Record<string, unknown>>('/api/workflows/active/steps');
 			activeSteps = {
-				extraction: data.extraction ?? false,
-				approval: data.approval ?? false,
-				erp_export: data.erp_export ?? false,
+				extraction: (data.extraction as boolean) ?? false,
+				approval: (data.approval as boolean) ?? false,
+				erp_export: (data.erp_export as boolean) ?? false,
+				approval_config: (data.approval_config as ApprovalConfig) ?? null,
 			};
 		} catch {
 			activeSteps = { ...DEFAULT_ACTIVE_STEPS };
