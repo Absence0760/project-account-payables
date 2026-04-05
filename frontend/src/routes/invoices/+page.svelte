@@ -6,6 +6,7 @@
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
+	import { toast } from '$lib/components/Toast.svelte';
 
 	let search = $state('');
 	let activeStatuses = $state<InvoiceStatus[]>([]);
@@ -13,7 +14,6 @@
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
 	let uploading = $state(false);
-	let uploadError = $state('');
 	let fileInput: HTMLInputElement;
 
 	async function handleUpload(e: Event) {
@@ -21,13 +21,13 @@
 		const file = input.files?.[0];
 		if (!file) return;
 		uploading = true;
-		uploadError = '';
 		try {
 			await api.upload('/api/invoices/upload', file);
 			await invoiceStore.fetch(buildParams());
 			await invoiceStore.fetchCounts();
+			toast('Invoice uploaded successfully', 'success');
 		} catch (err: unknown) {
-			uploadError = err instanceof Error ? err.message : 'Upload failed';
+			toast(err instanceof Error ? err.message : 'Upload failed', 'error');
 		} finally {
 			uploading = false;
 			input.value = '';
@@ -141,9 +141,6 @@
 			{uploading ? 'Uploading...' : '+ Upload Invoice'}
 		</button>
 	</header>
-	{#if uploadError}
-		<div class="upload-error">{uploadError}</div>
-	{/if}
 
 	<nav class="filters">
 		<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>

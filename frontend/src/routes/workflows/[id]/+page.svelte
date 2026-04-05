@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { toast } from '$lib/components/Toast.svelte';
 	import type {
 		WorkflowDefinition,
 		WorkflowStep,
@@ -24,8 +25,6 @@
 	let selectedIndex = $state<number>(0);
 	let saving = $state(false);
 	let dirty = $state(false);
-	let error = $state('');
-	let success = $state('');
 	let editingName = $state(false);
 	let nameInput = $state('');
 	let descInput = $state('');
@@ -45,7 +44,7 @@
 			descInput = wf.description ?? '';
 			selectedIndex = 0;
 		} catch {
-			error = 'Workflow not found';
+			toast('Workflow not found', 'error');
 		}
 	}
 
@@ -102,8 +101,6 @@
 	async function handleSave() {
 		if (!workflow) return;
 		saving = true;
-		error = '';
-		success = '';
 		try {
 			await workflowStore.update(workflow.id, {
 				name: nameInput.trim(),
@@ -111,10 +108,9 @@
 				steps,
 			});
 			dirty = false;
-			success = 'Workflow saved.';
-			setTimeout(() => (success = ''), 3000);
+			toast('Workflow saved', 'success');
 		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to save';
+			toast(e instanceof Error ? e.message : 'Failed to save', 'error');
 		} finally {
 			saving = false;
 		}
@@ -127,8 +123,9 @@
 				is_active: !workflow.is_active,
 			});
 			workflow = updated;
+			toast(updated.is_active ? 'Workflow activated' : 'Workflow deactivated', 'success');
 		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to update';
+			toast(e instanceof Error ? e.message : 'Failed to update', 'error');
 		}
 	}
 
@@ -144,7 +141,7 @@
 
 <div class="workspace">
 	{#if !workflow}
-		<div class="loading">{error || 'Loading...'}</div>
+		<div class="loading">Loading...</div>
 	{:else}
 		<header class="toolbar">
 			<div class="toolbar-left">
@@ -188,13 +185,6 @@
 				oninput={() => (dirty = true)}
 			/>
 		</div>
-
-		{#if error}
-			<div class="error-bar">{error}</div>
-		{/if}
-		{#if success}
-			<div class="success-bar">{success}</div>
-		{/if}
 
 		<div class="editor">
 			<!-- Left: step list / pipeline -->

@@ -8,12 +8,12 @@
 		DEFAULT_APPROVAL_CONFIG,
 		DEFAULT_ERP_CONFIG,
 	} from '$lib/types/workflow';
+	import { toast } from '$lib/components/Toast.svelte';
 
 	let showCreate = $state(false);
 	let newName = $state('');
 	let newDescription = $state('');
 	let creating = $state(false);
-	let error = $state('');
 
 	$effect(() => {
 		workflowStore.fetch();
@@ -39,7 +39,6 @@
 	async function handleCreate() {
 		if (!newName.trim()) return;
 		creating = true;
-		error = '';
 		try {
 			const created = await workflowStore.create({
 				name: newName.trim(),
@@ -73,7 +72,7 @@
 			newDescription = '';
 			window.location.href = `/workflows/${created.id}`;
 		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to create workflow';
+			toast(e instanceof Error ? e.message : 'Failed to create workflow', 'error');
 		} finally {
 			creating = false;
 		}
@@ -83,8 +82,9 @@
 		if (wf.is_default) return;
 		try {
 			await workflowStore.remove(wf.id);
+			toast('Workflow deleted', 'success');
 		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to delete workflow';
+			toast(e instanceof Error ? e.message : 'Failed to delete workflow', 'error');
 		}
 	}
 </script>
@@ -96,10 +96,6 @@
 		</div>
 		<button class="btn-create" onclick={() => (showCreate = true)}>+ New Workflow</button>
 	</header>
-
-	{#if error}
-		<div class="error-bar">{error}</div>
-	{/if}
 
 	<div class="grid-container">
 		<table>

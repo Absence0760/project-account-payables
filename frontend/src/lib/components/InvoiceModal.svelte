@@ -4,6 +4,7 @@
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { api } from '$lib/api';
 	import { PUBLIC_API_URL } from '$env/static/public';
+	import { toast } from '$lib/components/Toast.svelte';
 
 	const apiBase = PUBLIC_API_URL.replace(/\/+$/, '');
 
@@ -34,7 +35,6 @@
 
 	let saving = $state(false);
 	let submitting = $state(false);
-	let error = $state('');
 
 	let isDone = $derived(status === 'sent_to_erp');
 	let canSubmitStatus = $derived(
@@ -53,7 +53,6 @@
 
 	async function save() {
 		saving = true;
-		error = '';
 		try {
 			await invoiceStore.update(invoice.id, {
 				vendor,
@@ -64,9 +63,10 @@
 				po_number,
 				description,
 			});
+			toast('Invoice saved', 'success');
 			onclose();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Save failed';
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
 		} finally {
 			saving = false;
 		}
@@ -74,7 +74,6 @@
 
 	async function submitDone() {
 		submitting = true;
-		error = '';
 		try {
 			// Save fields first, then mark complete
 			await invoiceStore.update(invoice.id, {
@@ -87,9 +86,10 @@
 			});
 			await api.post(`/api/invoices/${invoice.id}/complete`, {});
 			await invoiceStore.fetch();
+			toast('Invoice submitted', 'success');
 			onclose();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Submit failed';
+			toast(err instanceof Error ? err.message : 'Submit failed', 'error');
 		} finally {
 			submitting = false;
 		}
@@ -120,7 +120,7 @@
 				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.${ext}`);
 			}
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Export failed';
+			toast(err instanceof Error ? err.message : 'Export failed', 'error');
 		}
 	}
 
@@ -219,10 +219,6 @@
 							<input type="text" bind:value={description} />
 						</label>
 					</div>
-
-					{#if error}
-						<div class="save-error">{error}</div>
-					{/if}
 
 					{#if canSubmitStatus && missingFields.length > 0}
 						<div class="validation-hint">Required: {missingFields.join(', ')}</div>
