@@ -14,7 +14,7 @@ from app.config import settings
 from app.database import control_engine, control_session_factory, _make_tenant_url
 from app.models import Base
 from app.models.organization import Organization
-from app.models.user import User, Role
+from app.models.user import User, Role, UserRole
 from app.models.vendor import Vendor
 from app.models.invoice import Invoice
 
@@ -134,21 +134,54 @@ async def seed_control_plane():
         ))
 
         # Roles
-        for role_name in ("admin", "ap_manager", "ap_clerk", "cfo"):
-            session.add(Role(name=role_name, description=f"{role_name} role"))
+        admin_role = Role(name="admin", description="Full access to all features and user management")
+        ap_manager_role = Role(name="ap_manager", description="Review and approve invoices")
+        ap_clerk_role = Role(name="ap_clerk", description="Upload invoices and enter data")
+        cfo_role = Role(name="cfo", description="Approve high-value invoices and view reports")
+        session.add_all([admin_role, ap_manager_role, ap_clerk_role, cfo_role])
 
-        # Users
-        session.add(User(
-            id=ACME_USER_ID, email="demo@acme.com", full_name="Acme Demo User",
-            hashed_password=pwd_context.hash("demo"), organization_id=ACME_ORG_ID,
-        ))
-        session.add(User(
-            id=TECH_USER_ID, email="admin@techflow.com", full_name="TechFlow Admin",
-            hashed_password=pwd_context.hash("demo"), organization_id=TECH_ORG_ID,
-        ))
+        # Acme users — one per role
+        hashed = pwd_context.hash("demo")
+        acme_admin = User(
+            id=ACME_USER_ID, email="demo@acme.com", full_name="Alice Admin",
+            hashed_password=hashed, organization_id=ACME_ORG_ID,
+        )
+        acme_manager = User(
+            email="demo+apmanager@acme.com", full_name="Marcus Manager",
+            hashed_password=hashed, organization_id=ACME_ORG_ID,
+        )
+        acme_clerk = User(
+            email="demo+apclerk@acme.com", full_name="Clara Clerk",
+            hashed_password=hashed, organization_id=ACME_ORG_ID,
+        )
+        acme_cfo = User(
+            email="demo+cfo@acme.com", full_name="Frank CFO",
+            hashed_password=hashed, organization_id=ACME_ORG_ID,
+        )
+
+        # TechFlow users
+        tech_admin = User(
+            id=TECH_USER_ID, email="admin@techflow.com", full_name="Tina TechAdmin",
+            hashed_password=hashed, organization_id=TECH_ORG_ID,
+        )
+        tech_clerk = User(
+            email="clerk@techflow.com", full_name="Carlos Clerk",
+            hashed_password=hashed, organization_id=TECH_ORG_ID,
+        )
+
+        session.add_all([acme_admin, acme_manager, acme_clerk, acme_cfo, tech_admin, tech_clerk])
+        await session.flush()
+
+        # Assign roles
+        session.add(UserRole(user_id=acme_admin.id, role_id=admin_role.id))
+        session.add(UserRole(user_id=acme_manager.id, role_id=ap_manager_role.id))
+        session.add(UserRole(user_id=acme_clerk.id, role_id=ap_clerk_role.id))
+        session.add(UserRole(user_id=acme_cfo.id, role_id=cfo_role.id))
+        session.add(UserRole(user_id=tech_admin.id, role_id=admin_role.id))
+        session.add(UserRole(user_id=tech_clerk.id, role_id=ap_clerk_role.id))
 
         await session.commit()
-        print("  Seeded 2 orgs, 2 users, 4 roles")
+        print("  Seeded 2 orgs, 6 users, 4 roles")
 
 
 async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):

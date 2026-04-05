@@ -9,7 +9,7 @@ from app.database import get_control_db
 from app.api.deps import create_access_token, decode_token, get_current_user
 from app.models.user import User
 from app.redis import block_token
-from app.schemas.auth import LoginRequest, TokenResponse, UserResponse
+from app.schemas.auth import LoginRequest, TokenResponse, UpdateProfileRequest, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -46,6 +46,32 @@ async def logout(authorization: str = Header()):
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: User = Depends(get_current_user)):
+    return UserResponse(
+        id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        organization_id=str(user.organization_id),
+        is_active=user.is_active,
+    )
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_me(
+    body: UpdateProfileRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
+):
+    if body.full_name is not None:
+        user.full_name = body.full_name
+
+    if body.password is not None:
+        if not body.current_password:
+            raise HTTPException(status_code=400, detail="Current password is required to set a new password")
+        if not user.hashed_password or not pwd_context.verify(body.current_password, user.hashed_password):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        user.hashed_password = pwd_context.hash(body.password)
+
+    await db.commit()
     return UserResponse(
         id=str(user.id),
         email=user.email,
