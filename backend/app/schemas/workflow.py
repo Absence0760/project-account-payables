@@ -25,9 +25,10 @@ class ApprovalStepConfig(BaseModel):
 
 
 class ErpExportStepConfig(BaseModel):
-    erp_system: str = "default"
     export_format: str = "json"  # "json", "xml", "csv", "cxml", "edi"
-    endpoint_url: str = ""
+    auto_send_on_approval: bool = True  # send to ERP immediately after approval
+    include_line_items: bool = True  # include line item details in the payload
+    include_attachments: bool = False  # include PDF file URL in the payload
 
 
 class WorkflowStepConfig(BaseModel):

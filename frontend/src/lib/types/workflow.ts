@@ -38,9 +38,10 @@ export const ERP_FORMAT_LABELS: Record<ErpExportFormat, string> = {
 };
 
 export interface ErpExportStepConfig {
-	erp_system: string;
 	export_format: ErpExportFormat;
-	endpoint_url: string;
+	auto_send_on_approval: boolean;
+	include_line_items: boolean;
+	include_attachments: boolean;
 }
 
 export type StepConfig = ExtractionStepConfig | ApprovalStepConfig | ErpExportStepConfig;
@@ -80,7 +81,8 @@ export const DEFAULT_APPROVAL_CONFIG: ApprovalStepConfig = {
 };
 
 export const DEFAULT_ERP_CONFIG: ErpExportStepConfig = {
-	erp_system: 'default',
 	export_format: 'json',
-	endpoint_url: '',
+	auto_send_on_approval: true,
+	include_line_items: true,
+	include_attachments: false,
 };

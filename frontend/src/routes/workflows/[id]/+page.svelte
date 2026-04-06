@@ -471,16 +471,23 @@
 						<!-- ERP Export config -->
 						{#if selectedStep.type === 'erp_export'}
 							{@const cfg = selectedStep.config as ErpExportStepConfig}
-							<div class="field">
-								<label for="erp-system">ERP System</label>
-								<input
-									id="erp-system"
-									type="text"
-									placeholder="e.g. SAP, NetSuite, QuickBooks..."
-									value={cfg.erp_system}
-									oninput={(e) => updateStepConfig(selectedIndex, 'erp_system', e.currentTarget.value)}
-								/>
+
+							<p class="field-hint">ERP connection credentials are configured in <a href="/organization">Organization Settings</a>. This step controls what and when to send.</p>
+
+							<div class="field toggle-field">
+								<label for="auto-send">Auto-send on approval</label>
+								<button
+									id="auto-send"
+									class="toggle"
+									class:on={cfg.auto_send_on_approval}
+									onclick={() => updateStepConfig(selectedIndex, 'auto_send_on_approval', !cfg.auto_send_on_approval)}
+								>
+									<span class="toggle-knob"></span>
+								</button>
 							</div>
+							{#if !cfg.auto_send_on_approval}
+								<p class="field-hint warning">Invoices will not be sent to ERP automatically. Users must manually trigger "Send to ERP" from the invoice.</p>
+							{/if}
 
 							<div class="field">
 								<label for="export-format">Export Format</label>
@@ -508,18 +515,31 @@
 								</p>
 							</div>
 
-							<div class="field">
-								<label for="endpoint-url">Endpoint URL</label>
-								<input
-									id="endpoint-url"
-									type="url"
-									placeholder="https://erp.example.com/api/invoices"
-									value={cfg.endpoint_url}
-									oninput={(e) => updateStepConfig(selectedIndex, 'endpoint_url', e.currentTarget.value)}
-								/>
-								<p class="field-hint">
-									Leave blank to generate a file for manual upload.
-								</p>
+							<div class="field-divider"></div>
+							<h4 class="field-section-title">Payload Options</h4>
+
+							<div class="field toggle-field">
+								<label for="include-lines">Include line items</label>
+								<button
+									id="include-lines"
+									class="toggle"
+									class:on={cfg.include_line_items}
+									onclick={() => updateStepConfig(selectedIndex, 'include_line_items', !cfg.include_line_items)}
+								>
+									<span class="toggle-knob"></span>
+								</button>
+							</div>
+
+							<div class="field toggle-field">
+								<label for="include-attach">Include PDF attachment URL</label>
+								<button
+									id="include-attach"
+									class="toggle"
+									class:on={cfg.include_attachments}
+									onclick={() => updateStepConfig(selectedIndex, 'include_attachments', !cfg.include_attachments)}
+								>
+									<span class="toggle-knob"></span>
+								</button>
 							</div>
 						{/if}
 					</div>
