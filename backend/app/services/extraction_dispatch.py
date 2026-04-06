@@ -82,6 +82,6 @@ async def _run_local(
             if not invoice:
                 return
 
-            await run_extraction(db, invoice, actor_id=actor_id)
+            await run_extraction(db, invoice, actor_id=actor_id, org_settings=org.settings)
         except Exception:
             await db.rollback()

@@ -1,0 +1,197 @@
+# AI Invoice Extraction
+
+## Overview
+
+When an invoice is uploaded, the system extracts all structured data (vendor, amount, dates, line items) using AI/OCR. The extraction service supports two models:
+
+| Model | How it works | Cost | Who pays for AI |
+|---|---|---|---|
+| **Platform** (default) | Uses your Claude Vision API key | Per-extraction fee to customer | You |
+| **BYOK** (Bring Your Own Key) | Customer provides their own AI API key | Free (no extraction fee) | Customer |
+
+## Supported Providers
+
+| Provider | Type | Best for |
+|---|---|---|
+| **Claude Vision** (Anthropic) | Platform default + BYOK | Highest accuracy, structured output |
+| **GPT-4V** (OpenAI) | BYOK only | Customers already on OpenAI |
+| **AWS Textract** | BYOK only | Customers on AWS with AnalyzeExpense |
+| **Mock** | Development | Testing without API calls |
+
+## Extraction Flow
+
+```
+Invoice Uploaded
+    |
+    v
+Dispatch (local or Lambda)
+    |
+    v
+Resolve Config
+    ├── Platform → use app-level Anthropic key (AP_ANTHROPIC_API_KEY)
+    └── BYOK → use customer's key from org.settings.extraction
+    |
+    v
+Adapter.extract(file_url, file_key, mime_type)
+    |
+    v
+Parse Response → ExtractionResult (per-field confidence)
+    |
+    v
+Apply to Invoice
+    ├── Header fields (vendor, amount, dates, etc.)
+    ├── Line items
+    ├── AI GL coding (suggest GL account + cost center)
+    └── Vendor matching (fuzzy match or auto-create)
+    |
+    v
+Track Usage (ExtractionUsage record)
+    |
+    v
+Transition: pending → ready_for_review
+```
+
+## Per-Field Confidence
+
+Every extracted field includes a confidence score (0.0 to 1.0). The extraction prompt asks the AI to self-rate certainty per field.
+
+| Confidence | Treatment |
+|---|---|
+| >= 0.9 | Auto-applied, no flag |
+| 0.7 - 0.9 | Applied, flagged for review |
+| < 0.7 | Not auto-applied, shown as suggestion |
+
+GL coding uses the 0.7 threshold — only auto-applied when the AI is reasonably confident.
+
+## AI GL Coding
+
+The extraction prompt includes GL account suggestions based on the vendor type and invoice description:
+
+| Category | Suggested GL |
+|---|---|
+| Office supplies | 6100 |
+| Cloud/software | 6200 |
+| Facility/maintenance | 6300 |
+| Marketing | 6400 |
+| Legal/professional | 6500 |
+| Food/catering | 6600 |
+| Shipping/logistics | 6700 |
+| Hardware/equipment | 1500 |
+
+The org's chart of accounts can be included in the prompt (future improvement) for more accurate suggestions.
+
+## ExtractionResult Structure
+
+```python
+ExtractionResult:
+    success: bool
+    overall_confidence: float  # average of key fields
+    
+    # Header fields — each is ExtractedField(value, confidence)
+    invoice_number, vendor_name, vendor_address, vendor_tax_id,
+    amount, currency, subtotal, tax_amount, tax_rate,
+    discount_amount, shipping_amount, invoice_date, due_date,
+    payment_terms, po_number, description, reference_number,
+    payment_method, bill_to_address, remit_to_address
+    
+    # AI suggestions
+    suggested_gl_account, suggested_cost_center
+    
+    # Line items
+    line_items: list[ExtractedLineItem]
+    
+    # Debug
+    raw_response, provider, error
+```
+
+## Usage Tracking & Billing
+
+Every extraction (success or failure) creates an `ExtractionUsage` record:
+
+| Field | Description |
+|---|---|
+| invoice_id | Which invoice was extracted |
+| provider | Which AI provider was used |
+| program_type | "platform" or "byok" |
+| period | "2026-04" (for monthly billing) |
+| success | Whether extraction succeeded |
+| organization_id | Tenant |
+
+**Billing logic:**
+- Platform extractions are billable (you charge the customer)
+- BYOK extractions are free (customer pays their own AI provider)
+- Failed extractions are tracked but not billable
+
+Query for monthly billing:
+```sql
+SELECT organization_id, period, count(*) as extractions
+FROM extraction_usage
+WHERE program_type = 'platform' AND success = true
+GROUP BY organization_id, period;
+```
+
+## Organization Settings
+
+Stored in `Organization.settings.extraction`:
+
+```json
+{
+  "extraction": {
+    "program_type": "platform",
+    "provider": "claude_vision"
+  }
+}
+```
+
+BYOK example:
+```json
+{
+  "extraction": {
+    "program_type": "byok",
+    "provider": "openai_vision",
+    "api_key": "sk-..."
+  }
+}
+```
+
+Platform mode uses environment variables:
+- `AP_ANTHROPIC_API_KEY` — your Anthropic API key
+- `AP_EXTRACTION_MODEL` — model to use (default: claude-sonnet-4-20250514)
+
+## Code Structure
+
+```
+backend/app/services/extraction_adapters/
+    __init__.py              # Package exports
+    base.py                  # ExtractionAdapter, ExtractionResult, ExtractedField types
+    dispatcher.py            # get_extraction_adapter() — picks adapter from config
+    mock_adapter.py          # Dev/testing
+    claude_vision.py         # Claude Vision (platform default)
+    openai_vision.py         # GPT-4V (BYOK)
+    aws_textract.py          # AWS Textract (BYOK)
+
+backend/app/services/extraction.py       # Orchestrates extraction + vendor matching + GL coding
+backend/app/services/extraction_dispatch.py  # Routes to local or Lambda
+backend/app/models/usage.py              # ExtractionUsage model for billing
+```
+
+## Implementation Status
+
+| Feature | Status |
+|---|---|
+| Extraction adapter interface | Done |
+| Mock adapter | Done |
+| Claude Vision adapter (platform) | Done |
+| OpenAI GPT-4V adapter (BYOK) | Done |
+| AWS Textract adapter (BYOK) | Done |
+| Per-field confidence scoring | Done |
+| AI GL coding in extraction prompt | Done |
+| Vendor matching after extraction | Done |
+| Line item extraction | Done |
+| Usage tracking (ExtractionUsage model) | Done |
+| Extraction config in org settings UI | Done |
+| Platform/BYOK dual model | Done |
+| Usage billing dashboard | Planned |
+| Custom chart of accounts in prompt | Planned |
+| Multi-page PDF support | Planned |
+| Learning from corrections | Planned |

@@ -94,6 +94,20 @@
 	let erpTokenId = $state('');
 	let erpTokenSecret = $state('');
 	let testingConnection = $state(false);
+	// Extraction
+	let extractionProgramType = $state('platform');
+	let extractionProvider = $state('claude_vision');
+	let extractionApiKey = $state('');
+	let extractionAwsKeyId = $state('');
+	let extractionAwsSecret = $state('');
+	let extractionAwsRegion = $state('us-east-1');
+	let savingExtraction = $state(false);
+
+	const EXTRACTION_PROVIDERS = [
+		{ value: 'claude_vision', label: 'Claude Vision (Anthropic)' },
+		{ value: 'openai_vision', label: 'GPT-4V (OpenAI)' },
+		{ value: 'aws_textract', label: 'AWS Textract' },
+	];
 	// Cards
 	let cardsEnabled = $state(false);
 	let cardsProgramType = $state('platform');
@@ -210,6 +224,16 @@
 				cardsExpiryDays = (cards.default_expiry_days as number) || 30;
 				cardsSandbox = (cards.sandbox as boolean) ?? true;
 			}
+			// Extraction
+			const extraction = (data.settings as unknown as Record<string, unknown>).extraction as Record<string, unknown> | undefined;
+			if (extraction) {
+				extractionProgramType = (extraction.program_type as string) || 'platform';
+				extractionProvider = (extraction.provider as string) || 'claude_vision';
+				extractionApiKey = (extraction.api_key as string) || '';
+				extractionAwsKeyId = (extraction.aws_access_key_id as string) || '';
+				extractionAwsSecret = (extraction.aws_secret_access_key as string) || '';
+				extractionAwsRegion = (extraction.aws_region as string) || 'us-east-1';
+			}
 		} catch {
 			toast('Failed to load organization', 'error');
 		}
@@ -292,6 +316,26 @@
 			toast(err instanceof Error ? err.message : 'Save failed', 'error');
 		} finally {
 			savingErp = false;
+		}
+	}
+
+	async function saveExtraction() {
+		savingExtraction = true;
+		try {
+			await patchSettings('AI Extraction', {
+				extraction: {
+					program_type: extractionProgramType,
+					provider: extractionProvider,
+					api_key: extractionApiKey,
+					aws_access_key_id: extractionAwsKeyId,
+					aws_secret_access_key: extractionAwsSecret,
+					aws_region: extractionAwsRegion,
+				},
+			});
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingExtraction = false;
 		}
 	}
 
@@ -409,6 +453,68 @@
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingDefaults} onclick={saveDefaults}>
 						{savingDefaults ? 'Saving...' : 'Save Defaults'}
+					</button>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>AI Extraction</h2>
+				<p class="card-hint">Configure how invoice data is extracted from uploaded files. Platform mode uses our AI — charged per extraction. BYOK uses your own API key.</p>
+
+				<div class="form-grid">
+					<label>
+						<span>Program</span>
+						<select bind:value={extractionProgramType}>
+							<option value="platform">Platform (per-invoice fee)</option>
+							<option value="byok">Bring Your Own Key (free)</option>
+						</select>
+					</label>
+					{#if extractionProgramType === 'byok'}
+						<label>
+							<span>Provider</span>
+							<select bind:value={extractionProvider}>
+								{#each EXTRACTION_PROVIDERS as p}
+									<option value={p.value}>{p.label}</option>
+								{/each}
+							</select>
+						</label>
+					{:else}
+						<label>
+							<span>Provider</span>
+							<input type="text" value="Claude Vision (Anthropic)" disabled />
+						</label>
+					{/if}
+				</div>
+
+				{#if extractionProgramType === 'platform'}
+					<p class="card-hint" style="margin-top: 10px;">Extractions use our Claude Vision API. No API key needed. Usage is tracked and billed per extraction.</p>
+				{:else if extractionProvider === 'claude_vision' || extractionProvider === 'openai_vision'}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>{extractionProvider === 'claude_vision' ? 'Anthropic' : 'OpenAI'} API Key</span>
+							<input type="password" bind:value={extractionApiKey} placeholder="sk-..." />
+						</label>
+					</div>
+				{:else if extractionProvider === 'aws_textract'}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>AWS Access Key ID</span>
+							<input type="text" bind:value={extractionAwsKeyId} />
+						</label>
+						<label>
+							<span>AWS Secret Access Key</span>
+							<input type="password" bind:value={extractionAwsSecret} />
+						</label>
+						<label>
+							<span>AWS Region</span>
+							<input type="text" bind:value={extractionAwsRegion} placeholder="us-east-1" />
+						</label>
+					</div>
+				{/if}
+
+				<div class="section-footer">
+					<button class="btn-save-section" disabled={savingExtraction} onclick={saveExtraction}>
+						{savingExtraction ? 'Saving...' : 'Save Extraction Settings'}
 					</button>
 				</div>
 			</section>

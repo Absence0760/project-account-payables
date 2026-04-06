@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     audit_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_audit_queue_url: str = ""  # required when audit_mode = "lambda"
 
+    # AI Extraction (platform-level key — used when customers choose "Platform" extraction)
+    anthropic_api_key: str = ""  # your Anthropic API key for Claude Vision
+    extraction_model: str = "claude-sonnet-4-20250514"
+
     # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
     lithic_api_key: str = ""  # your Lithic API key
     lithic_sandbox: bool = True

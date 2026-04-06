@@ -16,7 +16,9 @@ from app.models import Base
 from app.models.organization import Organization
 from app.models.user import User, Role, UserRole
 from app.models.vendor import Vendor
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
+from app.models.procurement import PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem
+from app.models.usage import ExtractionUsage
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -245,9 +247,74 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
             Invoice(organization_id=org_id, invoice_number="INV-2024-010", vendor_name="Office Supplies Co", vendor_id=v_office.id, description="Printer toner and paper", amount=Decimal("890.00"), currency="USD", invoice_date=date(2024, 4, 5), received_date=date(2024, 4, 5), due_date=date(2024, 5, 5), payment_terms="Net 30", status="approved", po_number="PO-2024-108", subtotal=Decimal("820.00"), tax_amount=Decimal("70.00"), bill_to_address=bill_to, approval_date=date(2024, 4, 6), approved_by="Marcus Manager", gl_account="6100", cost_center="ADMIN"),
         ]
         session.add_all(invoices)
+        await session.flush()
+
+        # Purchase Orders — linked to vendors, some match invoices
+        po1 = PurchaseOrder(organization_id=org_id, po_number="PO-2024-100", vendor_id=v_office.id, total=Decimal("1250.00"), status="open")
+        po2 = PurchaseOrder(organization_id=org_id, po_number="PO-2024-101", vendor_id=v_cloud.id, total=Decimal("8500.00"), status="open")
+        po3 = PurchaseOrder(organization_id=org_id, po_number="PO-2024-102", vendor_id=v_facility.id, total=Decimal("3000.00"), status="open")  # slight mismatch with invoice
+        po4 = PurchaseOrder(organization_id=org_id, po_number="PO-2024-104", vendor_id=v_tech.id, total=Decimal("12000.00"), status="open")
+        po5 = PurchaseOrder(organization_id=org_id, po_number="PO-2024-107", vendor_id=v_transport.id, total=Decimal("6300.00"), status="open")
+        session.add_all([po1, po2, po3, po4, po5])
+        await session.flush()
+
+        # PO Line Items
+        session.add_all([
+            POLineItem(po_id=po1.id, description="Paper and toner", quantity=Decimal("10"), unit_price=Decimal("85.00"), total=Decimal("850.00")),
+            POLineItem(po_id=po1.id, description="Pens and stationery", quantity=Decimal("50"), unit_price=Decimal("8.00"), total=Decimal("400.00")),
+            POLineItem(po_id=po2.id, description="Cloud hosting Q1", quantity=Decimal("1"), unit_price=Decimal("8500.00"), total=Decimal("8500.00")),
+            POLineItem(po_id=po3.id, description="Building cleaning", quantity=Decimal("1"), unit_price=Decimal("2000.00"), total=Decimal("2000.00")),
+            POLineItem(po_id=po3.id, description="HVAC maintenance", quantity=Decimal("1"), unit_price=Decimal("1000.00"), total=Decimal("1000.00")),
+            POLineItem(po_id=po4.id, description="Laptop - Model X", quantity=Decimal("5"), unit_price=Decimal("2400.00"), total=Decimal("12000.00")),
+            POLineItem(po_id=po5.id, description="Freight shipping", quantity=Decimal("1"), unit_price=Decimal("6300.00"), total=Decimal("6300.00")),
+        ])
+
+        # Goods Receipts — for 3-way matching
+        gr1 = GoodsReceipt(organization_id=org_id, gr_number="GR-2024-001", po_id=po4.id, received_date=date(2024, 3, 22), status="received")
+        gr2 = GoodsReceipt(organization_id=org_id, gr_number="GR-2024-002", po_id=po5.id, received_date=date(2024, 4, 1), status="received")
+        session.add_all([gr1, gr2])
+        await session.flush()
+
+        # GR Line Items — partial receipt on po4 (only 4 of 5 laptops)
+        session.add_all([
+            GRLineItem(gr_id=gr1.id, description="Laptop - Model X", quantity_received=Decimal("4")),  # ordered 5, received 4
+            GRLineItem(gr_id=gr2.id, description="Freight shipping", quantity_received=Decimal("1")),
+        ])
+
+        # Extraction results — simulate completed extractions for some invoices
+        for inv in invoices[:4]:
+            session.add(InvoiceExtractionResult(
+                invoice_id=inv.id,
+                method="claude_vision",
+                confidence=Decimal("0.9500"),
+                raw_result={
+                    "provider": "claude_vision",
+                    "overall_confidence": 0.95,
+                    "fields_extracted": 15,
+                },
+            ))
+
+        # Invoice line items — for the first two invoices
+        session.add_all([
+            InvoiceLineItem(invoice_id=invoices[0].id, line_number=1, description="Paper and toner", quantity=Decimal("10"), unit_price=Decimal("85.00"), total=Decimal("850.00"), gl_account="6100"),
+            InvoiceLineItem(invoice_id=invoices[0].id, line_number=2, description="Pens and stationery", quantity=Decimal("50"), unit_price=Decimal("8.00"), total=Decimal("400.00"), gl_account="6100"),
+            InvoiceLineItem(invoice_id=invoices[1].id, line_number=1, description="Cloud hosting Q1", quantity=Decimal("1"), unit_price=Decimal("8500.00"), total=Decimal("8500.00"), gl_account="6200"),
+        ])
+
+        # Extraction usage — simulate billing data
+        for i, inv in enumerate(invoices[:6]):
+            session.add(ExtractionUsage(
+                invoice_id=inv.id,
+                provider="claude_vision" if i < 4 else "mock",
+                program_type="platform" if i < 4 else "byok",
+                period="2024-03" if i < 3 else "2024-04",
+                success=True,
+                organization_id=org_id,
+            ))
 
         await session.commit()
-        print(f"  Seeded {tenant_label}: {len(all_vendors)} vendors ({1} unverified, {1} rejected), {len(invoices)} invoices")
+        print(f"  Seeded {tenant_label}: {len(all_vendors)} vendors, {len(invoices)} invoices, "
+              f"5 POs, 2 GRs, {4} extractions, {6} usage records")
 
     await engine.dispose()
 

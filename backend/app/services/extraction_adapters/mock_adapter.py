@@ -1,0 +1,55 @@
+"""Mock extraction adapter for development and testing."""
+
+import uuid
+from datetime import date, timedelta
+
+from app.services.extraction_adapters.base import (
+    ExtractionAdapter,
+    ExtractionResult,
+    ExtractedField,
+    ExtractedLineItem,
+)
+from app.services.extraction_adapters.dispatcher import register_extraction_adapter
+
+
+@register_extraction_adapter("mock")
+class MockExtractionAdapter(ExtractionAdapter):
+    provider_name = "mock"
+
+    async def extract(self, file_url: str, file_key: str, mime_type: str = "application/pdf") -> ExtractionResult:
+        today = date.today()
+        return ExtractionResult(
+            success=True,
+            overall_confidence=0.95,
+            invoice_number=ExtractedField(f"EXT-{uuid.uuid4().hex[:8].upper()}", 0.98),
+            vendor_name=ExtractedField("Extracted Vendor Inc", 0.95),
+            vendor_address=ExtractedField("123 Vendor St, Suite 200, Austin, TX 78701", 0.88),
+            vendor_tax_id=ExtractedField("12-3456789", 0.92),
+            amount=ExtractedField("1500.00", 0.99),
+            currency=ExtractedField("USD", 0.99),
+            subtotal=ExtractedField("1350.00", 0.97),
+            tax_amount=ExtractedField("150.00", 0.96),
+            tax_rate=ExtractedField("10.00", 0.90),
+            invoice_date=ExtractedField(today.isoformat(), 0.97),
+            due_date=ExtractedField((today + timedelta(days=30)).isoformat(), 0.95),
+            payment_terms=ExtractedField("Net 30", 0.93),
+            payment_method=ExtractedField("ach", 0.80),
+            reference_number=ExtractedField(f"REF-{uuid.uuid4().hex[:6].upper()}", 0.85),
+            description=ExtractedField(f"Extracted from file: {file_key or 'unknown'}", 0.90),
+            suggested_gl_account=ExtractedField("6100", 0.75),
+            suggested_cost_center=ExtractedField("ADMIN", 0.70),
+            line_items=[
+                ExtractedLineItem(
+                    line_number=1,
+                    description=ExtractedField("Professional services", 0.92),
+                    quantity=ExtractedField("1", 0.95),
+                    unit_price=ExtractedField("1350.00", 0.97),
+                    tax=ExtractedField("150.00", 0.93),
+                    total=ExtractedField("1500.00", 0.98),
+                ),
+            ],
+            provider="mock",
+        )
+
+    async def test_connection(self) -> bool:
+        return True

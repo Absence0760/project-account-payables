@@ -13,50 +13,54 @@ Feature backlog for the AP automation platform, ordered by impact.
 ## Priority 1: Core Automation (highest impact)
 
 ### Real AI Extraction
-**Status:** Partial (mock implementation)
+**Status:** Done — adapter pattern with Claude Vision (platform), OpenAI GPT-4V, AWS Textract (BYOK). Platform/BYOK dual model. See [ai-extraction.md](ai-extraction.md).
 
-Replace the mock extraction service with a real AI/OCR provider. This is the #1 value driver for touchless processing.
-
-- [ ] Integrate Claude Vision API for invoice field extraction
-- [ ] Add AWS Textract as a fallback provider
+- [x] Extraction adapter pattern with dispatcher
+- [x] Claude Vision adapter (platform default) with structured JSON prompt
+- [x] OpenAI GPT-4V adapter (BYOK)
+- [x] AWS Textract adapter (BYOK)
+- [x] Mock adapter for development
+- [x] Per-field confidence scoring (0-1)
+- [x] Extract line items (not just header fields)
+- [x] Platform/BYOK dual model — platform keys in env vars, customer keys in org settings
+- [x] Extraction config in organization settings UI
+- [x] Usage tracking (ExtractionUsage model) for billing
 - [ ] Support multi-page PDFs
-- [ ] Extract line items (not just header fields)
-- [ ] Confidence scoring per field — flag low-confidence for human review
-- [ ] Auto-approve extraction above configurable threshold (config exists in workflow)
 - [ ] Handle scanned/rotated/low-quality images
-- [ ] Target: 95%+ accuracy on standard invoice formats
+- [ ] Auto-approve extraction above configurable threshold
+- [ ] Custom chart of accounts in extraction prompt
+- [ ] Learning from corrections
 
-**Files:** `backend/app/services/extraction.py` (replace `_mock_extract`)
+**Files:** `backend/app/services/extraction_adapters/`, `backend/app/services/extraction.py`
 
 ---
 
 ### 2/3-Way PO Matching & Auto-Validation
-**Status:** Partial (DB models exist, no logic)
+**Status:** Partial — matching service built with 2-way and 3-way logic. UI and pipeline wiring not done. See [po-matching.md](po-matching.md).
 
-Match invoices against purchase orders and goods receipts to catch discrepancies before payment.
-
-- [ ] 2-way match: invoice vs. PO (amount, vendor, line items)
-- [ ] 3-way match: invoice vs. PO vs. goods receipt (quantity received)
-- [ ] Configurable tolerance thresholds (e.g., 5% amount variance allowed)
-- [ ] Auto-approve if within tolerance
-- [ ] Route to exception queue if mismatch
+- [x] 2-way match: invoice vs. PO (amount, vendor)
+- [x] 3-way match: invoice vs. PO vs. goods receipt (quantity received)
+- [x] Configurable tolerance thresholds (default 5%)
+- [x] Vendor-aware matching (PO lookup by vendor_id)
+- [ ] Wire matching into extraction/review pipeline
+- [ ] Match result display in invoice modal
+- [ ] Route mismatches to exception queue
 - [ ] PO management UI — list, view, link to invoices
 - [ ] Goods receipt UI — list, view, link to POs
-- [ ] Match status visible in invoice modal
+- [ ] PO sync from ERP
 
-**Files:** `backend/app/models/procurement.py` (PO, GR models exist)
+**Files:** `backend/app/services/po_matching.py`, `backend/app/models/procurement.py`
 
 ---
 
 ### AI Auto GL Coding
-**Status:** Planned
+**Status:** Done — included in the extraction prompt. Claude Vision suggests GL account and cost center based on vendor type and description. Auto-applied at >= 0.7 confidence.
 
-Use AI to automatically assign GL account and cost center based on vendor, description, line items, and historical patterns.
-
-- [ ] Train/prompt AI with org's chart of accounts
-- [ ] Suggest GL code + cost center on extraction
+- [x] AI suggests GL code + cost center during extraction
+- [x] Confidence score per suggestion
+- [x] Auto-apply above 0.7 threshold
+- [ ] Custom chart of accounts per org in the prompt
 - [ ] Learn from corrections — improve over time
-- [ ] Confidence score — auto-apply above threshold, flag below
 - [ ] Bulk re-code capability
 - [ ] GL code validation against chart of accounts
 
@@ -445,3 +449,10 @@ Visual drag-and-drop workflow builder for non-technical users.
 - [x] Workflow approval step: approver search/pick UI with chips
 - [x] Workflow approval thresholds (auto-approve below, CFO above, max amount)
 - [x] Self-service profile editing (name, password) in sidebar popover
+- [x] AI extraction adapter pattern (Claude Vision, OpenAI GPT-4V, AWS Textract)
+- [x] Platform/BYOK dual model for extraction (per-invoice billing for platform)
+- [x] Per-field confidence scoring on extraction
+- [x] AI GL coding (suggest GL account + cost center in extraction prompt)
+- [x] Line item extraction
+- [x] Extraction usage tracking for billing (ExtractionUsage model)
+- [x] PO matching service (2-way and 3-way with configurable tolerance)
