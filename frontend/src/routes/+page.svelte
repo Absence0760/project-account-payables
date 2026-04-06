@@ -11,6 +11,7 @@
 		total_rebates: number;
 		touchless_rate: number;
 		stale_approvals: number;
+		open_exceptions: number;
 		pipeline: Record<string, number>;
 		vendor_spend: Array<{ vendor: string; amount: number }>;
 		aging: { current: number; days_30: number; days_60: number; days_90_plus: number };
@@ -115,6 +116,12 @@
 				<span class="kpi-value">{data.touchless_rate}%</span>
 				<span class="kpi-label">Touchless Rate</span>
 			</div>
+			{#if data.open_exceptions > 0}
+				<a href="/exceptions" class="kpi highlight-red kpi-link">
+					<span class="kpi-value">{data.open_exceptions}</span>
+					<span class="kpi-label">Exceptions</span>
+				</a>
+			{/if}
 			{#if data.stale_approvals > 0}
 				<div class="kpi highlight-red">
 					<span class="kpi-value">{data.stale_approvals}</span>
@@ -325,6 +332,17 @@
 
 	.kpi.highlight-red .kpi-value {
 		color: #e04040;
+	}
+
+	.kpi-link {
+		text-decoration: none;
+		cursor: pointer;
+		transition: transform 0.1s;
+	}
+
+	.kpi-link:hover {
+		transform: translateY(-2px);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 	}
 
 	.kpi-value {

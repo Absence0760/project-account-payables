@@ -20,6 +20,7 @@ from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.procurement import PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem
 from app.models.usage import ExtractionUsage
 from app.models.gl_account import GLAccount
+from app.models.exception import Exception as APException
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -396,9 +397,17 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
             reference="CARD-4242",
         ))
 
+        # Exceptions — sample flagged invoices
+        session.add_all([
+            APException(invoice_id=invoices[2].id, exception_type="po_mismatch", severity="warning", description="Invoice $3,200 vs PO $3,000 — 6.7% variance exceeds 5% tolerance", status="open", organization_id=org_id),
+            APException(invoice_id=invoices[8].id, exception_type="unverified_vendor", severity="warning", description="Invoice linked to unverified vendor: Global Printing Services", status="open", organization_id=org_id),
+            APException(invoice_id=invoices[0].id, exception_type="fraud_flag", severity="info", description="Suspicious round amount: $1,250.00", status="open", organization_id=org_id),
+            APException(invoice_id=invoices[4].id, exception_type="duplicate", severity="warning", description="Duplicate invoice number for Tech Hardware Corp", status="resolved", resolution="Confirmed not a duplicate — different PO", resolved_by="Marcus Manager", organization_id=org_id),
+        ])
+
         await session.commit()
         print(f"  Seeded {tenant_label}: {len(all_vendors)} vendors, {len(invoices)} invoices, "
-              f"5 POs, 2 GRs, {len(gl_accounts)} GL accounts, 1 payment run, 3 payments")
+              f"5 POs, 2 GRs, {len(gl_accounts)} GL accounts, 1 payment run, 3 payments, 4 exceptions")
 
     await engine.dispose()
 

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, auth, cards, dashboard, erp_webhook, gl_accounts, invoices, organization, payments, purchase_orders, vendors, workflow, workflow_definitions
+from app.api import admin, auth, cards, dashboard, erp_webhook, exceptions, gl_accounts, invoices, organization, payments, purchase_orders, vendors, workflow, workflow_definitions
 
 
 @asynccontextmanager
@@ -34,6 +34,7 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")
+app.include_router(exceptions.router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")
 app.include_router(invoices.router, prefix="/api")
 app.include_router(purchase_orders.router, prefix="/api")

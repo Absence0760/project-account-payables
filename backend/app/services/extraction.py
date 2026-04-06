@@ -204,6 +204,17 @@ async def run_extraction(
         except Exception:
             pass
 
+        # Create exception record
+        from app.models.exception import Exception as APException
+        db.add(APException(
+            invoice_id=invoice_id,
+            exception_type="extraction_failed",
+            severity="error",
+            description=f"Extraction failed: {str(exc)[:500]}",
+            status="open",
+            organization_id=invoice_org_id,
+        ))
+
         # Transition pending → failed
         await transition_invoice(
             db,

@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
 from app.models.payment import Payment
 from app.models.user import User
@@ -155,12 +156,23 @@ async def get_dashboard(
     )
     stale_approvals = stale_q.scalar() or 0
 
+    # Open exceptions
+    try:
+        exc_q = await db.execute(
+            select(func.count()).where(APException.status.in_(["open", "escalated"]))
+        )
+        open_exceptions = exc_q.scalar() or 0
+    except Exception:
+        open_exceptions = 0
+        await db.rollback()
+
     return {
         "total_invoices": total_invoices or 0,
         "total_amount": float(total_amount),
         "total_paid": total_paid,
         "total_pending": total_pending,
         "total_rebates": total_rebates,
+        "open_exceptions": open_exceptions,
         "touchless_rate": touchless_rate,
         "stale_approvals": stale_approvals,
         "pipeline": pipeline,
