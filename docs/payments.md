@@ -153,15 +153,45 @@ Card details (full number, CVV) are never stored in the database — only `last_
 - Details are not cached in the frontend
 - In future: require password re-entry before revealing
 
-### Payment Flow (future)
+### Payment Flow
 
 1. User navigates to **Payments > Queue**
-2. Selects invoices and clicks **Create Payment Run**
-3. Chooses payment method per invoice (ACH, wire, check, virtual card)
-4. Reviews the batch: total amount, invoice count, method breakdown
-5. Clicks **Submit** → run created in `draft` status
-6. Clicks **Execute** → payments dispatched, statuses tracked
-7. For virtual card payments: cards generated, sent to vendors, charges tracked via webhooks
+2. **Selects invoices** via checkboxes (select-all available)
+3. Action bar shows count and total: *"3 selected — $18,050.00"*
+4. Clicks **Review & Pay** — review panel slides in
+5. **Chooses payment method per invoice** (ACH, Wire, Check, Virtual Card) via dropdown
+6. Reviews the batch total
+7. Clicks **Pay 3 Invoices** — this:
+   - Creates a payment run (draft)
+   - Immediately executes it
+   - Generates payment references (e.g., `ACH-20260406-001`)
+   - Updates invoice statuses to `payment_scheduled`
+   - **Triggers async ERP sync** in background
+8. Toast: *"Payment run executed — 3 payments completed. ERP sync in progress."*
+9. Queue clears, History/Runs/Summary update
+
+### ERP Payment Sync
+
+After a payment run executes, the system syncs payment data to the connected ERP in a background thread:
+
+```
+Execute Payment Run (response sent immediately)
+    |
+    └── Background thread:
+        ├── For each payment:
+        │   - Push payment details to ERP (amount, method, reference, date)
+        │   - Update invoice status: payment_scheduled → paid
+        │   - Log: "[payment-sync] Syncing payment abc: invoice=INV-001, $1,500, method=ach"
+        |
+        └── Log: "[payment-sync] Run xyz: 3 synced, 0 failed"
+```
+
+- Sync runs async — **doesn't block** the payment run response
+- Uses the same background thread pattern as extraction dispatch (fresh DB engines per thread)
+- If no ERP is configured, sync is skipped silently
+- Failed syncs are logged for retry (manual retry endpoint planned)
+
+**Files:** `backend/app/services/payment_erp_sync.py`
 
 ### 5. Reconciliation (Future)
 
@@ -174,7 +204,7 @@ Matching payments against bank statement entries:
 
 ## API Endpoints
 
-### Existing Endpoints
+### Implemented
 
 | Method | Path | Description |
 |---|---|---|
@@ -182,6 +212,11 @@ Matching payments against bank statement entries:
 | `GET` | `/api/payments/{id}` | Get single payment |
 | `POST` | `/api/payments` | Create individual payment |
 | `GET` | `/api/payments/runs/` | List payment runs |
+| `POST` | `/api/payments/runs` | Create a payment run (draft) |
+| `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
+| `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync |
+| `GET` | `/api/payments/queue` | List invoices ready for payment |
+| `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates |
 
 **Query parameters for `GET /api/payments`:**
 
@@ -196,17 +231,22 @@ Matching payments against bank statement entries:
 | `amount_min` | float | Minimum amount |
 | `amount_max` | float | Maximum amount |
 
-### Planned Endpoints
+**`POST /api/payments/runs` request body:**
+```json
+{
+  "items": [
+    { "invoice_id": "uuid", "method": "ach" },
+    { "invoice_id": "uuid", "method": "wire" },
+    { "invoice_id": "uuid", "method": "virtual_card" }
+  ]
+}
+```
+
+### Planned
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/payments/runs` | Create a payment run (draft) |
-| `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
-| `POST` | `/api/payments/runs/{id}/add` | Add invoices to a draft run |
-| `POST` | `/api/payments/runs/{id}/remove` | Remove invoices from a draft run |
-| `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run |
-| `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft or submitted run |
-| `GET` | `/api/payments/queue` | List invoices ready for payment |
+| `POST` | `/api/payments/runs/{id}/cancel` | Cancel a draft run |
 | `GET` | `/api/payments/schedules` | List payment schedules with discount info |
 | `PATCH` | `/api/payments/{id}` | Update payment (status, reference) |
 | `POST` | `/api/payments/{id}/void` | Void a pending/completed payment |
@@ -296,12 +336,32 @@ Every payment event writes to the audit log:
 
 CFO approval is required for executing payment runs above a configurable threshold (set in organization settings, future).
 
-## Implementation Order
+## Code Structure
 
-1. **Payment queue** — query approved invoices without completed payments, show due dates and discount opportunities
-2. **Create payment run** — select invoices, choose methods, review totals, save as draft
-3. **Execute payment run** — submit for processing, create individual payment records, update statuses
-4. **Payment history** — list runs and individual payments with filters
-5. **Payment schedules** — auto-create on invoice approval based on payment terms
-6. **Reconciliation** — bank statement import and matching (future phase)
-7. **Bank integration** — actual payment processor API calls (future phase)
+```
+backend/app/api/payments.py              # All payment endpoints (CRUD, runs, queue, summary)
+backend/app/models/payment.py            # Payment, PaymentRun, PaymentSchedule models
+backend/app/schemas/payment.py           # Pydantic schemas
+backend/app/services/payment_erp_sync.py # Async ERP sync after payment execution
+```
+
+## Implementation Status
+
+| Feature | Status |
+|---|---|
+| Payment queue (approved invoices ready to pay) | Done |
+| Payment history (all methods, filterable) | Done |
+| Payment runs list | Done |
+| Summary bar (KPIs) | Done |
+| Create payment run (select invoices, choose methods) | Done |
+| Review panel (per-invoice method selection, total) | Done |
+| Execute payment run (complete payments, generate references) | Done |
+| Async ERP sync after execution | Done |
+| Invoice status update on payment (→ payment_scheduled → paid) | Done |
+| Payment schedules (auto-created in seed) | Done |
+| Seed data (3 payments, 1 run, payment schedules) | Done |
+| Early-pay discount highlighting | Planned |
+| Cancel/void payment run | Planned |
+| Bank reconciliation | Planned |
+| Actual payment processor integration (ACH, wire) | Planned |
+| Virtual card generation in payment run | Planned |

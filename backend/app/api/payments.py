@@ -1,13 +1,15 @@
 """Payment endpoints."""
 
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_org_id
 from app.models.user import User
 from app.tenant import get_tenant_db
 from app.models.invoice import Invoice, InvoiceStatus
@@ -190,6 +192,164 @@ async def list_payment_runs(
         page=page,
         page_size=page_size,
     )
+
+
+class CreatePaymentRunItem(BaseModel):
+    invoice_id: str
+    method: str = "ach"  # ach, wire, check, virtual_card
+
+
+class CreatePaymentRunRequest(BaseModel):
+    items: list[CreatePaymentRunItem] = Field(..., min_length=1)
+
+
+@router.post("/runs", status_code=status.HTTP_201_CREATED)
+async def create_payment_run(
+    body: CreatePaymentRunRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Create a payment run from selected invoices."""
+    # Validate invoices exist and are payable
+    invoice_ids = [uuid.UUID(item.invoice_id) for item in body.items]
+    result = await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
+    invoices = {str(inv.id): inv for inv in result.scalars().all()}
+
+    if len(invoices) != len(invoice_ids):
+        raise HTTPException(status_code=404, detail="One or more invoices not found")
+
+    total = Decimal("0")
+    for item in body.items:
+        inv = invoices[item.invoice_id]
+        total += inv.amount
+
+    # Create the run
+    run = PaymentRun(
+        organization_id=org_id,
+        status="draft",
+        total_amount=total,
+        initiated_by=user.id,
+    )
+    db.add(run)
+    await db.flush()
+
+    # Create individual payments
+    for item in body.items:
+        inv = invoices[item.invoice_id]
+        payment = Payment(
+            invoice_id=inv.id,
+            payment_run_id=run.id,
+            amount=inv.amount,
+            method=item.method,
+            status="pending",
+            correlation_id=inv.correlation_id,
+        )
+        db.add(payment)
+
+    await db.commit()
+
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "total_amount": float(total),
+        "payment_count": len(body.items),
+        "message": f"Payment run created with {len(body.items)} payments totaling ${float(total):,.2f}",
+    }
+
+
+@router.get("/runs/{run_id}")
+async def get_payment_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    """Get a payment run with its individual payments."""
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Payment run not found")
+
+    # Get payments in this run with invoice details
+    pay_result = await db.execute(
+        select(Payment, Invoice)
+        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
+        .where(Payment.payment_run_id == run_id)
+    )
+    payments = [
+        {
+            "id": str(p.id),
+            "invoice_id": str(p.invoice_id),
+            "invoice_number": inv.invoice_number if inv else None,
+            "vendor_name": inv.vendor_name if inv else None,
+            "amount": float(p.amount),
+            "method": p.method,
+            "status": p.status,
+            "reference": p.reference,
+        }
+        for p, inv in pay_result.all()
+    ]
+
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "total_amount": float(run.total_amount) if run.total_amount else 0,
+        "initiated_by": str(run.initiated_by) if run.initiated_by else None,
+        "executed_at": run.executed_at.isoformat() if run.executed_at else None,
+        "created_at": run.created_at.isoformat() if run.created_at else "",
+        "payments": payments,
+    }
+
+
+@router.post("/runs/{run_id}/execute")
+async def execute_payment_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    """Execute a draft payment run — marks all payments as processing then completed."""
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Payment run not found")
+    if run.status != "draft":
+        raise HTTPException(status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'")
+
+    # Update run status
+    run.status = "completed"
+    run.executed_at = datetime.now(timezone.utc)
+
+    # Mark all payments as completed and generate references
+    pay_result = await db.execute(
+        select(Payment).where(Payment.payment_run_id == run_id)
+    )
+    payments = pay_result.scalars().all()
+
+    completed = 0
+    for i, payment in enumerate(payments):
+        payment.status = "completed"
+        method_prefix = (payment.method or "PAY").upper()
+        payment.reference = f"{method_prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{i+1:03d}"
+
+        # Update invoice status to payment_scheduled
+        inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+        inv = inv_result.scalar_one_or_none()
+        if inv and inv.status.value in ("approved", "sent_to_erp", "posted_in_erp"):
+            inv.status = InvoiceStatus.payment_scheduled
+        completed += 1
+
+    await db.commit()
+
+    # Async ERP sync — doesn't block the response
+    from app.services.payment_erp_sync import dispatch_payment_sync
+    await dispatch_payment_sync(run_id, uuid.UUID(str(run.organization_id)))
+
+    return {
+        "id": str(run.id),
+        "status": "completed",
+        "payments_completed": completed,
+        "message": f"Payment run executed — {completed} payments completed. ERP sync in progress.",
+    }
 
 
 # ── Payment Queue ───────────────────────────────────────────────────

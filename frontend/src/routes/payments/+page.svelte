@@ -35,6 +35,70 @@
 	}
 	let queue = $state<QueueItem[]>([]);
 
+	// Queue selection and payment run creation
+	let selectedQueue = $state<Set<string>>(new Set());
+	let paymentMethods = $state<Record<string, string>>({});
+	let creatingRun = $state(false);
+	let showReview = $state(false);
+
+	let allQueueSelected = $derived(
+		queue.length > 0 && queue.every(q => selectedQueue.has(q.id))
+	);
+
+	let selectedTotal = $derived(
+		queue.filter(q => selectedQueue.has(q.id)).reduce((sum, q) => sum + q.amount, 0)
+	);
+
+	function toggleQueueSelect(id: string) {
+		const next = new Set(selectedQueue);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selectedQueue = next;
+		if (!paymentMethods[id]) paymentMethods[id] = 'ach';
+	}
+
+	function toggleQueueSelectAll() {
+		if (allQueueSelected) {
+			selectedQueue = new Set();
+		} else {
+			selectedQueue = new Set(queue.map(q => q.id));
+			for (const q of queue) {
+				if (!paymentMethods[q.id]) paymentMethods[q.id] = 'ach';
+			}
+		}
+	}
+
+	async function createAndExecuteRun() {
+		if (selectedQueue.size === 0) return;
+		creatingRun = true;
+		try {
+			const items = [...selectedQueue].map(id => ({
+				invoice_id: id,
+				method: paymentMethods[id] || 'ach',
+			}));
+
+			// Create the run
+			const run = await api.post<{ id: string; message: string }>('/api/payments/runs', { items });
+
+			// Execute immediately
+			const result = await api.post<{ message: string }>(`/api/payments/runs/${run.id}/execute`, {});
+
+			toast(result.message, 'success');
+			selectedQueue = new Set();
+			showReview = false;
+
+			// Refresh all data
+			await loadSummary();
+			await loadQueue();
+			await loadRuns();
+			if (activeTab === 'history') await paymentStore.fetch(buildParams());
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Payment run failed', 'error');
+		} finally {
+			creatingRun = false;
+		}
+	}
+
 	// Runs
 	interface RunItem {
 		id: string;
@@ -188,9 +252,61 @@
 
 	<div class="grid-container">
 		{#if activeTab === 'queue'}
+			{#if selectedQueue.size > 0}
+				<div class="pay-bar">
+					<span class="pay-bar-count">{selectedQueue.size} selected — {formatCurrency(selectedTotal)}</span>
+					{#if !showReview}
+						<button class="btn-pay" onclick={() => (showReview = true)}>
+							Review & Pay
+						</button>
+					{/if}
+					<button class="btn-clear" onclick={() => { selectedQueue = new Set(); showReview = false; }}>Clear</button>
+				</div>
+			{/if}
+
+			{#if showReview && selectedQueue.size > 0}
+				<div class="review-panel">
+					<div class="review-title">Payment Review</div>
+					<table class="review-table">
+						<thead>
+							<tr>
+								<th>Invoice</th>
+								<th>Vendor</th>
+								<th class="right">Amount</th>
+								<th>Method</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each queue.filter(q => selectedQueue.has(q.id)) as item (item.id)}
+								<tr>
+									<td class="mono">{item.invoice_number}</td>
+									<td>{item.vendor_name}</td>
+									<td class="right mono">{formatCurrency(item.amount)}</td>
+									<td>
+										<select class="method-select" value={paymentMethods[item.id] || 'ach'} onchange={(e) => (paymentMethods[item.id] = e.currentTarget.value)}>
+											<option value="ach">ACH</option>
+											<option value="wire">Wire</option>
+											<option value="check">Check</option>
+											<option value="virtual_card">Virtual Card</option>
+										</select>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+					<div class="review-footer">
+						<span class="review-total">Total: {formatCurrency(selectedTotal)}</span>
+						<button class="btn-execute" disabled={creatingRun} onclick={createAndExecuteRun}>
+							{creatingRun ? 'Processing...' : `Pay ${selectedQueue.size} Invoice${selectedQueue.size > 1 ? 's' : ''}`}
+						</button>
+					</div>
+				</div>
+			{/if}
+
 			<table>
 				<thead>
 					<tr>
+						<th class="checkbox-col"><input type="checkbox" checked={allQueueSelected} onchange={toggleQueueSelectAll} /></th>
 						<th>Invoice #</th>
 						<th>Vendor</th>
 						<th class="right">Amount</th>
@@ -201,7 +317,8 @@
 				</thead>
 				<tbody>
 					{#each queue as item (item.id)}
-						<tr class:overdue={item.is_overdue}>
+						<tr class:overdue={item.is_overdue} class:row-selected={selectedQueue.has(item.id)}>
+							<td class="checkbox-col"><input type="checkbox" checked={selectedQueue.has(item.id)} onchange={() => toggleQueueSelect(item.id)} /></td>
 							<td class="mono">{item.invoice_number}</td>
 							<td>{item.vendor_name}</td>
 							<td class="right mono">{formatCurrency(item.amount, item.currency)}</td>
@@ -215,7 +332,7 @@
 							<td><StatusBadge status={item.status as import('$lib/types/invoice').InvoiceStatus} /></td>
 						</tr>
 					{:else}
-						<tr><td colspan="6" class="empty">No invoices ready for payment.</td></tr>
+						<tr><td colspan="7" class="empty">No invoices ready for payment.</td></tr>
 					{/each}
 				</tbody>
 			</table>
@@ -613,6 +730,153 @@
 	.badge.submitted {
 		background: rgba(99, 140, 255, 0.15);
 		color: #638cff;
+	}
+
+	/* --- Queue selection & payment --- */
+
+	.checkbox-col {
+		width: 36px;
+		text-align: center;
+		padding-left: 10px;
+		padding-right: 4px;
+	}
+
+	.checkbox-col input[type='checkbox'] {
+		cursor: pointer;
+		accent-color: var(--accent);
+	}
+
+	.row-selected {
+		background: rgba(99, 140, 255, 0.08);
+	}
+
+	.pay-bar {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 14px;
+		background: var(--surface);
+		border-bottom: 1px solid var(--border);
+	}
+
+	.pay-bar-count {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--accent);
+		flex: 1;
+	}
+
+	.btn-pay {
+		padding: 6px 16px;
+		border-radius: 4px;
+		border: none;
+		background: #1fa86a;
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-pay:hover {
+		opacity: 0.9;
+	}
+
+	.btn-clear {
+		padding: 6px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.82rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-clear:hover {
+		color: var(--text);
+	}
+
+	/* --- Review panel --- */
+
+	.review-panel {
+		padding: 14px;
+		background: var(--bg);
+		border-bottom: 1px solid var(--border);
+	}
+
+	.review-title {
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin-bottom: 10px;
+	}
+
+	.review-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.82rem;
+		margin-bottom: 12px;
+	}
+
+	.review-table th {
+		padding: 6px 10px;
+		text-align: left;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		border-bottom: 1px solid var(--border);
+	}
+
+	.review-table td {
+		padding: 6px 10px;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.method-select {
+		padding: 4px 8px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.82rem;
+		font-family: inherit;
+	}
+
+	.review-footer {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.review-total {
+		font-size: 0.9rem;
+		font-weight: 700;
+		color: var(--text);
+	}
+
+	.btn-execute {
+		padding: 8px 20px;
+		border-radius: 6px;
+		border: none;
+		background: #1fa86a;
+		color: #fff;
+		font-size: 0.88rem;
+		font-weight: 600;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-execute:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.btn-execute:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	@media (max-width: 768px) {
