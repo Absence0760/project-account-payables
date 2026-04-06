@@ -121,6 +121,73 @@ async def get_invoice(
     return InvoiceResponse.from_db(invoice)
 
 
+@router.get("/{invoice_id}/line-items")
+async def get_invoice_line_items(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    from app.models.invoice import InvoiceLineItem
+    result = await db.execute(
+        select(InvoiceLineItem)
+        .where(InvoiceLineItem.invoice_id == invoice_id)
+        .order_by(InvoiceLineItem.line_number)
+    )
+    items = result.scalars().all()
+    return [
+        {
+            "id": str(li.id),
+            "line_number": li.line_number,
+            "item_code": li.item_code,
+            "description": li.description,
+            "quantity": float(li.quantity) if li.quantity else None,
+            "unit_price": float(li.unit_price) if li.unit_price else None,
+            "tax": float(li.tax) if li.tax else None,
+            "total": float(li.total) if li.total else None,
+            "gl_account": li.gl_account,
+        }
+        for li in items
+    ]
+
+
+@router.put("/{invoice_id}/line-items")
+async def save_invoice_line_items(
+    invoice_id: uuid.UUID,
+    body: list[dict],
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Replace all line items for an invoice."""
+    from app.models.invoice import InvoiceLineItem
+
+    # Verify invoice exists
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Delete existing line items
+    await db.execute(
+        sa_delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id)
+    )
+
+    # Insert new line items
+    for i, item in enumerate(body):
+        li = InvoiceLineItem(
+            invoice_id=invoice_id,
+            line_number=item.get("line_number", i + 1),
+            item_code=item.get("item_code"),
+            description=item.get("description"),
+            quantity=Decimal(str(item["quantity"])) if item.get("quantity") is not None else None,
+            unit_price=Decimal(str(item["unit_price"])) if item.get("unit_price") is not None else None,
+            tax=Decimal(str(item["tax"])) if item.get("tax") is not None else None,
+            total=Decimal(str(item["total"])) if item.get("total") is not None else None,
+            gl_account=item.get("gl_account"),
+        )
+        db.add(li)
+
+    await db.commit()
+    return {"saved": len(body)}
+
+
 @router.post("", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED)
 async def create_invoice(
     body: InvoiceCreate,

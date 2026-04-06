@@ -56,6 +56,8 @@
 	let ship_to_address = $state(invoice.ship_to_address ?? '');
 	let tax_rate = $state(invoice.tax_rate);
 	let payment_method = $state(invoice.payment_method ?? '');
+	let gl_account = $state(invoice.gl_account ?? '');
+	let cost_center = $state(invoice.cost_center ?? '');
 	let reference_number = $state(invoice.reference_number ?? '');
 	/* eslint-enable svelte/state-referenced-locally */
 
@@ -144,6 +146,8 @@
 				tax_rate,
 				payment_method: payment_method || null,
 				reference_number: reference_number || null,
+				gl_account: gl_account || null,
+				cost_center: cost_center || null,
 			});
 			toast('Invoice saved', 'success');
 			onclose();
@@ -171,6 +175,8 @@
 				tax_rate,
 				payment_method: payment_method || null,
 				reference_number: reference_number || null,
+				gl_account: gl_account || null,
+				cost_center: cost_center || null,
 			});
 			const result = await api.post<{ id: string; status: string }>(`/api/invoices/${invoice.id}/complete`, {});
 			// If manually assigning an approver and invoice moved to ready_for_review
@@ -275,9 +281,13 @@
 					tax_rate = updated.tax_rate ?? tax_rate;
 					payment_method = updated.payment_method ?? payment_method;
 					reference_number = updated.reference_number ?? reference_number;
+					gl_account = updated.gl_account ?? gl_account;
+					cost_center = updated.cost_center ?? cost_center;
 
-					// Refresh the invoice list and audit log
+					// Refresh the invoice list, audit log, and line items
 					await invoiceStore.fetch();
+					await loadLineItems();
+					await loadExtractionConfidence();
 					await loadAuditLog();
 
 					if (updated.status === 'ready_for_review') {
@@ -357,6 +367,70 @@
 		URL.revokeObjectURL(url);
 	}
 
+	interface LineItem {
+		id: string;
+		line_number: number | null;
+		item_code: string | null;
+		description: string | null;
+		quantity: number | null;
+		unit_price: number | null;
+		tax: number | null;
+		total: number | null;
+		gl_account: string | null;
+	}
+
+	let lineItems = $state<LineItem[]>([]);
+	let lineItemsDirty = $state(false);
+	let savingLines = $state(false);
+
+	function updateLineItem(idx: number, field: string, value: unknown) {
+		lineItems = lineItems.map((li, i) => i === idx ? { ...li, [field]: value } : li);
+		lineItemsDirty = true;
+	}
+
+	function addLineItem() {
+		lineItems = [...lineItems, {
+			id: '',
+			line_number: lineItems.length + 1,
+			item_code: null,
+			description: '',
+			quantity: 1,
+			unit_price: null,
+			tax: null,
+			total: null,
+			gl_account: gl_account || null,
+		}];
+		lineItemsDirty = true;
+	}
+
+	function removeLineItem(idx: number) {
+		lineItems = lineItems.filter((_, i) => i !== idx);
+		lineItemsDirty = true;
+	}
+
+	async function saveLineItems() {
+		savingLines = true;
+		try {
+			await api.put(`/api/invoices/${invoice.id}/line-items`, lineItems.map((li, idx) => ({
+				line_number: idx + 1,
+				item_code: li.item_code,
+				description: li.description,
+				quantity: li.quantity,
+				unit_price: li.unit_price,
+				tax: li.tax,
+				total: li.total,
+				gl_account: li.gl_account,
+			})));
+			lineItemsDirty = false;
+			toast('Line items saved', 'success');
+			await loadLineItems();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingLines = false;
+		}
+	}
+
 	let auditLog = $state<AuditEntry[]>([]);
 
 	// Per-field confidence from extraction
@@ -382,7 +456,16 @@
 	$effect(() => {
 		loadAuditLog();
 		loadExtractionConfidence();
+		loadLineItems();
 	});
+
+	async function loadLineItems() {
+		try {
+			lineItems = await api.get<LineItem[]>(`/api/invoices/${invoice.id}/line-items`);
+		} catch {
+			// non-critical
+		}
+	}
 
 	async function loadAuditLog() {
 		auditLoading = true;
@@ -559,6 +642,62 @@
 							<span>Description {#if fieldConfidence.description}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.description)}" data-tip="{Math.round(fieldConfidence.description * 100)}% — {confidenceLabel(fieldConfidence.description)}"></span>{/if}</span>
 							<input type="text" bind:value={description} />
 						</label>
+						<label>
+							<span>GL Account {#if fieldConfidence.suggested_gl_account}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_gl_account)}" data-tip="{Math.round(fieldConfidence.suggested_gl_account * 100)}% — {confidenceLabel(fieldConfidence.suggested_gl_account)}"></span>{/if}</span>
+							<input type="text" bind:value={gl_account} placeholder="e.g. 6100" />
+						</label>
+						<label>
+							<span>Cost Center {#if fieldConfidence.suggested_cost_center}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_cost_center)}" data-tip="{Math.round(fieldConfidence.suggested_cost_center * 100)}% — {confidenceLabel(fieldConfidence.suggested_cost_center)}"></span>{/if}</span>
+							<input type="text" bind:value={cost_center} placeholder="e.g. ADMIN" />
+						</label>
+					</div>
+
+					<div class="line-items-section">
+						<div class="line-items-header">
+							<span class="line-items-title">Line Items</span>
+							<button type="button" class="btn-add-line" onclick={addLineItem}>+ Add Line</button>
+						</div>
+						{#if lineItems.length > 0}
+							<table class="line-items-table">
+								<thead>
+									<tr>
+										<th>#</th>
+										<th>Description</th>
+										<th class="right">Qty</th>
+										<th class="right">Unit Price</th>
+										<th class="right">Tax</th>
+										<th class="right">Total</th>
+										<th>GL</th>
+										<th></th>
+									</tr>
+								</thead>
+								<tbody>
+									{#each lineItems as li, idx}
+										<tr>
+											<td class="li-num">{idx + 1}</td>
+											<td><input type="text" class="li-input" value={li.description ?? ''} oninput={(e) => updateLineItem(idx, 'description', e.currentTarget.value)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" value={li.quantity ?? ''} oninput={(e) => updateLineItem(idx, 'quantity', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" value={li.unit_price ?? ''} oninput={(e) => updateLineItem(idx, 'unit_price', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" value={li.tax ?? ''} oninput={(e) => updateLineItem(idx, 'tax', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" value={li.total ?? ''} oninput={(e) => updateLineItem(idx, 'total', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="text" class="li-input li-gl" value={li.gl_account ?? ''} oninput={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)} /></td>
+											<td>
+												<button type="button" class="li-delete" onclick={() => removeLineItem(idx)}>&times;</button>
+											</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						{:else}
+							<p class="line-items-empty">No line items. Click "+ Add Line" to add one.</p>
+						{/if}
+						{#if lineItemsDirty}
+							<div class="line-items-actions">
+								<button type="button" class="btn-save-lines" disabled={savingLines} onclick={saveLineItems}>
+									{savingLines ? 'Saving...' : 'Save Line Items'}
+								</button>
+							</div>
+						{/if}
 					</div>
 
 					{#if invoice.warnings?.filter(w => w.type !== 'missing_field').length}
@@ -763,8 +902,8 @@
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 8px;
-		width: min(1100px, 95vw);
-		height: min(720px, 90vh);
+		width: min(1300px, 95vw);
+		height: min(800px, 92vh);
 		display: flex;
 		flex-direction: column;
 		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
@@ -860,7 +999,7 @@
 	/* --- Form pane --- */
 
 	.form-pane {
-		width: 380px;
+		width: 480px;
 		flex-shrink: 0;
 		overflow-y: auto;
 		overflow-x: hidden;
@@ -999,6 +1138,187 @@
 
 	.btn-delete-outline:disabled {
 		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	/* --- Line items --- */
+
+	.line-items-section {
+		margin-top: 14px;
+	}
+
+	.line-items-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 8px;
+	}
+
+	.line-items-title {
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+
+	.btn-add-line {
+		padding: 3px 10px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.75rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-add-line:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.line-items-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.8rem;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		overflow: hidden;
+	}
+
+	.line-items-table th {
+		background: var(--bg);
+		padding: 8px 8px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		color: var(--text-muted);
+		border-bottom: 1px solid var(--border);
+		text-align: left;
+		white-space: nowrap;
+	}
+
+	.line-items-table td {
+		padding: 3px 4px;
+		border-bottom: 1px solid var(--border);
+		color: var(--text);
+	}
+
+	.line-items-table tr:last-child td {
+		border-bottom: none;
+	}
+
+	.line-items-table .right {
+		text-align: right;
+	}
+
+	.li-num {
+		text-align: center;
+		color: var(--text-muted);
+		font-size: 0.75rem;
+		width: 28px;
+	}
+
+	.li-input {
+		width: 100%;
+		min-width: 0;
+		box-sizing: border-box;
+		padding: 5px 7px;
+		border: 1px solid transparent;
+		border-radius: 4px;
+		background: transparent;
+		font-size: 0.8rem;
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.li-input:focus {
+		outline: none;
+		border-color: var(--accent);
+		background: var(--bg);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.1);
+	}
+
+	.li-input:hover:not(:focus) {
+		border-color: var(--border);
+		background: var(--bg);
+	}
+
+	.li-input.right {
+		text-align: right;
+		font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+	}
+
+	.li-gl {
+		min-width: 50px;
+	}
+
+	/* Description column gets more space */
+	.line-items-table th:nth-child(2),
+	.line-items-table td:nth-child(2) {
+		width: 35%;
+	}
+
+	/* Number columns get fixed min width */
+	.line-items-table th:nth-child(3),
+	.line-items-table td:nth-child(3),
+	.line-items-table th:nth-child(4),
+	.line-items-table td:nth-child(4),
+	.line-items-table th:nth-child(5),
+	.line-items-table td:nth-child(5),
+	.line-items-table th:nth-child(6),
+	.line-items-table td:nth-child(6) {
+		width: 12%;
+	}
+
+	.li-delete {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 1rem;
+		padding: 0 4px;
+		line-height: 1;
+	}
+
+	.li-delete:hover {
+		color: #e04040;
+	}
+
+	.line-items-empty {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		text-align: center;
+		padding: 12px;
+		margin: 0;
+	}
+
+	.line-items-actions {
+		display: flex;
+		justify-content: flex-start;
+		margin-top: 8px;
+	}
+
+	.btn-save-lines {
+		padding: 5px 14px;
+		border-radius: 4px;
+		border: none;
+		background: var(--accent);
+		color: #fff;
+		font-size: 0.8rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-save-lines:hover:not(:disabled) {
+		opacity: 0.85;
+	}
+
+	.btn-save-lines:disabled {
+		opacity: 0.5;
 		cursor: not-allowed;
 	}
 
