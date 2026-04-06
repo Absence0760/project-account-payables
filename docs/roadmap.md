@@ -215,6 +215,169 @@ Separate portal for vendors to interact with the AP system.
 
 ---
 
+## Priority 8: AI-Powered Automation (strong differentiators)
+
+### AI Agents for Autonomous Exception Handling
+**Status:** Planned
+
+AI agents that autonomously resolve common exceptions without human intervention — mismatched amounts, missing PO references, GL coding errors.
+
+- [ ] Agent framework — define rules + AI fallback for each exception type
+- [ ] Auto-resolve: small amount mismatches within tolerance (adjust and approve)
+- [ ] Auto-resolve: missing PO — match by vendor + amount + date range
+- [ ] Auto-resolve: GL coding errors — correct based on historical patterns
+- [ ] Escalation rules — when agent confidence is low, route to human
+- [ ] Agent decision log — full audit trail of what the agent decided and why
+- [ ] Dashboard: agent resolution rate, accuracy, escalation rate
+- [ ] Configurable autonomy level per org (conservative → aggressive)
+
+---
+
+### Adaptive AI Workflows
+**Status:** Planned
+
+Workflows that learn from team behavior and adapt over time — routing, approval timing, exception handling.
+
+- [ ] Learn approval patterns — who approves what, how fast, rejection rates
+- [ ] Smart routing — assign invoices to the fastest/most-appropriate approver
+- [ ] Auto-adjust thresholds — raise auto-approve limit as accuracy improves
+- [ ] Anomaly detection — flag invoices that deviate from learned patterns
+- [ ] Suggest workflow changes — "Invoices from Vendor X are always approved, consider auto-approve"
+- [ ] A/B testing for workflow rules — compare performance of different configs
+- [ ] Feedback loop — corrections feed back into the AI model
+
+---
+
+### Intelligent Data Enrichment from Supplier History
+**Status:** Planned
+
+Auto-populate and validate invoice fields using historical data from the same supplier.
+
+- [ ] Auto-fill GL account, cost center, payment terms from vendor history
+- [ ] Flag deviations — "This vendor usually invoices ~$5K, this one is $50K"
+- [ ] Vendor performance scoring — on-time delivery, invoice accuracy, dispute rate
+- [ ] Suggest vendor consolidation — identify duplicate/similar vendors
+- [ ] Enrich vendor data from external sources (D&B, Clearbit)
+- [ ] Price variance detection — same item, different price across invoices
+
+---
+
+### Predictive Cash Flow Forecasting
+**Status:** Planned
+
+Use AP data to forecast cash outflows and optimize payment timing.
+
+- [ ] Forecast daily/weekly/monthly cash outflows from pending invoices
+- [ ] Factor in payment terms, early-pay discounts, and approval pipeline
+- [ ] "What-if" scenarios — impact of paying early vs. on-time vs. late
+- [ ] Cash position dashboard with AP commitments overlay
+- [ ] Alert when projected outflows exceed thresholds
+- [ ] Integration with bank balance data for complete cash picture
+- [ ] Export forecasts for CFO reporting
+
+---
+
+## Priority 9: Compliance & E-Invoicing
+
+### SOX-Compliant Audit Trails
+**Status:** Partial (audit log exists, not SOX-certified)
+
+Enhance the existing audit trail to meet SOX (Sarbanes-Oxley) compliance requirements.
+
+- [ ] Immutable audit log — prevent any modification or deletion of audit entries
+- [ ] Segregation of duties enforcement — same user can't create and approve
+- [ ] Access control audit — log who viewed what, not just who changed what
+- [ ] Periodic access reviews — flag users with unused elevated permissions
+- [ ] Retention policies — configurable retention periods, archival
+- [ ] Audit report generation — formatted for external auditors
+- [ ] Digital signatures on approvals (timestamp + user hash)
+- [ ] Change history on every field — before/after values
+- [ ] Export audit trail per invoice or date range for auditor review
+
+---
+
+### Automated E-Invoicing
+**Status:** Planned
+
+Support structured electronic invoice formats required in the EU, Australia, and other regions.
+
+- [ ] Peppol BIS Billing 3.0 — receive and send via Peppol network
+- [ ] Factur-X / ZUGFeRD — hybrid PDF/XML format (EU standard)
+- [ ] UBL (Universal Business Language) 2.1 — parse and generate
+- [ ] FatturaPA — Italian e-invoicing format
+- [ ] Auto-detect format on upload — parse structured data instead of OCR
+- [ ] Validate against schema — reject malformed e-invoices with clear errors
+- [ ] Generate compliant e-invoices for outbound (supplier portal responses)
+- [ ] Access point / PEPPOL AS4 gateway integration
+- [ ] Country-specific tax validation (VAT, GST)
+
+---
+
+## Priority 10: Dynamic Payments & Matching
+
+### Dynamic Discounting & Early Payment Optimization
+**Status:** Planned
+
+Go beyond static early-pay discounts — dynamically negotiate and optimize payment timing.
+
+- [ ] Supplier-offered dynamic discounts — "Pay in 5 days for 3% off" (sliding scale)
+- [ ] AI-optimized payment timing — maximize discount capture vs. cash preservation
+- [ ] ROI calculator per invoice — annualized return of paying early
+- [ ] Bulk discount negotiations — "Pay all 10 invoices from Vendor X early for 2%"
+- [ ] Supplier financing marketplace — connect to supply chain finance platforms
+- [ ] Dashboard: total discounts captured, missed, and projected savings
+- [ ] Auto-trigger early payment when ROI exceeds configurable threshold
+
+---
+
+### 4-Way Matching (with Quality Inspection)
+**Status:** Planned
+
+Extend PO matching to include quality inspection data — critical for manufacturing.
+
+- [ ] 4-way match: invoice vs. PO vs. goods receipt vs. quality inspection
+- [ ] Quality inspection model — pass/fail, partial acceptance, deviation notes
+- [ ] Reject invoices for goods that failed inspection
+- [ ] Partial payment — pay only for accepted quantity
+- [ ] Configurable match rules per vendor or commodity type
+- [ ] Integration with QMS (Quality Management Systems)
+- [ ] Exception routing when quality data is missing or mismatched
+
+---
+
+## Priority 11: Collaboration & Self-Service
+
+### Embedded Supplier Chat & Collaboration
+**Status:** Planned
+
+In-app communication between AP team and suppliers — no more email chains.
+
+- [ ] Per-invoice chat thread — AP team and supplier see the same conversation
+- [ ] Attach files to messages (corrected invoices, supporting docs)
+- [ ] @mention team members to loop them in
+- [ ] Supplier gets email notification with link to portal chat
+- [ ] Chat history persisted and linked to audit trail
+- [ ] Templates for common messages (missing PO, amount mismatch, payment status)
+- [ ] Resolution tracking — mark thread as resolved
+
+---
+
+### No-Code Workflow Builder
+**Status:** Partial (configurable steps exist, not drag-and-drop)
+
+Visual drag-and-drop workflow builder for non-technical users.
+
+- [ ] Canvas UI — drag steps onto a flowchart
+- [ ] Conditional branching — "if amount > $10K, route to CFO"
+- [ ] Parallel paths — multiple approvers in parallel
+- [ ] Custom step types — webhook, email notification, delay/wait
+- [ ] Template library — pre-built workflows for common scenarios
+- [ ] Version history — compare and rollback workflow changes
+- [ ] Simulation mode — test a workflow with sample invoices before activating
+- [ ] Import/export workflow definitions as JSON
+
+---
+
 ## Done (completed features)
 
 - [x] Multi-tenant architecture (database per tenant, subdomain routing)
