@@ -27,6 +27,7 @@
 		'invoice.assigned_for_review': 'Assigned for review',
 		'invoice.erp_submitted': 'Sent to ERP',
 		'invoice.extraction_dispatched': 'Extraction started',
+		'invoice.extraction_reset': 'Extraction reset',
 		'invoice.extraction_triggered': 'Extraction triggered manually',
 		'invoice.extraction_completed': 'Extraction completed',
 		'invoice.extraction_failed': 'Extraction failed',
@@ -140,6 +141,24 @@
 
 	let isClerkOnly = $derived(auth.isClerkOnly);
 	let isDone = $derived(status === 'done' || status === 'sent_to_erp');
+	let isExtracting = $derived(status === 'pending');
+	let resettingExtraction = $state(false);
+
+	async function handleResetExtraction() {
+		resettingExtraction = true;
+		try {
+			await api.post(`/api/invoices/${invoice.id}/reset-extraction`, {});
+			await invoiceStore.fetch();
+			status = 'failed' as typeof status;
+			extracting = false;
+			extractionStatus = '';
+			toast('Extraction reset — you can re-extract or edit manually', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Reset failed', 'error');
+		} finally {
+			resettingExtraction = false;
+		}
+	}
 	let isErpStatus = $derived(
 		status === 'sending_to_erp' || status === 'sent_to_erp' || status === 'posted_in_erp' ||
 		status === 'payment_scheduled' || status === 'paid'
@@ -933,6 +952,11 @@
 									{/if}
 								</button>
 							{/if}
+							{#if isExtracting && !extracting}
+								<button type="button" class="btn-reset" disabled={resettingExtraction} onclick={handleResetExtraction}>
+									{resettingExtraction ? 'Resetting...' : 'Reset'}
+								</button>
+							{/if}
 							{#if !isDone}
 								<button type="submit" class="btn-save" disabled={saving}>
 									{saving ? 'Saving...' : 'Save'}
@@ -1453,6 +1477,28 @@
 
 	.confidence-dot:hover::after {
 		opacity: 1;
+	}
+
+	.btn-reset {
+		padding: 8px 14px;
+		border-radius: 4px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		border: 1px solid #d4940a;
+		font-family: inherit;
+		white-space: nowrap;
+		background: var(--surface);
+		color: #d4940a;
+	}
+
+	.btn-reset:hover:not(:disabled) {
+		background: rgba(212, 148, 10, 0.1);
+	}
+
+	.btn-reset:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.btn-extract {

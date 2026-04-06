@@ -174,6 +174,38 @@ async def trigger_extraction(
     }
 
 
+@router.post("/{invoice_id}/reset-extraction")
+async def reset_extraction(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Reset a stuck extraction — moves invoice from 'pending' back to 'new'."""
+    invoice = await get_invoice_for_update(db, invoice_id)
+
+    if invoice.status != InvoiceStatus.pending:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Can only reset from 'pending' status, not '{invoice.status.value}'.",
+        )
+
+    await transition_invoice(
+        db, invoice, InvoiceStatus.failed,
+        actor_id=user.id,
+        action_name="invoice.extraction_reset",
+        details={"reason": "Manual reset — extraction stuck or failed silently"},
+    )
+    await db.commit()
+    await db.refresh(invoice)
+
+    return {
+        "id": str(invoice.id),
+        "status": invoice.status.value,
+        "message": "Extraction reset. You can re-extract or edit manually.",
+    }
+
+
 # ---------- Stage 2: Review ----------
 
 
