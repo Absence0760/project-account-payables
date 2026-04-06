@@ -66,8 +66,6 @@
 	}
 
 	let org = $state<OrgResponse | null>(null);
-	let saving = $state(false);
-
 	// Editable fields
 	let name = $state('');
 	let address = $state('');
@@ -96,6 +94,35 @@
 	let erpTokenId = $state('');
 	let erpTokenSecret = $state('');
 	let testingConnection = $state(false);
+	let connectionResult = $state<{ success: boolean; message: string } | null>(null);
+
+	async function testConnection() {
+		testingConnection = true;
+		connectionResult = null;
+		try {
+			connectionResult = await api.post<{ success: boolean; message: string }>('/api/organization/test-erp', {
+				type: erpType,
+				integration_method: erpMethod,
+				api_key: erpApiKey,
+				account_token: erpAccountToken,
+				base_url: erpBaseUrl,
+				tenant_id: erpTenantId,
+				client_id: erpClientId,
+				client_secret: erpClientSecret,
+				environment: erpEnvironment,
+				company_id: erpCompanyId,
+				account_id: erpAccountId,
+				consumer_key: erpConsumerKey,
+				consumer_secret: erpConsumerSecret,
+				token_id: erpTokenId,
+				token_secret: erpTokenSecret,
+			});
+		} catch (err) {
+			connectionResult = { success: false, message: err instanceof Error ? err.message : 'Test failed' };
+		} finally {
+			testingConnection = false;
+		}
+	}
 
 	$effect(() => {
 		loadOrg();
@@ -139,51 +166,83 @@
 		}
 	}
 
-	async function handleSave() {
-		saving = true;
+	let savingProfile = $state(false);
+	let savingDefaults = $state(false);
+	let savingErp = $state(false);
+
+	async function patchSettings(section: string, partial: Record<string, unknown>) {
+		const current = org ? (org.settings as unknown as Record<string, unknown>) : {};
+		const merged = { ...current, ...partial };
+		const data = await api.patch<OrgResponse>('/api/organization', {
+			...(partial.company ? { name: name.trim() } : {}),
+			settings: merged,
+		});
+		org = data;
+		toast(`${section} saved`, 'success');
+	}
+
+	async function saveProfile() {
+		savingProfile = true;
 		try {
-			const data = await api.patch<OrgResponse>('/api/organization', {
-				name: name.trim(),
-				settings: {
-					company: {
-						address,
-						phone,
-						website,
-						tax_id: taxId,
-						logo_url: org?.settings.company.logo_url ?? '',
-					},
-					invoice_defaults: {
-						currency,
-						payment_terms: paymentTerms,
-						number_prefix: numberPrefix,
-						default_gl_account: defaultGl,
-						default_cost_center: defaultCostCenter,
-					},
-					erp: {
-						type: erpType,
-						integration_method: erpMethod,
-						api_key: erpApiKey,
-						account_token: erpAccountToken,
-						base_url: erpBaseUrl,
-						tenant_id: erpTenantId,
-						client_id: erpClientId,
-						client_secret: erpClientSecret,
-						environment: erpEnvironment,
-						company_id: erpCompanyId,
-						account_id: erpAccountId,
-						consumer_key: erpConsumerKey,
-						consumer_secret: erpConsumerSecret,
-						token_id: erpTokenId,
-						token_secret: erpTokenSecret,
-					},
+			await patchSettings('Company profile', {
+				company: {
+					address, phone, website,
+					tax_id: taxId,
+					logo_url: org?.settings.company.logo_url ?? '',
 				},
 			});
-			org = data;
-			toast('Settings saved', 'success');
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Save failed', 'error');
 		} finally {
-			saving = false;
+			savingProfile = false;
+		}
+	}
+
+	async function saveDefaults() {
+		savingDefaults = true;
+		try {
+			await patchSettings('Invoice defaults', {
+				invoice_defaults: {
+					currency,
+					payment_terms: paymentTerms,
+					number_prefix: numberPrefix,
+					default_gl_account: defaultGl,
+					default_cost_center: defaultCostCenter,
+				},
+			});
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingDefaults = false;
+		}
+	}
+
+	async function saveErp() {
+		savingErp = true;
+		try {
+			await patchSettings('ERP integration', {
+				erp: {
+					type: erpType,
+					integration_method: erpMethod,
+					api_key: erpApiKey,
+					account_token: erpAccountToken,
+					base_url: erpBaseUrl,
+					tenant_id: erpTenantId,
+					client_id: erpClientId,
+					client_secret: erpClientSecret,
+					environment: erpEnvironment,
+					company_id: erpCompanyId,
+					account_id: erpAccountId,
+					consumer_key: erpConsumerKey,
+					consumer_secret: erpConsumerSecret,
+					token_id: erpTokenId,
+					token_secret: erpTokenSecret,
+				},
+			});
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingErp = false;
 		}
 	}
 
@@ -197,9 +256,6 @@
 <div class="workspace">
 	<header class="toolbar">
 		<h1>Organization</h1>
-		<button class="btn-primary" disabled={saving} onclick={handleSave}>
-			{saving ? 'Saving...' : 'Save Changes'}
-		</button>
 	</header>
 
 	{#if org}
@@ -227,6 +283,11 @@
 						<span>Website</span>
 						<input type="url" bind:value={website} placeholder="https://" />
 					</label>
+				</div>
+				<div class="section-footer">
+					<button class="btn-save-section" disabled={savingProfile} onclick={saveProfile}>
+						{savingProfile ? 'Saving...' : 'Save Profile'}
+					</button>
 				</div>
 			</section>
 
@@ -270,6 +331,11 @@
 						<span>Default Cost Center</span>
 						<input type="text" bind:value={defaultCostCenter} placeholder="e.g. ADMIN" />
 					</label>
+				</div>
+				<div class="section-footer">
+					<button class="btn-save-section" disabled={savingDefaults} onclick={saveDefaults}>
+						{savingDefaults ? 'Saving...' : 'Save Defaults'}
+					</button>
 				</div>
 			</section>
 
@@ -373,6 +439,20 @@
 					</div>
 					<p class="card-hint" style="margin-top: 8px;">Direct integration for {ERP_TYPES.find(e => e.value === erpType)?.label} is coming soon. Use Merge.dev in the meantime.</p>
 				{/if}
+
+				<div class="erp-test-row">
+					<button class="btn-save-section" disabled={savingErp} onclick={saveErp}>
+						{savingErp ? 'Saving...' : 'Save ERP Settings'}
+					</button>
+					<button class="btn-test" disabled={testingConnection} onclick={testConnection}>
+						{testingConnection ? 'Testing...' : 'Test Connection'}
+					</button>
+					{#if connectionResult}
+						<span class="test-result" class:success={connectionResult.success} class:failure={!connectionResult.success}>
+							{connectionResult.message}
+						</span>
+					{/if}
+				</div>
 			</section>
 
 			<section class="card plan-card">
@@ -412,27 +492,6 @@
 		margin: 0;
 	}
 
-	.btn-primary {
-		padding: 8px 18px;
-		border-radius: 6px;
-		border: none;
-		background: var(--accent);
-		color: #fff;
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-		white-space: nowrap;
-	}
-
-	.btn-primary:hover:not(:disabled) {
-		opacity: 0.85;
-	}
-
-	.btn-primary:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
 
 	.sections {
 		display: flex;
@@ -545,6 +604,81 @@
 	.plan-date {
 		font-size: 0.82rem;
 		color: var(--text-muted);
+	}
+
+	.section-footer {
+		display: flex;
+		justify-content: flex-start;
+		margin-top: 16px;
+		padding-top: 14px;
+		border-top: 1px solid var(--border);
+	}
+
+	.btn-save-section {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: none;
+		background: var(--accent);
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.btn-save-section:hover:not(:disabled) {
+		opacity: 0.85;
+	}
+
+	.btn-save-section:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.erp-test-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin-top: 16px;
+		padding-top: 14px;
+		border-top: 1px solid var(--border);
+	}
+
+	.btn-test {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+	}
+
+	.btn-test:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.btn-test:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.test-result {
+		font-size: 0.85rem;
+		font-weight: 500;
+	}
+
+	.test-result.success {
+		color: #1fa86a;
+	}
+
+	.test-result.failure {
+		color: #e04040;
 	}
 
 	.loading {

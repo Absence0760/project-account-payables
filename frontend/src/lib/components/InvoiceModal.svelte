@@ -86,6 +86,12 @@
 
 	let isClerkOnly = $derived(auth.isClerkOnly);
 	let isDone = $derived(status === 'done' || status === 'sent_to_erp');
+	let isErpStatus = $derived(
+		status === 'sending_to_erp' || status === 'sent_to_erp' || status === 'posted_in_erp' ||
+		status === 'payment_scheduled' || status === 'paid'
+	);
+	let canRetryErp = $derived(status === 'failed' && !isClerkOnly && invoice.approved_by);
+	let retryingErp = $state(false);
 	let canDelete = $derived(
 		!isClerkOnly && status !== 'done' && status !== 'sent_to_erp' && status !== 'sending_to_erp'
 	);
@@ -208,6 +214,20 @@
 		}
 	}
 
+	async function handleRetryErp() {
+		retryingErp = true;
+		try {
+			await api.post(`/api/invoices/${invoice.id}/retry-erp`, {});
+			await invoiceStore.fetch();
+			toast('ERP retry initiated', 'success');
+			onclose();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Retry failed', 'error');
+		} finally {
+			retryingErp = false;
+		}
+	}
+
 	async function deleteInvoice() {
 		deleting = true;
 		try {
@@ -262,6 +282,21 @@
 	}
 
 	let auditLog = $state<AuditEntry[]>([]);
+	let erpInfo = $derived.by(() => {
+		const erpActions = auditLog.filter(e =>
+			e.action.startsWith('invoice.erp_') || e.action.startsWith('invoice.completed')
+		);
+		if (erpActions.length === 0) return null;
+		const latest = erpActions[erpActions.length - 1];
+		return {
+			erp_reference: (latest.details as Record<string, unknown>)?.erp_reference as string | undefined,
+			erp_document_id: (latest.details as Record<string, unknown>)?.erp_document_id as string | undefined,
+			last_error: (latest.details as Record<string, unknown>)?.error as string | undefined,
+			action: latest.action,
+			actor: latest.actor_name,
+			time: latest.created_at,
+		};
+	});
 	let auditLoading = $state(false);
 
 	$effect(() => {
@@ -450,6 +485,38 @@
 									<span class="meta-label">Rejected by</span>
 									<span class="meta-value rejected">{invoice.rejected_by}</span>
 								</div>
+							{/if}
+						</div>
+					{/if}
+
+					{#if isErpStatus || (status === 'failed' && erpInfo)}
+						<div class="erp-section">
+							<div class="erp-title">ERP Status</div>
+							<div class="erp-details">
+								{#if erpInfo?.erp_reference}
+									<div class="erp-row">
+										<span class="erp-label">ERP Reference</span>
+										<code class="erp-value">{erpInfo.erp_reference}</code>
+									</div>
+								{/if}
+								{#if erpInfo?.erp_document_id}
+									<div class="erp-row">
+										<span class="erp-label">Document ID</span>
+										<code class="erp-value">{erpInfo.erp_document_id}</code>
+									</div>
+								{/if}
+								{#if erpInfo?.last_error}
+									<div class="erp-row erp-error">
+										<span class="erp-label">Error</span>
+										<span class="erp-value">{erpInfo.last_error}</span>
+									</div>
+								{/if}
+							</div>
+							{#if canRetryErp}
+								<button type="button" class="btn-retry-erp" disabled={retryingErp} onclick={handleRetryErp}>
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+									{retryingErp ? 'Retrying...' : 'Retry ERP Send'}
+								</button>
 							{/if}
 						</div>
 					{/if}
@@ -1060,6 +1127,79 @@
 		font-size: 0.72rem;
 		white-space: nowrap;
 		flex-shrink: 0;
+	}
+
+	/* --- ERP status section --- */
+
+	.erp-section {
+		margin-top: 14px;
+		padding: 12px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+	}
+
+	.erp-title {
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin-bottom: 8px;
+	}
+
+	.erp-details {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.erp-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 0.8rem;
+	}
+
+	.erp-label {
+		color: var(--text-muted);
+		min-width: 80px;
+	}
+
+	.erp-value {
+		font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+		font-size: 0.78rem;
+		color: var(--text);
+	}
+
+	.erp-error .erp-value {
+		color: #e04040;
+		font-family: inherit;
+	}
+
+	.btn-retry-erp {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		margin-top: 10px;
+		padding: 6px 14px;
+		border-radius: 4px;
+		border: 1px solid var(--accent);
+		background: var(--surface);
+		color: var(--accent);
+		font-size: 0.82rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-retry-erp:hover:not(:disabled) {
+		background: rgba(99, 140, 255, 0.08);
+	}
+
+	.btn-retry-erp:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	/* --- Review section --- */

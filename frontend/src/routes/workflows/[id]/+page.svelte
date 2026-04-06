@@ -2,6 +2,7 @@
 	import { page } from '$app/stores';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
+	import { api } from '$lib/api';
 	import { toast } from '$lib/components/Toast.svelte';
 	import type {
 		WorkflowDefinition,
@@ -31,13 +32,24 @@
 	let descInput = $state('');
 	let approverSearch = $state('');
 	let approverDropdownOpen = $state(false);
+	let erpMethod = $state<string>('merge_dev');
 
 	const id = $derived($page.params.id ?? '');
 
 	$effect(() => {
 		if (id) loadWorkflow(id);
 		adminStore.fetchUsers();
+		loadErpMethod();
 	});
+
+	async function loadErpMethod() {
+		try {
+			const org = await api.get<{ settings: { erp?: { integration_method?: string } } }>('/api/organization');
+			erpMethod = org.settings?.erp?.integration_method ?? 'merge_dev';
+		} catch {
+			// default to merge_dev
+		}
+	}
 
 	async function loadWorkflow(wfId: string) {
 		try {
@@ -489,31 +501,35 @@
 								<p class="field-hint warning">Invoices will not be sent to ERP automatically. Users must manually trigger "Send to ERP" from the invoice.</p>
 							{/if}
 
-							<div class="field">
-								<label for="export-format">Export Format</label>
-								<select
-									id="export-format"
-									value={cfg.export_format}
-									onchange={(e) => updateStepConfig(selectedIndex, 'export_format', e.currentTarget.value)}
-								>
-									{#each Object.entries(ERP_FORMAT_LABELS) as [value, label]}
-										<option {value}>{label}</option>
-									{/each}
-								</select>
-								<p class="field-hint">
-									{#if cfg.export_format === 'xml'}
-										Generates an XML document compatible with most ERP systems.
-									{:else if cfg.export_format === 'csv'}
-										Flat CSV file for import into spreadsheet-based workflows.
-									{:else if cfg.export_format === 'cxml'}
-										Commerce XML for procurement systems (Ariba, Coupa).
-									{:else if cfg.export_format === 'edi'}
-										EDI 810 format for legacy ERP integrations.
-									{:else}
-										Standard JSON payload sent via API.
-									{/if}
-								</p>
-							</div>
+							{#if erpMethod === 'direct'}
+								<div class="field">
+									<label for="export-format">Export Format</label>
+									<select
+										id="export-format"
+										value={cfg.export_format}
+										onchange={(e) => updateStepConfig(selectedIndex, 'export_format', e.currentTarget.value)}
+									>
+										{#each Object.entries(ERP_FORMAT_LABELS) as [value, label]}
+											<option {value}>{label}</option>
+										{/each}
+									</select>
+									<p class="field-hint">
+										{#if cfg.export_format === 'xml'}
+											Generates an XML document compatible with most ERP systems.
+										{:else if cfg.export_format === 'csv'}
+											Flat CSV file for import into spreadsheet-based workflows.
+										{:else if cfg.export_format === 'cxml'}
+											Commerce XML for procurement systems (Ariba, Coupa).
+										{:else if cfg.export_format === 'edi'}
+											EDI 810 format for legacy ERP integrations.
+										{:else}
+											Standard JSON payload sent via API.
+										{/if}
+									</p>
+								</div>
+							{:else}
+								<p class="field-hint">Export format is handled automatically by Merge.dev based on your ERP system.</p>
+							{/if}
 
 							<div class="field-divider"></div>
 							<h4 class="field-section-title">Payload Options</h4>
