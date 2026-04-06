@@ -11,12 +11,63 @@ When an invoice is uploaded, the system extracts all structured data (vendor, am
 
 ## Supported Providers
 
-| Provider | Type | Best for |
-|---|---|---|
-| **Claude Vision** (Anthropic) | Platform default + BYOK | Highest accuracy, structured output |
-| **GPT-4V** (OpenAI) | BYOK only | Customers already on OpenAI |
-| **AWS Textract** | BYOK only | Customers on AWS with AnalyzeExpense |
-| **Mock** | Development | Testing without API calls |
+| Provider | Type | PDF Support | Best for |
+|---|---|---|---|
+| **Claude Vision** (Anthropic) | Platform default + BYOK | Native (document mode) | Highest accuracy, structured output |
+| **GPT-4V** (OpenAI) | BYOK only | Text extraction + image fallback | Customers already on OpenAI |
+| **AWS Textract** | BYOK only | Native | Customers on AWS with AnalyzeExpense |
+| **Ollama** (Local) | BYOK only | Text extraction + image fallback | Development, privacy, on-premise |
+| **Mock** | Development | N/A | Testing without API calls |
+
+## PDF Handling: Smart Text vs Vision
+
+Most invoices from modern systems are digital PDFs with a text layer — they don't need OCR at all. The system detects this automatically:
+
+```
+PDF Uploaded
+    |
+    v
+Extract text from PDF (PyMuPDF)
+    |
+    ├── Has text layer (> 50 chars)?
+    │       |
+    │       v
+    │   TEXT MODE — send extracted text to AI model
+    │   - Works with ANY model (no vision model needed)
+    │   - Faster (instant text extraction vs 10-30s vision)
+    │   - Cheaper (text tokens vs image tokens)
+    │   - More accurate (no OCR errors)
+    │   - Even works with text-only models (qwen, llama, etc.)
+    │
+    └── No text layer (scanned/photographed)?
+            |
+            v
+        IMAGE MODE — convert PDF page to PNG at 200 DPI
+        - Requires a vision model (LLaVA, Llama 3.2 Vision, Claude, GPT-4V)
+        - Slower, more expensive
+        - Less accurate (OCR quality depends on scan quality)
+```
+
+**What this means per provider:**
+
+| Provider | Text PDFs | Scanned PDFs | Images (PNG/JPG) |
+|---|---|---|---|
+| **Claude Vision** | Native document mode | Native document mode | Native vision |
+| **Ollama** | Text extraction → any model | PDF → image → vision model | Direct vision |
+| **GPT-4V** | Text extraction → text mode | PDF → image → vision mode | Direct vision |
+| **AWS Textract** | Native | Native | Native |
+
+**For Ollama specifically:** Digital PDFs work with any Ollama model — even text-only models like `qwen2.5-coder` or `llama3`. You only need a vision model (`llama3.2-vision`, `llava`) for scanned invoices or photos.
+
+### Requirements
+
+PDF text extraction and image conversion require PyMuPDF:
+
+```bash
+cd backend && .venv/bin/pip install -e ".[dev]"
+```
+
+PyMuPDF is included in the project dependencies (`pyproject.toml`).
 
 ## Extraction Flow
 

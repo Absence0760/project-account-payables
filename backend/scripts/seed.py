@@ -20,6 +20,7 @@ from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.procurement import PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem
 from app.models.usage import ExtractionUsage
 from app.models.gl_account import GLAccount
+from app.models.payment import Payment, PaymentRun, PaymentSchedule
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -313,9 +314,91 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 organization_id=org_id,
             ))
 
+        # GL Accounts (Chart of Accounts)
+        gl_accounts = [
+            GLAccount(organization_id=org_id, code="1000", name="Cash and Cash Equivalents", account_type="asset", erp_account_id="1000"),
+            GLAccount(organization_id=org_id, code="1200", name="Accounts Receivable", account_type="asset", erp_account_id="1200"),
+            GLAccount(organization_id=org_id, code="1500", name="Fixed Assets - Equipment", account_type="asset", erp_account_id="1500"),
+            GLAccount(organization_id=org_id, code="2000", name="Accounts Payable", account_type="liability", erp_account_id="2000"),
+            GLAccount(organization_id=org_id, code="2100", name="Accrued Liabilities", account_type="liability", erp_account_id="2100"),
+            GLAccount(organization_id=org_id, code="4000", name="Revenue - Services", account_type="revenue", erp_account_id="4000"),
+            GLAccount(organization_id=org_id, code="6100", name="Office Supplies & Expenses", account_type="expense", erp_account_id="6100"),
+            GLAccount(organization_id=org_id, code="6200", name="Software & Cloud Services", account_type="expense", erp_account_id="6200"),
+            GLAccount(organization_id=org_id, code="6300", name="Facilities & Maintenance", account_type="expense", erp_account_id="6300"),
+            GLAccount(organization_id=org_id, code="6400", name="Marketing & Advertising", account_type="expense", erp_account_id="6400"),
+            GLAccount(organization_id=org_id, code="6500", name="Legal & Professional Fees", account_type="expense", erp_account_id="6500"),
+            GLAccount(organization_id=org_id, code="6600", name="Meals & Entertainment", account_type="expense", erp_account_id="6600"),
+            GLAccount(organization_id=org_id, code="6700", name="Shipping & Freight", account_type="expense", erp_account_id="6700"),
+            GLAccount(organization_id=org_id, code="6800", name="Travel & Transportation", account_type="expense", erp_account_id="6800"),
+            GLAccount(organization_id=org_id, code="8000", name="Payroll Expense", account_type="expense", erp_account_id="8000"),
+        ]
+        session.add_all(gl_accounts)
+
+        # Payment Schedules — for approved invoices
+        for inv in invoices:
+            if inv.due_date and inv.status in ("approved", "posted_in_erp"):
+                discount_date = None
+                discount_pct = None
+                if inv.payment_terms and "2/10" in (inv.payment_terms or ""):
+                    from datetime import timedelta
+                    discount_date = inv.invoice_date + timedelta(days=10) if inv.invoice_date else None
+                    discount_pct = Decimal("2.00")
+                session.add(PaymentSchedule(
+                    correlation_id=inv.correlation_id,
+                    invoice_id=inv.id,
+                    due_date=inv.due_date,
+                    discount_date=discount_date,
+                    discount_percent=discount_pct,
+                    payment_terms=inv.payment_terms,
+                ))
+
+        # Payment Run — one completed run with payments for the posted_in_erp invoice
+        from datetime import datetime, timezone
+        run = PaymentRun(
+            organization_id=org_id,
+            status="completed",
+            total_amount=Decimal("12000.00"),
+            initiated_by=ACME_USER_ID if org_id == ACME_ORG_ID else TECH_USER_ID,
+            executed_at=datetime(2024, 3, 25, 14, 0, tzinfo=timezone.utc),
+        )
+        session.add(run)
+        await session.flush()
+
+        # Payment for the posted_in_erp invoice (INV-2024-005)
+        session.add(Payment(
+            correlation_id=invoices[4].correlation_id,
+            invoice_id=invoices[4].id,
+            payment_run_id=run.id,
+            amount=Decimal("12000.00"),
+            method="ach",
+            status="completed",
+            reference="ACH-20240325-001",
+        ))
+
+        # Payment for the approved transport invoice (INV-2024-008) — pending
+        session.add(Payment(
+            correlation_id=invoices[7].correlation_id,
+            invoice_id=invoices[7].id,
+            payment_run_id=run.id,
+            amount=Decimal("6300.00"),
+            method="wire",
+            status="pending",
+            reference="WIRE-20240326-001",
+        ))
+
+        # A virtual card payment — for the marketing invoice (INV-2024-004)
+        session.add(Payment(
+            correlation_id=invoices[3].correlation_id,
+            invoice_id=invoices[3].id,
+            amount=Decimal("5750.00"),
+            method="virtual_card",
+            status="completed",
+            reference="CARD-4242",
+        ))
+
         await session.commit()
         print(f"  Seeded {tenant_label}: {len(all_vendors)} vendors, {len(invoices)} invoices, "
-              f"5 POs, 2 GRs, {4} extractions, {6} usage records")
+              f"5 POs, 2 GRs, {len(gl_accounts)} GL accounts, 1 payment run, 3 payments")
 
     await engine.dispose()
 

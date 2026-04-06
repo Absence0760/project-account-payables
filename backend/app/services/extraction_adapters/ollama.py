@@ -34,6 +34,35 @@ class OllamaAdapter(ExtractionAdapter):
 
     provider_name = "ollama"
 
+    @staticmethod
+    def _extract_pdf_text(pdf_bytes: bytes) -> str | None:
+        """Extract text from a PDF. Returns None if no text layer (scanned doc)."""
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            text = ""
+            for page in doc:
+                text += page.get_text()
+            text = text.strip()
+            # If very little text, it's probably a scanned PDF
+            return text if len(text) > 50 else None
+        except ImportError:
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _pdf_to_image(pdf_bytes: bytes) -> bytes | None:
+        """Convert first page of PDF to PNG image bytes. Fallback for scanned PDFs."""
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page = doc[0]
+            pix = page.get_pixmap(dpi=200)
+            return pix.tobytes("png")
+        except Exception:
+            return None
+
     def _base_url(self) -> str:
         return self.config.get("base_url", "http://localhost:11434")
 
@@ -44,25 +73,55 @@ class OllamaAdapter(ExtractionAdapter):
         if not file_bytes:
             return ExtractionResult(success=False, error="No file bytes provided", provider=self.provider_name)
 
-        file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+        is_pdf = mime_type == "application/pdf" or file_key.lower().endswith(".pdf")
+        use_vision = True
+        pdf_text = None
 
-        # If PDF, we need to note that Ollama vision models work with images
-        # For PDFs, the caller should convert to image first (future improvement)
-        # For now, send as-is — some models handle it, others won't
+        if is_pdf:
+            # Try to extract text first — much faster and more accurate
+            pdf_text = self._extract_pdf_text(file_bytes)
+            if pdf_text:
+                use_vision = False
+            else:
+                # Scanned PDF — convert to image for vision model
+                image_bytes = self._pdf_to_image(file_bytes)
+                if image_bytes:
+                    file_bytes = image_bytes
+                else:
+                    return ExtractionResult(
+                        success=False,
+                        error="Cannot read PDF. Install PyMuPDF: pip install PyMuPDF",
+                        provider=self.provider_name,
+                    )
 
-        # Call Ollama API (OpenAI-compatible endpoint)
-        body = {
-            "model": self._model(),
-            "messages": [
-                {
-                    "role": "user",
-                    "content": EXTRACTION_PROMPT,
-                    "images": [file_b64],
-                }
-            ],
-            "stream": False,
-            "format": "json",
-        }
+        if use_vision:
+            # Vision mode — send image to model
+            file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+            body = {
+                "model": self._model(),
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": EXTRACTION_PROMPT,
+                        "images": [file_b64],
+                    }
+                ],
+                "stream": False,
+                "format": "json",
+            }
+        else:
+            # Text mode — send extracted text, works with any model (no vision needed)
+            body = {
+                "model": self._model(),
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"{EXTRACTION_PROMPT}\n\nHere is the invoice text:\n\n{pdf_text}",
+                    }
+                ],
+                "stream": False,
+                "format": "json",
+            }
 
         try:
             async with httpx.AsyncClient(timeout=120) as client:
