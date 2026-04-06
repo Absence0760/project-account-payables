@@ -6,6 +6,9 @@ export type InvoiceStatus =
 	| 'rejected'
 	| 'sending_to_erp'
 	| 'sent_to_erp'
+	| 'posted_in_erp'
+	| 'payment_scheduled'
+	| 'paid'
 	| 'done'
 	| 'failed';
 
@@ -17,6 +20,9 @@ export const INVOICE_STATUSES: InvoiceStatus[] = [
 	'rejected',
 	'sending_to_erp',
 	'sent_to_erp',
+	'posted_in_erp',
+	'payment_scheduled',
+	'paid',
 	'done',
 	'failed'
 ];
@@ -29,6 +35,9 @@ export const STATUS_LABELS: Record<InvoiceStatus, string> = {
 	rejected: 'Rejected',
 	sending_to_erp: 'Sending to ERP',
 	sent_to_erp: 'Sent to ERP',
+	posted_in_erp: 'Posted in ERP',
+	payment_scheduled: 'Payment Scheduled',
+	paid: 'Paid',
 	done: 'Done',
 	failed: 'Failed'
 };
@@ -38,6 +47,9 @@ export const SYSTEM_MANAGED_STATUSES: Set<InvoiceStatus> = new Set([
 	'pending',
 	'sending_to_erp',
 	'sent_to_erp',
+	'posted_in_erp',
+	'payment_scheduled',
+	'paid',
 	'done'
 ]);
 
@@ -50,6 +62,9 @@ export const VALID_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
 	rejected: ['new', 'ready_for_review'],
 	sending_to_erp: [],
 	sent_to_erp: [],
+	posted_in_erp: [],
+	payment_scheduled: [],
+	paid: [],
 	done: [],
 	failed: ['new', 'pending'],
 };

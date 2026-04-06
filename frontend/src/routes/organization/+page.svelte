@@ -18,10 +18,43 @@
 		default_cost_center: string;
 	}
 
+	interface ErpConfig {
+		type: string;
+		integration_method: string;
+		api_key: string;
+		account_token: string;
+		// Direct adapter fields
+		base_url: string;
+		tenant_id: string;
+		client_id: string;
+		client_secret: string;
+		environment: string;
+		company_id: string;
+		account_id: string;
+		consumer_key: string;
+		consumer_secret: string;
+		token_id: string;
+		token_secret: string;
+	}
+
 	interface OrgSettings {
 		company: CompanyProfile;
 		invoice_defaults: InvoiceDefaults;
+		erp?: ErpConfig;
 	}
+
+	const ERP_TYPES = [
+		{ value: 'dynamics_365_bc', label: 'Microsoft Dynamics 365 Business Central' },
+		{ value: 'sap_s4hana', label: 'SAP S/4HANA' },
+		{ value: 'netsuite', label: 'Oracle NetSuite' },
+		{ value: 'epicor', label: 'Epicor Kinetic' },
+		{ value: 'acumatica', label: 'Acumatica Cloud ERP' },
+		{ value: 'sage_x3', label: 'Sage X3' },
+		{ value: 'infor', label: 'Infor CloudSuite Industrial' },
+		{ value: 'qad', label: 'QAD Adaptive' },
+		{ value: 'cetec', label: 'Cetec ERP' },
+		{ value: 'delmiaworks', label: 'DELMIAWorks' },
+	];
 
 	interface OrgResponse {
 		id: string;
@@ -46,6 +79,23 @@
 	let numberPrefix = $state('INV-');
 	let defaultGl = $state('');
 	let defaultCostCenter = $state('');
+	// ERP
+	let erpType = $state('dynamics_365_bc');
+	let erpMethod = $state('merge_dev');
+	let erpApiKey = $state('');
+	let erpAccountToken = $state('');
+	let erpBaseUrl = $state('');
+	let erpTenantId = $state('');
+	let erpClientId = $state('');
+	let erpClientSecret = $state('');
+	let erpEnvironment = $state('production');
+	let erpCompanyId = $state('');
+	let erpAccountId = $state('');
+	let erpConsumerKey = $state('');
+	let erpConsumerSecret = $state('');
+	let erpTokenId = $state('');
+	let erpTokenSecret = $state('');
+	let testingConnection = $state(false);
 
 	$effect(() => {
 		loadOrg();
@@ -65,6 +115,25 @@
 			numberPrefix = data.settings.invoice_defaults.number_prefix;
 			defaultGl = data.settings.invoice_defaults.default_gl_account;
 			defaultCostCenter = data.settings.invoice_defaults.default_cost_center;
+			// ERP
+			const erp = (data.settings as unknown as Record<string, unknown>).erp as ErpConfig | undefined;
+			if (erp) {
+				erpType = erp.type || 'dynamics_365_bc';
+				erpMethod = erp.integration_method || 'merge_dev';
+				erpApiKey = erp.api_key || '';
+				erpAccountToken = erp.account_token || '';
+				erpBaseUrl = erp.base_url || '';
+				erpTenantId = erp.tenant_id || '';
+				erpClientId = erp.client_id || '';
+				erpClientSecret = erp.client_secret || '';
+				erpEnvironment = erp.environment || 'production';
+				erpCompanyId = erp.company_id || '';
+				erpAccountId = erp.account_id || '';
+				erpConsumerKey = erp.consumer_key || '';
+				erpConsumerSecret = erp.consumer_secret || '';
+				erpTokenId = erp.token_id || '';
+				erpTokenSecret = erp.token_secret || '';
+			}
 		} catch {
 			toast('Failed to load organization', 'error');
 		}
@@ -89,6 +158,23 @@
 						number_prefix: numberPrefix,
 						default_gl_account: defaultGl,
 						default_cost_center: defaultCostCenter,
+					},
+					erp: {
+						type: erpType,
+						integration_method: erpMethod,
+						api_key: erpApiKey,
+						account_token: erpAccountToken,
+						base_url: erpBaseUrl,
+						tenant_id: erpTenantId,
+						client_id: erpClientId,
+						client_secret: erpClientSecret,
+						environment: erpEnvironment,
+						company_id: erpCompanyId,
+						account_id: erpAccountId,
+						consumer_key: erpConsumerKey,
+						consumer_secret: erpConsumerSecret,
+						token_id: erpTokenId,
+						token_secret: erpTokenSecret,
 					},
 				},
 			});
@@ -185,6 +271,108 @@
 						<input type="text" bind:value={defaultCostCenter} placeholder="e.g. ADMIN" />
 					</label>
 				</div>
+			</section>
+
+			<section class="card">
+				<h2>ERP Integration</h2>
+				<p class="card-hint">Connect to your ERP system for invoice posting and payment tracking.</p>
+				<div class="form-grid">
+					<label>
+						<span>ERP System</span>
+						<select bind:value={erpType}>
+							{#each ERP_TYPES as erp}
+								<option value={erp.value}>{erp.label}</option>
+							{/each}
+						</select>
+					</label>
+					<label>
+						<span>Integration Method</span>
+						<select bind:value={erpMethod}>
+							<option value="merge_dev">Merge.dev (Unified API)</option>
+							<option value="direct">Direct API Connection</option>
+						</select>
+					</label>
+				</div>
+
+				{#if erpMethod === 'merge_dev'}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>Merge.dev API Key</span>
+							<input type="password" bind:value={erpApiKey} placeholder="test_..." />
+						</label>
+						<label>
+							<span>Account Token</span>
+							<input type="password" bind:value={erpAccountToken} placeholder="Customer linked account token" />
+						</label>
+					</div>
+					<p class="card-hint" style="margin-top: 8px;">Get your API key from the <a href="https://app.merge.dev" target="_blank" rel="noopener">Merge.dev dashboard</a>. Account tokens are created when customers connect their ERP via Merge Link.</p>
+				{:else if erpType === 'dynamics_365_bc'}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>Base URL</span>
+							<input type="url" bind:value={erpBaseUrl} placeholder="https://api.businesscentral.dynamics.com/v2.0" />
+						</label>
+						<label>
+							<span>Environment</span>
+							<input type="text" bind:value={erpEnvironment} placeholder="production" />
+						</label>
+						<label>
+							<span>Azure Tenant ID</span>
+							<input type="text" bind:value={erpTenantId} />
+						</label>
+						<label>
+							<span>Client ID</span>
+							<input type="text" bind:value={erpClientId} />
+						</label>
+						<label>
+							<span>Client Secret</span>
+							<input type="password" bind:value={erpClientSecret} />
+						</label>
+						<label>
+							<span>Company ID</span>
+							<input type="text" bind:value={erpCompanyId} />
+						</label>
+					</div>
+				{:else if erpType === 'netsuite'}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>Account ID</span>
+							<input type="text" bind:value={erpAccountId} placeholder="1234567" />
+						</label>
+						<label>
+							<span>Consumer Key</span>
+							<input type="text" bind:value={erpConsumerKey} />
+						</label>
+						<label>
+							<span>Consumer Secret</span>
+							<input type="password" bind:value={erpConsumerSecret} />
+						</label>
+						<label>
+							<span>Token ID</span>
+							<input type="text" bind:value={erpTokenId} />
+						</label>
+						<label>
+							<span>Token Secret</span>
+							<input type="password" bind:value={erpTokenSecret} />
+						</label>
+					</div>
+				{:else}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>API Base URL</span>
+							<input type="url" bind:value={erpBaseUrl} />
+						</label>
+						<label>
+							<span>API Key / Client ID</span>
+							<input type="password" bind:value={erpClientId} />
+						</label>
+						<label>
+							<span>API Secret / Client Secret</span>
+							<input type="password" bind:value={erpClientSecret} />
+						</label>
+					</div>
+					<p class="card-hint" style="margin-top: 8px;">Direct integration for {ERP_TYPES.find(e => e.value === erpType)?.label} is coming soon. Use Merge.dev in the meantime.</p>
+				{/if}
 			</section>
 
 			<section class="card plan-card">

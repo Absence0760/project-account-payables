@@ -19,7 +19,14 @@ from app.models.workflow import WorkflowInstance, WorkflowStep
 from app.models.exception import Exception as ExceptionModel
 from app.services.invoice_warnings import refresh_warnings
 
-IMMUTABLE_STATUSES = {DBInvoiceStatus.sent_to_erp, DBInvoiceStatus.sending_to_erp, DBInvoiceStatus.done}
+IMMUTABLE_STATUSES = {
+    DBInvoiceStatus.sending_to_erp,
+    DBInvoiceStatus.sent_to_erp,
+    DBInvoiceStatus.posted_in_erp,
+    DBInvoiceStatus.payment_scheduled,
+    DBInvoiceStatus.paid,
+    DBInvoiceStatus.done,
+}
 from app.schemas.invoice import (
     BulkDeleteRequest,
     BulkDeleteResponse,

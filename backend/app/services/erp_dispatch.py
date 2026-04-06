@@ -70,6 +70,9 @@ async def _run_local(
         if not org:
             return
 
+    # Extract ERP config from org settings
+    erp_config = (org.settings or {}).get("erp")
+
     engine = get_tenant_engine(org.db_name)
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -83,6 +86,6 @@ async def _run_local(
                 return
 
             # Invoice is already in sending_to_erp state — run the ERP call
-            await send_to_erp_internal(db, invoice, actor_id=actor_id)
+            await send_to_erp_internal(db, invoice, actor_id=actor_id, erp_config=erp_config)
         except Exception:
             await db.rollback()

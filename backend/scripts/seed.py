@@ -103,7 +103,8 @@ async def create_tenant_tables(db_name: str):
             host=pg_host, port=pg_port, database=db_name_parsed,
         )
         try:
-            await conn.execute("ALTER TYPE invoicestatus ADD VALUE IF NOT EXISTS 'done'")
+            for val in ('done', 'posted_in_erp', 'payment_scheduled', 'paid'):
+                await conn.execute(f"ALTER TYPE invoicestatus ADD VALUE IF NOT EXISTS '{val}'")
         except asyncpg.exceptions.DuplicateObjectError:
             pass
         finally:
