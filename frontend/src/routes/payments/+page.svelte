@@ -2,15 +2,53 @@
 	import type { Payment, PaymentStatus, PaymentMethod } from '$lib/types/payment';
 	import { PAYMENT_STATUSES, PAYMENT_STATUS_LABELS, PAYMENT_METHOD_LABELS } from '$lib/types/payment';
 	import { paymentStore } from '$lib/stores/payments.svelte';
+	import { api } from '$lib/api';
+	import { toast } from '$lib/components/Toast.svelte';
+	import StatusBadge from '$lib/components/StatusBadge.svelte';
 
+	type Tab = 'queue' | 'history' | 'runs';
+	let activeTab = $state<Tab>('queue');
 	let search = $state('');
 	let activeStatus = $state<PaymentStatus | 'all'>('all');
-	let activeMethod = $state<PaymentMethod | 'all'>('all');
+
+	// Summary
+	interface Summary {
+		total_paid: number;
+		total_pending: number;
+		payment_count: number;
+		total_rebates: number;
+		queue_count: number;
+	}
+	let summary = $state<Summary | null>(null);
+
+	// Queue
+	interface QueueItem {
+		id: string;
+		invoice_number: string;
+		vendor_name: string;
+		amount: number;
+		currency: string;
+		due_date: string | null;
+		payment_terms: string | null;
+		status: string;
+		is_overdue: boolean;
+	}
+	let queue = $state<QueueItem[]>([]);
+
+	// Runs
+	interface RunItem {
+		id: string;
+		status: string;
+		total_amount: number | null;
+		executed_at: string | null;
+		created_at: string;
+		payment_count: number;
+	}
+	let runs = $state<RunItem[]>([]);
 
 	function buildParams(): Record<string, string> {
 		const params: Record<string, string> = { page_size: '100' };
 		if (activeStatus !== 'all') params.status = activeStatus;
-		if (activeMethod !== 'all') params.method = activeMethod;
 		if (search.trim()) params.search = search.trim();
 		return params;
 	}
@@ -18,13 +56,25 @@
 	let searchTimer: ReturnType<typeof setTimeout>;
 	function debouncedFetch() {
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => paymentStore.fetch(buildParams()), 300);
+		searchTimer = setTimeout(() => {
+			if (activeTab === 'history') paymentStore.fetch(buildParams());
+		}, 300);
 	}
 
 	$effect(() => {
-		activeStatus;
-		activeMethod;
-		paymentStore.fetch(buildParams());
+		loadSummary();
+		loadQueue();
+	});
+
+	$effect(() => {
+		if (activeTab === 'history') {
+			activeStatus;
+			paymentStore.fetch(buildParams());
+		} else if (activeTab === 'queue') {
+			loadQueue();
+		} else if (activeTab === 'runs') {
+			loadRuns();
+		}
 	});
 
 	$effect(() => {
@@ -32,115 +82,206 @@
 		debouncedFetch();
 	});
 
-	function statusCount(status: PaymentStatus): number {
-		return paymentStore.all.filter((p) => p.status === status).length;
+	async function loadSummary() {
+		try {
+			summary = await api.get<Summary>('/api/payments/summary');
+		} catch { /* non-critical */ }
 	}
 
-	function formatCurrency(amount: number): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+	async function loadQueue() {
+		try {
+			const data = await api.get<{ items: QueueItem[] }>('/api/payments/queue');
+			queue = data.items;
+		} catch { /* non-critical */ }
+	}
+
+	async function loadRuns() {
+		try {
+			const data = await api.get<{ items: RunItem[] }>('/api/payments/runs/?page_size=100');
+			runs = data.items;
+		} catch { /* non-critical */ }
+	}
+
+	function statusCount(s: PaymentStatus): number {
+		return paymentStore.all.filter((p) => p.status === s).length;
+	}
+
+	function formatCurrency(amount: number, currency: string = 'USD'): string {
+		return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
 	}
 
 	function formatDate(dateStr: string | null): string {
 		if (!dateStr) return '—';
-		return new Date(dateStr).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			year: 'numeric'
-		});
+		return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
 	function methodLabel(method: string | null): string {
 		if (!method) return '—';
 		return PAYMENT_METHOD_LABELS[method as PaymentMethod] ?? method;
 	}
-
-	// Summary stats
-	let totalAmount = $derived(
-		paymentStore.all.reduce((sum, p) => sum + p.amount, 0)
-	);
-	let completedCount = $derived(
-		paymentStore.all.filter((p) => p.status === 'completed').length
-	);
-	let pendingAmount = $derived(
-		paymentStore.all
-			.filter((p) => p.status === 'pending' || p.status === 'processing')
-			.reduce((sum, p) => sum + p.amount, 0)
-	);
 </script>
 
 <div class="workspace">
 	<header class="toolbar">
-		<div class="search-group">
+		<h1>Payments</h1>
+	</header>
+
+	{#if summary}
+		<div class="summary-cards">
+			<div class="scard">
+				<span class="scard-value">{formatCurrency(summary.total_paid)}</span>
+				<span class="scard-label">Total Paid</span>
+			</div>
+			<div class="scard">
+				<span class="scard-value">{formatCurrency(summary.total_pending)}</span>
+				<span class="scard-label">Pending</span>
+			</div>
+			<div class="scard">
+				<span class="scard-value">{summary.queue_count}</span>
+				<span class="scard-label">Ready to Pay</span>
+			</div>
+			<div class="scard">
+				<span class="scard-value">{summary.payment_count}</span>
+				<span class="scard-label">Payments</span>
+			</div>
+			{#if summary.total_rebates > 0}
+				<div class="scard rebate">
+					<span class="scard-value">{formatCurrency(summary.total_rebates)}</span>
+					<span class="scard-label">Rebates Earned</span>
+				</div>
+			{/if}
+		</div>
+	{/if}
+
+	<nav class="tabs">
+		<button class="tab" class:active={activeTab === 'queue'} onclick={() => (activeTab = 'queue')}>
+			Queue {#if summary}<span class="tab-count">{summary.queue_count}</span>{/if}
+		</button>
+		<button class="tab" class:active={activeTab === 'history'} onclick={() => (activeTab = 'history')}>
+			History
+		</button>
+		<button class="tab" class:active={activeTab === 'runs'} onclick={() => (activeTab = 'runs')}>
+			Runs
+		</button>
+	</nav>
+
+	{#if activeTab === 'history'}
+		<div class="filter-row">
 			<div class="search-box">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
 				</svg>
 				<input type="text" placeholder="Search payments..." bind:value={search} />
 			</div>
+			<nav class="filters">
+				<button class="filter-chip" class:active={activeStatus === 'all'} onclick={() => (activeStatus = 'all')}>
+					All <span class="count">{paymentStore.all.length}</span>
+				</button>
+				{#each PAYMENT_STATUSES as s}
+					<button class="filter-chip" class:active={activeStatus === s} onclick={() => (activeStatus = s)}>
+						{PAYMENT_STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
+					</button>
+				{/each}
+			</nav>
 		</div>
-	</header>
-
-	<div class="summary-cards">
-		<div class="card">
-			<span class="card-label">Total Payments</span>
-			<span class="card-value">{paymentStore.all.length}</span>
-		</div>
-		<div class="card">
-			<span class="card-label">Total Amount</span>
-			<span class="card-value">{formatCurrency(totalAmount)}</span>
-		</div>
-		<div class="card">
-			<span class="card-label">Completed</span>
-			<span class="card-value">{completedCount}</span>
-		</div>
-		<div class="card">
-			<span class="card-label">Pending Amount</span>
-			<span class="card-value">{formatCurrency(pendingAmount)}</span>
-		</div>
-	</div>
-
-	<nav class="filters">
-		<button class="filter-chip" class:active={activeStatus === 'all'} onclick={() => (activeStatus = 'all')}>
-			All <span class="count">{paymentStore.all.length}</span>
-		</button>
-		{#each PAYMENT_STATUSES as s}
-			<button class="filter-chip" class:active={activeStatus === s} onclick={() => (activeStatus = s)}>
-				{PAYMENT_STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
-			</button>
-		{/each}
-	</nav>
+	{/if}
 
 	<div class="grid-container">
-		<table>
-			<thead>
-				<tr>
-					<th>Reference</th>
-					<th>Vendor</th>
-					<th>Invoice #</th>
-					<th>Method</th>
-					<th class="right">Amount</th>
-					<th>Date</th>
-					<th>Status</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each paymentStore.all as payment (payment.id)}
+		{#if activeTab === 'queue'}
+			<table>
+				<thead>
 					<tr>
-						<td class="mono">{payment.reference ?? '—'}</td>
-						<td>{payment.vendor_name ?? '—'}</td>
-						<td class="mono">{payment.invoice_number ?? '—'}</td>
-						<td>{methodLabel(payment.method)}</td>
-						<td class="right mono">{formatCurrency(payment.amount)}</td>
-						<td>{formatDate(payment.created_at)}</td>
-						<td><span class="badge {payment.status}">{PAYMENT_STATUS_LABELS[payment.status]}</span></td>
+						<th>Invoice #</th>
+						<th>Vendor</th>
+						<th class="right">Amount</th>
+						<th>Due Date</th>
+						<th>Terms</th>
+						<th>Status</th>
 					</tr>
-				{:else}
+				</thead>
+				<tbody>
+					{#each queue as item (item.id)}
+						<tr class:overdue={item.is_overdue}>
+							<td class="mono">{item.invoice_number}</td>
+							<td>{item.vendor_name}</td>
+							<td class="right mono">{formatCurrency(item.amount, item.currency)}</td>
+							<td class:overdue-text={item.is_overdue}>
+								{formatDate(item.due_date)}
+								{#if item.is_overdue}
+									<span class="overdue-badge">Overdue</span>
+								{/if}
+							</td>
+							<td class="muted">{item.payment_terms ?? '—'}</td>
+							<td><StatusBadge status={item.status as import('$lib/types/invoice').InvoiceStatus} /></td>
+						</tr>
+					{:else}
+						<tr><td colspan="6" class="empty">No invoices ready for payment.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+
+		{:else if activeTab === 'history'}
+			<table>
+				<thead>
 					<tr>
-						<td colspan="7" class="empty">No payments match your filters.</td>
+						<th>Invoice #</th>
+						<th>Vendor</th>
+						<th>Method</th>
+						<th class="right">Amount</th>
+						<th>Status</th>
+						<th>Reference</th>
+						<th>Date</th>
 					</tr>
-				{/each}
-			</tbody>
-		</table>
+				</thead>
+				<tbody>
+					{#each paymentStore.all as p (p.id)}
+						<tr>
+							<td class="mono">{p.invoice_number ?? '—'}</td>
+							<td>{p.vendor_name ?? '—'}</td>
+							<td>
+								<span class="method-badge" class:card-method={p.method === 'virtual_card'}>
+									{methodLabel(p.method)}
+								</span>
+							</td>
+							<td class="right mono">{formatCurrency(p.amount)}</td>
+							<td><span class="badge {p.status}">{PAYMENT_STATUS_LABELS[p.status]}</span></td>
+							<td class="mono muted">{p.reference ?? '—'}</td>
+							<td class="muted">{formatDate(p.created_at)}</td>
+						</tr>
+					{:else}
+						<tr><td colspan="7" class="empty">No payments match your filters.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+
+		{:else if activeTab === 'runs'}
+			<table>
+				<thead>
+					<tr>
+						<th>Run</th>
+						<th>Status</th>
+						<th class="right">Total</th>
+						<th>Payments</th>
+						<th>Executed</th>
+						<th>Created</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each runs as run (run.id)}
+						<tr>
+							<td class="mono">{run.id.slice(0, 8)}</td>
+							<td><span class="badge {run.status}">{run.status}</span></td>
+							<td class="right mono">{run.total_amount ? formatCurrency(run.total_amount) : '—'}</td>
+							<td>{run.payment_count}</td>
+							<td class="muted">{formatDate(run.executed_at)}</td>
+							<td class="muted">{formatDate(run.created_at)}</td>
+						</tr>
+					{:else}
+						<tr><td colspan="6" class="empty">No payment runs yet.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
 	</div>
 </div>
 
@@ -158,46 +299,108 @@
 	.toolbar {
 		display: flex;
 		align-items: center;
-		gap: 16px;
+		justify-content: space-between;
 	}
 
-	/* Summary cards */
+	h1 {
+		font-size: 1.3rem;
+		font-weight: 700;
+		margin: 0;
+	}
+
+	/* --- Summary --- */
+
 	.summary-cards {
-		display: grid;
-		grid-template-columns: repeat(4, 1fr);
+		display: flex;
 		gap: 12px;
+		flex-wrap: wrap;
 	}
 
-	.card {
+	.scard {
+		flex: 1;
+		min-width: 140px;
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 8px;
-		padding: 16px;
+		padding: 14px 16px;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 2px;
 	}
 
-	.card-label {
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
+	.scard.rebate {
+		border-color: rgba(31, 168, 106, 0.3);
+		background: rgba(31, 168, 106, 0.04);
 	}
 
-	.card-value {
-		font-size: 1.25rem;
+	.scard-value {
+		font-size: 1.2rem;
 		font-weight: 700;
 		color: var(--text);
 	}
 
-	/* Filters */
-	.search-group {
+	.scard.rebate .scard-value {
+		color: #1fa86a;
+	}
+
+	.scard-label {
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	/* --- Tabs --- */
+
+	.tabs {
+		display: flex;
+		gap: 0;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.tab {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		flex: 1;
+		padding: 10px 20px;
+		border: none;
+		background: none;
+		color: var(--text-muted);
+		font-size: 0.88rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		border-bottom: 2px solid transparent;
+		margin-bottom: -1px;
+		transition: all 0.12s;
+	}
+
+	.tab:hover {
+		color: var(--text);
+	}
+
+	.tab.active {
+		color: var(--accent);
+		border-bottom-color: var(--accent);
+	}
+
+	.tab-count {
+		font-size: 0.72rem;
+		padding: 1px 6px;
+		border-radius: 8px;
+		background: rgba(99, 140, 255, 0.12);
+		color: var(--accent);
+		font-weight: 600;
+	}
+
+	/* --- Filter row (history tab) --- */
+
+	.filter-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
 	}
 
 	.search-box {
@@ -208,8 +411,7 @@
 		border: 1px solid var(--border);
 		border-radius: 20px;
 		padding: 8px 14px;
-		flex: 1;
-		max-width: 480px;
+		max-width: 320px;
 		color: var(--text-muted);
 	}
 
@@ -266,7 +468,8 @@
 		opacity: 0.7;
 	}
 
-	/* Table */
+	/* --- Table --- */
+
 	.grid-container {
 		background: var(--surface);
 		border: 1px solid var(--border);
@@ -278,12 +481,6 @@
 		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.875rem;
-	}
-
-	thead {
-		position: sticky;
-		top: 0;
-		z-index: 1;
 	}
 
 	th {
@@ -323,21 +520,63 @@
 		text-align: right;
 	}
 
+	.muted {
+		color: var(--text-muted);
+	}
+
 	.empty {
 		text-align: center;
 		padding: 40px 14px;
 		color: var(--text-muted);
 	}
 
-	/* Status badges */
+	/* --- Queue --- */
+
+	.overdue {
+		background: rgba(224, 64, 64, 0.04);
+	}
+
+	.overdue-text {
+		color: #e04040;
+	}
+
+	.overdue-badge {
+		display: inline-block;
+		font-size: 0.68rem;
+		font-weight: 600;
+		padding: 1px 6px;
+		border-radius: 8px;
+		background: rgba(224, 64, 64, 0.12);
+		color: #e04040;
+		margin-left: 6px;
+	}
+
+	/* --- Method badge --- */
+
+	.method-badge {
+		display: inline-block;
+		padding: 2px 8px;
+		border-radius: 10px;
+		background: var(--bg);
+		font-size: 0.78rem;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.method-badge.card-method {
+		background: rgba(99, 140, 255, 0.1);
+		color: var(--accent);
+	}
+
+	/* --- Status badges --- */
+
 	.badge {
 		display: inline-block;
 		padding: 3px 10px;
 		border-radius: 12px;
 		font-size: 0.75rem;
 		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
+		text-transform: capitalize;
 		white-space: nowrap;
 	}
 
@@ -366,9 +605,28 @@
 		color: #999;
 	}
 
+	.badge.draft {
+		background: var(--bg);
+		color: var(--text-muted);
+	}
+
+	.badge.submitted {
+		background: rgba(99, 140, 255, 0.15);
+		color: #638cff;
+	}
+
 	@media (max-width: 768px) {
 		.summary-cards {
 			grid-template-columns: repeat(2, 1fr);
+		}
+
+		.filter-row {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.search-box {
+			max-width: none;
 		}
 	}
 </style>

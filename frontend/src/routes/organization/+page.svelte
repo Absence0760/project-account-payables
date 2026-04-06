@@ -94,6 +94,40 @@
 	let erpTokenId = $state('');
 	let erpTokenSecret = $state('');
 	let testingConnection = $state(false);
+	// Cards
+	let cardsEnabled = $state(false);
+	let cardsProgramType = $state('platform');
+	let cardsProvider = $state('');
+	let cardsRegion = $state('US');
+	let cardsApiKey = $state('');
+	let cardsClientId = $state('');
+	let cardsClientSecret = $state('');
+	let cardsCustomerHashId = $state('');
+	let cardsWalletHashId = $state('');
+	let cardsExpiryDays = $state(30);
+	let cardsSandbox = $state(true);
+	let savingCards = $state(false);
+
+	const CARD_REGIONS = [
+		{ value: 'US', label: 'United States', default_provider: 'lithic' },
+		{ value: 'UK', label: 'United Kingdom', default_provider: 'lithic' },
+		{ value: 'DE', label: 'Germany (EU)', default_provider: 'lithic' },
+		{ value: 'FR', label: 'France (EU)', default_provider: 'lithic' },
+		{ value: 'NL', label: 'Netherlands (EU)', default_provider: 'lithic' },
+		{ value: 'ZA', label: 'South Africa', default_provider: 'nium' },
+		{ value: 'AU', label: 'Australia', default_provider: 'nium' },
+		{ value: 'SG', label: 'Singapore', default_provider: 'nium' },
+		{ value: 'HK', label: 'Hong Kong', default_provider: 'nium' },
+		{ value: 'IN', label: 'India', default_provider: 'nium' },
+		{ value: 'CA', label: 'Canada', default_provider: 'nium' },
+		{ value: 'AE', label: 'UAE', default_provider: 'nium' },
+		{ value: 'JP', label: 'Japan', default_provider: 'nium' },
+	];
+
+	let autoProvider = $derived(
+		CARD_REGIONS.find(r => r.value === cardsRegion)?.default_provider ?? 'nium'
+	);
+	let effectiveProvider = $derived(cardsProvider || autoProvider);
 	let connectionResult = $state<{ success: boolean; message: string } | null>(null);
 
 	async function testConnection() {
@@ -160,6 +194,21 @@
 				erpConsumerSecret = erp.consumer_secret || '';
 				erpTokenId = erp.token_id || '';
 				erpTokenSecret = erp.token_secret || '';
+			}
+			// Cards
+			const cards = (data.settings as unknown as Record<string, unknown>).cards as Record<string, unknown> | undefined;
+			if (cards) {
+				cardsEnabled = (cards.enabled as boolean) ?? false;
+				cardsProgramType = (cards.program_type as string) || 'platform';
+				cardsProvider = (cards.provider as string) || '';
+				cardsRegion = (cards.region as string) || 'US';
+				cardsApiKey = (cards.api_key as string) || '';
+				cardsClientId = (cards.client_id as string) || '';
+				cardsClientSecret = (cards.client_secret as string) || '';
+				cardsCustomerHashId = (cards.customer_hash_id as string) || '';
+				cardsWalletHashId = (cards.wallet_hash_id as string) || '';
+				cardsExpiryDays = (cards.default_expiry_days as number) || 30;
+				cardsSandbox = (cards.sandbox as boolean) ?? true;
 			}
 		} catch {
 			toast('Failed to load organization', 'error');
@@ -243,6 +292,31 @@
 			toast(err instanceof Error ? err.message : 'Save failed', 'error');
 		} finally {
 			savingErp = false;
+		}
+	}
+
+	async function saveCards() {
+		savingCards = true;
+		try {
+			await patchSettings('Virtual cards', {
+				cards: {
+					enabled: cardsEnabled,
+					program_type: cardsProgramType,
+					provider: cardsProvider || autoProvider,
+					region: cardsRegion,
+					api_key: cardsApiKey,
+					client_id: cardsClientId,
+					client_secret: cardsClientSecret,
+					customer_hash_id: cardsCustomerHashId,
+					wallet_hash_id: cardsWalletHashId,
+					default_expiry_days: cardsExpiryDays,
+					sandbox: cardsSandbox,
+				},
+			});
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingCards = false;
 		}
 	}
 
@@ -452,6 +526,105 @@
 							{connectionResult.message}
 						</span>
 					{/if}
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>Virtual Cards</h2>
+				<p class="card-hint">Issue single-use virtual cards for invoice payments. Earn rebates on every transaction.</p>
+
+				<div class="form-grid">
+					<label>
+						<span>Enabled</span>
+						<select bind:value={cardsEnabled}>
+							<option value={false}>Disabled</option>
+							<option value={true}>Enabled</option>
+						</select>
+					</label>
+					<label>
+						<span>Card Program</span>
+						<select bind:value={cardsProgramType}>
+							<option value="platform">Platform (recommended)</option>
+							<option value="byok">Bring Your Own Keys</option>
+						</select>
+					</label>
+					<label>
+						<span>Region</span>
+						<select bind:value={cardsRegion}>
+							{#each CARD_REGIONS as r}
+								<option value={r.value}>{r.label}</option>
+							{/each}
+						</select>
+					</label>
+					<label>
+						<span>Card Expiry (days)</span>
+						<input type="number" min="1" max="90" bind:value={cardsExpiryDays} />
+					</label>
+				</div>
+
+				{#if cardsEnabled && cardsProgramType === 'platform'}
+					<p class="card-hint" style="margin-top: 10px;">Cards are issued through our platform. Provider is auto-selected based on your region ({autoProvider === 'lithic' ? 'Lithic' : 'Nium'}). No API keys needed.</p>
+				{/if}
+
+				{#if cardsEnabled && cardsProgramType === 'byok'}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>Provider</span>
+							<select bind:value={cardsProvider}>
+								<option value="">Auto ({autoProvider === 'lithic' ? 'Lithic' : 'Nium'})</option>
+								<option value="lithic">Lithic (US/UK/EU)</option>
+								<option value="nium">Nium (Global)</option>
+							</select>
+						</label>
+					</div>
+
+					{#if effectiveProvider === 'lithic'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>Lithic API Key</span>
+								<input type="password" bind:value={cardsApiKey} placeholder="api-key-..." />
+							</label>
+							<label>
+								<span>Sandbox Mode</span>
+								<select bind:value={cardsSandbox}>
+									<option value={true}>Sandbox (testing)</option>
+									<option value={false}>Production</option>
+								</select>
+							</label>
+						</div>
+					{:else if effectiveProvider === 'nium'}
+						<div class="form-grid" style="margin-top: 14px;">
+							<label>
+								<span>Client ID</span>
+								<input type="text" bind:value={cardsClientId} />
+							</label>
+							<label>
+								<span>Client Secret</span>
+								<input type="password" bind:value={cardsClientSecret} />
+							</label>
+							<label>
+								<span>Customer Hash ID</span>
+								<input type="text" bind:value={cardsCustomerHashId} />
+							</label>
+							<label>
+								<span>Wallet Hash ID</span>
+								<input type="text" bind:value={cardsWalletHashId} />
+							</label>
+							<label>
+								<span>Sandbox Mode</span>
+								<select bind:value={cardsSandbox}>
+									<option value={true}>Sandbox (testing)</option>
+									<option value={false}>Production</option>
+								</select>
+							</label>
+						</div>
+					{/if}
+				{/if}
+
+				<div class="section-footer">
+					<button class="btn-save-section" disabled={savingCards} onclick={saveCards}>
+						{savingCards ? 'Saving...' : 'Save Card Settings'}
+					</button>
 				</div>
 			</section>
 

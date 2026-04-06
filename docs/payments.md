@@ -89,44 +89,79 @@ An individual payment record linked to a single invoice. Created when a payment 
 | `failed` | Payment failed (insufficient funds, bad account, etc.) |
 | `cancelled` | Payment voided before execution |
 
-## User Flow
+## User Interface
 
-### 1. Payment Queue
+The payments page (`/payments`) consolidates all payment activity — including virtual cards — into one view with three tabs.
 
-The Payments page shows invoices that are approved/sent_to_erp but don't have a completed payment yet. This is the "ready to pay" queue.
+### Page Layout
+
+```
+/payments
+  ├── Summary Bar        — Total Paid, Pending, Ready to Pay, Payments, Rebates Earned
+  ├── Tab: Queue         — invoices ready to pay (sorted by due date, overdue highlighted)
+  ├── Tab: History       — all payments in one table (ACH, wire, check, virtual card)
+  └── Tab: Runs          — payment batches
+```
+
+Virtual cards are **not** on a separate page. Card payments appear in the History tab with a card badge and last-4 digits. This gives one source of truth for "where did the money go."
+
+### Queue Tab
+
+Shows invoices in payable statuses (`approved`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled`) that don't have a completed payment yet.
 
 - Sorted by due date (soonest first)
-- Highlights overdue invoices
-- Shows early-pay discount opportunities with savings amount
-- Filterable by vendor, amount range, due date range
+- Overdue invoices highlighted in red with badge
+- Shows payment terms per invoice
+- Count shown in the tab badge
 
-### 2. Create Payment Run
+### History Tab
 
-1. User navigates to **Payments** and clicks **Create Payment Run**
-2. Selects invoices from the payment queue (checkboxes)
-3. Chooses payment method (ACH, wire, check, virtual card) — can be different per invoice
-4. Reviews the batch: total amount, invoice count, payment method breakdown
-5. Clicks **Submit** to create the run in `draft` status
-6. Clicks **Execute** to move to `processing` and trigger payment execution
+All payments across all methods in one table.
 
-### 3. Payment Execution
+| Column | Description |
+|---|---|
+| Invoice # | Linked invoice number |
+| Vendor | Vendor name |
+| Method | Badge: ACH, Wire, Check, or **Card** (highlighted) |
+| Amount | Payment amount |
+| Status | pending / processing / completed / failed / cancelled |
+| Reference | Check number, wire ref, ACH trace, or card last-4 |
+| Date | Payment date |
 
-When a run is executed:
+Search and status filter chips available on this tab.
 
-1. Each selected invoice gets a `Payment` record with status `pending`
-2. Payments are dispatched to the payment processor (async)
-3. As each payment completes, its status updates to `completed` or `failed`
-4. When all payments in the run finish, the run status updates to `completed` (or `failed` if any failed)
-5. An audit log entry is written for each payment event
+### Runs Tab
 
-### 4. Payment History
+Payment batch history — each run shows status, total, payment count, and execution date.
 
-The payment history view shows:
+### Summary Bar
 
-- All past payment runs with status, total, date, and payment count
-- Individual payments with vendor, invoice number, amount, method, status, and reference
-- Drill into a payment run to see its individual payments
-- Filter by status, method, date range
+Five KPI cards at the top:
+- **Total Paid** — sum of all completed payments
+- **Pending** — sum of pending/processing payments
+- **Ready to Pay** — count of invoices in queue
+- **Payments** — total payment count
+- **Rebates Earned** — sum of virtual card rebates (green, only shown if > 0)
+
+### Virtual Card Security
+
+Card details (full number, CVV) are never stored in the database — only `last_four` and `provider_card_id`.
+
+- Full card details are retrieved on demand from Lithic/Nium via `/api/cards/{id}/details`
+- **Access restricted** to admin and AP manager roles — clerks and CFOs get 403
+- **Every access is audit-logged** with action `card.details_viewed`
+- Details are not cached in the frontend
+- In future: require password re-entry before revealing
+
+### Payment Flow (future)
+
+1. User navigates to **Payments > Queue**
+2. Selects invoices and clicks **Create Payment Run**
+3. Chooses payment method per invoice (ACH, wire, check, virtual card)
+4. Reviews the batch: total amount, invoice count, method breakdown
+5. Clicks **Submit** → run created in `draft` status
+6. Clicks **Execute** → payments dispatched, statuses tracked
+7. For virtual card payments: cards generated, sent to vendors, charges tracked via webhooks
 
 ### 5. Reconciliation (Future)
 

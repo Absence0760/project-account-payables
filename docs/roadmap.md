@@ -98,7 +98,7 @@ Current: duplicate check, round amounts, future dates, past due. Needs:
 ## Priority 3: Payments
 
 ### Payment Run UI
-**Status:** Partial (backend API exists, no frontend)
+**Status:** Partial (payments page with tabs built, queue + history + runs views, summary bar. Payment run creation flow not yet implemented.)
 
 Full payment execution flow in the frontend.
 
@@ -117,14 +117,32 @@ Full payment execution flow in the frontend.
 
 ---
 
+### Virtual Card Program
+**Status:** Planned
+
+Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on every card payment. Primary monetization channel. See [virtual-cards.md](virtual-cards.md) for full design.
+
+- [ ] VirtualCard and CardRebate data models
+- [ ] Stripe Issuing adapter — card generation, detail retrieval, webhooks
+- [ ] Card generation in payment run — batch creation when virtual card method selected
+- [ ] Card list page — dashboard (active cards, spend, rebates) + filterable list
+- [ ] Card detail view — masked number, linked invoice, charge status
+- [ ] Vendor email notification — send card details on generation
+- [ ] Webhook handler — process charge/settlement events, update payment status
+- [ ] Rebate tracking — calculate and display rebates per card and period
+- [ ] Vendor card acceptance tracking — per-vendor flag, surface in payment run
+- [ ] Spend controls — per-card limits, merchant category restrictions, auto-expiry
+- [ ] Supplier portal integration — secure card detail viewing for vendors
+- [ ] Additional providers — Marqeta, Lithic adapters
+- [ ] Rebate dashboard — monthly earnings, projected savings, YTD totals
+
 ### Bank / Payment Processor Integration
 **Status:** Planned
 
-Connect to actual payment rails.
+Connect to actual payment rails for non-card payments.
 
 - [ ] ACH integration (e.g., Dwolla, Plaid, or bank API)
 - [ ] Wire transfer integration
-- [ ] Virtual card provider (e.g., Stripe Issuing, Marqeta)
 - [ ] Check printing service (e.g., Checkeeper)
 - [ ] Payment status webhooks from processor
 - [ ] Bank reconciliation — import statements, auto-match
@@ -398,7 +416,10 @@ Visual drag-and-drop workflow builder for non-technical users.
 - [x] ERP adapter pattern (Merge.dev + direct adapters for BC and NetSuite)
 - [x] ERP webhook endpoint for status callbacks
 - [x] Post-ERP statuses (posted_in_erp, payment_scheduled, paid)
-- [x] Organization settings (company profile, invoice defaults, ERP config)
+- [x] Organization settings (company profile, invoice defaults, ERP config, virtual card config)
+- [x] Payments page with tabs (Queue, History, Runs) and summary bar
+- [x] Virtual card adapter pattern (Lithic + Nium) with platform/BYOK dual model
+- [x] Card detail security (role-restricted, audit-logged, never cached)
 - [x] Advanced search and filtering
 - [x] Export (CSV, JSON, XML — single and bulk)
 - [x] Sidebar navigation with role-based visibility

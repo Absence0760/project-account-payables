@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     audit_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_audit_queue_url: str = ""  # required when audit_mode = "lambda"
 
+    # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
+    lithic_api_key: str = ""  # your Lithic API key
+    lithic_sandbox: bool = True
+    nium_client_id: str = ""  # your Nium client ID
+    nium_client_secret: str = ""
+    nium_customer_hash_id: str = ""
+    nium_wallet_hash_id: str = ""
+    nium_sandbox: bool = True
+
     # Redis
     redis_url: str = "redis://localhost:6379"
 
