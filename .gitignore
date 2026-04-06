@@ -145,3 +145,4 @@ __pycache__/
 *.egg
 .venv/
 *.so
+.DS_STORE

@@ -58,14 +58,64 @@
 	let payment_method = $state(invoice.payment_method ?? '');
 	let gl_account = $state(invoice.gl_account ?? '');
 	let cost_center = $state(invoice.cost_center ?? '');
+
+	interface GLAccountOption { code: string; name: string; }
+	let glAccounts = $state<GLAccountOption[]>([]);
+
+	$effect(() => {
+		loadGLAccounts();
+	});
+
+	async function loadGLAccounts() {
+		try {
+			glAccounts = await api.get<GLAccountOption[]>('/api/gl-accounts');
+		} catch { /* non-critical */ }
+	}
 	let reference_number = $state(invoice.reference_number ?? '');
 	/* eslint-enable svelte/state-referenced-locally */
 
 	let fullscreen = $state(false);
 	let showExportMenu = $state(false);
+	let formPaneWidth = $state(480);
+	let resizing = $state(false);
 
 	function toggleFullscreen() {
 		fullscreen = !fullscreen;
+		formPaneWidth = fullscreen ? 480 : 600;
+	}
+
+	let resizeOverlay: HTMLDivElement | undefined;
+
+	function startResize(e: MouseEvent) {
+		if (e.button !== 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		resizing = true;
+		const startX = e.clientX;
+		const startWidth = formPaneWidth;
+
+		// Create a full-screen transparent overlay to capture all mouse events
+		// This prevents the PDF iframe from stealing them
+		const overlay = document.createElement('div');
+		overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;cursor:col-resize;';
+		document.body.appendChild(overlay);
+		resizeOverlay = overlay;
+
+		function onMove(ev: MouseEvent) {
+			const delta = startX - ev.clientX;
+			formPaneWidth = Math.max(300, Math.min(1200, startWidth + delta));
+		}
+
+		function onUp() {
+			resizing = false;
+			overlay.remove();
+			resizeOverlay = undefined;
+			window.removeEventListener('mousemove', onMove);
+			window.removeEventListener('mouseup', onUp);
+		}
+
+		window.addEventListener('mousemove', onMove);
+		window.addEventListener('mouseup', onUp);
 	}
 
 	let saving = $state(false);
@@ -553,7 +603,7 @@
 			</div>
 		</header>
 
-		<div class="split">
+		<div class="split" class:resizing>
 			<div class="pdf-pane">
 				{#if invoice.file_url}
 					<iframe src={`${apiBase}${invoice.file_url}`} title="Invoice PDF — {invoice.invoice_number}"></iframe>
@@ -569,7 +619,9 @@
 				{/if}
 			</div>
 
-			<div class="form-pane">
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div class="resize-handle" onmousedown={startResize}></div>
+			<div class="form-pane" style="width:{formPaneWidth}px">
 				<form onsubmit={(e) => { e.preventDefault(); save(); }}>
 					<div class="form-grid">
 						<label class:field-error={canSubmitStatus && !vendor.trim()}>
@@ -644,7 +696,16 @@
 						</label>
 						<label>
 							<span>GL Account {#if fieldConfidence.suggested_gl_account}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_gl_account)}" data-tip="{Math.round(fieldConfidence.suggested_gl_account * 100)}% — {confidenceLabel(fieldConfidence.suggested_gl_account)}"></span>{/if}</span>
-							<input type="text" bind:value={gl_account} placeholder="e.g. 6100" />
+							{#if glAccounts.length > 0}
+								<select bind:value={gl_account}>
+									<option value="">— Select —</option>
+									{#each glAccounts as acct}
+										<option value={acct.code}>{acct.code} — {acct.name}</option>
+									{/each}
+								</select>
+							{:else}
+								<input type="text" bind:value={gl_account} placeholder="e.g. 6100" />
+							{/if}
 						</label>
 						<label>
 							<span>Cost Center {#if fieldConfidence.suggested_cost_center}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_cost_center)}" data-tip="{Math.round(fieldConfidence.suggested_cost_center * 100)}% — {confidenceLabel(fieldConfidence.suggested_cost_center)}"></span>{/if}</span>
@@ -680,7 +741,18 @@
 											<td><input type="number" class="li-input right" step="0.01" value={li.unit_price ?? ''} oninput={(e) => updateLineItem(idx, 'unit_price', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
 											<td><input type="number" class="li-input right" step="0.01" value={li.tax ?? ''} oninput={(e) => updateLineItem(idx, 'tax', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
 											<td><input type="number" class="li-input right" step="0.01" value={li.total ?? ''} oninput={(e) => updateLineItem(idx, 'total', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
-											<td><input type="text" class="li-input li-gl" value={li.gl_account ?? ''} oninput={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)} /></td>
+											<td>
+											{#if glAccounts.length > 0}
+												<select class="li-input li-gl" value={li.gl_account ?? ''} onchange={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)}>
+													<option value="">—</option>
+													{#each glAccounts as acct}
+														<option value={acct.code}>{acct.code}</option>
+													{/each}
+												</select>
+											{:else}
+												<input type="text" class="li-input li-gl" value={li.gl_account ?? ''} oninput={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)} />
+											{/if}
+										</td>
 											<td>
 												<button type="button" class="li-delete" onclick={() => removeLineItem(idx)}>&times;</button>
 											</td>
@@ -918,6 +990,7 @@
 		border: none;
 	}
 
+
 	header {
 		display: flex;
 		justify-content: space-between;
@@ -970,6 +1043,11 @@
 		min-height: 0;
 	}
 
+	.split.resizing {
+		user-select: none;
+		cursor: col-resize;
+	}
+
 	/* --- PDF pane --- */
 
 	.pdf-pane {
@@ -999,12 +1077,26 @@
 	/* --- Form pane --- */
 
 	.form-pane {
-		width: 480px;
 		flex-shrink: 0;
 		overflow-y: auto;
 		overflow-x: hidden;
 		display: flex;
 		flex-direction: column;
+	}
+
+	.resize-handle {
+		width: 5px;
+		cursor: col-resize;
+		background: transparent;
+		flex-shrink: 0;
+		position: relative;
+		z-index: 2;
+	}
+
+	.resize-handle:hover,
+	.resize-handle:active {
+		background: var(--accent);
+		opacity: 0.3;
 	}
 
 	form {
@@ -1906,7 +1998,11 @@
 		}
 
 		.form-pane {
-			width: 100%;
+			width: 100% !important;
+		}
+
+		.resize-handle {
+			display: none;
 		}
 	}
 </style>

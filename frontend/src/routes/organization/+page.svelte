@@ -146,6 +146,37 @@
 	let cardsExpiryDays = $state(30);
 	let cardsSandbox = $state(true);
 	let savingCards = $state(false);
+	// Data sync
+	let syncingGL = $state(false);
+	let syncingPOs = $state(false);
+	let glSyncResult = $state('');
+	let poSyncResult = $state('');
+
+	async function syncGLAccounts() {
+		syncingGL = true;
+		glSyncResult = '';
+		try {
+			const result = await api.post<{ message: string }>('/api/gl-accounts/sync-erp', {});
+			glSyncResult = result.message;
+		} catch (err) {
+			glSyncResult = err instanceof Error ? err.message : 'Sync failed';
+		} finally {
+			syncingGL = false;
+		}
+	}
+
+	async function syncPurchaseOrders() {
+		syncingPOs = true;
+		poSyncResult = '';
+		try {
+			const result = await api.post<{ message: string }>('/api/purchase-orders/sync-erp', {});
+			poSyncResult = result.message;
+		} catch (err) {
+			poSyncResult = err instanceof Error ? err.message : 'Sync failed';
+		} finally {
+			syncingPOs = false;
+		}
+	}
 
 	const CARD_REGIONS = [
 		{ value: 'US', label: 'United States', default_provider: 'lithic' },
@@ -786,6 +817,47 @@
 				</div>
 			</section>
 
+			<section class="card">
+				<h2>Data Sync</h2>
+				<p class="card-hint">Pull data from your connected ERP. Requires ERP Integration to be configured above.</p>
+
+				<div class="sync-grid">
+					<div class="sync-item">
+						<div class="sync-info">
+							<span class="sync-name">Chart of Accounts</span>
+							<span class="sync-desc">GL account codes for invoice coding</span>
+						</div>
+						<button class="btn-outline" disabled={syncingGL} onclick={syncGLAccounts}>
+							{syncingGL ? 'Syncing...' : 'Sync GL Accounts'}
+						</button>
+						{#if glSyncResult}
+							<span class="sync-result">{glSyncResult}</span>
+						{/if}
+					</div>
+
+					<div class="sync-item">
+						<div class="sync-info">
+							<span class="sync-name">Purchase Orders</span>
+							<span class="sync-desc">POs for invoice matching and validation</span>
+						</div>
+						<button class="btn-outline" disabled={syncingPOs} onclick={syncPurchaseOrders}>
+							{syncingPOs ? 'Syncing...' : 'Sync POs'}
+						</button>
+						{#if poSyncResult}
+							<span class="sync-result">{poSyncResult}</span>
+						{/if}
+					</div>
+
+					<div class="sync-item">
+						<div class="sync-info">
+							<span class="sync-name">Vendors</span>
+							<span class="sync-desc">Vendor master list for matching</span>
+						</div>
+						<a href="/vendors" class="btn-outline">Manage on Vendors page</a>
+					</div>
+				</div>
+			</section>
+
 			<section class="card plan-card">
 				<h2>Plan</h2>
 				<div class="plan-info">
@@ -1010,6 +1082,72 @@
 
 	.test-result.failure {
 		color: #e04040;
+	}
+
+	.sync-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		margin-top: 14px;
+	}
+
+	.sync-item {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 12px;
+		background: var(--bg);
+		border-radius: 6px;
+	}
+
+	.sync-info {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.sync-name {
+		font-size: 0.88rem;
+		font-weight: 500;
+		color: var(--text);
+	}
+
+	.sync-desc {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+	}
+
+	.sync-result {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.btn-outline {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+		text-decoration: none;
+		display: inline-block;
+		text-align: center;
+	}
+
+	.btn-outline:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.btn-outline:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.loading {

@@ -19,6 +19,7 @@ from app.models.vendor import Vendor
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.procurement import PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem
 from app.models.usage import ExtractionUsage
+from app.models.gl_account import GLAccount
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
