@@ -421,6 +421,51 @@
 									Invoices will be automatically approved without human review. Use with caution.
 								</p>
 							{/if}
+
+							<div class="field-divider"></div>
+							<h4 class="field-section-title">Approval Thresholds</h4>
+
+							<div class="field">
+								<label for="auto-approve-below">Auto-approve below ($)</label>
+								<input
+									id="auto-approve-below"
+									type="number"
+									step="0.01"
+									min="0"
+									placeholder="No limit"
+									value={cfg.auto_approve_below ?? ''}
+									oninput={(e) => updateStepConfig(selectedIndex, 'auto_approve_below', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
+								/>
+								<p class="field-hint">Invoices below this amount skip approval entirely.</p>
+							</div>
+
+							<div class="field">
+								<label for="require-cfo-above">Require CFO approval above ($)</label>
+								<input
+									id="require-cfo-above"
+									type="number"
+									step="0.01"
+									min="0"
+									placeholder="No limit"
+									value={cfg.require_cfo_above ?? ''}
+									oninput={(e) => updateStepConfig(selectedIndex, 'require_cfo_above', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
+								/>
+								<p class="field-hint">Invoices above this amount require a user with the CFO role to approve.</p>
+							</div>
+
+							<div class="field">
+								<label for="max-invoice-amount">Maximum invoice amount ($)</label>
+								<input
+									id="max-invoice-amount"
+									type="number"
+									step="0.01"
+									min="0"
+									placeholder="No limit"
+									value={cfg.max_invoice_amount ?? ''}
+									oninput={(e) => updateStepConfig(selectedIndex, 'max_invoice_amount', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
+								/>
+								<p class="field-hint">Invoices above this amount are rejected automatically.</p>
+							</div>
 						{/if}
 
 						<!-- ERP Export config -->
@@ -859,6 +904,7 @@
 
 	.field input[type='text'],
 	.field input[type='url'],
+	.field input[type='number'],
 	.field select {
 		width: 100%;
 		padding: 8px 10px;
@@ -891,6 +937,21 @@
 
 	.field-hint.warning {
 		color: #d4940a;
+	}
+
+	.field-divider {
+		height: 1px;
+		background: var(--border);
+		margin: 8px 0 4px;
+	}
+
+	.field-section-title {
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin: 0 0 4px;
 	}
 
 	.approver-chips {

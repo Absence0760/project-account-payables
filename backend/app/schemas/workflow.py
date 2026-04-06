@@ -19,6 +19,9 @@ class ApprovalStepConfig(BaseModel):
     approver_id: str | None = None  # deprecated, use approver_ids
     approver_ids: list[str] = []
     approver_strategy: str = "manual"  # "manual", "specific", "auto"
+    auto_approve_below: float | None = None  # auto-approve invoices below this amount
+    require_cfo_above: float | None = None  # require CFO approval above this amount
+    max_invoice_amount: float | None = None  # reject invoices above this amount
 
 
 class ErpExportStepConfig(BaseModel):

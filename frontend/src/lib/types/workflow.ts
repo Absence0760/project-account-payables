@@ -22,6 +22,9 @@ export interface ApprovalStepConfig {
 	approver_id: string | null;
 	approver_ids: string[];
 	approver_strategy: 'manual' | 'specific' | 'auto';
+	auto_approve_below: number | null;
+	require_cfo_above: number | null;
+	max_invoice_amount: number | null;
 }
 
 export type ErpExportFormat = 'json' | 'xml' | 'csv' | 'cxml' | 'edi';
@@ -71,6 +74,9 @@ export const DEFAULT_APPROVAL_CONFIG: ApprovalStepConfig = {
 	approver_id: null,
 	approver_ids: [],
 	approver_strategy: 'manual',
+	auto_approve_below: null,
+	require_cfo_above: null,
+	max_invoice_amount: null,
 };
 
 export const DEFAULT_ERP_CONFIG: ErpExportStepConfig = {
