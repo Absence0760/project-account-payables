@@ -107,7 +107,10 @@
 		{ value: 'claude_vision', label: 'Claude Vision (Anthropic)' },
 		{ value: 'openai_vision', label: 'GPT-4V (OpenAI)' },
 		{ value: 'aws_textract', label: 'AWS Textract' },
+		{ value: 'ollama', label: 'Ollama (Local)' },
 	];
+	let extractionOllamaUrl = $state('http://localhost:11434');
+	let extractionOllamaModel = $state('llama3.2-vision:11b');
 	// Cards
 	let cardsEnabled = $state(false);
 	let cardsProgramType = $state('platform');
@@ -233,6 +236,8 @@
 				extractionAwsKeyId = (extraction.aws_access_key_id as string) || '';
 				extractionAwsSecret = (extraction.aws_secret_access_key as string) || '';
 				extractionAwsRegion = (extraction.aws_region as string) || 'us-east-1';
+				extractionOllamaUrl = (extraction.base_url as string) || 'http://localhost:11434';
+				extractionOllamaModel = (extraction.model as string) || 'llama3.2-vision:11b';
 			}
 		} catch {
 			toast('Failed to load organization', 'error');
@@ -330,6 +335,8 @@
 					aws_access_key_id: extractionAwsKeyId,
 					aws_secret_access_key: extractionAwsSecret,
 					aws_region: extractionAwsRegion,
+					base_url: extractionOllamaUrl,
+					model: extractionOllamaModel,
 				},
 			});
 		} catch (err) {
@@ -510,6 +517,23 @@
 							<input type="text" bind:value={extractionAwsRegion} placeholder="us-east-1" />
 						</label>
 					</div>
+				{:else if extractionProvider === 'ollama'}
+					<div class="form-grid" style="margin-top: 14px;">
+						<label>
+							<span>Ollama URL</span>
+							<input type="url" bind:value={extractionOllamaUrl} placeholder="http://localhost:11434" />
+						</label>
+						<label>
+							<span>Model</span>
+							<select bind:value={extractionOllamaModel}>
+								<option value="llama3.2-vision:11b">Llama 3.2 Vision 11B</option>
+								<option value="llama3.2-vision:90b">Llama 3.2 Vision 90B</option>
+								<option value="llava:13b">LLaVA 13B</option>
+								<option value="llava:34b">LLaVA 34B</option>
+							</select>
+						</label>
+					</div>
+					<p class="card-hint" style="margin-top: 8px;">Runs locally — no data leaves your machine. Install: <code>brew install ollama && ollama pull {extractionOllamaModel}</code></p>
 				{/if}
 
 				<div class="section-footer">

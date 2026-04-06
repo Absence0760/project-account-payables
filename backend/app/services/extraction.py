@@ -59,6 +59,7 @@ async def run_extraction(
         import app.services.extraction_adapters.claude_vision  # noqa: F401
         import app.services.extraction_adapters.openai_vision  # noqa: F401
         import app.services.extraction_adapters.aws_textract  # noqa: F401
+        import app.services.extraction_adapters.ollama  # noqa: F401
         from app.services.extraction_adapters import get_extraction_adapter
 
         adapter = get_extraction_adapter(config)
