@@ -98,15 +98,18 @@ Current: duplicate check, round amounts, future dates, past due. Needs:
 ## Priority 3: Payments
 
 ### Payment Run UI
-**Status:** Partial (payments page with tabs built, queue + history + runs views, summary bar. Payment run creation flow not yet implemented.)
+**Status:** Partial — payments page with 3 tabs (Queue, History, Runs), summary bar, and backend endpoints done. Payment run creation/execution flow not yet implemented.
 
 Full payment execution flow in the frontend.
 
-- [ ] Payment queue page — approved invoices sorted by due date
+- [x] Payment queue page — approved invoices sorted by due date, overdue highlighting
+- [x] Payment history — all methods in one table (ACH, wire, check, card badges)
+- [x] Payment runs list — batch history with status, total, count
+- [x] Summary bar — total paid, pending, queue count, payments, rebates earned
+- [x] Payment queue backend — `GET /api/payments/queue` and `GET /api/payments/summary`
 - [ ] Early-pay discount highlighting with savings calculation
 - [ ] Create payment run — select invoices, choose method, review totals
 - [ ] Execute payment run — batch processing with status tracking
-- [ ] Payment history — past runs and individual payments
 - [ ] Payment details modal — status, reference, method, dates
 - [ ] Void/cancel payment capability
 - [ ] Payment remittance generation (PDF/email to vendor)
@@ -118,23 +121,26 @@ Full payment execution flow in the frontend.
 ---
 
 ### Virtual Card Program
-**Status:** Planned
+**Status:** Partial — adapter pattern (Lithic + Nium), models, API endpoints, org config UI, and webhook handler done. Frontend card list page and payment run integration not yet built.
 
 Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on every card payment. Primary monetization channel. See [virtual-cards.md](virtual-cards.md) for full design.
 
-- [ ] VirtualCard and CardRebate data models
-- [ ] Stripe Issuing adapter — card generation, detail retrieval, webhooks
+- [x] VirtualCard and CardRebate data models
+- [x] Card adapter pattern with dispatcher (Lithic for US/UK/EU, Nium for global)
+- [x] Lithic adapter — card creation, detail retrieval, cancellation, status
+- [x] Nium adapter — same interface for 40+ countries
+- [x] Mock adapter for development/testing
+- [x] Card API endpoints — generate, list, details, cancel, webhook, rebates, dashboard
+- [x] Card detail security — role-restricted (admin/manager), audit-logged
+- [x] Webhook handler — process charge/settlement events, auto-create rebates
+- [x] Platform/BYOK dual model — platform keys in env vars, customer keys in org settings
+- [x] Card config in organization settings UI — region auto-selects provider
+- [x] Vendor `accepts_virtual_cards` field
+- [ ] Card list in payments page (show card payments with badges in History tab)
 - [ ] Card generation in payment run — batch creation when virtual card method selected
-- [ ] Card list page — dashboard (active cards, spend, rebates) + filterable list
-- [ ] Card detail view — masked number, linked invoice, charge status
 - [ ] Vendor email notification — send card details on generation
-- [ ] Webhook handler — process charge/settlement events, update payment status
-- [ ] Rebate tracking — calculate and display rebates per card and period
-- [ ] Vendor card acceptance tracking — per-vendor flag, surface in payment run
-- [ ] Spend controls — per-card limits, merchant category restrictions, auto-expiry
-- [ ] Supplier portal integration — secure card detail viewing for vendors
-- [ ] Additional providers — Marqeta, Lithic adapters
 - [ ] Rebate dashboard — monthly earnings, projected savings, YTD totals
+- [ ] Supplier portal integration — secure card detail viewing for vendors
 
 ### Bank / Payment Processor Integration
 **Status:** Planned
@@ -415,14 +421,27 @@ Visual drag-and-drop workflow builder for non-technical users.
 - [x] Status transition rules with valid transitions per status
 - [x] ERP adapter pattern (Merge.dev + direct adapters for BC and NetSuite)
 - [x] ERP webhook endpoint for status callbacks
+- [x] ERP test connection button in org settings
+- [x] ERP retry button in invoice modal for failed sends
+- [x] ERP status display in invoice modal (document ID, error details)
 - [x] Post-ERP statuses (posted_in_erp, payment_scheduled, paid)
-- [x] Organization settings (company profile, invoice defaults, ERP config, virtual card config)
+- [x] Organization settings with per-section save (company, defaults, ERP, cards)
 - [x] Payments page with tabs (Queue, History, Runs) and summary bar
 - [x] Virtual card adapter pattern (Lithic + Nium) with platform/BYOK dual model
 - [x] Card detail security (role-restricted, audit-logged, never cached)
+- [x] Card API endpoints (generate, list, cancel, details, webhook, rebates, dashboard)
 - [x] Advanced search and filtering
 - [x] Export (CSV, JSON, XML — single and bulk)
 - [x] Vendor management (status, verification, ERP sync, fuzzy matching, AI auto-creation)
 - [x] Vendors page with verify/reject actions, ERP sync button, status filters
 - [x] Vendor matching wired into invoice extraction pipeline
+- [x] Vendor accepts_virtual_cards field for card payment eligibility
+- [x] Seed data: 10 vendors (mixed sources/statuses), 10 invoices (linked to vendors, varied statuses)
 - [x] Sidebar navigation with role-based visibility
+- [x] Sidebar icons for all nav items (Admin, Organization, Workflows, etc.)
+- [x] Delete user with cascade (role assignments cleaned up)
+- [x] Invoice delete with full cascade (all related tables cleaned up)
+- [x] Workflow ERP export step config (auto-send, format, payload options)
+- [x] Workflow approval step: approver search/pick UI with chips
+- [x] Workflow approval thresholds (auto-approve below, CFO above, max amount)
+- [x] Self-service profile editing (name, password) in sidebar popover
