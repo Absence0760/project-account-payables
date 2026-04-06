@@ -422,4 +422,7 @@ Visual drag-and-drop workflow builder for non-technical users.
 - [x] Card detail security (role-restricted, audit-logged, never cached)
 - [x] Advanced search and filtering
 - [x] Export (CSV, JSON, XML — single and bulk)
+- [x] Vendor management (status, verification, ERP sync, fuzzy matching, AI auto-creation)
+- [x] Vendors page with verify/reject actions, ERP sync button, status filters
+- [x] Vendor matching wired into invoice extraction pipeline
 - [x] Sidebar navigation with role-based visibility

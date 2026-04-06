@@ -48,6 +48,12 @@ async def run_extraction(
         invoice.reference_number = extracted.get("reference_number")
         invoice.description = extracted.get("description", "")
 
+        # Match vendor and link to invoice
+        from app.services.vendor_matching import match_and_link_vendor
+        vendor, vendor_action = await match_and_link_vendor(
+            db, invoice, invoice.organization_id,
+        )
+
         # Save extraction result
         extraction_result = InvoiceExtractionResult(
             invoice_id=invoice.id,
@@ -64,7 +70,12 @@ async def run_extraction(
             InvoiceStatus.ready_for_review,
             actor_id=actor_id,
             action_name="invoice.extraction_completed",
-            details={"method": "mock", "confidence": 0.95},
+            details={
+                "method": "mock",
+                "confidence": 0.95,
+                "vendor_action": vendor_action,
+                "vendor_id": str(vendor.id) if vendor else None,
+            },
         )
 
         # Advance workflow to review step

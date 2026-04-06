@@ -87,6 +87,14 @@ async def create_tenant_tables(db_name: str):
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS rejected_by VARCHAR(255)",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS assigned_to_id UUID",
             "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(255)",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS tax_id VARCHAR(50)",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS accepts_virtual_cards BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'active'",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS verified_by VARCHAR(255)",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS erp_vendor_id VARCHAR(255)",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS erp_synced_at TIMESTAMPTZ",
         ]:
             await conn.execute(text(stmt))
 
