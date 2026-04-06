@@ -51,6 +51,11 @@ async def run_extraction(
 
     This is called as a background task after file upload.
     """
+    # Cache IDs before try block — after rollback, invoice attrs may be expired
+    invoice_id = invoice.id
+    invoice_org_id = invoice.organization_id
+    invoice_correlation_id = invoice.correlation_id
+
     try:
         config = _resolve_extraction_config(org_settings)
 
@@ -63,22 +68,34 @@ async def run_extraction(
         from app.services.extraction_adapters import get_extraction_adapter
 
         adapter = get_extraction_adapter(config)
+        print(f"[extraction] Using adapter: {adapter.provider_name}, config provider: {config.get('provider')}")
 
-        # Build file URL for the adapter to fetch
-        file_url = invoice.file_url or ""
-        if file_url and not file_url.startswith("http"):
-            # Relative URL — prepend MinIO/S3 endpoint
-            from app.config import settings as app_settings
-            file_url = f"{app_settings.s3_endpoint_url}/{app_settings.s3_bucket}/{invoice.file_key}"
+        # Fetch file bytes from S3/MinIO directly (authenticated)
+        import boto3 as _boto3
+        from app.config import settings as app_settings
+        s3 = _boto3.client(
+            "s3",
+            endpoint_url=app_settings.s3_endpoint_url,
+            aws_access_key_id=app_settings.s3_access_key,
+            aws_secret_access_key=app_settings.s3_secret_key,
+        )
+        file_key = invoice.file_key or ""
+        print(f"[extraction] Fetching file from S3: bucket={app_settings.s3_bucket}, key={file_key}")
+        s3_obj = s3.get_object(Bucket=app_settings.s3_bucket, Key=file_key)
+        file_bytes = s3_obj["Body"].read()
+        print(f"[extraction] File fetched: {len(file_bytes)} bytes")
 
         result = await adapter.extract(
-            file_url=file_url,
-            file_key=invoice.file_key or "",
+            file_bytes=file_bytes,
+            file_key=file_key,
             mime_type="application/pdf",
         )
 
         if not result.success:
+            print(f"[extraction] Adapter returned failure: {result.error}")
             raise RuntimeError(result.error or "Extraction failed")
+
+        print(f"[extraction] Success! Confidence: {result.overall_confidence}, vendor: {result.vendor_name.value}")
 
         # Apply extracted fields to invoice
         _apply_extraction(invoice, result)
@@ -90,10 +107,10 @@ async def run_extraction(
                 line_number=li.line_number,
                 item_code=li.item_code.value if li.item_code.value else None,
                 description=li.description.value if li.description.value else None,
-                quantity=Decimal(li.quantity.value) if li.quantity.value else None,
-                unit_price=Decimal(li.unit_price.value) if li.unit_price.value else None,
-                tax=Decimal(li.tax.value) if li.tax.value else None,
-                total=Decimal(li.total.value) if li.total.value else None,
+                quantity=_clean_decimal(li.quantity.value) if li.quantity.value else None,
+                unit_price=_clean_decimal(li.unit_price.value) if li.unit_price.value else None,
+                tax=_clean_decimal(li.tax.value) if li.tax.value else None,
+                total=_clean_decimal(li.total.value) if li.total.value else None,
                 gl_account=li.gl_account.value if li.gl_account.value else None,
             )
             db.add(line_item)
@@ -158,18 +175,30 @@ async def run_extraction(
         await db.commit()
 
     except Exception as exc:
+        print(f"[extraction] Failed: {exc}")
         await db.rollback()
+
+        # Re-fetch invoice after rollback (the old object is expired)
+        from sqlalchemy import select as sa_select
+        from app.models.invoice import Invoice as InvoiceModel
+        result = await db.execute(
+            sa_select(InvoiceModel).where(InvoiceModel.id == invoice_id)
+        )
+        invoice = result.scalar_one_or_none()
+        if not invoice:
+            await db.commit()
+            return
 
         # Track failed usage
         try:
             config = _resolve_extraction_config(org_settings)
             usage = ExtractionUsage(
-                invoice_id=invoice.id,
+                invoice_id=invoice_id,
                 provider=config.get("provider", "unknown"),
                 program_type=config.get("program_type", "platform"),
                 period=datetime.now(timezone.utc).strftime("%Y-%m"),
                 success=False,
-                organization_id=invoice.organization_id,
+                organization_id=invoice_org_id,
             )
             db.add(usage)
         except Exception:
@@ -185,12 +214,25 @@ async def run_extraction(
             details={"error": str(exc)},
         )
 
-        instance = await get_workflow_instance(db, invoice.id)
+        instance = await get_workflow_instance(db, invoice_id)
         if instance:
             instance.state = "failed"
             instance.state_data = {**(instance.state_data or {}), "error": str(exc)}
 
         await db.commit()
+
+
+def _clean_decimal(val: str) -> Decimal | None:
+    """Clean a string value for Decimal conversion — strips $, commas, spaces."""
+    if not val:
+        return None
+    cleaned = val.strip().replace("$", "").replace(",", "").replace(" ", "")
+    if cleaned in ("", "null", "None", "N/A", "n/a", "-"):
+        return None
+    try:
+        return Decimal(cleaned)
+    except Exception:
+        return None
 
 
 def _apply_extraction(invoice: Invoice, result: ExtractionResult) -> None:
@@ -200,19 +242,31 @@ def _apply_extraction(invoice: Invoice, result: ExtractionResult) -> None:
     if result.vendor_name.value:
         invoice.vendor_name = result.vendor_name.value
     if result.amount.value:
-        invoice.amount = Decimal(result.amount.value)
+        d = _clean_decimal(result.amount.value)
+        if d is not None:
+            invoice.amount = d
     if result.currency.value:
         invoice.currency = result.currency.value
     if result.subtotal.value:
-        invoice.subtotal = Decimal(result.subtotal.value)
+        d = _clean_decimal(result.subtotal.value)
+        if d is not None:
+            invoice.subtotal = d
     if result.tax_amount.value:
-        invoice.tax_amount = Decimal(result.tax_amount.value)
+        d = _clean_decimal(result.tax_amount.value)
+        if d is not None:
+            invoice.tax_amount = d
     if result.tax_rate.value:
-        invoice.tax_rate = Decimal(result.tax_rate.value)
+        d = _clean_decimal(result.tax_rate.value)
+        if d is not None:
+            invoice.tax_rate = d
     if result.discount_amount.value:
-        invoice.discount_amount = Decimal(result.discount_amount.value)
+        d = _clean_decimal(result.discount_amount.value)
+        if d is not None:
+            invoice.discount_amount = d
     if result.shipping_amount.value:
-        invoice.shipping_amount = Decimal(result.shipping_amount.value)
+        d = _clean_decimal(result.shipping_amount.value)
+        if d is not None:
+            invoice.shipping_amount = d
     if result.invoice_date.value:
         from datetime import date as date_type
         try:

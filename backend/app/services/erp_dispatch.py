@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 import uuid
 
 import boto3
@@ -18,9 +19,25 @@ async def dispatch_erp(
     if settings.erp_mode == "lambda":
         _send_to_sqs(invoice_id, org_id, actor_id)
     else:
-        asyncio.create_task(
-            _run_local(invoice_id, org_id, actor_id)
+        thread = threading.Thread(
+            target=_run_in_thread,
+            args=(invoice_id, org_id, actor_id),
+            daemon=True,
         )
+        thread.start()
+
+
+def _run_in_thread(
+    invoice_id: uuid.UUID,
+    org_id: uuid.UUID,
+    actor_id: uuid.UUID,
+) -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run_local(invoice_id, org_id, actor_id))
+    finally:
+        loop.close()
 
 
 def _send_to_sqs(
@@ -52,40 +69,46 @@ async def _run_local(
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
 ) -> None:
-    """Run ERP send in-process with its own DB session."""
+    """Run ERP send in-process with its own DB session and engine."""
     from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-    from app.database import control_session_factory, get_tenant_engine
+    from app.database import _make_tenant_url
     from app.models.invoice import Invoice
     from app.models.organization import Organization
     from app.services.erp import send_to_erp_internal
 
-    # Look up the tenant DB name
-    async with control_session_factory() as ctrl_db:
-        result = await ctrl_db.execute(
-            select(Organization).where(Organization.id == org_id)
-        )
-        org = result.scalar_one_or_none()
-        if not org:
-            return
+    ctrl_engine = create_async_engine(settings.database_url)
+    ctrl_factory = async_sessionmaker(ctrl_engine, expire_on_commit=False)
 
-    # Extract ERP config from org settings
-    erp_config = (org.settings or {}).get("erp")
-
-    engine = get_tenant_engine(org.db_name)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with factory() as db:
-        try:
-            result = await db.execute(
-                select(Invoice).where(Invoice.id == invoice_id)
+    try:
+        async with ctrl_factory() as ctrl_db:
+            result = await ctrl_db.execute(
+                select(Organization).where(Organization.id == org_id)
             )
-            invoice = result.scalar_one_or_none()
-            if not invoice:
+            org = result.scalar_one_or_none()
+            if not org:
                 return
 
-            # Invoice is already in sending_to_erp state — run the ERP call
-            await send_to_erp_internal(db, invoice, actor_id=actor_id, erp_config=erp_config)
-        except Exception:
-            await db.rollback()
+        erp_config = (org.settings or {}).get("erp")
+
+        tenant_url = _make_tenant_url(org.db_name)
+        tenant_engine = create_async_engine(tenant_url)
+        tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
+
+        async with tenant_factory() as db:
+            try:
+                result = await db.execute(
+                    select(Invoice).where(Invoice.id == invoice_id)
+                )
+                invoice = result.scalar_one_or_none()
+                if not invoice:
+                    return
+
+                await send_to_erp_internal(db, invoice, actor_id=actor_id, erp_config=erp_config)
+            except Exception:
+                await db.rollback()
+
+        await tenant_engine.dispose()
+    finally:
+        await ctrl_engine.dispose()

@@ -74,6 +74,7 @@ async def upload_invoice(
 
         # Check if extraction is enabled in the active workflow
         extraction_enabled = await is_step_enabled(db, org_id, "extraction")
+        print(f"[upload] Invoice {invoice.id} created, extraction_enabled={extraction_enabled}")
 
         if extraction_enabled:
             # Transition new → pending and trigger extraction
@@ -89,7 +90,22 @@ async def upload_invoice(
             await db.commit()
             await db.refresh(invoice)
 
+            print(f"[upload] Dispatching extraction for invoice {invoice.id}")
             await dispatch_extraction(invoice.id, org_id, user.id)
+            print(f"[upload] Extraction dispatched for invoice {invoice.id}")
+
+            # Log that extraction was dispatched
+            from app.services.audit_dispatch import dispatch_audit
+            await dispatch_audit(
+                db,
+                correlation_id=invoice.correlation_id,
+                organization_id=org_id,
+                actor_id=user.id,
+                action="invoice.extraction_dispatched",
+                entity_type="invoice",
+                entity_id=invoice.id,
+                details={"trigger": "auto_on_upload", "filename": file.filename},
+            )
 
             return {
                 "id": str(invoice.id),
@@ -113,6 +129,49 @@ async def upload_invoice(
 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{invoice_id}/extract")
+async def trigger_extraction(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Manually trigger or re-trigger extraction on an invoice.
+
+    Works on invoices in 'new' or 'failed' status that have a file attached.
+    """
+    invoice = await get_invoice_for_update(db, invoice_id)
+
+    if invoice.status not in (InvoiceStatus.new, InvoiceStatus.failed):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot extract from '{invoice.status.value}' status. Must be 'new' or 'failed'.",
+        )
+
+    if not invoice.file_key:
+        raise HTTPException(status_code=400, detail="No file attached to this invoice. Upload a file first.")
+
+    # Transition to pending
+    await transition_invoice(
+        db, invoice, InvoiceStatus.pending,
+        actor_id=user.id,
+        action_name="invoice.extraction_triggered",
+        details={"manual": True},
+    )
+    await db.commit()
+    await db.refresh(invoice)
+
+    # Dispatch extraction
+    from app.services.extraction_dispatch import dispatch_extraction
+    await dispatch_extraction(invoice.id, org_id, user.id)
+
+    return {
+        "id": str(invoice.id),
+        "status": invoice.status.value,
+        "message": "Extraction triggered. Fields will be populated shortly.",
+    }
 
 
 # ---------- Stage 2: Review ----------

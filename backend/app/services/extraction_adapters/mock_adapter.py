@@ -16,7 +16,7 @@ from app.services.extraction_adapters.dispatcher import register_extraction_adap
 class MockExtractionAdapter(ExtractionAdapter):
     provider_name = "mock"
 
-    async def extract(self, file_url: str, file_key: str, mime_type: str = "application/pdf") -> ExtractionResult:
+    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
         today = date.today()
         return ExtractionResult(
             success=True,

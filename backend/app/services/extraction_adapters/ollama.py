@@ -40,17 +40,9 @@ class OllamaAdapter(ExtractionAdapter):
     def _model(self) -> str:
         return self.config.get("model", "llama3.2-vision:11b")
 
-    async def extract(self, file_url: str, file_key: str, mime_type: str = "application/pdf") -> ExtractionResult:
-        # Fetch the file
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                file_resp = await client.get(file_url)
-                file_resp.raise_for_status()
-                file_bytes = file_resp.content
-        except Exception as exc:
-            return ExtractionResult(
-                success=False, error=f"Failed to fetch file: {exc}", provider=self.provider_name,
-            )
+    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
+        if not file_bytes:
+            return ExtractionResult(success=False, error="No file bytes provided", provider=self.provider_name)
 
         file_b64 = base64.b64encode(file_bytes).decode("utf-8")
 

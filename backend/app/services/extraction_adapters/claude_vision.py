@@ -91,22 +91,12 @@ class ClaudeVisionAdapter(ExtractionAdapter):
 
     provider_name = "claude_vision"
 
-    async def extract(self, file_url: str, file_key: str, mime_type: str = "application/pdf") -> ExtractionResult:
+    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
         api_key = self.config.get("api_key", "")
         model = self.config.get("model", "claude-sonnet-4-20250514")
 
-        # Fetch the file content
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                file_resp = await client.get(file_url)
-                file_resp.raise_for_status()
-                file_bytes = file_resp.content
-        except Exception as exc:
-            return ExtractionResult(
-                success=False,
-                error=f"Failed to fetch file: {exc}",
-                provider=self.provider_name,
-            )
+        if not file_bytes:
+            return ExtractionResult(success=False, error="No file bytes provided", provider=self.provider_name)
 
         # Determine media type
         if mime_type in ("application/pdf",):

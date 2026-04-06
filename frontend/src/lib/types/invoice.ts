@@ -29,7 +29,7 @@ export const INVOICE_STATUSES: InvoiceStatus[] = [
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
 	new: 'New',
-	pending: 'Pending',
+	pending: 'Extracting',
 	ready_for_review: 'Ready for Review',
 	approved: 'Approved',
 	rejected: 'Rejected',

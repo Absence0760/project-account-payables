@@ -102,6 +102,28 @@
 	let extractionAwsSecret = $state('');
 	let extractionAwsRegion = $state('us-east-1');
 	let savingExtraction = $state(false);
+	let testingExtraction = $state(false);
+	let extractionTestResult = $state<{ success: boolean; message: string } | null>(null);
+
+	async function testExtraction() {
+		testingExtraction = true;
+		extractionTestResult = null;
+		try {
+			extractionTestResult = await api.post<{ success: boolean; message: string }>('/api/organization/test-extraction', {
+				provider: extractionProgramType === 'platform' ? 'claude_vision' : extractionProvider,
+				api_key: extractionApiKey,
+				aws_access_key_id: extractionAwsKeyId,
+				aws_secret_access_key: extractionAwsSecret,
+				aws_region: extractionAwsRegion,
+				base_url: extractionOllamaUrl,
+				model: extractionOllamaModel,
+			});
+		} catch (err) {
+			extractionTestResult = { success: false, message: err instanceof Error ? err.message : 'Test failed' };
+		} finally {
+			testingExtraction = false;
+		}
+	}
 
 	const EXTRACTION_PROVIDERS = [
 		{ value: 'claude_vision', label: 'Claude Vision (Anthropic)' },
@@ -249,11 +271,9 @@
 	let savingErp = $state(false);
 
 	async function patchSettings(section: string, partial: Record<string, unknown>) {
-		const current = org ? (org.settings as unknown as Record<string, unknown>) : {};
-		const merged = { ...current, ...partial };
 		const data = await api.patch<OrgResponse>('/api/organization', {
 			...(partial.company ? { name: name.trim() } : {}),
-			settings: merged,
+			settings: partial,
 		});
 		org = data;
 		toast(`${section} saved`, 'success');
@@ -536,10 +556,18 @@
 					<p class="card-hint" style="margin-top: 8px;">Runs locally — no data leaves your machine. Install: <code>brew install ollama && ollama pull {extractionOllamaModel}</code></p>
 				{/if}
 
-				<div class="section-footer">
+				<div class="erp-test-row">
 					<button class="btn-save-section" disabled={savingExtraction} onclick={saveExtraction}>
 						{savingExtraction ? 'Saving...' : 'Save Extraction Settings'}
 					</button>
+					<button class="btn-test" disabled={testingExtraction} onclick={testExtraction}>
+						{testingExtraction ? 'Testing...' : 'Test Connection'}
+					</button>
+					{#if extractionTestResult}
+						<span class="test-result" class:success={extractionTestResult.success} class:failure={!extractionTestResult.success}>
+							{extractionTestResult.message}
+						</span>
+					{/if}
 				</div>
 			</section>
 

@@ -91,8 +91,8 @@ class ExtractionAdapter:
     def __init__(self, config: dict):
         self.config = config
 
-    async def extract(self, file_url: str, file_key: str, mime_type: str = "application/pdf") -> ExtractionResult:
-        """Extract invoice data from a file. Returns structured result with per-field confidence."""
+    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
+        """Extract invoice data from file bytes. Returns structured result with per-field confidence."""
         raise NotImplementedError
 
     async def test_connection(self) -> bool:

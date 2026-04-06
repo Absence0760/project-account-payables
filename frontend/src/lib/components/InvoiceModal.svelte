@@ -26,6 +26,8 @@
 		'invoice.resubmitted': 'Resubmitted for review',
 		'invoice.assigned_for_review': 'Assigned for review',
 		'invoice.erp_submitted': 'Sent to ERP',
+		'invoice.extraction_dispatched': 'Extraction started',
+		'invoice.extraction_triggered': 'Extraction triggered manually',
 		'invoice.extraction_completed': 'Extraction completed',
 		'invoice.extraction_failed': 'Extraction failed',
 		'invoice.completed': 'Marked complete',
@@ -92,6 +94,10 @@
 	);
 	let canRetryErp = $derived(status === 'failed' && !isClerkOnly && invoice.approved_by);
 	let retryingErp = $state(false);
+	let canExtract = $derived(
+		(status === 'new' || status === 'failed') && invoice.file_url
+	);
+	let extracting = $state(false);
 	let canDelete = $derived(
 		!isClerkOnly && status !== 'done' && status !== 'sent_to_erp' && status !== 'sending_to_erp'
 	);
@@ -228,6 +234,76 @@
 		}
 	}
 
+	let extractionStatus = $state('');
+
+	async function handleExtract() {
+		extracting = true;
+		extractionStatus = 'Triggering extraction...';
+		try {
+			await api.post(`/api/invoices/${invoice.id}/extract`, {});
+			extractionStatus = 'Extracting fields...';
+			await pollForCompletion();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Extraction failed', 'error');
+			extracting = false;
+			extractionStatus = '';
+		}
+	}
+
+	async function pollForCompletion() {
+		const maxPolls = 30;
+		const interval = 2000;
+
+		for (let i = 0; i < maxPolls; i++) {
+			await new Promise(r => setTimeout(r, interval));
+
+			try {
+				const updated = await api.get<import('$lib/types/invoice').Invoice>(`/api/invoices/${invoice.id}`);
+
+				if (updated.status !== 'pending') {
+					// Extraction finished — update the modal fields with extracted data
+					vendor = updated.vendor || vendor;
+					invoice_number = updated.invoice_number || invoice_number;
+					amount = updated.amount || amount;
+					due_date = updated.due_date || due_date;
+					po_number = updated.po_number || po_number;
+					description = updated.description || description;
+					status = updated.status as typeof status;
+					vendor_address = updated.vendor_address ?? vendor_address;
+					vendor_tax_id = updated.vendor_tax_id ?? vendor_tax_id;
+					ship_to_address = updated.ship_to_address ?? ship_to_address;
+					tax_rate = updated.tax_rate ?? tax_rate;
+					payment_method = updated.payment_method ?? payment_method;
+					reference_number = updated.reference_number ?? reference_number;
+
+					// Refresh the invoice list and audit log
+					await invoiceStore.fetch();
+					await loadAuditLog();
+
+					if (updated.status === 'ready_for_review') {
+						toast('Extraction complete — fields populated', 'success');
+					} else if (updated.status === 'failed') {
+						toast('Extraction failed — check the activity log', 'error');
+					}
+
+					extracting = false;
+					extractionStatus = '';
+					return;
+				}
+
+				extractionStatus = `Extracting fields... (${i + 1}s)`;
+			} catch {
+				// Poll failed — keep trying
+			}
+		}
+
+		// Timeout
+		extracting = false;
+		extractionStatus = '';
+		toast('Extraction is taking longer than expected. Refresh the page to check.', 'warning');
+		await invoiceStore.fetch();
+	}
+
 	async function deleteInvoice() {
 		deleting = true;
 		try {
@@ -282,6 +358,10 @@
 	}
 
 	let auditLog = $state<AuditEntry[]>([]);
+
+	// Per-field confidence from extraction
+	type FieldConfidence = Record<string, number>;
+	let fieldConfidence = $state<FieldConfidence>({});
 	let erpInfo = $derived.by(() => {
 		const erpActions = auditLog.filter(e =>
 			e.action.startsWith('invoice.erp_') || e.action.startsWith('invoice.completed')
@@ -301,6 +381,7 @@
 
 	$effect(() => {
 		loadAuditLog();
+		loadExtractionConfidence();
 	});
 
 	async function loadAuditLog() {
@@ -312,6 +393,40 @@
 		} finally {
 			auditLoading = false;
 		}
+	}
+
+	async function loadExtractionConfidence() {
+		try {
+			const results = await api.get<Array<{ raw_result: Record<string, unknown> | null }>>(`/api/invoices/${invoice.id}/extraction`);
+			if (results.length === 0) return;
+			const latest = results[0];
+			const raw = latest.raw_result;
+			if (!raw) return;
+
+			const conf: FieldConfidence = {};
+			for (const [key, val] of Object.entries(raw)) {
+				if (val && typeof val === 'object' && 'confidence' in val) {
+					conf[key] = (val as { confidence: number }).confidence;
+				}
+			}
+			fieldConfidence = conf;
+		} catch {
+			// non-critical
+		}
+	}
+
+	function confidenceLabel(score: number): string {
+		if (score >= 0.95) return 'Very high';
+		if (score >= 0.85) return 'High';
+		if (score >= 0.7) return 'Medium';
+		if (score >= 0.5) return 'Low';
+		return 'Very low';
+	}
+
+	function confidenceColor(score: number): string {
+		if (score >= 0.85) return '#1fa86a';
+		if (score >= 0.7) return '#d4940a';
+		return '#e04040';
 	}
 
 	function formatAuditDate(iso: string): string {
@@ -375,23 +490,23 @@
 				<form onsubmit={(e) => { e.preventDefault(); save(); }}>
 					<div class="form-grid">
 						<label class:field-error={canSubmitStatus && !vendor.trim()}>
-							<span>Vendor <em class="required">*</em></span>
+							<span>Vendor <em class="required">*</em> {#if fieldConfidence.vendor_name}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_name)}" data-tip="{Math.round(fieldConfidence.vendor_name * 100)}% — {confidenceLabel(fieldConfidence.vendor_name)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor} required />
 						</label>
 						<label class:field-error={canSubmitStatus && !invoice_number.trim()}>
-							<span>Invoice # <em class="required">*</em></span>
+							<span>Invoice # <em class="required">*</em> {#if fieldConfidence.invoice_number}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.invoice_number)}" data-tip="{Math.round(fieldConfidence.invoice_number * 100)}% — {confidenceLabel(fieldConfidence.invoice_number)}"></span>{/if}</span>
 							<input type="text" bind:value={invoice_number} required />
 						</label>
 						<label class:field-error={canSubmitStatus && (!amount || amount <= 0)}>
-							<span>Amount <em class="required">*</em></span>
+							<span>Amount <em class="required">*</em> {#if fieldConfidence.amount}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.amount)}" data-tip="{Math.round(fieldConfidence.amount * 100)}% — {confidenceLabel(fieldConfidence.amount)}"></span>{/if}</span>
 							<input type="number" step="0.01" bind:value={amount} required />
 						</label>
 						<label>
-							<span>Due Date</span>
+							<span>Due Date {#if fieldConfidence.due_date}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.due_date)}" data-tip="{Math.round(fieldConfidence.due_date * 100)}% — {confidenceLabel(fieldConfidence.due_date)}"></span>{/if}</span>
 							<input type="date" bind:value={due_date} />
 						</label>
 						<label>
-							<span>PO Number</span>
+							<span>PO Number {#if fieldConfidence.po_number}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.po_number)}" data-tip="{Math.round(fieldConfidence.po_number * 100)}% — {confidenceLabel(fieldConfidence.po_number)}"></span>{/if}</span>
 							<input type="text" bind:value={po_number} />
 						</label>
 						{#if !isClerkOnly}
@@ -410,11 +525,11 @@
 							</label>
 						{/if}
 						<label>
-							<span>Reference #</span>
+							<span>Reference # {#if fieldConfidence.reference_number}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.reference_number)}" data-tip="{Math.round(fieldConfidence.reference_number * 100)}% — {confidenceLabel(fieldConfidence.reference_number)}"></span>{/if}</span>
 							<input type="text" bind:value={reference_number} />
 						</label>
 						<label>
-							<span>Payment Method</span>
+							<span>Payment Method {#if fieldConfidence.payment_method}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.payment_method)}" data-tip="{Math.round(fieldConfidence.payment_method * 100)}% — {confidenceLabel(fieldConfidence.payment_method)}"></span>{/if}</span>
 							<select bind:value={payment_method}>
 								<option value="">—</option>
 								<option value="ach">ACH</option>
@@ -425,23 +540,23 @@
 							</select>
 						</label>
 						<label>
-							<span>Tax Rate (%)</span>
+							<span>Tax Rate (%) {#if fieldConfidence.tax_rate}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.tax_rate)}" data-tip="{Math.round(fieldConfidence.tax_rate * 100)}% — {confidenceLabel(fieldConfidence.tax_rate)}"></span>{/if}</span>
 							<input type="number" step="0.01" min="0" max="100" bind:value={tax_rate} />
 						</label>
 						<label>
-							<span>Vendor Tax ID</span>
+							<span>Vendor Tax ID {#if fieldConfidence.vendor_tax_id}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_tax_id)}" data-tip="{Math.round(fieldConfidence.vendor_tax_id * 100)}% — {confidenceLabel(fieldConfidence.vendor_tax_id)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor_tax_id} placeholder="EIN / VAT #" />
 						</label>
 						<label class="full-width">
-							<span>Vendor Address</span>
+							<span>Vendor Address {#if fieldConfidence.vendor_address}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_address)}" data-tip="{Math.round(fieldConfidence.vendor_address * 100)}% — {confidenceLabel(fieldConfidence.vendor_address)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor_address} />
 						</label>
 						<label class="full-width">
-							<span>Ship-to Address</span>
+							<span>Ship-to Address {#if fieldConfidence.ship_to_address}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.ship_to_address)}" data-tip="{Math.round(fieldConfidence.ship_to_address * 100)}% — {confidenceLabel(fieldConfidence.ship_to_address)}"></span>{/if}</span>
 							<input type="text" bind:value={ship_to_address} />
 						</label>
 						<label class="full-width">
-							<span>Description</span>
+							<span>Description {#if fieldConfidence.description}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.description)}" data-tip="{Math.round(fieldConfidence.description * 100)}% — {confidenceLabel(fieldConfidence.description)}"></span>{/if}</span>
 							<input type="text" bind:value={description} />
 						</label>
 					</div>
@@ -536,6 +651,18 @@
 											{#if entry.details?.reason}
 												<span class="activity-detail">— {entry.details.reason}</span>
 											{/if}
+											{#if entry.action === 'invoice.extraction_completed' && entry.details?.confidence}
+												<span class="activity-detail">— {entry.details.method} ({Math.round((entry.details.confidence as number) * 100)}% confidence)</span>
+											{/if}
+											{#if entry.action === 'invoice.extraction_completed' && entry.details?.gl_suggested}
+												<span class="activity-detail">GL suggested: {entry.details.gl_suggested}</span>
+											{/if}
+											{#if entry.action === 'invoice.extraction_completed' && entry.details?.vendor_action === 'created'}
+												<span class="activity-detail">New vendor created (unverified)</span>
+											{/if}
+											{#if entry.action === 'invoice.extraction_failed' && entry.details?.error}
+												<span class="activity-detail error">— {entry.details.error}</span>
+											{/if}
 										</div>
 										<span class="activity-time">{formatAuditDate(entry.created_at)}</span>
 									</div>
@@ -584,6 +711,17 @@
 					<footer>
 						<div class="footer-right">
 							<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
+							{#if canExtract || extracting}
+								<button type="button" class="btn-extract" disabled={extracting} onclick={handleExtract}>
+									{#if extracting}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+										{extractionStatus || 'Extracting...'}
+									{:else}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+										{status === 'failed' ? 'Re-extract' : 'Extract'}
+									{/if}
+								</button>
+							{/if}
 							{#if !isDone}
 								<button type="submit" class="btn-save" disabled={saving}>
 									{saving ? 'Saving...' : 'Save'}
@@ -864,6 +1002,73 @@
 		cursor: not-allowed;
 	}
 
+	.confidence-dot {
+		display: inline-block;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		margin-left: 4px;
+		vertical-align: middle;
+		cursor: help;
+		position: relative;
+		/* Expand hover area */
+		padding: 4px;
+		margin: -4px;
+		margin-left: 0;
+		background-clip: content-box;
+	}
+
+	.confidence-dot::after {
+		content: attr(data-tip);
+		position: absolute;
+		bottom: calc(100% + 6px);
+		left: 50%;
+		transform: translateX(-50%);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 4px 8px;
+		font-size: 0.72rem;
+		font-weight: 500;
+		color: var(--text);
+		white-space: nowrap;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+		pointer-events: none;
+		opacity: 0;
+		transition: opacity 0.15s;
+		z-index: 10;
+	}
+
+	.confidence-dot:hover::after {
+		opacity: 1;
+	}
+
+	.btn-extract {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 14px;
+		border-radius: 4px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		border: 1px solid var(--border);
+		font-family: inherit;
+		white-space: nowrap;
+		background: var(--surface);
+		color: var(--text-muted);
+	}
+
+	.btn-extract:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.btn-extract:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
 	.btn-save {
 		background: var(--accent);
 		color: #fff;
@@ -1119,6 +1324,11 @@
 
 	.activity-detail {
 		color: var(--text-muted);
+		display: block;
+	}
+
+	.activity-detail.error {
+		color: #e04040;
 		font-style: italic;
 	}
 

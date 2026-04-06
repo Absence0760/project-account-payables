@@ -29,10 +29,10 @@ class OrganizationResponse(BaseModel):
     name: str
     slug: str
     plan: str
-    settings: OrganizationSettings
+    settings: dict  # raw JSONB — preserves erp, cards, extraction keys
     created_at: str
 
 
 class UpdateOrganizationRequest(BaseModel):
     name: str | None = Field(default=None, max_length=255)
-    settings: OrganizationSettings | None = None
+    settings: dict | None = None  # raw dict — merged into existing settings
