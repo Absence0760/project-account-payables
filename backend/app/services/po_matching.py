@@ -3,16 +3,14 @@
 Supports 2-way (invoice vs PO) and 3-way (invoice vs PO vs GR) matching.
 """
 
-import uuid
 from dataclasses import dataclass, field
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice
-from app.models.procurement import PurchaseOrder, GoodsReceipt
+from app.models.procurement import GoodsReceipt, PurchaseOrder
 
 
 @dataclass
@@ -59,9 +57,13 @@ async def match_invoice_to_po(
         return result
 
     # Find PO by number
-    po_query = select(PurchaseOrder).where(
-        PurchaseOrder.po_number == invoice.po_number,
-    ).options(selectinload(PurchaseOrder.line_items))
+    po_query = (
+        select(PurchaseOrder)
+        .where(
+            PurchaseOrder.po_number == invoice.po_number,
+        )
+        .options(selectinload(PurchaseOrder.line_items))
+    )
 
     # If invoice has a vendor_id, also match on vendor
     if invoice.vendor_id:
@@ -115,12 +117,8 @@ async def match_invoice_to_po(
 
         # Compare line quantities if both have line items
         if po.line_items and gr.line_items:
-            po_qty_total = sum(
-                float(li.quantity or 0) for li in po.line_items
-            )
-            gr_qty_total = sum(
-                float(li.quantity_received or 0) for li in gr.line_items
-            )
+            po_qty_total = sum(float(li.quantity or 0) for li in po.line_items)
+            gr_qty_total = sum(float(li.quantity_received or 0) for li in gr.line_items)
 
             if po_qty_total > 0 and gr_qty_total < po_qty_total:
                 pct_received = (gr_qty_total / po_qty_total) * 100

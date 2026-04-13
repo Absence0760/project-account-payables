@@ -9,16 +9,19 @@ import json
 import httpx
 
 from app.services.extraction_adapters.base import (
-    ExtractionAdapter,
-    ExtractionResult,
     ExtractedField,
     ExtractedLineItem,
+    ExtractionAdapter,
+    ExtractionResult,
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
 
-EXTRACTION_PROMPT = """You are an invoice data extraction system. Extract all fields from this invoice image/document.
+EXTRACTION_PROMPT = """You are an invoice data extraction system. \
+Extract all fields from this invoice image/document.
 
-Return a JSON object with the following structure. For each field, provide the value and a confidence score (0.0 to 1.0) indicating how certain you are.
+Return a JSON object with the following structure. For each field, \
+provide the value and a confidence score (0.0 to 1.0) indicating \
+how certain you are.
 
 ```json
 {
@@ -91,12 +94,20 @@ class ClaudeVisionAdapter(ExtractionAdapter):
 
     provider_name = "claude_vision"
 
-    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
+    async def extract(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+        file_url: str = "",
+    ) -> ExtractionResult:
         api_key = self.config.get("api_key", "")
         model = self.config.get("model", "claude-sonnet-4-20250514")
 
         if not file_bytes:
-            return ExtractionResult(success=False, error="No file bytes provided", provider=self.provider_name)
+            return ExtractionResult(
+                success=False, error="No file bytes provided", provider=self.provider_name
+            )
 
         # Determine media type
         if mime_type in ("application/pdf",):
@@ -149,7 +160,9 @@ class ClaudeVisionAdapter(ExtractionAdapter):
                 )
         except Exception as exc:
             return ExtractionResult(
-                success=False, error=f"API call failed: {exc}", provider=self.provider_name,
+                success=False,
+                error=f"API call failed: {exc}",
+                provider=self.provider_name,
             )
 
         if resp.status_code != 200:
@@ -215,20 +228,25 @@ class ClaudeVisionAdapter(ExtractionAdapter):
 
         # Parse line items
         for li in data.get("line_items", []):
-            result.line_items.append(ExtractedLineItem(
-                line_number=li.get("line_number", 0),
-                item_code=_parse_field(li, "item_code"),
-                description=_parse_field(li, "description"),
-                quantity=_parse_field(li, "quantity"),
-                unit_price=_parse_field(li, "unit_price"),
-                tax=_parse_field(li, "tax"),
-                total=_parse_field(li, "total"),
-            ))
+            result.line_items.append(
+                ExtractedLineItem(
+                    line_number=li.get("line_number", 0),
+                    item_code=_parse_field(li, "item_code"),
+                    description=_parse_field(li, "description"),
+                    quantity=_parse_field(li, "quantity"),
+                    unit_price=_parse_field(li, "unit_price"),
+                    tax=_parse_field(li, "tax"),
+                    total=_parse_field(li, "total"),
+                )
+            )
 
         # Calculate overall confidence
         fields = [
-            result.invoice_number, result.vendor_name, result.amount,
-            result.invoice_date, result.due_date,
+            result.invoice_number,
+            result.vendor_name,
+            result.amount,
+            result.invoice_date,
+            result.due_date,
         ]
         confidences = [f.confidence for f in fields if f.value is not None]
         result.overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0

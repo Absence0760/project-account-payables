@@ -118,7 +118,7 @@ class LithicAdapter(CardAdapter):
 
         data = resp.json()
         state = data.get("state", "").upper()
-        spend = data.get("spend_limit", 0)
+        data.get("spend_limit", 0)
         pending = data.get("pending_amount", 0)
 
         if state == "CLOSED":

@@ -1,7 +1,5 @@
 """Schemas for virtual card endpoints."""
 
-from decimal import Decimal
-
 from pydantic import BaseModel, Field
 
 

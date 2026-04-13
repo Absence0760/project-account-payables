@@ -8,7 +8,7 @@ from datetime import date
 from decimal import Decimal
 
 
-class ErpInvoiceStatus(str, enum.Enum):
+class ErpInvoiceStatus(enum.StrEnum):
     draft = "draft"
     open = "open"
     partially_paid = "partially_paid"

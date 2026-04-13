@@ -4,13 +4,13 @@ import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_org_id
 from app.models.organization import Organization
-from app.models.procurement import PurchaseOrder, POLineItem
+from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.tenant import get_tenant, get_tenant_db
@@ -96,9 +96,24 @@ async def sync_pos_from_erp(
             "total": "2500.00",
             "status": "open",
             "lines": [
-                {"description": "Printer paper - bulk", "quantity": "20", "unit_price": "45.00", "total": "900.00"},
-                {"description": "Ink cartridges", "quantity": "10", "unit_price": "80.00", "total": "800.00"},
-                {"description": "Desk organizers", "quantity": "16", "unit_price": "50.00", "total": "800.00"},
+                {
+                    "description": "Printer paper - bulk",
+                    "quantity": "20",
+                    "unit_price": "45.00",
+                    "total": "900.00",
+                },
+                {
+                    "description": "Ink cartridges",
+                    "quantity": "10",
+                    "unit_price": "80.00",
+                    "total": "800.00",
+                },
+                {
+                    "description": "Desk organizers",
+                    "quantity": "16",
+                    "unit_price": "50.00",
+                    "total": "800.00",
+                },
             ],
         },
         {
@@ -107,8 +122,18 @@ async def sync_pos_from_erp(
             "total": "15000.00",
             "status": "open",
             "lines": [
-                {"description": "Annual SaaS license", "quantity": "1", "unit_price": "12000.00", "total": "12000.00"},
-                {"description": "Premium support addon", "quantity": "1", "unit_price": "3000.00", "total": "3000.00"},
+                {
+                    "description": "Annual SaaS license",
+                    "quantity": "1",
+                    "unit_price": "12000.00",
+                    "total": "12000.00",
+                },
+                {
+                    "description": "Premium support addon",
+                    "quantity": "1",
+                    "unit_price": "3000.00",
+                    "total": "3000.00",
+                },
             ],
         },
         {
@@ -117,7 +142,12 @@ async def sync_pos_from_erp(
             "total": "24000.00",
             "status": "open",
             "lines": [
-                {"description": "Laptop Model X Pro", "quantity": "10", "unit_price": "2400.00", "total": "24000.00"},
+                {
+                    "description": "Laptop Model X Pro",
+                    "quantity": "10",
+                    "unit_price": "2400.00",
+                    "total": "24000.00",
+                },
             ],
         },
     ]
@@ -149,13 +179,15 @@ async def sync_pos_from_erp(
         await db.flush()
 
         for line in mock_po.get("lines", []):
-            db.add(POLineItem(
-                po_id=po.id,
-                description=line.get("description"),
-                quantity=Decimal(line["quantity"]) if line.get("quantity") else None,
-                unit_price=Decimal(line["unit_price"]) if line.get("unit_price") else None,
-                total=Decimal(line["total"]) if line.get("total") else None,
-            ))
+            db.add(
+                POLineItem(
+                    po_id=po.id,
+                    description=line.get("description"),
+                    quantity=Decimal(line["quantity"]) if line.get("quantity") else None,
+                    unit_price=Decimal(line["unit_price"]) if line.get("unit_price") else None,
+                    total=Decimal(line["total"]) if line.get("total") else None,
+                )
+            )
 
         created += 1
 

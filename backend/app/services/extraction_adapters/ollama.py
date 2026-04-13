@@ -14,10 +14,9 @@ import json
 import httpx
 
 from app.services.extraction_adapters.base import (
+    ExtractedLineItem,
     ExtractionAdapter,
     ExtractionResult,
-    ExtractedField,
-    ExtractedLineItem,
 )
 from app.services.extraction_adapters.claude_vision import EXTRACTION_PROMPT, _parse_field
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
@@ -39,6 +38,7 @@ class OllamaAdapter(ExtractionAdapter):
         """Extract text from a PDF. Returns None if no text layer (scanned doc)."""
         try:
             import fitz  # PyMuPDF
+
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             text = ""
             for page in doc:
@@ -56,6 +56,7 @@ class OllamaAdapter(ExtractionAdapter):
         """Convert first page of PDF to PNG image bytes. Fallback for scanned PDFs."""
         try:
             import fitz  # PyMuPDF
+
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             page = doc[0]
             pix = page.get_pixmap(dpi=200)
@@ -69,9 +70,17 @@ class OllamaAdapter(ExtractionAdapter):
     def _model(self) -> str:
         return self.config.get("model", "llama3.2-vision:11b")
 
-    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
+    async def extract(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+        file_url: str = "",
+    ) -> ExtractionResult:
         if not file_bytes:
-            return ExtractionResult(success=False, error="No file bytes provided", provider=self.provider_name)
+            return ExtractionResult(
+                success=False, error="No file bytes provided", provider=self.provider_name
+            )
 
         is_pdf = mime_type == "application/pdf" or file_key.lower().endswith(".pdf")
         use_vision = True
@@ -116,7 +125,9 @@ class OllamaAdapter(ExtractionAdapter):
                 "messages": [
                     {
                         "role": "user",
-                        "content": f"{EXTRACTION_PROMPT}\n\nHere is the invoice text:\n\n{pdf_text}",
+                        "content": (
+                            f"{EXTRACTION_PROMPT}\n\nHere is the invoice text:\n\n{pdf_text}"
+                        ),
                     }
                 ],
                 "stream": False,
@@ -137,7 +148,9 @@ class OllamaAdapter(ExtractionAdapter):
             )
         except Exception as exc:
             return ExtractionResult(
-                success=False, error=f"Ollama API error: {exc}", provider=self.provider_name,
+                success=False,
+                error=f"Ollama API error: {exc}",
+                provider=self.provider_name,
             )
 
         if resp.status_code != 200:
@@ -198,15 +211,17 @@ class OllamaAdapter(ExtractionAdapter):
         )
 
         for li in data.get("line_items", []):
-            result.line_items.append(ExtractedLineItem(
-                line_number=li.get("line_number", 0),
-                item_code=_parse_field(li, "item_code"),
-                description=_parse_field(li, "description"),
-                quantity=_parse_field(li, "quantity"),
-                unit_price=_parse_field(li, "unit_price"),
-                tax=_parse_field(li, "tax"),
-                total=_parse_field(li, "total"),
-            ))
+            result.line_items.append(
+                ExtractedLineItem(
+                    line_number=li.get("line_number", 0),
+                    item_code=_parse_field(li, "item_code"),
+                    description=_parse_field(li, "description"),
+                    quantity=_parse_field(li, "quantity"),
+                    unit_price=_parse_field(li, "unit_price"),
+                    tax=_parse_field(li, "tax"),
+                    total=_parse_field(li, "total"),
+                )
+            )
 
         fields = [result.invoice_number, result.vendor_name, result.amount]
         confidences = [f.confidence for f in fields if f.value is not None]

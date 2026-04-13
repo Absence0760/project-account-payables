@@ -1,7 +1,6 @@
 """Vendor matching service — fuzzy match vendor names from invoices against existing vendors."""
 
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +13,25 @@ def _normalize(name: str) -> str:
     """Normalize a vendor name for comparison."""
     name = name.lower().strip()
     # Remove common suffixes
-    for suffix in (" inc", " inc.", " llc", " ltd", " ltd.", " corp", " corp.",
-                    " co", " co.", " company", " group", " plc", " gmbh",
-                    " pty", " pty.", " limited", " incorporated"):
+    for suffix in (
+        " inc",
+        " inc.",
+        " llc",
+        " ltd",
+        " ltd.",
+        " corp",
+        " corp.",
+        " co",
+        " co.",
+        " company",
+        " group",
+        " plc",
+        " gmbh",
+        " pty",
+        " pty.",
+        " limited",
+        " incorporated",
+    ):
         if name.endswith(suffix):
             name = name[: -len(suffix)].strip()
     # Remove punctuation
@@ -78,9 +93,7 @@ async def match_vendor(
         return exact_match, 0.98
 
     # Third: fuzzy match against all active vendors
-    result = await db.execute(
-        select(Vendor).where(Vendor.status.in_(["active", "unverified"]))
-    )
+    result = await db.execute(select(Vendor).where(Vendor.status.in_(["active", "unverified"])))
     vendors = result.scalars().all()
 
     normalized_input = _normalize(vendor_name)

@@ -1,7 +1,7 @@
 """Shared FastAPI dependencies for auth, tenant context, and DB sessions."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, Header, HTTPException, status
 from jose import JWTError, jwt
@@ -19,7 +19,7 @@ ALGORITHM = "HS256"
 
 def create_access_token(user_id: uuid.UUID, org_id: uuid.UUID) -> str:
     jti = str(uuid.uuid4())
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
+    expire = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {
         "sub": str(user_id),
         "org": str(org_id),
@@ -55,7 +55,9 @@ async def get_current_user(
     # Check blocklist
     jti = payload.get("jti")
     if jti and await is_token_blocked(jti):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
+        )
 
     result = await db.execute(
         select(User).where(User.id == user_id).options(selectinload(User.roles))

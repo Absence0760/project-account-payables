@@ -1,14 +1,10 @@
 """AWS Textract extraction adapter — BYOK option for customers on AWS."""
 
-import json
-
-import httpx
-
 from app.services.extraction_adapters.base import (
-    ExtractionAdapter,
-    ExtractionResult,
     ExtractedField,
     ExtractedLineItem,
+    ExtractionAdapter,
+    ExtractionResult,
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
 
@@ -25,14 +21,24 @@ class AWSTextractAdapter(ExtractionAdapter):
 
     provider_name = "aws_textract"
 
-    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
+    async def extract(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+        file_url: str = "",
+    ) -> ExtractionResult:
         try:
             import boto3
         except ImportError:
-            return ExtractionResult(success=False, error="boto3 not installed", provider=self.provider_name)
+            return ExtractionResult(
+                success=False, error="boto3 not installed", provider=self.provider_name
+            )
 
         if not file_bytes:
-            return ExtractionResult(success=False, error="No file bytes provided", provider=self.provider_name)
+            return ExtractionResult(
+                success=False, error="No file bytes provided", provider=self.provider_name
+            )
 
         # Call Textract AnalyzeExpense
         try:
@@ -43,12 +49,12 @@ class AWSTextractAdapter(ExtractionAdapter):
                 region_name=self.config.get("aws_region", "us-east-1"),
             )
 
-            response = textract.analyze_expense(
-                Document={"Bytes": file_bytes}
-            )
+            response = textract.analyze_expense(Document={"Bytes": file_bytes})
         except Exception as exc:
             return ExtractionResult(
-                success=False, error=f"Textract API error: {exc}", provider=self.provider_name,
+                success=False,
+                error=f"Textract API error: {exc}",
+                provider=self.provider_name,
             )
 
         # Parse Textract response
@@ -111,6 +117,7 @@ class AWSTextractAdapter(ExtractionAdapter):
     async def test_connection(self) -> bool:
         try:
             import boto3
+
             textract = boto3.client(
                 "textract",
                 aws_access_key_id=self.config.get("aws_access_key_id"),

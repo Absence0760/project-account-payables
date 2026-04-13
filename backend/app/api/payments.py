@@ -1,20 +1,19 @@
 """Payment endpoints."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, and_, or_
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_org_id
-from app.models.user import User
-from app.tenant import get_tenant_db
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
-from app.models.virtual_card import VirtualCard, CardRebate
+from app.models.user import User
+from app.models.virtual_card import CardRebate
 from app.schemas.payment import (
     PaymentCreate,
     PaymentListResponse,
@@ -22,6 +21,7 @@ from app.schemas.payment import (
     PaymentRunListResponse,
     PaymentRunResponse,
 )
+from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -41,9 +41,7 @@ async def list_payments(
     amount_max: float | None = None,
     db: AsyncSession = Depends(get_tenant_db),
 ):
-    query = select(Payment, Invoice).outerjoin(
-        Invoice, Payment.invoice_id == Invoice.id
-    )
+    query = select(Payment, Invoice).outerjoin(Invoice, Payment.invoice_id == Invoice.id)
 
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
@@ -65,10 +63,11 @@ async def list_payments(
         )
 
     # Count
-    count_q = select(func.count()).select_from(
+    select(func.count()).select_from(
         select(Payment.id)
         .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .where(query.whereclause) if query.whereclause is not None
+        .where(query.whereclause)
+        if query.whereclause is not None
         else select(Payment.id)
     )
     # Simpler count approach
@@ -132,9 +131,7 @@ async def create_payment(
     db: AsyncSession = Depends(get_tenant_db),
 ):
     # Verify invoice exists
-    inv_result = await db.execute(
-        select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id))
-    )
+    inv_result = await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)))
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -254,7 +251,9 @@ async def create_payment_run(
         "status": run.status,
         "total_amount": float(total),
         "payment_count": len(body.items),
-        "message": f"Payment run created with {len(body.items)} payments totaling ${float(total):,.2f}",
+        "message": (
+            f"Payment run created with {len(body.items)} payments totaling ${float(total):,.2f}"
+        ),
     }
 
 
@@ -313,23 +312,23 @@ async def execute_payment_run(
     if not run:
         raise HTTPException(status_code=404, detail="Payment run not found")
     if run.status != "draft":
-        raise HTTPException(status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'")
+        raise HTTPException(
+            status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'"
+        )
 
     # Update run status
     run.status = "completed"
-    run.executed_at = datetime.now(timezone.utc)
+    run.executed_at = datetime.now(UTC)
 
     # Mark all payments as completed and generate references
-    pay_result = await db.execute(
-        select(Payment).where(Payment.payment_run_id == run_id)
-    )
+    pay_result = await db.execute(select(Payment).where(Payment.payment_run_id == run_id))
     payments = pay_result.scalars().all()
 
     completed = 0
     for i, payment in enumerate(payments):
         payment.status = "completed"
         method_prefix = (payment.method or "PAY").upper()
-        payment.reference = f"{method_prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{i+1:03d}"
+        payment.reference = f"{method_prefix}-{datetime.now(UTC).strftime('%Y%m%d')}-{i + 1:03d}"
 
         # Update invoice status to payment_scheduled
         inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
@@ -342,6 +341,7 @@ async def execute_payment_run(
 
     # Async ERP sync — doesn't block the response
     from app.services.payment_erp_sync import dispatch_payment_sync
+
     await dispatch_payment_sync(run_id, uuid.UUID(str(run.organization_id)))
 
     return {
@@ -362,11 +362,7 @@ async def payment_queue(
 ):
     """List approved invoices ready for payment (no completed payment yet)."""
     # Subquery: invoices that already have a completed payment
-    paid_ids = (
-        select(Payment.invoice_id)
-        .where(Payment.status == "completed")
-        .scalar_subquery()
-    )
+    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
 
     payable_statuses = [
         InvoiceStatus.approved.value,
@@ -395,8 +391,9 @@ async def payment_queue(
                 "currency": inv.currency,
                 "due_date": inv.due_date.isoformat() if inv.due_date else None,
                 "payment_terms": inv.payment_terms,
-                "status": inv.status.value if hasattr(inv.status, 'value') else inv.status,
-                "is_overdue": inv.due_date is not None and inv.due_date < __import__("datetime").date.today(),
+                "status": inv.status.value if hasattr(inv.status, "value") else inv.status,
+                "is_overdue": inv.due_date is not None
+                and inv.due_date < __import__("datetime").date.today(),
             }
             for inv in invoices
         ],
@@ -419,7 +416,9 @@ async def payment_summary(
     total_paid = float((await db.execute(paid_q)).scalar() or 0)
 
     # Total pending
-    pending_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status.in_(["pending", "processing"]))
+    pending_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(
+        Payment.status.in_(["pending", "processing"])
+    )
     total_pending = float((await db.execute(pending_q)).scalar() or 0)
 
     # Payment count
@@ -439,10 +438,12 @@ async def payment_summary(
         InvoiceStatus.payment_scheduled.value,
     ]
     queue_q = select(func.count()).select_from(
-        select(Invoice.id).where(
+        select(Invoice.id)
+        .where(
             Invoice.status.in_(payable_statuses),
             Invoice.id.notin_(paid_ids),
-        ).subquery()
+        )
+        .subquery()
     )
     queue_count = (await db.execute(queue_q)).scalar() or 0
 

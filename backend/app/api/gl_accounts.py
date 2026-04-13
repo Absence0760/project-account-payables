@@ -1,10 +1,9 @@
 """GL Account (Chart of Accounts) endpoints."""
 
 import uuid
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_org_id
@@ -26,12 +25,10 @@ async def list_gl_accounts(
 ):
     query = select(GLAccount)
     if active_only:
-        query = query.where(GLAccount.is_active == True)
+        query = query.where(GLAccount.is_active)
     if search:
         pattern = f"%{search}%"
-        query = query.where(
-            GLAccount.code.ilike(pattern) | GLAccount.name.ilike(pattern)
-        )
+        query = query.where(GLAccount.code.ilike(pattern) | GLAccount.name.ilike(pattern))
     if account_type:
         query = query.where(GLAccount.account_type == account_type)
 
@@ -129,13 +126,15 @@ async def sync_gl_accounts_from_erp(
                 existing.name = acct["name"]
                 updated += 1
         else:
-            db.add(GLAccount(
-                code=acct["code"],
-                name=acct["name"],
-                account_type=acct["type"],
-                organization_id=org_id,
-                erp_account_id=acct["code"],
-            ))
+            db.add(
+                GLAccount(
+                    code=acct["code"],
+                    name=acct["name"],
+                    account_type=acct["type"],
+                    organization_id=org_id,
+                    erp_account_id=acct["code"],
+                )
+            )
             created += 1
 
     await db.commit()

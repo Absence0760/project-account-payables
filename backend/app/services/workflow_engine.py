@@ -1,7 +1,7 @@
 """Invoice workflow state machine — validates transitions and orchestrates steps."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -78,8 +78,11 @@ def _check_step_enabled(steps_config: dict, step_type: str) -> bool:
 
 
 async def is_step_enabled(
-    db: AsyncSession, organization_id: uuid.UUID, step_type: str,
-    *, invoice_id: uuid.UUID | None = None,
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    step_type: str,
+    *,
+    invoice_id: uuid.UUID | None = None,
 ) -> bool:
     """Check if a step type is enabled.
 
@@ -104,13 +107,9 @@ def validate_transition(current: InvoiceStatus, target: InvoiceStatus) -> None:
         )
 
 
-async def get_invoice_for_update(
-    db: AsyncSession, invoice_id: uuid.UUID
-) -> Invoice:
+async def get_invoice_for_update(db: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
     """Fetch an invoice with a row-level lock to prevent concurrent transitions."""
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id).with_for_update()
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id).with_for_update())
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -172,9 +171,7 @@ async def get_or_create_workflow_definition(
     return defn
 
 
-async def create_workflow_instance(
-    db: AsyncSession, invoice: Invoice
-) -> WorkflowInstance:
+async def create_workflow_instance(db: AsyncSession, invoice: Invoice) -> WorkflowInstance:
     defn = await get_or_create_workflow_definition(db, invoice.organization_id)
     instance = WorkflowInstance(
         correlation_id=invoice.correlation_id,
@@ -189,9 +186,7 @@ async def create_workflow_instance(
     return instance
 
 
-async def get_workflow_instance(
-    db: AsyncSession, invoice_id: uuid.UUID
-) -> WorkflowInstance | None:
+async def get_workflow_instance(db: AsyncSession, invoice_id: uuid.UUID) -> WorkflowInstance | None:
     result = await db.execute(
         select(WorkflowInstance).where(WorkflowInstance.invoice_id == invoice_id)
     )
@@ -237,7 +232,7 @@ async def complete_current_step(
     step = result.scalar_one_or_none()
     if step:
         step.action = action
-        step.completed_at = datetime.now(timezone.utc)
+        step.completed_at = datetime.now(UTC)
     return step
 
 
@@ -254,9 +249,7 @@ async def advance_workflow(
     resolved_next = _STEP_TYPE_ALIASES.get(next_step_type, next_step_type)
     next_index = STEP_TYPES.index(resolved_next)
     instance.current_step = next_index
-    new_step = await create_workflow_step(
-        db, instance, next_step_type, assigned_to=assigned_to
-    )
+    new_step = await create_workflow_step(db, instance, next_step_type, assigned_to=assigned_to)
     return new_step
 
 
@@ -270,6 +263,6 @@ async def complete_workflow(
     # Create the final "done" step
     done_step = await create_workflow_step(db, instance, "done")
     done_step.action = "completed"
-    done_step.completed_at = datetime.now(timezone.utc)
+    done_step.completed_at = datetime.now(UTC)
     instance.current_step = len(STEP_TYPES) - 1
     instance.state = "completed"

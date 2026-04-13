@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, String
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -11,9 +11,7 @@ from app.models.base import Base, TimestampMixin
 class Vendor(Base, TimestampMixin):
     __tablename__ = "vendors"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     code: Mapped[str | None] = mapped_column(String(50))
     email: Mapped[str | None] = mapped_column(String(320))
@@ -25,8 +23,12 @@ class Vendor(Base, TimestampMixin):
     accepts_virtual_cards: Mapped[bool] = mapped_column(default=False)
 
     # Vendor status and verification
-    status: Mapped[str] = mapped_column(String(30), default="active")  # active, unverified, inactive, rejected
-    source: Mapped[str] = mapped_column(String(30), default="manual")  # manual, erp_sync, ai_extracted
+    status: Mapped[str] = mapped_column(
+        String(30), default="active"
+    )  # active, unverified, inactive, rejected
+    source: Mapped[str] = mapped_column(
+        String(30), default="manual"
+    )  # manual, erp_sync, ai_extracted
     verified_by: Mapped[str | None] = mapped_column(String(255))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

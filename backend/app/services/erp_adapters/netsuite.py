@@ -53,12 +53,13 @@ class NetSuiteAdapter(ErpAdapter):
         param_str = "&".join(f"{quote(k)}={quote(v)}" for k, v in sorted(params.items()))
         base_string = f"{method.upper()}&{quote(url, safe='')}&{quote(param_str, safe='')}"
 
-        signing_key = f"{quote(self.config['consumer_secret'])}&{quote(self.config['token_secret'])}"
-        signature = hmac.new(
-            signing_key.encode(), base_string.encode(), hashlib.sha256
-        ).digest()
+        signing_key = (
+            f"{quote(self.config['consumer_secret'])}&{quote(self.config['token_secret'])}"
+        )
+        signature = hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha256).digest()
 
         import base64
+
         sig_b64 = base64.b64encode(signature).decode()
 
         parts = [
@@ -67,8 +68,8 @@ class NetSuiteAdapter(ErpAdapter):
             f'oauth_token="{params["oauth_token"]}"',
             f'oauth_nonce="{nonce}"',
             f'oauth_timestamp="{timestamp}"',
-            f'oauth_signature_method="HMAC-SHA256"',
-            f'oauth_version="1.0"',
+            'oauth_signature_method="HMAC-SHA256"',
+            'oauth_version="1.0"',
             f'oauth_signature="{quote(sig_b64)}"',
         ]
         return ", ".join(parts)
@@ -92,7 +93,9 @@ class NetSuiteAdapter(ErpAdapter):
                         "account": {"refName": li.gl_account} if li.gl_account else None,
                     }
                     for li in payload.line_items
-                ] if payload.line_items else [
+                ]
+                if payload.line_items
+                else [
                     {
                         "description": payload.description or "",
                         "quantity": 1,
@@ -127,7 +130,9 @@ class NetSuiteAdapter(ErpAdapter):
             return ErpPostResult(
                 success=False,
                 message=f"NetSuite error {resp.status_code}: {resp.text}",
-                raw_response=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else None,
+                raw_response=resp.json()
+                if resp.headers.get("content-type", "").startswith("application/json")
+                else None,
             )
 
     async def get_invoice_status(self, erp_document_id: str) -> ErpInvoiceStatus:

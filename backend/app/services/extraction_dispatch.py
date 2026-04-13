@@ -58,11 +58,13 @@ def _send_to_sqs(
     )
     client.send_message(
         QueueUrl=settings.sqs_extraction_queue_url,
-        MessageBody=json.dumps({
-            "invoice_id": str(invoice_id),
-            "org_id": str(org_id),
-            "actor_id": str(actor_id),
-        }),
+        MessageBody=json.dumps(
+            {
+                "invoice_id": str(invoice_id),
+                "org_id": str(org_id),
+                "actor_id": str(actor_id),
+            }
+        ),
         MessageGroupId=str(invoice_id),
     )
 
@@ -78,7 +80,7 @@ async def _run_local(
     so we must create fresh engines (not reuse cached ones from the main loop).
     """
     from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from app.database import _make_tenant_url
     from app.models.invoice import Invoice
@@ -92,9 +94,7 @@ async def _run_local(
     try:
         # Look up the tenant DB name
         async with ctrl_factory() as ctrl_db:
-            result = await ctrl_db.execute(
-                select(Organization).where(Organization.id == org_id)
-            )
+            result = await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
             org = result.scalar_one_or_none()
             if not org:
                 print(f"[extraction] Organization {org_id} not found")
@@ -107,20 +107,27 @@ async def _run_local(
 
         async with tenant_factory() as db:
             try:
-                result = await db.execute(
-                    select(Invoice).where(Invoice.id == invoice_id)
-                )
+                result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
                 invoice = result.scalar_one_or_none()
                 if not invoice:
                     print(f"[extraction] Invoice {invoice_id} not found")
                     return
 
-                print(f"[extraction] Starting extraction for invoice {invoice_id}, file_key={invoice.file_key}")
+                print(
+                    f"[extraction] Starting extraction for "
+                    f"invoice {invoice_id}, "
+                    f"file_key={invoice.file_key}"
+                )
                 await run_extraction(db, invoice, actor_id=actor_id, org_settings=org.settings)
-                print(f"[extraction] Completed extraction for invoice {invoice_id}, status={invoice.status}")
+                print(
+                    f"[extraction] Completed extraction for "
+                    f"invoice {invoice_id}, "
+                    f"status={invoice.status}"
+                )
             except Exception as exc:
                 print(f"[extraction] ERROR for invoice {invoice_id}: {exc}")
                 import traceback
+
                 traceback.print_exc()
                 await db.rollback()
 

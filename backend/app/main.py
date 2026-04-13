@@ -3,7 +3,22 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, auth, cards, dashboard, erp_webhook, exceptions, gl_accounts, invoices, organization, payments, purchase_orders, vendors, workflow, workflow_definitions
+from app.api import (
+    admin,
+    auth,
+    cards,
+    dashboard,
+    erp_webhook,
+    exceptions,
+    gl_accounts,
+    invoices,
+    organization,
+    payments,
+    purchase_orders,
+    vendors,
+    workflow,
+    workflow_definitions,
+)
 
 
 @asynccontextmanager

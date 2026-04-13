@@ -25,9 +25,7 @@ async def get_tenant(
     slug: str = Depends(get_tenant_slug),
     db: AsyncSession = Depends(get_control_db),
 ) -> Organization:
-    result = await db.execute(
-        select(Organization).where(Organization.slug == slug)
-    )
+    result = await db.execute(select(Organization).where(Organization.slug == slug))
     org = result.scalar_one_or_none()
     if not org:
         raise HTTPException(

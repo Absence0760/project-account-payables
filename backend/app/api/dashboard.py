@@ -47,9 +47,7 @@ async def get_dashboard(
         .order_by(func.sum(Invoice.amount).desc())
         .limit(10)
     )
-    vendor_spend = [
-        {"vendor": row[0], "amount": float(row[1])} for row in vendor_spend_rows.all()
-    ]
+    vendor_spend = [{"vendor": row[0], "amount": float(row[1])} for row in vendor_spend_rows.all()]
 
     # Aging buckets
     aging = {"current": 0.0, "days_30": 0.0, "days_60": 0.0, "days_90_plus": 0.0}
@@ -74,8 +72,9 @@ async def get_dashboard(
     # Monthly trend (last 6 months) — compute in Python to avoid GROUP BY issues
     six_months_ago = today - timedelta(days=180)
     trend_inv_rows = await db.execute(
-        select(Invoice.invoice_date, Invoice.amount)
-        .where(Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None))
+        select(Invoice.invoice_date, Invoice.amount).where(
+            Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None)
+        )
     )
     trend_buckets: dict[str, dict] = {}
     for row in trend_inv_rows.all():
@@ -88,13 +87,14 @@ async def get_dashboard(
 
     # Upcoming payments (due within 7 days + overdue)
     week_ahead = today + timedelta(days=7)
-    paid_ids = (
-        select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
-    )
+    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
     upcoming_rows = await db.execute(
         select(
-            Invoice.id, Invoice.invoice_number, Invoice.vendor_name,
-            Invoice.amount, Invoice.due_date,
+            Invoice.id,
+            Invoice.invoice_number,
+            Invoice.vendor_name,
+            Invoice.amount,
+            Invoice.due_date,
         )
         .where(
             Invoice.due_date.isnot(None),
@@ -121,20 +121,20 @@ async def get_dashboard(
     total_processed = sum(pipeline.get(s, 0) for s in terminal)
     rejected_count = pipeline.get("rejected", 0)
     touchless_rate = round(
-        ((total_processed - rejected_count) / total_processed * 100)
-        if total_processed > 0 else 0, 1,
+        ((total_processed - rejected_count) / total_processed * 100) if total_processed > 0 else 0,
+        1,
     )
 
     # Payment totals — separate queries to avoid complex CASE expressions
     paid_q = await db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0))
-        .where(Payment.status == "completed")
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed")
     )
     total_paid = float(paid_q.scalar() or 0)
 
     pending_q = await db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0))
-        .where(Payment.status.in_(["pending", "processing"]))
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.status.in_(["pending", "processing"])
+        )
     )
     total_pending = float(pending_q.scalar() or 0)
 

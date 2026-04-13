@@ -1,7 +1,7 @@
 """Exception queue endpoints — view and resolve flagged invoices."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -36,9 +36,7 @@ async def list_exceptions(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
-    query = select(APException, Invoice).outerjoin(
-        Invoice, APException.invoice_id == Invoice.id
-    )
+    query = select(APException, Invoice).outerjoin(Invoice, APException.invoice_id == Invoice.id)
 
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
@@ -85,8 +83,7 @@ async def exception_summary(
     """Counts by status and type for the exception queue."""
     # By status
     status_rows = await db.execute(
-        select(APException.status, func.count(APException.id))
-        .group_by(APException.status)
+        select(APException.status, func.count(APException.id)).group_by(APException.status)
     )
     by_status = {row[0]: row[1] for row in status_rows.all()}
 
@@ -119,9 +116,7 @@ async def resolve_exception(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(APException).where(APException.id == exception_id)
-    )
+    result = await db.execute(select(APException).where(APException.id == exception_id))
     exc = result.scalar_one_or_none()
     if not exc:
         raise HTTPException(status_code=404, detail="Exception not found")
@@ -140,7 +135,7 @@ async def resolve_exception(
 
     exc.resolution = body.resolution
     exc.resolved_by = user.full_name
-    exc.resolved_at = datetime.now(timezone.utc)
+    exc.resolved_at = datetime.now(UTC)
     await db.commit()
 
     return {"id": str(exc.id), "status": exc.status, "message": f"Exception {body.action}d"}

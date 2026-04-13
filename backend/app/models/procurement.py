@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, ForeignKey, Numeric, String, Text, Enum
+from sqlalchemy import Date, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,9 +12,7 @@ from app.models.base import Base, TimestampMixin
 class PurchaseOrder(Base, TimestampMixin):
     __tablename__ = "purchase_orders"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     po_number: Mapped[str] = mapped_column(String(100), nullable=False)
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("vendors.id")
@@ -34,9 +32,7 @@ class PurchaseOrder(Base, TimestampMixin):
 class POLineItem(Base, TimestampMixin):
     __tablename__ = "po_line_items"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     po_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=False
     )
@@ -51,9 +47,7 @@ class POLineItem(Base, TimestampMixin):
 class GoodsReceipt(Base, TimestampMixin):
     __tablename__ = "goods_receipts"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     gr_number: Mapped[str] = mapped_column(String(100), nullable=False)
     po_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("purchase_orders.id")
@@ -73,9 +67,7 @@ class GoodsReceipt(Base, TimestampMixin):
 class GRLineItem(Base, TimestampMixin):
     __tablename__ = "gr_line_items"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     gr_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("goods_receipts.id"), nullable=False
     )

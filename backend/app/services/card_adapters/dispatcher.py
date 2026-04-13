@@ -40,9 +40,11 @@ REGION_DEFAULTS: dict[str, str] = {
 
 def register_card_adapter(provider: str):
     """Decorator to register a card adapter class."""
+
     def wrapper(cls: type[CardAdapter]):
         _ADAPTER_REGISTRY[provider] = cls
         return cls
+
     return wrapper
 
 

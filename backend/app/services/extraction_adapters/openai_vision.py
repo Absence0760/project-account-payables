@@ -6,10 +6,9 @@ import json
 import httpx
 
 from app.services.extraction_adapters.base import (
+    ExtractedLineItem,
     ExtractionAdapter,
     ExtractionResult,
-    ExtractedField,
-    ExtractedLineItem,
 )
 from app.services.extraction_adapters.claude_vision import EXTRACTION_PROMPT, _parse_field
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
@@ -26,18 +25,27 @@ class OpenAIVisionAdapter(ExtractionAdapter):
 
     provider_name = "openai_vision"
 
-    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
+    async def extract(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+        file_url: str = "",
+    ) -> ExtractionResult:
         api_key = self.config.get("api_key", "")
         model = self.config.get("model", "gpt-4o")
 
         if not file_bytes:
-            return ExtractionResult(success=False, error="No file bytes provided", provider=self.provider_name)
+            return ExtractionResult(
+                success=False, error="No file bytes provided", provider=self.provider_name
+            )
 
         is_pdf = mime_type == "application/pdf" or file_key.lower().endswith(".pdf")
         pdf_text = None
 
         if is_pdf:
             from app.services.extraction_adapters.ollama import OllamaAdapter
+
             pdf_text = OllamaAdapter._extract_pdf_text(file_bytes)
             if not pdf_text:
                 # Scanned PDF — convert to image
@@ -54,7 +62,9 @@ class OpenAIVisionAdapter(ExtractionAdapter):
                 "messages": [
                     {
                         "role": "user",
-                        "content": f"{EXTRACTION_PROMPT}\n\nHere is the invoice text:\n\n{pdf_text}",
+                        "content": (
+                            f"{EXTRACTION_PROMPT}\n\nHere is the invoice text:\n\n{pdf_text}"
+                        ),
                     }
                 ],
             }
@@ -70,10 +80,16 @@ class OpenAIVisionAdapter(ExtractionAdapter):
                         },
                     )
             except Exception as exc:
-                return ExtractionResult(success=False, error=f"API call failed: {exc}", provider=self.provider_name)
+                return ExtractionResult(
+                    success=False, error=f"API call failed: {exc}", provider=self.provider_name
+                )
 
             if resp.status_code != 200:
-                return ExtractionResult(success=False, error=f"OpenAI error {resp.status_code}: {resp.text}", provider=self.provider_name)
+                return ExtractionResult(
+                    success=False,
+                    error=f"OpenAI error {resp.status_code}: {resp.text}",
+                    provider=self.provider_name,
+                )
 
             resp_data = resp.json()
             text_content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -88,7 +104,11 @@ class OpenAIVisionAdapter(ExtractionAdapter):
             try:
                 data = json.loads(json_str)
             except json.JSONDecodeError:
-                return ExtractionResult(success=False, error="Failed to parse JSON from OpenAI response", provider=self.provider_name)
+                return ExtractionResult(
+                    success=False,
+                    error="Failed to parse JSON from OpenAI response",
+                    provider=self.provider_name,
+                )
 
             result = ExtractionResult(
                 success=True,
@@ -113,13 +133,15 @@ class OpenAIVisionAdapter(ExtractionAdapter):
             )
 
             for li in data.get("line_items", []):
-                result.line_items.append(ExtractedLineItem(
-                    line_number=li.get("line_number", 0),
-                    description=_parse_field(li, "description"),
-                    quantity=_parse_field(li, "quantity"),
-                    unit_price=_parse_field(li, "unit_price"),
-                    total=_parse_field(li, "total"),
-                ))
+                result.line_items.append(
+                    ExtractedLineItem(
+                        line_number=li.get("line_number", 0),
+                        description=_parse_field(li, "description"),
+                        quantity=_parse_field(li, "quantity"),
+                        unit_price=_parse_field(li, "unit_price"),
+                        total=_parse_field(li, "total"),
+                    )
+                )
 
             fields = [result.invoice_number, result.vendor_name, result.amount]
             confidences = [f.confidence for f in fields if f.value is not None]
@@ -158,10 +180,16 @@ class OpenAIVisionAdapter(ExtractionAdapter):
                     },
                 )
         except Exception as exc:
-            return ExtractionResult(success=False, error=f"API call failed: {exc}", provider=self.provider_name)
+            return ExtractionResult(
+                success=False, error=f"API call failed: {exc}", provider=self.provider_name
+            )
 
         if resp.status_code != 200:
-            return ExtractionResult(success=False, error=f"OpenAI error {resp.status_code}: {resp.text}", provider=self.provider_name)
+            return ExtractionResult(
+                success=False,
+                error=f"OpenAI error {resp.status_code}: {resp.text}",
+                provider=self.provider_name,
+            )
 
         resp_data = resp.json()
         text_content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -176,7 +204,11 @@ class OpenAIVisionAdapter(ExtractionAdapter):
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError:
-            return ExtractionResult(success=False, error="Failed to parse JSON from OpenAI response", provider=self.provider_name)
+            return ExtractionResult(
+                success=False,
+                error="Failed to parse JSON from OpenAI response",
+                provider=self.provider_name,
+            )
 
         result = ExtractionResult(
             success=True,
@@ -201,13 +233,15 @@ class OpenAIVisionAdapter(ExtractionAdapter):
         )
 
         for li in data.get("line_items", []):
-            result.line_items.append(ExtractedLineItem(
-                line_number=li.get("line_number", 0),
-                description=_parse_field(li, "description"),
-                quantity=_parse_field(li, "quantity"),
-                unit_price=_parse_field(li, "unit_price"),
-                total=_parse_field(li, "total"),
-            ))
+            result.line_items.append(
+                ExtractedLineItem(
+                    line_number=li.get("line_number", 0),
+                    description=_parse_field(li, "description"),
+                    quantity=_parse_field(li, "quantity"),
+                    unit_price=_parse_field(li, "unit_price"),
+                    total=_parse_field(li, "total"),
+                )
+            )
 
         fields = [result.invoice_number, result.vendor_name, result.amount]
         confidences = [f.confidence for f in fields if f.value is not None]

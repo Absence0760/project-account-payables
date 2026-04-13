@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 
-class CardStatus(str, enum.Enum):
+class CardStatus(enum.StrEnum):
     created = "created"
     sent = "sent"
     active = "active"

@@ -7,7 +7,7 @@ Tracks usage for billing when platform mode is used.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +17,8 @@ from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.usage import ExtractionUsage
 from app.services.extraction_adapters.base import ExtractionResult
 from app.services.workflow_engine import (
-    get_workflow_instance,
     advance_workflow,
+    get_workflow_instance,
     transition_invoice,
 )
 
@@ -54,25 +54,29 @@ async def run_extraction(
     # Cache IDs before try block — after rollback, invoice attrs may be expired
     invoice_id = invoice.id
     invoice_org_id = invoice.organization_id
-    invoice_correlation_id = invoice.correlation_id
 
     try:
         config = _resolve_extraction_config(org_settings)
 
         # Import adapters to trigger registration
-        import app.services.extraction_adapters.mock_adapter  # noqa: F401
-        import app.services.extraction_adapters.claude_vision  # noqa: F401
-        import app.services.extraction_adapters.openai_vision  # noqa: F401
         import app.services.extraction_adapters.aws_textract  # noqa: F401
+        import app.services.extraction_adapters.claude_vision  # noqa: F401
+        import app.services.extraction_adapters.mock_adapter  # noqa: F401
         import app.services.extraction_adapters.ollama  # noqa: F401
+        import app.services.extraction_adapters.openai_vision  # noqa: F401
         from app.services.extraction_adapters import get_extraction_adapter
 
         adapter = get_extraction_adapter(config)
-        print(f"[extraction] Using adapter: {adapter.provider_name}, config provider: {config.get('provider')}")
+        print(
+            f"[extraction] Using adapter: {adapter.provider_name}, "
+            f"config provider: {config.get('provider')}"
+        )
 
         # Fetch file bytes from S3/MinIO directly (authenticated)
         import boto3 as _boto3
+
         from app.config import settings as app_settings
+
         s3 = _boto3.client(
             "s3",
             endpoint_url=app_settings.s3_endpoint_url,
@@ -80,7 +84,9 @@ async def run_extraction(
             aws_secret_access_key=app_settings.s3_secret_key,
         )
         file_key = invoice.file_key or ""
-        print(f"[extraction] Fetching file from S3: bucket={app_settings.s3_bucket}, key={file_key}")
+        print(
+            f"[extraction] Fetching file from S3: bucket={app_settings.s3_bucket}, key={file_key}"
+        )
         s3_obj = s3.get_object(Bucket=app_settings.s3_bucket, Key=file_key)
         file_bytes = s3_obj["Body"].read()
         print(f"[extraction] File fetched: {len(file_bytes)} bytes")
@@ -95,7 +101,11 @@ async def run_extraction(
             print(f"[extraction] Adapter returned failure: {result.error}")
             raise RuntimeError(result.error or "Extraction failed")
 
-        print(f"[extraction] Success! Confidence: {result.overall_confidence}, vendor: {result.vendor_name.value}")
+        print(
+            f"[extraction] Success! Confidence: "
+            f"{result.overall_confidence}, "
+            f"vendor: {result.vendor_name.value}"
+        )
 
         # Apply extracted fields to invoice
         _apply_extraction(invoice, result)
@@ -123,8 +133,11 @@ async def run_extraction(
 
         # Vendor matching
         from app.services.vendor_matching import match_and_link_vendor
+
         vendor, vendor_action = await match_and_link_vendor(
-            db, invoice, invoice.organization_id,
+            db,
+            invoice,
+            invoice.organization_id,
         )
 
         # Save extraction result
@@ -142,7 +155,7 @@ async def run_extraction(
             invoice_id=invoice.id,
             provider=result.provider or config.get("provider", "unknown"),
             program_type=program_type,
-            period=datetime.now(timezone.utc).strftime("%Y-%m"),
+            period=datetime.now(UTC).strftime("%Y-%m"),
             success=True,
             organization_id=invoice.organization_id,
         )
@@ -168,9 +181,7 @@ async def run_extraction(
         # Advance workflow to review step
         instance = await get_workflow_instance(db, invoice.id)
         if instance:
-            await advance_workflow(
-                db, instance, "review", action="extracted"
-            )
+            await advance_workflow(db, instance, "review", action="extracted")
 
         await db.commit()
 
@@ -180,10 +191,10 @@ async def run_extraction(
 
         # Re-fetch invoice after rollback (the old object is expired)
         from sqlalchemy import select as sa_select
+
         from app.models.invoice import Invoice as InvoiceModel
-        result = await db.execute(
-            sa_select(InvoiceModel).where(InvoiceModel.id == invoice_id)
-        )
+
+        result = await db.execute(sa_select(InvoiceModel).where(InvoiceModel.id == invoice_id))
         invoice = result.scalar_one_or_none()
         if not invoice:
             await db.commit()
@@ -196,7 +207,7 @@ async def run_extraction(
                 invoice_id=invoice_id,
                 provider=config.get("provider", "unknown"),
                 program_type=config.get("program_type", "platform"),
-                period=datetime.now(timezone.utc).strftime("%Y-%m"),
+                period=datetime.now(UTC).strftime("%Y-%m"),
                 success=False,
                 organization_id=invoice_org_id,
             )
@@ -206,14 +217,17 @@ async def run_extraction(
 
         # Create exception record
         from app.models.exception import Exception as APException
-        db.add(APException(
-            invoice_id=invoice_id,
-            exception_type="extraction_failed",
-            severity="error",
-            description=f"Extraction failed: {str(exc)[:500]}",
-            status="open",
-            organization_id=invoice_org_id,
-        ))
+
+        db.add(
+            APException(
+                invoice_id=invoice_id,
+                exception_type="extraction_failed",
+                severity="error",
+                description=f"Extraction failed: {str(exc)[:500]}",
+                status="open",
+                organization_id=invoice_org_id,
+            )
+        )
 
         # Transition pending → failed
         await transition_invoice(
@@ -280,12 +294,14 @@ def _apply_extraction(invoice: Invoice, result: ExtractionResult) -> None:
             invoice.shipping_amount = d
     if result.invoice_date.value:
         from datetime import date as date_type
+
         try:
             invoice.invoice_date = date_type.fromisoformat(result.invoice_date.value)
         except ValueError:
             pass
     if result.due_date.value:
         from datetime import date as date_type
+
         try:
             invoice.due_date = date_type.fromisoformat(result.due_date.value)
         except ValueError:

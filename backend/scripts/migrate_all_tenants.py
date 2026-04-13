@@ -36,7 +36,7 @@ async def main():
         if result.returncode != 0:
             print(f"  FAILED: {result.stderr}")
         else:
-            print(f"  OK")
+            print("  OK")
 
     print("\nDone.")
 

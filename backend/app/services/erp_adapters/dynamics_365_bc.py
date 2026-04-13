@@ -30,12 +30,15 @@ class BusinessCentralAdapter(ErpAdapter):
         tenant_id = self.config["tenant_id"]
         url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(url, data={
-                "grant_type": "client_credentials",
-                "client_id": self.config["client_id"],
-                "client_secret": self.config["client_secret"],
-                "scope": "https://api.businesscentral.dynamics.com/.default",
-            })
+            resp = await client.post(
+                url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.config["client_id"],
+                    "client_secret": self.config["client_secret"],
+                    "scope": "https://api.businesscentral.dynamics.com/.default",
+                },
+            )
         resp.raise_for_status()
         return resp.json()["access_token"]
 
@@ -69,7 +72,9 @@ class BusinessCentralAdapter(ErpAdapter):
                     "unitCost": float(li.unit_price) if li.unit_price else float(li.total or 0),
                 }
                 for li in payload.line_items
-            ] if payload.line_items else [
+            ]
+            if payload.line_items
+            else [
                 {
                     "lineType": "Account",
                     "lineObjectNumber": payload.gl_account or "",
@@ -114,7 +119,9 @@ class BusinessCentralAdapter(ErpAdapter):
             return ErpPostResult(
                 success=False,
                 message=f"BC error {resp.status_code}: {resp.text}",
-                raw_response=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else None,
+                raw_response=resp.json()
+                if resp.headers.get("content-type", "").startswith("application/json")
+                else None,
             )
 
     async def get_invoice_status(self, erp_document_id: str) -> ErpInvoiceStatus:

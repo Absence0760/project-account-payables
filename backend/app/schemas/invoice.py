@@ -1,12 +1,11 @@
-import uuid
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class InvoiceStatus(str, Enum):
+class InvoiceStatus(StrEnum):
     new = "new"
     pending = "pending"
     ready_for_review = "ready_for_review"

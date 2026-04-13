@@ -3,13 +3,13 @@
 import uuid
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_org_id
 from app.database import get_control_db
-from app.models.invoice import Invoice, InvoiceStatus, InvoiceExtractionResult
+from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceStatus
 from app.models.user import User
 from app.models.workflow import AuditLog, WorkflowInstance, WorkflowStep
 from app.schemas.invoice import InvoiceResponse
@@ -19,10 +19,9 @@ from app.schemas.workflow import (
     AuditLogEntryResponse,
     RejectRequest,
     WorkflowInstanceResponse,
-    WorkflowStepResponse,
 )
-from app.services import review as review_svc
 from app.services import erp as erp_svc
+from app.services import review as review_svc
 from app.services.erp_dispatch import dispatch_erp
 from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
@@ -96,6 +95,7 @@ async def upload_invoice(
 
             # Log that extraction was dispatched
             from app.services.audit_dispatch import dispatch_audit
+
             await dispatch_audit(
                 db,
                 correlation_id=invoice.correlation_id,
@@ -147,15 +147,21 @@ async def trigger_extraction(
     if invoice.status not in (InvoiceStatus.new, InvoiceStatus.failed):
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot extract from '{invoice.status.value}' status. Must be 'new' or 'failed'.",
+            detail=(
+                f"Cannot extract from '{invoice.status.value}' status. Must be 'new' or 'failed'."
+            ),
         )
 
     if not invoice.file_key:
-        raise HTTPException(status_code=400, detail="No file attached to this invoice. Upload a file first.")
+        raise HTTPException(
+            status_code=400, detail="No file attached to this invoice. Upload a file first."
+        )
 
     # Transition to pending
     await transition_invoice(
-        db, invoice, InvoiceStatus.pending,
+        db,
+        invoice,
+        InvoiceStatus.pending,
         actor_id=user.id,
         action_name="invoice.extraction_triggered",
         details={"manual": True},
@@ -165,6 +171,7 @@ async def trigger_extraction(
 
     # Dispatch extraction
     from app.services.extraction_dispatch import dispatch_extraction
+
     await dispatch_extraction(invoice.id, org_id, user.id)
 
     return {
@@ -191,7 +198,9 @@ async def reset_extraction(
         )
 
     await transition_invoice(
-        db, invoice, InvoiceStatus.failed,
+        db,
+        invoice,
+        InvoiceStatus.failed,
         actor_id=user.id,
         action_name="invoice.extraction_reset",
         details={"reason": "Manual reset — extraction stuck or failed silently"},
@@ -219,7 +228,9 @@ async def assign_reviewer(
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
     if invoice.status != InvoiceStatus.ready_for_review:
-        raise HTTPException(status_code=409, detail="Invoice must be in 'ready_for_review' to assign a reviewer")
+        raise HTTPException(
+            status_code=409, detail="Invoice must be in 'ready_for_review' to assign a reviewer"
+        )
 
     reviewer_id = uuid.UUID(body.user_id)
     result = await control_db.execute(select(User).where(User.id == reviewer_id))
@@ -380,20 +391,19 @@ async def complete_invoice(
         )
 
     # Check workflow config for this invoice
-    approval_enabled = await is_step_enabled(
-        db, org_id, "approval", invoice_id=invoice.id
-    )
-    erp_enabled = await is_step_enabled(
-        db, org_id, "erp_export", invoice_id=invoice.id
-    )
+    approval_enabled = await is_step_enabled(db, org_id, "approval", invoice_id=invoice.id)
+    erp_enabled = await is_step_enabled(db, org_id, "erp_export", invoice_id=invoice.id)
 
     await refresh_warnings(db, invoice)
 
     if invoice.status == InvoiceStatus.new and approval_enabled:
         # Submit for review
         await transition_invoice(
-            db, invoice, InvoiceStatus.ready_for_review,
-            actor_id=user.id, action_name="invoice.submitted_for_review",
+            db,
+            invoice,
+            InvoiceStatus.ready_for_review,
+            actor_id=user.id,
+            action_name="invoice.submitted_for_review",
         )
         await db.commit()
         await db.refresh(invoice)
@@ -407,8 +417,11 @@ async def complete_invoice(
     if invoice.status == InvoiceStatus.approved and erp_enabled:
         # Trigger ERP dispatch
         await transition_invoice(
-            db, invoice, InvoiceStatus.sending_to_erp,
-            actor_id=user.id, action_name="invoice.erp_submitted",
+            db,
+            invoice,
+            InvoiceStatus.sending_to_erp,
+            actor_id=user.id,
+            action_name="invoice.erp_submitted",
         )
         await db.commit()
         await dispatch_erp(invoice.id, org_id, user.id)
@@ -421,8 +434,11 @@ async def complete_invoice(
 
     # Default: mark as done
     await transition_invoice(
-        db, invoice, InvoiceStatus.done,
-        actor_id=user.id, action_name="invoice.completed",
+        db,
+        invoice,
+        InvoiceStatus.done,
+        actor_id=user.id,
+        action_name="invoice.completed",
     )
     await db.commit()
     await db.refresh(invoice)
@@ -442,9 +458,7 @@ async def export_invoice(
     user: User = Depends(get_current_user),
 ):
     """Export invoice data in the requested format for ERP upload."""
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id)
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -475,10 +489,15 @@ async def export_invoice(
         content = ET.tostring(root, encoding="unicode", xml_declaration=True)
 
         from fastapi.responses import Response
+
         return Response(
             content=content,
             media_type="application/xml",
-            headers={"Content-Disposition": f'attachment; filename="invoice-{invoice.invoice_number or invoice_id}.xml"'},
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="invoice-{invoice.invoice_number or invoice_id}.xml"'
+                )
+            },
         )
 
     elif format == "csv":
@@ -491,10 +510,15 @@ async def export_invoice(
         writer.writerow(data)
 
         from fastapi.responses import Response
+
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="invoice-{invoice.invoice_number or invoice_id}.csv"'},
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="invoice-{invoice.invoice_number or invoice_id}.csv"'
+                )
+            },
         )
 
     else:
@@ -551,9 +575,7 @@ async def get_audit_log(
     user: User = Depends(get_current_user),
 ):
     # Get the invoice's correlation_id
-    result = await db.execute(
-        select(Invoice.correlation_id).where(Invoice.id == invoice_id)
-    )
+    result = await db.execute(select(Invoice.correlation_id).where(Invoice.id == invoice_id))
     correlation_id = result.scalar_one_or_none()
     if not correlation_id:
         raise HTTPException(status_code=404, detail="Invoice not found")

@@ -9,9 +9,11 @@ _ADAPTER_REGISTRY: dict[str, type[ExtractionAdapter]] = {}
 
 def register_extraction_adapter(provider: str):
     """Decorator to register an extraction adapter class."""
+
     def wrapper(cls: type[ExtractionAdapter]):
         _ADAPTER_REGISTRY[provider] = cls
         return cls
+
     return wrapper
 
 

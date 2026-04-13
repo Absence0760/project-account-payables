@@ -1,7 +1,7 @@
 """Vendor ERP sync service — pull vendors from ERP and sync to local database."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +28,7 @@ async def sync_vendors_from_erp(
 
     Returns summary: {created: int, updated: int, unchanged: int}
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     created = 0
     updated = 0
     unchanged = 0

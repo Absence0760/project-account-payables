@@ -85,15 +85,17 @@ def _send_to_sqs(
     )
     client.send_message(
         QueueUrl=settings.sqs_audit_queue_url,
-        MessageBody=json.dumps({
-            "tenant_db_name": tenant_db_name,
-            "correlation_id": str(correlation_id),
-            "organization_id": str(organization_id),
-            "actor_id": str(actor_id) if actor_id else None,
-            "action": action,
-            "entity_type": entity_type,
-            "entity_id": str(entity_id),
-            "details": details,
-        }),
+        MessageBody=json.dumps(
+            {
+                "tenant_db_name": tenant_db_name,
+                "correlation_id": str(correlation_id),
+                "organization_id": str(organization_id),
+                "actor_id": str(actor_id) if actor_id else None,
+                "action": action,
+                "entity_type": entity_type,
+                "entity_id": str(entity_id),
+                "details": details,
+            }
+        ),
         MessageGroupId=str(correlation_id),
     )

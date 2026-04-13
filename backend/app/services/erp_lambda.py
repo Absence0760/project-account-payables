@@ -18,9 +18,7 @@ def handler(event, context):
     """AWS Lambda entry point — processes SQS batch."""
     for record in event.get("Records", []):
         body = json.loads(record["body"])
-        asyncio.get_event_loop().run_until_complete(
-            _process_message(body)
-        )
+        asyncio.get_event_loop().run_until_complete(_process_message(body))
     return {"statusCode": 200}
 
 
@@ -40,9 +38,7 @@ async def _process_message(body: dict) -> None:
     async with control_factory() as ctrl_db:
         from app.models.organization import Organization
 
-        result = await ctrl_db.execute(
-            select(Organization).where(Organization.id == org_id)
-        )
+        result = await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
         org = result.scalar_one_or_none()
         if not org:
             await control_engine.dispose()
@@ -58,9 +54,7 @@ async def _process_message(body: dict) -> None:
             from app.models.invoice import Invoice
             from app.services.erp import send_to_erp_internal
 
-            result = await db.execute(
-                select(Invoice).where(Invoice.id == invoice_id)
-            )
+            result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
             invoice = result.scalar_one_or_none()
             if not invoice:
                 return

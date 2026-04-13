@@ -9,7 +9,7 @@ import threading
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.database import _make_tenant_url
@@ -48,9 +48,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
     try:
         # Look up org
         async with ctrl_factory() as ctrl_db:
-            result = await ctrl_db.execute(
-                select(Organization).where(Organization.id == org_id)
-            )
+            result = await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
             org = result.scalar_one_or_none()
             if not org:
                 print(f"[payment-sync] Organization {org_id} not found")
@@ -62,13 +60,13 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
             return
 
         # Import adapters
-        import app.services.erp_adapters.mock_adapter  # noqa: F401
-        import app.services.erp_adapters.merge_dev  # noqa: F401
         import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
+        import app.services.erp_adapters.merge_dev  # noqa: F401
+        import app.services.erp_adapters.mock_adapter  # noqa: F401
         import app.services.erp_adapters.netsuite  # noqa: F401
         from app.services.erp_adapters import get_erp_adapter
 
-        adapter = get_erp_adapter(erp_config)
+        get_erp_adapter(erp_config)
 
         # Open tenant DB
         tenant_url = _make_tenant_url(org.db_name)
@@ -101,6 +99,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                         # Update invoice status to paid if currently payment_scheduled
                         if invoice and invoice.status.value == "payment_scheduled":
                             from app.models.invoice import InvoiceStatus
+
                             invoice.status = InvoiceStatus.paid
 
                         synced += 1

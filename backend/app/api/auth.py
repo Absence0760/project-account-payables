@@ -5,8 +5,8 @@ from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_control_db
 from app.api.deps import create_access_token, decode_token, get_current_user
+from app.database import get_control_db
 from app.models.user import User
 from app.redis import block_token
 from app.schemas.auth import LoginRequest, TokenResponse, UpdateProfileRequest, UserResponse
@@ -40,6 +40,7 @@ async def logout(authorization: str = Header()):
         exp = payload.get("exp", 0)
         # Block for the remaining lifetime of the token
         import time
+
         ttl = max(int(exp - time.time()), 1)
         await block_token(jti, ttl)
 
@@ -71,8 +72,12 @@ async def update_me(
 
     if body.password is not None:
         if not body.current_password:
-            raise HTTPException(status_code=400, detail="Current password is required to set a new password")
-        if not user.hashed_password or not pwd_context.verify(body.current_password, user.hashed_password):
+            raise HTTPException(
+                status_code=400, detail="Current password is required to set a new password"
+            )
+        if not user.hashed_password or not pwd_context.verify(
+            body.current_password, user.hashed_password
+        ):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
         user.hashed_password = pwd_context.hash(body.password)
 

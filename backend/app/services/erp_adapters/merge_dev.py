@@ -43,7 +43,9 @@ class MergeDevAdapter(ErpAdapter):
                 "total_amount": float(payload.amount),
                 "sub_total": float(payload.subtotal) if payload.subtotal else None,
                 "total_tax_amount": float(payload.tax_amount) if payload.tax_amount else None,
-                "total_discount": float(payload.discount_amount) if payload.discount_amount else None,
+                "total_discount": float(payload.discount_amount)
+                if payload.discount_amount
+                else None,
                 "memo": payload.description,
                 "purchase_order_number": payload.po_number,
                 "line_items": [
@@ -83,7 +85,9 @@ class MergeDevAdapter(ErpAdapter):
             return ErpPostResult(
                 success=False,
                 message=f"Merge.dev error {resp.status_code}: {resp.text}",
-                raw_response=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else None,
+                raw_response=resp.json()
+                if resp.headers.get("content-type", "").startswith("application/json")
+                else None,
             )
 
     async def get_invoice_status(self, erp_document_id: str) -> ErpInvoiceStatus:

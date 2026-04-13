@@ -9,24 +9,15 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.tenant import get_tenant_db
-from app.models.invoice import Invoice, InvoiceLineItem, InvoiceExtractionResult, InvoiceStatus as DBInvoiceStatus
-from app.models.payment import PaymentSchedule, Payment
-from app.models.workflow import WorkflowInstance, WorkflowStep
 from app.models.exception import Exception as ExceptionModel
-from app.services.invoice_warnings import refresh_warnings
-
-IMMUTABLE_STATUSES = {
-    DBInvoiceStatus.sending_to_erp,
-    DBInvoiceStatus.sent_to_erp,
-    DBInvoiceStatus.posted_in_erp,
-    DBInvoiceStatus.payment_scheduled,
-    DBInvoiceStatus.paid,
-    DBInvoiceStatus.done,
-}
+from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
+from app.models.invoice import InvoiceStatus as DBInvoiceStatus
+from app.models.payment import Payment, PaymentSchedule
+from app.models.workflow import WorkflowInstance, WorkflowStep
 from app.schemas.invoice import (
     BulkDeleteRequest,
     BulkDeleteResponse,
@@ -38,6 +29,17 @@ from app.schemas.invoice import (
     InvoiceResponse,
     InvoiceUpdate,
 )
+from app.services.invoice_warnings import refresh_warnings
+from app.tenant import get_tenant_db
+
+IMMUTABLE_STATUSES = {
+    DBInvoiceStatus.sending_to_erp,
+    DBInvoiceStatus.sent_to_erp,
+    DBInvoiceStatus.posted_in_erp,
+    DBInvoiceStatus.payment_scheduled,
+    DBInvoiceStatus.paid,
+    DBInvoiceStatus.done,
+}
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -112,9 +114,7 @@ async def get_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
 ):
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id)
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -127,6 +127,7 @@ async def get_invoice_line_items(
     db: AsyncSession = Depends(get_tenant_db),
 ):
     from app.models.invoice import InvoiceLineItem
+
     result = await db.execute(
         select(InvoiceLineItem)
         .where(InvoiceLineItem.invoice_id == invoice_id)
@@ -165,9 +166,7 @@ async def save_invoice_line_items(
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     # Delete existing line items
-    await db.execute(
-        sa_delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id)
-    )
+    await db.execute(sa_delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id))
 
     # Insert new line items
     for i, item in enumerate(body):
@@ -177,7 +176,9 @@ async def save_invoice_line_items(
             item_code=item.get("item_code"),
             description=item.get("description"),
             quantity=Decimal(str(item["quantity"])) if item.get("quantity") is not None else None,
-            unit_price=Decimal(str(item["unit_price"])) if item.get("unit_price") is not None else None,
+            unit_price=Decimal(str(item["unit_price"]))
+            if item.get("unit_price") is not None
+            else None,
             tax=Decimal(str(item["tax"])) if item.get("tax") is not None else None,
             total=Decimal(str(item["total"])) if item.get("total") is not None else None,
             gl_account=item.get("gl_account"),
@@ -233,9 +234,7 @@ async def update_invoice(
     body: InvoiceUpdate,
     db: AsyncSession = Depends(get_tenant_db),
 ):
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id)
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -263,9 +262,7 @@ async def delete_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
 ):
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id)
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -284,7 +281,14 @@ async def _delete_invoice_cascade(db: AsyncSession, invoice_id: uuid.UUID) -> No
     wf_ids_q = select(WorkflowInstance.id).where(WorkflowInstance.invoice_id == invoice_id)
     await db.execute(sa_delete(WorkflowStep).where(WorkflowStep.instance_id.in_(wf_ids_q)))
     # Delete direct children of invoices
-    for model in (ExceptionModel, Payment, PaymentSchedule, WorkflowInstance, InvoiceExtractionResult, InvoiceLineItem):
+    for model in (
+        ExceptionModel,
+        Payment,
+        PaymentSchedule,
+        WorkflowInstance,
+        InvoiceExtractionResult,
+        InvoiceLineItem,
+    ):
         await db.execute(sa_delete(model).where(model.invoice_id == invoice_id))
     await db.execute(sa_delete(Invoice).where(Invoice.id == invoice_id))
 

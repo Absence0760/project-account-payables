@@ -18,9 +18,7 @@ def handler(event, context):
     """AWS Lambda entry point — processes SQS batch."""
     for record in event.get("Records", []):
         body = json.loads(record["body"])
-        asyncio.get_event_loop().run_until_complete(
-            _process_message(body)
-        )
+        asyncio.get_event_loop().run_until_complete(_process_message(body))
     return {"statusCode": 200}
 
 

@@ -5,8 +5,8 @@ from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.invoice import Invoice, InvoiceStatus
 from app.models.exception import Exception as APException
+from app.models.invoice import Invoice, InvoiceStatus
 from app.services.workflow_engine import (
     advance_workflow,
     complete_current_step,
@@ -70,13 +70,15 @@ async def reject_invoice(
     )
 
     # Create an exception record
-    db.add(APException(
-        invoice_id=invoice.id,
-        exception_type="review_rejected",
-        description=reason,
-        status="open",
-        organization_id=invoice.organization_id,
-    ))
+    db.add(
+        APException(
+            invoice_id=invoice.id,
+            exception_type="review_rejected",
+            description=reason,
+            status="open",
+            organization_id=invoice.organization_id,
+        )
+    )
 
     instance = await get_workflow_instance(db, invoice.id)
     if instance:
@@ -130,6 +132,7 @@ async def assign_reviewer(
 
     # Find the current review step and assign it
     from sqlalchemy import select
+
     from app.models.workflow import WorkflowStep
 
     result = await db.execute(

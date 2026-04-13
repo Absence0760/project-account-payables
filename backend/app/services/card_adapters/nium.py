@@ -33,8 +33,23 @@ class NiumAdapter(CardAdapter):
 
     provider_name = "nium"
     supported_regions = [
-        "ZA", "AU", "NZ", "SG", "HK", "IN", "CA", "BR", "MX",
-        "AE", "JP", "KR", "MY", "TH", "PH", "ID", "VN",
+        "ZA",
+        "AU",
+        "NZ",
+        "SG",
+        "HK",
+        "IN",
+        "CA",
+        "BR",
+        "MX",
+        "AE",
+        "JP",
+        "KR",
+        "MY",
+        "TH",
+        "PH",
+        "ID",
+        "VN",
     ]
 
     _access_token: str | None = None

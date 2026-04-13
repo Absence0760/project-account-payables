@@ -1,26 +1,24 @@
 import enum
 import uuid
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import (
     Date,
-    DateTime,
     Enum,
     ForeignKey,
     Integer,
     Numeric,
     String,
     Text,
-    func,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
 
 
-class InvoiceStatus(str, enum.Enum):
+class InvoiceStatus(enum.StrEnum):
     new = "new"
     pending = "pending"
     ready_for_review = "ready_for_review"
@@ -38,9 +36,7 @@ class InvoiceStatus(str, enum.Enum):
 class Invoice(Base, TimestampMixin):
     __tablename__ = "invoices"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     correlation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), default=uuid.uuid4, unique=True, index=True
     )
@@ -101,9 +97,7 @@ class Invoice(Base, TimestampMixin):
 class InvoiceLineItem(Base, TimestampMixin):
     __tablename__ = "invoice_line_items"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
     )
@@ -122,9 +116,7 @@ class InvoiceLineItem(Base, TimestampMixin):
 class InvoiceExtractionResult(Base, TimestampMixin):
     __tablename__ = "invoice_extraction_results"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
     )

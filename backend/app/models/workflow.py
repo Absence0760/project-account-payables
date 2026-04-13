@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -11,9 +11,7 @@ from app.models.base import Base, TimestampMixin
 class WorkflowDefinition(Base, TimestampMixin):
     __tablename__ = "workflow_definitions"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     steps_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -30,12 +28,8 @@ class WorkflowDefinition(Base, TimestampMixin):
 class WorkflowInstance(Base, TimestampMixin):
     __tablename__ = "workflow_instances"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    correlation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     definition_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("workflow_definitions.id"), nullable=False
     )
@@ -56,12 +50,8 @@ class WorkflowInstance(Base, TimestampMixin):
 class WorkflowStep(Base, TimestampMixin):
     __tablename__ = "workflow_steps"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    correlation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     instance_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("workflow_instances.id"), nullable=False
     )
@@ -77,12 +67,8 @@ class WorkflowStep(Base, TimestampMixin):
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    correlation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )

@@ -1,20 +1,20 @@
 """Vendor CRUD endpoints with verification workflow."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_org_id
-from app.models.user import User
-from app.models.organization import Organization
-from app.tenant import get_tenant, get_tenant_db
 from app.models.invoice import Invoice
+from app.models.organization import Organization
+from app.models.user import User
 from app.models.vendor import Vendor
 from app.schemas.vendor import VendorCreate, VendorResponse, VendorUpdate
 from app.services.vendor_sync import sync_vendors_from_erp
+from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
 
@@ -51,9 +51,7 @@ async def list_vendors(
     # Get invoice counts per vendor
     items = []
     for v in vendors:
-        count_result = await db.execute(
-            select(func.count()).where(Invoice.vendor_id == v.id)
-        )
+        count_result = await db.execute(select(func.count()).where(Invoice.vendor_id == v.id))
         inv_count = count_result.scalar() or 0
         items.append(VendorResponse.from_db(v, inv_count))
 
@@ -71,9 +69,7 @@ async def get_vendor(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id)
-    )
+    result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -93,7 +89,7 @@ async def create_vendor(
         status="active",
         source="manual",
         verified_by=user.full_name,
-        verified_at=datetime.now(timezone.utc),
+        verified_at=datetime.now(UTC),
     )
     db.add(vendor)
     await db.flush()
@@ -108,9 +104,7 @@ async def update_vendor(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id)
-    )
+    result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -129,9 +123,7 @@ async def delete_vendor(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id)
-    )
+    result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -146,9 +138,7 @@ async def verify_vendor(
     user: User = Depends(get_current_user),
 ):
     """Verify an unverified vendor — makes them eligible for payment."""
-    result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id)
-    )
+    result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -157,7 +147,7 @@ async def verify_vendor(
 
     vendor.status = "active"
     vendor.verified_by = user.full_name
-    vendor.verified_at = datetime.now(timezone.utc)
+    vendor.verified_at = datetime.now(UTC)
     await db.commit()
     return VendorResponse.from_db(vendor)
 
@@ -169,9 +159,7 @@ async def reject_vendor(
     user: User = Depends(get_current_user),
 ):
     """Reject an unverified vendor — marks as invalid/duplicate."""
-    result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id)
-    )
+    result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -193,16 +181,19 @@ async def sync_vendors_from_erp_endpoint(
     """Pull vendors from the connected ERP and sync to local database."""
     erp_config = (org.settings or {}).get("erp")
     if not erp_config:
-        raise HTTPException(status_code=400, detail="No ERP configured. Set up ERP integration in Organization Settings.")
+        raise HTTPException(
+            status_code=400,
+            detail="No ERP configured. Set up ERP integration in Organization Settings.",
+        )
 
     # Use ERP adapter to fetch vendors
-    import app.services.erp_adapters.mock_adapter  # noqa: F401
-    import app.services.erp_adapters.merge_dev  # noqa: F401
     import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
+    import app.services.erp_adapters.merge_dev  # noqa: F401
+    import app.services.erp_adapters.mock_adapter  # noqa: F401
     import app.services.erp_adapters.netsuite  # noqa: F401
     from app.services.erp_adapters import get_erp_adapter
 
-    adapter = get_erp_adapter(erp_config)
+    get_erp_adapter(erp_config)
 
     # For now, use mock vendor data — real adapters would call adapter.list_vendors()
     # TODO: add list_vendors() to ErpAdapter interface
@@ -228,6 +219,10 @@ async def sync_vendors_from_erp_endpoint(
 
     return {
         "success": True,
-        "message": f"Synced {result['created']} new, {result['updated']} updated, {result['unchanged']} unchanged",
+        "message": (
+            f"Synced {result['created']} new, "
+            f"{result['updated']} updated, "
+            f"{result['unchanged']} unchanged"
+        ),
         **result,
     }

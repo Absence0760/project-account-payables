@@ -35,6 +35,7 @@ class CreateUserRequest(BaseModel):
 
 class CreateUserResponse(AdminUserResponse):
     """Returned on user creation — includes the generated temporary password."""
+
     temporary_password: str
 
 

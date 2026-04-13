@@ -70,12 +70,28 @@ class ExtractionResult:
         """Convert to a flat dict of field_name → value (for backward compat)."""
         result = {}
         for fname in (
-            "invoice_number", "vendor_name", "vendor_address", "vendor_tax_id",
-            "amount", "currency", "subtotal", "tax_amount", "tax_rate",
-            "discount_amount", "shipping_amount", "invoice_date", "due_date",
-            "payment_terms", "po_number", "description", "reference_number",
-            "payment_method", "bill_to_address", "remit_to_address",
-            "suggested_gl_account", "suggested_cost_center",
+            "invoice_number",
+            "vendor_name",
+            "vendor_address",
+            "vendor_tax_id",
+            "amount",
+            "currency",
+            "subtotal",
+            "tax_amount",
+            "tax_rate",
+            "discount_amount",
+            "shipping_amount",
+            "invoice_date",
+            "due_date",
+            "payment_terms",
+            "po_number",
+            "description",
+            "reference_number",
+            "payment_method",
+            "bill_to_address",
+            "remit_to_address",
+            "suggested_gl_account",
+            "suggested_cost_center",
         ):
             f: ExtractedField = getattr(self, fname)
             if f.value is not None:
@@ -91,8 +107,17 @@ class ExtractionAdapter:
     def __init__(self, config: dict):
         self.config = config
 
-    async def extract(self, file_bytes: bytes = b"", file_key: str = "", mime_type: str = "application/pdf", file_url: str = "") -> ExtractionResult:
-        """Extract invoice data from file bytes. Returns structured result with per-field confidence."""
+    async def extract(
+        self,
+        file_bytes: bytes = b"",
+        file_key: str = "",
+        mime_type: str = "application/pdf",
+        file_url: str = "",
+    ) -> ExtractionResult:
+        """Extract invoice data from file bytes.
+
+        Returns structured result with per-field confidence.
+        """
         raise NotImplementedError
 
     async def test_connection(self) -> bool:

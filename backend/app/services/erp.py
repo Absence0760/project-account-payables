@@ -2,15 +2,12 @@
 
 import asyncio
 import uuid
-from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.services.erp_adapters import (
-    ErpAdapter,
     InvoicePayload,
-    LineItemPayload,
     get_erp_adapter,
 )
 from app.services.workflow_engine import (
@@ -116,7 +113,7 @@ async def send_to_erp(
                         "last_error": str(exc),
                     }
                     await db.commit()
-                delay = BASE_DELAY_SECONDS * (2 ** attempt)
+                delay = BASE_DELAY_SECONDS * (2**attempt)
                 await asyncio.sleep(delay)
             else:
                 # All retries exhausted → failed
@@ -148,6 +145,7 @@ async def retry_erp(
     """Retry a failed ERP push. Only valid if the invoice was previously approved."""
     if not invoice.approved_by:
         from fastapi import HTTPException
+
         raise HTTPException(
             status_code=409,
             detail="Cannot retry ERP push — invoice was never approved",
@@ -234,9 +232,9 @@ async def _call_erp(invoice: Invoice, erp_config: dict | None = None) -> str:
     config = erp_config or {"type": "mock", "integration_method": "direct"}
 
     # Import adapters to trigger registration
-    import app.services.erp_adapters.mock_adapter  # noqa: F401
-    import app.services.erp_adapters.merge_dev  # noqa: F401
     import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
+    import app.services.erp_adapters.merge_dev  # noqa: F401
+    import app.services.erp_adapters.mock_adapter  # noqa: F401
     import app.services.erp_adapters.netsuite  # noqa: F401
 
     adapter = get_erp_adapter(config)

@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -12,9 +12,7 @@ from app.models.base import Base, TimestampMixin
 class PaymentRun(Base, TimestampMixin):
     __tablename__ = "payment_runs"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     status: Mapped[str] = mapped_column(String(30), default="draft")
     total_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
     initiated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
@@ -28,12 +26,8 @@ class PaymentRun(Base, TimestampMixin):
 class PaymentSchedule(Base, TimestampMixin):
     __tablename__ = "payment_schedules"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    correlation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
     )
@@ -46,12 +40,8 @@ class PaymentSchedule(Base, TimestampMixin):
 class Payment(Base, TimestampMixin):
     __tablename__ = "payments"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    correlation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
     )

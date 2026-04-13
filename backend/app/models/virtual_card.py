@@ -14,9 +14,7 @@ from app.models.base import Base, TimestampMixin
 class VirtualCard(Base, TimestampMixin):
     __tablename__ = "virtual_cards"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
     )
@@ -26,9 +24,7 @@ class VirtualCard(Base, TimestampMixin):
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("vendors.id")
     )
-    correlation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     card_provider: Mapped[str] = mapped_column(String(30), nullable=False)
     provider_card_id: Mapped[str] = mapped_column(String(255), nullable=False)
     last_four: Mapped[str | None] = mapped_column(String(4))
@@ -50,9 +46,7 @@ class VirtualCard(Base, TimestampMixin):
 class CardRebate(Base, TimestampMixin):
     __tablename__ = "card_rebates"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     virtual_card_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("virtual_cards.id"), nullable=False
     )

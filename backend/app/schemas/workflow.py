@@ -5,7 +5,6 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
-
 # ---------- workflow definition schemas ----------
 
 
@@ -36,7 +35,9 @@ class WorkflowStepConfig(BaseModel):
     type: str  # "extraction", "approval", "erp_export"
     name: str
     enabled: bool = True
-    config: ExtractionStepConfig | ApprovalStepConfig | ErpExportStepConfig | dict = Field(default_factory=dict)
+    config: ExtractionStepConfig | ApprovalStepConfig | ErpExportStepConfig | dict = Field(
+        default_factory=dict
+    )
 
 
 class WorkflowDefinitionCreate(BaseModel):
@@ -85,6 +86,7 @@ class AssignReviewerRequest(BaseModel):
 
 class ApproveRequest(BaseModel):
     """Optional field corrections applied at approval time."""
+
     vendor: str | None = Field(default=None, max_length=255)
     invoice_number: str | None = Field(default=None, max_length=100)
     amount: Decimal | None = Field(default=None, ge=0)

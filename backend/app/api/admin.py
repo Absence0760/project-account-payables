@@ -38,8 +38,7 @@ def _user_to_response(user: User) -> AdminUserResponse:
         full_name=user.full_name,
         is_active=user.is_active,
         roles=[
-            RoleResponse(id=str(r.id), name=r.name, description=r.description)
-            for r in user.roles
+            RoleResponse(id=str(r.id), name=r.name, description=r.description) for r in user.roles
         ],
         created_at=user.created_at.isoformat() if user.created_at else "",
     )
@@ -71,10 +70,7 @@ async def list_roles(
 ):
     result = await db.execute(select(Role).order_by(Role.name))
     roles = result.scalars().all()
-    return [
-        RoleResponse(id=str(r.id), name=r.name, description=r.description)
-        for r in roles
-    ]
+    return [RoleResponse(id=str(r.id), name=r.name, description=r.description) for r in roles]
 
 
 @router.post("/users", response_model=CreateUserResponse, status_code=status.HTTP_201_CREATED)
@@ -150,9 +146,7 @@ async def update_user(
         target.hashed_password = pwd_context.hash(body.password)
 
     if body.role_names is not None:
-        await db.execute(
-            UserRole.__table__.delete().where(UserRole.user_id == user_id)
-        )
+        await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_id))
         if body.role_names:
             result = await db.execute(select(Role).where(Role.name.in_(body.role_names)))
             roles = result.scalars().all()
@@ -186,8 +180,6 @@ async def delete_user(
         raise HTTPException(status_code=409, detail="Cannot delete yourself")
 
     # Remove role assignments first
-    await db.execute(
-        UserRole.__table__.delete().where(UserRole.user_id == user_id)
-    )
+    await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_id))
     await db.delete(target)
     await db.commit()

@@ -143,14 +143,14 @@ async def update_workflow(
         if body.is_active and not defn.is_active:
             # Deactivate all other workflows for this org
             await db.execute(
-                select(WorkflowDefinition)
-                .where(
+                select(WorkflowDefinition).where(
                     WorkflowDefinition.organization_id == org_id,
                     WorkflowDefinition.id != workflow_id,
                     WorkflowDefinition.is_active == True,  # noqa: E712
                 )
             )
             from sqlalchemy import update as sql_update
+
             await db.execute(
                 sql_update(WorkflowDefinition)
                 .where(

@@ -7,13 +7,13 @@ from app.api.deps import get_current_user
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
-from app.tenant import get_tenant
 from app.schemas.organization import (
     CompanyProfile,
     InvoiceDefaults,
     OrganizationResponse,
     UpdateOrganizationRequest,
 )
+from app.tenant import get_tenant
 
 router = APIRouter(prefix="/organization", tags=["organization"])
 
@@ -75,18 +75,20 @@ async def test_erp_connection(
         raise HTTPException(status_code=400, detail="No ERP configuration provided")
 
     # Import adapters to trigger registration
-    import app.services.erp_adapters.mock_adapter  # noqa: F401
-    import app.services.erp_adapters.merge_dev  # noqa: F401
     import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
+    import app.services.erp_adapters.merge_dev  # noqa: F401
+    import app.services.erp_adapters.mock_adapter  # noqa: F401
     import app.services.erp_adapters.netsuite  # noqa: F401
-
     from app.services.erp_adapters import get_erp_adapter
 
     try:
         adapter = get_erp_adapter(erp_config)
         success = await adapter.test_connection()
         if success:
-            return {"success": True, "message": f"Connected to {erp_config.get('type', 'ERP')} successfully"}
+            return {
+                "success": True,
+                "message": f"Connected to {erp_config.get('type', 'ERP')} successfully",
+            }
         else:
             return {"success": False, "message": "Connection failed — check your credentials"}
     except Exception as exc:
@@ -100,15 +102,17 @@ async def test_extraction_connection(
     user: User = Depends(get_current_user),
 ):
     """Test the AI extraction provider connection. Uses request body config if provided."""
-    config = request if request and request.get("provider") else (org.settings or {}).get("extraction")
+    config = (
+        request if request and request.get("provider") else (org.settings or {}).get("extraction")
+    )
     if not config:
         raise HTTPException(status_code=400, detail="No extraction configuration provided")
 
-    import app.services.extraction_adapters.mock_adapter  # noqa: F401
-    import app.services.extraction_adapters.claude_vision  # noqa: F401
-    import app.services.extraction_adapters.openai_vision  # noqa: F401
     import app.services.extraction_adapters.aws_textract  # noqa: F401
+    import app.services.extraction_adapters.claude_vision  # noqa: F401
+    import app.services.extraction_adapters.mock_adapter  # noqa: F401
     import app.services.extraction_adapters.ollama  # noqa: F401
+    import app.services.extraction_adapters.openai_vision  # noqa: F401
     from app.services.extraction_adapters import get_extraction_adapter
 
     try:
@@ -120,7 +124,12 @@ async def test_extraction_connection(
         else:
             if provider == "ollama":
                 model = config.get("model", "llama3.2-vision:11b")
-                return {"success": False, "message": f"Ollama is running but model '{model}' not found. Run: ollama pull {model}"}
+                return {
+                    "success": False,
+                    "message": (
+                        f"Ollama is running but model '{model}' not found. Run: ollama pull {model}"
+                    ),
+                }
             return {"success": False, "message": "Connection failed — check your configuration"}
     except Exception as exc:
         return {"success": False, "message": str(exc)}

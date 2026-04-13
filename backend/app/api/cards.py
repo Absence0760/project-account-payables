@@ -1,16 +1,15 @@
 """Virtual card endpoints — generate, list, cancel, webhook."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select, extract
+from sqlalchemy import extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_org_id
 from app.config import settings
-from app.tenant import get_tenant, get_tenant_db
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.user import User
@@ -25,6 +24,7 @@ from app.schemas.virtual_card import (
     RebateListResponse,
     RebateResponse,
 )
+from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/cards", tags=["cards"])
 
@@ -54,6 +54,7 @@ def _resolve_card_config(org: Organization) -> dict:
     else:
         # Platform keys — auto-select provider by region
         from app.services.card_adapters.dispatcher import get_default_provider
+
         provider = get_default_provider(region)
 
         if provider == "lithic":
@@ -75,7 +76,9 @@ def _resolve_card_config(org: Organization) -> dict:
             }
 
 
-def _card_response(card: VirtualCard, invoice: Invoice | None = None, vendor: Vendor | None = None) -> CardResponse:
+def _card_response(
+    card: VirtualCard, invoice: Invoice | None = None, vendor: Vendor | None = None
+) -> CardResponse:
     return CardResponse(
         id=str(card.id),
         invoice_id=str(card.invoice_id),
@@ -123,7 +126,7 @@ async def card_dashboard(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Active cards
     active_q = select(func.count(), func.coalesce(func.sum(VirtualCard.amount_limit), 0)).where(
@@ -172,14 +175,17 @@ async def generate_cards(
 ):
     org_cards = (org.settings or {}).get("cards", {})
     if not org_cards.get("enabled"):
-        raise HTTPException(status_code=400, detail="Virtual cards are not enabled. Configure in Organization Settings.")
+        raise HTTPException(
+            status_code=400,
+            detail="Virtual cards are not enabled. Configure in Organization Settings.",
+        )
     card_config = _resolve_card_config(org)
 
     # Import adapters
-    import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.nium  # noqa: F401
-    from app.services.card_adapters import get_card_adapter, VirtualCardPayload
+    from app.services.card_adapters import VirtualCardPayload, get_card_adapter
 
     adapter = get_card_adapter(card_config)
     expiry_days = card_config.get("default_expiry_days", 30)
@@ -216,7 +222,7 @@ async def generate_cards(
             amount_limit=inv.amount,
             currency=inv.currency or "USD",
             status="created",
-            expires_at=datetime.now(timezone.utc) + timedelta(days=expiry_days),
+            expires_at=datetime.now(UTC) + timedelta(days=expiry_days),
             organization_id=org_id,
         )
         db.add(card)
@@ -242,7 +248,9 @@ async def get_card_details(
     # Role check — only admin and ap_manager can see full card details
     user_roles = {r.name for r in user.roles}
     if not user_roles & {"admin", "ap_manager"}:
-        raise HTTPException(status_code=403, detail="Only admins and AP managers can view card details")
+        raise HTTPException(
+            status_code=403, detail="Only admins and AP managers can view card details"
+        )
 
     result = await db.execute(select(VirtualCard).where(VirtualCard.id == card_id))
     card = result.scalar_one_or_none()
@@ -251,6 +259,7 @@ async def get_card_details(
 
     # Audit log the access
     from app.services.audit_dispatch import dispatch_audit
+
     await dispatch_audit(
         db,
         correlation_id=card.correlation_id or uuid.uuid4(),
@@ -264,8 +273,8 @@ async def get_card_details(
 
     card_config = _resolve_card_config(org)
 
-    import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.nium  # noqa: F401
     from app.services.card_adapters import get_card_adapter
 
@@ -296,8 +305,8 @@ async def cancel_card(
 
     card_config = _resolve_card_config(org)
 
-    import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.nium  # noqa: F401
     from app.services.card_adapters import get_card_adapter
 
@@ -333,8 +342,9 @@ async def card_webhook(provider: str, request: Request):
 
     # Find the card across all tenant DBs — in production, include tenant info in webhook metadata
     # For now, search by provider_card_id
-    from app.database import control_session_factory, get_tenant_engine
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.database import control_session_factory, get_tenant_engine
 
     async with control_session_factory() as ctrl_db:
         orgs_result = await ctrl_db.execute(select(Organization))
@@ -354,12 +364,16 @@ async def card_webhook(provider: str, request: Request):
 
                 # Update card based on event
                 is_auth = "authorization" in event_type.lower() or "auth" in event_type.lower()
-                is_settled = "transaction" in event_type.lower() or "settlement" in event_type.lower()
+                is_settled = (
+                    "transaction" in event_type.lower() or "settlement" in event_type.lower()
+                )
 
                 if is_auth and card.status in ("created", "sent", "active"):
                     card.status = "charged"
-                    card.amount_charged = Decimal(str(amount)) / 100 if amount else card.amount_limit
-                    card.charged_at = datetime.now(timezone.utc)
+                    card.amount_charged = (
+                        Decimal(str(amount)) / 100 if amount else card.amount_limit
+                    )
+                    card.charged_at = datetime.now(UTC)
                     card.merchant_name = merchant
                 elif is_settled and card.status == "charged":
                     card.status = "completed"
@@ -371,7 +385,7 @@ async def card_webhook(provider: str, request: Request):
                         amount=rebate_amount,
                         rate=rebate_rate,
                         status="pending",
-                        period=datetime.now(timezone.utc).strftime("%Y-%m"),
+                        period=datetime.now(UTC).strftime("%Y-%m"),
                         organization_id=card.organization_id,
                     )
                     db.add(rebate)

@@ -1,12 +1,10 @@
-import uuid
-from datetime import date, datetime
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class PaymentStatus(str, Enum):
+class PaymentStatus(StrEnum):
     pending = "pending"
     processing = "processing"
     completed = "completed"
@@ -14,14 +12,14 @@ class PaymentStatus(str, Enum):
     cancelled = "cancelled"
 
 
-class PaymentMethod(str, Enum):
+class PaymentMethod(StrEnum):
     ach = "ach"
     wire = "wire"
     check = "check"
     virtual_card = "virtual_card"
 
 
-class PaymentRunStatus(str, Enum):
+class PaymentRunStatus(StrEnum):
     draft = "draft"
     submitted = "submitted"
     processing = "processing"

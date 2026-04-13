@@ -77,9 +77,7 @@ async def erp_webhook(
 
     # Look up the org
     async with control_session_factory() as ctrl_db:
-        result = await ctrl_db.execute(
-            select(Organization).where(Organization.slug == tenant_slug)
-        )
+        result = await ctrl_db.execute(select(Organization).where(Organization.slug == tenant_slug))
         org = result.scalar_one_or_none()
         if not org:
             raise HTTPException(status_code=404, detail="Unknown tenant")
@@ -113,7 +111,11 @@ async def erp_webhook(
             current = invoice.status
             valid_transitions = {
                 InvoiceStatus.sent_to_erp: {InvoiceStatus.posted_in_erp, InvoiceStatus.failed},
-                InvoiceStatus.posted_in_erp: {InvoiceStatus.payment_scheduled, InvoiceStatus.paid, InvoiceStatus.failed},
+                InvoiceStatus.posted_in_erp: {
+                    InvoiceStatus.payment_scheduled,
+                    InvoiceStatus.paid,
+                    InvoiceStatus.failed,
+                },
                 InvoiceStatus.payment_scheduled: {InvoiceStatus.paid, InvoiceStatus.failed},
             }
 

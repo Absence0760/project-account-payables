@@ -6,10 +6,10 @@ import uuid
 
 import asyncpg
 from passlib.context import CryptContext
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import settings
-from app.database import control_engine, control_session_factory, _make_tenant_url
+from app.database import _make_tenant_url, control_engine, control_session_factory
 from app.models import Base
 from app.models.organization import Organization
 from app.models.user import User
@@ -32,7 +32,9 @@ async def create_database(db_name: str) -> None:
     else:
         host, port = host_port, 5432
 
-    conn = await asyncpg.connect(host=host, port=port, user=user, password=password, database="postgres")
+    conn = await asyncpg.connect(
+        host=host, port=port, user=user, password=password, database="postgres"
+    )
     try:
         exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
         if not exists:
@@ -49,12 +51,13 @@ async def create_tenant_tables(db_name: str) -> None:
     tenant_url = _make_tenant_url(db_name)
     engine = create_async_engine(tenant_url)
     tenant_tables = [
-        table for name, table in Base.metadata.tables.items()
-        if name not in CONTROL_TABLES
+        table for name, table in Base.metadata.tables.items() if name not in CONTROL_TABLES
     ]
     async with engine.begin() as conn:
         await conn.run_sync(
-            lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tenant_tables, checkfirst=True)
+            lambda sync_conn: Base.metadata.create_all(
+                sync_conn, tables=tenant_tables, checkfirst=True
+            )
         )
     await engine.dispose()
     print(f"  Created tenant tables in: {db_name}")

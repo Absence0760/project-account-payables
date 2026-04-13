@@ -4,16 +4,17 @@ from __future__ import annotations
 
 from app.services.erp_adapters.base import ErpAdapter
 
-
 # Registry of available adapters by erp_type
 _ADAPTER_REGISTRY: dict[str, type[ErpAdapter]] = {}
 
 
 def register_adapter(erp_type: str):
     """Decorator to register an adapter class."""
+
     def wrapper(cls: type[ErpAdapter]):
         _ADAPTER_REGISTRY[erp_type] = cls
         return cls
+
     return wrapper
 
 
