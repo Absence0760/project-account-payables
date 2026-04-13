@@ -161,7 +161,8 @@ Full list in `backend/app/config.py`.
 | Vendor mgmt | `docs/vendor-management.md` — sources, sync, matching |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
 | Local AI testing | `docs/local-ai-testing.md` — Ollama setup |
-| Roadmap | `docs/roadmap.md` — feature backlog with status |
+| Roadmap | `docs/roadmap.md` — feature backlog with status and competitive context |
+| Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 
 Prefer reading docs over guessing. Update them when behavior changes.
 

@@ -66,22 +66,59 @@ Feature backlog for the AP automation platform, ordered by impact.
 
 ---
 
-## Priority 2: Workflow & Exceptions
+## Priority 2: Workflow, Approvals & Exceptions
 
 ### Exception Queue
-**Status:** Partial (exception model exists, no UI)
+**Status:** Done
 
 Dedicated page for handling flagged invoices — mismatches, rejections, anomalies.
 
-- [ ] Exception list page with filters (type, status, severity, date)
-- [ ] Exception types: PO mismatch, duplicate, fraud flag, rejection, extraction failure
-- [ ] Resolution actions: override, correct, escalate, reject
+- [x] Exception list page with filters (type, status, severity, date)
+- [x] Exception types: PO mismatch, duplicate, fraud flag, rejection, extraction failure, unverified vendor, missing data
+- [x] Resolution actions: resolve, escalate, dismiss (with resolution note)
+- [x] Summary: counts by status, breakdown by type
+- [x] Link back to invoice from exception
 - [ ] Assignment — route to specific users based on exception type
 - [ ] SLA tracking — time to resolution
 - [ ] Bulk resolution for common patterns
-- [ ] Link back to invoice modal from exception
 
-**Files:** `backend/app/models/exception.py` (model exists)
+**Files:** `backend/app/routers/exceptions.py`, `backend/app/models/exception.py`
+
+---
+
+### Advanced Approval Routing
+**Status:** Planned — **Competitive gap: all competitors have this**
+
+Current state: manual, specific, and auto approval strategies only. No amount-based routing, no delegation, no escalation. Every competitor offers configurable multi-level approval chains.
+
+- [ ] Amount-based routing — auto-route to different approvers by invoice amount threshold
+- [ ] Department/GL-based routing — route by cost center, GL code, or department
+- [ ] Multi-level approval chains — sequential approval (clerk → manager → CFO for large invoices)
+- [ ] Parallel approvals — multiple approvers review simultaneously, require all/any
+- [ ] Delegation / out-of-office — designate a proxy approver with date range
+- [ ] Escalation rules — auto-escalate after N hours/days without action
+- [ ] Email approval — approve/reject directly from email notification without logging in
+- [ ] Slack/Teams approval — approve/reject from Slack message buttons
+- [ ] Segregation of duties — prevent same user from creating and approving an invoice
+- [ ] Approval matrix UI — visual configuration of routing rules per org
+
+**Competitors:** Coupa (matrix approval), Tipalti (parallel + Slack), Stampli (email/Slack), Airbase (Slack-native), Basware (conditional chains)
+
+---
+
+### Backend RBAC Enforcement
+**Status:** Planned — **Security gap: all competitors have this**
+
+Current state: role checks are UI-only. Any authenticated user can call any API endpoint. This is a security vulnerability, not just a missing feature.
+
+- [ ] Decorator-based role checks on all router endpoints (e.g., `@require_roles("admin", "ap_manager")`)
+- [ ] Endpoint-level permission mapping for all 4 roles
+- [ ] Segregation of duties enforcement at API level
+- [ ] Return 403 Forbidden (not just hide UI elements)
+- [ ] Unit tests for all role-gated endpoints
+- [ ] Audit log unauthorized access attempts
+
+**Files:** `backend/app/api/deps.py` (add `require_roles` dependency)
 
 ---
 
@@ -146,6 +183,24 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 - [ ] Rebate dashboard — monthly earnings, projected savings, YTD totals
 - [ ] Supplier portal integration — secure card detail viewing for vendors
 
+### International Payments
+**Status:** Planned — **Competitive gap: Tipalti, Coupa, Basware, Airbase, Medius have this**
+
+Current state: domestic-only payment methods. Blocks entire non-US market. Tipalti supports 196 countries and 120 currencies.
+
+- [ ] Multi-currency payment execution — pay in vendor's local currency
+- [ ] FX rate management — real-time rates, rate lock at payment creation
+- [ ] Cross-border ACH (global ACH networks)
+- [ ] International wire transfers (SWIFT)
+- [ ] SEPA payments (EU)
+- [ ] Payment corridor optimization — cheapest route per destination
+- [ ] Regulatory compliance per corridor (KYC/AML)
+- [ ] FX gain/loss tracking and reporting
+
+**Competitors:** Tipalti (196 countries, 120 currencies), Coupa Pay, Basware Pay, Airbase
+
+---
+
 ### Bank / Payment Processor Integration
 **Status:** Planned
 
@@ -195,55 +250,101 @@ Connect to actual payment rails for non-card payments.
 - [ ] Consolidated reporting across entities
 
 ### Tax Compliance
-**Status:** Planned
+**Status:** Planned — **Competitive gap: 1099 is table stakes for US AP**
 
+1099 compliance is required for US AP operations. Bill.com, Tipalti, AvidXchange, Stampli, MineralTree all have it. VAT/e-invoicing is required for EU expansion (Medius and Basware lead).
+
+**US Tax (Priority):**
+- [ ] W-9 collection — request, store, and validate vendor W-9 forms
+- [ ] TIN validation — verify Tax Identification Numbers against IRS database
+- [ ] 1099 tracking — flag vendors exceeding $600 annual threshold
+- [ ] 1099-NEC and 1099-MISC generation — auto-generate from payment data
+- [ ] 1099 e-filing — file electronically with IRS (direct or via partner like Tax1099)
+- [ ] 1099 vendor dashboard — summary of all 1099-eligible vendors and YTD totals
+
+**International Tax:**
 - [ ] Tax rate lookup by jurisdiction (e.g., Avalara, TaxJar)
-- [ ] 1099 tracking for US vendors
 - [ ] VAT handling for international invoices
 - [ ] Withholding tax calculation
+- [ ] GST handling (Australia, India, Canada)
 - [ ] Tax report generation
+- [ ] Country-specific tax rules engine
+
+**Competitors:** Tipalti (1099 + W-8BEN + VAT), Bill.com (1099 e-filing), Basware (global VAT, 60+ countries), Medius (EU e-invoicing mandates)
 
 ---
 
 ## Priority 6: Supplier Portal
+**Competitive gap: all competitors have a supplier portal**
 
 ### Vendor Self-Service
 **Status:** Planned
 
-Separate portal for vendors to interact with the AP system.
+Separate portal for vendors to interact with the AP system. Biggest workflow gap — forces email/manual invoice intake without this. Every competitor (Coupa CSP, Tipalti Supplier Hub, Basware Network, Stampli) offers this.
 
 - [ ] Vendor login (separate auth, linked to vendor record)
 - [ ] Submit invoices directly (upload PDF or enter manually)
+- [ ] PO flip — create invoice from PO (pre-populate fields)
 - [ ] Check invoice status and payment status
 - [ ] View payment history and download remittances
 - [ ] Update company info, bank details, tax ID
-- [ ] Bank detail change requires AP admin approval
+- [ ] Bank detail change requires AP admin approval (fraud prevention)
+- [ ] W-9/W-8 form upload and management
 - [ ] Notification preferences (email on payment, on rejection)
+- [ ] Virtual card detail viewing (secure, one-time access)
+- [ ] Early payment discount offers (tie into dynamic discounting)
+
+**Competitors:** Coupa (CSP, free for suppliers), Tipalti (full supplier hub), Basware (Basware Network), Stampli (invoice submission + status)
 
 ---
 
-## Priority 7: Mobile & Notifications
+## Priority 7: Authentication & Enterprise Security
+**Competitive gap: SSO is an enterprise deal-blocker**
+
+### SSO / Enterprise Authentication
+**Status:** Planned — fields exist in User model (`sso_provider`, `sso_provider_id`) but not implemented
+
+No SSO = no enterprise sale. Every competitor supports SAML/OIDC.
+
+- [ ] SAML 2.0 SSO (Okta, Azure AD, OneLogin)
+- [ ] OIDC (OpenID Connect) support
+- [ ] JIT (Just-In-Time) user provisioning from SSO
+- [ ] SSO-only mode — disable password login when SSO is configured
+- [ ] SCIM user provisioning (auto-create/deactivate users from IdP)
+- [ ] MFA enforcement (TOTP, WebAuthn/passkeys)
+- [ ] Force password change on first login (non-SSO users)
+- [ ] Session management — concurrent session limits, forced logout
+
+**Competitors:** All competitors support SSO. Coupa, SAP Concur, and Basware also support SCIM.
+
+---
+
+## Priority 8: Mobile & Notifications
+**Competitive gap: most competitors have mobile apps**
 
 ### Mobile Access
 **Status:** Partial (responsive CSS)
+
+Bill.com, Coupa, SAP Concur, Stampli, and Airbase all have native mobile apps. PWA is a pragmatic path that avoids app store complexity.
 
 - [ ] PWA (Progressive Web App) — installable, works offline for viewing
 - [ ] Push notifications for approvals needing attention
 - [ ] Mobile-optimized approval flow (swipe to approve/reject)
 - [ ] Camera upload — take photo of paper invoice directly
+- [ ] Mobile-specific UI components (bottom nav, gesture support)
 
 ### Email & Notification System
 **Status:** Planned
 
 - [ ] Email notifications on key events (invoice assigned, approved, rejected, paid)
 - [ ] Configurable notification preferences per user
-- [ ] Email-to-invoice — forward invoices to a dedicated email address for auto-import
-- [ ] Slack/Teams integration for approval notifications
+- [ ] Email-to-invoice — forward invoices to a dedicated email address for auto-import (Bill.com, Tipalti, Stampli, Medius have this)
+- [ ] Slack/Teams integration for approval notifications (Stampli, Airbase differentiate here)
 - [ ] In-app notification center
 
 ---
 
-## Priority 8: AI-Powered Automation (strong differentiators)
+## Priority 9: AI-Powered Automation (strong differentiators)
 
 ### AI Agents for Autonomous Exception Handling
 **Status:** Planned
@@ -305,7 +406,24 @@ Use AP data to forecast cash outflows and optimize payment timing.
 
 ---
 
-## Priority 9: Compliance & E-Invoicing
+## Priority 10: Compliance & E-Invoicing
+
+### Sanctions & Vendor Risk Screening
+**Status:** Planned — **Competitive gap for regulated industries**
+
+Tipalti, Coupa, Medius, and Basware all screen vendors against sanctions lists. Required for financial services, government contractors, and regulated industries.
+
+- [ ] OFAC/SDN sanctions screening on vendor creation and update
+- [ ] Ongoing monitoring — re-screen vendors periodically (daily/weekly)
+- [ ] Flag and block payments to sanctioned entities
+- [ ] Adverse media screening
+- [ ] Vendor risk scoring (sanctions + fraud signals + payment history)
+- [ ] Integration with screening providers (Dow Jones, Refinitiv, ComplyAdvantage)
+- [ ] Screening audit trail — log all checks and results
+
+**Competitors:** Tipalti (OFAC/SDN built-in), Coupa (community risk), Basware (sanctions + fraud module), Medius (fraud intelligence)
+
+---
 
 ### SOX-Compliant Audit Trails
 **Status:** Partial (audit log exists, not SOX-certified)
@@ -341,7 +459,7 @@ Support structured electronic invoice formats required in the EU, Australia, and
 
 ---
 
-## Priority 10: Dynamic Payments & Matching
+## Priority 11: Dynamic Payments & Matching
 
 ### Dynamic Discounting & Early Payment Optimization
 **Status:** Planned
@@ -373,7 +491,7 @@ Extend PO matching to include quality inspection data — critical for manufactu
 
 ---
 
-## Priority 11: Collaboration & Self-Service
+## Priority 12: Collaboration & Self-Service
 
 ### Embedded Supplier Chat & Collaboration
 **Status:** Planned
@@ -403,6 +521,58 @@ Visual drag-and-drop workflow builder for non-technical users.
 - [ ] Version history — compare and rollback workflow changes
 - [ ] Simulation mode — test a workflow with sample invoices before activating
 - [ ] Import/export workflow definitions as JSON
+
+---
+
+## Priority 13: Platform Expansion (adjacent markets)
+
+These features expand beyond core AP automation into broader spend management. Airbase and Coupa win mid-market deals by offering all-in-one spend platforms. Consider these only after core AP gaps are closed.
+
+### Expense Management
+**Status:** Planned
+
+Corporate expense tracking and reimbursement. Airbase, Coupa, SAP Concur, and Bill.com (Divvy) all offer this. Increasingly expected as part of a "spend management" platform.
+
+- [ ] Out-of-pocket expense submission with receipt capture
+- [ ] Corporate card transaction import and reconciliation
+- [ ] Expense policies — per diem, mileage rates, category limits
+- [ ] Pre-approval workflows for high-value expenses
+- [ ] Integration with existing virtual card program
+- [ ] Expense reporting with GL coding
+- [ ] Manager approval flow (reuse AP approval infrastructure)
+
+**Competitors:** Airbase (core offering), Coupa (full module), SAP Concur (industry leader), Bill.com/Divvy (corporate cards + expenses)
+
+---
+
+### Procurement / Requisitions
+**Status:** Planned
+
+Procure-to-pay: requisitioning, PO creation, catalog management. Coupa and Basware are leaders here. Airbase offers "intake-to-procure" for software purchases.
+
+- [ ] Purchase requisition creation and approval
+- [ ] Requisition-to-PO conversion
+- [ ] Catalog management (supplier catalogs, punch-out)
+- [ ] Guided buying — direct users to preferred vendors/contracts
+- [ ] Budget tracking — spend against department/project budgets
+- [ ] Intake forms for non-PO spend (software, services)
+
+**Competitors:** Coupa (full source-to-pay), Basware (procurement suite), Airbase (intake-to-procure), Medius (basic procurement)
+
+---
+
+### Contract Management
+**Status:** Planned
+
+Contract lifecycle management. Only enterprise tools (Coupa, Basware) have this natively. Most mid-market competitors don't.
+
+- [ ] Contract repository — upload and store contracts
+- [ ] Spend-to-contract tracking — link invoices to contracts
+- [ ] Renewal alerts — notify before contract expiry
+- [ ] Contract compliance monitoring — flag spend outside contract terms
+- [ ] Contract-based PO creation — auto-populate PO from contract terms
+
+**Competitors:** Coupa (full CLM), Basware (moderate), Airbase (basic repository)
 
 ---
 
@@ -456,3 +626,7 @@ Visual drag-and-drop workflow builder for non-technical users.
 - [x] Line item extraction
 - [x] Extraction usage tracking for billing (ExtractionUsage model)
 - [x] PO matching service (2-way and 3-way with configurable tolerance)
+- [x] Exception queue with filters, resolution actions, and summary
+- [x] Fraud detection (duplicate invoices, round amounts, future dates, unverified vendors)
+- [x] Dashboard KPIs (pipeline, aging, vendor spend, monthly trends, upcoming payments)
+- [x] Payment run creation and execution with ERP sync
