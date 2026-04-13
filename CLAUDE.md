@@ -10,6 +10,7 @@ Full-stack accounts payable management app. SvelteKit frontend + FastAPI backend
 
 - **frontend/** — SvelteKit 2, Svelte 5 (runes), adapter-static, TypeScript, pnpm. Dev port `7777`.
 - **backend/** — FastAPI, Python 3.12+, SQLAlchemy 2 async, Alembic, PostgreSQL 16, Redis 7, MinIO (S3). Dev port `8000`.
+- **mobile/** — Flutter 3.41+, Dart 3.11+, iOS + Android. Material 3, ChangeNotifier stores.
 - **Infra** — Docker Compose for local services. GitHub Pages for frontend deploy.
 
 ## Commands
@@ -32,6 +33,12 @@ python main.py                # dev server on :8000 (auto-reload)
 pytest                        # run tests
 ruff check .                  # lint
 ruff format .                 # format
+
+# Mobile (from mobile/)
+flutter pub get               # install
+flutter run                   # run on iOS simulator
+flutter analyze               # lint
+flutter test                  # run tests
 
 # Database migrations (from backend/)
 alembic revision --autogenerate -m "description"   # create migration
@@ -150,6 +157,7 @@ Full list in `backend/app/config.py`.
 |-------|-----------|
 | Frontend details | `frontend/CLAUDE.md` — routes, stores, components, API mappings |
 | Backend details | `backend/CLAUDE.md` — models, services, adapters, migrations |
+| Mobile app | `mobile/CLAUDE.md` — Flutter iOS app, screens, stores, API client |
 | AI extraction | `docs/ai-extraction.md` — platform vs BYOK, provider configs |
 | ERP integration | `docs/erp-integration.md` — adapter pattern, Merge.dev, direct APIs |
 | Workflow design | `docs/workflow-design.md` — state machine, step types, snapshots |
