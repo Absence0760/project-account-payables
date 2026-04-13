@@ -27,28 +27,34 @@ flutter test                 # run tests
 ```
 mobile/
 ├── lib/
-│   ├── main.dart                # App entry, splash, auth routing
+│   ├── main.dart                # App entry, splash, biometric check, push init
 │   ├── config.dart              # API URL, tenant slug
 │   ├── api/
-│   │   ├── api_client.dart      # HTTP client (JWT + X-Tenant-Slug header)
+│   │   ├── api_client.dart      # HTTP client (JWT + X-Tenant-Slug header, timeout, debug logs)
 │   │   └── endpoints.dart       # Typed API methods (auth, invoices, dashboard, payments)
 │   ├── models/
 │   │   ├── user.dart            # User model with role helpers
 │   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states)
 │   │   └── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
+│   ├── services/
+│   │   ├── biometric_service.dart  # Face ID / fingerprint via local_auth
+│   │   ├── camera_capture.dart     # Image picker + invoice upload
+│   │   ├── offline_store.dart      # SQLite cache for offline viewing
+│   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications
 │   ├── stores/
 │   │   ├── auth_store.dart      # Auth state — login, logout, role checks
-│   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject
-│   │   └── dashboard_store.dart # Dashboard KPI data
+│   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject (offline cached)
+│   │   └── dashboard_store.dart # Dashboard KPI data (offline cached)
 │   ├── screens/
 │   │   ├── login_screen.dart    # Tenant + email/password login
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
 │   │   ├── dashboard_screen.dart # KPIs, aging, top vendors
-│   │   ├── invoices_screen.dart  # Invoice list with search + status filters
+│   │   ├── invoices_screen.dart  # Invoice list with search + status filters + camera button
 │   │   ├── invoice_detail_screen.dart # Detail view with approve/reject
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
+│   │   ├── capture_screen.dart   # Camera/gallery capture → upload → extract
 │   │   ├── payments_screen.dart  # Payment history
-│   │   └── settings_screen.dart  # User profile, tenant info, logout
+│   │   └── settings_screen.dart  # User profile, biometric toggle, logout
 │   └── widgets/
 │       ├── status_badge.dart    # Colored invoice status chip
 │       ├── kpi_card.dart        # Dashboard metric card
@@ -102,6 +108,36 @@ Bottom navigation adapts based on user roles (same as web frontend):
 | Approvals | Admin, AP Manager |
 | Payments | Admin, AP Manager, CFO |
 | Settings | All roles |
+
+## Feature status
+
+**Done:**
+- Login with tenant selection
+- Dashboard (KPIs, aging buckets, top vendors)
+- Invoice list with search + status filter chips
+- Invoice detail with approve/reject
+- Approvals tab with swipe-to-approve
+- Payment history list
+- Role-based bottom navigation
+- Settings (profile, tenant info, logout)
+- JWT in secure storage (iOS Keychain / Android Keystore)
+- Camera OCR — snap photo or pick from gallery → upload → trigger AI extraction
+- Push notifications — Firebase Cloud Messaging (foreground + background), no-op if Firebase not configured
+- Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure
+- Biometric login — Face ID / fingerprint / device PIN, toggle in settings, checked on app launch
+
+**Not yet built (see `docs/roadmap.md` Priority 8 for full list):**
+- Invoice editing (change fields in detail screen)
+- Activity timeline in invoice detail (audit log)
+- PDF/image viewer for uploaded invoice files
+- Exception queue (view/resolve flagged invoices)
+- Vendor list (view, verify/reject)
+- Payment queue (invoices ready to pay)
+- Payment runs (create/execute)
+- Advanced search (date range, amount range, vendor filter)
+- Invoice warnings/fraud flags display
+- ERP status display on invoice detail
+- Bulk operations, export, workflow management, org settings, admin screens
 
 ## Conventions
 

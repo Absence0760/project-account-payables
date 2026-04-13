@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
@@ -16,8 +17,9 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
   @override
   void initState() {
     super.initState();
-    // Fetch all invoices — pendingApproval filters client-side
-    InvoiceStore.instance.fetch();
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      InvoiceStore.instance.fetch();
+    });
   }
 
   @override

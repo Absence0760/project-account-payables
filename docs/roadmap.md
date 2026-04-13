@@ -322,16 +322,49 @@ No SSO = no enterprise sale. Every competitor supports SAML/OIDC.
 ## Priority 8: Mobile & Notifications
 **Competitive gap: most competitors have mobile apps**
 
-### Mobile Access
-**Status:** Partial (responsive CSS)
+### Flutter Mobile App
+**Status:** Partial — boilerplate built (iOS + Android), core screens working
 
-Bill.com, Coupa, SAP Concur, Stampli, and Airbase all have native mobile apps. PWA is a pragmatic path that avoids app store complexity.
+Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, payments, settings. Same backend API as web.
 
-- [ ] PWA (Progressive Web App) — installable, works offline for viewing
-- [ ] Push notifications for approvals needing attention
-- [ ] Mobile-optimized approval flow (swipe to approve/reject)
-- [ ] Camera upload — take photo of paper invoice directly
-- [ ] Mobile-specific UI components (bottom nav, gesture support)
+**Done:**
+- [x] Login with tenant selection
+- [x] Dashboard (KPIs, aging buckets, top vendors)
+- [x] Invoice list with search + status filter chips
+- [x] Invoice detail with approve/reject
+- [x] Approvals tab with swipe-to-approve
+- [x] Payment history list
+- [x] Role-based bottom navigation
+- [x] Settings (profile, tenant info, logout)
+- [x] JWT in secure storage (iOS Keychain / Android Keystore)
+- [x] API contract tests in backend to prevent client breakage
+
+- [x] Camera OCR — snap photo or pick from gallery → upload → trigger AI extraction
+- [x] Push notifications — Firebase Cloud Messaging + local notifications (no-op until Firebase configured)
+- [x] Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure
+- [x] Biometric login — Face ID / fingerprint / device PIN toggle in settings, checked on app launch
+
+**Medium priority — parity with web:**
+- [ ] Invoice upload (file picker — PDF support)
+- [ ] Invoice editing (change fields in detail screen)
+- [ ] Activity timeline in invoice detail (audit log)
+- [ ] PDF/image viewer for uploaded invoice files
+- [ ] Exception queue (view/resolve flagged invoices)
+- [ ] Vendor list (view, verify/reject)
+- [ ] Payment queue (invoices ready to pay)
+- [ ] Payment runs (create/execute)
+- [ ] Advanced search (date range, amount range, vendor filter)
+- [ ] Invoice warnings/fraud flags display
+- [ ] ERP status display on invoice detail
+
+**Low priority — admin features (less needed on mobile):**
+- [ ] Bulk operations (select multiple, delete, status change)
+- [ ] Export (CSV/XML)
+- [ ] Workflow management
+- [ ] Organization settings
+- [ ] Admin user management
+
+**Files:** `mobile/` — see `mobile/CLAUDE.md` for full structure
 
 ### Email & Notification System
 **Status:** Planned

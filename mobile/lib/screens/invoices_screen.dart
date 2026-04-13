@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:ap_mobile/models/invoice.dart';
+import 'package:ap_mobile/screens/capture_screen.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
@@ -18,7 +20,9 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
   @override
   void initState() {
     super.initState();
-    InvoiceStore.instance.fetch();
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      InvoiceStore.instance.fetch();
+    });
   }
 
   @override
@@ -32,6 +36,15 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Invoices'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.camera_alt),
+            tooltip: 'Capture Invoice',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const CaptureScreen()),
+            ),
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(

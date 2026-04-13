@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/screens/home_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
+import 'package:ap_mobile/services/biometric_service.dart';
+import 'package:ap_mobile/services/push_service.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 
 void main() {
@@ -45,15 +47,39 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _init() async {
-    final loggedIn = await AuthStore.instance.init();
+    // Initialize push notifications (no-op if Firebase not configured)
+    await PushService.instance.init();
+
+    final hasSession = await AuthStore.instance.init();
     if (!mounted) return;
 
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) =>
-            loggedIn ? const HomeScreen() : const LoginScreen(),
-      ),
-    );
+    if (hasSession) {
+      // Has a valid session — check biometric lock
+      final bioEnabled = await BiometricService.instance.isEnabled;
+      if (bioEnabled) {
+        final authenticated = await BiometricService.instance.authenticate();
+        if (!authenticated) {
+          // Biometric failed — go to login screen
+          if (mounted) {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (_) => const LoginScreen()),
+            );
+          }
+          return;
+        }
+      }
+      if (mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+        );
+      }
+    } else {
+      if (mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+        );
+      }
+    }
   }
 
   @override

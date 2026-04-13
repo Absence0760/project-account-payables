@@ -2,10 +2,36 @@ import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/config.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
+import 'package:ap_mobile/services/biometric_service.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  bool _bioAvailable = false;
+  bool _bioEnabled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBiometricState();
+  }
+
+  Future<void> _loadBiometricState() async {
+    final available = await BiometricService.instance.isAvailable;
+    final enabled = await BiometricService.instance.isEnabled;
+    if (mounted) {
+      setState(() {
+        _bioAvailable = available;
+        _bioEnabled = enabled;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -56,7 +82,8 @@ class SettingsScreen extends StatelessWidget {
                       children: (user?.roles ?? [])
                           .map(
                             (r) => Chip(
-                              label: Text(r, style: const TextStyle(fontSize: 12)),
+                              label:
+                                  Text(r, style: const TextStyle(fontSize: 12)),
                               visualDensity: VisualDensity.compact,
                             ),
                           )
@@ -78,6 +105,27 @@ class SettingsScreen extends StatelessWidget {
                 title: const Text('API Server'),
                 subtitle: Text(AppConfig.apiBaseUrl),
               ),
+
+              // Security
+              if (_bioAvailable) ...[
+                const Divider(height: 32),
+                SwitchListTile(
+                  secondary: const Icon(Icons.fingerprint),
+                  title: const Text('Biometric Unlock'),
+                  subtitle: const Text('Use fingerprint or face to unlock'),
+                  value: _bioEnabled,
+                  onChanged: (enabled) async {
+                    if (enabled) {
+                      // Verify biometrics work before enabling
+                      final ok =
+                          await BiometricService.instance.authenticate();
+                      if (!ok) return;
+                    }
+                    await BiometricService.instance.setEnabled(enabled);
+                    setState(() => _bioEnabled = enabled);
+                  },
+                ),
+              ],
 
               const Divider(height: 32),
 

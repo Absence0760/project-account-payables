@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
 import 'package:ap_mobile/stores/dashboard_store.dart';
@@ -17,7 +18,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    DashboardStore.instance.fetch();
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      DashboardStore.instance.fetch();
+    });
   }
 
   @override
