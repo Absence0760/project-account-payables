@@ -126,18 +126,31 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure
 - Biometric login — Face ID / fingerprint / device PIN, toggle in settings, checked on app launch
 
-**Not yet built (see `docs/roadmap.md` Priority 8 for full list):**
+**Mobile-only features (not on web):**
+- Camera OCR capture (snap photo → upload)
+- Push notifications (FCM)
+- Offline mode (SQLite cache)
+- Biometric login (Face ID / fingerprint)
+- Swipe-to-approve gesture
+
+**Web features not yet on mobile (see `docs/roadmap.md` Priority 8):**
 - Invoice editing (change fields in detail screen)
-- Activity timeline in invoice detail (audit log)
+- Invoice upload via file picker (PDF/PNG/JPG/TIFF) — mobile has camera only
 - PDF/image viewer for uploaded invoice files
-- Exception queue (view/resolve flagged invoices)
-- Vendor list (view, verify/reject)
-- Payment queue (invoices ready to pay)
-- Payment runs (create/execute)
-- Advanced search (date range, amount range, vendor filter)
+- Activity timeline / audit log in invoice detail
+- Advanced search modal (vendor, PO, amount range, date range)
 - Invoice warnings/fraud flags display
 - ERP status display on invoice detail
-- Bulk operations, export, workflow management, org settings, admin screens
+- Exception queue (list, resolve, escalate, dismiss)
+- Vendor management (list, verify/reject, ERP sync)
+- Payment queue (select invoices, choose method)
+- Payment runs (create/execute batches)
+- Payment summary cards (total paid, pending, rebates)
+- Workflow management (list, create, edit steps)
+- Organization settings (company, ERP config, extraction config)
+- Admin user management (create, edit, delete users, role assignment)
+- Bulk operations (select multiple, delete, status change)
+- Export (CSV, JSON, XML)
 
 ## Conventions
 

@@ -51,7 +51,7 @@ class PushService {
 
       // Initialize local notifications for foreground display
       await _localNotifications.initialize(
-        const InitializationSettings(
+        settings: const InitializationSettings(
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
           iOS: DarwinInitializationSettings(),
         ),
@@ -78,10 +78,10 @@ class PushService {
 
     // Show local notification since FCM doesn't auto-show in foreground
     _localNotifications.show(
-      notification.hashCode,
-      notification.title,
-      notification.body,
-      const NotificationDetails(
+      id: notification.hashCode,
+      title: notification.title,
+      body: notification.body,
+      notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           'ap_approvals',
           'Approval Notifications',

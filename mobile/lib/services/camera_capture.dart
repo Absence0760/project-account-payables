@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 
@@ -13,7 +15,7 @@ class CameraCapture {
   static final _picker = ImagePicker();
 
   /// Pick an image from camera or gallery.
-  /// Returns the file path, or null if cancelled.
+  /// Returns the file, or null if cancelled.
   static Future<File?> pickImage({bool fromCamera = true}) async {
     try {
       final image = await _picker.pickImage(
@@ -30,51 +32,55 @@ class CameraCapture {
     }
   }
 
-  /// Pick a PDF file.
-  static Future<File?> pickPdf() async {
-    // image_picker doesn't support PDFs — would need file_picker package
-    // For now, camera capture is the primary mobile use case
-    debugPrint('[camera] PDF pick not yet implemented — use camera capture');
-    return null;
-  }
-
-  /// Upload an invoice file (image or PDF) to the backend.
-  /// Returns the created invoice data, or throws on failure.
+  /// Upload an invoice file (image) to the backend.
+  /// Returns the response data with invoice id, status, and message.
   static Future<Map<String, dynamic>> uploadInvoice(File file) async {
     final api = ApiClient();
     final uri = Uri.parse('${AppConfig.apiUrl}/invoices/upload');
+    final filename = p.basename(file.path);
+
+    debugPrint('[camera] Uploading $filename to $uri');
 
     final request = http.MultipartRequest('POST', uri);
+    request.headers.addAll(api.authHeaders);
+    // Determine MIME type from extension — image_picker often omits it
+    final ext = p.extension(filename).toLowerCase();
+    final contentType = switch (ext) {
+      '.jpg' || '.jpeg' => MediaType('image', 'jpeg'),
+      '.png' => MediaType('image', 'png'),
+      '.tiff' || '.tif' => MediaType('image', 'tiff'),
+      '.pdf' => MediaType('application', 'pdf'),
+      _ => MediaType('image', 'jpeg'), // camera photos default to JPEG
+    };
 
-    // Add auth and tenant headers
-    if (api.hasToken) {
-      // Access the headers through a post request to get them
-      // We need to manually construct headers here since MultipartRequest
-      // doesn't go through our normal client
-      final headers = <String, String>{};
-      // We'll read token from secure storage via the API client
-      // For now, use the internal state
-      request.headers.addAll(headers);
-    }
+    debugPrint('[camera] File: $filename, content-type: $contentType');
 
     request.files.add(
       await http.MultipartFile.fromPath(
         'file',
         file.path,
-        filename: p.basename(file.path),
+        filename: filename,
+        contentType: contentType,
       ),
     );
 
-    debugPrint('[camera] Uploading ${p.basename(file.path)}...');
-
-    final streamedResponse = await request.send();
+    final streamedResponse =
+        await request.send().timeout(const Duration(seconds: 30));
     final response = await http.Response.fromStream(streamedResponse);
 
+    debugPrint('[camera] Upload response: ${response.statusCode}');
+
+    if (response.statusCode == 401) {
+      await api.clearSession();
+      throw ApiException(401, 'Unauthorized');
+    }
     if (response.statusCode >= 400) {
       throw ApiException(response.statusCode, response.body);
     }
 
-    debugPrint('[camera] Upload complete: ${response.statusCode}');
+    if (response.body.isNotEmpty) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
     return {};
   }
 }

@@ -344,16 +344,17 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 - [x] Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure
 - [x] Biometric login — Face ID / fingerprint / device PIN toggle in settings, checked on app launch
 
-**Medium priority — parity with web:**
-- [ ] Invoice upload (file picker — PDF support)
+**Medium priority — parity with web (see `mobile/CLAUDE.md` for full gap list):**
+- [ ] Invoice upload via file picker (PDF/PNG/JPG/TIFF support)
 - [ ] Invoice editing (change fields in detail screen)
 - [ ] Activity timeline in invoice detail (audit log)
 - [ ] PDF/image viewer for uploaded invoice files
-- [ ] Exception queue (view/resolve flagged invoices)
-- [ ] Vendor list (view, verify/reject)
-- [ ] Payment queue (invoices ready to pay)
-- [ ] Payment runs (create/execute)
-- [ ] Advanced search (date range, amount range, vendor filter)
+- [ ] Exception queue (list, resolve, escalate, dismiss)
+- [ ] Vendor management (list, verify/reject, ERP sync)
+- [ ] Payment queue (select invoices, choose method)
+- [ ] Payment runs (create/execute batches)
+- [ ] Payment summary cards (total paid, pending, rebates)
+- [ ] Advanced search modal (vendor, PO, amount range, date range)
 - [ ] Invoice warnings/fraud flags display
 - [ ] ERP status display on invoice detail
 

@@ -96,6 +96,19 @@ Access via: http://acme.localhost:7777 or http://techflow.localhost:7777
 - **BASE_PATH** — set to `/<repo-name>` during CI builds for GitHub Pages asset paths.
 - **No SSR** — static adapter only. Dynamic data comes from the backend API.
 
+## Web vs Mobile feature parity
+
+The mobile app (`mobile/`) covers core approval workflows. These web features are **not yet on mobile**:
+
+- Invoice editing, file upload (PDF), PDF viewer, audit timeline
+- Advanced search, bulk operations, export
+- Vendors, exceptions, workflows, organization settings, admin
+- Payment queue and payment runs
+
+Mobile has features **not on web**: camera OCR, push notifications, offline mode, biometric login, swipe-to-approve.
+
+See `mobile/CLAUDE.md` for the full mobile feature list and `docs/roadmap.md` Priority 8 for the parity roadmap.
+
 ## Deployment
 
 - **GitHub Pages**: push to `main` triggers `.github/workflows/deploy.yml`

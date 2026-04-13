@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/services/camera_capture.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 
@@ -37,20 +38,24 @@ class _CaptureScreenState extends State<CaptureScreen> {
     });
 
     try {
-      await CameraCapture.uploadInvoice(_selectedFile!);
+      final result = await CameraCapture.uploadInvoice(_selectedFile!);
       // Refresh invoice list
       await InvoiceStore.instance.fetch();
 
       if (mounted) {
+        final message =
+            result['message'] as String? ?? 'Invoice uploaded successfully';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invoice uploaded — extraction started')),
+          SnackBar(content: Text(message)),
         );
         Navigator.of(context).pop();
       }
     } catch (e) {
       setState(() {
         _uploading = false;
-        _error = e.toString();
+        _error = e is ApiException
+            ? 'Upload failed (${e.statusCode}): ${e.message}'
+            : 'Upload failed: $e';
       });
     }
   }

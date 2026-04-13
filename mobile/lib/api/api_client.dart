@@ -59,10 +59,23 @@ class ApiClient {
     await _storage.deleteAll();
   }
 
+  /// Auth + tenant headers for JSON requests.
   Map<String, String> get _headers {
     final headers = <String, String>{
       'Content-Type': 'application/json',
     };
+    if (_token != null) {
+      headers['Authorization'] = 'Bearer $_token';
+    }
+    if (_tenantSlug != null) {
+      headers['X-Tenant-Slug'] = _tenantSlug!;
+    }
+    return headers;
+  }
+
+  /// Auth + tenant headers without Content-Type (for multipart uploads).
+  Map<String, String> get authHeaders {
+    final headers = <String, String>{};
     if (_token != null) {
       headers['Authorization'] = 'Bearer $_token';
     }

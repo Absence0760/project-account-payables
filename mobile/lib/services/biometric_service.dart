@@ -41,10 +41,6 @@ class BiometricService {
     try {
       return await _auth.authenticate(
         localizedReason: 'Unlock Account Payables',
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: false, // allow PIN/pattern fallback
-        ),
       );
     } on PlatformException catch (e) {
       debugPrint('[biometric] Auth failed: $e');
