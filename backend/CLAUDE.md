@@ -11,6 +11,16 @@ Backend-specific guidance. See root `CLAUDE.md` for project-wide context.
 - **Pydantic v2** for request/response schemas
 - **ruff** for lint/format (line-length 100, rules: E, F, I, UP)
 
+## First-time setup (from `backend/`)
+
+```bash
+docker compose up -d                            # start Postgres, Redis, MinIO
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"                         # install with dev deps
+python scripts/seed.py                          # seed 2 demo tenants
+python main.py                                  # dev server on :8000
+```
+
 ## Commands (from `backend/`)
 
 ```bash
