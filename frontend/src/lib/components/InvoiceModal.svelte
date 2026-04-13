@@ -625,7 +625,12 @@
 		<div class="split" class:resizing>
 			<div class="pdf-pane">
 				{#if invoice.file_url}
-					<iframe src={`${apiBase}${invoice.file_url}`} title="Invoice PDF — {invoice.invoice_number}"></iframe>
+					{@const isImage = /\.(png|jpg|jpeg|tiff?)$/i.test(invoice.file_url)}
+					{#if isImage}
+						<img src={`${apiBase}${invoice.file_url}`} alt="Invoice — {invoice.invoice_number}" class="invoice-image" />
+					{:else}
+						<iframe src={`${apiBase}${invoice.file_url}`} title="Invoice PDF — {invoice.invoice_number}"></iframe>
+					{/if}
 				{:else}
 					<div class="no-pdf">
 						<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1085,6 +1090,12 @@
 		width: 100%;
 		height: 100%;
 		border: none;
+	}
+
+	.pdf-pane .invoice-image {
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
 	}
 
 	.no-pdf {

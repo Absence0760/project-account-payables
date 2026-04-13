@@ -52,6 +52,7 @@ class Invoice {
   final DateTime? dueDate;
   final String? description;
   final String? poNumber;
+  final String? fileUrl;
   final DateTime createdAt;
 
   Invoice({
@@ -65,6 +66,7 @@ class Invoice {
     this.dueDate,
     this.description,
     this.poNumber,
+    this.fileUrl,
     required this.createdAt,
   });
 
@@ -72,7 +74,7 @@ class Invoice {
     return Invoice(
       id: json['id'] as String,
       invoiceNumber: json['invoice_number'] as String?,
-      vendorName: json['vendor_name'] as String?,
+      vendorName: (json['vendor_name'] ?? json['vendor']) as String?,
       amount: (json['amount'] as num?)?.toDouble(),
       currency: json['currency'] as String? ?? 'USD',
       status: InvoiceStatus.fromString(json['status'] as String),
@@ -84,6 +86,7 @@ class Invoice {
           : null,
       description: json['description'] as String?,
       poNumber: json['po_number'] as String?,
+      fileUrl: json['file_url'] as String?,
       createdAt: DateTime.parse(json['created_at'] as String),
     );
   }

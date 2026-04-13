@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/config.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
@@ -150,6 +152,43 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             ),
           ],
 
+          // Invoice image
+          if (inv.fileUrl != null && inv.fileUrl!.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            GestureDetector(
+              onTap: () => _showFullImage(context, inv.fileUrl!),
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Image.network(
+                  '${AppConfig.apiBaseUrl}${inv.fileUrl}',
+                  headers: ApiClient().authHeaders,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.description,
+                            size: 40, color: Colors.grey.shade400),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tap to view file',
+                          style: TextStyle(color: Colors.grey.shade500),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+
           const SizedBox(height: 24),
 
           // Details
@@ -195,6 +234,36 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           ),
           Expanded(child: Text(value)),
         ],
+      ),
+    );
+  }
+
+  void _showFullImage(BuildContext context, String fileUrl) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
+            title: const Text('Invoice Image'),
+          ),
+          backgroundColor: Colors.black,
+          body: InteractiveViewer(
+            child: Center(
+              child: Image.network(
+                '${AppConfig.apiBaseUrl}$fileUrl',
+                headers: ApiClient().authHeaders,
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => const Center(
+                  child: Text(
+                    'Unable to load image',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
