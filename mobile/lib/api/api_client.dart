@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
@@ -81,8 +82,18 @@ class ApiClient {
     String path, [
     Map<String, String>? params,
   ]) async {
-    final response = await _http.get(_uri(path, params), headers: _headers);
-    return _handleResponse(response);
+    final uri = _uri(path, params);
+    debugPrint('[API] GET $uri');
+    try {
+      final response = await _http
+          .get(uri, headers: _headers)
+          .timeout(const Duration(seconds: 10));
+      debugPrint('[API] GET $path → ${response.statusCode}');
+      return _handleResponse(response);
+    } catch (e) {
+      debugPrint('[API] GET $path FAILED: $e');
+      rethrow;
+    }
   }
 
   Future<List<dynamic>> getList(
@@ -97,12 +108,22 @@ class ApiClient {
     String path, [
     Map<String, dynamic>? body,
   ]) async {
-    final response = await _http.post(
-      _uri(path),
-      headers: _headers,
-      body: body != null ? jsonEncode(body) : null,
-    );
-    return _handleResponse(response);
+    final uri = _uri(path);
+    debugPrint('[API] POST $uri');
+    try {
+      final response = await _http
+          .post(
+            uri,
+            headers: _headers,
+            body: body != null ? jsonEncode(body) : null,
+          )
+          .timeout(const Duration(seconds: 10));
+      debugPrint('[API] POST $path → ${response.statusCode}');
+      return _handleResponse(response);
+    } catch (e) {
+      debugPrint('[API] POST $path FAILED: $e');
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> patch(

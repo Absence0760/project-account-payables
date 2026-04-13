@@ -92,25 +92,34 @@ class DashboardData {
   });
 
   factory DashboardData.fromJson(Map<String, dynamic> json) {
+    // upcoming_payments is a list of invoices from the API
+    final upcomingRaw = json['upcoming_payments'];
+    final upcomingList = upcomingRaw is List ? upcomingRaw : [];
+    final upcomingTotal = upcomingList.fold<double>(
+      0,
+      (sum, item) => sum + ((item['amount'] as num?)?.toDouble() ?? 0),
+    );
+
     return DashboardData(
       totalInvoices: json['total_invoices'] as int? ?? 0,
       totalAmount: (json['total_amount'] as num?)?.toDouble() ?? 0,
       pipeline: (json['pipeline'] as Map<String, dynamic>?)
               ?.map((k, v) => MapEntry(k, v as int)) ??
           {},
-      topVendors: (json['top_vendors'] as List<dynamic>?)
+      topVendors: (json['vendor_spend'] as List<dynamic>?)
               ?.map((v) => VendorSpend.fromJson(v as Map<String, dynamic>))
               .toList() ??
           [],
       aging: AgingReport.fromJson(
         json['aging'] as Map<String, dynamic>? ?? {},
       ),
-      trends: (json['trends'] as List<dynamic>?)
+      trends: (json['monthly_trend'] as List<dynamic>?)
               ?.map((t) => MonthlyTrend.fromJson(t as Map<String, dynamic>))
               .toList() ??
           [],
-      upcoming: UpcomingPayments.fromJson(
-        json['upcoming_payments'] as Map<String, dynamic>? ?? {},
+      upcoming: UpcomingPayments(
+        count: upcomingList.length,
+        totalAmount: upcomingTotal,
       ),
     );
   }
@@ -129,8 +138,8 @@ class VendorSpend {
 
   factory VendorSpend.fromJson(Map<String, dynamic> json) {
     return VendorSpend(
-      vendorName: json['vendor_name'] as String? ?? 'Unknown',
-      totalAmount: (json['total_amount'] as num?)?.toDouble() ?? 0,
+      vendorName: (json['vendor'] ?? json['vendor_name']) as String? ?? 'Unknown',
+      totalAmount: ((json['amount'] ?? json['total_amount']) as num?)?.toDouble() ?? 0,
       invoiceCount: json['invoice_count'] as int? ?? 0,
     );
   }
@@ -152,9 +161,9 @@ class AgingReport {
   factory AgingReport.fromJson(Map<String, dynamic> json) {
     return AgingReport(
       current: (json['current'] as num?)?.toDouble() ?? 0,
-      thirtyDays: (json['30_days'] as num?)?.toDouble() ?? 0,
-      sixtyDays: (json['60_days'] as num?)?.toDouble() ?? 0,
-      ninetyPlus: (json['90_plus'] as num?)?.toDouble() ?? 0,
+      thirtyDays: ((json['days_30'] ?? json['30_days']) as num?)?.toDouble() ?? 0,
+      sixtyDays: ((json['days_60'] ?? json['60_days']) as num?)?.toDouble() ?? 0,
+      ninetyPlus: ((json['days_90_plus'] ?? json['90_plus']) as num?)?.toDouble() ?? 0,
     );
   }
 }

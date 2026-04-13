@@ -52,7 +52,9 @@ class AuthStore extends ChangeNotifier {
       return true;
     } catch (e) {
       _loading = false;
-      _error = e is ApiException ? 'Invalid credentials' : e.toString();
+      _error = e is ApiException
+          ? 'Invalid credentials'
+          : 'Connection failed: $e';
       notifyListeners();
       return false;
     }
