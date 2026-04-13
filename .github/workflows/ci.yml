@@ -93,6 +93,8 @@ jobs:
         run: pnpm install
 
       - name: Typecheck
+        env:
+          PUBLIC_API_URL: http://localhost:8000
         run: pnpm check
 
       - name: Build
