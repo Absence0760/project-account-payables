@@ -362,26 +362,30 @@ No SSO = no enterprise sale. OIDC (Okta + Entra) + SCIM 2.0 user provisioning ar
 ---
 
 ### SOC 2 Readiness
-**Status:** Planned — **Common deal-blocker, mostly non-code**
+**Status:** Engineering prereqs in motion — **kickoff plan + most code controls landed; process work pending founder sign-off**
 
-SOC 2 Type I (design) → Type II (operating over time) is the table-stakes security attestation for selling to finance teams. Most of the work is policy, process, and evidence collection — not code — but a few engineering-side controls need to land first.
+SOC 2 Type I (design) → Type II (operating over time) is the table-stakes security attestation for selling to finance teams. Full plan in [`docs/soc2-readiness.md`](soc2-readiness.md) — vendor comparison, control mapping, timeline, and what the founder still needs to do as a human.
 
 **Engineering prerequisites:**
-- [ ] Access reviews — quarterly automated export of every user + role across control + tenant DBs
-- [ ] Session management — concurrent session limits, forced logout on role change (overlaps with SSO section)
-- [ ] Encryption at rest — confirm RDS + S3 bucket encryption flipped on; document KMS key rotation
-- [ ] Encryption in transit — TLS everywhere, HSTS on the frontend, no plaintext internal hops
-- [ ] Backup + DR runbook — RDS snapshot cadence, restore tested quarterly, documented RTO/RPO
-- [ ] Vulnerability scanning in CI — Dependabot (shipped) + container image scanning + weekly SAST
-- [ ] Centralized audit log shipping — don't rely solely on tenant-DB audit_log; stream to a WORM-compliant store
-- [ ] Secrets rotation — SOPS KMS key rotation procedure; app secrets rotated ≤ 90 days
+- [x] Access reviews — `backend/scripts/access_review.py` exports every user × role × org as CSV (quarterly)
+- [x] Backup + DR runbook — `docs/backup-disaster-recovery.md` with RTO/RPO + restore procedures
+- [x] Secrets rotation runbook — `docs/secrets-rotation.md` (cadence + procedure for every secret)
+- [x] Vulnerability scanning in CI — Dependabot (shipped) + CodeQL SAST (Python + JS) + Trivy on the backend container, weekly + on push (`.github/workflows/security.yml`)
+- [x] RBAC enforcement at API layer (separate roadmap item — already done)
+- [x] MFA support + org-level enforcement (separate roadmap item — already done)
+- [ ] Session management — concurrent session limits, forced logout on role change
+- [ ] Centralized audit log shipping — tenant-DB `audit_log` → CloudWatch Logs / S3 Object Lock
+- [ ] Auth event audit log — login/logout/MFA events into the audit log table reliably
+- [ ] HSTS header + verify TLS coverage end-to-end
+- [ ] KMS key auto-rotation flag in Terraform
+- [ ] S3 versioning + Object Lock verified in Terraform
 
-**Process / attestation work:**
-- [ ] Vendor selection — Drata, Vanta, Secureframe, or Sprinto; pick one and run the continuous-compliance loop
-- [ ] Policy library — information security, incident response, change management, access control, vendor mgmt
+**Process / attestation work** (founder, not engineer):
+- [ ] Vendor selection — Vanta, Drata, Secureframe, or Sprinto. See `docs/soc2-readiness.md` § Vendor comparison.
+- [ ] Policy library — info security, incident response, change management, access control, vendor mgmt (vendor templates)
 - [ ] Employee onboarding / offboarding checklist with evidence collection
 - [ ] Incident response runbook + on-call rotation
-- [ ] SOC 2 Type I audit (point-in-time) — typical 4-8 weeks after prereqs
+- [ ] SOC 2 Type I audit (point-in-time) — typical 4–8 weeks after prereqs
 - [ ] Begin Type II observation window (6+ months) for annual renewal
 
 **Competitors:** Every serious competitor has SOC 2 Type II. Without it, enterprise deals stall at security review.

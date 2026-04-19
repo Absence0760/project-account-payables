@@ -179,6 +179,9 @@ Full list in `backend/app/config.py`.
 | Architecture | `docs/architecture.md` — system overview |
 | Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
+| SOC 2 readiness | `docs/soc2-readiness.md` — vendor comparison, control mapping, kickoff plan |
+| Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
+| Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |

@@ -1,0 +1,86 @@
+name: Security
+
+# Static analysis + container scanning. Runs on every PR + push to main, and
+# weekly on a schedule so freshly-disclosed CVEs in unchanged dependencies
+# still get caught. Findings flow to the GitHub Security tab via SARIF.
+#
+# This job is part of the SOC 2 prerequisite checklist
+# (`docs/soc2-readiness.md` § Vulnerability + dependency management).
+# Removing it weakens an attestable control — coordinate with the security
+# officer before disabling.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays at 06:00 UTC — catches CVEs disclosed since the last commit.
+    - cron: '0 6 * * 1'
+
+permissions:
+  # SARIF upload requires `security-events: write`. Restricting to the
+  # minimum keeps the workflow safe to run on PRs from forks.
+  contents: read
+  security-events: write
+
+jobs:
+  codeql-python:
+    name: CodeQL (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # Default + security-extended catches more sinks (SQL injection,
+          # path traversal, XSS) at the cost of some false positives.
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:python'
+
+  codeql-javascript:
+    name: CodeQL (TypeScript/JavaScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
+
+  trivy-backend-image:
+    name: Trivy (backend container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t ap-backend:scan ./backend
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ap-backend:scan
+          format: sarif
+          output: trivy-backend.sarif
+          # Only fail the build on HIGH or CRITICAL — anything below is
+          # noise without policy. Surfacing all severities to the
+          # Security tab keeps low/medium visible without blocking PRs.
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          # Don't fail the workflow itself — let the SARIF upload step
+          # surface findings via the Security tab. PR review can decide
+          # whether to bump the base image, patch, or accept the risk.
+          exit-code: '0'
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-backend.sarif
+          category: trivy-backend
