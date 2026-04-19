@@ -21,11 +21,13 @@ docker compose up -d minio
 
 ## Services
 
-| Service    | Image              | Port(s)         | Description               |
-|------------|--------------------|-----------------|---------------------------|
-| PostgreSQL | `postgres:16-alpine` | `5432`        | Primary database (multi-DB)|
-| Redis      | `redis:7-alpine`     | `6379`        | Cache / task queue        |
-| MinIO      | `minio/minio:latest` | `9000`, `9001`| S3-compatible storage     |
+| Service    | Image                    | Port(s)         | Description                                       |
+|------------|--------------------------|-----------------|---------------------------------------------------|
+| PostgreSQL | `pgvector/pgvector:pg16` | `5432`          | Primary database (multi-DB) + pgvector extension  |
+| Redis      | `redis:7-alpine`         | `6379`          | JWT blocklist + rate-limit counters               |
+| MinIO      | `minio/minio:latest`     | `9000`, `9001`  | S3-compatible storage                             |
+
+The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 
 ## Default Credentials
 

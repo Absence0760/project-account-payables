@@ -9,7 +9,7 @@ FastAPI backend running on http://localhost:8000. Interactive docs available at:
 
 ### Authentication
 
-All endpoints except `/api/auth/login` and `/api/health` require a Bearer token:
+All endpoints except `/api/auth/login`, `/api/signup/*`, `/api/public-config`, and `/api/health` require a Bearer token:
 
 ```
 Authorization: Bearer <jwt_token>
@@ -27,14 +27,33 @@ The frontend sends this automatically based on the subdomain. When testing via c
 
 ## Auth
 
-| Method  | Path              | Description                              | Database      |
-|---------|-------------------|------------------------------------------|---------------|
-| `POST`  | `/api/auth/login` | Login with email/password, returns JWT   | Control plane |
-| `POST`  | `/api/auth/logout`| Revoke current token via Redis blocklist | Control plane |
-| `GET`   | `/api/auth/me`    | Get current user (includes roles)        | Control plane |
-| `PATCH` | `/api/auth/me`    | Update own name or password              | Control plane |
+| Method  | Path                         | Description                                                        | Database      |
+|---------|------------------------------|--------------------------------------------------------------------|---------------|
+| `POST`  | `/api/auth/login`            | Login with email/password, returns JWT + `must_change_password`    | Control plane |
+| `POST`  | `/api/auth/logout`           | Revoke current token via Redis blocklist                           | Control plane |
+| `GET`   | `/api/auth/me`               | Get current user (roles, `must_change_password`)                   | Control plane |
+| `PATCH` | `/api/auth/me`               | Update own name or password                                        | Control plane |
+| `POST`  | `/api/auth/change-password`  | Set a new password (clears `must_change_password`)                 | Control plane |
 
 Auth endpoints do **not** require the `X-Tenant-Slug` header.
+
+## Signup (anonymous, pre-tenant)
+
+| Method  | Path                      | Description                                                         | Database      |
+|---------|---------------------------|---------------------------------------------------------------------|---------------|
+| `GET`   | `/api/signup/slug-check`  | `?slug=<s>` — availability check for the signup form's inline UX     | Control plane |
+| `POST`  | `/api/signup/start`       | Rate-limited + captcha-verified. Creates `email_verifications` row and sends verification email. No tenant is provisioned. | Control plane |
+| `POST`  | `/api/signup/complete`    | Consumes token, provisions tenant (DB + org + admin user), generates temp password, sends welcome email.                  | Control plane → tenant DB |
+
+See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the full flow and abuse mitigations.
+
+## Public config
+
+| Method | Path                  | Description                                        |
+|--------|-----------------------|----------------------------------------------------|
+| `GET`  | `/api/public-config`  | Non-secret config (hcaptcha sitekey, tenant URL template) for the signup form |
+
+No authentication required.
 
 ## Invoices
 
@@ -118,6 +137,7 @@ Admin endpoints require the `X-Tenant-Slug` header (to scope user listing to the
 | `GET`  | `/api/invoices/{id}/audit-log`    | Full audit trail (with actor names) | Tenant DB + Control |
 | `GET`  | `/api/invoices/{id}/workflow`     | Workflow instance + steps | Tenant DB |
 | `GET`  | `/api/invoices/{id}/extraction`   | AI extraction results    | Tenant DB |
+| `GET`  | `/api/invoices/{id}/priors`       | Priors metadata from the latest extraction (vendor cache overrides + RAG neighbors). See [`ai-extraction.md`](ai-extraction.md). | Tenant DB |
 | `GET`  | `/api/invoices/{id}/export`       | Export single invoice    | Tenant DB |
 
 ## Health

@@ -24,9 +24,13 @@ pnpm check            # typecheck
 
 | Route | File | API calls |
 |-------|------|-----------|
-| `/` | `routes/+page.svelte` | `GET /api/dashboard` |
+| `/` (tenant) | `routes/+page.svelte` | `GET /api/dashboard` |
+| `/` (no-tenant) | `lib/components/Landing.svelte` (inline in `+layout.svelte`) | Marketing landing page with features, pricing, signup CTA |
+| `/signup` | `routes/signup/+page.svelte` | `GET /api/public-config`, `GET /api/signup/slug-check`, `POST /api/signup/start` |
+| `/verify` | `routes/verify/+page.svelte` | `POST /api/signup/complete` |
 | `/login` | `routes/login/+page.svelte` | `POST /api/auth/login` |
-| `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices`, `POST /api/invoices/upload`, `PATCH /api/invoices/{id}`, bulk ops |
+| `/change-password` | `routes/change-password/+page.svelte` | `POST /api/auth/change-password` |
+| `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `POST /api/invoices/upload`, `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, bulk ops |
 | `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors` |
 | `/payments` | `routes/payments/+page.svelte` | `GET /api/payments`, `GET/POST /api/payments/runs`, `POST /api/payments/runs/{id}/execute` |
 | `/exceptions` | `routes/exceptions/+page.svelte` | `GET /api/exceptions`, `PATCH /api/exceptions/{id}` |
@@ -35,8 +39,11 @@ pnpm check            # typecheck
 | `/organization` | `routes/organization/+page.svelte` | `GET/PATCH /api/organization` |
 | `/admin` | `routes/admin/+page.svelte` | `GET/POST/PATCH/DELETE /api/admin/users`, `GET /api/admin/roles` |
 
-Root layout (`+layout.svelte`): tenant slug detection, auth guard (redirects to `/login`), sidebar.
-Login layout (`login/+layout.svelte`): bare layout (no sidebar).
+Root layout (`+layout.svelte`) routing logic:
+- No tenant subdomain → Landing component (public) or `<slot />` for `/signup` / `/verify`
+- Tenant present, not logged in → redirect to `/login`
+- Tenant present, logged in, `must_change_password=true` → redirect to `/change-password`
+- Tenant present, logged in, flag clear → app shell with sidebar
 
 ## Key modules
 
