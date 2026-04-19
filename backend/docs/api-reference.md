@@ -148,5 +148,5 @@ curl http://localhost:8000/api/dashboard \
   -H "X-Tenant-Slug: acme"
 ```
 
-See [authentication.md](authentication.md) for details on the auth flow.
-See [multi-tenancy.md](multi-tenancy.md) for details on tenant routing.
+See [authentication.md](../../docs/authentication.md) for details on the auth flow.
+See [multi-tenancy.md](../../docs/multi-tenancy.md) for details on tenant routing.

@@ -2,6 +2,29 @@
 
 Backend-specific guidance. See root `CLAUDE.md` for project-wide context.
 
+## Where to look (backend docs)
+
+Deep-dive docs live in `backend/docs/`:
+
+| Topic | File |
+|-------|------|
+| REST API reference | `docs/api-reference.md` |
+| PostgreSQL schema + migrations | `docs/database.md` |
+| AI extraction adapters | `docs/ai-extraction.md` |
+| ERP adapters (Merge.dev + direct) | `docs/erp-integration.md` |
+| Workflow state machine | `docs/workflow-design.md` |
+| Workflow snapshot semantics | `docs/workflow-snapshots.md` |
+| Payment runs + ERP sync | `docs/payments.md` |
+| Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
+| PO matching (2-way / 3-way) | `docs/po-matching.md` |
+| Vendor management | `docs/vendor-management.md` |
+| Local AI testing (Ollama) | `docs/local-ai-testing.md` |
+| Docker Compose services | `docs/docker.md` |
+| Redis | `docs/redis.md` |
+| MinIO / S3 | `docs/minio.md` |
+
+Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
+
 ## Stack
 
 - **FastAPI** on **Python 3.12+**, async throughout

@@ -2,7 +2,7 @@
 
 Python 3.12+ / FastAPI / PostgreSQL / Redis / MinIO
 
-See [/docs/backend.md](../docs/backend.md) for full documentation.
+See [`CLAUDE.md`](CLAUDE.md) for full documentation and [`docs/`](docs/) for deep-dives (API, database, adapters, workflows).
 
 ## Quick Start
 
@@ -31,4 +31,4 @@ python scripts/create_tenant.py --name "New Corp" --slug newcorp \
   --admin-email admin@newcorp.com --admin-password changeme
 ```
 
-See [/docs/multi-tenancy.md](../docs/multi-tenancy.md) for details.
+See [`../docs/multi-tenancy.md`](../docs/multi-tenancy.md) for details.

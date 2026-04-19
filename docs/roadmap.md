@@ -13,7 +13,7 @@ Feature backlog for the AP automation platform, ordered by impact.
 ## Priority 1: Core Automation (highest impact)
 
 ### Real AI Extraction
-**Status:** Done — adapter pattern with Claude Vision (platform), OpenAI GPT-4V, AWS Textract (BYOK). Platform/BYOK dual model. See [ai-extraction.md](ai-extraction.md).
+**Status:** Done — adapter pattern with Claude Vision (platform), OpenAI GPT-4V, AWS Textract (BYOK). Platform/BYOK dual model. See [ai-extraction.md](../backend/docs/ai-extraction.md).
 
 - [x] Extraction adapter pattern with dispatcher
 - [x] Claude Vision adapter (platform default) with structured JSON prompt
@@ -36,7 +36,7 @@ Feature backlog for the AP automation platform, ordered by impact.
 ---
 
 ### 2/3-Way PO Matching & Auto-Validation
-**Status:** Partial — matching service built with 2-way and 3-way logic. UI and pipeline wiring not done. See [po-matching.md](po-matching.md).
+**Status:** Partial — matching service built with 2-way and 3-way logic. UI and pipeline wiring not done. See [po-matching.md](../backend/docs/po-matching.md).
 
 - [x] 2-way match: invoice vs. PO (amount, vendor)
 - [x] 3-way match: invoice vs. PO vs. goods receipt (quantity received)
@@ -157,14 +157,14 @@ Full payment execution flow in the frontend.
 
 **Files:** `backend/app/api/payments.py`, `backend/app/models/payment.py`
 
-**See also:** [payments.md](payments.md)
+**See also:** [payments.md](../backend/docs/payments.md)
 
 ---
 
 ### Virtual Card Program
 **Status:** Partial — adapter pattern (Lithic + Nium), models, API endpoints, org config UI, and webhook handler done. Frontend card list page and payment run integration not yet built.
 
-Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on every card payment. Primary monetization channel. See [virtual-cards.md](virtual-cards.md) for full design.
+Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on every card payment. Primary monetization channel. See [virtual-cards.md](../backend/docs/virtual-cards.md) for full design.
 
 - [x] VirtualCard and CardRebate data models
 - [x] Card adapter pattern with dispatcher (Lithic for US/UK/EU, Nium for global)

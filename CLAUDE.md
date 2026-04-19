@@ -156,19 +156,25 @@ Full list in `backend/app/config.py`.
 | Topic | Read this |
 |-------|-----------|
 | Frontend details | `frontend/CLAUDE.md` — routes, stores, components, API mappings |
-| Backend details | `backend/CLAUDE.md` — models, services, adapters, migrations |
+| Backend details | `backend/CLAUDE.md` + `backend/docs/` — models, services, adapters, migrations |
 | Mobile app | `mobile/CLAUDE.md` — Flutter iOS app, screens, stores, API client |
-| AI extraction | `docs/ai-extraction.md` — platform vs BYOK, provider configs |
-| ERP integration | `docs/erp-integration.md` — adapter pattern, Merge.dev, direct APIs |
-| Workflow design | `docs/workflow-design.md` — state machine, step types, snapshots |
-| Payments | `docs/payments.md` — payment runs, schedules, ERP sync |
-| Virtual cards | `docs/virtual-cards.md` — Lithic/Nium, rebates, webhooks |
-| PO matching | `docs/po-matching.md` — 2-way/3-way matching logic |
+| AI extraction | `backend/docs/ai-extraction.md` — platform vs BYOK, provider configs |
+| ERP integration | `backend/docs/erp-integration.md` — adapter pattern, Merge.dev, direct APIs |
+| Workflow design | `backend/docs/workflow-design.md` — state machine, step types, snapshots |
+| Payments | `backend/docs/payments.md` — payment runs, schedules, ERP sync |
+| Virtual cards | `backend/docs/virtual-cards.md` — Lithic/Nium, rebates, webhooks |
+| PO matching | `backend/docs/po-matching.md` — 2-way/3-way matching logic |
+| Vendor mgmt | `backend/docs/vendor-management.md` — sources, sync, matching |
+| Local AI testing | `backend/docs/local-ai-testing.md` — Ollama setup |
+| API reference | `backend/docs/api-reference.md` — REST endpoints |
+| DB / Redis / MinIO | `backend/docs/{database,redis,minio,docker}.md` — backend infra |
 | Auth & RBAC | `docs/authentication.md`, `docs/user-management.md` |
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
-| Vendor mgmt | `docs/vendor-management.md` — sources, sync, matching |
+| Architecture | `docs/architecture.md` — system overview |
+| Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
-| Local AI testing | `docs/local-ai-testing.md` — Ollama setup |
+| Getting started | `docs/getting-started.md` — first-run setup |
+| Troubleshooting | `docs/troubleshooting.md` — common issues |
 | Roadmap | `docs/roadmap.md` — feature backlog with status and competitive context |
 | Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 
