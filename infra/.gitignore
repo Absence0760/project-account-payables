@@ -1,0 +1,19 @@
+# Terraform working directory (provider binaries, modules, etc.)
+.terraform/
+
+# Terraform state — never commit, contains secrets and resource IDs
+*.tfstate
+*.tfstate.*
+
+# Terraform plan files
+*.tfplan
+tfplan*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# NOTE: .terraform.lock.hcl IS committed. It pins provider versions for
+# reproducible builds (like package-lock.json for npm). Do not ignore it.
+# NOTE: *.tfvars is handled by the root .gitignore with an exclusion for
+# *.tfvars.example and *.tfvars.sops.

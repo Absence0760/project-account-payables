@@ -65,10 +65,19 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variable files
+# ---------------------------------------------------------------------------
+# Environment & secrets
+# ---------------------------------------------------------------------------
+# Plaintext env files are always secret and never committed. The SOPS
+# variants (*.sops) are committed because they are encrypted under the
+# project's AWS KMS key — decryption requires kms:Decrypt permission via
+# IAM, not a key file.
+#
+# See .sops.yaml + backend/CLAUDE.md § Secrets management for the workflow.
 .env
 .env.*
 !.env.example
+!.env.sops
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -146,6 +155,16 @@ __pycache__/
 .venv/
 *.so
 .DS_STORE
+
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+# Plaintext terraform.tfvars is secret; the SOPS-encrypted
+# terraform.tfvars.sops is committed. Example is a template, safe to commit.
+# Keep .terraform.lock.hcl committed — it pins provider versions.
+*.tfvars
+!*.tfvars.example
+!*.tfvars.sops
 
 # ---------------------------------------------------------------------------
 # Local agent / AI tooling state

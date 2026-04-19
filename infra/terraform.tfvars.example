@@ -1,0 +1,31 @@
+# Copy this file to terraform.tfvars and fill in the values, OR use SOPS:
+#   cp terraform.tfvars.example terraform.tfvars
+#   # edit values...
+#   sops -e terraform.tfvars > terraform.tfvars.sops && rm terraform.tfvars
+#
+# Plaintext terraform.tfvars is gitignored. The encrypted terraform.tfvars.sops
+# is what gets committed. See .sops.yaml and backend/CLAUDE.md § Secrets
+# management.
+#
+# This file is a skeleton. No Terraform-managed AWS resources exist in this
+# repo yet — add them alongside real variables as production infra is built
+# out. See docs/production-deployment.md for the planned AWS shape (ECS,
+# ALB, CloudFront, RDS).
+
+# Primary AWS region.
+aws_region = "us-east-1"
+
+# Project name used for tagging and resource naming.
+project = "account-payables"
+
+# --- Placeholders for future real resources ---
+#
+# When the ECS/ALB/RDS/CloudFront stack lands, put its secrets here:
+#   - rds_master_password
+#   - anthropic_api_key
+#   - lithic_api_key / nium_client_secret
+#   - github_repo (for OIDC role trust policy)
+#   - domain_name / route53_zone_id
+#
+# Mirror the AP_* env vars in backend/.env.example — anything in there that
+# is a real secret belongs in this file once deployed to AWS.

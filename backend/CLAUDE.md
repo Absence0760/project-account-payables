@@ -224,6 +224,64 @@ Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`.
 | `scripts/create_tenant.py` | Provisions a single new tenant (org + admin user + DB + tables) |
 | `scripts/migrate_all_tenants.py` | Runs `alembic upgrade head` on every tenant DB |
 
+## Secrets management (SOPS + AWS KMS)
+
+Deployed-environment secrets are encrypted at rest with [SOPS](https://github.com/getsops/sops) backed by an AWS KMS key. Local dev still uses plain `backend/.env` (copied from `backend/.env.example`), which is gitignored.
+
+**File layout:**
+
+```
+backend/
+├── .env                 # local dev — gitignored, copy from .env.example
+├── .env.example         # local dev template — committed
+└── .env.sops            # deployed secrets, AWS KMS-encrypted — committed
+
+infra/
+├── terraform.tfvars.example   # committed template
+└── terraform.tfvars.sops      # encrypted TF vars — committed
+```
+
+**One-time bootstrap per clone** (creates the KMS key, populates `.sops.yaml`, seeds the `.sops` files):
+
+```bash
+brew install sops awscli jq    # or apt/yum equivalent
+aws configure                   # must be authenticated with an IAM principal
+                                # that has kms:CreateKey + kms:CreateAlias
+./bin/sops-init.sh
+```
+
+The script is idempotent; re-runs reuse the existing KMS key.
+
+**Edit an encrypted file:**
+
+```bash
+sops backend/.env.sops             # decrypts → $EDITOR → re-encrypts on save
+sops infra/terraform.tfvars.sops
+```
+
+**Decrypt to a plaintext .env (e.g. to run the deployed backend locally against prod-like config):**
+
+```bash
+sops -d backend/.env.sops > backend/.env
+```
+
+`backend/.env` is gitignored, so the plaintext copy stays on your laptop.
+
+**Load into a container entrypoint:**
+
+```bash
+set -a
+. <(sops -d backend/.env.sops)
+set +a
+exec python main.py
+```
+
+**Adding a collaborator:** grant them `kms:Decrypt` (and usually `kms:Encrypt`, `kms:GenerateDataKey`) on the project's KMS key via an IAM policy. No changes to `.sops.yaml` and no re-encryption needed — IAM is the source of truth.
+
+**Rotating the KMS key:** run `aws kms update-alias` to point the alias at a new key, then `sops updatekeys backend/.env.sops` (and the same for tfvars) to re-encrypt under the new key material.
+
+See `infra/README.md` and the comments at the top of `.sops.yaml` for full context.
+
 ## Conventions
 
 - **Async only** — all DB operations use SQLAlchemy 2 async. Don't introduce sync DB calls.
