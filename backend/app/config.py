@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     hcaptcha_sitekey: str = ""  # exposed to frontend via a public endpoint
     signup_rate_limit_per_hour: int = 5
 
+    # RAG / embeddings
+    rag_enabled: bool = True
+    rag_top_k: int = 3
+    embedding_provider: str = "mock"  # "mock" (dev default) | "openai"
+    embedding_api_key: str = ""
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+
     # App
     debug: bool = True
 

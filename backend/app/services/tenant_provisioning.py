@@ -74,6 +74,10 @@ async def _create_tenant_tables(db_name: str) -> None:
         table for name, table in Base.metadata.tables.items() if name not in CONTROL_TABLES
     ]
     async with engine.begin() as conn:
+        # pgvector extension is required by the RAG embeddings table
+        # (app.models.invoice_embedding). CREATE EXTENSION must run before
+        # create_all, because the Vector column type resolves at DDL time.
+        await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
         await conn.run_sync(
             lambda sync_conn: Base.metadata.create_all(
                 sync_conn, tables=tenant_tables, checkfirst=True

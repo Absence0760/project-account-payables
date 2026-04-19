@@ -31,7 +31,13 @@ ACME_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000010")
 TECH_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
 TECH_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
 
-CONTROL_TABLES = {"organizations", "users", "roles", "user_roles"}
+CONTROL_TABLES = {
+    "organizations",
+    "users",
+    "roles",
+    "user_roles",
+    "email_verifications",
+}
 
 
 async def create_database(db_name: str) -> None:
@@ -62,9 +68,21 @@ async def create_database(db_name: str) -> None:
 
 
 async def create_control_tables():
-    """Create control-plane tables (orgs, users, roles)."""
+    """Create control-plane tables (orgs, users, roles, email_verifications).
+
+    Filters Base.metadata to the control set so we don't try to create
+    tenant-scoped tables (like invoice_embeddings, which needs pgvector)
+    in the control DB.
+    """
+    control_tables = [
+        table for name, table in Base.metadata.tables.items() if name in CONTROL_TABLES
+    ]
     async with control_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(
+            lambda sync_conn: Base.metadata.create_all(
+                sync_conn, tables=control_tables, checkfirst=True
+            )
+        )
     print("  Control-plane tables ready")
 
 
@@ -76,6 +94,9 @@ async def create_tenant_tables(db_name: str):
         table for name, table in Base.metadata.tables.items() if name not in CONTROL_TABLES
     ]
     async with engine.begin() as conn:
+        # pgvector extension — required by invoice_embeddings (RAG priors).
+        # Must run before create_all so the Vector column type resolves.
+        await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
         await conn.run_sync(
             lambda sync_conn: Base.metadata.create_all(
                 sync_conn, tables=tenant_tables, checkfirst=True

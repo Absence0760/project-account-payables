@@ -123,5 +123,13 @@ class InvoiceExtractionResult(Base, TimestampMixin):
     method: Mapped[str] = mapped_column(String(50), nullable=False)
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     raw_result: Mapped[dict | None] = mapped_column(JSONB)
+    # Tracks what the priors pipeline did for this extraction so the UI can
+    # show the reviewer which past invoices / vendor-cache entries shaped
+    # the output. Shape:
+    #   {
+    #     "vendor_cache_applied": ["currency", "tax_rate"],
+    #     "rag_neighbors": [{"invoice_id": "...", "similarity": 0.87, ...}]
+    #   }
+    priors_metadata: Mapped[dict | None] = mapped_column(JSONB)
 
     invoice: Mapped[Invoice] = relationship(back_populates="extraction_results")

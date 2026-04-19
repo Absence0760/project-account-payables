@@ -122,6 +122,14 @@ class ClaudeVisionAdapter(ExtractionAdapter):
 
         file_b64 = base64.b64encode(file_bytes).decode("utf-8")
 
+        # RAG few-shot context (retrieved by services.extraction.run_extraction
+        # and passed through the adapter config). Prepend as a preamble so the
+        # extraction prompt that follows stays authoritative.
+        few_shot = self.config.get("few_shot_prompt") or ""
+        prompt_text = EXTRACTION_PROMPT
+        if few_shot:
+            prompt_text = f"{few_shot}\n\n---\n\n{EXTRACTION_PROMPT}"
+
         # Call Claude API
         body = {
             "model": model,
@@ -140,7 +148,7 @@ class ClaudeVisionAdapter(ExtractionAdapter):
                         },
                         {
                             "type": "text",
-                            "text": EXTRACTION_PROMPT,
+                            "text": prompt_text,
                         },
                     ],
                 }

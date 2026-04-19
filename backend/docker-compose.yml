@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector image = official Postgres 16 + the pgvector extension,
+    # used by the RAG extraction priors (see backend/docs/ai-extraction.md).
+    # If you were running plain postgres:16 and have existing data, this upgrade
+    # is safe — the image is binary-compatible with the same data directory.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

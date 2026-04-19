@@ -1,6 +1,7 @@
 from app.models.base import Base
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
+from app.models.invoice_embedding import InvoiceEmbedding
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
@@ -19,6 +20,7 @@ __all__ = [
     "Invoice",
     "InvoiceLineItem",
     "InvoiceExtractionResult",
+    "InvoiceEmbedding",
     "PurchaseOrder",
     "POLineItem",
     "GoodsReceipt",

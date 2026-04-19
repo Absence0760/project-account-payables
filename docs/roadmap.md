@@ -30,7 +30,7 @@ Feature backlog for the AP automation platform, ordered by impact.
 - [ ] Auto-approve extraction above configurable threshold — `auto_approve_threshold` on org settings; transition directly to `approved` when `overall_confidence >= threshold`
 - [ ] Custom chart of accounts in extraction prompt — load the org's active `GLAccount` rows and inject as allowed values into the Claude Vision prompt; post-validate `suggested_gl_account`
 - [x] Learning from corrections — per-vendor correction cache (see below)
-- [ ] RAG-based extraction priors (see below)
+- [x] RAG-based extraction priors — pgvector + few-shot retrieval (see below)
 
 **Files:** `backend/app/services/extraction_adapters/`, `backend/app/services/extraction.py`, `backend/app/services/vendor_priors.py`
 
@@ -40,18 +40,13 @@ When a reviewer corrects extracted fields during approval, the corrected values 
 
 This is deterministic and requires no ML infrastructure. It handles the 80% case ("same vendor's invoices follow the same pattern") with zero cold-start cost.
 
-#### RAG with pgvector (planned)
+#### RAG with pgvector (shipped)
 
-For semantic similarity across templates/layouts (beyond exact vendor match), add a vector-retrieval layer:
+Semantic-similarity learning complementing the per-vendor cache. At correction time, the invoice's PyMuPDF-extracted text is embedded with `text-embedding-3-small` (mock adapter available for local dev) and stored in `invoice_embeddings` (pgvector) alongside the final corrected fields. At extraction time, the incoming invoice's text is embedded, top-3 semantic neighbors are retrieved via cosine distance, and the matched `(invoice_text, corrected_fields)` pairs are injected into the Claude Vision prompt as few-shot examples.
 
-1. Embed each invoice's PyMuPDF text layer with `text-embedding-3-small` (1536-d) at correction time.
-2. Store `(embedding, corrected_fields)` in a `invoice_embeddings` table backed by the pgvector extension.
-3. At extraction time, embed the incoming invoice and query top-3 nearest neighbors (cosine similarity).
-4. Inject those (image, corrected JSON) pairs into the Claude Vision prompt as few-shot examples.
+Tenant-scoped by default (no cross-tenant leakage). HNSW index on the embedding column for approximate nearest-neighbor search at scale. Metadata about which neighbors were used is persisted on `InvoiceExtractionResult.priors_metadata` and surfaced in the invoice detail UI via `GET /api/invoices/{id}/priors`.
 
-Benefits compound with volume (50-100 invoices inflection). Per-tenant by default; cross-tenant opt-in for broader learning. Adds pgvector + embedding API costs (~$0.02/1M tokens — negligible). Cold-start problem: first invoices in a tenant see no benefit.
-
-**Status:** design only — implement once there's real extraction volume to measure against.
+Conflict resolution: the per-vendor cache (see above) runs AFTER the AI output and overrides low-confidence fields, so when cache and RAG disagree on a field, the cache wins — per-vendor explicit corrections are more authoritative than semantic retrieval.
 
 ---
 

@@ -91,6 +91,27 @@ async def run_extraction(
         file_bytes = s3_obj["Body"].read()
         print(f"[extraction] File fetched: {len(file_bytes)} bytes")
 
+        # RAG: embed the invoice text and fetch similar past extractions to
+        # prime the adapter. No-op when rag_enabled=False, text layer empty,
+        # or the tenant has no embeddings yet.
+        from app.services.rag import (
+            build_few_shot_prompt,
+            extract_invoice_text,
+            neighbors_to_metadata,
+            retrieve_similar,
+        )
+
+        invoice_text = extract_invoice_text(file_bytes)
+        neighbors = await retrieve_similar(
+            db, invoice_text, exclude_invoice_id=invoice_id
+        )
+        if neighbors:
+            config["few_shot_prompt"] = build_few_shot_prompt(neighbors)
+            print(f"[extraction] RAG: {len(neighbors)} neighbors injected as few-shot")
+
+        # Build a fresh adapter now that few_shot_prompt is in the config.
+        adapter = get_extraction_adapter(config)
+
         result = await adapter.extract(
             file_bytes=file_bytes,
             file_key=file_key,
@@ -149,12 +170,21 @@ async def run_extraction(
         if applied_priors:
             print(f"[extraction] Applied vendor priors: {applied_priors}")
 
-        # Save extraction result
+        # Save extraction result with priors metadata (what the UI will show
+        # for transparency — which cache overrides and RAG neighbors shaped
+        # this extraction).
+        priors_metadata: dict = {}
+        if applied_priors:
+            priors_metadata["vendor_cache_applied"] = applied_priors
+        if neighbors:
+            priors_metadata["rag_neighbors"] = neighbors_to_metadata(neighbors)
+
         extraction_result = InvoiceExtractionResult(
             invoice_id=invoice.id,
             method=result.provider or config.get("provider", "unknown"),
             confidence=Decimal(str(round(result.overall_confidence, 4))),
             raw_result=result.raw_response,
+            priors_metadata=priors_metadata or None,
         )
         db.add(extraction_result)
 

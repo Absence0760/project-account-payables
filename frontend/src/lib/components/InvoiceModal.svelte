@@ -522,11 +522,34 @@
 	});
 	let auditLoading = $state(false);
 
+	interface RagNeighbor {
+		invoice_id: string;
+		similarity: number;
+		vendor_name: string | null;
+		invoice_number: string | null;
+		amount: string | null;
+	}
+	interface PriorsData {
+		vendor_cache_applied: string[];
+		rag_neighbors: RagNeighbor[];
+	}
+	let priors = $state<PriorsData>({ vendor_cache_applied: [], rag_neighbors: [] });
+	let priorsOpen = $state(false);
+
 	$effect(() => {
 		loadAuditLog();
 		loadExtractionConfidence();
 		loadLineItems();
+		loadPriors();
 	});
+
+	async function loadPriors() {
+		try {
+			priors = await api.get<PriorsData>(`/api/invoices/${invoice.id}/priors`);
+		} catch {
+			// non-critical — older invoices may predate the priors_metadata column
+		}
+	}
 
 	async function loadLineItems() {
 		try {
@@ -867,6 +890,77 @@
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
 									{retryingErp ? 'Retrying...' : 'Retry ERP Send'}
 								</button>
+							{/if}
+						</div>
+					{/if}
+
+					{#if priors.vendor_cache_applied.length > 0 || priors.rag_neighbors.length > 0}
+						<div class="priors-section">
+							<button
+								type="button"
+								class="priors-toggle"
+								onclick={() => (priorsOpen = !priorsOpen)}
+								aria-expanded={priorsOpen}
+							>
+								<span class="priors-title">Extraction priors</span>
+								<span class="priors-chips">
+									{#if priors.vendor_cache_applied.length > 0}
+										<span class="priors-chip">Vendor cache · {priors.vendor_cache_applied.length}</span>
+									{/if}
+									{#if priors.rag_neighbors.length > 0}
+										<span class="priors-chip">RAG · {priors.rag_neighbors.length} similar</span>
+									{/if}
+								</span>
+								<span class="priors-caret">{priorsOpen ? '▾' : '▸'}</span>
+							</button>
+
+							{#if priorsOpen}
+								<div class="priors-body">
+									{#if priors.vendor_cache_applied.length > 0}
+										<div class="priors-group">
+											<div class="priors-group-title">Applied from vendor cache</div>
+											<div class="priors-tags">
+												{#each priors.vendor_cache_applied as field}
+													<span class="priors-tag">{field}</span>
+												{/each}
+											</div>
+											<div class="priors-help">
+												These fields were pulled from previous corrections for this vendor
+												because the AI's confidence was below threshold.
+											</div>
+										</div>
+									{/if}
+
+									{#if priors.rag_neighbors.length > 0}
+										<div class="priors-group">
+											<div class="priors-group-title">Similar past invoices used as hints</div>
+											<table class="priors-table">
+												<thead>
+													<tr>
+														<th>Similarity</th>
+														<th>Vendor</th>
+														<th>Invoice #</th>
+														<th>Amount</th>
+													</tr>
+												</thead>
+												<tbody>
+													{#each priors.rag_neighbors as n}
+														<tr>
+															<td>{Math.round(n.similarity * 100)}%</td>
+															<td>{n.vendor_name ?? '—'}</td>
+															<td>{n.invoice_number ?? '—'}</td>
+															<td>{n.amount ?? '—'}</td>
+														</tr>
+													{/each}
+												</tbody>
+											</table>
+											<div class="priors-help">
+												Semantic neighbors from this tenant's approved history. Included in
+												the extraction prompt as few-shot examples.
+											</div>
+										</div>
+									{/if}
+								</div>
 							{/if}
 						</div>
 					{/if}
@@ -2061,5 +2155,101 @@
 		.resize-handle {
 			display: none;
 		}
+	}
+
+	/* -------------------------- priors panel ---------------------------- */
+	.priors-section {
+		margin: 16px 0;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--surface);
+	}
+	.priors-toggle {
+		width: 100%;
+		background: transparent;
+		border: none;
+		padding: 12px 14px;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		cursor: pointer;
+		color: var(--text);
+		font-family: inherit;
+		text-align: left;
+	}
+	.priors-title {
+		font-weight: 600;
+		font-size: 0.88rem;
+	}
+	.priors-chips {
+		display: inline-flex;
+		gap: 6px;
+		flex: 1;
+	}
+	.priors-chip {
+		background: rgba(99, 140, 255, 0.15);
+		color: var(--accent);
+		font-size: 0.72rem;
+		font-weight: 500;
+		padding: 2px 8px;
+		border-radius: 999px;
+	}
+	.priors-caret {
+		color: var(--text-muted);
+		font-size: 0.85rem;
+	}
+	.priors-body {
+		padding: 0 14px 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 18px;
+	}
+	.priors-group-title {
+		font-size: 0.76rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin-bottom: 8px;
+	}
+	.priors-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.priors-tag {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 4px 10px;
+		font-size: 0.8rem;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	}
+	.priors-help {
+		margin-top: 8px;
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		line-height: 1.5;
+	}
+	.priors-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.82rem;
+	}
+	.priors-table th,
+	.priors-table td {
+		text-align: left;
+		padding: 6px 10px;
+		border-bottom: 1px solid var(--border);
+	}
+	.priors-table th {
+		color: var(--text-muted);
+		font-weight: 500;
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+	.priors-table tr:last-child td {
+		border-bottom: none;
 	}
 </style>

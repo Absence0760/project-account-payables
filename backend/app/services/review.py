@@ -1,12 +1,15 @@
 """Review service — approve, reject, and resubmit invoices."""
 
+import logging
 import uuid
 from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
+from app.services.rag import store_embedding
 from app.services.vendor_priors import record_corrections
 from app.services.workflow_engine import (
     advance_workflow,
@@ -15,6 +18,33 @@ from app.services.workflow_engine import (
     get_workflow_instance,
     transition_invoice,
 )
+
+_log = logging.getLogger(__name__)
+
+
+async def _fetch_invoice_bytes(invoice: Invoice) -> bytes | None:
+    """Best-effort S3 fetch of the invoice file for RAG embedding.
+
+    Returns None on any failure — RAG storage is a learning-side-effect, not
+    a correctness requirement, so we never block the approval on it.
+    """
+    file_key = invoice.file_key
+    if not file_key:
+        return None
+    try:
+        import boto3
+
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=settings.s3_endpoint_url,
+            aws_access_key_id=settings.s3_access_key,
+            aws_secret_access_key=settings.s3_secret_key,
+        )
+        obj = s3.get_object(Bucket=settings.s3_bucket, Key=file_key)
+        return obj["Body"].read()
+    except Exception as exc:
+        _log.warning("Failed to fetch bytes for RAG embedding of %s: %s", invoice.id, exc)
+        return None
 
 
 async def approve_invoice(
@@ -36,6 +66,16 @@ async def approve_invoice(
         # Store vendor-consistent corrections in the correction cache so
         # future extractions from the same vendor pick up the right values.
         await record_corrections(db, invoice, corrections)
+
+    # Upsert the RAG embedding using the invoice's NOW-correct fields.
+    # Best-effort: failures (S3 unavailable, no text layer, embedding API
+    # down) log and move on — the approval itself still commits.
+    try:
+        file_bytes = await _fetch_invoice_bytes(invoice)
+        if file_bytes:
+            await store_embedding(db, invoice, file_bytes=file_bytes)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("RAG embedding storage failed for %s: %s", invoice.id, exc)
 
     invoice.approval_date = date.today()
     invoice.approved_by = actor_name

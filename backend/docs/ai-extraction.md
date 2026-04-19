@@ -246,7 +246,7 @@ backend/app/models/usage.py              # ExtractionUsage model for billing
 | Custom chart of accounts in prompt | Planned |
 | Multi-page PDF support | Planned |
 | Learning from corrections — per-vendor cache | **Done** |
-| Learning from corrections — RAG with pgvector | Planned |
+| Learning from corrections — RAG with pgvector | **Done** |
 
 ---
 
@@ -297,3 +297,76 @@ This keeps the adapter contract simple and avoids the chicken-and-egg of "need v
 ### Cold-start / small-tenant behavior
 
 First invoice from a vendor: no priors exist, no overlay, identical behavior to before. After one correction, that field is cached for the vendor from then on.
+
+---
+
+## Learning from corrections — RAG with pgvector
+
+Complements the per-vendor cache with semantic similarity across templates — works even when the invoice is from a brand-new vendor whose layout resembles something already in the tenant's history.
+
+### Data model
+
+Tenant-scoped table `invoice_embeddings` (requires the Postgres `vector` extension, which `services/tenant_provisioning.py` creates on first tenant bootstrap):
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | UUID | PK |
+| `invoice_id` | UUID FK (unique) | One embedding per invoice |
+| `vendor_id` | UUID FK (nullable) | Indexed for optional vendor-filtered retrieval |
+| `embedding` | `vector(1536)` | Unit-normalized for cosine search |
+| `corrected_fields` | JSONB | Snapshot of the final (reviewer-approved) field values |
+| `model` | VARCHAR(100) | Embedding model name — vectors from different models aren't comparable |
+
+HNSW index on `embedding` using `vector_cosine_ops`. Migration: `0003_rag_embeddings.py` (tenant-only, gated on presence of `invoices`).
+
+### Pluggable embedding adapters
+
+`app/services/embedding_adapters/` mirrors the extraction/ERP/email adapter pattern:
+
+| Adapter | Use |
+|---|---|
+| `mock` | Default for local dev. Deterministic hash-to-vector — same text → same vector, different text → different vector. No external calls. |
+| `openai` | Production. `text-embedding-3-small`, 1536-d, via httpx to avoid the full openai SDK dep. Costs ~$0.02/1M tokens. |
+
+Configured via `AP_EMBEDDING_PROVIDER`, `AP_EMBEDDING_API_KEY`, `AP_EMBEDDING_MODEL`, `AP_EMBEDDING_DIMENSIONS`.
+
+### Write path — embed on correction
+
+When `services.review.approve_invoice` commits (with or without corrections), it fetches the invoice file from S3, extracts the text layer via PyMuPDF, embeds it, and upserts into `invoice_embeddings` with the invoice's NOW-correct field values. Best-effort — failures log and are swallowed so they never block the approval.
+
+### Read path — few-shot at extraction time
+
+`services.extraction.run_extraction`:
+
+1. Extracts text from the just-uploaded PDF via PyMuPDF.
+2. Embeds it.
+3. Queries the top-3 nearest neighbors via cosine distance (`pgvector`'s `<=>` operator).
+4. Builds a `"Here are similar past invoices ..."` preamble listing each neighbor's corrected field values.
+5. Injects the preamble into the Claude Vision adapter via `config["few_shot_prompt"]`. The adapter prepends it to its usual extraction prompt.
+6. After extraction, persists which neighbors were used on `InvoiceExtractionResult.priors_metadata` for UI transparency.
+
+### Interaction with the per-vendor cache
+
+Both systems run on the same extraction — they're complementary, not competing:
+
+1. **Before extraction**: RAG retrieves semantically similar past invoices and primes the prompt. Works for new vendors.
+2. **Adapter runs**: Claude Vision uses both the document and the few-shot examples to extract fields.
+3. **After vendor matching**: the per-vendor cache overlays low-confidence fields with cached values. Works only for known vendors.
+4. **On correction**: BOTH stores are updated — the cache by `(vendor_id, field)`, the RAG store by invoice text.
+
+When they disagree on a field, cache wins (runs later in the pipeline) — per-vendor explicit corrections are more trustworthy than semantic retrieval.
+
+### UI — "Extraction priors" panel
+
+`GET /api/invoices/{id}/priors` returns both `vendor_cache_applied: [...]` and `rag_neighbors: [...]` from the latest `InvoiceExtractionResult.priors_metadata`. The InvoiceModal shows a collapsible "Extraction priors" section listing which cache fields were overlaid and which past invoices informed this extraction (with similarity score, vendor, invoice #, amount). Reviewers can see exactly why the AI produced what it did.
+
+### Cold-start & cost
+
+- First N invoices in a tenant: no embeddings to retrieve from, no benefit. Extraction quality equals the bare adapter.
+- Inflection typically at 50-100 invoices — after that the neighbor retrieval has enough density to find meaningful matches.
+- Embedding API cost: negligible (1536-d vector ≈ 500 input tokens per invoice for `text-embedding-3-small` → <$0.001/invoice).
+- The `mock` adapter keeps local dev free and offline-capable.
+
+### Privacy
+
+Default per-tenant: no invoice embeddings ever leak across tenants. The table lives in each `ap_<slug>` DB. Cross-tenant learning is possible as an explicit opt-in (move embeddings to a shared catalog and flag with a consent column), but not implemented — mentioned here for future design.

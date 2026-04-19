@@ -121,6 +121,39 @@ async def get_invoice(
     return InvoiceResponse.from_db(invoice)
 
 
+@router.get("/{invoice_id}/priors")
+async def get_invoice_priors(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Return priors metadata from the most recent extraction.
+
+    Shape:
+        {
+          "vendor_cache_applied": ["currency", "tax_rate", ...],
+          "rag_neighbors": [
+            {"invoice_id": "...", "similarity": 0.87, "vendor_name": "...",
+             "invoice_number": "...", "amount": "..."},
+          ]
+        }
+
+    Used by the invoice detail UI to show the reviewer which past corrections
+    shaped the AI's output. Returns empty arrays when RAG/cache didn't fire.
+    """
+    result = await db.execute(
+        select(InvoiceExtractionResult)
+        .where(InvoiceExtractionResult.invoice_id == invoice_id)
+        .order_by(InvoiceExtractionResult.created_at.desc())
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    metadata = (row.priors_metadata if row else None) or {}
+    return {
+        "vendor_cache_applied": metadata.get("vendor_cache_applied", []),
+        "rag_neighbors": metadata.get("rag_neighbors", []),
+    }
+
+
 @router.get("/{invoice_id}/line-items")
 async def get_invoice_line_items(
     invoice_id: uuid.UUID,
