@@ -251,6 +251,26 @@ Connect to actual payment rails for non-card payments.
 
 ---
 
+### CFO / Finance-Leader Analytics
+**Status:** Planned — **Executive-buyer persona**
+
+Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and controllers buy on different metrics — the ones that show up in board decks and drive working-capital decisions. Separate surface because the audience and filter defaults differ (entity, period, currency, accrual vs cash).
+
+- [ ] Days Payable Outstanding (DPO) trend — monthly/quarterly, with benchmark overlay
+- [ ] Cash conversion cycle (DSO + DIO - DPO) where data available
+- [ ] Accruals view — open POs × GR ÷ invoices not yet posted
+- [ ] Working capital impact — "if we paid 5 days later across the board, how much cash unlocked"
+- [ ] Supplier concentration — % of spend going to top 10 / top 50 vendors; flag if a single vendor exceeds threshold
+- [ ] Fraud rate trend — exceptions raised / total invoices, by type
+- [ ] Early-pay discount ROI — captured vs missed, dollar value of missed
+- [ ] Rebate yield — virtual card rebates earned as % of spend + annualized run rate
+- [ ] Forecast variance — actual AP outflow vs forecast, monthly
+- [ ] Drill-through from every KPI to the contributing invoice set (don't make CFOs export CSVs to investigate)
+
+**Competitors:** Coupa (Spend Intelligence), Tipalti (CFO Insights), SAP Ariba (Spend Visibility), AppZen (audit analytics). This is where enterprise AP tools differentiate from SMB tools.
+
+---
+
 ## Priority 5: Multi-Currency & Tax
 
 ### Multi-Currency Support
@@ -336,6 +356,33 @@ No SSO = no enterprise sale. Every competitor supports SAML/OIDC.
 - [ ] Session management — concurrent session limits, forced logout
 
 **Competitors:** All competitors support SSO. Coupa, SAP Concur, and Basware also support SCIM.
+
+---
+
+### SOC 2 Readiness
+**Status:** Planned — **Common deal-blocker, mostly non-code**
+
+SOC 2 Type I (design) → Type II (operating over time) is the table-stakes security attestation for selling to finance teams. Most of the work is policy, process, and evidence collection — not code — but a few engineering-side controls need to land first.
+
+**Engineering prerequisites:**
+- [ ] Access reviews — quarterly automated export of every user + role across control + tenant DBs
+- [ ] Session management — concurrent session limits, forced logout on role change (overlaps with SSO section)
+- [ ] Encryption at rest — confirm RDS + S3 bucket encryption flipped on; document KMS key rotation
+- [ ] Encryption in transit — TLS everywhere, HSTS on the frontend, no plaintext internal hops
+- [ ] Backup + DR runbook — RDS snapshot cadence, restore tested quarterly, documented RTO/RPO
+- [ ] Vulnerability scanning in CI — Dependabot (shipped) + container image scanning + weekly SAST
+- [ ] Centralized audit log shipping — don't rely solely on tenant-DB audit_log; stream to a WORM-compliant store
+- [ ] Secrets rotation — SOPS KMS key rotation procedure; app secrets rotated ≤ 90 days
+
+**Process / attestation work:**
+- [ ] Vendor selection — Drata, Vanta, Secureframe, or Sprinto; pick one and run the continuous-compliance loop
+- [ ] Policy library — information security, incident response, change management, access control, vendor mgmt
+- [ ] Employee onboarding / offboarding checklist with evidence collection
+- [ ] Incident response runbook + on-call rotation
+- [ ] SOC 2 Type I audit (point-in-time) — typical 4-8 weeks after prereqs
+- [ ] Begin Type II observation window (6+ months) for annual renewal
+
+**Competitors:** Every serious competitor has SOC 2 Type II. Without it, enterprise deals stall at security review.
 
 ---
 
@@ -534,11 +581,14 @@ Support structured electronic invoice formats required in the EU, Australia, and
 - [ ] Factur-X / ZUGFeRD — hybrid PDF/XML format (EU standard)
 - [ ] UBL (Universal Business Language) 2.1 — parse and generate
 - [ ] FatturaPA — Italian e-invoicing format
+- [ ] CFDI 4.0 — Mexican e-invoicing (SAT stamping, UUID, PAC integration)
+- [ ] NFe / NFS-e — Brazilian electronic invoicing (state-level SEFAZ integration)
+- [ ] DIAN — Colombian e-invoicing
 - [ ] Auto-detect format on upload — parse structured data instead of OCR
 - [ ] Validate against schema — reject malformed e-invoices with clear errors
 - [ ] Generate compliant e-invoices for outbound (supplier portal responses)
 - [ ] Access point / PEPPOL AS4 gateway integration
-- [ ] Country-specific tax validation (VAT, GST)
+- [ ] Country-specific tax validation (VAT, GST, IVA)
 
 ---
 

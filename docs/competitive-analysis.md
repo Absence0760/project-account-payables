@@ -33,10 +33,16 @@ Analysis of the AP automation market as of April 2026. Covers 10 major competito
 | Invoice workflows/state machine | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | PO matching (2-way) | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | PO matching (3-way) | Have | - | Y | Y | Y | - | Y | Y | Y | Y | Y |
-| Duplicate detection | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| Duplicate detection (exact match) | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| Semantic duplicate detection (embeddings) | **Have** | - | - | - | - | - | - | - | - | - | - |
+| AI learning from corrections | **Have** | - | - | - | - | - | - | Y | - | - | - |
+| RAG-based few-shot extraction priors | **Have** | - | - | - | - | - | - | - | - | - | - |
+| Per-vendor correction cache | **Have** | - | - | - | - | - | - | Y | - | - | - |
 | Exception queue | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | Audit trail | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | Bulk operations | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| Self-service tenant signup | **Have** | Y (SMB) | - | - | - | - | - | - | - | - | - |
+| First-login password change enforcement | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 
 ### Approvals
 
@@ -107,7 +113,10 @@ Analysis of the AP automation market as of April 2026. Covers 10 major competito
 | RBAC (API-level enforcement) | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | SSO/SAML | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | MFA | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
-| SOC 1/SOC 2 | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| SOC 2 Type I/II | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| hCaptcha on public endpoints | **Have** | - | - | - | - | - | - | - | - | - | - |
+| Rate limiting (Redis sliding window) | **Have** | - | - | Y | - | - | - | - | - | Y | - |
+| SOPS + KMS encrypted secrets | **Have** | - | - | - | - | - | - | - | - | - | - |
 | 1099 e-filing | Gap | Y | Y | - | - | Y | Y | Y | Y | Y | - |
 | VAT/GST handling | Gap | - | Y | Y | Y | - | - | - | - | Y | Y |
 | E-invoicing (Peppol, etc.) | Gap | - | - | - | - | - | - | - | - | Y | Y |
@@ -137,7 +146,11 @@ Analysis of the AP automation market as of April 2026. Covers 10 major competito
 
 | Feature | Us | Bill | Tipalti | Coupa | Concur | Avid | Mineral | Stampli | Airbase | Medius | Basware |
 |---------|-----|------|---------|-------|--------|------|---------|---------|---------|--------|---------|
-| Mobile app | Gap | Y | - | Y | Y | Y | - | Y | Y | Y | Y |
+| Mobile app (iOS + Android) | **Have** | Y | - | Y | Y | Y | - | Y | Y | Y | Y |
+| Camera OCR capture | **Have** | Y | - | - | - | - | - | Y | - | - | - |
+| Biometric login (Face ID / fingerprint) | **Have** | Y | - | - | - | - | - | - | - | - | - |
+| Offline mode (SQLite cache) | **Have** | - | - | - | - | - | - | - | - | - | - |
+| Swipe-to-approve gesture | **Have** | - | - | - | - | - | - | - | - | - | - |
 | Expense management | Gap | Y* | - | Y | Y | - | - | - | Y | Y | Y |
 | Procurement / requisitions | Gap | - | - | Y | Y* | - | - | - | Y | Y | Y |
 | Contract management | Gap | - | - | Y | Y* | - | - | - | - | - | Y |
@@ -152,53 +165,67 @@ Analysis of the AP automation market as of April 2026. Covers 10 major competito
 
 These are areas where we are genuinely ahead of most or all competitors:
 
-1. **Multi-provider AI extraction with BYOK** — Every competitor uses a single proprietary OCR/AI pipeline. Our pluggable adapter pattern (Claude Vision, GPT-4V, Textract, Ollama) with both platform and bring-your-own-key models is unique. Customers aren't locked into one AI provider.
+1. **Multi-provider AI extraction with BYOK** — Every competitor uses a single proprietary OCR/AI pipeline. Our pluggable adapter pattern (Claude Vision, GPT-4V, Textract, Ollama) with both platform and bring-your-own-key models is unique. Customers aren't locked into one AI provider and can self-host via Ollama for data-sovereignty-conscious deployments.
 
-2. **Database-per-tenant isolation** — Most competitors use row-level tenant isolation. Our database-per-tenant architecture provides stronger security guarantees, easier compliance (data residency), and simpler tenant lifecycle management. Strong selling point for security-conscious enterprise buyers.
+2. **Two-layer learning from corrections** — Per-vendor correction cache (deterministic) + pgvector RAG with `text-embedding-3-small` (semantic). Reviewer corrections feed both stores simultaneously. Only Stampli has *any* correction-learning ("Billy the Bot"); nobody else has the dual deterministic + semantic approach, and nobody else exposes the priors transparently in the UI (the "Extraction priors" panel shows exactly which past invoices and cached fields shaped each extraction).
 
-3. **Multi-provider virtual cards** — Lithic + Nium with automatic region-based provider selection. Most competitors partner with a single card issuer. Our multi-provider approach gives better global coverage and negotiating leverage.
+3. **Semantic duplicate detection via embeddings** — Reuses the same `invoice_embeddings` store to catch near-duplicates the rule-based (vendor_name + invoice_number) check misses. Configurable threshold, no extra compute. Every competitor has rule-based dup detection; nobody catches OCR-drift or template-resend cases this cleanly.
 
-4. **Pluggable adapter architecture** — Extraction, ERP, and card providers are all pluggable via decorator-based registration. Adding a new provider means copying a file and implementing the interface. This is more developer-friendly and extensible than most enterprise AP tools.
+4. **Database-per-tenant isolation** — Most competitors use row-level tenant isolation. Our database-per-tenant architecture provides stronger security guarantees, easier compliance (data residency), and simpler tenant lifecycle management. Strong selling point for security-conscious enterprise buyers.
 
-5. **Unified ERP API (Merge.dev) + direct adapters** — Best of both worlds: broad coverage via Merge.dev's unified API with the option to build optimized direct integrations for high-value ERPs.
+5. **Self-service tenant provisioning** — Anonymous visitor → signup form → email verification → provisioned tenant with temp password → first-login password change, fully automated in ~30s. Every enterprise competitor (Tipalti, Coupa, Concur, Medius, Basware, Stampli, Airbase) is sales-led only. Bill.com has SMB self-serve; our implementation with hCaptcha + Redis rate limiting + two-phase (start → verify → complete) is production-ready PLG infrastructure.
 
-6. **AI vendor auto-creation with fuzzy matching** — Vendors are automatically created from invoice extraction with confidence scoring and fuzzy name matching. Most competitors require manual vendor setup before invoice processing.
+6. **Multi-provider virtual cards** — Lithic + Nium with automatic region-based provider selection. Most competitors partner with a single card issuer. Our multi-provider approach gives better global coverage and negotiating leverage.
+
+7. **Native mobile app with differentiated features** — Flutter iOS + Android with camera OCR capture, biometric login (Face ID / fingerprint / device PIN), offline mode (SQLite cache), push notifications (FCM), and swipe-to-approve. Most AP competitors have browser-first mobile or basic approval-only apps. Offline mode and swipe-to-approve are genuinely rare.
+
+8. **Pluggable adapter architecture** — Extraction, ERP, card, email, and embedding providers are all pluggable via decorator-based registration. Adding a new provider means copying a file and implementing the interface. More developer-friendly and extensible than any enterprise AP tool.
+
+9. **Unified ERP API (Merge.dev) + direct adapters** — Best of both worlds: broad coverage via Merge.dev's unified API with the option to build optimized direct integrations for high-value ERPs.
+
+10. **AI vendor auto-creation with fuzzy matching** — Vendors are automatically created from invoice extraction with confidence scoring and fuzzy name matching. Most competitors require manual vendor setup before invoice processing.
+
+11. **Production-grade security infrastructure out of the box** — SOPS + AWS KMS for secrets encryption (committed encrypted to git), Dependabot for supply-chain monitoring, hCaptcha on anonymous endpoints, Redis-backed sliding-window rate limiting, JWT with blocklist on logout. Competitors often treat these as enterprise-tier features.
 
 ---
 
 ## Critical Gaps to Close
 
-Ranked by competitive impact — features where we are behind all or nearly all competitors:
+Ranked by competitive impact — features where we are behind most or all competitors. Matches the prioritization in `roadmap.md`.
 
-### Tier 1: Deal-Blockers (every buyer asks for these)
+### Tier 1: Deal-Blockers (hard filter on every mid-market+ RFP)
 
 | Gap | Why It Matters | Who Has It |
 |-----|---------------|-----------|
-| **Backend RBAC enforcement** | API endpoints aren't gated by role — security vulnerability, not just a missing feature. Any authenticated user can hit any endpoint. | All competitors |
-| **SSO/SAML** | Enterprise deal requirement. No SSO = no enterprise sale. Fields exist in User model but not implemented. | All competitors |
+| **SSO (SAML + OIDC + SCIM)** | No SSO = no enterprise sale, period. Fields exist in User model but not wired. | All competitors |
+| **PO matching pipeline wiring** | 2-way + 3-way matching *service* exists; extraction/review UI doesn't call it and exceptions aren't routed. Mid-market buyers expect PO-gated invoices. | All competitors |
+| **Real ACH / wire execution** | Virtual cards cover ~30-40% of spend in practice; the rest is ACH. Need Modern Treasury / Stripe Treasury / direct bank integration. | All competitors |
 | **Supplier portal** | Vendors can't self-submit invoices or check payment status. Forces email/manual intake. Biggest workflow gap. | All competitors |
-| **Advanced approval routing** | No amount-based auto-routing, no delegation, no escalation, no parallel chains. Basic manual/specific only. | All competitors |
+| **SOC 2 Type II** | Security review blocker. Mostly process + docs, but a few engineering controls (access reviews, centralized audit shipping, encryption verification). 60+ day blocker if not started. | All competitors |
+| **Backend RBAC enforcement** | API endpoints aren't gated by role — security vulnerability. Any authenticated user can hit any endpoint. | All competitors |
 | **1099 tax compliance** | W-9 collection, TIN validation, 1099 e-filing. Required for US AP operations. | Bill, Tipalti, Avid, Mineral, Stampli, Airbase |
 
-### Tier 2: Competitive Disadvantages (lose deals without these)
+### Tier 2: Competitive Disadvantages (lose deals against peers)
 
 | Gap | Why It Matters | Who Has It |
 |-----|---------------|-----------|
-| **International payments** | Multi-currency, FX management, cross-border ACH/wire. Blocks non-US market entirely. | Tipalti, Coupa, Concur, Airbase, Medius, Basware |
-| **Mobile app** | Approve invoices on the go, camera capture. Table stakes for mid-market+. | Bill, Coupa, Concur, Stampli, Airbase |
-| **Custom report builder** | Fixed KPIs only. Buyers need ad-hoc reporting. | Coupa, Tipalti, Stampli, Airbase, Medius, Basware |
+| **Advanced approval routing** | No amount-based auto-routing, no delegation, no escalation, no parallel chains. Workflow engine has the state machine but not the rules. | All competitors |
+| **International payments (FX + local rails)** | Multi-currency, cross-border ACH/wire, SEPA, SWIFT. Blocks non-US market entirely. | Tipalti, Coupa, Concur, Airbase, Medius, Basware |
+| **Multi-entity / intercompany** | Consolidated reporting, cross-entity allocations. Blocks mid-market customers with subsidiaries. | All enterprise competitors |
+| **CFO / finance-leader analytics** | Current dashboard is operational (aging, touchless rate). Missing DPO, cash conversion cycle, accruals, supplier concentration — the KPIs CFOs buy on. | Coupa, Tipalti, Basware, Medius |
 | **Segregation of duties** | Same user can create and approve invoices. Compliance requirement for regulated industries. | Tipalti, Coupa, MineralTree, Stampli, Airbase, Medius, Basware |
 | **Sanctions/OFAC screening** | Required for regulated industries. Vendors aren't screened against sanctions lists. | Tipalti, Coupa, Medius, Basware |
+| **Custom report builder** | Fixed KPIs only. Mid-market+ buyers expect ad-hoc reporting. | Coupa, Tipalti, Stampli, Airbase, Medius, Basware |
 
-### Tier 3: Market Expansion (nice-to-have, opens new segments)
+### Tier 3: Market Expansion (opens new segments)
 
 | Gap | Why It Matters | Who Has It |
 |-----|---------------|-----------|
+| **E-invoicing compliance (Peppol, CFDI, NFe)** | EU mandates through 2026-2028; LatAm already mandated. Without Peppol/ViDA readiness, no EU market. | Medius, Basware |
 | **Expense management** | Adjacent market. All-in-one spend platforms are winning mid-market. | Bill/Divvy, Coupa, Concur, Airbase, Medius |
 | **Dynamic discounting** | Revenue opportunity. Optimize payment timing for discounts. | Coupa, Basware, Medius, Tipalti |
 | **Email inbox ingestion** | Auto-import invoices from a dedicated email address. Reduces manual upload. | Bill, Tipalti, Coupa, Stampli, Medius, Basware |
 | **Procurement** | Full procure-to-pay. Requisitioning, catalogs, guided buying. | Coupa, Basware, Airbase, Medius |
-| **E-invoicing (Peppol)** | Required in EU. Growing mandates worldwide. | Medius, Basware |
 | **Contract management** | Spend-to-contract tracking, renewal alerts. | Coupa, Basware |
 
 ---
@@ -211,9 +238,9 @@ Ranked by competitive impact — features where we are behind all or nearly all 
 
 **Weaknesses:** Limited international payments. Basic PO matching. Not enterprise-grade. Limited AI beyond basic OCR. No procurement or contract management.
 
-**Where we win:** Multi-provider AI extraction, database-per-tenant security, pluggable architecture, stronger ERP breadth.
+**Where we win:** Multi-provider AI extraction with BYOK, two-layer correction learning (cache + RAG), semantic duplicate detection, database-per-tenant security, pluggable architecture, stronger ERP breadth, native mobile with offline + biometric.
 
-**Where they win:** Mobile app, supplier portal, 1099 compliance, expense management (Divvy), broader SMB market penetration.
+**Where they win:** Supplier portal, 1099 compliance, expense management (Divvy), broader SMB market penetration, established payments network, brand recognition.
 
 ---
 
@@ -223,9 +250,9 @@ Ranked by competitive impact — features where we are behind all or nearly all 
 
 **Weaknesses:** No expense management. Limited mobile. Procurement is basic. Not a full BSM platform.
 
-**Where we win:** Multi-provider AI extraction, database-per-tenant isolation, virtual card multi-provider approach, pluggable adapter architecture.
+**Where we win:** Multi-provider AI extraction with BYOK, two-layer correction learning, semantic duplicate detection, database-per-tenant isolation, virtual card multi-provider approach, pluggable adapter architecture, self-service signup, modern native mobile app.
 
-**Where they win:** International payments, tax compliance, sanctions screening, supplier portal, advanced approval routing with Slack integration.
+**Where they win:** International payments, tax compliance, sanctions screening, supplier portal, advanced approval routing with Slack integration, SOC 2 attestation.
 
 ---
 
@@ -247,9 +274,9 @@ Ranked by competitive impact — features where we are behind all or nearly all 
 
 **Weaknesses:** No expense management. No procurement. Limited international payments. Basic tax compliance.
 
-**Where we win:** Multi-provider AI (vs single proprietary), database-per-tenant isolation, virtual card multi-provider, broader ERP coverage via Merge.dev.
+**Where we win:** Multi-provider AI (vs single proprietary), transparent priors UI (reviewer sees exactly which past invoices shaped extraction), semantic duplicate detection, database-per-tenant isolation, virtual card multi-provider, broader ERP coverage via Merge.dev, native mobile with offline + biometric.
 
-**Where they win:** AI learning from corrections, invoice collaboration threads, mobile app, supplier portal, Slack approval integration, more mature approval routing.
+**Where they win:** Longer track record with correction-learning (Billy the Bot is mature), invoice collaboration threads, supplier portal, Slack approval integration, more mature approval routing, SOC 2.
 
 ---
 
@@ -261,7 +288,7 @@ Ranked by competitive impact — features where we are behind all or nearly all 
 
 **Where we win:** Broader ERP coverage, multi-provider AI extraction, database-per-tenant isolation, virtual card multi-provider.
 
-**Where they win:** Expense management, corporate cards, Slack-native approvals, procurement intake, real-time spend controls, mobile app.
+**Where they win:** Expense management, corporate cards, Slack-native approvals, procurement intake, real-time spend controls, SOC 2.
 
 ---
 
@@ -292,14 +319,22 @@ Ranked by competitive impact — features where we are behind all or nearly all 
 ## Strategic Positioning
 
 ### Our sweet spot
-Mid-market companies (100-5,000 employees) that need:
-- AI-first invoice processing (not legacy OCR)
-- Strong ERP integration without enterprise pricing
-- Virtual card rebates to offset platform cost
-- Tenant-isolated security for compliance
+**SMB-to-mid-market PLG segment (20-1,000 employees)** that wants:
+- AI-first invoice processing with transparent learning (not legacy OCR, not black-box "AI")
+- Strong ERP integration without enterprise pricing or sales cycles
+- Self-service onboarding — spin up a workspace in 30 seconds without talking to sales
+- Virtual card rebates that offset or exceed platform cost
+- Tenant-isolated security (database-per-tenant) for compliance without enterprise-tier pricing
+- Native mobile with offline/biometric for approvers
+
+### Wedge strategy
+**Self-service + AI-native differentiation at the SMB/mid-market boundary.** Enterprise competitors (Coupa, Tipalti, Basware, Medius, Stampli, Airbase) are all sales-led and take weeks-to-months to onboard. Bill.com owns SMB self-serve but has weak AI and security. Our combination — self-service provisioning + dual-layer correction learning + transparent priors UI + multi-provider BYOK AI + database-per-tenant — occupies a position nobody currently holds.
 
 ### Who we compete with most directly
-**Stampli**, **MineralTree**, and **Bill.com** in the mid-market AP automation segment. We differentiate on AI flexibility (multi-provider BYOK), security (database-per-tenant), and virtual card monetization.
+**Stampli**, **Bill.com**, **MineralTree** in mid-market AP automation. We differentiate on: multi-provider AI with BYOK, two-layer learning (cache + RAG), semantic dup detection, self-service onboarding, native mobile, and tenant isolation. Stampli matches us on correction-learning (Billy the Bot) but not on transparency or semantic dup detection; Bill.com matches on SMB self-serve but not on AI depth.
+
+### Who we compete with less directly (and why)
+**Tipalti** wins international payments and tax compliance. We lose those deals today; our SSO+ACH+SOC 2 work closes the gap. **Airbase** wins expense+AP bundled. Different wedge — we'd need to build expense mgmt to compete head-on, which isn't cheap.
 
 ### Who we don't compete with (yet)
-**Coupa** and **Basware** in enterprise BSM. We lack procurement, contract management, and global compliance to play at that level. **SAP Concur** in T&E-centric enterprises — different buyer.
+**Coupa** and **Basware** in enterprise BSM — we lack procurement, contract management, and global compliance to play at that level. **SAP Concur** in T&E-centric enterprises — different buyer.
