@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
@@ -95,9 +96,11 @@ async def list_invoices(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    # Paginate
+    # Paginate. Eager-load extraction_results so priors_summary can be
+    # computed without N+1 queries per row.
     query = query.order_by(Invoice.created_at.desc())
     query = query.offset((page - 1) * page_size).limit(page_size)
+    query = query.options(selectinload(Invoice.extraction_results))
     result = await db.execute(query)
     invoices = result.scalars().all()
 

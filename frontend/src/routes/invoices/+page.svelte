@@ -429,7 +429,17 @@
 								</span>
 							{/if}
 						</td>
-						<td>{invoice.vendor || '—'}</td>
+						<td>
+							{invoice.vendor || '—'}
+							{#if invoice.priors_summary && (invoice.priors_summary.cache > 0 || invoice.priors_summary.rag > 0)}
+								<span
+									class="priors-badge"
+									title="Extraction priors: {invoice.priors_summary.cache} vendor-cache field{invoice.priors_summary.cache === 1 ? '' : 's'}, {invoice.priors_summary.rag} RAG neighbor{invoice.priors_summary.rag === 1 ? '' : 's'}"
+								>
+									{#if invoice.priors_summary.rag > 0}RAG·{invoice.priors_summary.rag}{/if}{#if invoice.priors_summary.cache > 0 && invoice.priors_summary.rag > 0}·{/if}{#if invoice.priors_summary.cache > 0}cache·{invoice.priors_summary.cache}{/if}
+								</span>
+							{/if}
+						</td>
 						<td class="description">{invoice.description}</td>
 						<td class="mono">{invoice.po_number}</td>
 						<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
@@ -733,6 +743,20 @@
 		vertical-align: middle;
 		margin-left: 4px;
 		color: #d4940a;
+		cursor: help;
+	}
+
+	.priors-badge {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 1px 6px;
+		border-radius: 4px;
+		background: rgba(99, 140, 255, 0.15);
+		color: var(--accent);
+		font-size: 0.68rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		vertical-align: middle;
 		cursor: help;
 	}
 

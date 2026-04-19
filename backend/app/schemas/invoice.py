@@ -121,6 +121,10 @@ class InvoiceResponse(BaseModel):
     created_at: str
     file_url: str | None
     warnings: list[dict] | None = None
+    # Summary counts from the latest extraction's priors_metadata — feeds the
+    # small "priors applied" indicator on the invoice-list row. Null when no
+    # extraction ran or no priors fired.
+    priors_summary: dict | None = None
 
     model_config = {"from_attributes": True}
 
@@ -163,7 +167,22 @@ class InvoiceResponse(BaseModel):
             created_at=inv.created_at.isoformat() if inv.created_at else "",
             file_url=inv.file_url,
             warnings=inv.warnings,
+            priors_summary=_priors_summary(inv),
         )
+
+
+def _priors_summary(inv) -> dict | None:
+    """Flatten the latest extraction result's priors_metadata into counts."""
+    results = getattr(inv, "extraction_results", None) or []
+    if not results:
+        return None
+    latest = max(results, key=lambda r: r.created_at or 0)
+    meta = latest.priors_metadata or {}
+    cache = len(meta.get("vendor_cache_applied") or [])
+    rag = len(meta.get("rag_neighbors") or [])
+    if cache == 0 and rag == 0:
+        return None
+    return {"cache": cache, "rag": rag}
 
 
 class InvoiceListResponse(BaseModel):

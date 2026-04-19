@@ -16,6 +16,7 @@ from app.models import Base
 from app.models.exception import Exception as APException
 from app.models.gl_account import GLAccount
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
+from app.models.invoice_embedding import InvoiceEmbedding
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
@@ -748,8 +749,9 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
         )
 
         # Extraction results — simulate completed extractions for some invoices
+        extraction_results: list[InvoiceExtractionResult] = []
         for inv in invoices[:4]:
-            session.add(
+            extraction_results.append(
                 InvoiceExtractionResult(
                     invoice_id=inv.id,
                     method="claude_vision",
@@ -759,6 +761,67 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
                         "overall_confidence": 0.95,
                         "fields_extracted": 15,
                     },
+                )
+            )
+        session.add_all(extraction_results)
+
+        # Demo priors_metadata so the "Extraction priors" UI has something to
+        # show on seeded data. Real production extractions build this during
+        # services/extraction.run_extraction.
+        if len(extraction_results) >= 3:
+            extraction_results[2].priors_metadata = {
+                "vendor_cache_applied": ["currency", "payment_terms"],
+            }
+        if len(extraction_results) >= 4 and len(invoices) >= 2:
+            extraction_results[3].priors_metadata = {
+                "vendor_cache_applied": ["tax_rate"],
+                "rag_neighbors": [
+                    {
+                        "invoice_id": str(invoices[0].id),
+                        "similarity": 0.91,
+                        "vendor_name": invoices[0].vendor_name,
+                        "invoice_number": invoices[0].invoice_number,
+                        "amount": str(invoices[0].amount),
+                    },
+                    {
+                        "invoice_id": str(invoices[1].id),
+                        "similarity": 0.78,
+                        "vendor_name": invoices[1].vendor_name,
+                        "invoice_number": invoices[1].invoice_number,
+                        "amount": str(invoices[1].amount),
+                    },
+                ],
+            }
+
+        # RAG embeddings — one per invoice, using the mock adapter so seed
+        # doesn't need an OpenAI key. Lets the /api/extract flow retrieve
+        # neighbors on a brand-new invoice upload against the demo tenant.
+        from app.services.embedding_adapters.mock_adapter import MockEmbeddingAdapter
+
+        embedder = MockEmbeddingAdapter({"dimensions": 1536})
+        for inv in invoices:
+            canonical = (
+                f"Vendor: {inv.vendor_name}\n"
+                f"Invoice #: {inv.invoice_number}\n"
+                f"Amount: {inv.amount}\n"
+                f"Currency: {inv.currency or 'USD'}\n"
+                f"Terms: {inv.payment_terms or ''}\n"
+                f"Description: {inv.description or ''}\n"
+            )
+            emb_result = await embedder.embed(canonical)
+            session.add(
+                InvoiceEmbedding(
+                    invoice_id=inv.id,
+                    vendor_id=inv.vendor_id,
+                    embedding=emb_result.vector,
+                    corrected_fields={
+                        "vendor_name": inv.vendor_name,
+                        "invoice_number": inv.invoice_number,
+                        "amount": str(inv.amount),
+                        "currency": inv.currency,
+                        "payment_terms": inv.payment_terms,
+                    },
+                    model="mock",
                 )
             )
 

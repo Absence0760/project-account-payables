@@ -146,4 +146,5 @@ export interface Invoice {
 	created_at: string;
 	file_url: string | null;
 	warnings: InvoiceWarning[] | null;
+	priors_summary: { cache: number; rag: number } | null;
 }
