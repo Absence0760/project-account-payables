@@ -14,10 +14,18 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    get_current_user,
+    require_roles,
+)
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice import InvoiceStatus as DBInvoiceStatus
 from app.models.payment import Payment, PaymentSchedule
+from app.models.user import User
 from app.models.workflow import WorkflowInstance, WorkflowStep
 from app.schemas.invoice import (
     BulkDeleteRequest,
@@ -60,6 +68,7 @@ async def list_invoices(
     due_date_to: date | None = None,
     search: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
 ):
     query = select(Invoice)
 
@@ -116,6 +125,7 @@ async def list_invoices(
 async def get_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
 ):
     result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
@@ -128,6 +138,7 @@ async def get_invoice(
 async def get_invoice_priors(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
 ):
     """Return priors metadata from the most recent extraction.
 
@@ -161,6 +172,7 @@ async def get_invoice_priors(
 async def get_invoice_line_items(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
 ):
     from app.models.invoice import InvoiceLineItem
 
@@ -191,6 +203,7 @@ async def save_invoice_line_items(
     invoice_id: uuid.UUID,
     body: list[dict],
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     """Replace all line items for an invoice."""
     from app.models.invoice import InvoiceLineItem
@@ -229,6 +242,7 @@ async def save_invoice_line_items(
 async def create_invoice(
     body: InvoiceCreate,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     invoice = Invoice(
         invoice_number=body.invoice_number,
@@ -269,6 +283,7 @@ async def update_invoice(
     invoice_id: uuid.UUID,
     body: InvoiceUpdate,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
@@ -297,6 +312,7 @@ async def update_invoice(
 async def delete_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     invoice = result.scalar_one_or_none()
@@ -354,6 +370,7 @@ def _invoice_to_export_dict(inv: Invoice) -> dict:
 async def bulk_delete(
     body: BulkDeleteRequest,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     ids = [uuid.UUID(i) for i in body.ids]
     result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
@@ -376,6 +393,7 @@ async def bulk_delete(
 async def bulk_status_change(
     body: BulkStatusRequest,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     ids = [uuid.UUID(i) for i in body.ids]
     result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
@@ -399,6 +417,7 @@ async def bulk_status_change(
 async def bulk_export(
     body: BulkExportRequest,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
 ):
     ids = [uuid.UUID(i) for i in body.ids]
     result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))

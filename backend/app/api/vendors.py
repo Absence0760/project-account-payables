@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    get_org_id,
+    require_roles,
+)
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.user import User
@@ -27,7 +33,7 @@ async def list_vendors(
     status_filter: str | None = Query(None, alias="status"),
     source: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     query = select(Vendor)
     if search:
@@ -67,7 +73,7 @@ async def list_vendors(
 async def get_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
@@ -80,7 +86,7 @@ async def get_vendor(
 async def create_vendor(
     body: VendorCreate,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     vendor = Vendor(
@@ -102,7 +108,7 @@ async def update_vendor(
     vendor_id: uuid.UUID,
     body: VendorUpdate,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
@@ -121,7 +127,7 @@ async def update_vendor(
 async def delete_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
@@ -135,7 +141,7 @@ async def delete_vendor(
 async def verify_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Verify an unverified vendor — makes them eligible for payment."""
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
@@ -156,7 +162,7 @@ async def verify_vendor(
 async def reject_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Reject an unverified vendor — marks as invalid/duplicate."""
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
@@ -175,7 +181,7 @@ async def reject_vendor(
 async def sync_vendors_from_erp_endpoint(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Pull vendors from the connected ERP and sync to local database."""

@@ -8,7 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    get_current_user,
+    get_org_id,
+    require_roles,
+)
 from app.models.organization import Organization
 from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.user import User
@@ -75,7 +81,7 @@ async def list_purchase_orders(
 async def sync_pos_from_erp(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Pull purchase orders from the connected ERP."""

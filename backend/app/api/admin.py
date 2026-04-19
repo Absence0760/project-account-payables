@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import ROLE_ADMIN, get_org_id, require_roles
 from app.database import get_control_db
 from app.models.user import Role, User, UserRole
 from app.schemas.admin import (
@@ -47,7 +47,7 @@ def _user_to_response(user: User) -> AdminUserResponse:
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
     db: AsyncSession = Depends(get_control_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(
@@ -66,7 +66,7 @@ async def list_users(
 @router.get("/roles", response_model=list[RoleResponse])
 async def list_roles(
     db: AsyncSession = Depends(get_control_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
 ):
     result = await db.execute(select(Role).order_by(Role.name))
     roles = result.scalars().all()
@@ -77,7 +77,7 @@ async def list_roles(
 async def create_user(
     body: CreateUserRequest,
     db: AsyncSession = Depends(get_control_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     # Check email uniqueness
@@ -119,7 +119,7 @@ async def update_user(
     user_id: uuid.UUID,
     body: UpdateUserRequest,
     db: AsyncSession = Depends(get_control_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(
@@ -167,7 +167,7 @@ async def update_user(
 async def delete_user(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_control_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(

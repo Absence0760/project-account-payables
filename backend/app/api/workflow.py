@@ -7,7 +7,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    get_current_user,
+    get_org_id,
+    require_roles,
+)
 from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceStatus
 from app.models.user import User
@@ -45,7 +52,7 @@ router = APIRouter(prefix="/invoices", tags=["workflow"])
 async def upload_invoice(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Upload an invoice file, create the invoice, and optionally trigger extraction."""
@@ -135,7 +142,7 @@ async def upload_invoice(
 async def trigger_extraction(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Manually trigger or re-trigger extraction on an invoice.
@@ -185,7 +192,7 @@ async def trigger_extraction(
 async def reset_extraction(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Reset a stuck extraction — moves invoice from 'pending' back to 'new'."""
@@ -224,7 +231,7 @@ async def assign_reviewer(
     body: AssignReviewerRequest,
     db: AsyncSession = Depends(get_tenant_db),
     control_db: AsyncSession = Depends(get_control_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
     if invoice.status != InvoiceStatus.ready_for_review:
@@ -253,7 +260,7 @@ async def approve_invoice(
     invoice_id: uuid.UUID,
     body: ApproveRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
     corrections = body.model_dump(exclude_unset=True) if body else None
@@ -273,7 +280,7 @@ async def reject_invoice(
     invoice_id: uuid.UUID,
     body: RejectRequest,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
 
@@ -291,7 +298,7 @@ async def reject_invoice(
 async def resubmit_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
 
@@ -310,7 +317,7 @@ async def resubmit_invoice(
 async def send_to_erp(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
@@ -339,7 +346,7 @@ async def send_to_erp(
 async def retry_erp(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
@@ -364,7 +371,7 @@ async def retry_erp(
 async def complete_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Advance an invoice to the next logical step based on the workflow.
@@ -530,7 +537,7 @@ async def export_invoice(
 
 
 @router.get("/file/{file_key:path}")
-async def get_invoice_file(file_key: str):
+async def get_invoice_file(file_key: str, user: User = Depends(get_current_user)):
     """Proxy the file from S3 to the browser."""
     from fastapi.responses import Response
 
@@ -549,6 +556,7 @@ async def get_invoice_file(file_key: str):
 async def get_workflow(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
 ):
     result = await db.execute(
         select(WorkflowInstance).where(WorkflowInstance.invoice_id == invoice_id)
@@ -602,6 +610,7 @@ async def get_audit_log(
 async def get_extraction_results(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
 ):
     result = await db.execute(
         select(InvoiceExtractionResult)

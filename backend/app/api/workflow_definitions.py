@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import ROLE_ADMIN, get_current_user, get_org_id, require_roles
 from app.models.user import User
 from app.models.workflow import WorkflowDefinition
 from app.schemas.workflow import (
@@ -79,7 +79,7 @@ async def list_workflows(
 async def create_workflow(
     body: WorkflowDefinitionCreate,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     steps_config = {"steps": [s.model_dump() for s in body.steps]}
@@ -122,7 +122,7 @@ async def update_workflow(
     workflow_id: uuid.UUID,
     body: WorkflowDefinitionUpdate,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(
@@ -172,7 +172,7 @@ async def update_workflow(
 async def delete_workflow(
     workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(

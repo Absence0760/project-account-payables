@@ -34,7 +34,7 @@ JWT-based authentication using `python-jose` for token handling and `passlib` wi
 
 ### Protected routes
 
-All endpoints except `/api/auth/login` and `/api/health` require a valid Bearer token. Authentication is enforced via FastAPI dependencies in `app/api/deps.py`.
+All endpoints except the explicit allowlist (login flow, OIDC handshake, signup, webhooks, SCIM, health) require a valid Bearer token AND the right role. Authentication and role checks are enforced via FastAPI dependencies in `app/api/deps.py` (`get_current_user`, `require_roles`). See **Role-based access control** below for the full permission matrix.
 
 ## Token Revocation (Blocklist)
 
@@ -333,3 +333,79 @@ Anything else returns a `400 invalidFilter` with a clear message so the IdP surf
 ### Not in this pass
 
 - **`/Groups` endpoints** — group sync requires mapping IdP groups to our `Role` rows. Design work pending (how is "admin group members get admin role" expressed? Per-tenant config or convention?). Tracked in the roadmap.
+
+---
+
+## Role-based access control (RBAC)
+
+Every authenticated endpoint declares the roles it accepts via a single dependency, `require_roles(*roles)` in `app/api/deps.py`. The check is **any-of**: a user passes if they hold at least one of the listed roles. This mirrors the frontend's `hasAnyRole()` gate so backend and UI permissions can't drift apart.
+
+```python
+from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, require_roles
+
+@router.post("/invoices/{invoice_id}/approve")
+async def approve_invoice(
+    invoice_id: uuid.UUID,
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    ...
+```
+
+Failed checks return `403 Forbidden` with `{"detail": "Your role does not permit this action."}` and emit a `WARNING`-level log (`RBAC denied: user=… roles=… required_any=… METHOD PATH`) so monitoring can pick up brute-force probing.
+
+### Permission matrix
+
+The matrix below is the source of truth — it mirrors `frontend/src/lib/components/Sidebar.svelte` (page visibility) and the `!isClerkOnly` / `isManager` / `isCfo` checks in invoice + workflow components. Roles are non-exclusive: a user may hold any combination.
+
+| Endpoint area | Read | Write |
+|---|---|---|
+| `/admin/*` (user CRUD, role list) | admin | admin |
+| `/organization` settings + tests + SCIM token | admin | admin |
+| `/workflows` (definition CUD) | any-authenticated | admin |
+| `/exceptions` (list + resolve) | admin · ap_manager | admin · ap_manager |
+| `/vendors/{id}/verify`, `/reject`, `/sync-erp` | — | admin · ap_manager |
+| `/vendors` create / patch / delete | — | admin · ap_manager |
+| `/gl-accounts` create / sync-erp | any-authenticated (read) | admin · ap_manager |
+| `/purchase-orders` sync-erp | any-authenticated (read) | admin · ap_manager |
+| `/invoices/{id}/assign` (route to a reviewer) | — | admin · ap_manager |
+| `/invoices` mutate (create / patch / delete / line-items / bulk) | any-authenticated (read) | admin · ap_manager · cfo |
+| `/invoices/{id}/upload`, `/extract`, `/reset-extraction` | — | admin · ap_manager · cfo |
+| `/invoices/{id}/approve`, `/reject`, `/resubmit`, `/complete`, `/send-to-erp`, `/retry-erp` | — | admin · ap_manager · cfo |
+| `/payments/*` (incl. runs create + execute) | admin · ap_manager · cfo | admin · ap_manager · cfo |
+| `/cards` (list / dashboard / generate / cancel / details / rebates) | admin · ap_manager · cfo | admin · ap_manager · cfo |
+| `/dashboard` | any-authenticated | — |
+| `/auth/me`, `/auth/mfa/*` (per-user MFA mgmt), `/auth/change-password` | any-authenticated | any-authenticated |
+
+### "Read open to all authenticated" surfaces
+
+Invoices, workflow definitions list/active-steps, GL accounts list, and POs list are readable by every authenticated user (including pure clerks). Clerks can see the work; they just can't take action on it. This matches the frontend, where the invoice list page is visible to clerks but write controls are hidden.
+
+### Endpoints that intentionally do **not** require a JWT
+
+These are explicitly listed in `tests/test_rbac.py::NO_AUTH_REQUIRED` and use other auth mechanisms or are public:
+
+- `POST /auth/login`, `POST /auth/mfa/challenge/email`, `POST /auth/mfa/verify` — pre-login flow, gated by password + challenge token.
+- `POST /auth/logout` — uses Bearer header but reads it directly, not via `Depends`.
+- `GET /auth/sso/*` and `POST /auth/sso/callback` — OIDC handshake.
+- `POST /signup/*`, `GET /signup/slug-check` — public signup.
+- `POST /cards/webhook/{provider}`, `POST /erp/webhook/{erp_type}` — provider-signed webhooks.
+- `GET /scim/v2/*`, `POST /scim/v2/Users`, etc. — per-tenant SCIM bearer token validated inside the handler.
+
+### Coverage gate
+
+`tests/test_rbac.py::test_every_endpoint_requires_auth_or_is_explicitly_public` walks every router at import time. If a new endpoint is added without an auth dependency and is not on the `NO_AUTH_REQUIRED` allowlist, the test fails. This is the *one* test that has to fail noisily in CI when someone forgets RBAC — the kind of mistake that put us in the "any authenticated user can hit any endpoint" hole that this work fixed.
+
+A companion test catches the inverse: if `NO_AUTH_REQUIRED` references an endpoint that no longer exists, it fails so the allowlist can't silently rot.
+
+### Adding a new endpoint
+
+1. Pick the right role tuple from the matrix above (or invent one and update this doc).
+2. Add `user: User = Depends(require_roles(ROLE_X, ...))` to the endpoint signature.
+3. If the endpoint genuinely cannot take a JWT (webhook, login flow), add it to `NO_AUTH_REQUIRED` in `tests/test_rbac.py` with a one-line comment explaining why.
+4. Run `pytest tests/test_rbac.py` — the coverage gate will tell you if anything's missing.
+
+### Not in this pass
+
+- **Segregation of duties (SoD)** — users currently can approve invoices they themselves created. The classic AP SoD invariant ("approver != creator") is a sensible follow-up but not part of basic RBAC. Tracked in the roadmap.
+- **Per-org custom roles** — the four roles (admin, ap_manager, ap_clerk, cfo) are hard-coded. Custom-role configuration would need a tenant-scoped permission table and policy engine.
+- **Audit log of denied requests** — denials are logged via Python `logging.warning` for now, not persisted to the `audit_log` table. If oncall wants to query historical denials, surface them via centralized log shipping (planned under SOC 2 readiness).

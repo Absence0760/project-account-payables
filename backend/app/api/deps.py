@@ -1,9 +1,10 @@
 """Shared FastAPI dependencies for auth, tenant context, and DB sessions."""
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +15,19 @@ from app.database import get_control_db
 from app.models.user import User
 from app.redis import is_token_blocked
 
+logger = logging.getLogger(__name__)
+
 ALGORITHM = "HS256"
+
+# Role constants — mirror the four roles seeded into `roles` table by
+# `scripts/seed.py`. Centralised here so a typo doesn't silently lock
+# everyone out (`require_roles("admni")` would be a 403 for everyone).
+ROLE_ADMIN = "admin"
+ROLE_AP_MANAGER = "ap_manager"
+ROLE_AP_CLERK = "ap_clerk"
+ROLE_CFO = "cfo"
+
+ALL_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)
 
 
 def create_access_token(user_id: uuid.UUID, org_id: uuid.UUID) -> str:
@@ -70,3 +83,58 @@ async def get_current_user(
 
 def get_org_id(user: User = Depends(get_current_user)) -> uuid.UUID:
     return user.organization_id
+
+
+def require_roles(*allowed: str):
+    """Dependency factory — restricts an endpoint to users holding ANY of the
+    given roles. 403 on miss.
+
+    Usage::
+
+        @router.post("/users")
+        async def create_user(
+            body: CreateUserRequest,
+            user: User = Depends(require_roles(ROLE_ADMIN)),
+        ):
+            ...
+
+    The check is "any-of," not "all-of." A user with multiple roles passes if
+    they hold at least one of the listed ones — matches the way the frontend
+    role gates work (`hasAnyRole`). For tighter checks, compose two
+    dependencies or call `user.roles` directly inside the handler.
+
+    Misses are logged at WARNING with the request method/path, the actor, and
+    the role mismatch. They're attack-shaped events — flooding the log on 403
+    is intentional so monitoring picks up brute-force probing.
+    """
+    if not allowed:
+        raise ValueError("require_roles() needs at least one role")
+    unknown = set(allowed) - set(ALL_ROLES)
+    if unknown:
+        # Catch typos at import time, not at request time.
+        raise ValueError(f"Unknown role(s) in require_roles: {sorted(unknown)}")
+
+    allowed_set = frozenset(allowed)
+
+    async def checker(
+        request: Request,
+        user: User = Depends(get_current_user),
+    ) -> User:
+        held = {r.name for r in user.roles}
+        if held & allowed_set:
+            return user
+        logger.warning(
+            "RBAC denied: user=%s org=%s roles=%s required_any=%s %s %s",
+            user.id,
+            user.organization_id,
+            sorted(held),
+            sorted(allowed_set),
+            request.method,
+            request.url.path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your role does not permit this action.",
+        )
+
+    return checker

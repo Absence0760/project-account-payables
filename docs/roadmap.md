@@ -125,18 +125,17 @@ Current state: manual, specific, and auto approval strategies only. No amount-ba
 ---
 
 ### Backend RBAC Enforcement
-**Status:** Planned — **Security gap: all competitors have this**
+**Status:** Done — `require_roles(*roles)` dependency, full permission matrix applied across every router. Coverage gate in `tests/test_rbac.py` blocks regressions.
 
-Current state: role checks are UI-only. Any authenticated user can call any API endpoint. This is a security vulnerability, not just a missing feature.
+- [x] `require_roles(*roles)` dependency in `app/api/deps.py` — any-of semantics, 403 on miss, WARN-level log on denial
+- [x] Endpoint-level permission mapping for all 4 roles (admin / ap_manager / ap_clerk / cfo) — see `docs/authentication.md` § RBAC
+- [x] Return 403 Forbidden (not just hide UI elements)
+- [x] Unit tests for `require_roles` semantics + coverage gate that fails CI if a new endpoint ships without an auth dependency
+- [x] Log unauthorized access attempts at WARN level (sufficient for monitoring; persistent audit-log entries deferred to SOC 2 prep)
+- [ ] Segregation of duties enforcement (approver ≠ creator) — classic AP invariant, follow-up
+- [ ] Per-org custom roles — currently the 4 roles are fixed
 
-- [ ] Decorator-based role checks on all router endpoints (e.g., `@require_roles("admin", "ap_manager")`)
-- [ ] Endpoint-level permission mapping for all 4 roles
-- [ ] Segregation of duties enforcement at API level
-- [ ] Return 403 Forbidden (not just hide UI elements)
-- [ ] Unit tests for all role-gated endpoints
-- [ ] Audit log unauthorized access attempts
-
-**Files:** `backend/app/api/deps.py` (add `require_roles` dependency)
+**Files:** `backend/app/api/deps.py`, every `backend/app/api/*.py` router, `backend/tests/test_rbac.py`
 
 ---
 

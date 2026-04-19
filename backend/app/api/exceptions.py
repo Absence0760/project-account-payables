@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, require_roles
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
 from app.models.user import User
@@ -34,7 +34,7 @@ async def list_exceptions(
     exception_type: str | None = Query(None, alias="type"),
     severity: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     query = select(APException, Invoice).outerjoin(Invoice, APException.invoice_id == Invoice.id)
 
@@ -78,7 +78,7 @@ async def list_exceptions(
 @router.get("/summary")
 async def exception_summary(
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     """Counts by status and type for the exception queue."""
     # By status
@@ -114,7 +114,7 @@ async def resolve_exception(
     exception_id: uuid.UUID,
     body: ResolveRequest,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     result = await db.execute(select(APException).where(APException.id == exception_id))
     exc = result.scalar_one_or_none()

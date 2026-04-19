@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.api.deps import get_current_user
+from app.api.deps import ROLE_ADMIN, get_current_user, require_roles
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
@@ -58,7 +58,7 @@ async def get_organization(
 async def update_organization(
     body: UpdateOrganizationRequest,
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
     db: AsyncSession = Depends(get_control_db),
 ):
     if body.name is not None:
@@ -78,7 +78,7 @@ async def update_organization(
 async def test_erp_connection(
     request: dict | None = None,
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
 ):
     """Test the ERP connection. Uses request body config if provided, otherwise saved config."""
     erp_config = request if request and request.get("type") else (org.settings or {}).get("erp")
@@ -109,7 +109,7 @@ async def test_erp_connection(
 @router.post("/sso/scim-token", response_model=SCIMTokenResponse)
 async def mint_scim_token(
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
     db: AsyncSession = Depends(get_control_db),
 ):
     """Mint a fresh SCIM bearer token for this tenant.
@@ -138,7 +138,7 @@ async def mint_scim_token(
 async def test_extraction_connection(
     request: dict | None = None,
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
 ):
     """Test the AI extraction provider connection. Uses request body config if provided."""
     config = (

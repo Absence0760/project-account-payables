@@ -197,6 +197,23 @@ Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
 - `get_current_user()` — FastAPI dependency, returns User or 401
 - Logout adds `jti` to Redis blocklist with TTL matching token expiry
 
+### RBAC (`require_roles`)
+
+Every authenticated endpoint declares the roles it accepts:
+
+```python
+from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, require_roles
+
+user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
+```
+
+- Any-of semantics: user passes if they hold at least one listed role.
+- 403 with `{"detail": "Your role does not permit this action."}` on miss.
+- Denials log at WARN level for monitoring.
+- New endpoints without an auth dependency fail `tests/test_rbac.py` — coverage gate.
+- Public endpoints (login, MFA challenge, OIDC, signup, webhooks, SCIM) live in `NO_AUTH_REQUIRED` in the same test file.
+- Full permission matrix: `../docs/authentication.md` § RBAC.
+
 ### MFA (`services/mfa.py`)
 
 - TOTP (pyotp) + email-OTP backup. Master switch `AP_MFA_ENABLED` (default `false` for local dev).

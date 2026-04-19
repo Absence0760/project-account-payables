@@ -9,7 +9,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    get_org_id,
+    require_roles,
+)
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
 from app.models.user import User
@@ -40,6 +46,7 @@ async def list_payments(
     amount_min: float | None = None,
     amount_max: float | None = None,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     query = select(Payment, Invoice).outerjoin(Invoice, Payment.invoice_id == Invoice.id)
 
@@ -112,6 +119,7 @@ async def list_payments(
 async def get_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     result = await db.execute(
         select(Payment, Invoice)
@@ -129,6 +137,7 @@ async def get_payment(
 async def create_payment(
     body: PaymentCreate,
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     # Verify invoice exists
     inv_result = await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)))
@@ -159,6 +168,7 @@ async def list_payment_runs(
     page_size: int = Query(25, ge=1, le=100),
     status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     query = select(PaymentRun)
 
@@ -204,7 +214,7 @@ class CreatePaymentRunRequest(BaseModel):
 async def create_payment_run(
     body: CreatePaymentRunRequest,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Create a payment run from selected invoices."""
@@ -261,7 +271,7 @@ async def create_payment_run(
 async def get_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     """Get a payment run with its individual payments."""
     result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
@@ -304,7 +314,7 @@ async def get_payment_run(
 async def execute_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     """Execute a draft payment run — marks all payments as processing then completed."""
     result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
@@ -358,7 +368,7 @@ async def execute_payment_run(
 @router.get("/queue")
 async def payment_queue(
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     """List approved invoices ready for payment (no completed payment yet)."""
     # Subquery: invoices that already have a completed payment
@@ -408,7 +418,7 @@ async def payment_queue(
 @router.get("/summary")
 async def payment_summary(
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     """KPIs for the payments page summary bar."""
     # Total paid (completed)

@@ -8,7 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    get_org_id,
+    require_roles,
+)
 from app.config import settings
 from app.models.invoice import Invoice
 from app.models.organization import Organization
@@ -104,7 +110,7 @@ def _card_response(
 async def list_cards(
     status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     query = select(VirtualCard, Invoice).outerjoin(Invoice, VirtualCard.invoice_id == Invoice.id)
     if status_filter:
@@ -124,7 +130,7 @@ async def list_cards(
 @router.get("/dashboard", response_model=CardDashboardResponse)
 async def card_dashboard(
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     now = datetime.now(UTC)
 
@@ -170,7 +176,7 @@ async def generate_cards(
     body: GenerateCardsRequest,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     org_cards = (org.settings or {}).get("cards", {})
@@ -242,7 +248,7 @@ async def get_card_details(
     card_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     """Retrieve full card details. Restricted to admin/manager roles. Audit-logged."""
     # Role check — only admin and ap_manager can see full card details
@@ -294,7 +300,7 @@ async def cancel_card(
     card_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     result = await db.execute(select(VirtualCard).where(VirtualCard.id == card_id))
     card = result.scalar_one_or_none()
@@ -404,7 +410,7 @@ async def card_webhook(provider: str, request: Request):
 async def list_rebates(
     period: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     query = select(CardRebate)
     if period:

@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_org_id
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    get_current_user,
+    get_org_id,
+    require_roles,
+)
 from app.models.gl_account import GLAccount
 from app.models.organization import Organization
 from app.models.user import User
@@ -54,7 +60,7 @@ async def list_gl_accounts(
 async def create_gl_account(
     body: dict,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     account = GLAccount(
@@ -77,7 +83,7 @@ async def create_gl_account(
 async def sync_gl_accounts_from_erp(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Pull chart of accounts from the connected ERP."""
