@@ -71,7 +71,7 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 
 | Prefix | Purpose |
 |--------|---------|
-| `/auth` | Login, logout, profile (JWT + Redis blocklist) |
+| `/auth` | Login, logout, profile (JWT + Redis blocklist), MFA enroll/verify/disable, MFA challenge |
 | `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
 | `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra (per-tenant bearer auth) |
 | `/admin` | User CRUD, role assignment |
@@ -153,6 +153,7 @@ Workflow definitions are snapshotted per-invoice — editing a definition does n
 | `AP_REDIS_URL` | `redis://localhost:6379` | Token blocklist |
 | `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
 | `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |
+| `AP_MFA_ENABLED` | `false` | Master MFA switch — keep `false` in local dev, flip on in deployed envs |
 
 Full list in `backend/app/config.py`.
 

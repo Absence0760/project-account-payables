@@ -353,7 +353,9 @@ No SSO = no enterprise sale. OIDC (Okta + Entra) + SCIM 2.0 user provisioning ar
 - [ ] SAML 2.0 SSO (Okta, Azure AD, OneLogin) — separate code path for regulated buyers
 - [ ] SCIM `/Groups` — needs IdP-group → Role mapping design (per-tenant config? convention?)
 - [ ] SSO-only mode — disable password login when SSO is configured (flag on `Organization.settings.sso`)
-- [ ] MFA enforcement (TOTP, WebAuthn/passkeys)
+- [x] MFA — TOTP enrollment + email-OTP backup, opt-in per user with org-level enforcement toggle (`AP_MFA_ENABLED` master switch; default off in dev)
+- [ ] MFA — WebAuthn / passkeys (TOTP shipped first; passkeys are a separate code path)
+- [ ] MFA — mobile app support (Flutter login currently expects `TokenResponse` only)
 - [ ] Session management — concurrent session limits, forced logout
 
 **Competitors:** All competitors support SSO. Coupa, SAP Concur, and Basware also support SCIM.

@@ -280,6 +280,11 @@
 				cardsExpiryDays = (cards.default_expiry_days as number) || 30;
 				cardsSandbox = (cards.sandbox as boolean) ?? true;
 			}
+			// Security (MFA enforcement)
+			const mfaCfg = (data.settings as unknown as Record<string, unknown>).mfa as
+				| Record<string, unknown>
+				| undefined;
+			mfaRequired = (mfaCfg?.required as boolean) ?? false;
 			// Extraction
 			const extraction = (data.settings as unknown as Record<string, unknown>).extraction as Record<string, unknown> | undefined;
 			if (extraction) {
@@ -300,6 +305,10 @@
 	let savingProfile = $state(false);
 	let savingDefaults = $state(false);
 	let savingErp = $state(false);
+
+	// Security
+	let mfaRequired = $state(false);
+	let savingSecurity = $state(false);
 
 	async function patchSettings(section: string, partial: Record<string, unknown>) {
 		const data = await api.patch<OrgResponse>('/api/organization', {
@@ -419,6 +428,19 @@
 			toast(err instanceof Error ? err.message : 'Save failed', 'error');
 		} finally {
 			savingCards = false;
+		}
+	}
+
+	async function saveSecurity() {
+		savingSecurity = true;
+		try {
+			await patchSettings('Security', {
+				mfa: { required: mfaRequired },
+			});
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingSecurity = false;
 		}
 	}
 
@@ -818,6 +840,26 @@
 			</section>
 
 			<section class="card">
+				<h2>Security</h2>
+				<p class="card-hint">
+					Require all users in this workspace to enable two-factor
+					authentication. Existing users without MFA will be prompted to
+					enroll on their next sign-in.
+				</p>
+
+				<label class="switch-row">
+					<input type="checkbox" bind:checked={mfaRequired} />
+					<span>Require two-factor authentication for all users</span>
+				</label>
+
+				<div class="section-footer">
+					<button class="btn-save-section" disabled={savingSecurity} onclick={saveSecurity}>
+						{savingSecurity ? 'Saving...' : 'Save'}
+					</button>
+				</div>
+			</section>
+
+			<section class="card">
 				<h2>Data Sync</h2>
 				<p class="card-hint">Pull data from your connected ERP. Requires ERP Integration to be configured above.</p>
 
@@ -1154,6 +1196,31 @@
 		text-align: center;
 		padding: 40px;
 		color: var(--text-muted);
+	}
+
+	label.switch-row {
+		flex-direction: row;
+		align-items: center;
+		gap: 10px;
+		font-size: 0.9rem;
+		color: var(--text);
+		cursor: pointer;
+	}
+
+	label.switch-row span {
+		font-size: 0.9rem;
+		font-weight: 400;
+		color: var(--text);
+		text-transform: none;
+		letter-spacing: normal;
+	}
+
+	label.switch-row input[type='checkbox'] {
+		width: 16px;
+		height: 16px;
+		accent-color: var(--accent);
+		cursor: pointer;
+		flex-shrink: 0;
 	}
 
 	@media (max-width: 600px) {

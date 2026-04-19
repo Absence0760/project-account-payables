@@ -72,6 +72,22 @@ class Settings(BaseSettings):
     # identical ones.
     duplicate_similarity_threshold: float = 0.95
 
+    # MFA (TOTP + email backup)
+    # Master switch — when false, all MFA enrollment, challenge, and enforcement
+    # is bypassed. Default is `false` so local dev "just works" without TOTP
+    # apps; flip to `true` in deployed environments.
+    mfa_enabled: bool = False
+    # Issuer label baked into TOTP provisioning URIs (what the user sees in
+    # Google Authenticator / 1Password). Customer name keeps it brand-aligned.
+    mfa_issuer: str = "Account Payables"
+    # Email-OTP code lifetime. Six minutes balances "user has time to switch
+    # from inbox back to the form" with "stolen email is short-lived."
+    mfa_email_otp_ttl_seconds: int = 360
+    # Short-lived JWT minted when password+email check out but MFA is still
+    # required. The user trades it for a real access token by completing the
+    # TOTP / email challenge. Five minutes is enough to find your phone.
+    mfa_challenge_ttl_seconds: int = 300
+
     # SSO / SCIM
     # Base URL the OIDC provider redirects back to. Must exactly match what's
     # registered with Okta / Entra. {base} is substituted from AP_PUBLIC_URL.

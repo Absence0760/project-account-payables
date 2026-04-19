@@ -20,7 +20,7 @@ JWT-based authentication using `python-jose` for token handling and `passlib` wi
 
 ### Login endpoint
 
-`POST /api/auth/login` — accepts email and password, verifies against the hashed password in the **control-plane database**, and returns a signed JWT. This endpoint uses `get_control_db` (not the tenant DB).
+`POST /api/auth/login` — accepts email and password, verifies against the hashed password in the **control-plane database**. Returns either a signed JWT (`{access_token, ...}`) or, when MFA is in play, a short-lived challenge token (`{mfa_required: true, mfa_challenge_token, methods, must_enroll}`). See the **MFA** section below for the full flow. This endpoint uses `get_control_db` (not the tenant DB).
 
 ### Logout endpoint
 
@@ -194,7 +194,96 @@ New users get `ap_clerk` role by default (least privilege). The first user ever 
 ### Not in this pass
 
 - **SAML 2.0** — tracked in Priority 7 roadmap. OIDC covers ~90% of "SSO" asks; SAML remains a separate code path for regulated industries that require it.
-- **MFA enforcement / SSO-only mode** — trivially layered on top later (flag on Organization.settings forcing `hashed_password=NULL` path).
+
+---
+
+## Multi-factor authentication (MFA)
+
+TOTP-based two-factor with optional email backup. Per-user opt-in by default; admins can flip a tenant-wide enforcement switch under **Organization → Security**.
+
+### Master switch
+
+`AP_MFA_ENABLED` (default `false`) is the platform-level gate. When false, all MFA endpoints, login challenges, and enforcement are skipped — useful for local dev where you don't want to scan a QR code every time. Flip to `true` in any deployed environment.
+
+### Factors
+
+| Factor | Identifier | Notes |
+|---|---|---|
+| **TOTP** | `totp` | RFC 6238, 30-second window, ±1 step skew tolerance. `pyotp` under the hood. Compatible with Google Authenticator, 1Password, Authy, Microsoft Authenticator. |
+| **Email OTP** | `email` | 6-digit code emailed via the configured `AP_EMAIL_PROVIDER`. Lives in Redis with a `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL (default 6 minutes). Only the SHA-256 of the code is stored — Redis dumps don't reveal codes. Single-use. |
+
+Email is offered as a backup so a lost phone doesn't lock the account out. It's also the only available factor for users under org-enforcement who haven't enrolled TOTP yet (verifying email proves inbox ownership before they're allowed to enroll).
+
+### Login flow
+
+```
+POST /api/auth/login {email, password}
+  └─ MFA off OR user not enrolled AND org doesn't require it
+        → 200 {access_token, token_type, must_change_password}
+  └─ MFA required
+        → 200 {mfa_required: true, mfa_challenge_token, methods, must_enroll}
+
+  (browser stashes mfa_challenge_token in sessionStorage, navigates to /login/mfa)
+
+POST /api/auth/mfa/challenge/email {challenge_token}    # only if user picks email
+  └─ 204 No Content (issues + emails a 6-digit code)
+
+POST /api/auth/mfa/verify {challenge_token, code, method}
+  └─ 200 {access_token, token_type, must_change_password}
+```
+
+The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`, default 5 minutes) with `typ: mfa_challenge`. That keeps the flow stateless — no DB row to garbage-collect, no Redis lookup on every check. A regular access token won't satisfy the challenge endpoint and vice versa.
+
+### Per-user enrollment
+
+```
+POST /api/auth/mfa/enroll                # mints secret + provisioning URI + QR (data URL)
+POST /api/auth/mfa/enroll/verify {code}  # confirms scan worked, flips mfa_enabled true
+POST /api/auth/mfa/disable    {password} # turns it off (re-confirms password first)
+```
+
+The QR code is returned inline as a `data:image/png;base64,...` URL so the frontend doesn't need a separate authed image endpoint. The plaintext base32 secret is also returned so users without a camera-equipped scanner can paste it manually.
+
+Disable requires password re-entry — a stolen session shouldn't be able to silently strip MFA off. If the org enforces MFA, disable is blocked outright.
+
+### Org enforcement
+
+`Organization.settings.mfa.required: bool` — toggled from **Organization → Security** (admin only). When true:
+
+- Every user without `mfa_enabled` is gated. They can complete one email-OTP login but are routed straight to `/profile` to enroll TOTP.
+- Per-user disable is blocked — if you don't want enforcement, turn off the org setting first.
+- New users (including SCIM-provisioned ones) follow the same gate.
+
+### What stays where
+
+| Data | Lives in | Why |
+|---|---|---|
+| `User.mfa_secret` (base32) | control-plane DB | Per-user, durable, written once at enrollment. |
+| `User.mfa_enabled`, `mfa_enrolled_at` | control-plane DB | Drives login-flow decisions. |
+| `Organization.settings.mfa.required` | control-plane DB (JSONB) | Org-wide policy; lives next to other settings. |
+| Email-OTP hash | Redis (`mfa:email_otp:<user_id>`) | Short-lived, single-use, no need to persist. |
+| MFA challenge token | client only (sessionStorage) | Stateless JWT — server doesn't need to remember it. |
+
+### SSO + MFA
+
+OIDC SSO sign-in does **not** trigger our MFA challenge — the IdP is the source of truth for "did this person prove a second factor." Configure MFA in Okta/Entra itself if you want it enforced for SSO users.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/auth/login` | Returns either a token or an MFA challenge. |
+| `POST` | `/api/auth/mfa/challenge/email` | Sends a 6-digit code to the user's email. |
+| `POST` | `/api/auth/mfa/verify` | Trades a challenge token + code for an access token. |
+| `POST` | `/api/auth/mfa/enroll` | Starts TOTP enrollment — returns secret + QR. |
+| `POST` | `/api/auth/mfa/enroll/verify` | Confirms enrollment with a valid code. |
+| `POST` | `/api/auth/mfa/disable` | Turns MFA off (requires password). |
+
+### Not in this pass
+
+- **WebAuthn / passkeys** — tracked in roadmap. TOTP covers the bulk of "we need MFA" asks; WebAuthn is a separate, more involved code path.
+- **Backup codes (static)** — email-OTP fills the same recovery role and doesn't require the user to safely store anything.
+- **Mobile MFA** — the Flutter app currently expects `TokenResponse` from `/login` and doesn't handle `MFAChallengeResponse`. Mobile users can sign in with `AP_MFA_ENABLED=false`. Mobile MFA is on the roadmap.
 
 ---
 

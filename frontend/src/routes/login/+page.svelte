@@ -53,7 +53,15 @@
 		error = '';
 		loading = true;
 		try {
-			await auth.login(email, password);
+			const result = await auth.login(email, password);
+			if (result.kind === 'mfa') {
+				// Stash the challenge in sessionStorage so the verify page can
+				// pick it up. sessionStorage clears on tab close — won't outlive
+				// the login attempt.
+				sessionStorage.setItem('mfa_challenge', JSON.stringify(result.challenge));
+				goto('/login/mfa');
+				return;
+			}
 			goto('/');
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Login failed';

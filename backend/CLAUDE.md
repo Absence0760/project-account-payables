@@ -197,6 +197,15 @@ Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
 - `get_current_user()` — FastAPI dependency, returns User or 401
 - Logout adds `jti` to Redis blocklist with TTL matching token expiry
 
+### MFA (`services/mfa.py`)
+
+- TOTP (pyotp) + email-OTP backup. Master switch `AP_MFA_ENABLED` (default `false` for local dev).
+- Per-user secret on `User.mfa_secret`; org-wide enforcement via `Organization.settings.mfa.required`.
+- Login returns either `TokenResponse` or `MFAChallengeResponse`. Challenge token is a short-lived JWT with `typ: mfa_challenge` — verified at `POST /api/auth/mfa/verify`.
+- Email-OTP hashes live in Redis (`mfa:email_otp:<user_id>`), short TTL, single-use.
+- SSO sign-in skips our MFA challenge — IdPs handle their own MFA.
+- Full reference: `../docs/authentication.md` § MFA.
+
 ## Organization settings (JSONB)
 
 Stored in `Organization.settings`:
@@ -206,7 +215,8 @@ Stored in `Organization.settings`:
   "invoice_defaults": { "currency", "payment_terms", "number_prefix", "default_gl_account", "default_cost_center" },
   "erp": { "type", "integration_method", "credentials": { ... } },
   "extraction": { "program_type": "platform"|"byok", "provider", "api_key", "model" },
-  "cards": { "program_type": "platform"|"byok", "provider", ... }
+  "cards": { "program_type": "platform"|"byok", "provider", ... },
+  "mfa": { "required": true|false }
 }
 ```
 

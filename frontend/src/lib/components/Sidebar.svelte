@@ -184,6 +184,9 @@
 						<div class="profile-email">{auth.user?.email ?? '—'}</div>
 					</div>
 					<button class="profile-action" onclick={openEditProfile}>Edit Profile</button>
+					<a class="profile-action" href="/profile" onclick={() => (showProfile = false)}>
+						Security & Two-factor
+					</a>
 					<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
 				{/if}
 			</div>
