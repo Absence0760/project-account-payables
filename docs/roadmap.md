@@ -25,13 +25,33 @@ Feature backlog for the AP automation platform, ordered by impact.
 - [x] Platform/BYOK dual model — platform keys in env vars, customer keys in org settings
 - [x] Extraction config in organization settings UI
 - [x] Usage tracking (ExtractionUsage model) for billing
-- [ ] Support multi-page PDFs
-- [ ] Handle scanned/rotated/low-quality images
-- [ ] Auto-approve extraction above configurable threshold
-- [ ] Custom chart of accounts in extraction prompt
-- [ ] Learning from corrections
+- [ ] Support multi-page PDFs — PyMuPDF rasterize each page, merge line-items, keep highest-confidence header fields
+- [ ] Handle scanned/rotated/low-quality images — auto-deskew via PyMuPDF OSD before extraction
+- [ ] Auto-approve extraction above configurable threshold — `auto_approve_threshold` on org settings; transition directly to `approved` when `overall_confidence >= threshold`
+- [ ] Custom chart of accounts in extraction prompt — load the org's active `GLAccount` rows and inject as allowed values into the Claude Vision prompt; post-validate `suggested_gl_account`
+- [x] Learning from corrections — per-vendor correction cache (see below)
+- [ ] RAG-based extraction priors (see below)
 
-**Files:** `backend/app/services/extraction_adapters/`, `backend/app/services/extraction.py`
+**Files:** `backend/app/services/extraction_adapters/`, `backend/app/services/extraction.py`, `backend/app/services/vendor_priors.py`
+
+#### Learning from corrections — per-vendor cache (shipped)
+
+When a reviewer corrects extracted fields during approval, the corrected values are stored keyed by `(vendor_id, field_name)` in the `vendor_extraction_priors` tenant table. On the next extraction for the same vendor, low-confidence values for cached fields are overlaid with the stored values. Only "vendor-consistent" fields are cached (currency, tax_rate, payment_terms, payment_method, vendor_address, vendor_tax_id, remit_to_address, gl_account, cost_center) — never per-invoice fields like amount or invoice_number.
+
+This is deterministic and requires no ML infrastructure. It handles the 80% case ("same vendor's invoices follow the same pattern") with zero cold-start cost.
+
+#### RAG with pgvector (planned)
+
+For semantic similarity across templates/layouts (beyond exact vendor match), add a vector-retrieval layer:
+
+1. Embed each invoice's PyMuPDF text layer with `text-embedding-3-small` (1536-d) at correction time.
+2. Store `(embedding, corrected_fields)` in a `invoice_embeddings` table backed by the pgvector extension.
+3. At extraction time, embed the incoming invoice and query top-3 nearest neighbors (cosine similarity).
+4. Inject those (image, corrected JSON) pairs into the Claude Vision prompt as few-shot examples.
+
+Benefits compound with volume (50-100 invoices inflection). Per-tenant by default; cross-tenant opt-in for broader learning. Adds pgvector + embedding API costs (~$0.02/1M tokens — negligible). Cold-start problem: first invoices in a tenant see no benefit.
+
+**Status:** design only — implement once there's real extraction volume to measure against.
 
 ---
 

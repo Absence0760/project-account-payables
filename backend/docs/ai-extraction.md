@@ -245,4 +245,55 @@ backend/app/models/usage.py              # ExtractionUsage model for billing
 | Usage billing dashboard | Planned |
 | Custom chart of accounts in prompt | Planned |
 | Multi-page PDF support | Planned |
-| Learning from corrections | Planned |
+| Learning from corrections — per-vendor cache | **Done** |
+| Learning from corrections — RAG with pgvector | Planned |
+
+---
+
+## Learning from corrections — per-vendor cache
+
+When reviewers fix extracted fields during approval, those corrections are stored against the matched vendor and reused on the next extraction. Deterministic, no ML, no cold-start cost — it handles the "same vendor's invoices follow the same template" case with a small tenant-scoped table.
+
+### Data model
+
+Tenant-scoped table `vendor_extraction_priors` with one row per `(vendor_id, field_name)`:
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | UUID | PK |
+| `vendor_id` | UUID FK → vendors | Owner |
+| `field_name` | VARCHAR(60) | e.g. `currency`, `payment_terms` |
+| `value` | TEXT | Most-recent corrected value |
+| `correction_count` | INT | Times this field has been corrected for this vendor |
+| `last_applied_at` | TIMESTAMPTZ | Bumped each time a future extraction uses it |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Audit |
+
+Unique on `(vendor_id, field_name)`. Model at `app/models/vendor_priors.py`.
+
+### Cacheable fields (whitelist)
+
+Only fields that are *vendor-consistent* are cached — fields that vary per-invoice are never stored:
+
+```python
+CACHEABLE_FIELDS = {
+    "currency", "tax_rate", "payment_terms", "payment_method",
+    "vendor_address", "vendor_tax_id", "remit_to_address",
+    "gl_account", "cost_center",
+}
+```
+
+Never cached: `invoice_number`, `amount`, `subtotal`, `tax_amount`, `discount_amount`, `shipping_amount`, `invoice_date`, `due_date`, `po_number`, `reference_number`, `description`, `line_items`.
+
+### Write path — record on correction
+
+`services.review.approve_invoice` accepts `corrections: dict | None`. Before committing, `services.vendor_priors.record_corrections` upserts each whitelisted field into `vendor_extraction_priors` and increments `correction_count`.
+
+### Read path — apply on extraction
+
+After `services.extraction.run_extraction` runs the adapter and `match_and_link_vendor` links the invoice to a known vendor, `services.vendor_priors.apply_priors_to_invoice` overlays cached values on *low-confidence* extracted fields only (threshold: 0.8 by default). The extraction adapter still runs on the raw file — priors are a post-extraction correction, not a prompt hint.
+
+This keeps the adapter contract simple and avoids the chicken-and-egg of "need vendor to fetch priors, but priors live in prompt." The tradeoff: the AI doesn't see priors as hints, so it can't reconcile a contradictory invoice against them. For the vendor-template-consistency use case that's fine.
+
+### Cold-start / small-tenant behavior
+
+First invoice from a vendor: no priors exist, no overlay, identical behavior to before. After one correction, that field is cached for the vendor from then on.

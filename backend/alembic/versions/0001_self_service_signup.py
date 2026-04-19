@@ -10,9 +10,15 @@ scripts/create_tenant.py. To stay compatible with existing dev databases, the
 operations in this migration use IF NOT EXISTS so running it against a DB
 that already has the columns/tables is a no-op.
 
-Applies ONLY to the control plane DB (account_payables). Tenant DBs are
-unaffected — the two new objects live alongside users/orgs/roles.
+Control-plane-only migration. Both the `users` table and the new
+`email_verifications` table live in the control plane — tenant DBs hold
+invoices, vendors, etc., but not users. When `scripts/migrate_all_tenants.py`
+runs this migration against each tenant DB, we detect the absence of the
+`users` table and skip, so alembic records the revision as applied without
+trying to ALTER a table that doesn't exist.
 """
+
+from sqlalchemy import text
 
 from alembic import op
 
@@ -22,7 +28,22 @@ branch_labels = None
 depends_on = None
 
 
+def _is_control_db() -> bool:
+    """Probe for the `users` table — present in control plane only."""
+    bind = op.get_bind()
+    result = bind.execute(
+        text(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'users'"
+        )
+    ).scalar()
+    return result is not None
+
+
 def upgrade() -> None:
+    if not _is_control_db():
+        return
+
     op.execute(
         """
         ALTER TABLE users
@@ -57,5 +78,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _is_control_db():
+        return
     op.execute("DROP TABLE IF EXISTS email_verifications")
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS must_change_password")

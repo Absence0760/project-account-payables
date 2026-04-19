@@ -7,6 +7,7 @@ from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, Purchas
 from app.models.signup import EmailVerification
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
+from app.models.vendor_priors import VendorExtractionPrior
 from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, WorkflowStep
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "PaymentSchedule",
     "Payment",
     "Vendor",
+    "VendorExtractionPrior",
     "APException",
     "EmailVerification",
 ]

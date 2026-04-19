@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
+from app.services.vendor_priors import record_corrections
 from app.services.workflow_engine import (
     advance_workflow,
     complete_current_step,
@@ -31,6 +32,10 @@ async def approve_invoice(
             if value is not None:
                 attr = field_map.get(field, field)
                 setattr(invoice, attr, value)
+
+        # Store vendor-consistent corrections in the correction cache so
+        # future extractions from the same vendor pick up the right values.
+        await record_corrections(db, invoice, corrections)
 
     invoice.approval_date = date.today()
     invoice.approved_by = actor_name

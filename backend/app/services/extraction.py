@@ -140,6 +140,15 @@ async def run_extraction(
             invoice.organization_id,
         )
 
+        # Per-vendor correction cache: overlay cached priors (currency, tax
+        # rate, payment terms, etc.) onto low-confidence extracted fields
+        # for this vendor. No-op if the vendor is new or has no priors yet.
+        from app.services.vendor_priors import apply_priors_to_invoice
+
+        applied_priors = await apply_priors_to_invoice(db, invoice, result)
+        if applied_priors:
+            print(f"[extraction] Applied vendor priors: {applied_priors}")
+
         # Save extraction result
         extraction_result = InvoiceExtractionResult(
             invoice_id=invoice.id,
