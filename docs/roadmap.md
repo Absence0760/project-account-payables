@@ -29,8 +29,10 @@ Feature backlog for the AP automation platform, ordered by impact.
 - [ ] Handle scanned/rotated/low-quality images — auto-deskew via PyMuPDF OSD before extraction
 - [ ] Auto-approve extraction above configurable threshold — `auto_approve_threshold` on org settings; transition directly to `approved` when `overall_confidence >= threshold`
 - [ ] Custom chart of accounts in extraction prompt — load the org's active `GLAccount` rows and inject as allowed values into the Claude Vision prompt; post-validate `suggested_gl_account`
+- [ ] Extraction self-correction pass — after the primary extraction, a cheap secondary LLM call verifies invariants (`subtotal + tax + shipping ≈ amount`, `due_date >= invoice_date`, `sum(line_items.total) ≈ amount`). Flag inconsistencies with per-field confidence penalty or trigger a re-extract. Measurable accuracy lift at negligible cost.
 - [x] Learning from corrections — per-vendor correction cache (see below)
 - [x] RAG-based extraction priors — pgvector + few-shot retrieval (see below)
+- [x] Semantic duplicate detection — near-duplicate catch via cosine similarity on the same `invoice_embeddings` store. Threshold `AP_DUPLICATE_SIMILARITY_THRESHOLD` (default 0.95, tighter than RAG retrieval). See `backend/docs/ai-extraction.md` § Duplicate detection.
 
 **Files:** `backend/app/services/extraction_adapters/`, `backend/app/services/extraction.py`, `backend/app/services/vendor_priors.py`
 
@@ -74,10 +76,11 @@ Conflict resolution: the per-vendor cache (see above) runs AFTER the AI output a
 - [x] AI suggests GL code + cost center during extraction
 - [x] Confidence score per suggestion
 - [x] Auto-apply above 0.7 threshold
-- [ ] Custom chart of accounts per org in the prompt
-- [ ] Learn from corrections — improve over time
-- [ ] Bulk re-code capability
-- [ ] GL code validation against chart of accounts
+- [x] Learn from corrections — reviewer corrections to `gl_account` / `cost_center` feed the per-vendor correction cache (see AI extraction section). Future extractions for the same vendor overlay the cached code on low-confidence suggestions.
+- [ ] Custom chart of accounts per org in the prompt — inject the org's active `GLAccount` rows as allowed values so the AI can't invent codes.
+- [ ] RAG-driven GL coding — at extraction time, retrieve the nearest-neighbor approved invoice (via the existing `invoice_embeddings`) and seed the prompt with its `gl_account`. Handles new vendors whose layout resembles a known one.
+- [ ] Bulk re-code capability — admin tool to re-run GL suggestion across a date range / vendor set.
+- [ ] GL code validation against chart of accounts — post-extraction check that `suggested_gl_account` is a live code for the org.
 
 ---
 
@@ -138,12 +141,14 @@ Current state: role checks are UI-only. Any authenticated user can call any API 
 ---
 
 ### Enhanced Fraud Detection
-**Status:** Done (basic)
+**Status:** Done (basic) + semantic duplicate detection shipped
 
-Current: duplicate check, round amounts, future dates, past due. Needs:
+Current: exact-match duplicate check (`vendor_name + invoice_number`), semantic duplicate via embeddings, round amounts, future dates, past due, unverified vendor. Needs:
 
-- [ ] Vendor bank account change detection (flag recent changes)
-- [ ] Invoice amount anomaly detection (vs. vendor history)
+- [x] Semantic duplicate detection — cosine similarity on `invoice_embeddings` catches near-duplicates the exact-match rule misses. See `backend/docs/ai-extraction.md` § Duplicate detection.
+- [ ] Vendor bank account change detection (flag recent changes to `remit_to_address` / bank info)
+- [ ] LLM-based anomaly detection — feed the invoice + vendor history (last N approved invoices) to an LLM with a "is this in-pattern for this vendor?" prompt. Catches what rules can't: first-time payment method, unusual remit-to, amount 5σ from vendor mean, suspicious invoice date timing. Gated by org setting; cost is one LLM call per incoming invoice.
+- [ ] Rule-based invoice amount anomaly detection (vs. vendor history) — simpler statistical fallback if LLM isn't configured
 - [ ] Rush payment pattern detection
 - [ ] New vendor + large amount flag
 - [ ] Invoice from personal email domain flag
@@ -437,6 +442,35 @@ Auto-populate and validate invoice fields using historical data from the same su
 - [ ] Suggest vendor consolidation — identify duplicate/similar vendors
 - [ ] Enrich vendor data from external sources (D&B, Clearbit)
 - [ ] Price variance detection — same item, different price across invoices
+
+---
+
+### Conversational AP Assistant
+**Status:** Planned — **Differentiator for CFO / AP Manager persona**
+
+Chat sidebar over the tenant's data. Replaces ad-hoc SQL and spreadsheet exports for common operational questions.
+
+- [ ] Tool-calling LLM with a fixed toolset: `list_invoices(filters)`, `get_vendor_spend(period)`, `list_pending_approvals(assignee)`, `get_payment_forecast(horizon)`, `find_invoices_by_text(query)` — no raw SQL exposure, each tool is a typed endpoint.
+- [ ] Tenant-scoped context — conversation history per user, org-level cap on tokens/cost.
+- [ ] Streaming responses via server-sent events; charts rendered from structured tool output.
+- [ ] Example prompts built into the empty state: *"which approvals have I been sitting on > 5 days?"*, *"which vendors are we paying the most this quarter?"*, *"show me invoices with PO mismatches over $10k"*.
+- [ ] Cost controls — token budget per org per month, clear usage meter in the UI.
+- [ ] Audit trail — log every tool call for compliance / debugging.
+
+Highest-leverage "sticky feature" work once the product has real usage. Cold-start is fine because it's retrieval over existing data, not learned patterns.
+
+---
+
+### Audit Log Summarization
+**Status:** Planned
+
+One-paragraph natural-language summary at the top of the invoice modal, generated from the audit log + extraction metadata. Dramatically improves the "catching up on an invoice" UX — reviewers don't have to parse a 15-row timeline.
+
+- [ ] Cached summary field on `invoices.meta` (regenerate on audit log mutation)
+- [ ] LLM call invoked lazily on first open after audit log changes
+- [ ] Handles all status transitions, corrections, exception resolutions, ERP sync events
+- [ ] Shows confidence context: *"auto-extracted at 95% confidence with RAG priors applied"*
+- [ ] Small feature but high-visibility — pairs well with the invoice-list priors chips
 
 ---
 

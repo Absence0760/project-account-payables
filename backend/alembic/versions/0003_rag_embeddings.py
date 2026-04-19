@@ -12,8 +12,9 @@ it's a no-op on the control plane DB.
 The embedding dimension (1536) must match AP_EMBEDDING_DIMENSIONS.
 """
 
-from alembic import op
 from sqlalchemy import text
+
+from alembic import op
 
 revision = "0003_rag"
 down_revision = "0002_vendor_priors"
