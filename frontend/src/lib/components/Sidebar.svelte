@@ -2,49 +2,9 @@
 	import { page } from '$app/state';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
 
 	let collapsed = $derived(sidebar.collapsed);
 	let showProfile = $state(false);
-	let editingProfile = $state(false);
-	let profileName = $state('');
-	let currentPassword = $state('');
-	let newPassword = $state('');
-	let profileSaving = $state(false);
-
-	function openEditProfile() {
-		profileName = auth.user?.full_name ?? '';
-		currentPassword = '';
-		newPassword = '';
-		editingProfile = true;
-	}
-
-	async function saveProfile() {
-		profileSaving = true;
-		try {
-			const changes: Record<string, string> = {};
-			if (profileName.trim() && profileName !== auth.user?.full_name) {
-				changes.full_name = profileName.trim();
-			}
-			if (newPassword.trim()) {
-				changes.password = newPassword;
-				changes.current_password = currentPassword;
-			}
-			if (Object.keys(changes).length === 0) {
-				editingProfile = false;
-				return;
-			}
-			await api.patch('/api/auth/me', changes);
-			await auth.fetchUser();
-			toast('Profile updated', 'success');
-			editingProfile = false;
-		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to update profile', 'error');
-		} finally {
-			profileSaving = false;
-		}
-	}
 
 	interface NavItem {
 		label: string;
@@ -157,38 +117,14 @@
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div class="profile-backdrop" onclick={() => (showProfile = false)} onkeydown={() => {}}></div>
 			<div class="profile-popover">
-				{#if editingProfile}
-					<form class="profile-edit-form" onsubmit={(e) => { e.preventDefault(); saveProfile(); }}>
-						<label>
-							<span class="field-label">Name</span>
-							<input type="text" bind:value={profileName} class="profile-input" />
-						</label>
-						<label>
-							<span class="field-label">Current Password</span>
-							<input type="password" bind:value={currentPassword} class="profile-input" placeholder="Required to change password" />
-						</label>
-						<label>
-							<span class="field-label">New Password</span>
-							<input type="password" bind:value={newPassword} class="profile-input" minlength="6" placeholder="Leave blank to keep current" />
-						</label>
-						<div class="profile-edit-actions">
-							<button type="button" class="profile-edit-cancel" onclick={() => (editingProfile = false)}>Cancel</button>
-							<button type="submit" class="profile-edit-save" disabled={profileSaving}>
-								{profileSaving ? 'Saving...' : 'Save'}
-							</button>
-						</div>
-					</form>
-				{:else}
-					<div class="profile-info">
-						<div class="profile-name">{auth.user?.full_name ?? '—'}</div>
-						<div class="profile-email">{auth.user?.email ?? '—'}</div>
-					</div>
-					<button class="profile-action" onclick={openEditProfile}>Edit Profile</button>
-					<a class="profile-action" href="/profile" onclick={() => (showProfile = false)}>
-						Security & Two-factor
-					</a>
-					<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
-				{/if}
+				<div class="profile-info">
+					<div class="profile-name">{auth.user?.full_name ?? '—'}</div>
+					<div class="profile-email">{auth.user?.email ?? '—'}</div>
+				</div>
+				<a class="profile-action" href="/profile" onclick={() => (showProfile = false)}>
+					Profile & Security
+				</a>
+				<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
 			</div>
 		{/if}
 		<button class="profile-btn" class:collapsed title={collapsed ? 'Profile' : ''} onclick={() => (showProfile = !showProfile)}>
@@ -315,6 +251,9 @@
 		padding: 12px;
 		min-width: 200px;
 		z-index: 61;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
 	}
 
 	.profile-info {
@@ -354,6 +293,8 @@
 	}
 
 	.profile-action {
+		display: block;
+		box-sizing: border-box;
 		width: 100%;
 		padding: 7px 12px;
 		border-radius: 5px;
@@ -362,96 +303,15 @@
 		color: var(--text-muted);
 		font-size: 0.82rem;
 		font-weight: 500;
+		text-align: center;
+		text-decoration: none;
 		cursor: pointer;
 		font-family: inherit;
-		margin-bottom: 6px;
 	}
 
 	.profile-action:hover {
 		border-color: var(--accent);
 		color: var(--accent);
-	}
-
-	.profile-edit-form {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
-	.profile-edit-form label {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-
-	.field-label {
-		font-size: 0.72rem;
-		font-weight: 500;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
-	.profile-input {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 6px 8px;
-		font-size: 0.82rem;
-		color: var(--text);
-		font-family: inherit;
-		width: 100%;
-		box-sizing: border-box;
-	}
-
-	.profile-input:focus {
-		outline: none;
-		border-color: var(--accent);
-		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
-	}
-
-	.profile-edit-actions {
-		display: flex;
-		gap: 6px;
-		justify-content: flex-end;
-		padding-top: 4px;
-		border-top: 1px solid var(--border);
-	}
-
-	.profile-edit-cancel {
-		padding: 5px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.profile-edit-cancel:hover {
-		background: var(--bg);
-	}
-
-	.profile-edit-save {
-		padding: 5px 12px;
-		border-radius: 4px;
-		border: none;
-		background: var(--accent);
-		color: #fff;
-		font-size: 0.8rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.profile-edit-save:hover:not(:disabled) {
-		opacity: 0.85;
-	}
-
-	.profile-edit-save:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
 	}
 
 	.nav-group-title {

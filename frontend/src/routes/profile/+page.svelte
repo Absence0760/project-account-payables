@@ -14,6 +14,58 @@
 	let disablePassword = $state('');
 	let loading = $state(false);
 
+	// Account editing
+	let fullName = $state('');
+	let savingProfile = $state(false);
+	let currentPassword = $state('');
+	let newPassword = $state('');
+	let confirmPassword = $state('');
+	let savingPassword = $state(false);
+
+	$effect(() => {
+		// Sync local edit field when the user loads / changes
+		if (auth.user && !fullName) {
+			fullName = auth.user.full_name;
+		}
+	});
+
+	async function saveProfile() {
+		if (!fullName.trim() || fullName === auth.user?.full_name) return;
+		savingProfile = true;
+		try {
+			await api.patch('/api/auth/me', { full_name: fullName.trim() });
+			await auth.fetchUser();
+			toast('Profile updated', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to update profile', 'error');
+		} finally {
+			savingProfile = false;
+		}
+	}
+
+	async function changePassword() {
+		if (!currentPassword || !newPassword) return;
+		if (newPassword !== confirmPassword) {
+			toast('Passwords do not match', 'error');
+			return;
+		}
+		savingPassword = true;
+		try {
+			await api.patch('/api/auth/me', {
+				current_password: currentPassword,
+				password: newPassword,
+			});
+			currentPassword = '';
+			newPassword = '';
+			confirmPassword = '';
+			toast('Password updated', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to update password', 'error');
+		} finally {
+			savingPassword = false;
+		}
+	}
+
 	async function startEnroll() {
 		loading = true;
 		try {
@@ -68,14 +120,84 @@
 
 		<section class="card">
 			<h2>Account</h2>
-			<dl>
-				<dt>Name</dt>
-				<dd>{auth.user?.full_name ?? '—'}</dd>
-				<dt>Email</dt>
-				<dd>{auth.user?.email ?? '—'}</dd>
-				<dt>Roles</dt>
-				<dd>{auth.user?.roles.join(', ') || '—'}</dd>
-			</dl>
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					saveProfile();
+				}}
+			>
+				<label>
+					<span>Full name</span>
+					<input type="text" bind:value={fullName} required autocomplete="name" />
+				</label>
+				<dl class="readonly">
+					<dt>Email</dt>
+					<dd>{auth.user?.email ?? '—'}</dd>
+					<dt>Roles</dt>
+					<dd>{auth.user?.roles.join(', ') || '—'}</dd>
+				</dl>
+				<div class="actions">
+					<button
+						type="submit"
+						disabled={savingProfile || !fullName.trim() || fullName === auth.user?.full_name}
+					>
+						{savingProfile ? 'Saving...' : 'Save'}
+					</button>
+				</div>
+			</form>
+		</section>
+
+		<section class="card">
+			<h2>Password</h2>
+			<p class="hint">
+				Use a strong password unique to this account. After saving you'll stay
+				signed in on this device but other sessions remain valid until they
+				expire.
+			</p>
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					changePassword();
+				}}
+			>
+				<label>
+					<span>Current password</span>
+					<input
+						type="password"
+						bind:value={currentPassword}
+						required
+						autocomplete="current-password"
+					/>
+				</label>
+				<label>
+					<span>New password</span>
+					<input
+						type="password"
+						bind:value={newPassword}
+						required
+						minlength="6"
+						autocomplete="new-password"
+					/>
+				</label>
+				<label>
+					<span>Confirm new password</span>
+					<input
+						type="password"
+						bind:value={confirmPassword}
+						required
+						minlength="6"
+						autocomplete="new-password"
+					/>
+				</label>
+				<div class="actions">
+					<button
+						type="submit"
+						disabled={savingPassword || !currentPassword || !newPassword || newPassword !== confirmPassword}
+					>
+						{savingPassword ? 'Saving...' : 'Change password'}
+					</button>
+				</div>
+			</form>
 		</section>
 
 		<section class="card">
@@ -220,6 +342,14 @@
 		grid-template-columns: 120px 1fr;
 		gap: 8px 16px;
 		margin: 0;
+	}
+
+	dl.readonly {
+		margin-top: 4px;
+		padding: 12px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
 	}
 
 	dt {
