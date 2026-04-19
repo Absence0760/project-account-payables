@@ -72,6 +72,18 @@ class Settings(BaseSettings):
     # identical ones.
     duplicate_similarity_threshold: float = 0.95
 
+    # SSO / SCIM
+    # Base URL the OIDC provider redirects back to. Must exactly match what's
+    # registered with Okta / Entra. {base} is substituted from AP_PUBLIC_URL.
+    sso_redirect_path: str = "/login/sso-callback"
+    # Called after successful SSO to hand the browser our own JWT in a short-
+    # lived URL fragment; the frontend reads and stores it. Keep the path
+    # static so IdP configs don't need per-tenant changes.
+    sso_state_ttl_seconds: int = 600  # OIDC state / nonce expiry
+    # Hash (not reversible) of the per-tenant SCIM bearer token is what gets
+    # stored. The plaintext token is shown to the admin ONCE on generation.
+    scim_url_path: str = "/api/scim/v2"
+
     # App
     debug: bool = True
 

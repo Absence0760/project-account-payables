@@ -129,3 +129,116 @@ curl http://localhost:8000/api/auth/me \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-Tenant-Slug: acme"
 ```
+
+---
+
+## SSO (OIDC via Okta + Microsoft Entra)
+
+A single OIDC flow supports both Okta and Entra because they're both OIDC-compliant — the only per-tenant variation is the discovery URL. Config lives on `Organization.settings.sso`:
+
+```json
+{
+  "sso": {
+    "enabled": true,
+    "provider": "okta",
+    "discovery_url": "https://acme.okta.com/.well-known/openid-configuration",
+    "client_id": "...",
+    "client_secret": "...",
+    "scim_bearer_hash": "<sha256 hex>",
+    "allowed_email_domains": ["acme.com"]
+  }
+}
+```
+
+### Flow
+
+1. User clicks **Sign in with Okta/Microsoft** on `/login` (button renders only when `GET /api/auth/sso/config?slug=<tenant>` returns `enabled: true`).
+2. Browser navigates to `GET /api/auth/sso/authorize?slug=<tenant>` on the backend.
+3. Backend fetches the discovery doc (cached in Redis for 24h), mints a one-shot `state` + `nonce` into Redis (keyed to the tenant slug), and **302-redirects** to the IdP's `authorization_endpoint` with `redirect_uri` pointing to the *tenant's own subdomain* (built from `AP_TENANT_URL_TEMPLATE`).
+4. User authenticates on the IdP.
+5. IdP redirects back to `<tenant>.app.com/login/sso-callback?code=...&state=...`.
+6. Frontend callback page POSTs `{code, state}` to `/api/auth/sso/callback`.
+7. Backend:
+   - Consumes the state (single-use) and extracts the bound tenant + nonce.
+   - Exchanges the code for tokens via the IdP's `token_endpoint`.
+   - Validates the ID token against the IdP's JWKS (iss, aud, exp, nonce).
+   - Optionally enforces `allowed_email_domains`.
+   - JIT-provisions the user (match order: `(sso_provider, sso_provider_id)` → `(organization_id, email)` → new user with least-privilege `ap_clerk` role, or `admin` if it's the first user in the org).
+   - Mints our own JWT and returns `{access_token, must_change_password, tenant_slug}`.
+8. Frontend stores the JWT, fetches `/api/auth/me`, and routes to `/change-password` if flagged or `/` otherwise.
+
+### Why callback URLs are per-tenant
+
+Each customer registers their own Okta/Entra app with `redirect_uri = https://<theirtenant>.app.com/login/sso-callback`. That way the IdP redirects directly to the tenant origin and our localStorage JWT works without cross-origin hops. In dev, `AP_TENANT_URL_TEMPLATE=http://{slug}.localhost:7777` gives each tenant their own callback URL for free.
+
+### JIT user provisioning
+
+First SSO login provisions the user. Three match paths:
+
+| Match on | When it fires |
+|---|---|
+| `(sso_provider, sso_provider_id)` | Durable — survives email changes |
+| `(organization_id, email)` | First SSO login for an existing password user — links their row and sets `sso_provider_id` |
+| Create new | No match → new row with `hashed_password=NULL` (SSO-only), `must_change_password=false` |
+
+New users get `ap_clerk` role by default (least privilege). The first user ever in an org gets `admin`.
+
+### OIDC endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/auth/sso/config?slug=<s>` | Unauthenticated. Returns `{enabled, provider}`. Never leaks secrets. |
+| `GET` | `/api/auth/sso/authorize?slug=<s>` | 302 to IdP. |
+| `POST` | `/api/auth/sso/callback` | `{code, state}` → `{access_token, must_change_password, tenant_slug}`. |
+
+### Not in this pass
+
+- **SAML 2.0** — tracked in Priority 7 roadmap. OIDC covers ~90% of "SSO" asks; SAML remains a separate code path for regulated industries that require it.
+- **MFA enforcement / SSO-only mode** — trivially layered on top later (flag on Organization.settings forcing `hashed_password=NULL` path).
+
+---
+
+## SCIM 2.0 (user provisioning from Okta + Entra)
+
+Automated user lifecycle — IdP pushes create/update/deactivate events to our SCIM endpoints so admins don't hand-manage users.
+
+### Per-tenant bearer auth
+
+Each tenant has its own SCIM bearer token. When an admin generates one (via the Organization settings UI):
+
+1. Backend mints a 43-char URL-safe token.
+2. SHA-256 hashes it.
+3. Stores the **hex digest** in `Organization.settings.sso.scim_bearer_hash`.
+4. Returns the plaintext token **once** to the admin.
+5. Admin pastes it into Okta/Entra's SCIM config alongside the SCIM URL.
+
+Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it and looks for a matching `scim_bearer_hash` across all orgs to resolve the tenant. Linear scan, acceptable while tenant count is <<1000.
+
+### Endpoints (all under `/api/scim/v2`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/ServiceProviderConfig` | Discovery doc — Okta/Entra probe this first. |
+| `GET` | `/Schemas/{id}` | Minimal User schema — Entra probes this before syncing. |
+| `GET` | `/Users` | List + filter + paginate. Supports `userName eq`, `emails eq`, `externalId eq`, `active eq`. |
+| `GET` | `/Users/{id}` | Fetch one user. |
+| `POST` | `/Users` | Create. Returns 409 `uniqueness` on duplicate userName. |
+| `PATCH` | `/Users/{id}` | Partial update. Supports the ops Okta + Entra send (active toggle, userName/externalId/name replace, root-object replace). |
+| `DELETE` | `/Users/{id}` | **Soft delete** — sets `is_active=false`. Preserves audit trail. |
+
+### Filter syntax
+
+Only the filter subset Okta + Entra actually use:
+
+```
+userName eq "alice@acme.com"
+emails eq "alice@acme.com"
+externalId eq "okta-user-id"
+active eq true
+```
+
+Anything else returns a `400 invalidFilter` with a clear message so the IdP surfaces a useful error.
+
+### Not in this pass
+
+- **`/Groups` endpoints** — group sync requires mapping IdP groups to our `Role` rows. Design work pending (how is "admin group members get admin role" expressed? Per-tenant config or convention?). Tracked in the roadmap.

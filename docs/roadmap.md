@@ -342,9 +342,9 @@ Separate portal for vendors to interact with the AP system. Biggest workflow gap
 **Competitive gap: SSO is an enterprise deal-blocker**
 
 ### SSO / Enterprise Authentication
-**Status:** Planned — fields exist in User model (`sso_provider`, `sso_provider_id`) but not implemented
+**Status:** OIDC + SCIM /Users shipped · SAML + SCIM /Groups planned
 
-No SSO = no enterprise sale. Every competitor supports SAML/OIDC.
+No SSO = no enterprise sale. OIDC (Okta + Entra) + SCIM 2.0 user provisioning are live; SAML is a separate code path for regulated buyers that require it.
 
 - [ ] SAML 2.0 SSO (Okta, Azure AD, OneLogin)
 - [ ] OIDC (OpenID Connect) support

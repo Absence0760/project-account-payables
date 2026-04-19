@@ -26,7 +26,7 @@
 
 		const path = $page.url.pathname;
 
-		if (!auth.loggedIn && path !== '/login') {
+		if (!auth.loggedIn && !path.startsWith('/login')) {
 			goto('/login');
 			return;
 		}
@@ -52,7 +52,7 @@
 	<slot />
 {:else if tenant === null}
 	<Landing />
-{:else if $page.url.pathname === '/login' || $page.url.pathname === '/change-password'}
+{:else if $page.url.pathname.startsWith('/login') || $page.url.pathname === '/change-password'}
 	<slot />
 {:else if auth.loggedIn && auth.user && !auth.user.must_change_password}
 	<div class="app-shell">

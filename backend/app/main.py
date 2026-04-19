@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import (
     admin,
     auth,
+    auth_sso,
     cards,
     dashboard,
     erp_webhook,
@@ -15,6 +16,7 @@ from app.api import (
     organization,
     payments,
     purchase_orders,
+    scim,
     signup,
     vendors,
     workflow,
@@ -60,6 +62,8 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(organization.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(signup.router, prefix="/api")
+app.include_router(auth_sso.router, prefix="/api")
+app.include_router(scim.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")
 

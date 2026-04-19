@@ -1,11 +1,52 @@
 <script lang="ts">
 	import { auth } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+	import { api } from '$lib/api';
+	import { getTenantSlug } from '$lib/tenant';
+	import { PUBLIC_API_URL } from '$env/static/public';
+
+	interface SSOConfigPublic {
+		enabled: boolean;
+		provider: string | null;
+	}
 
 	let email = $state('');
 	let password = $state('');
 	let error = $state('');
 	let loading = $state(false);
+	let ssoEnabled = $state(false);
+	let ssoProviderLabel = $state<string>('');
+
+	const PROVIDER_LABELS: Record<string, string> = {
+		okta: 'Okta',
+		entra: 'Microsoft',
+		oidc: 'SSO',
+	};
+
+	onMount(async () => {
+		const slug = getTenantSlug();
+		if (!slug) return;
+		try {
+			const cfg = await api.get<SSOConfigPublic>(
+				`/api/auth/sso/config?slug=${encodeURIComponent(slug)}`
+			);
+			ssoEnabled = cfg.enabled;
+			ssoProviderLabel = PROVIDER_LABELS[cfg.provider ?? 'oidc'] ?? 'SSO';
+		} catch {
+			// Non-fatal — password login still works
+		}
+	});
+
+	function signInWithSSO() {
+		const slug = getTenantSlug();
+		if (!slug) return;
+		// 302 directly to the backend authorize endpoint — it builds the IdP
+		// URL and redirects the browser onward. Full page nav, not fetch,
+		// because we need the browser to follow the IdP's redirects.
+		const base = PUBLIC_API_URL.replace(/\/+$/, '');
+		window.location.href = `${base}/api/auth/sso/authorize?slug=${encodeURIComponent(slug)}`;
+	}
 
 	async function handleSubmit(e: Event) {
 		e.preventDefault();
@@ -43,6 +84,13 @@
 		<button type="submit" disabled={loading}>
 			{loading ? 'Signing in...' : 'Sign in'}
 		</button>
+
+		{#if ssoEnabled}
+			<div class="divider"><span>or</span></div>
+			<button type="button" class="sso-btn" onclick={signInWithSSO}>
+				Sign in with {ssoProviderLabel}
+			</button>
+		{/if}
 	</form>
 </div>
 
@@ -137,5 +185,33 @@
 	button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.divider {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		color: var(--text-muted);
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		margin: 4px 0;
+	}
+	.divider::before,
+	.divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border);
+	}
+
+	.sso-btn {
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text);
+	}
+	.sso-btn:hover:not(:disabled) {
+		border-color: var(--text-muted);
+		opacity: 1;
 	}
 </style>
