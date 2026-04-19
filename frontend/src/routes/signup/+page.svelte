@@ -4,6 +4,7 @@
 
 	interface PublicConfig {
 		hcaptcha_sitekey: string;
+		tenant_url_template: string;
 	}
 
 	interface StartResponse {
@@ -23,6 +24,10 @@
 	let adminEmail = $state('');
 	let captchaToken = $state<string | null>(null);
 	let captchaSitekey = $state<string>('');
+	// Host/port suffix shown after the slug input, derived from the backend
+	// tenant_url_template (e.g. "http://{slug}.localhost:7777" → ".localhost:7777").
+	let tenantUrlSuffix = $state<string>('.localhost:7777');
+	let tenantExampleHost = $state<string>('your-slug.localhost:7777');
 
 	let slugStatus = $state<'idle' | 'checking' | 'ok' | 'bad'>('idle');
 	let slugError = $state<string | null>(null);
@@ -38,6 +43,15 @@
 			const cfg = await api.get<PublicConfig>('/api/public-config');
 			captchaSitekey = cfg.hcaptcha_sitekey || '';
 			if (captchaSitekey) loadHCaptcha();
+			if (cfg.tenant_url_template) {
+				// Strip protocol + split on {slug} to get just the host-suffix portion.
+				const noProtocol = cfg.tenant_url_template.replace(/^https?:\/\//, '');
+				const parts = noProtocol.split('{slug}');
+				if (parts.length === 2) {
+					tenantUrlSuffix = parts[1];
+					tenantExampleHost = `your-slug${parts[1]}`;
+				}
+			}
 		} catch {
 			// Non-fatal — backend may be unreachable; form will surface errors on submit.
 		}
@@ -150,7 +164,7 @@
 						autocorrect="off"
 						spellcheck="false"
 					/>
-					<span class="slug-suffix">.localhost:7777</span>
+					<span class="slug-suffix">{tenantUrlSuffix}</span>
 				</div>
 				{#if slugStatus === 'checking'}
 					<small class="hint">Checking availability…</small>
@@ -187,7 +201,7 @@
 			</button>
 
 			<p class="footer">
-				Already have a workspace? Visit <code>your-slug.localhost:7777</code> to sign in.
+				Already have a workspace? Visit <code>{tenantExampleHost}</code> to sign in.
 			</p>
 		</form>
 	{/if}

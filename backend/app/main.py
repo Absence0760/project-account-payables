@@ -71,7 +71,9 @@ async def health():
 
 @app.get("/api/public-config")
 async def public_config():
-    """Non-secret config exposed to the frontend (e.g., captcha sitekey)."""
+    """Non-secret config exposed to the frontend (e.g., captcha sitekey,
+    tenant URL shape used by the signup form and other non-tenant pages)."""
     return {
         "hcaptcha_sitekey": settings.hcaptcha_sitekey,
+        "tenant_url_template": settings.tenant_url_template,
     }
