@@ -819,16 +819,69 @@
 						{/if}
 					</div>
 
-					{#if invoice.warnings?.filter(w => w.type !== 'missing_field').length}
+					{#if invoice.warnings?.filter(w => w.type !== 'missing_field' && w.type !== 'po_mismatch').length}
 						<div class="warnings-list">
-							{#each invoice.warnings.filter(w => w.type !== 'missing_field') as w}
+							{#each invoice.warnings.filter(w => w.type !== 'missing_field' && w.type !== 'po_mismatch') as w}
 								<div class="warning-item {w.severity}">
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 										<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-									</svg>
-									{w.message}
-								</div>
+								</svg>
+								{w.message}
+							</div>
 							{/each}
+						</div>
+					{/if}
+
+					{#if invoice.po_match}
+						{@const m = invoice.po_match}
+						<div class="po-match {m.status}">
+							<div class="po-match-header">
+								<span class="po-match-title">PO Match</span>
+								<span class="po-match-status {m.status}">
+									{#if m.status === 'matched'}Matched
+									{:else if m.status === 'mismatch'}Mismatch
+									{:else if m.status === 'partial'}Partial Receipt
+									{:else}PO Not Found
+									{/if}
+								</span>
+								{#if m.match_type !== 'none'}
+									<span class="po-match-type">{m.match_type}</span>
+								{/if}
+							</div>
+							{#if m.po_number}
+								<div class="po-match-grid">
+									<div>
+										<span class="po-match-label">PO #</span>
+										<span class="po-match-value mono">{m.po_number}</span>
+									</div>
+									{#if m.po_total !== null}
+										<div>
+											<span class="po-match-label">PO Total</span>
+											<span class="po-match-value mono">${m.po_total.toFixed(2)}</span>
+										</div>
+									{/if}
+									{#if m.amount_variance !== 0}
+										<div>
+											<span class="po-match-label">Variance</span>
+											<span
+												class="po-match-value mono"
+												class:variance-pos={m.amount_variance > 0}
+												class:variance-neg={m.amount_variance < 0}
+											>
+												{m.amount_variance > 0 ? '+' : ''}${m.amount_variance.toFixed(2)}
+												({m.amount_variance_pct > 0 ? '+' : ''}{m.amount_variance_pct.toFixed(1)}%)
+											</span>
+										</div>
+									{/if}
+								</div>
+							{/if}
+							{#if m.issues.length > 0}
+								<ul class="po-match-issues">
+									{#each m.issues as issue}
+										<li>{issue}</li>
+									{/each}
+								</ul>
+							{/if}
 						</div>
 					{/if}
 
@@ -1763,6 +1816,129 @@
 	.warning-item.info {
 		background: rgba(99, 140, 255, 0.1);
 		color: #638cff;
+	}
+
+	.po-match {
+		margin-top: 12px;
+		padding: 12px 14px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--bg);
+		font-size: 0.85rem;
+	}
+
+	.po-match.matched {
+		border-color: rgba(31, 168, 106, 0.4);
+		background: rgba(31, 168, 106, 0.06);
+	}
+
+	.po-match.mismatch,
+	.po-match.no_po {
+		border-color: rgba(224, 64, 64, 0.4);
+		background: rgba(224, 64, 64, 0.06);
+	}
+
+	.po-match.partial {
+		border-color: rgba(212, 148, 10, 0.4);
+		background: rgba(212, 148, 10, 0.06);
+	}
+
+	.po-match-header {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-bottom: 8px;
+	}
+
+	.po-match-title {
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		margin-right: auto;
+	}
+
+	.po-match-status {
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 2px 10px;
+		border-radius: 10px;
+	}
+
+	.po-match-status.matched {
+		background: rgba(31, 168, 106, 0.15);
+		color: #1fa86a;
+	}
+
+	.po-match-status.mismatch,
+	.po-match-status.no_po {
+		background: rgba(224, 64, 64, 0.15);
+		color: #e04040;
+	}
+
+	.po-match-status.partial {
+		background: rgba(212, 148, 10, 0.15);
+		color: #d4940a;
+	}
+
+	.po-match-type {
+		font-size: 0.72rem;
+		font-weight: 500;
+		padding: 1px 8px;
+		border-radius: 8px;
+		background: var(--surface);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+	}
+
+	.po-match-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+		gap: 10px;
+		margin-bottom: 6px;
+	}
+
+	.po-match-grid > div {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.po-match-label {
+		font-size: 0.72rem;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.po-match-value {
+		font-size: 0.88rem;
+		font-weight: 500;
+	}
+
+	.po-match-value.mono {
+		font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+		font-size: 0.82rem;
+	}
+
+	.po-match-value.variance-pos {
+		color: #e04040;
+	}
+
+	.po-match-value.variance-neg {
+		color: #d4940a;
+	}
+
+	.po-match-issues {
+		margin: 6px 0 0;
+		padding-left: 18px;
+		font-size: 0.8rem;
+		color: var(--text-muted);
+	}
+
+	.po-match-issues li {
+		margin-bottom: 2px;
 	}
 
 	.required {

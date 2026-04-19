@@ -109,6 +109,20 @@ export interface InvoiceWarning {
 	message: string;
 }
 
+export interface PoMatch {
+	status: 'no_po' | 'matched' | 'mismatch' | 'partial';
+	match_type: 'none' | '2-way' | '3-way';
+	po_id: string | null;
+	po_number: string | null;
+	po_total: number | null;
+	gr_id: string | null;
+	amount_variance: number;
+	amount_variance_pct: number;
+	within_tolerance: boolean;
+	issues: string[];
+	details: Record<string, unknown>;
+}
+
 export interface Invoice {
 	id: string;
 	correlation_id: string;
@@ -146,5 +160,6 @@ export interface Invoice {
 	created_at: string;
 	file_url: string | null;
 	warnings: InvoiceWarning[] | null;
+	po_match: PoMatch | null;
 	priors_summary: { cache: number; rag: number } | null;
 }

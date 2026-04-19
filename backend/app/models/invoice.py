@@ -77,6 +77,11 @@ class Invoice(Base, TimestampMixin):
     file_url: Mapped[str | None] = mapped_column(String(1024))
     file_key: Mapped[str | None] = mapped_column(String(512))
     warnings: Mapped[list | None] = mapped_column(JSONB)
+    # Latest PO match result. Shape: {status, match_type, po_id, po_number,
+    # po_total, invoice_amount, variance, variance_pct, within_tolerance,
+    # has_gr, gr_id, issues}. Populated by `services.invoice_warnings.refresh_warnings`
+    # whenever the invoice changes. NULL when the invoice has no `po_number`.
+    po_match: Mapped[dict | None] = mapped_column(JSONB)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True

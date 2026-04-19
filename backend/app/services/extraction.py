@@ -199,6 +199,14 @@ async def run_extraction(
             )
             print(f"[extraction] Duplicate detection: {len(duplicate_matches)} near-match(es)")
 
+        # Refresh warnings + PO match — handles missing fields, duplicates,
+        # fraud flags, vendor verification status, and 2/3-way PO matching.
+        # Runs here so the reviewer sees a fully-populated invoice (with any
+        # exceptions surfaced in the queue) the moment extraction lands.
+        from app.services.invoice_warnings import refresh_warnings
+
+        await refresh_warnings(db, invoice)
+
         # Save extraction result with priors metadata (what the UI will show
         # for transparency — which cache overrides and RAG neighbors shaped
         # this extraction).

@@ -107,9 +107,10 @@ The procurement models already exist:
 | Vendor-aware matching (match PO by vendor_id) | Done |
 | Goods receipt quantity comparison | Done |
 | Procurement models (PO, GR) | Done (existed) |
-| Match endpoint wired into extraction pipeline | Planned |
-| Match result display in invoice modal | Planned |
-| Exception routing for mismatches | Planned |
-| PO management UI | Planned |
-| PO sync from ERP | Planned |
-| Configurable tolerance per org | Planned |
+| Wired into extraction + invoice-mutation pipeline (`services.invoice_warnings.refresh_warnings`) | Done |
+| Persisted on `invoice.po_match` (JSONB, alembic 0006) | Done |
+| Match result display in invoice modal (PO Match panel with status badge, variance, issues) | Done |
+| Exception routing for mismatches (`po_mismatch` exceptions auto-created by severity: error / warning / info) | Done |
+| PO management UI (list + detail page) | Planned |
+| PO sync from ERP (real adapter `list_pos()` — currently mock data) | Planned |
+| Configurable tolerance per org (`Organization.settings.po_matching.tolerance_pct`) | Planned |

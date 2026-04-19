@@ -118,8 +118,8 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 
 | Method   | Path                                | Roles | Description |
 |----------|-------------------------------------|-------|-------------|
-| `GET`    | `/api/invoices`                     | *     | List invoices (paginated, filterable). Returns `priors_summary` per row when RAG/cache fired. |
-| `GET`    | `/api/invoices/{id}`                | *     | Get single invoice |
+| `GET`    | `/api/invoices`                     | *     | List invoices (paginated, filterable). Returns `priors_summary` and `po_match` per row when applicable. |
+| `GET`    | `/api/invoices/{id}`                | *     | Get single invoice — includes the latest `po_match` JSONB result and any `warnings` |
 | `GET`    | `/api/invoices/{id}/priors`         | *     | Priors metadata from latest extraction (vendor cache + RAG neighbors). See [`ai-extraction.md`](ai-extraction.md). |
 | `GET`    | `/api/invoices/{id}/line-items`     | *     | Get invoice line items |
 | `PUT`    | `/api/invoices/{id}/line-items`     | admin/manager/cfo | Replace all line items |

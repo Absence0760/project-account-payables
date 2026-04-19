@@ -69,7 +69,7 @@ All transitions are enforced by a state machine in `services/workflow_engine.py`
 7. Return `202 Accepted` with the invoice ID and `correlation_id`.
 
 **Extraction outcomes:**
-- **Success:** Extracted fields are written to the invoice, an `InvoiceExtractionResult` row is created with the confidence score and raw output, and the invoice transitions to `ready_for_review`.
+- **Success:** Extracted fields are written to the invoice, vendor matching links the invoice to a `Vendor`, the per-vendor correction cache overlays cached priors, RAG few-shots inform the prompt, and `services.invoice_warnings.refresh_warnings` runs to populate warnings, exceptions, and the **2/3-way PO match** (persisted on `invoice.po_match`). An `InvoiceExtractionResult` row is created with the confidence score and raw output, and the invoice transitions to `ready_for_review`.
 - **Failure:** Invoice transitions to `failed`. Error details are stored in `WorkflowInstance.state_data`.
 - **Timeout:** If extraction has not completed within 5 minutes, the invoice is transitioned to `failed` with reason `extraction_timeout`.
 

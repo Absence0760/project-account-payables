@@ -3,6 +3,7 @@
 Also creates exception records for issues that need human resolution.
 """
 
+from dataclasses import asdict
 from datetime import date
 
 from sqlalchemy import func, select
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
+from app.services.po_matching import match_invoice_to_po
 
 
 async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
@@ -120,9 +122,62 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
             db, invoice, "missing_data", "error", "Required fields missing after extraction"
         )
 
+    # PO matching — runs whenever the invoice has a po_number. The match
+    # service handles 2-way (invoice vs PO) and 3-way (with goods receipt).
+    # Result is persisted on `invoice.po_match` so the modal can render it
+    # without re-running. Mismatches and missing POs raise exceptions for
+    # the queue. Skip on draft `new` invoices that haven't been extracted yet.
+    if invoice.po_number and invoice.status.value != "new":
+        await _refresh_po_match(db, invoice, warnings)
+    else:
+        invoice.po_match = None
+
     # Persist
     invoice.warnings = warnings or None
     return warnings
+
+
+async def _refresh_po_match(db: AsyncSession, invoice: Invoice, warnings: list[dict]) -> None:
+    """Run PO matching and append to warnings + exceptions on issues.
+
+    Stores the structured result on `invoice.po_match` for UI rendering.
+    Mutates `warnings` in place.
+    """
+    match = await match_invoice_to_po(db, invoice)
+    invoice.po_match = asdict(match)
+
+    if match.status == "no_po":
+        warnings.append(
+            {
+                "type": "po_mismatch",
+                "severity": "error",
+                "message": f"PO {invoice.po_number} not found",
+            }
+        )
+        await _ensure_exception(
+            db,
+            invoice,
+            "po_mismatch",
+            "error",
+            f"Invoice references PO {invoice.po_number} but no matching PO exists",
+        )
+    elif match.status == "mismatch":
+        # Lead with the most useful number — variance %.
+        msg = (
+            f"Amount variance {match.amount_variance_pct:+.1f}% vs PO {match.po_number} "
+            f"(invoice ${invoice.amount} vs PO ${match.po_total:.2f})"
+        )
+        warnings.append({"type": "po_mismatch", "severity": "warning", "message": msg})
+        await _ensure_exception(db, invoice, "po_mismatch", "warning", msg)
+    elif match.status == "partial":
+        # Partial 3-way receipt — informational. Reviewer needs to know but
+        # it's not an error; goods may be in transit.
+        msg = (
+            f"Partial 3-way match — {match.match_type} match against PO {match.po_number}, "
+            f"but only part of the ordered quantity has been received"
+        )
+        warnings.append({"type": "po_mismatch", "severity": "info", "message": msg})
+        await _ensure_exception(db, invoice, "po_mismatch", "info", msg)
 
 
 async def _ensure_exception(

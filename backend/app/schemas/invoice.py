@@ -121,6 +121,10 @@ class InvoiceResponse(BaseModel):
     created_at: str
     file_url: str | None
     warnings: list[dict] | None = None
+    # Latest 2/3-way PO match result (status, variance, issues). Populated by
+    # `services.invoice_warnings.refresh_warnings`. Null when the invoice has
+    # no `po_number`. The invoice modal renders this as a PO Match panel.
+    po_match: dict | None = None
     # Summary counts from the latest extraction's priors_metadata — feeds the
     # small "priors applied" indicator on the invoice-list row. Null when no
     # extraction ran or no priors fired.
@@ -167,6 +171,7 @@ class InvoiceResponse(BaseModel):
             created_at=inv.created_at.isoformat() if inv.created_at else "",
             file_url=inv.file_url,
             warnings=inv.warnings,
+            po_match=inv.po_match,
             priors_summary=_priors_summary(inv),
         )
 

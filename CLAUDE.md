@@ -97,7 +97,7 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 | `extraction.py` | Dispatches AI extraction (platform Claude Vision or BYOK provider) |
 | `erp.py` | Pushes approved invoices to ERP with retry logic |
 | `review.py` | Approve/reject with field corrections |
-| `po_matching.py` | 2-way/3-way invoice-to-PO matching |
+| `po_matching.py` | 2-way/3-way invoice-to-PO matching — invoked by `invoice_warnings.refresh_warnings` after every extraction and on every invoice mutation; result persisted on `Invoice.po_match` |
 | `vendor_matching.py` | Fuzzy vendor matching by name/code/tax_id |
 | `invoice_warnings.py` | Generates warnings and exceptions (duplicates, fraud, etc.) |
 | `payment_erp_sync.py` | Syncs payment status back to ERP |

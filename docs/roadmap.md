@@ -53,18 +53,18 @@ Conflict resolution: the per-vendor cache (see above) runs AFTER the AI output a
 ---
 
 ### 2/3-Way PO Matching & Auto-Validation
-**Status:** Partial — matching service built with 2-way and 3-way logic. UI and pipeline wiring not done. See [po-matching.md](../backend/docs/po-matching.md).
+**Status:** Done (core flow) — matching runs after every extraction and on every invoice mutation. Mismatches and missing POs route into the exception queue. Modal renders a PO Match panel with status, variance, and issues.
 
 - [x] 2-way match: invoice vs. PO (amount, vendor)
 - [x] 3-way match: invoice vs. PO vs. goods receipt (quantity received)
 - [x] Configurable tolerance thresholds (default 5%)
 - [x] Vendor-aware matching (PO lookup by vendor_id)
-- [ ] Wire matching into extraction/review pipeline
-- [ ] Match result display in invoice modal
-- [ ] Route mismatches to exception queue
-- [ ] PO management UI — list, view, link to invoices
+- [x] Wired into extraction/review pipeline — `services.invoice_warnings.refresh_warnings` runs `match_invoice_to_po` whenever an invoice changes; result is persisted on `invoice.po_match` (JSONB column added in migration 0006)
+- [x] Match result display in invoice modal — color-coded panel (matched / mismatch / partial / no PO) with PO #, variance, issues
+- [x] Routes mismatches to exception queue — `po_mismatch` exceptions auto-created, severity scaled (error for missing PO, warning for amount variance, info for partial 3-way receipt)
+- [ ] PO management UI — list, view, link to invoices (read-only `GET /api/purchase-orders` exists; no detail page)
 - [ ] Goods receipt UI — list, view, link to POs
-- [ ] PO sync from ERP
+- [ ] PO sync from ERP — `POST /api/purchase-orders/sync-erp` returns mock data; needs real ERP-adapter `list_pos()` method
 
 **Files:** `backend/app/services/po_matching.py`, `backend/app/models/procurement.py`
 
