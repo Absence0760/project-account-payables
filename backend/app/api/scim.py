@@ -154,12 +154,12 @@ def _apply_filter(query, filter_expr: str):
     ]:
         prefix = f"{attr} eq "
         if expr.startswith(prefix):
-            value = expr[len(prefix):].strip().strip('"')
+            value = expr[len(prefix) :].strip().strip('"')
             return query.where(column == value)
 
-    if expr in ('active eq true', 'active eq True'):
+    if expr in ("active eq true", "active eq True"):
         return query.where(User.is_active.is_(True))
-    if expr in ('active eq false', 'active eq False'):
+    if expr in ("active eq false", "active eq False"):
         return query.where(User.is_active.is_(False))
 
     raise _scim_http_error(
@@ -231,9 +231,7 @@ async def create_user(
 
     # SCIM requires 409 on duplicate userName.
     existing = (
-        await db.execute(
-            select(User).where(User.email == email, User.organization_id == org.id)
-        )
+        await db.execute(select(User).where(User.email == email, User.organization_id == org.id))
     ).scalar_one_or_none()
     if existing is not None:
         raise _scim_http_error(409, f"User with userName {email} already exists.", "uniqueness")

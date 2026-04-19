@@ -72,8 +72,10 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 | Prefix | Purpose |
 |--------|---------|
 | `/auth` | Login, logout, profile (JWT + Redis blocklist) |
+| `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
+| `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra (per-tenant bearer auth) |
 | `/admin` | User CRUD, role assignment |
-| `/organization` | Org settings, ERP/extraction connection tests |
+| `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
 | `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send |
 | `/vendors` | Vendor CRUD, ERP sync |
 | `/payments` | Payment listing, payment runs (create/execute) |

@@ -28,7 +28,8 @@ pnpm check            # typecheck
 | `/` (no-tenant) | `lib/components/Landing.svelte` (inline in `+layout.svelte`) | Marketing landing page with features, pricing, signup CTA |
 | `/signup` | `routes/signup/+page.svelte` | `GET /api/public-config`, `GET /api/signup/slug-check`, `POST /api/signup/start` |
 | `/verify` | `routes/verify/+page.svelte` | `POST /api/signup/complete` |
-| `/login` | `routes/login/+page.svelte` | `POST /api/auth/login` |
+| `/login` | `routes/login/+page.svelte` | `POST /api/auth/login`, `GET /api/auth/sso/config` (renders SSO button when enabled) |
+| `/login/sso-callback` | `routes/login/sso-callback/+page.svelte` | `POST /api/auth/sso/callback` — exchanges OIDC code+state for our JWT after IdP redirect |
 | `/change-password` | `routes/change-password/+page.svelte` | `POST /api/auth/change-password` |
 | `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `POST /api/invoices/upload`, `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, bulk ops |
 | `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors` |

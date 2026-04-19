@@ -175,9 +175,7 @@ def test_scim_error_envelope():
 def test_scim_patch_op_shape():
     from app.schemas.scim import SCIMPatchOp, SCIMPatchRequest
 
-    req = SCIMPatchRequest(
-        Operations=[SCIMPatchOp(op="replace", path="active", value=False)]
-    )
+    req = SCIMPatchRequest(Operations=[SCIMPatchOp(op="replace", path="active", value=False)])
     assert req.Operations[0].op == "replace"
     assert req.Operations[0].path == "active"
 
@@ -193,3 +191,84 @@ def test_sso_config_public_omits_secrets():
     fields = set(SSOConfigPublic.model_fields.keys())
     # Allowed fields only
     assert fields == {"enabled", "provider"}
+
+
+# ---------- redirect_uri threaded through the OIDC handshake --------------
+#
+# Regression guard: an earlier draft of build_authorize_url and
+# exchange_code_for_tokens dropped the tenant slug, so they fell back to a
+# zero-arg redirect_uri() call that crashed at runtime. Lock down that the
+# slug is threaded through and the same URI is sent in both legs of the
+# handshake (OIDC token exchange validates redirect_uri matches authorize).
+
+
+def test_build_authorize_url_uses_per_tenant_redirect_uri():
+    from app.services.sso import build_authorize_url, redirect_uri
+
+    discovery = {"authorization_endpoint": "https://idp.example/authorize"}
+    url = build_authorize_url(discovery, "client-123", "state-x", "nonce-y", "acme")
+
+    assert url.startswith("https://idp.example/authorize?")
+    expected = redirect_uri("acme")
+    # urlencoded form — the encoded value must appear in the query string
+    from urllib.parse import quote
+
+    assert quote(expected, safe="") in url
+    assert "state=state-x" in url
+    assert "nonce=nonce-y" in url
+    assert "client_id=client-123" in url
+
+
+async def test_exchange_code_posts_matching_redirect_uri(monkeypatch):
+    """OIDC requires the token-exchange redirect_uri to exactly equal the one
+    sent during authorize. Fake out httpx to capture the POST body and assert
+    redirect_uri matches what build_authorize_url would send."""
+    from app.services import sso as sso_module
+
+    captured: dict = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"id_token": "fake", "access_token": "fake"}
+
+    class _FakeClient:
+        def __init__(self, *_, **__):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def post(self, url, data, headers):
+            captured["url"] = url
+            captured["data"] = data
+            return _FakeResp()
+
+    monkeypatch.setattr(sso_module.httpx, "AsyncClient", _FakeClient)
+
+    discovery = {"token_endpoint": "https://idp.example/token"}
+    await sso_module.exchange_code_for_tokens(
+        discovery, "client-id", "client-secret", "auth-code", "acme"
+    )
+
+    assert captured["url"] == "https://idp.example/token"
+    assert captured["data"]["redirect_uri"] == sso_module.redirect_uri("acme")
+    assert captured["data"]["code"] == "auth-code"
+    assert captured["data"]["grant_type"] == "authorization_code"
+
+
+# ---------- SCIM token mint endpoint --------------------------------------
+
+
+def test_scim_token_response_shape_omits_hash():
+    """The mint endpoint must return the plaintext token (so the admin can
+    paste it into the IdP) but never the stored hash itself — only a short
+    prefix for UI identification."""
+    from app.api.organization import SCIMTokenResponse
+
+    fields = set(SCIMTokenResponse.model_fields.keys())
+    assert fields == {"token", "bearer_hash_prefix"}

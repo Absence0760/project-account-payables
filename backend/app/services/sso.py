@@ -171,12 +171,14 @@ async def consume_state(state: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_authorize_url(discovery_doc: dict, client_id: str, state: str, nonce: str) -> str:
+def build_authorize_url(
+    discovery_doc: dict, client_id: str, state: str, nonce: str, tenant_slug: str
+) -> str:
     endpoint = discovery_doc["authorization_endpoint"]
     params = {
         "response_type": "code",
         "client_id": client_id,
-        "redirect_uri": redirect_uri(),
+        "redirect_uri": redirect_uri(tenant_slug),
         "scope": "openid email profile",
         "state": state,
         "nonce": nonce,
@@ -185,16 +187,24 @@ def build_authorize_url(discovery_doc: dict, client_id: str, state: str, nonce: 
 
 
 async def exchange_code_for_tokens(
-    discovery_doc: dict, client_id: str, client_secret: str, code: str
+    discovery_doc: dict,
+    client_id: str,
+    client_secret: str,
+    code: str,
+    tenant_slug: str,
 ) -> dict[str, Any]:
-    """POST to the token endpoint with the auth code. Returns the token bundle."""
+    """POST to the token endpoint with the auth code. Returns the token bundle.
+
+    The redirect_uri here MUST exactly match the one sent during authorize —
+    OIDC token exchange validates it as a defence against code-injection attacks.
+    """
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
             discovery_doc["token_endpoint"],
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": redirect_uri(),
+                "redirect_uri": redirect_uri(tenant_slug),
                 "client_id": client_id,
                 "client_secret": client_secret,
             },

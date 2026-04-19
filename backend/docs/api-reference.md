@@ -9,7 +9,7 @@ FastAPI backend running on http://localhost:8000. Interactive docs available at:
 
 ### Authentication
 
-All endpoints except `/api/auth/login`, `/api/signup/*`, `/api/public-config`, and `/api/health` require a Bearer token:
+All endpoints except `/api/auth/login`, `/api/auth/sso/*`, `/api/scim/v2/*` (uses its own per-tenant SCIM bearer), `/api/signup/*`, `/api/public-config`, and `/api/health` require a Bearer token:
 
 ```
 Authorization: Bearer <jwt_token>
@@ -36,6 +36,33 @@ The frontend sends this automatically based on the subdomain. When testing via c
 | `POST`  | `/api/auth/change-password`  | Set a new password (clears `must_change_password`)                 | Control plane |
 
 Auth endpoints do **not** require the `X-Tenant-Slug` header.
+
+## SSO (OIDC — Okta + Microsoft Entra)
+
+| Method  | Path                          | Description                                                       | Database      |
+|---------|-------------------------------|-------------------------------------------------------------------|---------------|
+| `GET`   | `/api/auth/sso/config`        | `?slug=<s>` — public, returns `{enabled, provider}` for the login button. Never leaks secrets. | Control plane |
+| `GET`   | `/api/auth/sso/authorize`     | `?slug=<s>` — 302 to the IdP's authorization endpoint. Mints state+nonce in Redis. | Control plane |
+| `POST`  | `/api/auth/sso/callback`      | `{code, state}` → `{access_token, must_change_password, tenant_slug}`. Validates the ID token, JIT-provisions the user, mints our JWT. | Control plane |
+| `POST`  | `/api/organization/sso/scim-token` | Authenticated. Mints (or rotates) the per-tenant SCIM bearer. Returns `{token, bearer_hash_prefix}` once — only the sha256 is persisted. | Control plane |
+
+See [`docs/authentication.md`](../../docs/authentication.md) § SSO for the full handshake and JIT-provisioning rules.
+
+## SCIM 2.0 (user provisioning from the IdP)
+
+All `/api/scim/v2/*` endpoints authenticate via the **per-tenant SCIM bearer** (not a user JWT). Tenant is resolved by sha256-matching the bearer against `Organization.settings.sso.scim_bearer_hash`.
+
+| Method   | Path                                | Description                                                       | Database      |
+|----------|-------------------------------------|-------------------------------------------------------------------|---------------|
+| `GET`    | `/api/scim/v2/ServiceProviderConfig` | Discovery doc — Okta/Entra probe this first.                     | Control plane |
+| `GET`    | `/api/scim/v2/Schemas/{id}`         | Minimal User schema — Entra probes this before syncing.           | Control plane |
+| `GET`    | `/api/scim/v2/Users`                | List + paginate. Filters: `userName eq`, `emails eq`, `externalId eq`, `active eq`. | Control plane |
+| `GET`    | `/api/scim/v2/Users/{id}`           | Fetch one user.                                                   | Control plane |
+| `POST`   | `/api/scim/v2/Users`                | Create. 409 `uniqueness` on duplicate userName.                   | Control plane |
+| `PATCH`  | `/api/scim/v2/Users/{id}`           | Partial update — supports the ops Okta + Entra send (active toggle, name/email/externalId replace, root replace). | Control plane |
+| `DELETE` | `/api/scim/v2/Users/{id}`           | **Soft delete** — sets `is_active=false`. Preserves audit trail. | Control plane |
+
+See [`docs/authentication.md`](../../docs/authentication.md) § SCIM for the bearer-token mint/rotate flow.
 
 ## Signup (anonymous, pre-tenant)
 

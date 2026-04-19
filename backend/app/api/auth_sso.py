@@ -106,7 +106,7 @@ async def sso_authorize(slug: str, db: AsyncSession = Depends(get_control_db)):
 
     discovery = await fetch_discovery(config.discovery_url)
     state, nonce = await create_state(slug)
-    url = build_authorize_url(discovery, config.client_id, state, nonce)
+    url = build_authorize_url(discovery, config.client_id, state, nonce, slug)
     return RedirectResponse(url, status_code=302)
 
 
@@ -134,7 +134,7 @@ async def sso_callback(
 
     try:
         tokens = await exchange_code_for_tokens(
-            discovery, config.client_id, config.client_secret, body.code
+            discovery, config.client_id, config.client_secret, body.code, tenant_slug
         )
     except SSOValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -149,11 +149,7 @@ async def sso_callback(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Entra sometimes uses `upn` (user principal name) instead of `email`
-    email = (
-        claims.get("email")
-        or claims.get("preferred_username")
-        or claims.get("upn")
-    )
+    email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
     sub = claims.get("sub")
     if not email or not sub:
         raise HTTPException(status_code=400, detail="IdP did not return an email or subject id.")
@@ -188,10 +184,10 @@ async def _jit_provision(
     claims: dict,
 ) -> User:
     """Find or create the user. Matching order:
-      1. (sso_provider, sso_provider_id) — durable across email changes
-      2. (organization_id, email) — links SSO to an existing password user
-      3. New user with JIT-provisioned admin role if org has no users yet,
-         otherwise ap_clerk (least-privilege default).
+    1. (sso_provider, sso_provider_id) — durable across email changes
+    2. (organization_id, email) — links SSO to an existing password user
+    3. New user with JIT-provisioned admin role if org has no users yet,
+       otherwise ap_clerk (least-privilege default).
     """
     # 1. Durable match
     result = await db.execute(
@@ -241,23 +237,17 @@ async def _jit_provision(
         # in the org (unlikely via SSO but possible via SCIM), grant admin.
         first_user = (
             await db.execute(
-                select(User.id)
-                .where(User.organization_id == org.id, User.id != user.id)
-                .limit(1)
+                select(User.id).where(User.organization_id == org.id, User.id != user.id).limit(1)
             )
         ).scalar_one_or_none() is None
 
         role_name = "admin" if first_user else "ap_clerk"
-        role = (
-            await db.execute(select(Role).where(Role.name == role_name))
-        ).scalar_one_or_none()
+        role = (await db.execute(select(Role).where(Role.name == role_name))).scalar_one_or_none()
         if role is not None:
             db.add(UserRole(user_id=user.id, role_id=role.id))
 
         logger.info("JIT-provisioned user %s in org %s as %s", email, org.slug, role_name)
 
     # Ensure roles eager-loaded for any downstream caller
-    await db.execute(
-        select(User).where(User.id == user.id).options(selectinload(User.roles))
-    )
+    await db.execute(select(User).where(User.id == user.id).options(selectinload(User.roles)))
     return user

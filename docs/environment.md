@@ -35,6 +35,9 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_S3_SECRET_KEY`    | `minioadmin`                                                             | MinIO/S3 secret key              |
 | `AP_S3_BUCKET`        | `invoices`                                                               | S3 bucket for invoice files      |
 | `AP_DEBUG`            | `true`                                                                   | Enable debug logging             |
+| `AP_SSO_REDIRECT_PATH` | `/login/sso-callback`                                                   | Path the IdP redirects back to after OIDC auth (per tenant subdomain) |
+| `AP_SSO_STATE_TTL_SECONDS` | `600`                                                               | TTL on the OIDC state/nonce stored in Redis  |
+| `AP_SCIM_URL_PATH`    | `/api/scim/v2`                                                           | Mount path for SCIM 2.0 endpoints |
 
 Copy the example file (optional — defaults work with Docker Compose):
 

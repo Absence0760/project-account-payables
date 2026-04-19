@@ -204,13 +204,15 @@ Automated user lifecycle — IdP pushes create/update/deactivate events to our S
 
 ### Per-tenant bearer auth
 
-Each tenant has its own SCIM bearer token. When an admin generates one (via the Organization settings UI):
+Each tenant has its own SCIM bearer token. To generate one, the admin POSTs to `/api/organization/sso/scim-token` (no body). The backend:
 
-1. Backend mints a 43-char URL-safe token.
+1. Mints a 43-char URL-safe token.
 2. SHA-256 hashes it.
 3. Stores the **hex digest** in `Organization.settings.sso.scim_bearer_hash`.
-4. Returns the plaintext token **once** to the admin.
-5. Admin pastes it into Okta/Entra's SCIM config alongside the SCIM URL.
+4. Returns `{token, bearer_hash_prefix}` — the plaintext token is shown **once** and never re-served. The 8-char prefix is a UI identifier so admins can tell which token is currently active.
+5. Admin pastes the plaintext token into Okta/Entra's SCIM config alongside the SCIM URL.
+
+Re-calling the endpoint rotates the token: the old hash is overwritten, so any IdP still using the previous token starts seeing 401s.
 
 Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it and looks for a matching `scim_bearer_hash` across all orgs to resolve the tenant. Linear scan, acceptable while tenant count is <<1000.
 

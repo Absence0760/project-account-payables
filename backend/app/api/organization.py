@@ -1,7 +1,9 @@
 """Organization settings endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import get_current_user
 from app.database import get_control_db
@@ -13,9 +15,18 @@ from app.schemas.organization import (
     OrganizationResponse,
     UpdateOrganizationRequest,
 )
+from app.services.sso import generate_scim_token
 from app.tenant import get_tenant
 
 router = APIRouter(prefix="/organization", tags=["organization"])
+
+
+class SCIMTokenResponse(BaseModel):
+    """Returned ONCE on token generation. The plaintext `token` is never
+    re-served — only the sha256 of it is persisted server-side."""
+
+    token: str
+    bearer_hash_prefix: str  # first 8 hex chars, useful as a UI identifier
 
 
 def _org_response(org: Organization) -> OrganizationResponse:
@@ -93,6 +104,34 @@ async def test_erp_connection(
             return {"success": False, "message": "Connection failed — check your credentials"}
     except Exception as exc:
         return {"success": False, "message": str(exc)}
+
+
+@router.post("/sso/scim-token", response_model=SCIMTokenResponse)
+async def mint_scim_token(
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Mint a fresh SCIM bearer token for this tenant.
+
+    Returns the plaintext token in the response — the admin pastes it into
+    Okta/Entra and we never see it again. Only the sha256 hex digest is stored
+    in `org.settings.sso.scim_bearer_hash`. Rotating is a re-call: the previous
+    hash is overwritten and any IdP still using the old token will start
+    getting 401s, which is the desired behaviour.
+    """
+    raw, digest = generate_scim_token()
+
+    settings_dict = dict(org.settings or {})
+    sso = dict(settings_dict.get("sso") or {})
+    sso["scim_bearer_hash"] = digest
+    settings_dict["sso"] = sso
+    org.settings = settings_dict
+    # Mutating a nested dict in-place doesn't mark JSONB dirty on its own.
+    flag_modified(org, "settings")
+
+    await db.commit()
+    return SCIMTokenResponse(token=raw, bearer_hash_prefix=digest[:8])
 
 
 @router.post("/test-extraction")

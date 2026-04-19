@@ -344,15 +344,16 @@ Separate portal for vendors to interact with the AP system. Biggest workflow gap
 ### SSO / Enterprise Authentication
 **Status:** OIDC + SCIM /Users shipped · SAML + SCIM /Groups planned
 
-No SSO = no enterprise sale. OIDC (Okta + Entra) + SCIM 2.0 user provisioning are live; SAML is a separate code path for regulated buyers that require it.
+No SSO = no enterprise sale. OIDC (Okta + Entra) + SCIM 2.0 user provisioning are live; SAML is a separate code path for regulated buyers that require it. See [`docs/authentication.md`](authentication.md) § SSO and § SCIM for the full design.
 
-- [ ] SAML 2.0 SSO (Okta, Azure AD, OneLogin)
-- [ ] OIDC (OpenID Connect) support
-- [ ] JIT (Just-In-Time) user provisioning from SSO
-- [ ] SSO-only mode — disable password login when SSO is configured
-- [ ] SCIM user provisioning (auto-create/deactivate users from IdP)
+- [x] OIDC (OpenID Connect) support — single flow covers Okta + Entra via per-tenant discovery URL
+- [x] JIT (Just-In-Time) user provisioning from SSO — match by `(provider, sub)` then `(org, email)`, otherwise create
+- [x] SCIM 2.0 `/Users` provisioning (create / list / get / PATCH / soft-delete) with per-tenant bearer token
+- [x] Force password change on first login (non-SSO users) — `User.must_change_password` flag, cleared on `/api/auth/change-password`
+- [ ] SAML 2.0 SSO (Okta, Azure AD, OneLogin) — separate code path for regulated buyers
+- [ ] SCIM `/Groups` — needs IdP-group → Role mapping design (per-tenant config? convention?)
+- [ ] SSO-only mode — disable password login when SSO is configured (flag on `Organization.settings.sso`)
 - [ ] MFA enforcement (TOTP, WebAuthn/passkeys)
-- [ ] Force password change on first login (non-SSO users)
 - [ ] Session management — concurrent session limits, forced logout
 
 **Competitors:** All competitors support SSO. Coupa, SAP Concur, and Basware also support SCIM.
