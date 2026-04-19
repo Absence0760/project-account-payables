@@ -99,12 +99,15 @@ The database supports four roles:
 
 Roles are returned by `GET /api/auth/me` in the `roles` array. The frontend uses these to control sidebar navigation visibility, button visibility, and action availability (see [user-management.md](user-management.md) for the full matrix).
 
-Backend API-level role enforcement (`Depends(require_role("admin"))`) is planned for a future phase — currently enforcement is UI-only.
+Backend API-level role enforcement is in place via `Depends(require_roles(...))` on every protected endpoint. The full permission matrix is in the **RBAC** section below. Frontend gates exist for UX (hiding buttons, sidebar items) but are not the security boundary — the backend is.
 
 ## Testing Auth via curl
 
 ```bash
-# Login and capture token
+# Login and capture token. NOTE: when AP_MFA_ENABLED=true and the user has MFA
+# enrolled (or the org enforces it), the response is an MFAChallengeResponse
+# (no `access_token` field) and you'll need to complete /api/auth/mfa/verify
+# next. The snippet below assumes MFA is off (the local-dev default).
 TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"demo@acme.com","password":"demo"}' \

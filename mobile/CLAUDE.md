@@ -134,6 +134,9 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Swipe-to-approve gesture
 
 **Web features not yet on mobile (see `docs/roadmap.md` Priority 8):**
+- **MFA** — `AuthStore.login()` only handles `TokenResponse`; if the backend returns `MFAChallengeResponse` (when `AP_MFA_ENABLED=true` and the user is enrolled or org-enforced), login throws. Mobile users can still sign in when MFA is off, but tenants with enforcement need a mobile MFA flow + a `/profile` enrollment screen.
+- **Org Security settings** — the web `/organization` page exposes the `mfa.required` toggle; mobile has no equivalent.
+- **OIDC SSO** — `Sign in with Okta/Microsoft` button is web-only.
 - Invoice editing (change fields in detail screen)
 - Invoice upload via file picker (PDF/PNG/JPG/TIFF) — mobile has camera only
 - PDF/image viewer for uploaded invoice files

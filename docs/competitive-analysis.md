@@ -110,9 +110,11 @@ Analysis of the AP automation market as of April 2026. Covers 10 major competito
 | Feature | Us | Bill | Tipalti | Coupa | Concur | Avid | Mineral | Stampli | Airbase | Medius | Basware |
 |---------|-----|------|---------|-------|--------|------|---------|---------|---------|--------|---------|
 | RBAC (UI-level) | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
-| RBAC (API-level enforcement) | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
-| SSO/SAML | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
-| MFA | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| RBAC (API-level enforcement) | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| SSO — OIDC (Okta, Entra) | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| SSO — SAML 2.0 | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| SCIM 2.0 user provisioning | Have | - | Y | Y | Y | - | - | - | Y | Y | Y |
+| MFA (TOTP + email backup) | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | SOC 2 Type I/II | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | hCaptcha on public endpoints | **Have** | - | - | - | - | - | - | - | - | - | - |
 | Rate limiting (Redis sliding window) | **Have** | - | - | Y | - | - | - | - | - | Y | - |
@@ -197,12 +199,11 @@ Ranked by competitive impact — features where we are behind most or all compet
 
 | Gap | Why It Matters | Who Has It |
 |-----|---------------|-----------|
-| **SSO (SAML + OIDC + SCIM)** | No SSO = no enterprise sale, period. Fields exist in User model but not wired. | All competitors |
+| **SAML 2.0 SSO** | OIDC + SCIM `/Users` are shipped — covers Okta + Entra. SAML is still required by some regulated buyers. | All competitors |
 | **PO matching pipeline wiring** | 2-way + 3-way matching *service* exists; extraction/review UI doesn't call it and exceptions aren't routed. Mid-market buyers expect PO-gated invoices. | All competitors |
 | **Real ACH / wire execution** | Virtual cards cover ~30-40% of spend in practice; the rest is ACH. Need Modern Treasury / Stripe Treasury / direct bank integration. | All competitors |
 | **Supplier portal** | Vendors can't self-submit invoices or check payment status. Forces email/manual intake. Biggest workflow gap. | All competitors |
 | **SOC 2 Type II** | Security review blocker. Mostly process + docs, but a few engineering controls (access reviews, centralized audit shipping, encryption verification). 60+ day blocker if not started. | All competitors |
-| **Backend RBAC enforcement** | API endpoints aren't gated by role — security vulnerability. Any authenticated user can hit any endpoint. | All competitors |
 | **1099 tax compliance** | W-9 collection, TIN validation, 1099 e-filing. Required for US AP operations. | Bill, Tipalti, Avid, Mineral, Stampli, Airbase |
 
 ### Tier 2: Competitive Disadvantages (lose deals against peers)

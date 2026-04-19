@@ -243,9 +243,10 @@ def test_all_roles_constant_matches_seed_script():
     `scripts/seed.py`'s role list — if a new role is added there but not here,
     `require_roles("new_role")` would explode at import time and lock that
     role out of every protected endpoint."""
-    seed_path = "/Users/jhoward/private_repos/project-account-payables/backend/scripts/seed.py"
-    with open(seed_path) as f:
-        text = f.read()
+    from pathlib import Path
+
+    seed_path = Path(__file__).resolve().parent.parent / "scripts" / "seed.py"
+    text = seed_path.read_text()
     # Heuristic: pull every "name=\"role_name\"" inside Role(...) constructions.
     seeded = set(re.findall(r'Role\([^)]*name="([^"]+)"', text))
     if not seeded:

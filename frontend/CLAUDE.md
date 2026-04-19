@@ -44,9 +44,14 @@ pnpm check            # typecheck
 
 Root layout (`+layout.svelte`) routing logic:
 - No tenant subdomain → Landing component (public) or `<slot />` for `/signup` / `/verify`
-- Tenant present, not logged in → redirect to `/login`
+- Tenant present, not logged in → redirect to `/login` (or `/login/mfa` if a challenge is pending in `sessionStorage`)
 - Tenant present, logged in, `must_change_password=true` → redirect to `/change-password`
 - Tenant present, logged in, flag clear → app shell with sidebar
+
+MFA flow:
+- `/login` calls `auth.login()`. If it returns `{kind:'mfa', challenge}`, the page stashes the challenge in `sessionStorage` and navigates to `/login/mfa`.
+- `/login/mfa` reads the challenge, lets the user pick TOTP or email, calls `auth.completeMfa(...)` or `auth.requestEmailMfa(...)`. On success, removes the challenge and navigates home — or to `/profile` if `must_enroll=true`.
+- `/profile` renders enrollment (QR + verify) and disable forms backed by `/api/auth/mfa/{enroll,enroll/verify,disable}`.
 
 ## Key modules
 
@@ -68,7 +73,7 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 
 | Store | File | State | Key methods |
 |-------|------|-------|-------------|
-| `auth` | `auth.svelte.ts` | `user`, `loggedIn`, role checks (`isAdmin`, `isManager`, `isCfo`, `isClerkOnly`) | `login()`, `logout()`, `fetchUser()`, `hasRole()` |
+| `auth` | `auth.svelte.ts` | `user` (incl. `mfa_enabled`, `mfa_required_by_org`), `loggedIn`, role checks (`isAdmin`, `isManager`, `isCfo`, `isClerkOnly`) | `login()` (returns `{kind:'ok'} \| {kind:'mfa', challenge}` — MFA branch routes to `/login/mfa`), `completeMfa(token, code, method)`, `requestEmailMfa(token)`, `logout()`, `fetchUser()`, `hasRole()`, `hasAnyRole()` |
 | `invoiceStore` | `invoices.svelte.ts` | `all`, `loading`, `total`, `statusCounts` | `fetch(params)`, `fetchCounts()`, `update(id, changes)` |
 | `paymentStore` | `payments.svelte.ts` | `all`, `loading`, `total` | `fetch(params)` |
 | `workflowStore` | `workflows.svelte.ts` | `all`, `loading`, `activeSteps` | `fetch()`, `fetchActiveSteps()`, `getById()`, `create()`, `update()` |
@@ -77,11 +82,12 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 
 ### Components (`src/lib/components/`)
 
-- `Sidebar.svelte` — nav sidebar (collapsed/expanded)
+- `Sidebar.svelte` — nav sidebar (collapsed/expanded), profile popover with link to `/profile`
 - `StatusBadge.svelte` — invoice status display
 - `InvoiceModal.svelte` — invoice detail/edit modal
 - `AdvancedSearchModal.svelte` — invoice search filters
 - `Toast.svelte` — toast notifications
+- `Landing.svelte` + `Pricing.svelte` — public marketing landing page (no-tenant route)
 
 ### Types (`src/lib/types/`)
 

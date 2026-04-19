@@ -90,7 +90,7 @@ backend/
 
 1. **Control plane** (`account_payables`) — shared across all tenants
    - `Organization` — id, name, slug, db_name, settings (JSONB), plan
-   - `User` — email, full_name, hashed_password, sso_provider/id, organization_id
+   - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, organization_id
    - `Role` — name (admin, ap_manager, ap_clerk, cfo)
    - `UserRole` — junction table
    - `ExtractionUsage` — billing: invoice_id, provider, program_type, period

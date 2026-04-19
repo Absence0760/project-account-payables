@@ -8,7 +8,7 @@ The app uses a **database-per-tenant** isolation model:
 
 | Database            | Purpose                    | Contains                                                                                    |
 |---------------------|----------------------------|---------------------------------------------------------------------------------------------|
-| `account_payables`  | Control plane              | organizations, users, roles, user_roles, email_verifications                                |
+| `account_payables`  | Control plane              | organizations, users, roles, user_roles, email_verifications, extraction_usage, card_rebates |
 | `ap_acme`           | Acme Corp tenant           | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
 | `ap_techflow`       | TechFlow Inc tenant        | invoices, vendors, payments, workflows, vendor_extraction_priors, invoice_embeddings, ...   |
 
@@ -33,10 +33,12 @@ postgresql+asyncpg://postgres:postgres@localhost:5432/ap_acme
 ### Control-Plane Tables
 
 - `organizations` — tenant registry (name, slug, db_name, settings, plan)
-- `users` — all users across all tenants (email, full_name, hashed_password, organization_id, **must_change_password**)
+- `users` — all users across all tenants. Columns: `email`, `full_name`, `hashed_password` (nullable for SSO-only), `organization_id`, `is_active`, `must_change_password`, `sso_provider` + `sso_provider_id` (OIDC linkage), `mfa_secret` + `mfa_enabled` + `mfa_enrolled_at` (TOTP MFA)
 - `roles` — role definitions (admin, ap_manager, ap_clerk, cfo)
 - `user_roles` — many-to-many join table
 - `email_verifications` — pending self-service signups (token, email, slug, admin_name, expires_at, consumed_at). Created by `POST /api/signup/start`, consumed by `POST /api/signup/complete`.
+- `extraction_usage` — billing rows: invoice_id, provider, program_type, period (used for tracking platform-extraction usage)
+- `card_rebates` — billing rows: virtual_card_id, amount, rate, status, period
 
 ### Tenant Tables
 
@@ -118,6 +120,8 @@ Migrations may target either the control plane or tenant DBs — never both. Eac
 | 0001     | Control | `users`      | Adds `users.must_change_password`; creates `email_verifications`.                                                        |
 | 0002     | Tenant  | `vendors`    | Creates `vendor_extraction_priors` (per-vendor correction cache).                                                        |
 | 0003     | Tenant  | `invoices`   | Creates pgvector extension + `invoice_embeddings` + HNSW cosine index; adds `invoice_extraction_results.priors_metadata`. |
+| 0004     | Control | `users`      | Adds `users.sso_provider` + `users.sso_provider_id` + partial index for OIDC user lookup.                                |
+| 0005     | Control | `users`      | Adds `users.mfa_secret`, `users.mfa_enabled`, `users.mfa_enrolled_at` (TOTP MFA).                                        |
 
 ## Seeding
 

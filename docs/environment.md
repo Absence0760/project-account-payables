@@ -42,6 +42,34 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_MFA_ISSUER`       | `Account Payables`                                                       | Label shown in TOTP authenticator apps |
 | `AP_MFA_EMAIL_OTP_TTL_SECONDS` | `360`                                                           | Lifetime of email-OTP backup codes |
 | `AP_MFA_CHALLENGE_TTL_SECONDS` | `300`                                                           | Lifetime of the post-password "still need MFA" challenge token |
+| `AP_ACCESS_TOKEN_EXPIRE_MINUTES` | `30`                                                          | JWT lifetime in minutes |
+| `AP_REDIS_URL`        | `redis://localhost:6379`                                                 | Redis connection — required at runtime (auth blocklist, MFA, SSO state, rate limit) |
+| `AP_CORS_ORIGINS`     | `["http://localhost:7777","http://localhost:5173"]`                      | Comma-separated allowed origins (also matched by regex on subdomain) |
+| `AP_EXTRACTION_MODE`  | `local`                                                                  | `local` (in-process thread) or `lambda` (dispatch to SQS) |
+| `AP_ERP_MODE`         | `local`                                                                  | `local` or `lambda` for ERP push dispatch |
+| `AP_AUDIT_MODE`       | `local`                                                                  | `local` or `lambda` for audit log writes |
+| `AP_SQS_EXTRACTION_QUEUE_URL` | (empty)                                                          | Required when `AP_EXTRACTION_MODE=lambda` |
+| `AP_SQS_ERP_QUEUE_URL` | (empty)                                                                 | Required when `AP_ERP_MODE=lambda` |
+| `AP_SQS_AUDIT_QUEUE_URL` | (empty)                                                               | Required when `AP_AUDIT_MODE=lambda` |
+| `AP_ANTHROPIC_API_KEY` | (empty)                                                                 | Platform Claude Vision key (used when org chooses "Platform" extraction) |
+| `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514`                                               | Default extraction model for the platform program |
+| `AP_LITHIC_API_KEY`   | (empty)                                                                  | Platform Lithic key for virtual cards |
+| `AP_LITHIC_SANDBOX`   | `true`                                                                   | Use Lithic sandbox endpoints |
+| `AP_NIUM_CLIENT_ID` / `_SECRET` / `_CUSTOMER_HASH_ID` / `_WALLET_HASH_ID` / `_SANDBOX` | (empty / `true`)                | Platform Nium config for virtual cards |
+| `AP_EMAIL_PROVIDER`   | `console`                                                                | `console` (logs to stdout) or `ses` |
+| `AP_EMAIL_FROM`       | `no-reply@localhost`                                                     | From-address on outbound transactional email |
+| `AP_AWS_SES_REGION`   | `us-east-1`                                                              | AWS region when `AP_EMAIL_PROVIDER=ses` |
+| `AP_PUBLIC_URL`       | `http://localhost:7777`                                                  | Where the frontend is served — used in outbound email links |
+| `AP_TENANT_URL_TEMPLATE` | `http://{slug}.localhost:7777`                                        | Per-tenant URL shape; `{slug}` is substituted |
+| `AP_HCAPTCHA_SECRET` / `AP_HCAPTCHA_SITEKEY` | (empty)                                                   | hCaptcha keys for self-service signup |
+| `AP_SIGNUP_RATE_LIMIT_PER_HOUR` | `5`                                                            | Max signups per IP per hour (Redis sliding window) |
+| `AP_RAG_ENABLED`      | `true`                                                                   | RAG retrieval of similar invoices as few-shot examples |
+| `AP_RAG_TOP_K`        | `3`                                                                      | Number of semantic neighbors retrieved per extraction |
+| `AP_EMBEDDING_PROVIDER` | `mock`                                                                 | `mock` (dev) or `openai` (text-embedding-3-small) |
+| `AP_EMBEDDING_API_KEY` | (empty)                                                                 | OpenAI API key when `AP_EMBEDDING_PROVIDER=openai` |
+| `AP_EMBEDDING_MODEL`  | `text-embedding-3-small`                                                 | Embedding model name |
+| `AP_EMBEDDING_DIMENSIONS` | `1536`                                                               | Embedding vector size — must match the column type in pgvector |
+| `AP_DUPLICATE_SIMILARITY_THRESHOLD` | `0.95`                                                     | Cosine threshold for flagging near-duplicate invoices |
 
 Copy the example file (optional — defaults work with Docker Compose):
 

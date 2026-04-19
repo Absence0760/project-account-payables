@@ -32,7 +32,7 @@ Roles are enforced in the frontend UI. The `/api/auth/me` endpoint returns the u
 | Bulk: delete, status change | Yes | Yes | No | Yes |
 | Bulk: export | Yes | Yes | Yes | Yes |
 
-Backend API endpoints are not yet role-gated — enforcement is UI-only for now.
+Backend API endpoints are role-gated via `Depends(require_roles(...))` in `backend/app/api/deps.py`. The frontend matrix above mirrors what the backend allows. A coverage gate in `backend/tests/test_rbac.py` fails CI if a new endpoint ships without an auth dependency. Full permission matrix in `authentication.md` § RBAC.
 
 ## Invite Flow
 
@@ -142,10 +142,14 @@ organizations
 | id | UUID | Primary key |
 | email | String | Unique across all orgs |
 | full_name | String | Display name |
-| hashed_password | String | Bcrypt hash (nullable for SSO users) |
+| hashed_password | String | Bcrypt hash (nullable for SSO-only users) |
 | is_active | Boolean | Account status |
-| sso_provider | String | SSO provider name (future use) |
-| sso_provider_id | String | External SSO user ID (future use) |
+| must_change_password | Boolean | Forces a password change on next login (set when admins reset, or on signup) |
+| sso_provider | String | OIDC provider label (`okta`, `entra`, `oidc`) — set on first SSO login |
+| sso_provider_id | String | Provider's `sub` claim — durable identifier for the user across email changes |
+| mfa_secret | String | Base32-encoded TOTP secret. Populated during enrollment, "active" once `mfa_enabled` flips true. |
+| mfa_enabled | Boolean | True after the user verifies a TOTP code during enrollment |
+| mfa_enrolled_at | Timestamp | When `mfa_enabled` flipped true (audit + reporting) |
 | organization_id | UUID | FK to organizations |
 | created_at | Timestamp | Account creation time |
 
@@ -159,9 +163,9 @@ organizations
 
 ## Future Considerations
 
-- **Backend RBAC enforcement**: Check roles in API middleware to restrict endpoints (e.g., only admins can access `/api/admin/*`, only AP Managers can approve). Currently enforcement is UI-only.
-- **Email invitations**: Send invite emails with a magic link or temp password via SMTP
-- **SSO integration**: The `sso_provider` and `sso_provider_id` fields exist but are not yet implemented
+- **Email invitations**: Send invite emails with a magic link or temp password via SMTP (admins currently hand temp passwords to invitees out-of-band)
 - **Password reset**: Self-service password reset via email (currently requires admin to reset)
-- **Force password change**: Flag to require password change on first login after invite
 - **Approval thresholds**: Role-based invoice approval limits (e.g., CFO required above $10,000)
+- **Segregation of duties**: enforce approver ≠ creator on invoice approve (tracked in roadmap under RBAC)
+- **SCIM `/Groups`**: map IdP groups to our `Role` rows (`/Users` is shipped; group sync is not)
+- **WebAuthn / passkeys**: TOTP MFA shipped — passkeys are a separate code path tracked in roadmap

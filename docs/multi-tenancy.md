@@ -45,12 +45,15 @@ X-Tenant-Slug header
 
 ### Control-plane DB (`account_payables`)
 
-| Table           | Purpose                      |
-|-----------------|------------------------------|
-| `organizations` | Tenant registry (slug, db_name, plan) |
-| `users`         | All users across all tenants |
-| `roles`         | Role definitions             |
-| `user_roles`    | User-role assignments        |
+| Table                  | Purpose                                                          |
+|------------------------|------------------------------------------------------------------|
+| `organizations`        | Tenant registry (slug, db_name, plan, settings JSONB)            |
+| `users`                | All users across all tenants — incl. SSO + MFA fields            |
+| `roles`                | Role definitions (admin, ap_manager, ap_clerk, cfo)              |
+| `user_roles`           | User-role assignments                                            |
+| `email_verifications`  | Pending self-service signups (token, slug, expires_at)           |
+| `extraction_usage`     | Per-invoice billing rows for platform extraction                 |
+| `card_rebates`         | Per-virtual-card rebate billing rows                             |
 
 ### Tenant DB (`ap_<slug>`)
 

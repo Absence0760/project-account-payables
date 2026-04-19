@@ -114,24 +114,42 @@ Extract audit log writes from `backend/app/services/audit.py` into an async Lamb
 
 ## Environment Configuration
 
-The FastAPI app uses `pydantic-settings` (`backend/app/config.py`). Key production settings:
+The FastAPI app uses `pydantic-settings` (`backend/app/config.py`) with the `AP_` prefix. **Every variable below MUST be prefixed with `AP_`** — pydantic-settings ignores unprefixed names and silently falls back to defaults.
 
 ```env
 # Database
-DATABASE_URL=postgresql+asyncpg://user:pass@rds-host:5432/account_payables
-TENANT_DB_PREFIX=ap_
+AP_DATABASE_URL=postgresql+asyncpg://user:pass@rds-host:5432/account_payables
+AP_TENANT_DB_PREFIX=ap_
+
+# Auth — REQUIRED in production
+AP_SECRET_KEY=<generate via `openssl rand -hex 32`>
+AP_MFA_ENABLED=true
 
 # S3 (use real S3, not MinIO)
-S3_BUCKET=your-invoice-bucket
-# Omit S3_ENDPOINT_URL to use real AWS S3
+AP_S3_BUCKET=your-invoice-bucket
+# Omit AP_S3_ENDPOINT_URL to use real AWS S3
 
-# Extraction
-EXTRACTION_MODE=lambda
-SQS_EXTRACTION_QUEUE_URL=https://sqs.region.amazonaws.com/account/extraction-queue
+# Dispatch — async via SQS in production
+AP_EXTRACTION_MODE=lambda
+AP_SQS_EXTRACTION_QUEUE_URL=https://sqs.region.amazonaws.com/account/extraction-queue
+AP_ERP_MODE=lambda
+AP_SQS_ERP_QUEUE_URL=https://sqs.region.amazonaws.com/account/erp-queue
+AP_AUDIT_MODE=lambda
+AP_SQS_AUDIT_QUEUE_URL=https://sqs.region.amazonaws.com/account/audit-queue
 
-# Redis
-REDIS_URL=redis://elasticache-host:6379
+# Redis — required for auth blocklist, MFA, SSO state
+AP_REDIS_URL=redis://elasticache-host:6379
+
+# Email + signup
+AP_EMAIL_PROVIDER=ses
+AP_EMAIL_FROM=no-reply@yourcompany.com
+AP_PUBLIC_URL=https://app.yourcompany.com
+AP_TENANT_URL_TEMPLATE=https://{slug}.app.yourcompany.com
+AP_HCAPTCHA_SECRET=<from hCaptcha dashboard>
+AP_HCAPTCHA_SITEKEY=<from hCaptcha dashboard>
 ```
+
+See `docs/environment.md` for the full var list including extraction, ERP, and card platform keys.
 
 ## Network Architecture
 

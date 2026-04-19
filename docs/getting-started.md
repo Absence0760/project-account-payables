@@ -74,7 +74,7 @@ All demo accounts use password `demo`.
 | `admin@techflow.com`    | Tina TechAdmin | Admin    |
 | `clerk@techflow.com`    | Carlos Clerk   | AP Clerk |
 
-The seed script creates 2 organizations, 6 users, 4 roles, 8 vendors, and 8 invoices per tenant.
+The seed script creates 2 organizations, 6 users, 4 roles, 10 vendors, and 10 invoices per tenant.
 
 ## What's Running Where
 

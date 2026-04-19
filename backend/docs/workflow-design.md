@@ -15,16 +15,22 @@ Each invoice carries a **correlation ID** (UUID) that is propagated to every wor
 
 ## Invoice Statuses
 
-| Status             | Meaning                                  | Workflow Stage      |
-|--------------------|------------------------------------------|---------------------|
-| `new`              | Created, no file attached yet            | Pre-workflow        |
-| `pending`          | File uploaded, AI extraction in progress | Stage 1: Upload     |
-| `ready_for_review` | Extraction complete, awaiting reviewer   | Stage 2: Review     |
-| `approved`         | Reviewer approved, ready for ERP push    | Between 2 and 3     |
-| `rejected`         | Reviewer rejected, needs edits/re-upload | Stage 2 (branch)    |
-| `sending_to_erp`   | Async ERP submission in flight           | Stage 3: ERP Send   |
-| `sent_to_erp`      | ERP confirmed receipt — terminal state   | Stage 4: Done       |
-| `failed`           | Any stage failed                         | Error state         |
+| Status              | Meaning                                                            | Workflow Stage     |
+|---------------------|--------------------------------------------------------------------|--------------------|
+| `new`               | Created, no file attached yet                                      | Pre-workflow       |
+| `pending`           | File uploaded, AI extraction in progress                           | Stage 1: Extract   |
+| `ready_for_review`  | Extraction complete, awaiting reviewer                             | Stage 2: Review    |
+| `approved`          | Reviewer approved, ready for ERP push                              | Between 2 and 3    |
+| `rejected`          | Reviewer rejected, needs edits/re-upload                           | Stage 2 (branch)   |
+| `sending_to_erp`    | Async ERP submission in flight                                     | Stage 3: ERP Send  |
+| `sent_to_erp`       | ERP confirmed receipt                                              | Stage 4 (start)    |
+| `posted_in_erp`     | ERP posted/booked the invoice (set via inbound ERP webhook)        | Stage 4            |
+| `payment_scheduled` | Added to a payment run, awaiting execution                         | Stage 5 (payments) |
+| `paid`              | Payment executed                                                   | Stage 5            |
+| `done`              | Workflow complete — terminal state, invoice is now immutable       | Final              |
+| `failed`            | Any stage failed                                                   | Error state        |
+
+The state machine in `services/workflow_engine.py` enforces the transitions documented below. The `posted_in_erp`, `payment_scheduled`, and `paid` statuses are set by **external events** (inbound ERP webhook, payment-run execution) rather than the standard transition path; they live in the enum so the status badge is accurate but they're not part of the linear workflow flow.
 
 ## Status Transitions
 
@@ -37,11 +43,16 @@ ready_for_review ─> rejected                 (reviewer rejects)
 rejected ─────────> ready_for_review         (re-submitted after edits)
 rejected ─────────> new                      (requires full re-upload)
 approved ─────────> sending_to_erp           (ERP submission initiated)
+approved ─────────> done                     (no ERP step in workflow → terminal)
 sending_to_erp ───> sent_to_erp              (ERP confirmed)
 sending_to_erp ───> failed                   (ERP rejected or timed out)
+sent_to_erp ──────> done                     (terminal — workflow complete)
+new ──────────────> done                     (no workflow steps enabled → terminal)
 failed ───────────> pending                  (retry extraction)
 failed ───────────> sending_to_erp           (retry ERP push, if previously approved)
 ```
+
+`done` is the terminal state for the standard workflow path. `posted_in_erp` / `payment_scheduled` / `paid` are set by external triggers (ERP webhook, payment runs) and are not driven by `transition_invoice()`.
 
 All transitions are enforced by a state machine in `services/workflow_engine.py`. Invalid transitions return `409 Conflict`.
 
@@ -52,7 +63,7 @@ All transitions are enforced by a state machine in `services/workflow_engine.py`
 1. Accept file upload (PDF, PNG, JPEG, TIFF — max 25 MB).
 2. Store file in S3/MinIO under `{organization_id}/{invoice_id}/{filename}`.
 3. Create the Invoice record with `status=new` and placeholder fields (`invoice_number="PENDING"`, `amount=0`). Populate `file_key` and `file_url`.
-4. Create a WorkflowInstance and the first WorkflowStep (`type=upload`).
+4. Create a WorkflowInstance and the first WorkflowStep (`type=extraction`).
 5. Transition invoice to `pending`.
 6. Dispatch async AI extraction task.
 7. Return `202 Accepted` with the invoice ID and `correlation_id`.
@@ -126,7 +137,7 @@ Can be triggered manually by the user or automatically after approval.
 
 1. Validate invoice status is `approved`.
 2. Transition to `sending_to_erp`.
-3. Create a WorkflowStep (`type=erp_push`).
+3. Create a WorkflowStep (`type=erp_export`).
 4. Dispatch async ERP call. The invoice's `correlation_id` is sent as an idempotency key to prevent duplicate records in the ERP system.
 
 ### Retry Logic
@@ -141,14 +152,15 @@ Can be triggered manually by the user or automatically after approval.
 
 ## Stage 4: Done
 
-`sent_to_erp` is the terminal state. When the ERP confirms receipt:
+`done` is the terminal state. When the ERP confirms receipt:
 
-1. Complete the `erp_push` WorkflowStep.
+1. Complete the `erp_export` WorkflowStep.
 2. Create a final WorkflowStep (`type=done`, `action=completed`).
-3. Set `WorkflowInstance.state = "completed"`.
-4. Write audit log (`invoice.erp_confirmed`).
+3. Transition `sent_to_erp → done`.
+4. Set `WorkflowInstance.state = "completed"`.
+5. Write audit log (`invoice.erp_confirmed`).
 
-The invoice is now **immutable**. The PATCH and DELETE endpoints reject requests for invoices in `sent_to_erp` or `sending_to_erp` status.
+The invoice is **immutable** in the later half of the lifecycle. PATCH and DELETE reject requests when the invoice is in `sending_to_erp`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled`, `paid`, or `done` (the `IMMUTABLE_STATUSES` set in `app/api/invoices.py`).
 
 ## Workflow Models
 
@@ -159,15 +171,17 @@ One per organization. Represents the workflow template. The `steps_config` JSONB
 ```json
 {
   "steps": [
-    { "number": 1, "type": "upload",   "name": "Upload & Extract" },
-    { "number": 2, "type": "review",   "name": "Human Review" },
-    { "number": 3, "type": "erp_push", "name": "Send to ERP" },
-    { "number": 4, "type": "done",     "name": "Complete" }
+    { "number": 1, "type": "extraction", "name": "Data Extraction" },
+    { "number": 2, "type": "approval",   "name": "Manager Approval" },
+    { "number": 3, "type": "erp_export", "name": "ERP Export" },
+    { "number": 4, "type": "done",       "name": "Complete" }
   ]
 }
 ```
 
-Seeded per tenant at organization creation. Configurable for future custom approval chains.
+Step types `extraction`, `approval`, `erp_export`, `done` are canonical. Legacy aliases `upload`, `review`, `erp_push` are still accepted by `_STEP_TYPE_ALIASES` for backwards compatibility but new configs should use the canonical names.
+
+Seeded per tenant at organization creation. Configurable for custom approval chains.
 
 ### WorkflowInstance
 
@@ -189,7 +203,7 @@ One row per step attempted. Created when a step begins, updated on completion.
 |----------------|-----------------------------------------------------|
 | `correlation_id`| Same as the instance                               |
 | `step_number`  | Matches the definition step number                  |
-| `step_type`    | `upload`, `review`, `erp_push`, `done`              |
+| `step_type`    | `extraction`, `approval`, `erp_export`, `done` (canonical) |
 | `assigned_to`  | Reviewer user UUID (for review steps)               |
 | `action`       | Outcome: `extracted`, `approved`, `rejected`, etc.  |
 | `completed_at` | When the step finished                              |
@@ -262,15 +276,18 @@ Each entry records:
 
 ### Workflow Actions
 
-| Method | Path                              | Purpose                     | Returns |
-|--------|-----------------------------------|-----------------------------|---------|
-| POST   | `/api/invoices/upload`            | Upload file, start workflow | 202     |
-| POST   | `/api/invoices/{id}/assign`       | Assign reviewer             | 200     |
-| POST   | `/api/invoices/{id}/approve`      | Approve invoice             | 200     |
-| POST   | `/api/invoices/{id}/reject`       | Reject invoice              | 200     |
-| POST   | `/api/invoices/{id}/resubmit`     | Resubmit for review         | 200     |
-| POST   | `/api/invoices/{id}/send-to-erp`  | Initiate ERP push           | 202     |
-| POST   | `/api/invoices/{id}/retry-erp`    | Retry failed ERP push       | 202     |
+| Method | Path                                  | Purpose                                    | Returns |
+|--------|---------------------------------------|--------------------------------------------|---------|
+| POST   | `/api/invoices/upload`                | Upload file, start workflow                | 202     |
+| POST   | `/api/invoices/{id}/extract`          | Manually (re-)trigger extraction           | 202     |
+| POST   | `/api/invoices/{id}/reset-extraction` | Reset stuck `pending` extraction to `new`  | 200     |
+| POST   | `/api/invoices/{id}/assign`           | Assign reviewer                            | 200     |
+| POST   | `/api/invoices/{id}/approve`          | Approve invoice                            | 200     |
+| POST   | `/api/invoices/{id}/reject`           | Reject invoice                             | 200     |
+| POST   | `/api/invoices/{id}/resubmit`         | Resubmit for review                        | 200     |
+| POST   | `/api/invoices/{id}/send-to-erp`      | Initiate ERP push                          | 202     |
+| POST   | `/api/invoices/{id}/retry-erp`        | Retry failed ERP push                      | 202     |
+| POST   | `/api/invoices/{id}/complete`         | Advance to next workflow step              | 200     |
 
 ### Read Endpoints
 

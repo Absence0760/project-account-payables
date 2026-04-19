@@ -39,7 +39,18 @@ def test_user_response_contract():
     )
     data = resp.model_dump()
 
-    required_fields = {"id", "email", "full_name", "organization_id", "roles"}
+    required_fields = {
+        "id",
+        "email",
+        "full_name",
+        "organization_id",
+        "roles",
+        # Auth-flow flags both clients branch on. Dropping any of these
+        # silently breaks first-login and MFA UX.
+        "must_change_password",
+        "mfa_enabled",
+        "mfa_required_by_org",
+    }
     assert required_fields.issubset(data.keys())
     assert isinstance(data["roles"], list)
 

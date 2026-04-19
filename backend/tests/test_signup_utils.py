@@ -120,7 +120,7 @@ def test_signup_complete_request_schema():
 
 
 def test_change_password_request_schema_enforces_minimum():
-    from app.schemas.signup import ChangePasswordRequest
+    from app.schemas.auth import ChangePasswordRequest
 
     ChangePasswordRequest(current_password="old", new_password="x" * 12)
 
