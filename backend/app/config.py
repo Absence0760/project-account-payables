@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:7777", "http://localhost:5173"]
 
+    # Self-service signup
+    email_provider: str = "console"  # "console" (dev default) | "ses"
+    email_from: str = "no-reply@localhost"
+    aws_ses_region: str = "us-east-1"
+    public_url: str = "http://localhost:7777"  # where the frontend is served
+    tenant_url_template: str = "http://{slug}.localhost:7777"
+    hcaptcha_secret: str = ""  # empty = skip captcha verification
+    hcaptcha_sitekey: str = ""  # exposed to frontend via a public endpoint
+    signup_rate_limit_per_hour: int = 5
+
     # App
     debug: bool = True
 

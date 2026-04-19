@@ -5,6 +5,8 @@ interface User {
 	email: string;
 	full_name: string;
 	organization_id: string;
+	is_active: boolean;
+	must_change_password: boolean;
 	roles: string[];
 }
 

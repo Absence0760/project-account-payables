@@ -221,8 +221,34 @@ Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`.
 | Script | Purpose |
 |--------|---------|
 | `scripts/seed.py` | Creates 2 tenants (acme, techflow) with full sample data (vendors, invoices, POs, payments, exceptions) |
-| `scripts/create_tenant.py` | Provisions a single new tenant (org + admin user + DB + tables) |
+| `scripts/create_tenant.py` | CLI wrapper around `services.tenant_provisioning.provision_tenant` — provisions a single tenant (org + admin user + DB + tables) |
 | `scripts/migrate_all_tenants.py` | Runs `alembic upgrade head` on every tenant DB |
+
+## Self-service tenant signup
+
+Two-step flow under `/api/signup`:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/signup/start` | Rate-limit check, captcha verify, slug-format check, slug-availability check. Creates an `EmailVerification` row (24h TTL) and sends a verification email. No tenant resources created yet. |
+| `GET /api/signup/slug-check?slug=…` | Cheap inline availability check for the signup form. |
+| `POST /api/signup/complete` | Consumes the token, re-checks slug availability, provisions the tenant via `services.tenant_provisioning.provision_tenant`, generates a temp password, sends the welcome email with tenant URL + credentials, marks the verification consumed. |
+| `POST /api/auth/change-password` | Authenticated. Validates current password, enforces complexity, sets the new hash and clears `User.must_change_password`. |
+
+The welcome email contains the tenant URL (`AP_TENANT_URL_TEMPLATE`, e.g. `https://{slug}.app.com`) and a 16-char URL-safe temp password. The user is forced to change it on first login (`User.must_change_password` is `true` until they hit `/api/auth/change-password`).
+
+**Pluggable services:**
+
+- `services/email_adapters/` — `console` (local dev, logs to stdout) and `ses` (AWS SES) via `AP_EMAIL_PROVIDER`. Same registry pattern as extraction/ERP adapters.
+- `services/tenant_provisioning.py` — reusable async `provision_tenant()` used by both the CLI and the API.
+- `services/rate_limit.py` — Redis sliding-window limiter. Signup: `AP_SIGNUP_RATE_LIMIT_PER_HOUR` (default 5).
+- `utils/slug.py` — regex + reserved-word blocklist + DB uniqueness check.
+- `utils/hcaptcha.py` — server-side siteverify. Skips when `AP_HCAPTCHA_SECRET` is empty (local dev).
+- `utils/passwords.py` — `generate_temp_password()` + `validate_password_complexity()` (min 12 chars, upper/lower/digit).
+
+The captcha sitekey is exposed to the frontend via `GET /api/public-config` so the SvelteKit build doesn't need to bake it in.
+
+Relevant env vars: `AP_EMAIL_PROVIDER`, `AP_EMAIL_FROM`, `AP_AWS_SES_REGION`, `AP_PUBLIC_URL`, `AP_TENANT_URL_TEMPLATE`, `AP_HCAPTCHA_SECRET`, `AP_HCAPTCHA_SITEKEY`, `AP_SIGNUP_RATE_LIMIT_PER_HOUR`.
 
 ## Secrets management (SOPS + AWS KMS)
 

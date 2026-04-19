@@ -4,6 +4,7 @@ from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
+from app.models.signup import EmailVerification
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, WorkflowStep
@@ -30,4 +31,5 @@ __all__ = [
     "Payment",
     "Vendor",
     "APException",
+    "EmailVerification",
 ]

@@ -15,10 +15,12 @@ from app.api import (
     organization,
     payments,
     purchase_orders,
+    signup,
     vendors,
     workflow,
     workflow_definitions,
 )
+from app.config import settings
 
 
 @asynccontextmanager
@@ -57,6 +59,7 @@ app.include_router(vendors.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(organization.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
+app.include_router(signup.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")
 
@@ -64,3 +67,11 @@ app.include_router(workflow_definitions.router, prefix="/api")
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/public-config")
+async def public_config():
+    """Non-secret config exposed to the frontend (e.g., captcha sitekey)."""
+    return {
+        "hcaptcha_sitekey": settings.hcaptcha_sitekey,
+    }

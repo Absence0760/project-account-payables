@@ -11,6 +11,9 @@
 
 	let tenant = $state<string | null | undefined>(undefined);
 
+	// Routes that render without a tenant context (signup flow).
+	const PUBLIC_PATHS = ['/signup', '/verify'];
+
 	$effect(() => {
 		if (browser) {
 			tenant = getTenantSlug();
@@ -18,29 +21,50 @@
 	});
 
 	$effect(() => {
-		if (tenant && !auth.loggedIn && $page.url.pathname !== '/login') {
+		if (!tenant) return;
+
+		const path = $page.url.pathname;
+
+		if (!auth.loggedIn && path !== '/login') {
 			goto('/login');
+			return;
 		}
-		if (tenant && auth.loggedIn && !auth.user) {
+
+		if (auth.loggedIn && !auth.user) {
 			auth.fetchUser();
+			return;
+		}
+
+		if (
+			auth.loggedIn &&
+			auth.user?.must_change_password &&
+			path !== '/change-password'
+		) {
+			goto('/change-password');
 		}
 	});
 </script>
 
 {#if tenant === undefined}
 	<!-- SSR / hydration: tenant not resolved yet, render nothing to avoid flash -->
-{:else if tenant === null}
-	<div class="no-tenant">
-		<h1>No tenant found</h1>
-		<p>Access the app via a subdomain, e.g.:</p>
-		<ul>
-			<li><a href="http://acme.localhost:7777">acme.localhost:7777</a></li>
-			<li><a href="http://techflow.localhost:7777">techflow.localhost:7777</a></li>
-		</ul>
-	</div>
-{:else if $page.url.pathname === '/login'}
+{:else if PUBLIC_PATHS.includes($page.url.pathname)}
 	<slot />
-{:else if auth.loggedIn}
+{:else if tenant === null}
+	<div class="landing">
+		<div class="landing-inner">
+			<h1>Better AP</h1>
+			<p class="tagline">AP automation — invoices, approvals, payments.</p>
+			<div class="cta">
+				<a class="primary" href="/signup">Create your workspace</a>
+			</div>
+			<p class="sub">
+				Already have one? Visit <code>your-slug.localhost:7777</code> to sign in.
+			</p>
+		</div>
+	</div>
+{:else if $page.url.pathname === '/login' || $page.url.pathname === '/change-password'}
+	<slot />
+{:else if auth.loggedIn && auth.user && !auth.user.must_change_password}
 	<div class="app-shell">
 		<Sidebar />
 		<main class="main-content" style="margin-left: {sidebar.collapsed ? 60 : 220}px">
@@ -62,41 +86,61 @@
 		transition: margin-left 0.2s ease;
 	}
 
-	.no-tenant {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
+	.landing {
 		min-height: 100vh;
+		display: grid;
+		place-items: center;
+		background: var(--bg);
+		padding: 40px 20px;
+	}
+
+	.landing-inner {
+		max-width: 520px;
+		text-align: center;
 		color: var(--text);
-		font-family: inherit;
 	}
 
-	.no-tenant h1 {
-		font-size: 1.3rem;
-		margin-bottom: 8px;
+	.landing h1 {
+		font-size: 2.2rem;
+		margin: 0 0 12px;
+		font-weight: 700;
 	}
 
-	.no-tenant p {
+	.tagline {
+		font-size: 1rem;
 		color: var(--text-muted);
-		margin-bottom: 12px;
+		margin: 0 0 32px;
 	}
 
-	.no-tenant ul {
-		list-style: none;
-		padding: 0;
+	.cta {
+		margin: 24px 0;
 	}
 
-	.no-tenant li {
-		margin: 6px 0;
-	}
-
-	.no-tenant a {
-		color: var(--accent);
+	.cta .primary {
+		display: inline-block;
+		background: var(--accent);
+		color: #fff;
+		padding: 12px 28px;
+		border-radius: 6px;
 		text-decoration: none;
+		font-weight: 500;
+		font-size: 0.95rem;
 	}
 
-	.no-tenant a:hover {
-		text-decoration: underline;
+	.cta .primary:hover {
+		opacity: 0.9;
+	}
+
+	.sub {
+		font-size: 0.85rem;
+		color: var(--text-muted);
+		margin-top: 20px;
+	}
+
+	.sub code {
+		background: var(--surface);
+		padding: 2px 6px;
+		border-radius: 3px;
+		font-size: 0.82rem;
 	}
 </style>

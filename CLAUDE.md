@@ -84,6 +84,7 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 | `/exceptions` | Exception queue, resolution |
 | `/dashboard` | KPI aggregates (pipeline, aging, spend, trends) |
 | `/erp` | Inbound ERP webhooks (status updates) |
+| `/signup` | Self-service tenant signup (start / slug-check / complete) |
 | `/health` | Health check |
 
 ### Key services (`backend/app/services/`)
@@ -177,6 +178,7 @@ Full list in `backend/app/config.py`.
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
 | Getting started | `docs/getting-started.md` — first-run setup |
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
+| Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
 | Roadmap | `docs/roadmap.md` — feature backlog with status and competitive context |
 | Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 
