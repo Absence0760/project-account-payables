@@ -35,7 +35,7 @@ pnpm check            # typecheck
 | `/change-password` | `routes/change-password/+page.svelte` | `POST /api/auth/change-password` |
 | `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `POST /api/invoices/upload`, `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, bulk ops |
 | `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors` |
-| `/payments` | `routes/payments/+page.svelte` | `GET /api/payments`, `GET/POST /api/payments/runs`, `POST /api/payments/runs/{id}/execute` |
+| `/payments` | `routes/payments/+page.svelte` | `GET /api/payments/{queue,summary,runs/}`, `GET /api/payments`, `POST /api/payments/runs` (creates draft), `GET /api/payments/runs/{id}` + `POST .../execute` (via `RunDetailModal`) |
 | `/exceptions` | `routes/exceptions/+page.svelte` | `GET /api/exceptions`, `PATCH /api/exceptions/{id}` |
 | `/workflows` | `routes/workflows/+page.svelte` | `GET /api/workflows`, `POST /api/workflows` |
 | `/workflows/[id]` | `routes/workflows/[id]/+page.svelte` | `GET/PATCH /api/workflows/{id}`, `GET /api/organization` |
@@ -86,6 +86,7 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 - `StatusBadge.svelte` — invoice status display
 - `InvoiceModal.svelte` — invoice detail/edit modal
 - `AdvancedSearchModal.svelte` — invoice search filters
+- `RunDetailModal.svelte` — payment run detail; shows status, total, payments table; Execute button when run is `draft`
 - `Toast.svelte` — toast notifications
 - `Landing.svelte` + `Pricing.svelte` — public marketing landing page (no-tenant route)
 

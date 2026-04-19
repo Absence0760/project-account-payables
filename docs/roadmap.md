@@ -158,21 +158,21 @@ Current: exact-match duplicate check (`vendor_name + invoice_number`), semantic 
 ## Priority 3: Payments
 
 ### Payment Run UI
-**Status:** Partial — payments page with 3 tabs (Queue, History, Runs), summary bar, and backend endpoints done. Payment run creation/execution flow not yet implemented.
-
-Full payment execution flow in the frontend.
+**Status:** Done (core flow) — queue → select + per-row method → create draft → review in modal → execute. Drilldown from Runs tab works.
 
 - [x] Payment queue page — approved invoices sorted by due date, overdue highlighting
 - [x] Payment history — all methods in one table (ACH, wire, check, card badges)
 - [x] Payment runs list — batch history with status, total, count
 - [x] Summary bar — total paid, pending, queue count, payments, rebates earned
 - [x] Payment queue backend — `GET /api/payments/queue` and `GET /api/payments/summary`
+- [x] Create payment run — select invoices in the queue, choose method per row, totals shown
+- [x] Run detail modal — status, total, payments table, references; opens after creating a draft and from any row in the Runs tab
+- [x] Execute payment run — separate from create, so a draft can be reviewed before money moves
 - [ ] Early-pay discount highlighting with savings calculation
-- [ ] Create payment run — select invoices, choose method, review totals
-- [ ] Execute payment run — batch processing with status tracking
-- [ ] Payment details modal — status, reference, method, dates
-- [ ] Void/cancel payment capability
+- [ ] Void/cancel payment capability — backend doesn't support it yet
+- [ ] Cancel a draft run before executing — backend doesn't support it yet
 - [ ] Payment remittance generation (PDF/email to vendor)
+- [ ] Approval workflow on a draft run (CFO sign-off before execute)
 
 **Files:** `backend/app/api/payments.py`, `backend/app/models/payment.py`
 

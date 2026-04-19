@@ -5,6 +5,7 @@
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/Toast.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
+	import RunDetailModal from '$lib/components/RunDetailModal.svelte';
 
 	type Tab = 'queue' | 'history' | 'runs';
 	let activeTab = $state<Tab>('queue');
@@ -41,6 +42,10 @@
 	let creatingRun = $state(false);
 	let showReview = $state(false);
 
+	// Run detail modal — opened both after creating a draft from the queue
+	// and when clicking a row in the Runs tab.
+	let activeRunId = $state<string | null>(null);
+
 	let allQueueSelected = $derived(
 		queue.length > 0 && queue.every(q => selectedQueue.has(q.id))
 	);
@@ -68,35 +73,44 @@
 		}
 	}
 
-	async function createAndExecuteRun() {
+	async function createDraftRun() {
 		if (selectedQueue.size === 0) return;
 		creatingRun = true;
 		try {
-			const items = [...selectedQueue].map(id => ({
+			const items = [...selectedQueue].map((id) => ({
 				invoice_id: id,
 				method: paymentMethods[id] || 'ach',
 			}));
 
-			// Create the run
-			const run = await api.post<{ id: string; message: string }>('/api/payments/runs', { items });
+			// Create as a draft. The backend always creates with status='draft';
+			// a separate /execute call moves money. The modal lets the user
+			// review what's about to be paid before triggering it.
+			const run = await api.post<{ id: string; message: string }>(
+				'/api/payments/runs',
+				{ items }
+			);
 
-			// Execute immediately
-			const result = await api.post<{ message: string }>(`/api/payments/runs/${run.id}/execute`, {});
-
-			toast(result.message, 'success');
+			toast('Draft payment run created — review and execute', 'success');
 			selectedQueue = new Set();
 			showReview = false;
+			activeRunId = run.id;
 
-			// Refresh all data
-			await loadSummary();
-			await loadQueue();
+			// Refresh runs list so the new draft shows up immediately.
 			await loadRuns();
-			if (activeTab === 'history') await paymentStore.fetch(buildParams());
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Payment run failed', 'error');
 		} finally {
 			creatingRun = false;
 		}
+	}
+
+	async function onRunChanged() {
+		// Called by the modal after a successful execute. Refresh everything
+		// the user might be looking at.
+		await loadSummary();
+		await loadQueue();
+		await loadRuns();
+		if (activeTab === 'history') await paymentStore.fetch(buildParams());
 	}
 
 	// Runs
@@ -296,8 +310,10 @@
 					</table>
 					<div class="review-footer">
 						<span class="review-total">Total: {formatCurrency(selectedTotal)}</span>
-						<button class="btn-execute" disabled={creatingRun} onclick={createAndExecuteRun}>
-							{creatingRun ? 'Processing...' : `Pay ${selectedQueue.size} Invoice${selectedQueue.size > 1 ? 's' : ''}`}
+						<button class="btn-execute" disabled={creatingRun} onclick={createDraftRun}>
+							{creatingRun
+								? 'Creating draft...'
+								: `Create Draft Run · ${selectedQueue.size} Invoice${selectedQueue.size > 1 ? 's' : ''}`}
 						</button>
 					</div>
 				</div>
@@ -385,7 +401,7 @@
 				</thead>
 				<tbody>
 					{#each runs as run (run.id)}
-						<tr>
+						<tr class="clickable" onclick={() => (activeRunId = run.id)}>
 							<td class="mono">{run.id.slice(0, 8)}</td>
 							<td><span class="badge {run.status}">{run.status}</span></td>
 							<td class="right mono">{run.total_amount ? formatCurrency(run.total_amount) : '—'}</td>
@@ -401,6 +417,14 @@
 		{/if}
 	</div>
 </div>
+
+{#if activeRunId}
+	<RunDetailModal
+		runId={activeRunId}
+		onclose={() => (activeRunId = null)}
+		onchange={onRunChanged}
+	/>
+{/if}
 
 <style>
 	.workspace {
@@ -626,6 +650,10 @@
 
 	tbody tr:hover {
 		background: rgba(99, 140, 255, 0.04);
+	}
+
+	tbody tr.clickable {
+		cursor: pointer;
 	}
 
 	.mono {

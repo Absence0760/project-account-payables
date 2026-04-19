@@ -155,20 +155,27 @@ Card details (full number, CVV) are never stored in the database — only `last_
 
 ### Payment Flow
 
+The flow is split into **create draft** and **execute** so a CFO can review what's about to be paid before money moves.
+
 1. User navigates to **Payments > Queue**
 2. **Selects invoices** via checkboxes (select-all available)
 3. Action bar shows count and total: *"3 selected — $18,050.00"*
 4. Clicks **Review & Pay** — review panel slides in
 5. **Chooses payment method per invoice** (ACH, Wire, Check, Virtual Card) via dropdown
-6. Reviews the batch total
-7. Clicks **Pay 3 Invoices** — this:
-   - Creates a payment run (draft)
-   - Immediately executes it
+6. Clicks **Create Draft Run · 3 Invoices** — this:
+   - `POST /api/payments/runs` creates a `PaymentRun` with `status='draft'`
+   - Pending payment rows are created (no money has moved)
+   - The Run Detail modal opens automatically showing the draft
+7. Toast: *"Draft payment run created — review and execute"*
+8. In the **Run Detail modal** the user reviews the payments table and clicks **Execute**:
+   - `POST /api/payments/runs/{id}/execute` flips the run to `completed`
    - Generates payment references (e.g., `ACH-20260406-001`)
    - Updates invoice statuses to `payment_scheduled`
    - **Triggers async ERP sync** in background
-8. Toast: *"Payment run executed — 3 payments completed. ERP sync in progress."*
-9. Queue clears, History/Runs/Summary update
+9. Toast: *"Payment run executed — 3 payments completed. ERP sync in progress."*
+10. Queue clears, History/Runs/Summary update; the modal stays open showing the now-completed run
+
+The same Run Detail modal is reachable by clicking any row in the **Runs** tab — for completed runs it shows the payments + references; for stale drafts it offers Execute.
 
 ### ERP Payment Sync
 
