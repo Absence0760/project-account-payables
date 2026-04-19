@@ -370,3 +370,39 @@ When they disagree on a field, cache wins (runs later in the pipeline) — per-v
 ### Privacy
 
 Default per-tenant: no invoice embeddings ever leak across tenants. The table lives in each `ap_<slug>` DB. Cross-tenant learning is possible as an explicit opt-in (move embeddings to a shared catalog and flag with a consent column), but not implemented — mentioned here for future design.
+
+---
+
+## Duplicate detection (semantic)
+
+Built on top of the same `invoice_embeddings` table as RAG. Complements the rule-based check in `services/invoice_warnings.py` (which does exact `vendor_name + invoice_number` match). The semantic pass catches near-duplicates where text overlap is very high but strings differ slightly — re-uploads, vendor resends with one field tweaked, OCR whitespace drift.
+
+### How it runs
+
+In `services/extraction.run_extraction`, after the RAG priors + vendor-cache passes, the flow calls `services.duplicate_detection.find_semantic_duplicates(db, invoice_text, exclude_invoice_id=<self>)`. It:
+
+1. Embeds the current invoice's text (same adapter as RAG — mock locally, OpenAI in prod).
+2. Queries `invoice_embeddings` ordered by cosine distance.
+3. Returns every match at or above `AP_DUPLICATE_SIMILARITY_THRESHOLD` (default `0.95`).
+
+If any matches come back, extraction:
+
+- Appends a `duplicate_similar` warning to `invoice.warnings` with the top match summary and a `related_invoices` array (`{invoice_id, invoice_number, vendor_name, amount, similarity}` per match). The existing yellow warning icon on the invoice-list row picks this up automatically.
+- Creates an `APException` of type `duplicate` (open, warning severity) so it lands in the exception queue.
+
+Extraction never blocks — the invoice still gets created and routed. Reviewer decides.
+
+### Threshold rationale
+
+`0.95` is intentionally tighter than RAG retrieval (which wants semantically related but *distinct* invoices for few-shot prompting). In observed data, recurring monthly invoices from the same vendor with a new amount/date typically land in the 0.85-0.93 range and should NOT be flagged. Only near-identical text should hit 0.95+.
+
+Adjust via `AP_DUPLICATE_SIMILARITY_THRESHOLD`. Lower → more sensitive (more false positives); higher → stricter (only exact duplicates).
+
+### Interaction with the rule-based check
+
+The existing exact-match check in `invoice_warnings.py` runs on every invoice (including manually created ones without extraction). The semantic check runs only on extracted invoices with a text layer. They're complementary:
+
+- Exact match catches *deterministic* duplicates regardless of PDF quality.
+- Semantic match catches fuzzy duplicates but requires a readable text layer and a non-empty embedding store.
+
+Both emit the same `duplicate` exception type, so the queue and filtering work uniformly.

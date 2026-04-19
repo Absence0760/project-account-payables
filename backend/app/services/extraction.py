@@ -170,6 +170,39 @@ async def run_extraction(
         if applied_priors:
             print(f"[extraction] Applied vendor priors: {applied_priors}")
 
+        # Semantic duplicate detection — reuses invoice_embeddings. Catches
+        # near-duplicates that the rule-based (vendor_name + invoice_number)
+        # check in invoice_warnings.py misses. Flags with a warning on the
+        # invoice and an APException for the queue; never blocks the
+        # extraction itself — reviewer decides.
+        from app.models.exception import Exception as APException
+        from app.services.duplicate_detection import (
+            find_semantic_duplicates,
+            matches_to_warning,
+        )
+
+        duplicate_matches = await find_semantic_duplicates(
+            db, invoice_text, exclude_invoice_id=invoice_id
+        )
+        duplicate_warning = matches_to_warning(duplicate_matches)
+        if duplicate_warning:
+            existing = list(invoice.warnings or [])
+            existing.append(duplicate_warning)
+            invoice.warnings = existing
+            db.add(
+                APException(
+                    invoice_id=invoice_id,
+                    exception_type="duplicate",
+                    severity="warning",
+                    description=duplicate_warning["message"],
+                    status="open",
+                    organization_id=invoice_org_id,
+                )
+            )
+            print(
+                f"[extraction] Duplicate detection: {len(duplicate_matches)} near-match(es)"
+            )
+
         # Save extraction result with priors metadata (what the UI will show
         # for transparency — which cache overrides and RAG neighbors shaped
         # this extraction).

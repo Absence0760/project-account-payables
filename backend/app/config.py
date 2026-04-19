@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
+    # Cosine similarity above which a new invoice is flagged as a likely
+    # duplicate of an already-stored one. Tighter than rag_top_k retrieval:
+    # RAG wants semantically related invoices; dup detection wants near-
+    # identical ones.
+    duplicate_similarity_threshold: float = 0.95
 
     # App
     debug: bool = True
