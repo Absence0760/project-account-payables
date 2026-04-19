@@ -111,9 +111,7 @@ async def store_embedding(
     result = await adapter.embed(text)
 
     existing = (
-        await db.execute(
-            select(InvoiceEmbedding).where(InvoiceEmbedding.invoice_id == invoice.id)
-        )
+        await db.execute(select(InvoiceEmbedding).where(InvoiceEmbedding.invoice_id == invoice.id))
     ).scalar_one_or_none()
 
     snapshot = _snapshot(invoice)

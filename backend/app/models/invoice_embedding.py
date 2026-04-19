@@ -28,9 +28,7 @@ EMBEDDING_DIMENSIONS = 1536
 class InvoiceEmbedding(Base, TimestampMixin):
     __tablename__ = "invoice_embeddings"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("invoices.id", ondelete="CASCADE"),

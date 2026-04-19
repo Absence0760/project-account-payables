@@ -102,9 +102,7 @@ async def run_extraction(
         )
 
         invoice_text = extract_invoice_text(file_bytes)
-        neighbors = await retrieve_similar(
-            db, invoice_text, exclude_invoice_id=invoice_id
-        )
+        neighbors = await retrieve_similar(db, invoice_text, exclude_invoice_id=invoice_id)
         if neighbors:
             config["few_shot_prompt"] = build_few_shot_prompt(neighbors)
             print(f"[extraction] RAG: {len(neighbors)} neighbors injected as few-shot")
@@ -199,9 +197,7 @@ async def run_extraction(
                     organization_id=invoice_org_id,
                 )
             )
-            print(
-                f"[extraction] Duplicate detection: {len(duplicate_matches)} near-match(es)"
-            )
+            print(f"[extraction] Duplicate detection: {len(duplicate_matches)} near-match(es)")
 
         # Save extraction result with priors metadata (what the UI will show
         # for transparency — which cache overrides and RAG neighbors shaped

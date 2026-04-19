@@ -31,15 +31,15 @@ def test_validate_slug_format_accepts_valid(slug):
 @pytest.mark.parametrize(
     "slug",
     [
-        "",              # empty
-        "ab",            # too short
-        "1acme",         # must start with letter
-        "ACME",          # upper-case
-        "acme_corp",     # underscore not allowed
-        "-acme",         # leading hyphen
-        "acme-",         # trailing hyphen
-        "ac--me",        # consecutive hyphens
-        "a" * 31,        # too long
+        "",  # empty
+        "ab",  # too short
+        "1acme",  # must start with letter
+        "ACME",  # upper-case
+        "acme_corp",  # underscore not allowed
+        "-acme",  # leading hyphen
+        "acme-",  # trailing hyphen
+        "ac--me",  # consecutive hyphens
+        "a" * 31,  # too long
     ],
 )
 def test_validate_slug_format_rejects_invalid(slug):
@@ -82,10 +82,10 @@ def test_validate_password_complexity_accepts_strong():
 @pytest.mark.parametrize(
     "password",
     [
-        "short1A",              # too short
-        "alllowercase12345",    # no upper
-        "ALLUPPERCASE12345",    # no lower
-        "NoDigitsHereAtAll",    # no digit
+        "short1A",  # too short
+        "alllowercase12345",  # no upper
+        "ALLUPPERCASE12345",  # no lower
+        "NoDigitsHereAtAll",  # no digit
     ],
 )
 def test_validate_password_complexity_rejects_weak(password):

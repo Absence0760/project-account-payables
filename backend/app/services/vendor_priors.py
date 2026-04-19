@@ -120,10 +120,14 @@ async def record_corrections(
 
 async def _get_priors(db: AsyncSession, vendor_id: uuid.UUID) -> dict[str, VendorExtractionPrior]:
     rows = (
-        await db.execute(
-            select(VendorExtractionPrior).where(VendorExtractionPrior.vendor_id == vendor_id)
+        (
+            await db.execute(
+                select(VendorExtractionPrior).where(VendorExtractionPrior.vendor_id == vendor_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {r.field_name: r for r in rows}
 
 

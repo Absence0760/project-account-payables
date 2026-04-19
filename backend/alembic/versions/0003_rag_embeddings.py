@@ -68,15 +68,12 @@ def upgrade() -> None:
     )
 
     op.execute(
-        "ALTER TABLE invoice_extraction_results "
-        "ADD COLUMN IF NOT EXISTS priors_metadata JSONB"
+        "ALTER TABLE invoice_extraction_results ADD COLUMN IF NOT EXISTS priors_metadata JSONB"
     )
 
 
 def downgrade() -> None:
     if not _is_tenant_db():
         return
-    op.execute(
-        "ALTER TABLE invoice_extraction_results DROP COLUMN IF EXISTS priors_metadata"
-    )
+    op.execute("ALTER TABLE invoice_extraction_results DROP COLUMN IF EXISTS priors_metadata")
     op.execute("DROP TABLE IF EXISTS invoice_embeddings")
