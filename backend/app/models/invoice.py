@@ -70,6 +70,7 @@ class Invoice(Base, TimestampMixin):
     approval_date: Mapped[date | None] = mapped_column(Date)
     approved_by: Mapped[str | None] = mapped_column(String(255))
     rejected_by: Mapped[str | None] = mapped_column(String(255))
+    uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     assigned_to_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     assigned_to: Mapped[str | None] = mapped_column(String(255))
     gl_account: Mapped[str | None] = mapped_column(String(100))

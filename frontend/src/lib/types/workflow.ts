@@ -17,14 +17,24 @@ export interface ExtractionStepConfig {
 	auto_approve_threshold: number;
 }
 
+export interface ApprovalLevelConfig {
+	min_amount: number | null;
+	max_amount: number | null;
+	approver_ids: string[];
+	required_approvals: number;
+	name: string;
+}
+
 export interface ApprovalStepConfig {
 	required: boolean;
 	approver_id: string | null;
 	approver_ids: string[];
-	approver_strategy: 'manual' | 'specific' | 'auto';
+	approver_strategy: 'manual' | 'specific' | 'auto' | 'chain';
 	auto_approve_below: number | null;
 	require_cfo_above: number | null;
 	max_invoice_amount: number | null;
+	approval_chain: ApprovalLevelConfig[];
+	require_segregation: boolean;
 }
 
 export type ErpExportFormat = 'json' | 'xml' | 'csv' | 'cxml' | 'edi';
@@ -78,6 +88,8 @@ export const DEFAULT_APPROVAL_CONFIG: ApprovalStepConfig = {
 	auto_approve_below: null,
 	require_cfo_above: null,
 	max_invoice_amount: null,
+	approval_chain: [],
+	require_segregation: false,
 };
 
 export const DEFAULT_ERP_CONFIG: ErpExportStepConfig = {

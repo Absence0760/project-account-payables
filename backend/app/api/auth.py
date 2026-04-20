@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from passlib.context import CryptContext
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -336,3 +337,87 @@ async def change_password(
     await db.commit()
     org = await _load_user_org(db, user.organization_id)
     return _user_response(user, org)
+
+
+# ---------- Delegation / Out-of-Office ----------
+
+
+class SetDelegateRequest(BaseModel):
+    delegate_to_id: str
+    until: str  # ISO datetime
+
+
+class DelegationResponse(BaseModel):
+    delegate_to_id: str | None = None
+    delegate_to_name: str | None = None
+    until: str | None = None
+    is_active: bool = False
+
+
+@router.get("/delegation", response_model=DelegationResponse)
+async def get_delegation(
+    db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(get_current_user),
+):
+    """Get current user's delegation status."""
+    from datetime import UTC, datetime
+
+    is_active = bool(
+        user.delegate_to_id and user.delegate_until and user.delegate_until > datetime.now(UTC)
+    )
+    delegate_name = None
+    if user.delegate_to_id:
+        result = await db.execute(select(User).where(User.id == user.delegate_to_id))
+        delegate = result.scalar_one_or_none()
+        if delegate:
+            delegate_name = delegate.full_name
+
+    return DelegationResponse(
+        delegate_to_id=str(user.delegate_to_id) if user.delegate_to_id else None,
+        delegate_to_name=delegate_name,
+        until=user.delegate_until.isoformat() if user.delegate_until else None,
+        is_active=is_active,
+    )
+
+
+@router.post("/delegation", response_model=DelegationResponse)
+async def set_delegation(
+    body: SetDelegateRequest,
+    db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(get_current_user),
+):
+    """Set out-of-office delegation — approvals route to delegate."""
+    import uuid as _uuid
+    from datetime import datetime
+
+    delegate_id = _uuid.UUID(body.delegate_to_id)
+    if delegate_id == user.id:
+        raise HTTPException(status_code=422, detail="Cannot delegate to yourself.")
+
+    # Verify delegate exists and is in same org
+    result = await db.execute(select(User).where(User.id == delegate_id))
+    delegate = result.scalar_one_or_none()
+    if not delegate or delegate.organization_id != user.organization_id:
+        raise HTTPException(status_code=404, detail="Delegate user not found.")
+
+    user.delegate_to_id = delegate_id
+    user.delegate_until = datetime.fromisoformat(body.until)
+    await db.commit()
+
+    return DelegationResponse(
+        delegate_to_id=str(delegate_id),
+        delegate_to_name=delegate.full_name,
+        until=user.delegate_until.isoformat(),
+        is_active=True,
+    )
+
+
+@router.delete("/delegation", status_code=204)
+async def clear_delegation(
+    db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(get_current_user),
+):
+    """Clear out-of-office delegation."""
+    user.delegate_to_id = None
+    user.delegate_until = None
+    await db.commit()

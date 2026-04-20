@@ -69,6 +69,7 @@ async def upload_invoice(
             currency="USD",
             status=InvoiceStatus.new,
             organization_id=org_id,
+            uploaded_by_id=user.id,
         )
         db.add(invoice)
         await db.flush()

@@ -58,6 +58,8 @@ class WorkflowStep(Base, TimestampMixin):
     step_number: Mapped[int] = mapped_column(nullable=False)
     step_type: Mapped[str] = mapped_column(String(50), nullable=False)
     assigned_to: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    original_assigned_to: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    approval_level: Mapped[int | None] = mapped_column()
     action: Mapped[str | None] = mapped_column(String(50))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

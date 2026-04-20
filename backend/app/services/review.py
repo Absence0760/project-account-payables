@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import date
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -96,7 +97,23 @@ async def approve_invoice(
     actor_roles: set[str] | None = None,
     corrections: dict | None = None,
 ) -> Invoice:
+    from app.services.approval_chain import (
+        advance_approval_chain,
+        check_segregation,
+    )
+
+    # Read approval config from workflow snapshot
+    instance = await get_workflow_instance(db, invoice.id)
+    approval_config: dict = {}
+    if instance and instance.steps_config_snapshot:
+        approval_config = get_step_config(instance.steps_config_snapshot, "approval")
+
+    # Segregation of duties: uploader cannot approve
+    check_segregation(invoice, actor_id, approval_config)
+
+    # Threshold enforcement
     await _enforce_approval_thresholds(db, invoice, actor_roles or set())
+
     # Apply any field corrections
     if corrections:
         field_map = {"vendor": "vendor_name"}
@@ -119,6 +136,16 @@ async def approve_invoice(
     except Exception as exc:  # noqa: BLE001
         _log.warning("RAG embedding storage failed for %s: %s", invoice.id, exc)
 
+    # Multi-level chain: check if this approval satisfies the current level
+    # or if more levels remain.
+    if approval_config.get("approver_strategy") == "chain" and instance:
+        chain_complete = advance_approval_chain(instance, actor_id)
+        if not chain_complete:
+            # More levels needed — stay in ready_for_review, record partial
+            await db.flush()
+            return invoice
+
+    # All approvals satisfied (or single-level) — finalize
     invoice.approval_date = date.today()
     invoice.approved_by = actor_name
 
@@ -131,7 +158,6 @@ async def approve_invoice(
         details={"corrections": corrections} if corrections else None,
     )
 
-    instance = await get_workflow_instance(db, invoice.id)
     if instance:
         await advance_workflow(db, instance, "erp_push", action="approved")
 
@@ -208,18 +234,36 @@ async def assign_reviewer(
     actor_id: uuid.UUID,
     reviewer_id: uuid.UUID,
     reviewer_name: str,
+    control_db: AsyncSession | None = None,
 ) -> None:
+    from app.services.audit_dispatch import dispatch_audit
+
+    # Check delegation — if reviewer is OOO, reassign to their delegate
+    original_id = None
+    if control_db:
+        from app.services.approval_chain import resolve_assignee
+
+        effective_id, original_id = await resolve_assignee(reviewer_id, control_db)
+        if original_id:
+            # Delegation active — look up delegate's name
+            from app.models.user import User as UserModel
+
+            delegate_result = await control_db.execute(
+                select(UserModel).where(UserModel.id == effective_id)
+            )
+            delegate = delegate_result.scalar_one_or_none()
+            if delegate:
+                reviewer_id = effective_id
+                reviewer_name = delegate.full_name
+
     invoice.assigned_to_id = reviewer_id
     invoice.assigned_to = reviewer_name
-    from app.services.audit_dispatch import dispatch_audit
 
     instance = await get_workflow_instance(db, invoice.id)
     if not instance:
         return
 
     # Find the current review step and assign it
-    from sqlalchemy import select
-
     from app.models.workflow import WorkflowStep
 
     result = await db.execute(
@@ -235,6 +279,8 @@ async def assign_reviewer(
     step = result.scalar_one_or_none()
     if step:
         step.assigned_to = reviewer_id
+        if original_id:
+            step.original_assigned_to = original_id
 
     await dispatch_audit(
         db,
@@ -244,5 +290,8 @@ async def assign_reviewer(
         action="invoice.assigned_for_review",
         entity_type="invoice",
         entity_id=invoice.id,
-        details={"reviewer_id": str(reviewer_id)},
+        details={
+            "reviewer_id": str(reviewer_id),
+            **({"delegated_from": str(original_id)} if original_id else {}),
+        },
     )

@@ -50,6 +50,11 @@ class User(Base, TimestampMixin):
     mfa_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     mfa_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Delegation — when set and delegate_until > now, this user is OOO and
+    # their approval assignments are routed to the delegate.
+    delegate_to_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    delegate_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )

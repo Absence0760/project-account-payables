@@ -13,14 +13,26 @@ class ExtractionStepConfig(BaseModel):
     auto_approve_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
 
 
+class ApprovalLevelConfig(BaseModel):
+    """One level in a multi-level approval chain."""
+
+    min_amount: float | None = None
+    max_amount: float | None = None
+    approver_ids: list[str] = []
+    required_approvals: int = 1
+    name: str = ""
+
+
 class ApprovalStepConfig(BaseModel):
     required: bool = True
     approver_id: str | None = None  # deprecated, use approver_ids
     approver_ids: list[str] = []
-    approver_strategy: str = "manual"  # "manual", "specific", "auto"
+    approver_strategy: str = "manual"  # "manual", "specific", "auto", "chain"
     auto_approve_below: float | None = None  # auto-approve invoices below this amount
     require_cfo_above: float | None = None  # require CFO approval above this amount
     max_invoice_amount: float | None = None  # reject invoices above this amount
+    approval_chain: list[ApprovalLevelConfig] = []  # used when strategy="chain"
+    require_segregation: bool = False  # approver ≠ uploader
 
 
 class ErpExportStepConfig(BaseModel):
