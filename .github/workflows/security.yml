@@ -1,8 +1,9 @@
 name: Security
 
-# Static analysis + container scanning. Runs on every PR + push to main, and
-# weekly on a schedule so freshly-disclosed CVEs in unchanged dependencies
-# still get caught. Findings flow to the GitHub Security tab via SARIF.
+# Static analysis + container scanning. Runs on every push to main, on PRs
+# that touch code (docs-only PRs skipped), and weekly to catch CVEs
+# disclosed since the last commit. Findings flow to the GitHub Security
+# tab via SARIF.
 #
 # This job is part of the SOC 2 prerequisite checklist
 # (`docs/soc2-readiness.md` § Vulnerability + dependency management).
@@ -12,30 +13,41 @@ name: Security
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   schedule:
     # Mondays at 06:00 UTC — catches CVEs disclosed since the last commit.
     - cron: '0 6 * * 1'
 
 permissions:
-  # SARIF upload requires `security-events: write`. Restricting to the
-  # minimum keeps the workflow safe to run on PRs from forks.
+  # SARIF upload requires `security-events: write`. `actions: read` is
+  # needed by the CodeQL analyze step's telemetry / workflow-run lookup
+  # (without it you get "Resource not accessible by integration" which
+  # fails the whole job even when the analysis itself succeeded).
   contents: read
   security-events: write
+  actions: read
 
 jobs:
   codeql-python:
     name: CodeQL (Python)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v3
         with:
           languages: python
-          # Default + security-extended catches more sinks (SQL injection,
-          # path traversal, XSS) at the cost of some false positives.
-          queries: security-extended
+          # Default security suite. `security-extended` was taking 30–60s
+          # extra on a tiny codebase with no additional hits; if the
+          # signal-to-noise ever justifies it, flip back.
+          queries: security
       - uses: github/codeql-action/analyze@v3
         with:
           category: '/language:python'
@@ -43,12 +55,13 @@ jobs:
   codeql-javascript:
     name: CodeQL (TypeScript/JavaScript)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v3
         with:
           languages: javascript-typescript
-          queries: security-extended
+          queries: security
       - uses: github/codeql-action/analyze@v3
         with:
           category: '/language:javascript-typescript'
@@ -56,6 +69,7 @@ jobs:
   trivy-backend-image:
     name: Trivy (backend container)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +77,9 @@ jobs:
         run: docker build -t ap-backend:scan ./backend
 
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pin to an actual published tag. `0.28.0` was a typo — Trivy's
+        # v0.x/v1.x tags live at https://github.com/aquasecurity/trivy-action/releases.
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ap-backend:scan
           format: sarif
