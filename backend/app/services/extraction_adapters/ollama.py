@@ -121,17 +121,25 @@ class OllamaAdapter(ExtractionAdapter):
             return None
 
     @staticmethod
-    def _pdf_to_image(pdf_bytes: bytes) -> bytes | None:
-        """Convert first page of PDF to PNG image bytes. Fallback for scanned PDFs."""
+    def _pdf_to_images(pdf_bytes: bytes, max_pages: int = 20) -> list[bytes]:
+        """Convert all pages of a PDF to PNG images. Fallback for scanned PDFs.
+
+        Returns a list of PNG byte buffers (one per page), capped at max_pages
+        to avoid blowing up token budgets on unusually long documents.
+        """
         try:
             import fitz  # PyMuPDF
 
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            page = doc[0]
-            pix = page.get_pixmap(dpi=200)
-            return pix.tobytes("png")
+            images = []
+            for i, page in enumerate(doc):
+                if i >= max_pages:
+                    break
+                pix = page.get_pixmap(dpi=200)
+                images.append(pix.tobytes("png"))
+            return images
         except Exception:
-            return None
+            return []
 
     def _base_url(self) -> str:
         return self.config.get("base_url", "http://localhost:11434")
@@ -155,17 +163,16 @@ class OllamaAdapter(ExtractionAdapter):
         use_vision = True
         pdf_text = None
 
+        page_images: list[bytes] = []
         if is_pdf:
             # Try to extract text first — much faster and more accurate
             pdf_text = self._extract_pdf_text(file_bytes)
             if pdf_text:
                 use_vision = False
             else:
-                # Scanned PDF — convert to image for vision model
-                image_bytes = self._pdf_to_image(file_bytes)
-                if image_bytes:
-                    file_bytes = image_bytes
-                else:
+                # Scanned PDF — convert ALL pages to images for vision model
+                page_images = self._pdf_to_images(file_bytes)
+                if not page_images:
                     return ExtractionResult(
                         success=False,
                         error="Cannot read PDF. Install PyMuPDF: pip install PyMuPDF",
@@ -187,15 +194,19 @@ class OllamaAdapter(ExtractionAdapter):
         }
 
         if use_vision:
-            # Vision mode — send image to model
-            file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+            # Vision mode — send all page images to model (multi-page support)
+            if page_images:
+                images_b64 = [base64.b64encode(img).decode("utf-8") for img in page_images]
+            else:
+                # Non-PDF image file — single image
+                images_b64 = [base64.b64encode(file_bytes).decode("utf-8")]
             body = {
                 "model": self._model(),
                 "messages": [
                     {
                         "role": "user",
                         "content": EXTRACTION_PROMPT,
-                        "images": [file_b64],
+                        "images": images_b64,
                     }
                 ],
                 "stream": False,

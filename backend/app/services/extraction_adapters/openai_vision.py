@@ -43,15 +43,15 @@ class OpenAIVisionAdapter(ExtractionAdapter):
         is_pdf = mime_type == "application/pdf" or file_key.lower().endswith(".pdf")
         pdf_text = None
 
+        page_images: list[bytes] = []
         if is_pdf:
             from app.services.extraction_adapters.ollama import OllamaAdapter
 
             pdf_text = OllamaAdapter._extract_pdf_text(file_bytes)
             if not pdf_text:
-                # Scanned PDF — convert to image
-                image_bytes = OllamaAdapter._pdf_to_image(file_bytes)
-                if image_bytes:
-                    file_bytes = image_bytes
+                # Scanned PDF — convert ALL pages to images
+                page_images = OllamaAdapter._pdf_to_images(file_bytes)
+                if page_images:
                     mime_type = "image/png"
 
         # If we have text, use text-only mode (cheaper, faster, more accurate)
@@ -148,12 +148,24 @@ class OpenAIVisionAdapter(ExtractionAdapter):
             result.overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
             return result
 
-        file_b64 = base64.b64encode(file_bytes).decode("utf-8")
-
-        if mime_type in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):
-            image_url = f"data:{mime_type};base64,{file_b64}"
+        # Build image content blocks — multi-page support
+        if page_images:
+            image_content = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{base64.b64encode(img).decode('utf-8')}"
+                    },
+                }
+                for img in page_images
+            ]
         else:
-            image_url = f"data:image/png;base64,{file_b64}"
+            file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+            if mime_type in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):
+                image_url = f"data:{mime_type};base64,{file_b64}"
+            else:
+                image_url = f"data:image/png;base64,{file_b64}"
+            image_content = [{"type": "image_url", "image_url": {"url": image_url}}]
 
         body = {
             "model": model,
@@ -162,7 +174,7 @@ class OpenAIVisionAdapter(ExtractionAdapter):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image_url", "image_url": {"url": image_url}},
+                        *image_content,
                         {"type": "text", "text": EXTRACTION_PROMPT},
                     ],
                 }

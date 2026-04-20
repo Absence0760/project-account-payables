@@ -273,7 +273,7 @@ backend/app/models/usage.py              # ExtractionUsage model for billing
 | Platform/BYOK dual model | Done |
 | Usage billing dashboard | Planned |
 | Custom chart of accounts in prompt | **Done** |
-| Multi-page PDF support | Planned |
+| Multi-page PDF support | **Done** — Claude native document mode; Ollama/OpenAI send all pages as images |
 | Learning from corrections — per-vendor cache | **Done** |
 | Learning from corrections — RAG with pgvector | **Done** |
 

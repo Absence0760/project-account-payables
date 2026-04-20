@@ -25,7 +25,7 @@ Feature backlog for the AP automation platform, ordered by impact.
 - [x] Platform/BYOK dual model — platform keys in env vars, customer keys in org settings
 - [x] Extraction config in organization settings UI
 - [x] Usage tracking (ExtractionUsage model) for billing
-- [ ] Support multi-page PDFs — PyMuPDF rasterize each page, merge line-items, keep highest-confidence header fields
+- [x] Support multi-page PDFs — `_pdf_to_images()` converts all pages (up to 20) to PNG; vision adapters (Ollama, OpenAI) send all page images in one API call. Claude Vision handles multi-page natively via document mode. Text-mode already extracted all pages.
 - [ ] Handle scanned/rotated/low-quality images — auto-deskew via PyMuPDF OSD before extraction
 - [x] Auto-approve extraction above configurable threshold — `auto_approve_enabled` + `auto_approve_threshold` on extraction step config; also checks `auto_approve_below` from approval step. Invoices skip review and go directly to `approved` with `approved_by="system (auto-approve)"`
 - [x] Custom chart of accounts in extraction prompt — org's active GLAccount rows queried and injected into extraction prompt via `config["gl_account_catalog"]`. Falls back to hardcoded default list
