@@ -264,9 +264,8 @@ Each entry records:
 | Scenario                    | Handling                                                             |
 |-----------------------------|----------------------------------------------------------------------|
 | Concurrent transitions      | `SELECT ... FOR UPDATE` prevents race conditions                     |
-| Extraction timeout          | 5-minute limit; auto-transition to `failed`                          |
-| Orphaned `pending` invoices | Background sweep transitions to `failed` after N minutes             |
-| Orphaned `sending_to_erp`   | Same sweep for invoices stuck beyond the retry window                |
+| Extraction timeout          | `services/extraction_reaper.py` runs in-process every `AP_EXTRACTION_REAPER_INTERVAL_SECONDS` (60s default); transitions any invoice in `pending` for more than `AP_EXTRACTION_TIMEOUT_SECONDS` (600s default) to `failed` and appends an `extraction_timeout` warning. Reviewer can re-trigger or fall back to manual entry. Same logic available as `python scripts/reap_stuck_extractions.py` for one-shot use. |
+| Orphaned `sending_to_erp`   | (pending) — same pattern, not yet implemented for the ERP push path  |
 | Duplicate invoices          | Check `invoice_number` + `vendor_name` per org; return `409 Conflict`|
 | Rejection loops             | Track count in `state_data`; auto-escalate after N rejections        |
 | File validation             | Max 25 MB; allowed types: PDF, PNG, JPEG, TIFF                      |

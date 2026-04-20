@@ -27,10 +27,30 @@ from app.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
-    from app.database import dispose_all_engines
+    # Background reaper for invoices stuck in `pending` extraction. Started
+    # on app boot, cancelled cleanly on shutdown. Toggleable via
+    # AP_EXTRACTION_REAPER_ENABLED so tests / one-shot CLI runs can disable it.
+    import asyncio
 
-    await dispose_all_engines()
+    from app.services.extraction_reaper import run_reaper_loop
+
+    reaper_task: asyncio.Task | None = None
+    if settings.extraction_reaper_enabled:
+        reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
+
+    try:
+        yield
+    finally:
+        if reaper_task is not None:
+            reaper_task.cancel()
+            try:
+                await reaper_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        from app.database import dispose_all_engines
+
+        await dispose_all_engines()
 
 
 app = FastAPI(

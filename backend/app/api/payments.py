@@ -179,9 +179,7 @@ async def payment_summary(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     """KPIs for the payments page summary bar."""
-    paid_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(
-        Payment.status == "completed"
-    )
+    paid_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed")
     total_paid = float((await db.execute(paid_q)).scalar() or 0)
 
     pending_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(
@@ -631,5 +629,3 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
         from app.services.payment_erp_sync import dispatch_payment_sync
 
         await dispatch_payment_sync(run_id, uuid.UUID(str(org.id)))
-
-

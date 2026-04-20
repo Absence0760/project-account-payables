@@ -6,9 +6,9 @@ this script to top up.
 
 Usage (from `backend/`):
 
-    python scripts/seed_payable_invoices.py                        # default: 5 invoices into ap_acme
-    python scripts/seed_payable_invoices.py --tenant ap_techflow   # specific tenant
-    python scripts/seed_payable_invoices.py --count 10             # more invoices
+    python scripts/seed_payable_invoices.py                      # default: 5 into ap_acme
+    python scripts/seed_payable_invoices.py --tenant ap_techflow # specific tenant
+    python scripts/seed_payable_invoices.py --count 10           # more invoices
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import argparse
 import asyncio
 import random
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -50,7 +50,6 @@ async def seed(db_name: str, count: int) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     today = date.today()
-    now = datetime.now(UTC)
 
     async with factory() as session:
         vendors_result = await session.execute(
@@ -58,9 +57,7 @@ async def seed(db_name: str, count: int) -> None:
         )
         vendors = vendors_result.scalars().all()
         if not vendors:
-            print(
-                f"FAIL: tenant {db_name} has no active vendors — run scripts/seed.py first"
-            )
+            print(f"FAIL: tenant {db_name} has no active vendors — run scripts/seed.py first")
             await engine.dispose()
             return
 

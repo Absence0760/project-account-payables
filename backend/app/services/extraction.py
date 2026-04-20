@@ -7,7 +7,7 @@ Tracks usage for billing when platform mode is used.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -323,80 +323,246 @@ async def run_extraction(
         await db.commit()
 
 
-def _clean_decimal(val: str) -> Decimal | None:
-    """Clean a string value for Decimal conversion — strips $, commas, spaces."""
-    if not val:
+# Sentinel values to treat as "no extraction." Vision models routinely
+# emit these literal strings (or leak parts of the prompt schema) when a
+# field isn't present on the document; landing them verbatim in the DB
+# pollutes downstream search, vendor matching, and exception flagging.
+_NULL_SENTINELS = frozenset(
+    s.casefold()
+    for s in (
+        "",
+        "null",
+        "none",
+        "n/a",
+        "na",
+        "-",
+        "—",
+        "string or null",
+        "string",
+        "tbd",
+        "unknown",
+        "not provided",
+        "not specified",
+        "not available",
+    )
+)
+
+# Currency symbols stripped before Decimal conversion. We keep the raw
+# value's currency code on `invoice.currency`; the amount column is the
+# numeric magnitude only.
+_CURRENCY_SYMBOLS = "$€£¥₹₽₩฿₪₦"
+
+
+def _clean_decimal(val: str | None) -> Decimal | None:
+    """Clean a string value for Decimal conversion.
+
+    Handles the common failure modes vision models produce:
+    - Currency symbols (`$`, `€`, `£`, ...)
+    - Thousands separators + spaces
+    - Percent signs (e.g. `8.25%` for tax_rate)
+    - Parenthesised negatives (`(123.45)` → `-123.45`, classic accounting)
+    - Unicode minus sign (`−` U+2212) used by Word-style invoices
+    - Sentinel "no value" strings (`null`, `N/A`, `-`, etc.)
+
+    Returns None on anything that can't be parsed — never raises.
+    """
+    if val is None:
         return None
-    cleaned = val.strip().replace("$", "").replace(",", "").replace(" ", "")
-    if cleaned in ("", "null", "None", "N/A", "n/a", "-"):
+    s = str(val).strip()
+    if s.casefold() in _NULL_SENTINELS:
+        return None
+
+    # Accounting negatives: "(123.45)" → "-123.45"
+    if s.startswith("(") and s.endswith(")"):
+        s = "-" + s[1:-1].strip()
+
+    # Strip currency symbols + separators
+    for sym in _CURRENCY_SYMBOLS:
+        s = s.replace(sym, "")
+    s = s.replace(",", "").replace(" ", "").replace("%", "")
+    # Unicode minus → ASCII minus
+    s = s.replace("\u2212", "-")
+
+    if s.casefold() in _NULL_SENTINELS:
         return None
     try:
-        return Decimal(cleaned)
+        return Decimal(s)
     except Exception:
         return None
 
 
+def _clean_string(val: str | None) -> str | None:
+    """Filter sentinel "no value" strings out of free-form text fields.
+
+    Same `_NULL_SENTINELS` treatment as `_clean_decimal` so we don't end
+    up with literal `"null"` or `"N/A"` in `vendor_address` etc. Returns
+    the trimmed string or None.
+    """
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s or s.casefold() in _NULL_SENTINELS:
+        return None
+    return s
+
+
+# Map of common ways models phrase a payment method → our canonical value.
+# Keys are casefolded; values match the dropdown options in
+# `InvoiceModal.svelte` so a select-bind round-trips cleanly.
+_PAYMENT_METHOD_ALIASES = {
+    "ach": "ach",
+    "ach transfer": "ach",
+    "ach payment": "ach",
+    "automated clearing house": "ach",
+    "wire": "wire",
+    "wire transfer": "wire",
+    "swift": "wire",
+    "check": "check",
+    "cheque": "check",
+    "paper check": "check",
+    "credit card": "credit_card",
+    "creditcard": "credit_card",
+    "card": "credit_card",
+    "credit": "credit_card",
+    "cc": "credit_card",
+    "virtual card": "credit_card",
+    "vcard": "credit_card",
+    "other": "other",
+    "rtp": "wire",  # real-time payment — no dropdown option, fold into wire
+    "ach preferred. wire transfer accepted.": "ach",  # exact prompt-leak we've seen
+}
+
+
+def _normalize_payment_method(val: str | None) -> str | None:
+    """Map the model's free-form payment-method string to a canonical
+    lowercase value the frontend dropdown matches.
+
+    Without this, an extraction of `"ACH"` (uppercase) leaves the
+    dropdown blank because its options are lowercase. Returns None
+    when nothing maps and the value isn't already a known canonical form.
+    """
+    if val is None:
+        return None
+    s = str(val).strip().casefold()
+    if not s or s in _NULL_SENTINELS:
+        return None
+    if s in _PAYMENT_METHOD_ALIASES:
+        return _PAYMENT_METHOD_ALIASES[s]
+    # Heuristic: substring match for compound phrases like "ACH preferred."
+    for alias, canonical in _PAYMENT_METHOD_ALIASES.items():
+        if alias in s:
+            return canonical
+    return None
+
+
+def _clean_date(val: str | None) -> date | None:
+    """Parse a model-returned date string into a `date`.
+
+    Tries ISO first (the format we ask for in the prompt), then the
+    common variations vision models slip into: US `MM/DD/YYYY`,
+    European `DD/MM/YYYY` (ambiguous with US — we try US first since
+    most invoices we see are US), and human-readable `Month DD, YYYY`.
+
+    Strict `date.fromisoformat` was silently dropping anything but
+    `YYYY-MM-DD`, which meant a model returning "March 15, 2024" lost
+    the date entirely.
+    """
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s or s.casefold() in _NULL_SENTINELS:
+        return None
+
+    # ISO is the prompt-requested format — try first.
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        pass
+
+    # Common alternates, in priority order.
+    formats = (
+        "%m/%d/%Y",  # 3/15/2024
+        "%m-%d-%Y",  # 3-15-2024
+        "%d/%m/%Y",  # 15/3/2024 (EU)
+        "%d-%m-%Y",
+        "%Y/%m/%d",  # 2024/3/15
+        "%B %d, %Y",  # March 15, 2024
+        "%b %d, %Y",  # Mar 15, 2024
+        "%d %B %Y",  # 15 March 2024
+        "%d %b %Y",  # 15 Mar 2024
+        "%d-%b-%Y",  # 15-Mar-2024
+        "%Y-%m-%d %H:%M:%S",  # ISO with time — drop the time
+    )
+    for fmt in formats:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _apply_extraction(invoice: Invoice, result: ExtractionResult) -> None:
-    """Apply extracted fields to the invoice record."""
-    if result.invoice_number.value:
-        invoice.invoice_number = result.invoice_number.value
-    if result.vendor_name.value:
-        invoice.vendor_name = result.vendor_name.value
-    if result.amount.value:
-        d = _clean_decimal(result.amount.value)
-        if d is not None:
-            invoice.amount = d
-    if result.currency.value:
-        invoice.currency = result.currency.value
-    if result.subtotal.value:
-        d = _clean_decimal(result.subtotal.value)
-        if d is not None:
-            invoice.subtotal = d
-    if result.tax_amount.value:
-        d = _clean_decimal(result.tax_amount.value)
-        if d is not None:
-            invoice.tax_amount = d
-    if result.tax_rate.value:
-        d = _clean_decimal(result.tax_rate.value)
-        if d is not None:
-            invoice.tax_rate = d
-    if result.discount_amount.value:
-        d = _clean_decimal(result.discount_amount.value)
-        if d is not None:
-            invoice.discount_amount = d
-    if result.shipping_amount.value:
-        d = _clean_decimal(result.shipping_amount.value)
-        if d is not None:
-            invoice.shipping_amount = d
-    if result.invoice_date.value:
-        from datetime import date as date_type
+    """Apply extracted fields to the invoice record.
 
-        try:
-            invoice.invoice_date = date_type.fromisoformat(result.invoice_date.value)
-        except ValueError:
-            pass
-    if result.due_date.value:
-        from datetime import date as date_type
+    Every field goes through a typed cleaner that:
+    - Filters sentinel "null" / "N/A" / prompt-leak strings
+    - Normalises common case + format variants
+    - Drops un-parsable values silently (rather than corrupting the row)
 
-        try:
-            invoice.due_date = date_type.fromisoformat(result.due_date.value)
-        except ValueError:
-            pass
-    if result.payment_terms.value:
-        invoice.payment_terms = result.payment_terms.value
-    if result.po_number.value:
-        invoice.po_number = result.po_number.value
-    if result.description.value:
-        invoice.description = result.description.value
-    if result.vendor_address.value:
-        invoice.vendor_address = result.vendor_address.value
-    if result.vendor_tax_id.value:
-        invoice.vendor_tax_id = result.vendor_tax_id.value
-    if result.payment_method.value:
-        invoice.payment_method = result.payment_method.value
-    if result.reference_number.value:
-        invoice.reference_number = result.reference_number.value
-    if result.bill_to_address.value:
-        invoice.bill_to_address = result.bill_to_address.value
-    if result.remit_to_address.value:
-        invoice.remit_to_address = result.remit_to_address.value
+    None of the cleaners overwrite an existing value with None — the model
+    might miss a field that the human (or a previous extraction) already
+    populated. We only assign when the cleaner returns a real value.
+    """
+
+    # Free-form text fields — sentinel-filter only.
+    for src, dst in (
+        (result.invoice_number, "invoice_number"),
+        (result.vendor_name, "vendor_name"),
+        (result.payment_terms, "payment_terms"),
+        (result.po_number, "po_number"),
+        (result.description, "description"),
+        (result.vendor_address, "vendor_address"),
+        (result.vendor_tax_id, "vendor_tax_id"),
+        (result.reference_number, "reference_number"),
+        (result.bill_to_address, "bill_to_address"),
+        (result.remit_to_address, "remit_to_address"),
+    ):
+        cleaned = _clean_string(src.value)
+        if cleaned is not None:
+            setattr(invoice, dst, cleaned)
+
+    # Decimals.
+    for src, dst in (
+        (result.amount, "amount"),
+        (result.subtotal, "subtotal"),
+        (result.tax_amount, "tax_amount"),
+        (result.tax_rate, "tax_rate"),
+        (result.discount_amount, "discount_amount"),
+        (result.shipping_amount, "shipping_amount"),
+    ):
+        d = _clean_decimal(src.value)
+        if d is not None:
+            setattr(invoice, dst, d)
+
+    # Dates.
+    for src, dst in (
+        (result.invoice_date, "invoice_date"),
+        (result.due_date, "due_date"),
+    ):
+        d = _clean_date(src.value)
+        if d is not None:
+            setattr(invoice, dst, d)
+
+    # Currency — uppercase 3-char code or None. Models sometimes return
+    # "US Dollars" or "USD." with punctuation; we normalise via the
+    # sentinel filter + uppercase, then validate length.
+    cur = _clean_string(result.currency.value)
+    if cur is not None:
+        cur_upper = cur.upper().rstrip(".").strip()
+        if len(cur_upper) == 3 and cur_upper.isalpha():
+            invoice.currency = cur_upper
+
+    # Payment method — map free-form to canonical dropdown values.
+    pm = _normalize_payment_method(result.payment_method.value)
+    if pm is not None:
+        invoice.payment_method = pm

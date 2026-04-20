@@ -613,14 +613,40 @@
 
 			const conf: FieldConfidence = {};
 			for (const [key, val] of Object.entries(raw)) {
-				if (val && typeof val === 'object' && 'confidence' in val) {
-					conf[key] = (val as { confidence: number }).confidence;
-				}
+				if (!val || typeof val !== 'object') continue;
+				if (!('confidence' in val) || !('value' in val)) continue;
+				const field = val as { value: unknown; confidence: number };
+				// Don't record confidence for fields the model didn't actually
+				// extract — many adapters emit a "0% / Very low" confidence on
+				// blank fields, which would render a misleading dot next to an
+				// empty input. Treat null / empty string / zero-length as
+				// "no extraction" for dot-rendering purposes.
+				const v = field.value;
+				const hasValue =
+					v !== null &&
+					v !== undefined &&
+					!(typeof v === 'string' && v.trim() === '');
+				if (!hasValue) continue;
+				conf[key] = field.confidence;
 			}
 			fieldConfidence = conf;
 		} catch {
 			// non-critical
 		}
+	}
+
+	// Render a confidence dot only when (a) the model reported a confidence
+	// AND (b) the value the user actually sees in the input is non-empty.
+	// The raw extraction result alone isn't enough — adapters sometimes emit
+	// values the backend can't parse (e.g. "8.25%" for a Decimal column),
+	// leaving the input blank but raw_result populated. Previously we showed
+	// a dot next to a blank field in that case.
+	function dot(field: string, value: unknown): boolean {
+		if (!(field in fieldConfidence)) return false;
+		if (value === null || value === undefined) return false;
+		if (typeof value === 'string' && value.trim() === '') return false;
+		if (typeof value === 'number' && Number.isNaN(value)) return false;
+		return true;
 	}
 
 	function confidenceLabel(score: number): string {
@@ -709,23 +735,23 @@
 				<form onsubmit={(e) => { e.preventDefault(); save(); }}>
 					<div class="form-grid">
 						<label class:field-error={canSubmitStatus && !vendor.trim()}>
-							<span>Vendor <em class="required">*</em> {#if fieldConfidence.vendor_name}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_name)}" data-tip="{Math.round(fieldConfidence.vendor_name * 100)}% — {confidenceLabel(fieldConfidence.vendor_name)}"></span>{/if}</span>
+							<span>Vendor <em class="required">*</em> {#if dot('vendor_name', vendor)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_name)}" data-tip="{Math.round(fieldConfidence.vendor_name * 100)}% — {confidenceLabel(fieldConfidence.vendor_name)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor} required />
 						</label>
 						<label class:field-error={canSubmitStatus && !invoice_number.trim()}>
-							<span>Invoice # <em class="required">*</em> {#if fieldConfidence.invoice_number}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.invoice_number)}" data-tip="{Math.round(fieldConfidence.invoice_number * 100)}% — {confidenceLabel(fieldConfidence.invoice_number)}"></span>{/if}</span>
+							<span>Invoice # <em class="required">*</em> {#if dot('invoice_number', invoice_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.invoice_number)}" data-tip="{Math.round(fieldConfidence.invoice_number * 100)}% — {confidenceLabel(fieldConfidence.invoice_number)}"></span>{/if}</span>
 							<input type="text" bind:value={invoice_number} required />
 						</label>
 						<label class:field-error={canSubmitStatus && (!amount || amount <= 0)}>
-							<span>Amount <em class="required">*</em> {#if fieldConfidence.amount}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.amount)}" data-tip="{Math.round(fieldConfidence.amount * 100)}% — {confidenceLabel(fieldConfidence.amount)}"></span>{/if}</span>
+							<span>Amount <em class="required">*</em> {#if dot('amount', amount)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.amount)}" data-tip="{Math.round(fieldConfidence.amount * 100)}% — {confidenceLabel(fieldConfidence.amount)}"></span>{/if}</span>
 							<input type="number" step="0.01" bind:value={amount} required />
 						</label>
 						<label>
-							<span>Due Date {#if fieldConfidence.due_date}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.due_date)}" data-tip="{Math.round(fieldConfidence.due_date * 100)}% — {confidenceLabel(fieldConfidence.due_date)}"></span>{/if}</span>
+							<span>Due Date {#if dot('due_date', due_date)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.due_date)}" data-tip="{Math.round(fieldConfidence.due_date * 100)}% — {confidenceLabel(fieldConfidence.due_date)}"></span>{/if}</span>
 							<input type="date" bind:value={due_date} />
 						</label>
 						<label>
-							<span>PO Number {#if fieldConfidence.po_number}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.po_number)}" data-tip="{Math.round(fieldConfidence.po_number * 100)}% — {confidenceLabel(fieldConfidence.po_number)}"></span>{/if}</span>
+							<span>PO Number {#if dot('po_number', po_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.po_number)}" data-tip="{Math.round(fieldConfidence.po_number * 100)}% — {confidenceLabel(fieldConfidence.po_number)}"></span>{/if}</span>
 							<input type="text" bind:value={po_number} />
 						</label>
 						{#if !isClerkOnly}
@@ -744,11 +770,11 @@
 							</label>
 						{/if}
 						<label>
-							<span>Reference # {#if fieldConfidence.reference_number}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.reference_number)}" data-tip="{Math.round(fieldConfidence.reference_number * 100)}% — {confidenceLabel(fieldConfidence.reference_number)}"></span>{/if}</span>
+							<span>Reference # {#if dot('reference_number', reference_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.reference_number)}" data-tip="{Math.round(fieldConfidence.reference_number * 100)}% — {confidenceLabel(fieldConfidence.reference_number)}"></span>{/if}</span>
 							<input type="text" bind:value={reference_number} />
 						</label>
 						<label>
-							<span>Payment Method {#if fieldConfidence.payment_method}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.payment_method)}" data-tip="{Math.round(fieldConfidence.payment_method * 100)}% — {confidenceLabel(fieldConfidence.payment_method)}"></span>{/if}</span>
+							<span>Payment Method {#if dot('payment_method', payment_method)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.payment_method)}" data-tip="{Math.round(fieldConfidence.payment_method * 100)}% — {confidenceLabel(fieldConfidence.payment_method)}"></span>{/if}</span>
 							<select bind:value={payment_method}>
 								<option value="">—</option>
 								<option value="ach">ACH</option>
@@ -759,27 +785,27 @@
 							</select>
 						</label>
 						<label>
-							<span>Tax Rate (%) {#if fieldConfidence.tax_rate}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.tax_rate)}" data-tip="{Math.round(fieldConfidence.tax_rate * 100)}% — {confidenceLabel(fieldConfidence.tax_rate)}"></span>{/if}</span>
+							<span>Tax Rate (%) {#if dot('tax_rate', tax_rate)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.tax_rate)}" data-tip="{Math.round(fieldConfidence.tax_rate * 100)}% — {confidenceLabel(fieldConfidence.tax_rate)}"></span>{/if}</span>
 							<input type="number" step="0.01" min="0" max="100" bind:value={tax_rate} />
 						</label>
 						<label>
-							<span>Vendor Tax ID {#if fieldConfidence.vendor_tax_id}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_tax_id)}" data-tip="{Math.round(fieldConfidence.vendor_tax_id * 100)}% — {confidenceLabel(fieldConfidence.vendor_tax_id)}"></span>{/if}</span>
+							<span>Vendor Tax ID {#if dot('vendor_tax_id', vendor_tax_id)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_tax_id)}" data-tip="{Math.round(fieldConfidence.vendor_tax_id * 100)}% — {confidenceLabel(fieldConfidence.vendor_tax_id)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor_tax_id} placeholder="EIN / VAT #" />
 						</label>
 						<label class="full-width">
-							<span>Vendor Address {#if fieldConfidence.vendor_address}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_address)}" data-tip="{Math.round(fieldConfidence.vendor_address * 100)}% — {confidenceLabel(fieldConfidence.vendor_address)}"></span>{/if}</span>
+							<span>Vendor Address {#if dot('vendor_address', vendor_address)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_address)}" data-tip="{Math.round(fieldConfidence.vendor_address * 100)}% — {confidenceLabel(fieldConfidence.vendor_address)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor_address} />
 						</label>
 						<label class="full-width">
-							<span>Ship-to Address {#if fieldConfidence.ship_to_address}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.ship_to_address)}" data-tip="{Math.round(fieldConfidence.ship_to_address * 100)}% — {confidenceLabel(fieldConfidence.ship_to_address)}"></span>{/if}</span>
+							<span>Ship-to Address {#if dot('ship_to_address', ship_to_address)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.ship_to_address)}" data-tip="{Math.round(fieldConfidence.ship_to_address * 100)}% — {confidenceLabel(fieldConfidence.ship_to_address)}"></span>{/if}</span>
 							<input type="text" bind:value={ship_to_address} />
 						</label>
 						<label class="full-width">
-							<span>Description {#if fieldConfidence.description}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.description)}" data-tip="{Math.round(fieldConfidence.description * 100)}% — {confidenceLabel(fieldConfidence.description)}"></span>{/if}</span>
+							<span>Description {#if dot('description', description)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.description)}" data-tip="{Math.round(fieldConfidence.description * 100)}% — {confidenceLabel(fieldConfidence.description)}"></span>{/if}</span>
 							<input type="text" bind:value={description} />
 						</label>
 						<label>
-							<span>GL Account {#if fieldConfidence.suggested_gl_account}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_gl_account)}" data-tip="{Math.round(fieldConfidence.suggested_gl_account * 100)}% — {confidenceLabel(fieldConfidence.suggested_gl_account)}"></span>{/if}</span>
+							<span>GL Account {#if dot('suggested_gl_account', gl_account)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_gl_account)}" data-tip="{Math.round(fieldConfidence.suggested_gl_account * 100)}% — {confidenceLabel(fieldConfidence.suggested_gl_account)}"></span>{/if}</span>
 							{#if glAccounts.length > 0}
 								<select bind:value={gl_account}>
 									<option value="">— Select —</option>
@@ -792,7 +818,7 @@
 							{/if}
 						</label>
 						<label>
-							<span>Cost Center {#if fieldConfidence.suggested_cost_center}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_cost_center)}" data-tip="{Math.round(fieldConfidence.suggested_cost_center * 100)}% — {confidenceLabel(fieldConfidence.suggested_cost_center)}"></span>{/if}</span>
+							<span>Cost Center {#if dot('suggested_cost_center', cost_center)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_cost_center)}" data-tip="{Math.round(fieldConfidence.suggested_cost_center * 100)}% — {confidenceLabel(fieldConfidence.suggested_cost_center)}"></span>{/if}</span>
 							<input type="text" bind:value={cost_center} placeholder="e.g. ADMIN" />
 						</label>
 					</div>

@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     # Extraction
     extraction_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_extraction_queue_url: str = ""  # required when extraction_mode = "lambda"
+    # Background reaper that transitions invoices stuck in `pending` (extraction
+    # timed out, worker crashed, Ollama hung, etc.) to `failed` so the reviewer
+    # can retry. Threshold = how long an invoice may sit in `pending` before
+    # being declared dead. Interval = how often the reaper sweeps.
+    extraction_timeout_seconds: int = 600
+    extraction_reaper_interval_seconds: int = 60
+    extraction_reaper_enabled: bool = True
 
     # ERP
     erp_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS

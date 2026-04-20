@@ -22,6 +22,75 @@ from app.services.extraction_adapters.claude_vision import EXTRACTION_PROMPT, _p
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
 
 
+def _parse_ollama_json(content: str) -> dict | None:
+    """Robust JSON extractor for Ollama responses.
+
+    Even with `format: "json"` set on the request, the smaller vision
+    models (Llama 3.2 Vision 11B in particular) sometimes wrap output in
+    ```json fences, prefix it with prose ("Here is the extraction: ..."),
+    or trail with commentary. We try, in order:
+
+    1. Direct parse — the happy path.
+    2. Strip ```json``` fences.
+    3. Find the first balanced { ... } block via brace counting.
+
+    Returns the parsed dict, or None if no JSON object can be recovered.
+    """
+    if not content:
+        return None
+    text = content.strip()
+
+    # 1. Direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Fenced block
+    if "```" in text:
+        candidate = text.split("```", 2)[1] if text.count("```") >= 2 else text.split("```", 1)[1]
+        candidate = candidate.lstrip()
+        if candidate.lower().startswith("json"):
+            candidate = candidate[4:].lstrip()
+        candidate = candidate.split("```", 1)[0].strip()
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Brace-counted scan — find the first `{` and read forward until the
+    #    matching closing `}`. Tolerates models that prepend "Here is the
+    #    invoice data:" or trailing commentary.
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start : i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 @register_extraction_adapter("ollama")
 class OllamaAdapter(ExtractionAdapter):
     """Extract invoice data using a local Ollama vision model.
@@ -103,6 +172,20 @@ class OllamaAdapter(ExtractionAdapter):
                         provider=self.provider_name,
                     )
 
+        # Sampling settings. We deliberately do NOT pin a fixed seed: with
+        # weak local vision models (Llama 3.2 Vision 11B), a fixed seed +
+        # temperature=0 locks every retry onto the exact same failure mode
+        # — if that one path misses a field, you can never recover. A
+        # fresh seed each call gives the model a chance to land on a
+        # different path on retry, which is the user-visible behaviour
+        # we actually want for "click extract again, hope it works."
+        #
+        # `num_predict` is just a buffer for the long JSON schema response
+        # and doesn't affect quality. Keep it.
+        ollama_options = {
+            "num_predict": 4096,
+        }
+
         if use_vision:
             # Vision mode — send image to model
             file_b64 = base64.b64encode(file_bytes).decode("utf-8")
@@ -117,6 +200,7 @@ class OllamaAdapter(ExtractionAdapter):
                 ],
                 "stream": False,
                 "format": "json",
+                "options": ollama_options,
             }
         else:
             # Text mode — send extracted text, works with any model (no vision needed)
@@ -132,10 +216,17 @@ class OllamaAdapter(ExtractionAdapter):
                 ],
                 "stream": False,
                 "format": "json",
+                "options": ollama_options,
             }
 
+        # Ollama serialises inference per-model by default (one in-flight
+        # request at a time). When users upload N invoices in quick
+        # succession, requests 2..N queue inside Ollama. With a tight
+        # client timeout the queued requests give up before they even
+        # start running. 600s lets the queue drain even with ~10 invoices
+        # batched on an 11B vision model (~30–60s each).
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=600) as client:
                 resp = await client.post(
                     f"{self._base_url()}/api/chat",
                     json=body,
@@ -144,6 +235,17 @@ class OllamaAdapter(ExtractionAdapter):
             return ExtractionResult(
                 success=False,
                 error="Cannot connect to Ollama. Is it running? Start with: ollama serve",
+                provider=self.provider_name,
+            )
+        except httpx.ReadTimeout:
+            return ExtractionResult(
+                success=False,
+                error=(
+                    "Ollama timed out (>10 min). The model is probably overloaded — "
+                    "either too many invoices queued at once, or the model is too large "
+                    "for the GPU. Try uploading fewer at a time, or set "
+                    "OLLAMA_NUM_PARALLEL=2 in Ollama's environment to allow parallel inference."
+                ),
                 provider=self.provider_name,
             )
         except Exception as exc:
@@ -163,17 +265,8 @@ class OllamaAdapter(ExtractionAdapter):
         resp_data = resp.json()
         text_content = resp_data.get("message", {}).get("content", "")
 
-        # Parse JSON from response
-        json_str = text_content.strip()
-        if json_str.startswith("```"):
-            json_str = json_str.split("```")[1]
-            if json_str.startswith("json"):
-                json_str = json_str[4:]
-        json_str = json_str.strip()
-
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
+        data = _parse_ollama_json(text_content)
+        if data is None:
             return ExtractionResult(
                 success=False,
                 error="Failed to parse JSON from Ollama response",
