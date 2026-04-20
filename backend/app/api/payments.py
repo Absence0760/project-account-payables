@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +17,10 @@ from app.api.deps import (
     require_roles,
 )
 from app.models.invoice import Invoice, InvoiceStatus
+from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun
 from app.models.user import User
+from app.models.vendor import Vendor
 from app.models.virtual_card import CardRebate
 from app.schemas.payment import (
     PaymentCreate,
@@ -27,7 +29,12 @@ from app.schemas.payment import (
     PaymentRunListResponse,
     PaymentRunResponse,
 )
-from app.tenant import get_tenant_db
+from app.services.payment_adapters import (
+    PaymentPayload,
+    PaymentStatus,
+    get_payment_adapter,
+)
+from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -314,9 +321,22 @@ async def get_payment_run(
 async def execute_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    """Execute a draft payment run — marks all payments as processing then completed."""
+    """Execute a draft payment run via the configured payment adapter.
+
+    Each payment is dispatched to the org's configured processor (Modern
+    Treasury for prod, mock for dev). The adapter returns either a
+    `submitted`/`processing` status (real money in flight, terminal status
+    arrives via webhook) or `completed`/`failed` immediately (mock).
+
+    Run status:
+      - `completed` — every payment reached `completed`
+      - `partial`   — at least one succeeded, at least one failed
+      - `failed`    — every payment failed
+      - `submitted` — at least one payment is in flight (waiting on webhook)
+    """
     result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
     run = result.scalar_one_or_none()
     if not run:
@@ -326,40 +346,192 @@ async def execute_payment_run(
             status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'"
         )
 
-    # Update run status
-    run.status = "completed"
-    run.executed_at = datetime.now(UTC)
+    payment_config = (org.settings or {}).get("payments") or {}
+    adapter = get_payment_adapter(payment_config)
+    now = datetime.now(UTC)
 
-    # Mark all payments as completed and generate references
     pay_result = await db.execute(select(Payment).where(Payment.payment_run_id == run_id))
     payments = pay_result.scalars().all()
 
     completed = 0
-    for i, payment in enumerate(payments):
-        payment.status = "completed"
-        method_prefix = (payment.method or "PAY").upper()
-        payment.reference = f"{method_prefix}-{datetime.now(UTC).strftime('%Y%m%d')}-{i + 1:03d}"
+    failed = 0
+    in_flight = 0
 
-        # Update invoice status to payment_scheduled
+    for payment in payments:
+        # Resolve invoice + vendor for the payload
         inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
-        inv = inv_result.scalar_one_or_none()
-        if inv and inv.status.value in ("approved", "sent_to_erp", "posted_in_erp"):
-            inv.status = InvoiceStatus.payment_scheduled
-        completed += 1
+        invoice = inv_result.scalar_one_or_none()
+        vendor_bank: dict | None = None
+        if invoice and invoice.vendor_id:
+            v_result = await db.execute(
+                select(Vendor.bank_details).where(Vendor.id == invoice.vendor_id)
+            )
+            vendor_bank = v_result.scalar_one_or_none()
+
+        payload = PaymentPayload(
+            correlation_id=str(payment.correlation_id or payment.id),
+            invoice_id=str(payment.invoice_id),
+            invoice_number=invoice.invoice_number if invoice else "",
+            vendor_name=invoice.vendor_name if invoice else "",
+            amount=payment.amount,
+            currency=invoice.currency if invoice else "USD",
+            method=payment.method or "ach",
+            description=invoice.description if invoice else None,
+            vendor_bank=vendor_bank,
+            metadata={"organization_id": str(org.id)},
+        )
+
+        result_obj = await adapter.create_payment(payload)
+        payment.provider = adapter.provider_name
+        payment.provider_payment_id = result_obj.provider_payment_id
+        payment.reference = result_obj.reference or payment.reference
+        payment.submitted_at = now
+
+        if result_obj.status == PaymentStatus.completed:
+            payment.status = "completed"
+            payment.completed_at = now
+            completed += 1
+            if invoice and invoice.status.value in (
+                "approved",
+                "sent_to_erp",
+                "posted_in_erp",
+            ):
+                invoice.status = InvoiceStatus.payment_scheduled
+        elif result_obj.status in (PaymentStatus.submitted, PaymentStatus.processing):
+            # Real money in flight; webhook will finalize.
+            payment.status = result_obj.status.value
+            in_flight += 1
+            if invoice and invoice.status.value in (
+                "approved",
+                "sent_to_erp",
+                "posted_in_erp",
+            ):
+                invoice.status = InvoiceStatus.payment_scheduled
+        else:
+            # failed or cancelled
+            payment.status = result_obj.status.value
+            payment.failure_reason = result_obj.failure_reason
+            payment.completed_at = now
+            failed += 1
+
+    # Run status reflects the rollup of its payments.
+    if failed and not (completed or in_flight):
+        run.status = "failed"
+    elif failed:
+        run.status = "partial"
+    elif in_flight:
+        run.status = "submitted"
+    else:
+        run.status = "completed"
+    run.executed_at = now
 
     await db.commit()
 
-    # Async ERP sync — doesn't block the response
-    from app.services.payment_erp_sync import dispatch_payment_sync
+    # ERP sync only fires for payments we believe settled — pending ones
+    # will sync when their webhook lands.
+    if completed:
+        from app.services.payment_erp_sync import dispatch_payment_sync
 
-    await dispatch_payment_sync(run_id, uuid.UUID(str(run.organization_id)))
+        await dispatch_payment_sync(run_id, uuid.UUID(str(run.organization_id)))
 
     return {
         "id": str(run.id),
-        "status": "completed",
+        "status": run.status,
+        "provider": adapter.provider_name,
         "payments_completed": completed,
-        "message": f"Payment run executed — {completed} payments completed. ERP sync in progress.",
+        "payments_in_flight": in_flight,
+        "payments_failed": failed,
+        "message": _execute_message(adapter.provider_name, completed, in_flight, failed),
     }
+
+
+def _execute_message(provider: str, completed: int, in_flight: int, failed: int) -> str:
+    parts: list[str] = []
+    if completed:
+        parts.append(f"{completed} completed")
+    if in_flight:
+        parts.append(f"{in_flight} in flight")
+    if failed:
+        parts.append(f"{failed} failed")
+    body = ", ".join(parts) or "0 payments"
+    return f"Payment run executed via {provider}: {body}."
+
+
+# ── Provider webhook ────────────────────────────────────────────────
+
+
+@router.post("/webhook/{tenant_slug}/{provider}", status_code=status.HTTP_204_NO_CONTENT)
+async def payment_webhook(tenant_slug: str, provider: str, request: Request):
+    """Receive a payment-status webhook from the configured processor.
+
+    Auth is by the processor's HMAC signature (verified inside
+    `adapter.parse_webhook`), not a JWT. The tenant is encoded in the URL
+    path — each tenant configures its own webhook URL with the processor,
+    so a leaked URL only affects that one tenant. Bad signatures, unknown
+    events, and unknown tenants all return 204 silently — leaking the
+    distinction would help an attacker probe for the right secret. Audit
+    log captures the rejection.
+
+    URL shape (configure in the processor's dashboard):
+        https://app.com/api/payments/webhook/{tenant_slug}/{provider}
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.database import control_session_factory, get_tenant_engine
+
+    body = await request.body()
+    headers = {k: v for k, v in request.headers.items()}
+
+    # Resolve tenant from the URL path (no JWT, no X-Tenant-Slug header).
+    async with control_session_factory() as ctrl_db:
+        org_result = await ctrl_db.execute(
+            select(Organization).where(Organization.slug == tenant_slug)
+        )
+        org = org_result.scalar_one_or_none()
+    if org is None:
+        return
+
+    payment_config = (org.settings or {}).get("payments") or {}
+    if payment_config.get("provider") != provider:
+        return  # wrong adapter for this tenant
+
+    adapter = get_payment_adapter(payment_config)
+    event = adapter.parse_webhook(headers, body)
+    if event is None:
+        return  # bad signature, unrecognised event, or no-op
+
+    # Open a tenant-DB session to look up + update the Payment row.
+    engine = get_tenant_engine(org.db_name)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as db:
+        pay_result = await db.execute(
+            select(Payment).where(Payment.provider_payment_id == event.provider_payment_id)
+        )
+        payment = pay_result.scalar_one_or_none()
+        if not payment:
+            return  # late retry of a payment we don't have
+
+        # Don't downgrade a terminal payment — webhooks can arrive out of
+        # order and re-deliveries can land hours after success.
+        if payment.status in ("completed", "failed", "cancelled"):
+            return
+
+        payment.status = event.status.value
+        if event.reference:
+            payment.reference = event.reference
+        if event.failure_reason:
+            payment.failure_reason = event.failure_reason
+        if payment.status in ("completed", "failed", "cancelled"):
+            payment.completed_at = datetime.now(UTC)
+
+        run_id = payment.payment_run_id if payment.status == "completed" else None
+        await db.commit()
+
+    # ERP sync runs after the DB commit so it sees the latest status.
+    if run_id:
+        from app.services.payment_erp_sync import dispatch_payment_sync
+
+        await dispatch_payment_sync(run_id, uuid.UUID(str(org.id)))
 
 
 # ── Payment Queue ───────────────────────────────────────────────────

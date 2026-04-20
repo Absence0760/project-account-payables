@@ -285,6 +285,19 @@
 				| Record<string, unknown>
 				| undefined;
 			mfaRequired = (mfaCfg?.required as boolean) ?? false;
+			// Payments
+			const pmt = (data.settings as unknown as Record<string, unknown>).payments as
+				| Record<string, unknown>
+				| undefined;
+			if (pmt) {
+				paymentsProvider = (pmt.provider as string) || 'mock';
+				paymentsProgramType = (pmt.program_type as string) || 'byok';
+				paymentsApiKey = (pmt.api_key as string) || '';
+				paymentsOrgId = (pmt.org_id as string) || '';
+				paymentsOriginatingAccount = (pmt.originating_account_id as string) || '';
+				paymentsWebhookSecret = (pmt.webhook_secret as string) || '';
+				paymentsSandbox = (pmt.sandbox as boolean) ?? true;
+			}
 			// Extraction
 			const extraction = (data.settings as unknown as Record<string, unknown>).extraction as Record<string, unknown> | undefined;
 			if (extraction) {
@@ -309,6 +322,42 @@
 	// Security
 	let mfaRequired = $state(false);
 	let savingSecurity = $state(false);
+
+	// Payments
+	let paymentsProvider = $state('mock');
+	let paymentsProgramType = $state('byok'); // mock = no key; modern_treasury = byok keys
+	let paymentsApiKey = $state('');
+	let paymentsOrgId = $state('');
+	let paymentsOriginatingAccount = $state('');
+	let paymentsWebhookSecret = $state('');
+	let paymentsSandbox = $state(true);
+	let savingPayments = $state(false);
+	let testingPayments = $state(false);
+	let paymentsTestResult = $state<{ success: boolean; message: string } | null>(null);
+
+	async function testPayments() {
+		testingPayments = true;
+		paymentsTestResult = null;
+		try {
+			paymentsTestResult = await api.post<{ success: boolean; message: string }>(
+				'/api/organization/test-payments',
+				{
+					provider: paymentsProvider,
+					api_key: paymentsApiKey,
+					org_id: paymentsOrgId,
+					originating_account_id: paymentsOriginatingAccount,
+					sandbox: paymentsSandbox,
+				}
+			);
+		} catch (err) {
+			paymentsTestResult = {
+				success: false,
+				message: err instanceof Error ? err.message : 'Test failed',
+			};
+		} finally {
+			testingPayments = false;
+		}
+	}
 
 	async function patchSettings(section: string, partial: Record<string, unknown>) {
 		const data = await api.patch<OrgResponse>('/api/organization', {
@@ -441,6 +490,27 @@
 			toast(err instanceof Error ? err.message : 'Save failed', 'error');
 		} finally {
 			savingSecurity = false;
+		}
+	}
+
+	async function savePayments() {
+		savingPayments = true;
+		try {
+			await patchSettings('Payments', {
+				payments: {
+					provider: paymentsProvider,
+					program_type: paymentsProgramType,
+					api_key: paymentsApiKey,
+					org_id: paymentsOrgId,
+					originating_account_id: paymentsOriginatingAccount,
+					webhook_secret: paymentsWebhookSecret,
+					sandbox: paymentsSandbox,
+				},
+			});
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingPayments = false;
 		}
 	}
 
@@ -735,6 +805,69 @@
 					{#if connectionResult}
 						<span class="test-result" class:success={connectionResult.success} class:failure={!connectionResult.success}>
 							{connectionResult.message}
+						</span>
+					{/if}
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>Payments (ACH / Wire / RTP)</h2>
+				<p class="card-hint">
+					Pick the payment processor that moves money to vendors when a
+					payment run is executed. <strong>Mock</strong> is for local dev — payments
+					complete instantly with fake references and no real transfer.
+					<strong>Modern Treasury</strong> handles real ACH, wire, and RTP via your bank.
+				</p>
+
+				<div class="form-grid">
+					<label>
+						<span>Provider</span>
+						<select bind:value={paymentsProvider}>
+							<option value="mock">Mock (dev only)</option>
+							<option value="modern_treasury">Modern Treasury</option>
+						</select>
+					</label>
+				</div>
+
+				{#if paymentsProvider === 'modern_treasury'}
+					<div class="form-grid">
+						<label>
+							<span>Modern Treasury Organization ID</span>
+							<input type="text" bind:value={paymentsOrgId} placeholder="org_..." />
+						</label>
+						<label>
+							<span>API Key</span>
+							<input type="password" bind:value={paymentsApiKey} placeholder="••••••••" autocomplete="off" />
+						</label>
+						<label>
+							<span>Originating Account ID</span>
+							<input type="text" bind:value={paymentsOriginatingAccount} placeholder="internal_account_..." />
+						</label>
+						<label>
+							<span>Webhook Signing Secret</span>
+							<input type="password" bind:value={paymentsWebhookSecret} placeholder="for HMAC-SHA256 verification" autocomplete="off" />
+						</label>
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={paymentsSandbox} />
+							<span>Sandbox mode</span>
+						</label>
+					</div>
+					<p class="card-hint">
+						Configure your webhook in Modern Treasury to point at:
+						<code>{org.created_at ? `${window.location.origin.replace(window.location.host, org.slug + '.' + window.location.host)}/api/payments/webhook/${org.slug}/modern_treasury` : '...'}</code>
+					</p>
+				{/if}
+
+				<div class="section-footer">
+					<button class="btn-save-section" disabled={savingPayments} onclick={savePayments}>
+						{savingPayments ? 'Saving...' : 'Save Payment Settings'}
+					</button>
+					<button class="btn-test" disabled={testingPayments || paymentsProvider === 'mock'} onclick={testPayments}>
+						{testingPayments ? 'Testing...' : 'Test Connection'}
+					</button>
+					{#if paymentsTestResult}
+						<span class="test-result" class:success={paymentsTestResult.success} class:failure={!paymentsTestResult.success}>
+							{paymentsTestResult.message}
 						</span>
 					{/if}
 				</div>

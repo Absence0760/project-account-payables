@@ -177,6 +177,77 @@ The flow is split into **create draft** and **execute** so a CFO can review what
 
 The same Run Detail modal is reachable by clicking any row in the **Runs** tab — for completed runs it shows the payments + references; for stale drafts it offers Execute.
 
+### Payment processor adapters
+
+The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:
+
+```python
+class PaymentAdapter:
+    async def create_payment(payload: PaymentPayload) -> PaymentResult: ...
+    async def get_payment_status(provider_payment_id: str) -> PaymentStatus: ...
+    def parse_webhook(headers: dict, body: bytes) -> WebhookEvent | None: ...
+    async def test_connection() -> bool: ...
+```
+
+Registered providers:
+
+| Provider | Methods | Use case |
+|---|---|---|
+| `mock` | ach, wire, check, rtp, virtual_card | Local dev — settles instantly with deterministic fake references. Default when `Organization.settings.payments` is empty. |
+| `modern_treasury` | ach, wire, rtp, check | Production. Real bank rails via Modern Treasury's REST API. Idempotent on `correlation_id`. |
+
+Per-org config lives at `Organization.settings.payments`:
+
+```json
+{
+  "provider": "modern_treasury" | "mock",
+  "program_type": "byok",
+  "org_id": "org_...",                // Modern Treasury org ID
+  "api_key": "...",
+  "originating_account_id": "internal_account_...",
+  "webhook_secret": "...",            // HMAC-SHA256 secret for signature verification
+  "sandbox": true
+}
+```
+
+#### Lifecycle
+
+```
+[execute payment run]                       [webhook arrives]
+        │                                          │
+        ▼                                          ▼
+adapter.create_payment(payload)            adapter.parse_webhook(headers, body)
+        │                                          │
+        ▼                                          ▼
+ PaymentResult{status, provider_payment_id}    WebhookEvent{provider_payment_id, status}
+        │                                          │
+        ▼                                          ▼
+ Payment row gets:                          Payment row gets:
+   provider, provider_payment_id,            status (only if not already terminal),
+   reference, status,                        reference, failure_reason,
+   submitted_at                              completed_at (on terminal)
+```
+
+The orchestrator never auto-completes — only the adapter response (mock) or a webhook (real processor) flips a payment to `completed`. This prevents the platform from claiming money has moved when it hasn't.
+
+#### Webhook URL
+
+Each tenant configures their processor's webhook URL to:
+
+```
+https://app.com/api/payments/webhook/{tenant_slug}/{provider}
+```
+
+Tenant is encoded in the path (no `X-Tenant-Slug` header needed — processors don't always support custom headers). The adapter verifies the signature; bad signatures, unknown events, and missing payments all return `204` silently to avoid leaking probing information.
+
+#### Adding a new processor (Stripe Treasury, Increase, Column, …)
+
+1. Copy `mock_adapter.py`, implement the four methods.
+2. Register with `@register_payment_adapter("stripe_treasury")`.
+3. Map the processor's status enum to `PaymentStatus` in your adapter (Modern Treasury's `_STATUS_MAP` is the reference).
+4. Add the provider to the org-settings UI dropdown.
+5. Tests: dispatcher returns the new adapter, status-map covers every documented status, webhook signature verification works.
+
 ### ERP Payment Sync
 
 After a payment run executes, the system syncs payment data to the connected ERP in a background thread:

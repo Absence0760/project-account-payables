@@ -66,6 +66,8 @@ NO_AUTH_REQUIRED = {
     ("POST", "/auth/logout"),  # uses Bearer header but not as a Depends
     # cards.py — webhook authenticated by provider signature
     ("POST", "/cards/webhook/{provider}"),
+    # payments.py — payment-processor webhook; HMAC-verified, tenant in URL path
+    ("POST", "/payments/webhook/{tenant_slug}/{provider}"),
     # erp_webhook.py
     ("POST", "/erp/webhook/{erp_type}"),
     # signup.py — public

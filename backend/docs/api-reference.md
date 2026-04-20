@@ -205,7 +205,8 @@ All payment endpoints require `admin/manager/cfo`.
 | `GET`  | `/api/payments/runs/`         | List payment runs |
 | `POST` | `/api/payments/runs`          | Create a payment run |
 | `GET`  | `/api/payments/runs/{id}`     | Get payment run details |
-| `POST` | `/api/payments/runs/{id}/execute` | Execute a payment run |
+| `POST` | `/api/payments/runs/{id}/execute` | Execute a draft payment run via the configured processor; response includes `payments_completed` / `payments_in_flight` / `payments_failed` rollup |
+| `POST` | `/api/payments/webhook/{tenant_slug}/{provider}` | (provider-signed) — payment-status webhook from Modern Treasury / similar. Tenant in URL path, signature verified per adapter. |
 
 ## Virtual Cards
 

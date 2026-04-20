@@ -182,6 +182,23 @@ ERP send has retry logic: up to 3 attempts with exponential backoff (2s, 4s, 8s)
 
 Registered: `lithic`, `nium`, `mock`. Both have sandbox modes.
 
+### Payment adapters (`services/payment_adapters/`)
+
+```python
+@register_payment_adapter("my_processor")
+class MyAdapter(PaymentAdapter):
+    async def create_payment(self, payload: PaymentPayload) -> PaymentResult: ...
+    async def get_payment_status(self, provider_payment_id: str) -> PaymentStatus: ...
+    def parse_webhook(self, headers: dict, body: bytes) -> WebhookEvent | None: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock`, `modern_treasury`.
+
+`execute_payment_run` dispatches via the adapter; webhook handler at `/api/payments/webhook/{tenant_slug}/{provider}` drives the `submitted → completed/failed` transition. Tenant comes from the URL path (no JWT, no header). Idempotent on the payment's `correlation_id`.
+
+Per-org config in `Organization.settings.payments`. See `../docs/payments.md` § Payment processor adapters.
+
 ## Dispatch modes
 
 Extraction, ERP push, and audit logging support two execution modes:

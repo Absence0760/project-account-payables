@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,3 +52,17 @@ class Payment(Base, TimestampMixin):
     method: Mapped[str | None] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(30), default="pending")
     reference: Mapped[str | None] = mapped_column(String(255))
+    # Which adapter handled this payment (`mock`, `modern_treasury`, ...).
+    # Populated when the row is submitted to a processor. Null for pre-
+    # adapter rows backfilled from the legacy fake-execute path.
+    provider: Mapped[str | None] = mapped_column(String(50))
+    # Processor's identifier — used to look up the row when a webhook lands.
+    provider_payment_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    # Set on `failed` / `cancelled`. Free-form so we can preserve the
+    # processor's exact error message for debugging.
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    # Lifecycle timestamps. `submitted_at` = sent to processor; `completed_at`
+    # = terminal status reported. Lets us compute settlement latency for
+    # ops dashboards without parsing audit logs.
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -108,6 +108,7 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 - **Extraction** (`services/extraction_adapters/`): claude_vision, openai_vision, aws_textract, ollama, mock. Registry via `@register_extraction_adapter` decorator.
 - **ERP** (`services/erp_adapters/`): merge_dev (unified), dynamics_365_bc, netsuite, mock. Registry via `@register_adapter` decorator. Config `integration_method: "merge_dev"|"direct"` selects path.
 - **Cards** (`services/card_adapters/`): lithic, nium, mock. Both have sandbox modes.
+- **Payments** (`services/payment_adapters/`): modern_treasury, mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
 
 To add a new adapter: copy `mock_adapter.py`, implement the interface, register with the decorator.
 

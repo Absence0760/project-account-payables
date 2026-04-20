@@ -123,6 +123,7 @@ Migrations may target either the control plane or tenant DBs — never both. Eac
 | 0004     | Control | `users`      | Adds `users.sso_provider` + `users.sso_provider_id` + partial index for OIDC user lookup.                                |
 | 0005     | Control | `users`      | Adds `users.mfa_secret`, `users.mfa_enabled`, `users.mfa_enrolled_at` (TOTP MFA).                                        |
 | 0006     | Tenant  | `invoices`   | Adds `invoices.po_match` JSONB column (latest 2/3-way PO match result).                                                  |
+| 0007     | Tenant  | `payments`   | Adds `payments.provider`, `provider_payment_id`, `failure_reason`, `submitted_at`, `completed_at` (adapter lifecycle).   |
 
 ## Seeding
 

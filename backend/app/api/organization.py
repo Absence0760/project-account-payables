@@ -134,6 +134,46 @@ async def mint_scim_token(
     return SCIMTokenResponse(token=raw, bearer_hash_prefix=digest[:8])
 
 
+@router.post("/test-payments")
+async def test_payment_connection(
+    request: dict | None = None,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Test the payment processor connection.
+
+    Uses request body if provided (for the "Test Connection" button before
+    saving), otherwise the saved org settings.
+    """
+    config = (
+        request if request and request.get("provider") else (org.settings or {}).get("payments")
+    )
+    if not config:
+        raise HTTPException(status_code=400, detail="No payment processor configuration provided")
+
+    # Trigger registration of all bundled adapters.
+    from app.services.payment_adapters import get_payment_adapter
+
+    try:
+        adapter = get_payment_adapter(config)
+        success = await adapter.test_connection()
+        provider = config.get("provider", "unknown")
+        if success:
+            return {"success": True, "message": f"Connected to {provider} successfully"}
+        # Surface the most likely cause without leaking key material.
+        if provider == "modern_treasury":
+            return {
+                "success": False,
+                "message": (
+                    "Modern Treasury rejected the credentials — verify the "
+                    "Organization ID, API key, and that the key has API access enabled."
+                ),
+            }
+        return {"success": False, "message": "Connection failed — check your configuration"}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
+
+
 @router.post("/test-extraction")
 async def test_extraction_connection(
     request: dict | None = None,

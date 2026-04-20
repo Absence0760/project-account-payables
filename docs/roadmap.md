@@ -221,7 +221,18 @@ Current state: domestic-only payment methods. Blocks entire non-US market. Tipal
 ---
 
 ### Bank / Payment Processor Integration
-**Status:** Planned
+**Status:** Done (Modern Treasury + mock) — adapter pattern lives in `backend/app/services/payment_adapters/`. Real ACH/wire/RTP flow works end-to-end (create payment → idempotent processor call → webhook-driven status updates → ERP sync on settle).
+
+- [x] Adapter scaffold (`base.py`, `dispatcher.py`, `mock_adapter.py`)
+- [x] Modern Treasury adapter — full payment-order create + status lookup + webhook parsing with HMAC-SHA256
+- [x] Per-org config (`Organization.settings.payments`) — provider, credentials, originating account, webhook secret, sandbox flag
+- [x] Frontend org-settings UI for selecting + configuring the processor
+- [x] Webhook handler (`POST /api/payments/webhook/{tenant_slug}/{provider}`) — drives `submitted → completed/failed` transitions
+- [x] `payments.provider`, `provider_payment_id`, `failure_reason`, `submitted_at`, `completed_at` columns (alembic 0007)
+- [x] `execute_payment_run` dispatches via adapter; run status reflects rollup (`completed` / `partial` / `submitted` / `failed`)
+- [ ] Vendor counterparty management UI — admins currently set `Vendor.bank_details.counterparty_id` directly
+- [ ] Reconciliation job — periodically reconcile against the processor for missing webhooks
+- [ ] Stripe Treasury / Increase / Column adapters (Modern Treasury covers the most demand)
 
 Connect to actual payment rails for non-card payments.
 
