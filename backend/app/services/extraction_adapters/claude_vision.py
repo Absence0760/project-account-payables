@@ -16,7 +16,7 @@ from app.services.extraction_adapters.base import (
 )
 from app.services.extraction_adapters.dispatcher import register_extraction_adapter
 
-EXTRACTION_PROMPT = """You are an invoice data extraction system. \
+_EXTRACTION_PROMPT_TEMPLATE = """You are an invoice data extraction system. \
 Extract all fields from this invoice image/document.
 
 Return a JSON object with the following structure. For each field, \
@@ -68,7 +68,14 @@ Do NOT default to 1.0 for all fields. Be honest about uncertainty.
 }
 ```
 
-For GL account suggestion, consider the vendor type and invoice description:
+For GL account suggestion, use ONLY codes from this chart of accounts:
+{{GL_ACCOUNT_CATALOG}}
+
+Return ONLY the JSON object, no other text."""
+
+_GL_PLACEHOLDER = "{{GL_ACCOUNT_CATALOG}}"
+
+_DEFAULT_GL_LIST = """\
 - Office supplies → 6100
 - Cloud/software services → 6200
 - Facility/maintenance → 6300
@@ -76,9 +83,11 @@ For GL account suggestion, consider the vendor type and invoice description:
 - Legal/professional → 6500
 - Food/catering → 6600
 - Shipping/logistics → 6700
-- Hardware/equipment → 1500
+- Hardware/equipment → 1500"""
 
-Return ONLY the JSON object, no other text."""
+# Backward-compatible constant with the default GL list baked in.
+# Other adapters (openai_vision, ollama) import this directly.
+EXTRACTION_PROMPT = _EXTRACTION_PROMPT_TEMPLATE.replace(_GL_PLACEHOLDER, _DEFAULT_GL_LIST)
 
 
 def _parse_field(data: dict | None, field_name: str) -> ExtractedField:
@@ -129,13 +138,21 @@ class ClaudeVisionAdapter(ExtractionAdapter):
 
         file_b64 = base64.b64encode(file_bytes).decode("utf-8")
 
+        # Build the extraction prompt — inject org-specific GL catalog if
+        # available, otherwise fall back to the default hardcoded list.
+        gl_catalog = self.config.get("gl_account_catalog")
+        if gl_catalog:
+            base_prompt = _EXTRACTION_PROMPT_TEMPLATE.replace(_GL_PLACEHOLDER, gl_catalog)
+        else:
+            base_prompt = EXTRACTION_PROMPT
+
         # RAG few-shot context (retrieved by services.extraction.run_extraction
         # and passed through the adapter config). Prepend as a preamble so the
         # extraction prompt that follows stays authoritative.
         few_shot = self.config.get("few_shot_prompt") or ""
-        prompt_text = EXTRACTION_PROMPT
+        prompt_text = base_prompt
         if few_shot:
-            prompt_text = f"{few_shot}\n\n---\n\n{EXTRACTION_PROMPT}"
+            prompt_text = f"{few_shot}\n\n---\n\n{base_prompt}"
 
         # Call Claude API
         body = {

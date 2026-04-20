@@ -348,14 +348,14 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
 
-    engine_call_count = 0
+    # Identify engine by URL so extra create_async_engine calls (e.g. from
+    # app.database module-level code) don't shift the counter.
+    _TENANT_URL = "postgresql+asyncpg://localhost/ap_test"
 
     def make_engine(url, **kwargs):
-        nonlocal engine_call_count
-        engine_call_count += 1
-        if engine_call_count == 1:
-            return mock_ctrl_engine
-        return mock_tenant_engine
+        if url == _TENANT_URL:
+            return mock_tenant_engine
+        return mock_ctrl_engine
 
     def make_factory(engine, **kwargs):
         if engine is mock_ctrl_engine:
@@ -367,7 +367,7 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
         patch("sqlalchemy.ext.asyncio.async_sessionmaker", side_effect=make_factory),
         patch(
             "app.database._make_tenant_url",
-            return_value="postgresql+asyncpg://localhost/ap_test",
+            return_value=_TENANT_URL,
         ),
     ):
         await mod._mark_failed(invoice_id, org_id, "extraction crashed")
@@ -388,12 +388,12 @@ async def test_mark_failed_is_noop_when_org_not_found():
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
 
-    engine_call_count = 0
+    _TENANT_URL = "postgresql+asyncpg://localhost/ap_test_noop"
 
     def make_engine(url, **kwargs):
-        nonlocal engine_call_count
-        engine_call_count += 1
-        return mock_ctrl_engine if engine_call_count == 1 else mock_tenant_engine
+        if url == _TENANT_URL:
+            return mock_tenant_engine
+        return mock_ctrl_engine
 
     def make_factory(engine, **kwargs):
         return MagicMock(return_value=ctrl_session)
@@ -428,14 +428,12 @@ async def test_mark_failed_does_not_transition_non_pending_invoice():
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
 
-    engine_call_count = 0
+    _TENANT_URL = "postgresql+asyncpg://localhost/ap_test"
 
     def make_engine(url, **kwargs):
-        nonlocal engine_call_count
-        engine_call_count += 1
-        if engine_call_count == 1:
-            return mock_ctrl_engine
-        return mock_tenant_engine
+        if url == _TENANT_URL:
+            return mock_tenant_engine
+        return mock_ctrl_engine
 
     def make_factory(engine, **kwargs):
         if engine is mock_ctrl_engine:
@@ -447,7 +445,7 @@ async def test_mark_failed_does_not_transition_non_pending_invoice():
         patch("sqlalchemy.ext.asyncio.async_sessionmaker", side_effect=make_factory),
         patch(
             "app.database._make_tenant_url",
-            return_value="postgresql+asyncpg://localhost/ap_test",
+            return_value=_TENANT_URL,
         ),
     ):
         await mod._mark_failed(invoice_id, org_id, "reason")

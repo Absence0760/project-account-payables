@@ -34,9 +34,12 @@ from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import get_file, upload_invoice_file
 from app.services.workflow_engine import (
+    advance_workflow,
     create_workflow_instance,
     create_workflow_step,
     get_invoice_for_update,
+    get_step_config,
+    get_workflow_instance,
     is_step_enabled,
     transition_invoice,
 )
@@ -265,11 +268,13 @@ async def approve_invoice(
     invoice = await get_invoice_for_update(db, invoice_id)
     corrections = body.model_dump(exclude_unset=True) if body else None
 
+    actor_roles = {r.name for r in user.roles} if user.roles else set()
     await review_svc.approve_invoice(
         db,
         invoice,
         actor_id=user.id,
         actor_name=user.full_name,
+        actor_roles=actor_roles,
         corrections=corrections or None,
     )
     return InvoiceResponse.from_db(invoice)
@@ -404,6 +409,41 @@ async def complete_invoice(
     await refresh_warnings(db, invoice)
 
     if invoice.status == InvoiceStatus.new and approval_enabled:
+        # Check auto_approve_below — skip review for small invoices
+        instance = await get_workflow_instance(db, invoice.id)
+        approval_config: dict = {}
+        if instance and instance.steps_config_snapshot:
+            approval_config = get_step_config(instance.steps_config_snapshot, "approval")
+
+        auto_below = approval_config.get("auto_approve_below")
+        if auto_below is not None and float(invoice.amount or 0) < auto_below:
+            from datetime import date
+
+            invoice.approval_date = date.today()
+            invoice.approved_by = "system (below threshold)"
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.approved,
+                actor_id=user.id,
+                action_name="invoice.auto_approved",
+                details={
+                    "reason": "below_threshold",
+                    "threshold": auto_below,
+                    "amount": float(invoice.amount),
+                },
+            )
+            if instance:
+                await advance_workflow(db, instance, "erp_push", action="auto_approved")
+            await db.commit()
+            await db.refresh(invoice)
+            return {
+                "id": str(invoice.id),
+                "correlation_id": str(invoice.correlation_id),
+                "status": invoice.status.value,
+                "message": (f"Auto-approved (amount below ${auto_below:,.2f} threshold)."),
+            }
+
         # Submit for review
         await transition_invoice(
             db,

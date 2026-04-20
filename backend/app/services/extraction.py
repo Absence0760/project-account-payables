@@ -110,7 +110,30 @@ async def run_extraction(
             config["few_shot_prompt"] = build_few_shot_prompt(neighbors)
             print(f"[extraction] RAG: {len(neighbors)} neighbors injected as few-shot")
 
-        # Build a fresh adapter now that few_shot_prompt is in the config.
+        # GL catalog: inject org-specific chart of accounts so the AI
+        # uses real codes instead of the hardcoded default list.
+        from sqlalchemy import select as sa_select
+
+        from app.models.gl_account import GLAccount
+
+        gl_result = await db.execute(
+            sa_select(GLAccount)
+            .where(
+                GLAccount.organization_id == invoice_org_id,
+                GLAccount.is_active == True,  # noqa: E712
+            )
+            .order_by(GLAccount.code)
+        )
+        gl_accounts = gl_result.scalars().all()
+        if gl_accounts:
+            gl_lines = [
+                f"{gl.code} \u2014 {gl.name}" + (f" [{gl.account_type}]" if gl.account_type else "")
+                for gl in gl_accounts
+            ]
+            config["gl_account_catalog"] = "\n".join(gl_lines)
+            print(f"[extraction] GL catalog: {len(gl_accounts)} accounts injected")
+
+        # Build a fresh adapter now that config is fully populated.
         adapter = get_extraction_adapter(config)
 
         result = await adapter.extract(
@@ -131,6 +154,26 @@ async def run_extraction(
 
         # Apply extracted fields to invoice
         _apply_extraction(invoice, result)
+
+        # Self-correction pass — verify arithmetic, date ordering, line-item
+        # math.  Lowers confidence on suspect fields and adds warnings.
+        from app.services.extraction_self_correction import run_self_correction
+
+        correction_report = await run_self_correction(result, org_settings)
+        if correction_report.corrected:
+            # Re-apply cleaned values after confidence adjustments
+            existing_warnings = list(invoice.warnings or [])
+            for v in correction_report.violations:
+                existing_warnings.append(
+                    {
+                        "type": "extraction_self_correction",
+                        "severity": v["severity"],
+                        "message": v["message"],
+                        "check": v["check"],
+                    }
+                )
+            invoice.warnings = existing_warnings
+            print(f"[extraction] Self-correction: {len(correction_report.violations)} violation(s)")
 
         # Save line items if extracted
         for li in result.line_items:
@@ -218,6 +261,11 @@ async def run_extraction(
             priors_metadata["vendor_cache_applied"] = applied_priors
         if neighbors:
             priors_metadata["rag_neighbors"] = neighbors_to_metadata(neighbors)
+        if correction_report.corrected:
+            priors_metadata["self_correction"] = {
+                "violations": correction_report.violations,
+                "penalties": correction_report.confidence_penalties,
+            }
 
         extraction_result = InvoiceExtractionResult(
             invoice_id=invoice.id,
@@ -242,16 +290,46 @@ async def run_extraction(
             ctrl_db.add(usage)
             await ctrl_db.commit()
 
-        # Transition pending → ready_for_review
+        # Decide target status: auto-approve or ready_for_review
+        from app.services.workflow_engine import get_step_config
+
+        target_status = InvoiceStatus.ready_for_review
+        auto_approved = False
+
+        instance = await get_workflow_instance(db, invoice.id)
+        if instance and instance.steps_config_snapshot:
+            ext_cfg = get_step_config(instance.steps_config_snapshot, "extraction")
+            approval_cfg = get_step_config(instance.steps_config_snapshot, "approval")
+
+            # Confidence-based auto-approve
+            if ext_cfg.get("auto_approve_enabled") and result.overall_confidence >= ext_cfg.get(
+                "auto_approve_threshold", 0.95
+            ):
+                target_status = InvoiceStatus.approved
+                auto_approved = True
+
+            # Amount-based auto-approve
+            auto_below = approval_cfg.get("auto_approve_below")
+            if auto_below is not None and float(invoice.amount or 0) < auto_below:
+                target_status = InvoiceStatus.approved
+                auto_approved = True
+
+        if auto_approved:
+            invoice.approval_date = date.today()
+            invoice.approved_by = "system (auto-approve)"
+
         await transition_invoice(
             db,
             invoice,
-            InvoiceStatus.ready_for_review,
+            target_status,
             actor_id=actor_id,
-            action_name="invoice.extraction_completed",
+            action_name=(
+                "invoice.auto_approved" if auto_approved else "invoice.extraction_completed"
+            ),
             details={
                 "method": result.provider,
                 "confidence": result.overall_confidence,
+                "auto_approved": auto_approved,
                 "vendor_action": vendor_action,
                 "vendor_id": str(vendor.id) if vendor else None,
                 "gl_suggested": result.suggested_gl_account.value,
@@ -259,10 +337,12 @@ async def run_extraction(
             },
         )
 
-        # Advance workflow to review step
-        instance = await get_workflow_instance(db, invoice.id)
+        # Advance workflow
         if instance:
-            await advance_workflow(db, instance, "review", action="extracted")
+            if auto_approved:
+                await advance_workflow(db, instance, "erp_push", action="auto_approved")
+            else:
+                await advance_workflow(db, instance, "review", action="extracted")
 
         await db.commit()
 

@@ -14,8 +14,17 @@ from app.services.audit_dispatch import dispatch_audit
 # ---------- valid status transitions ----------
 
 VALID_TRANSITIONS: dict[InvoiceStatus, set[InvoiceStatus]] = {
-    InvoiceStatus.new: {InvoiceStatus.pending, InvoiceStatus.ready_for_review, InvoiceStatus.done},
-    InvoiceStatus.pending: {InvoiceStatus.ready_for_review, InvoiceStatus.failed},
+    InvoiceStatus.new: {
+        InvoiceStatus.pending,
+        InvoiceStatus.ready_for_review,
+        InvoiceStatus.approved,
+        InvoiceStatus.done,
+    },
+    InvoiceStatus.pending: {
+        InvoiceStatus.ready_for_review,
+        InvoiceStatus.approved,
+        InvoiceStatus.failed,
+    },
     InvoiceStatus.ready_for_review: {InvoiceStatus.approved, InvoiceStatus.rejected},
     InvoiceStatus.approved: {InvoiceStatus.sending_to_erp, InvoiceStatus.done},
     InvoiceStatus.rejected: {InvoiceStatus.ready_for_review, InvoiceStatus.new},
@@ -75,6 +84,14 @@ def _check_step_enabled(steps_config: dict, step_type: str) -> bool:
         if step.get("type") == step_type:
             return step.get("enabled", True)
     return True  # enabled by default if not configured
+
+
+def get_step_config(steps_config: dict, step_type: str) -> dict:
+    """Return the config dict for a specific step type, or empty dict."""
+    for step in steps_config.get("steps", []):
+        if step.get("type") == step_type:
+            return step.get("config", {})
+    return {}
 
 
 async def is_step_enabled(

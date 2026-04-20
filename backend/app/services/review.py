@@ -15,6 +15,7 @@ from app.services.workflow_engine import (
     advance_workflow,
     complete_current_step,
     create_workflow_step,
+    get_step_config,
     get_workflow_instance,
     transition_invoice,
 )
@@ -47,14 +48,55 @@ async def _fetch_invoice_bytes(invoice: Invoice) -> bytes | None:
         return None
 
 
+async def _enforce_approval_thresholds(
+    db: AsyncSession,
+    invoice: Invoice,
+    actor_roles: set[str],
+) -> None:
+    """Check approval thresholds from the workflow snapshot. Raises on violation."""
+    from fastapi import HTTPException, status
+
+    instance = await get_workflow_instance(db, invoice.id)
+    if not instance or not instance.steps_config_snapshot:
+        return
+
+    config = get_step_config(instance.steps_config_snapshot, "approval")
+    if not config:
+        return
+
+    amount = float(invoice.amount or 0)
+
+    # Hard reject if over max
+    max_amount = config.get("max_invoice_amount")
+    if max_amount is not None and amount > max_amount:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount:,.2f}."),
+        )
+
+    # CFO role gate for high-value invoices
+    cfo_threshold = config.get("require_cfo_above")
+    if cfo_threshold is not None and amount > cfo_threshold:
+        if "cfo" not in actor_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Invoice amount ${amount:,.2f} exceeds"
+                    f" ${cfo_threshold:,.2f}. CFO approval required."
+                ),
+            )
+
+
 async def approve_invoice(
     db: AsyncSession,
     invoice: Invoice,
     *,
     actor_id: uuid.UUID,
     actor_name: str,
+    actor_roles: set[str] | None = None,
     corrections: dict | None = None,
 ) -> Invoice:
+    await _enforce_approval_thresholds(db, invoice, actor_roles or set())
     # Apply any field corrections
     if corrections:
         field_map = {"vendor": "vendor_name"}
