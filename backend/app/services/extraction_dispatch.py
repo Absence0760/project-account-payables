@@ -149,9 +149,7 @@ async def _run_local(
     # Minimal pool (1 conn) — each worker only runs one job at a time and
     # we don't want 3 workers × 2 engines × default pool (15) to exhaust
     # PostgreSQL's max_connections (100).
-    ctrl_engine = create_async_engine(
-        settings.database_url, pool_size=1, max_overflow=0
-    )
+    ctrl_engine = create_async_engine(settings.database_url, pool_size=1, max_overflow=0)
     ctrl_factory = async_sessionmaker(ctrl_engine, expire_on_commit=False)
 
     try:
@@ -166,17 +164,13 @@ async def _run_local(
 
             # Create a fresh tenant engine for this thread
             tenant_url = _make_tenant_url(org.db_name)
-            tenant_engine = create_async_engine(
-                tenant_url, pool_size=1, max_overflow=0
-            )
+            tenant_engine = create_async_engine(tenant_url, pool_size=1, max_overflow=0)
             tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
             try:
                 async with tenant_factory() as db:
                     try:
-                        result = await db.execute(
-                            select(Invoice).where(Invoice.id == invoice_id)
-                        )
+                        result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
                         invoice = result.scalar_one_or_none()
                         if not invoice:
                             print(f"[extraction] Invoice {invoice_id} not found")
@@ -236,9 +230,7 @@ async def _fail_invoice_safely(
         traceback.print_exc()
 
 
-async def _mark_failed(
-    invoice_id: uuid.UUID, org_id: uuid.UUID, reason: str
-) -> None:
+async def _mark_failed(invoice_id: uuid.UUID, org_id: uuid.UUID, reason: str) -> None:
     """Transition an invoice to 'failed' using a fresh DB session.
 
     Used by the worker when a job times out or crashes outside ``_run_local``.
@@ -250,23 +242,17 @@ async def _mark_failed(
     from app.models.invoice import Invoice, InvoiceStatus
     from app.models.organization import Organization
 
-    ctrl_engine = create_async_engine(
-        settings.database_url, pool_size=1, max_overflow=0
-    )
+    ctrl_engine = create_async_engine(settings.database_url, pool_size=1, max_overflow=0)
     ctrl_factory = async_sessionmaker(ctrl_engine, expire_on_commit=False)
     try:
         async with ctrl_factory() as ctrl_db:
-            result = await ctrl_db.execute(
-                select(Organization).where(Organization.id == org_id)
-            )
+            result = await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
             org = result.scalar_one_or_none()
             if not org:
                 return
 
         tenant_url = _make_tenant_url(org.db_name)
-        tenant_engine = create_async_engine(
-            tenant_url, pool_size=1, max_overflow=0
-        )
+        tenant_engine = create_async_engine(tenant_url, pool_size=1, max_overflow=0)
         try:
             tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
             async with tenant_factory() as db:
