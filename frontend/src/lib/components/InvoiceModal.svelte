@@ -1302,12 +1302,16 @@
 		width: 100%;
 		height: 100%;
 		border: none;
+		/* Own compositing layer — prevents the browser from repainting the
+		   heavyweight PDF renderer on every scroll frame of the form pane. */
+		will-change: transform;
 	}
 
 	.pdf-pane .invoice-image {
 		width: 100%;
 		height: 100%;
 		object-fit: contain;
+		will-change: transform;
 	}
 
 	.no-pdf {

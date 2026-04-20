@@ -20,42 +20,49 @@ EXTRACTION_PROMPT = """You are an invoice data extraction system. \
 Extract all fields from this invoice image/document.
 
 Return a JSON object with the following structure. For each field, \
-provide the value and a confidence score (0.0 to 1.0) indicating \
-how certain you are.
+provide the value and a confidence score between 0.0 and 1.0. \
+Use these confidence ranges:
+- 0.95-1.0: field is clearly printed and unambiguous
+- 0.8-0.94: field is legible but could have a minor read error
+- 0.5-0.79: field is partially obscured, blurry, or you are guessing
+- 0.1-0.49: field is barely visible or mostly inferred from context
+- null value with 0.0: field is not present on the document
+
+Do NOT default to 1.0 for all fields. Be honest about uncertainty.
 
 ```json
 {
-  "invoice_number": {"value": "string", "confidence": 0.0},
-  "vendor_name": {"value": "string", "confidence": 0.0},
-  "vendor_address": {"value": "string", "confidence": 0.0},
-  "vendor_tax_id": {"value": "string or null", "confidence": 0.0},
-  "amount": {"value": "decimal string", "confidence": 0.0},
-  "currency": {"value": "3-letter code", "confidence": 0.0},
-  "subtotal": {"value": "decimal string or null", "confidence": 0.0},
-  "tax_amount": {"value": "decimal string or null", "confidence": 0.0},
-  "tax_rate": {"value": "decimal string or null", "confidence": 0.0},
-  "discount_amount": {"value": "decimal string or null", "confidence": 0.0},
-  "shipping_amount": {"value": "decimal string or null", "confidence": 0.0},
-  "invoice_date": {"value": "YYYY-MM-DD", "confidence": 0.0},
-  "due_date": {"value": "YYYY-MM-DD or null", "confidence": 0.0},
-  "payment_terms": {"value": "string or null", "confidence": 0.0},
-  "po_number": {"value": "string or null", "confidence": 0.0},
-  "description": {"value": "brief description of invoice contents", "confidence": 0.0},
-  "reference_number": {"value": "string or null", "confidence": 0.0},
-  "payment_method": {"value": "ach|wire|check|credit_card or null", "confidence": 0.0},
-  "bill_to_address": {"value": "string or null", "confidence": 0.0},
-  "remit_to_address": {"value": "string or null", "confidence": 0.0},
-  "suggested_gl_account": {"value": "GL code or null", "confidence": 0.0},
-  "suggested_cost_center": {"value": "cost center or null", "confidence": 0.0},
+  "invoice_number": {"value": "string", "confidence": 0.95},
+  "vendor_name": {"value": "string", "confidence": 0.9},
+  "vendor_address": {"value": "string", "confidence": 0.85},
+  "vendor_tax_id": {"value": "string or null", "confidence": 0.7},
+  "amount": {"value": "decimal string", "confidence": 0.95},
+  "currency": {"value": "3-letter code", "confidence": 0.9},
+  "subtotal": {"value": "decimal string or null", "confidence": 0.85},
+  "tax_amount": {"value": "decimal string or null", "confidence": 0.8},
+  "tax_rate": {"value": "decimal string or null", "confidence": 0.6},
+  "discount_amount": {"value": "decimal string or null", "confidence": 0.5},
+  "shipping_amount": {"value": "decimal string or null", "confidence": 0.5},
+  "invoice_date": {"value": "YYYY-MM-DD", "confidence": 0.95},
+  "due_date": {"value": "YYYY-MM-DD or null", "confidence": 0.85},
+  "payment_terms": {"value": "string or null", "confidence": 0.7},
+  "po_number": {"value": "string or null", "confidence": 0.8},
+  "description": {"value": "brief description of invoice contents", "confidence": 0.75},
+  "reference_number": {"value": "string or null", "confidence": 0.6},
+  "payment_method": {"value": "ach|wire|check|credit_card or null", "confidence": 0.5},
+  "bill_to_address": {"value": "string or null", "confidence": 0.7},
+  "remit_to_address": {"value": "string or null", "confidence": 0.6},
+  "suggested_gl_account": {"value": "GL code or null", "confidence": 0.5},
+  "suggested_cost_center": {"value": "cost center or null", "confidence": 0.4},
   "line_items": [
     {
       "line_number": 1,
-      "item_code": {"value": "string or null", "confidence": 0.0},
-      "description": {"value": "string", "confidence": 0.0},
-      "quantity": {"value": "decimal string", "confidence": 0.0},
-      "unit_price": {"value": "decimal string", "confidence": 0.0},
-      "tax": {"value": "decimal string or null", "confidence": 0.0},
-      "total": {"value": "decimal string", "confidence": 0.0}
+      "item_code": {"value": "string or null", "confidence": 0.7},
+      "description": {"value": "string", "confidence": 0.85},
+      "quantity": {"value": "decimal string", "confidence": 0.9},
+      "unit_price": {"value": "decimal string", "confidence": 0.9},
+      "tax": {"value": "decimal string or null", "confidence": 0.6},
+      "total": {"value": "decimal string", "confidence": 0.95}
     }
   ]
 }

@@ -17,21 +17,27 @@ import boto3
 from app.config import settings
 
 # ---------------------------------------------------------------------------
-# Local extraction queue — one worker thread processes jobs sequentially.
+# Local extraction queue — a small pool of worker threads processes jobs
+# concurrently (default 3).  Keeps throughput high for bulk uploads while
+# staying under typical AI-provider rate limits.
 # ---------------------------------------------------------------------------
 
+_WORKER_COUNT = 3
 _job_queue: queue.Queue[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = queue.Queue()
-_worker_thread: threading.Thread | None = None
+_worker_threads: list[threading.Thread] = []
 _worker_lock = threading.Lock()
 
 
-def _ensure_worker() -> None:
-    """Start the worker thread if it isn't already running."""
-    global _worker_thread
+def _ensure_workers() -> None:
+    """Start worker threads, replacing any that have exited."""
     with _worker_lock:
-        if _worker_thread is None or not _worker_thread.is_alive():
-            _worker_thread = threading.Thread(target=_extraction_worker, daemon=True)
-            _worker_thread.start()
+        # Remove dead threads
+        _worker_threads[:] = [t for t in _worker_threads if t.is_alive()]
+        # Top up to _WORKER_COUNT
+        while len(_worker_threads) < _WORKER_COUNT:
+            t = threading.Thread(target=_extraction_worker, daemon=True)
+            t.start()
+            _worker_threads.append(t)
 
 
 def _extraction_worker() -> None:
@@ -82,7 +88,7 @@ async def dispatch_extraction(
         _send_to_sqs(invoice_id, org_id, actor_id)
     else:
         _job_queue.put((invoice_id, org_id, actor_id))
-        _ensure_worker()
+        _ensure_workers()
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +145,13 @@ async def _run_local(
     from app.models.organization import Organization
     from app.services.extraction import run_extraction
 
-    # Create a fresh control-plane engine for this thread
-    ctrl_engine = create_async_engine(settings.database_url)
+    # Create a fresh control-plane engine for this thread.
+    # Minimal pool (1 conn) — each worker only runs one job at a time and
+    # we don't want 3 workers × 2 engines × default pool (15) to exhaust
+    # PostgreSQL's max_connections (100).
+    ctrl_engine = create_async_engine(
+        settings.database_url, pool_size=1, max_overflow=0
+    )
     ctrl_factory = async_sessionmaker(ctrl_engine, expire_on_commit=False)
 
     try:
@@ -155,7 +166,9 @@ async def _run_local(
 
             # Create a fresh tenant engine for this thread
             tenant_url = _make_tenant_url(org.db_name)
-            tenant_engine = create_async_engine(tenant_url)
+            tenant_engine = create_async_engine(
+                tenant_url, pool_size=1, max_overflow=0
+            )
             tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
 
             try:
@@ -237,7 +250,9 @@ async def _mark_failed(
     from app.models.invoice import Invoice, InvoiceStatus
     from app.models.organization import Organization
 
-    ctrl_engine = create_async_engine(settings.database_url)
+    ctrl_engine = create_async_engine(
+        settings.database_url, pool_size=1, max_overflow=0
+    )
     ctrl_factory = async_sessionmaker(ctrl_engine, expire_on_commit=False)
     try:
         async with ctrl_factory() as ctrl_db:
@@ -249,7 +264,9 @@ async def _mark_failed(
                 return
 
         tenant_url = _make_tenant_url(org.db_name)
-        tenant_engine = create_async_engine(tenant_url)
+        tenant_engine = create_async_engine(
+            tenant_url, pool_size=1, max_overflow=0
+        )
         try:
             tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
             async with tenant_factory() as db:

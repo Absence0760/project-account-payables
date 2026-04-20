@@ -28,16 +28,22 @@
 		const total = files.length;
 		let succeeded = 0;
 		let failed = 0;
+		const BATCH = 5;
 
-		for (let i = 0; i < total; i++) {
-			const file = files[i];
-			uploadProgress = total > 1 ? `Uploading ${i + 1} of ${total}...` : 'Uploading...';
-			try {
-				await api.upload('/api/invoices/upload', file);
-				succeeded++;
-			} catch (err: unknown) {
-				failed++;
-				toast(`Failed to upload ${file.name}: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
+		for (let i = 0; i < total; i += BATCH) {
+			const batch = Array.from(files).slice(i, i + BATCH);
+			uploadProgress = total > 1 ? `Uploading ${Math.min(i + BATCH, total)} of ${total}...` : 'Uploading...';
+			const results = await Promise.allSettled(
+				batch.map((file) => api.upload('/api/invoices/upload', file))
+			);
+			for (let j = 0; j < results.length; j++) {
+				if (results[j].status === 'fulfilled') {
+					succeeded++;
+				} else {
+					failed++;
+					const reason = (results[j] as PromiseRejectedResult).reason;
+					toast(`Failed to upload ${batch[j].name}: ${reason instanceof Error ? reason.message : 'Unknown error'}`, 'error');
+				}
 			}
 		}
 
@@ -421,6 +427,17 @@
 
 	<div class="grid-container">
 		<table>
+			<colgroup>
+				<col style="width:40px" />
+				<col style="width:72px" />
+				<col style="width:11%" />
+				<col style="width:16%" />
+				<col />
+				<col style="width:8%" />
+				<col style="width:9%" />
+				<col style="width:9%" />
+				<col style="width:15%" />
+			</colgroup>
 			<thead>
 				<tr>
 					<th class="checkbox-col"><input type="checkbox" checked={allSelected} onchange={toggleSelectAll} /></th>
@@ -655,6 +672,7 @@
 		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.875rem;
+		table-layout: fixed;
 	}
 
 	thead {
@@ -682,10 +700,6 @@
 		color: var(--text);
 		white-space: nowrap;
 		vertical-align: middle;
-	}
-
-	.description {
-		max-width: 220px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
