@@ -405,6 +405,7 @@
 			<thead>
 				<tr>
 					<th class="checkbox-col"><input type="checkbox" checked={allSelected} onchange={toggleSelectAll} /></th>
+					<th class="actions-col"></th>
 					<th>Invoice #</th>
 					<th>Vendor</th>
 					<th>Description</th>
@@ -412,39 +413,12 @@
 					<th class="right">Amount</th>
 					<th>Due Date</th>
 					<th>Status</th>
-					<th></th>
 				</tr>
 			</thead>
 			<tbody>
 				{#each invoiceStore.all as invoice (invoice.id)}
 					<tr class:row-selected={selected.has(invoice.id)}>
 						<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
-						<td class="mono">
-							{invoice.invoice_number || '—'}
-							{#if invoice.warnings?.length}
-								<span class="warning-icon" title={invoice.warnings.map(w => w.message).join(', ')}>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-										<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-									</svg>
-								</span>
-							{/if}
-						</td>
-						<td>
-							{invoice.vendor || '—'}
-							{#if invoice.priors_summary && (invoice.priors_summary.cache > 0 || invoice.priors_summary.rag > 0)}
-								<span
-									class="priors-badge"
-									title="Extraction priors: {invoice.priors_summary.cache} vendor-cache field{invoice.priors_summary.cache === 1 ? '' : 's'}, {invoice.priors_summary.rag} RAG neighbor{invoice.priors_summary.rag === 1 ? '' : 's'}"
-								>
-									{#if invoice.priors_summary.rag > 0}RAG·{invoice.priors_summary.rag}{/if}{#if invoice.priors_summary.cache > 0 && invoice.priors_summary.rag > 0}·{/if}{#if invoice.priors_summary.cache > 0}cache·{invoice.priors_summary.cache}{/if}
-								</span>
-							{/if}
-						</td>
-						<td class="description">{invoice.description}</td>
-						<td class="mono">{invoice.po_number}</td>
-						<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
-						<td>{invoice.due_date}</td>
-						<td><StatusBadge status={invoice.status} /></td>
 						<td class="actions">
 							<button class="edit-btn" onclick={() => (editing = invoice)}>Edit</button>
 							{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
@@ -471,6 +445,32 @@
 								</button>
 							{/if}
 						</td>
+						<td class="mono">
+							{invoice.invoice_number || '—'}
+							{#if invoice.warnings?.length}
+								<span class="warning-icon" title={invoice.warnings.map(w => w.message).join(', ')}>
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+									</svg>
+								</span>
+							{/if}
+						</td>
+						<td>
+							{invoice.vendor || '—'}
+							{#if invoice.priors_summary && (invoice.priors_summary.cache > 0 || invoice.priors_summary.rag > 0)}
+								<span
+									class="priors-badge"
+									title="Extraction priors: {invoice.priors_summary.cache} vendor-cache field{invoice.priors_summary.cache === 1 ? '' : 's'}, {invoice.priors_summary.rag} RAG neighbor{invoice.priors_summary.rag === 1 ? '' : 's'}"
+								>
+									{#if invoice.priors_summary.rag > 0}RAG·{invoice.priors_summary.rag}{/if}{#if invoice.priors_summary.cache > 0 && invoice.priors_summary.rag > 0}·{/if}{#if invoice.priors_summary.cache > 0}cache·{invoice.priors_summary.cache}{/if}
+								</span>
+							{/if}
+						</td>
+						<td class="description" title={invoice.description}>{invoice.description}</td>
+						<td class="mono">{invoice.po_number}</td>
+						<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
+						<td>{invoice.due_date}</td>
+						<td><StatusBadge status={invoice.status} /></td>
 					</tr>
 				{:else}
 					<tr>
@@ -624,6 +624,12 @@
 		border: 1px solid var(--border);
 		border-radius: 8px;
 		overflow-x: auto;
+		/* Workspace is `display: flex; flex-direction: column`, so children
+		   inherit `min-width: auto` = intrinsic content width. Without
+		   min-width: 0, this card grows to fit the table and the page
+		   scrolls horizontally instead of the card scrolling internally. */
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	table {
@@ -656,11 +662,13 @@
 		border-bottom: 1px solid var(--border);
 		color: var(--text);
 		white-space: nowrap;
+		vertical-align: middle;
 	}
 
 	.description {
-		white-space: normal;
 		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	tr:last-child td {
@@ -812,7 +820,14 @@
 
 	/* --- Bulk action bar --- */
 
+	/* Floats above the page so selecting rows doesn't shove the table down.
+	   Bottom-centered so it lands in the natural eye line for an "I'm
+	   acting on the selection" affordance. */
 	.bulk-bar {
+		position: fixed;
+		left: 50%;
+		bottom: 24px;
+		transform: translateX(-50%);
 		display: flex;
 		align-items: center;
 		gap: 10px;
@@ -820,7 +835,10 @@
 		background: var(--surface);
 		border: 1px solid var(--accent);
 		border-radius: 8px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 		flex-wrap: wrap;
+		z-index: 50;
+		max-width: calc(100vw - 48px);
 	}
 
 	.bulk-count {

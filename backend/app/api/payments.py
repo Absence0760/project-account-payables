@@ -1,7 +1,7 @@
 """Payment endpoints."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -120,6 +120,105 @@ async def list_payments(
         page=page,
         page_size=page_size,
     )
+
+
+# NOTE: /queue and /summary MUST be declared before the /{payment_id} route —
+# FastAPI matches paths in declaration order, and "queue"/"summary" otherwise
+# get parsed as a UUID and fail with a 422 before ever reaching the handler.
+
+
+@router.get("/queue")
+async def payment_queue(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """List approved invoices ready for payment (no completed payment yet)."""
+    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
+
+    payable_statuses = [
+        InvoiceStatus.approved.value,
+        InvoiceStatus.sent_to_erp.value,
+        InvoiceStatus.posted_in_erp.value,
+        InvoiceStatus.payment_scheduled.value,
+    ]
+
+    result = await db.execute(
+        select(Invoice)
+        .where(
+            Invoice.status.in_(payable_statuses),
+            Invoice.id.notin_(paid_ids),
+        )
+        .order_by(Invoice.due_date.asc().nulls_last())
+    )
+    invoices = result.scalars().all()
+
+    today = date.today()
+    return {
+        "items": [
+            {
+                "id": str(inv.id),
+                "invoice_number": inv.invoice_number,
+                "vendor_name": inv.vendor_name,
+                "amount": float(inv.amount),
+                "currency": inv.currency,
+                "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                "payment_terms": inv.payment_terms,
+                "status": inv.status.value if hasattr(inv.status, "value") else inv.status,
+                "is_overdue": inv.due_date is not None and inv.due_date < today,
+            }
+            for inv in invoices
+        ],
+        "total": len(invoices),
+        "total_amount": float(sum(inv.amount for inv in invoices)),
+    }
+
+
+@router.get("/summary")
+async def payment_summary(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """KPIs for the payments page summary bar."""
+    paid_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(
+        Payment.status == "completed"
+    )
+    total_paid = float((await db.execute(paid_q)).scalar() or 0)
+
+    pending_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(
+        Payment.status.in_(["pending", "processing", "submitted"])
+    )
+    total_pending = float((await db.execute(pending_q)).scalar() or 0)
+
+    count_q = select(func.count()).select_from(Payment)
+    payment_count = (await db.execute(count_q)).scalar() or 0
+
+    rebate_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
+    total_rebates = float((await db.execute(rebate_q)).scalar() or 0)
+
+    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
+    payable_statuses = [
+        InvoiceStatus.approved.value,
+        InvoiceStatus.sent_to_erp.value,
+        InvoiceStatus.posted_in_erp.value,
+        InvoiceStatus.payment_scheduled.value,
+    ]
+    queue_q = select(func.count()).select_from(
+        select(Invoice.id)
+        .where(
+            Invoice.status.in_(payable_statuses),
+            Invoice.id.notin_(paid_ids),
+        )
+        .subquery()
+    )
+    queue_count = (await db.execute(queue_q)).scalar() or 0
+
+    return {
+        "total_paid": total_paid,
+        "total_pending": total_pending,
+        "payment_count": payment_count,
+        "total_rebates": total_rebates,
+        "queue_count": queue_count,
+    }
 
 
 @router.get("/{payment_id}", response_model=PaymentResponse)
@@ -534,105 +633,3 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
         await dispatch_payment_sync(run_id, uuid.UUID(str(org.id)))
 
 
-# ── Payment Queue ───────────────────────────────────────────────────
-
-
-@router.get("/queue")
-async def payment_queue(
-    db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
-):
-    """List approved invoices ready for payment (no completed payment yet)."""
-    # Subquery: invoices that already have a completed payment
-    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
-
-    payable_statuses = [
-        InvoiceStatus.approved.value,
-        InvoiceStatus.sent_to_erp.value,
-        InvoiceStatus.posted_in_erp.value,
-        InvoiceStatus.payment_scheduled.value,
-    ]
-
-    result = await db.execute(
-        select(Invoice)
-        .where(
-            Invoice.status.in_(payable_statuses),
-            Invoice.id.notin_(paid_ids),
-        )
-        .order_by(Invoice.due_date.asc().nulls_last())
-    )
-    invoices = result.scalars().all()
-
-    return {
-        "items": [
-            {
-                "id": str(inv.id),
-                "invoice_number": inv.invoice_number,
-                "vendor_name": inv.vendor_name,
-                "amount": float(inv.amount),
-                "currency": inv.currency,
-                "due_date": inv.due_date.isoformat() if inv.due_date else None,
-                "payment_terms": inv.payment_terms,
-                "status": inv.status.value if hasattr(inv.status, "value") else inv.status,
-                "is_overdue": inv.due_date is not None
-                and inv.due_date < __import__("datetime").date.today(),
-            }
-            for inv in invoices
-        ],
-        "total": len(invoices),
-        "total_amount": float(sum(inv.amount for inv in invoices)),
-    }
-
-
-# ── Payment Summary ─────────────────────────────────────────────────
-
-
-@router.get("/summary")
-async def payment_summary(
-    db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
-):
-    """KPIs for the payments page summary bar."""
-    # Total paid (completed)
-    paid_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed")
-    total_paid = float((await db.execute(paid_q)).scalar() or 0)
-
-    # Total pending
-    pending_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(
-        Payment.status.in_(["pending", "processing"])
-    )
-    total_pending = float((await db.execute(pending_q)).scalar() or 0)
-
-    # Payment count
-    count_q = select(func.count()).select_from(Payment)
-    payment_count = (await db.execute(count_q)).scalar() or 0
-
-    # Rebates earned
-    rebate_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
-    total_rebates = float((await db.execute(rebate_q)).scalar() or 0)
-
-    # Queue size
-    paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
-    payable_statuses = [
-        InvoiceStatus.approved.value,
-        InvoiceStatus.sent_to_erp.value,
-        InvoiceStatus.posted_in_erp.value,
-        InvoiceStatus.payment_scheduled.value,
-    ]
-    queue_q = select(func.count()).select_from(
-        select(Invoice.id)
-        .where(
-            Invoice.status.in_(payable_statuses),
-            Invoice.id.notin_(paid_ids),
-        )
-        .subquery()
-    )
-    queue_count = (await db.execute(queue_q)).scalar() or 0
-
-    return {
-        "total_paid": total_paid,
-        "total_pending": total_pending,
-        "payment_count": payment_count,
-        "total_rebates": total_rebates,
-        "queue_count": queue_count,
-    }

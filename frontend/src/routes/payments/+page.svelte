@@ -163,21 +163,27 @@
 	async function loadSummary() {
 		try {
 			summary = await api.get<Summary>('/api/payments/summary');
-		} catch { /* non-critical */ }
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load summary', 'error');
+		}
 	}
 
 	async function loadQueue() {
 		try {
 			const data = await api.get<{ items: QueueItem[] }>('/api/payments/queue');
 			queue = data.items;
-		} catch { /* non-critical */ }
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
+		}
 	}
 
 	async function loadRuns() {
 		try {
 			const data = await api.get<{ items: RunItem[] }>('/api/payments/runs/?page_size=100');
 			runs = data.items;
-		} catch { /* non-critical */ }
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load payment runs', 'error');
+		}
 	}
 
 	function statusCount(s: PaymentStatus): number {
@@ -616,6 +622,8 @@
 		border: 1px solid var(--border);
 		border-radius: 8px;
 		overflow-x: auto;
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	table {
@@ -778,13 +786,23 @@
 		background: rgba(99, 140, 255, 0.08);
 	}
 
+	/* Floats above the page so selecting rows doesn't shove the queue down.
+	   Same treatment as the invoices bulk-bar. */
 	.pay-bar {
+		position: fixed;
+		left: 50%;
+		bottom: 24px;
+		transform: translateX(-50%);
 		display: flex;
 		align-items: center;
 		gap: 12px;
-		padding: 10px 14px;
+		padding: 10px 16px;
 		background: var(--surface);
-		border-bottom: 1px solid var(--border);
+		border: 1px solid var(--accent);
+		border-radius: 8px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+		z-index: 50;
+		max-width: calc(100vw - 48px);
 	}
 
 	.pay-bar-count {

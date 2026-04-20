@@ -235,6 +235,8 @@
 		border: 1px solid var(--border);
 		border-radius: 8px;
 		overflow-x: auto;
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	table {

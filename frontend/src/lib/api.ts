@@ -52,6 +52,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	return res.json();
 }
 
+async function fetchBlob(path: string): Promise<string> {
+	// For binary endpoints (image / PDF) that <img src> and <iframe src>
+	// can't reach because they don't carry the Bearer token. Caller is
+	// responsible for `URL.revokeObjectURL` on the returned URL.
+	const token = getToken();
+	const headers: Record<string, string> = {};
+	if (token) headers['Authorization'] = `Bearer ${token}`;
+	const tenant = getTenantSlug();
+	if (tenant) headers['X-Tenant-Slug'] = tenant;
+
+	const res = await fetch(`${BASE}${path}`, { headers });
+	if (res.status === 401) {
+		clearToken();
+		window.location.href = '/login';
+		throw new Error('Unauthorized');
+	}
+	if (!res.ok) {
+		throw new Error(`Failed to load file: ${res.status}`);
+	}
+	const blob = await res.blob();
+	return URL.createObjectURL(blob);
+}
+
 export const api = {
 	get: <T>(path: string) => request<T>(path),
 	post: <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
@@ -67,4 +90,5 @@ export const api = {
 			headers: {},  // let browser set Content-Type with boundary
 		});
 	},
+	fetchBlob,
 };

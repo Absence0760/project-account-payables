@@ -73,6 +73,10 @@
 
 	.main-content {
 		flex: 1;
+		/* Without min-width: 0, a flex item's intrinsic minimum is its content
+		   width — wide tables/grids would push the page wider than the
+		   viewport, breaking the sidebar and clipping headers/buttons. */
+		min-width: 0;
 		transition: margin-left 0.2s ease;
 	}
 </style>

@@ -5,7 +5,6 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
-	import { PUBLIC_API_URL } from '$env/static/public';
 	import { toast } from '$lib/components/Toast.svelte';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
@@ -17,7 +16,6 @@
 		created_at: string;
 	}
 
-	const apiBase = PUBLIC_API_URL.replace(/\/+$/, '');
 	const ACTION_LABELS: Record<string, string> = {
 		'invoice.uploaded': 'Uploaded invoice',
 		'invoice.submitted_for_review': 'Submitted for review',
@@ -536,6 +534,41 @@
 	let priors = $state<PriorsData>({ vendor_cache_applied: [], rag_neighbors: [] });
 	let priorsOpen = $state(false);
 
+	// File preview — `<img src>` and `<iframe src>` can't reach the file
+	// endpoint because they don't carry the Bearer token. Fetch the bytes
+	// through the auth'd API client and render via a blob URL. The effect
+	// also handles cleanup so we don't leak object URLs across invoices.
+	let fileBlobUrl = $state<string | null>(null);
+	let fileLoadError = $state(false);
+
+	$effect(() => {
+		const path = invoice.file_url;
+		fileLoadError = false;
+		if (!path) {
+			fileBlobUrl = null;
+			return;
+		}
+		let revoked = false;
+		let createdUrl: string | null = null;
+		api.fetchBlob(path)
+			.then((url) => {
+				if (revoked) {
+					URL.revokeObjectURL(url);
+					return;
+				}
+				createdUrl = url;
+				fileBlobUrl = url;
+			})
+			.catch(() => {
+				fileLoadError = true;
+				fileBlobUrl = null;
+			});
+		return () => {
+			revoked = true;
+			if (createdUrl) URL.revokeObjectURL(createdUrl);
+		};
+	});
+
 	$effect(() => {
 		loadAuditLog();
 		loadExtractionConfidence();
@@ -649,10 +682,14 @@
 			<div class="pdf-pane">
 				{#if invoice.file_url}
 					{@const isImage = /\.(png|jpg|jpeg|tiff?)$/i.test(invoice.file_url)}
-					{#if isImage}
-						<img src={`${apiBase}${invoice.file_url}`} alt="Invoice — {invoice.invoice_number}" class="invoice-image" />
+					{#if fileLoadError}
+						<div class="no-pdf">Failed to load file. Try refreshing.</div>
+					{:else if !fileBlobUrl}
+						<div class="no-pdf">Loading…</div>
+					{:else if isImage}
+						<img src={fileBlobUrl} alt="Invoice — {invoice.invoice_number}" class="invoice-image" />
 					{:else}
-						<iframe src={`${apiBase}${invoice.file_url}`} title="Invoice PDF — {invoice.invoice_number}"></iframe>
+						<iframe src={fileBlobUrl} title="Invoice PDF — {invoice.invoice_number}"></iframe>
 					{/if}
 				{:else}
 					<div class="no-pdf">
@@ -766,6 +803,7 @@
 							<button type="button" class="btn-add-line" onclick={addLineItem}>+ Add Line</button>
 						</div>
 						{#if lineItems.length > 0}
+							<div class="line-items-scroll">
 							<table class="line-items-table">
 								<thead>
 									<tr>
@@ -807,6 +845,7 @@
 									{/each}
 								</tbody>
 							</table>
+							</div>
 						{:else}
 							<p class="line-items-empty">No line items. Click "+ Add Line" to add one.</p>
 						{/if}
@@ -1452,13 +1491,18 @@
 		color: var(--accent);
 	}
 
-	.line-items-table {
+	.line-items-scroll {
 		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.8rem;
+		overflow-x: auto;
 		border: 1px solid var(--border);
 		border-radius: 6px;
-		overflow: hidden;
+	}
+
+	.line-items-table {
+		width: 100%;
+		min-width: 520px;
+		border-collapse: collapse;
+		font-size: 0.8rem;
 	}
 
 	.line-items-table th {
@@ -1508,6 +1552,19 @@
 		font-family: inherit;
 	}
 
+	/* Kill the native number-input spinners — they steal ~20px per cell, which
+	   in a narrow modal pane meant amounts like "$7,000.00" got clipped to "70".
+	   Keep semantic type=number for keyboard + inputmode behaviour. */
+	.li-input[type='number']::-webkit-inner-spin-button,
+	.li-input[type='number']::-webkit-outer-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+	.li-input[type='number'] {
+		-moz-appearance: textfield;
+		appearance: textfield;
+	}
+
 	.li-input:focus {
 		outline: none;
 		border-color: var(--accent);
@@ -1526,25 +1583,62 @@
 	}
 
 	.li-gl {
-		min-width: 50px;
+		min-width: 70px;
 	}
 
-	/* Description column gets more space */
+	/* Fixed layout so column widths are honoured even when the modal pane
+	   is narrow. Numbers get whatever they actually need to display
+	   "$10,000.00" without truncation; description flexes. */
+	.line-items-table {
+		table-layout: fixed;
+	}
+
+	/* # */
+	.line-items-table th:nth-child(1),
+	.line-items-table td:nth-child(1) {
+		width: 32px;
+	}
+
+	/* Description — flexes, inputs ellipsis if too long */
 	.line-items-table th:nth-child(2),
 	.line-items-table td:nth-child(2) {
-		width: 35%;
+		width: auto;
 	}
 
-	/* Number columns get fixed min width */
+	/* Qty */
 	.line-items-table th:nth-child(3),
-	.line-items-table td:nth-child(3),
+	.line-items-table td:nth-child(3) {
+		width: 60px;
+	}
+
+	/* Unit Price */
 	.line-items-table th:nth-child(4),
-	.line-items-table td:nth-child(4),
+	.line-items-table td:nth-child(4) {
+		width: 90px;
+	}
+
+	/* Tax */
 	.line-items-table th:nth-child(5),
-	.line-items-table td:nth-child(5),
+	.line-items-table td:nth-child(5) {
+		width: 70px;
+	}
+
+	/* Total */
 	.line-items-table th:nth-child(6),
 	.line-items-table td:nth-child(6) {
-		width: 12%;
+		width: 90px;
+	}
+
+	/* GL */
+	.line-items-table th:nth-child(7),
+	.line-items-table td:nth-child(7) {
+		width: 90px;
+	}
+
+	/* × delete button */
+	.line-items-table th:nth-child(8),
+	.line-items-table td:nth-child(8) {
+		width: 28px;
 	}
 
 	.li-delete {
