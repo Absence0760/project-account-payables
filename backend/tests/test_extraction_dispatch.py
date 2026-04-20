@@ -305,24 +305,29 @@ async def test_fail_invoice_safely_swallows_db_errors():
 # ---------------------------------------------------------------------------
 
 
-def _make_session_cm(session):
-    """Wrap an AsyncMock session in an async context manager."""
-    cm = AsyncMock()
-    cm.__aenter__.return_value = session
-    cm.__aexit__.return_value = None
-    return cm
+class _FakeDbSession:
+    """A real Python async context manager / DB session that returns a fixed
+    scalar from execute(). Using a concrete class avoids AsyncMock attribute
+    auto-creation subtleties that can produce coroutine objects in unexpected
+    places."""
 
+    def __init__(self, scalar_return_value):
+        self._scalar_rv = scalar_return_value
+        self.committed = False
 
-def _make_async_session(scalar_return_value):
-    """Build a session whose execute().scalar_one_or_none() returns a real value
-    (not a coroutine). An AsyncMock's auto-attribute .return_value can spawn
-    further AsyncMocks whose .scalar_one_or_none() becomes awaitable; we avoid
-    that by explicitly typing the execute return_value as a plain MagicMock."""
-    execute_result = MagicMock()
-    execute_result.scalar_one_or_none = MagicMock(return_value=scalar_return_value)
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=execute_result)
-    return session
+    async def execute(self, query):
+        result = MagicMock()
+        result.scalar_one_or_none = MagicMock(return_value=self._scalar_rv)
+        return result
+
+    async def commit(self):
+        self.committed = True
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
 
 
 @pytest.mark.asyncio
@@ -337,8 +342,8 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
     fake_org = SimpleNamespace(id=org_id, db_name="ap_test")
     fake_invoice = SimpleNamespace(id=invoice_id, status=InvoiceStatus.pending)
 
-    ctrl_session = _make_async_session(fake_org)
-    tenant_session = _make_async_session(fake_invoice)
+    ctrl_session = _FakeDbSession(fake_org)
+    tenant_session = _FakeDbSession(fake_invoice)
 
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
@@ -354,8 +359,8 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
 
     def make_factory(engine, **kwargs):
         if engine is mock_ctrl_engine:
-            return MagicMock(return_value=_make_session_cm(ctrl_session))
-        return MagicMock(return_value=_make_session_cm(tenant_session))
+            return MagicMock(return_value=ctrl_session)
+        return MagicMock(return_value=tenant_session)
 
     with (
         patch("sqlalchemy.ext.asyncio.create_async_engine", side_effect=make_engine),
@@ -368,7 +373,7 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
         await mod._mark_failed(invoice_id, org_id, "extraction crashed")
 
     assert fake_invoice.status == InvoiceStatus.failed
-    tenant_session.commit.assert_awaited_once()
+    assert tenant_session.committed is True
     mock_ctrl_engine.dispose.assert_awaited()
     mock_tenant_engine.dispose.assert_awaited()
 
@@ -378,7 +383,7 @@ async def test_mark_failed_is_noop_when_org_not_found():
     """If the org has been deleted, _mark_failed returns without touching a tenant DB."""
     import app.services.extraction_dispatch as mod
 
-    ctrl_session = _make_async_session(None)
+    ctrl_session = _FakeDbSession(None)  # scalar returns None → early return
 
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
@@ -391,7 +396,7 @@ async def test_mark_failed_is_noop_when_org_not_found():
         return mock_ctrl_engine if engine_call_count == 1 else mock_tenant_engine
 
     def make_factory(engine, **kwargs):
-        return MagicMock(return_value=_make_session_cm(ctrl_session))
+        return MagicMock(return_value=ctrl_session)
 
     with (
         patch("sqlalchemy.ext.asyncio.create_async_engine", side_effect=make_engine),
@@ -417,8 +422,8 @@ async def test_mark_failed_does_not_transition_non_pending_invoice():
     fake_org = SimpleNamespace(id=org_id, db_name="ap_test")
     fake_invoice = SimpleNamespace(id=invoice_id, status=InvoiceStatus.done)
 
-    ctrl_session = _make_async_session(fake_org)
-    tenant_session = _make_async_session(fake_invoice)
+    ctrl_session = _FakeDbSession(fake_org)
+    tenant_session = _FakeDbSession(fake_invoice)
 
     mock_ctrl_engine = AsyncMock()
     mock_tenant_engine = AsyncMock()
@@ -434,8 +439,8 @@ async def test_mark_failed_does_not_transition_non_pending_invoice():
 
     def make_factory(engine, **kwargs):
         if engine is mock_ctrl_engine:
-            return MagicMock(return_value=_make_session_cm(ctrl_session))
-        return MagicMock(return_value=_make_session_cm(tenant_session))
+            return MagicMock(return_value=ctrl_session)
+        return MagicMock(return_value=tenant_session)
 
     with (
         patch("sqlalchemy.ext.asyncio.create_async_engine", side_effect=make_engine),
@@ -448,4 +453,4 @@ async def test_mark_failed_does_not_transition_non_pending_invoice():
         await mod._mark_failed(invoice_id, org_id, "reason")
 
     assert fake_invoice.status == InvoiceStatus.done
-    tenant_session.commit.assert_not_awaited()
+    assert tenant_session.committed is False
