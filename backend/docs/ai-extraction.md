@@ -157,7 +157,9 @@ ExtractionResult:
 
 ## Usage Tracking & Billing
 
-Every extraction (success or failure) creates an `ExtractionUsage` record:
+Every extraction (success or failure) creates an `ExtractionUsage` record.
+
+> **Note:** `ExtractionUsage` is a **control-plane model** — it lives in the `account_payables` DB, not in tenant DBs. Because of this, `run_extraction()` accepts an optional `ctrl_db: AsyncSession` parameter for writing usage records to the control-plane database.
 
 | Field | Description |
 |---|---|

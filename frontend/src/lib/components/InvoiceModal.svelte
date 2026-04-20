@@ -1204,11 +1204,10 @@
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
+		background: rgba(0, 0, 0, 0.6);
 		display: grid;
 		place-items: center;
 		z-index: 100;
-		backdrop-filter: blur(2px);
 	}
 
 	.modal {
@@ -1221,7 +1220,7 @@
 		flex-direction: column;
 		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
 		overflow: hidden;
-		transition: all 0.2s ease;
+		transition: width 0.2s ease, height 0.2s ease;
 	}
 
 	.modal.fullscreen {
@@ -1296,6 +1295,7 @@
 		border-right: 1px solid var(--border);
 		background: #1a1a24;
 		display: flex;
+		contain: paint;
 	}
 
 	.pdf-pane iframe {
@@ -1333,6 +1333,7 @@
 		overflow-x: hidden;
 		display: flex;
 		flex-direction: column;
+		contain: paint;
 	}
 
 	.resize-handle {
@@ -1752,13 +1753,15 @@
 		white-space: nowrap;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 		pointer-events: none;
-		opacity: 0;
-		transition: opacity 0.15s;
+		/* display:none instead of opacity:0 — avoids laying out ~15
+		   absolute-positioned pseudo-elements during scroll, which
+		   causes layout thrashing in the form pane. */
+		display: none;
 		z-index: 10;
 	}
 
 	.confidence-dot:hover::after {
-		opacity: 1;
+		display: block;
 	}
 
 	.btn-reset {

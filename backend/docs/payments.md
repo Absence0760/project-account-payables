@@ -294,7 +294,7 @@ Matching payments against bank statement entries:
 | `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
 | `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync |
 | `GET` | `/api/payments/queue` | List invoices ready for payment |
-| `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates |
+| `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
 
 **Query parameters for `GET /api/payments`:**
 

@@ -115,7 +115,7 @@ To add a new adapter: copy `mock_adapter.py`, implement the interface, register 
 ### Dispatch modes
 
 Extraction, ERP, and audit operations support two execution modes via config:
-- `local` (default) — runs in background thread in-process
+- `local` (default) — jobs queued in-process; pool of 3 worker threads drains the queue (engines use `pool_size=1, max_overflow=0` to stay under PostgreSQL's connection limit)
 - `lambda` — sends to SQS, processed by Lambda worker
 
 Controlled by: `AP_EXTRACTION_MODE`, `AP_ERP_MODE`, `AP_AUDIT_MODE`

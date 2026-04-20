@@ -202,7 +202,7 @@ Per-org config in `Organization.settings.payments`. See `../docs/payments.md` §
 ## Dispatch modes
 
 Extraction, ERP push, and audit logging support two execution modes:
-- **local** (default) — runs in background thread with separate DB engine
+- **local** (default) — jobs queued in-process; pool of 3 worker threads drains the queue. Each worker creates fresh engines with `pool_size=1, max_overflow=0` to avoid exhausting PostgreSQL connections.
 - **lambda** — sends message to SQS, processed by Lambda handler
 
 Files: `*_dispatch.py` (router), `*_lambda.py` (Lambda handler).
