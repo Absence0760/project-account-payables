@@ -139,6 +139,27 @@ async def approve_invoice(
     # Multi-level chain: check if this approval satisfies the current level
     # or if more levels remain.
     if approval_config.get("approver_strategy") == "chain" and instance:
+        # Lock the workflow instance row to prevent concurrent approval races
+        from app.models.workflow import WorkflowInstance
+        from app.services.approval_chain import init_chain_state, resolve_applicable_levels
+
+        locked_result = await db.execute(
+            select(WorkflowInstance).where(WorkflowInstance.id == instance.id).with_for_update()
+        )
+        instance = locked_result.scalar_one()
+
+        # Initialize chain state on first approval if not yet initialized
+        if not (instance.state_data or {}).get("approval_levels"):
+            applicable = resolve_applicable_levels(
+                approval_config.get("approval_chain", []),
+                float(invoice.amount or 0),
+            )
+            if applicable:
+                init_chain_state(instance, applicable)
+            else:
+                # No levels apply — treat as single-level, fall through
+                pass
+
         chain_complete = advance_approval_chain(instance, actor_id)
         if not chain_complete:
             # More levels needed — stay in ready_for_review, record partial

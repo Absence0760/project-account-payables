@@ -86,6 +86,7 @@ The approval step in the workflow definition supports three strategies:
 | **Manual** | When submitting for review, the user picks an approver from a dropdown. The selected user is assigned and sees Approve/Reject buttons on the invoice. |
 | **Specific** | One or more approvers are pre-configured in the workflow. Invoices are auto-assigned (round-robin). Only the assigned user sees the review buttons. |
 | **Auto** | Invoices skip human review entirely and are auto-approved. |
+| **Chain** | Multi-level sequential approval. Each level defines a min/max amount range, approver list, and required approval count. All approvals at level N must complete before level N+1 begins. See **Multi-Level Approval Chains** below. |
 
 Multiple approvers can be configured for the "specific" strategy via the workflow editor's search-and-pick interface.
 
@@ -94,6 +95,57 @@ Multiple approvers can be configured for the "specific" strategy via the workflo
 - If an invoice has an `assigned_to_id`, only that user sees Approve/Reject buttons in the modal.
 - If no one is assigned, any user with a non-clerk role can review.
 - AP Clerks never see review buttons regardless of assignment.
+
+### Approval Thresholds
+
+All thresholds are read from `steps_config_snapshot` (frozen per invoice at creation time).
+
+| Config key | Behavior |
+|---|---|
+| `auto_approve_below` | Invoices with amount below this value skip human review entirely — auto-approved. |
+| `require_cfo_above` | Non-CFO users receive 403 when attempting to approve invoices above this amount. |
+| `max_invoice_amount` | Invoices above this amount are rejected outright (422). |
+
+### Multi-Level Approval Chains
+
+Strategy `"chain"` with `approval_chain: list[ApprovalLevelConfig]`.
+
+Each `ApprovalLevelConfig`:
+
+| Field | Purpose |
+|---|---|
+| `min_amount` | Lower bound for this level to apply |
+| `max_amount` | Upper bound (nullable for open-ended) |
+| `approver_ids` | List of eligible approver UUIDs |
+| `required_approvals` | Number of approvals needed at this level |
+| `name` | Display name (e.g. "Manager", "CFO") |
+
+Chain state is tracked in `WorkflowInstance.state_data["approval_levels"]`. Levels are sequential: all approvals at level N must complete before level N+1 becomes active. The invoice stays in `ready_for_review` until all applicable levels are satisfied.
+
+### Segregation of Duties
+
+`require_segregation: bool` on the approval step config. When enabled:
+
+- `Invoice.uploaded_by_id` tracks the user who uploaded the invoice.
+- If the approver is the same user who uploaded (`uploaded_by_id == current_user.id`), the approval is rejected with 403.
+- Skipped when `uploaded_by_id` is NULL (pre-existing invoices created before the field was added).
+
+### Delegation / Out-of-Office
+
+Users can designate a delegate who receives their approval assignments while they are away.
+
+- `User.delegate_to_id` — FK to the delegate user (control plane).
+- `User.delegate_until` — datetime after which delegation expires.
+- `assign_reviewer()` checks delegation and reassigns to the delegate when active.
+- `WorkflowStep.original_assigned_to` records the intended user so the audit trail shows both the original assignee and the delegate.
+
+API:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/auth/delegation` | Check current delegation status |
+| `POST` | `/api/auth/delegation` | Set delegate: `{delegate_to_id, until}` |
+| `DELETE` | `/api/auth/delegation` | Clear delegation |
 
 ### Endpoints
 

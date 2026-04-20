@@ -102,6 +102,33 @@ Track Usage (ExtractionUsage record)
 Transition: pending → ready_for_review
 ```
 
+### Self-Correction Pass
+
+Runs after `_apply_extraction()`, before line items are saved. Implemented in `services/extraction_self_correction.py`.
+
+**Invariant checks (4):**
+
+1. **Total reconciliation** — `|subtotal + tax_amount - amount| / amount <= 2%`
+2. **Date ordering** — `due_date >= invoice_date`
+3. **Line items sum** — `|sum(line_item.total) - amount| / amount <= 2%`
+4. **Line item math** — per line: `|quantity * unit_price - total| / total <= 1%`
+
+**On violation:**
+
+- Confidence penalty of -0.2 applied to the relevant field(s)
+- Warning added to `invoice.warnings`
+- Results stored in `InvoiceExtractionResult.priors_metadata.self_correction`
+
+Controlled by `org_settings.extraction.self_correction_enabled` (default: true).
+
+### Auto-Approve on Confidence
+
+When `auto_approve_enabled=true` on the extraction step config and `overall_confidence >= auto_approve_threshold`: the invoice transitions directly from `pending` to `approved`, skipping `ready_for_review`.
+
+Also checks `auto_approve_below` from the approval step config — invoices below that amount threshold skip review entirely.
+
+Sets `approved_by="system (auto-approve)"`.
+
 ## Per-Field Confidence
 
 Every extracted field includes a confidence score (0.0 to 1.0). The extraction prompt asks the AI to self-rate certainty per field.
@@ -129,7 +156,7 @@ The extraction prompt includes GL account suggestions based on the vendor type a
 | Shipping/logistics | 6700 |
 | Hardware/equipment | 1500 |
 
-The org's chart of accounts can be included in the prompt (future improvement) for more accurate suggestions.
+The org's active `GLAccount` rows are queried and injected into the extraction prompt via `config["gl_account_catalog"]`, so the AI suggests from real codes. Falls back to the hardcoded default list above when no GL accounts are configured for the org.
 
 ## ExtractionResult Structure
 
@@ -245,7 +272,7 @@ backend/app/models/usage.py              # ExtractionUsage model for billing
 | Extraction config in org settings UI | Done |
 | Platform/BYOK dual model | Done |
 | Usage billing dashboard | Planned |
-| Custom chart of accounts in prompt | Planned |
+| Custom chart of accounts in prompt | **Done** |
 | Multi-page PDF support | Planned |
 | Learning from corrections — per-vendor cache | **Done** |
 | Learning from corrections — RAG with pgvector | **Done** |

@@ -290,6 +290,18 @@ OIDC SSO sign-in does **not** trigger our MFA challenge — the IdP is the sourc
 
 ---
 
+## Delegation / Out-of-Office
+
+Any user can set a delegate who receives their approval assignments while they are away.
+
+- **Set a delegate:** `POST /api/auth/delegation` with `{delegate_to_id, until}` — `until` is an ISO datetime after which delegation automatically expires.
+- **Check status:** `GET /api/auth/delegation` — returns the current delegation (delegate user, expiry) or empty if none is active.
+- **Clear:** `DELETE /api/auth/delegation` — removes the delegation immediately.
+
+When a reviewer is OOO (has an active, non-expired delegation), approval assignments auto-route to their delegate. The audit trail records both the original assignee (`WorkflowStep.original_assigned_to`) and the delegate who actually performed the action.
+
+---
+
 ## SCIM 2.0 (user provisioning from Okta + Entra)
 
 Automated user lifecycle — IdP pushes create/update/deactivate events to our SCIM endpoints so admins don't hand-manage users.

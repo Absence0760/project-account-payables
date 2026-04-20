@@ -27,9 +27,9 @@ Feature backlog for the AP automation platform, ordered by impact.
 - [x] Usage tracking (ExtractionUsage model) for billing
 - [ ] Support multi-page PDFs — PyMuPDF rasterize each page, merge line-items, keep highest-confidence header fields
 - [ ] Handle scanned/rotated/low-quality images — auto-deskew via PyMuPDF OSD before extraction
-- [ ] Auto-approve extraction above configurable threshold — `auto_approve_threshold` on org settings; transition directly to `approved` when `overall_confidence >= threshold`
-- [ ] Custom chart of accounts in extraction prompt — load the org's active `GLAccount` rows and inject as allowed values into the Claude Vision prompt; post-validate `suggested_gl_account`
-- [ ] Extraction self-correction pass — after the primary extraction, a cheap secondary LLM call verifies invariants (`subtotal + tax + shipping ≈ amount`, `due_date >= invoice_date`, `sum(line_items.total) ≈ amount`). Flag inconsistencies with per-field confidence penalty or trigger a re-extract. Measurable accuracy lift at negligible cost.
+- [x] Auto-approve extraction above configurable threshold — `auto_approve_enabled` + `auto_approve_threshold` on extraction step config; also checks `auto_approve_below` from approval step. Invoices skip review and go directly to `approved` with `approved_by="system (auto-approve)"`
+- [x] Custom chart of accounts in extraction prompt — org's active GLAccount rows queried and injected into extraction prompt via `config["gl_account_catalog"]`. Falls back to hardcoded default list
+- [x] Extraction self-correction pass — `services/extraction_self_correction.py` verifies arithmetic (subtotal+tax≈amount), date ordering, line-item math. Violations lower confidence (-0.2) and add warnings. Controlled by `org_settings.extraction.self_correction_enabled`
 - [x] Learning from corrections — per-vendor correction cache (see below)
 - [x] RAG-based extraction priors — pgvector + few-shot retrieval (see below)
 - [x] Semantic duplicate detection — near-duplicate catch via cosine similarity on the same `invoice_embeddings` store. Threshold `AP_DUPLICATE_SIMILARITY_THRESHOLD` (default 0.95, tighter than RAG retrieval). See `backend/docs/ai-extraction.md` § Duplicate detection.
@@ -106,19 +106,21 @@ Dedicated page for handling flagged invoices — mismatches, rejections, anomali
 ---
 
 ### Advanced Approval Routing
-**Status:** Planned — **Competitive gap: all competitors have this**
+**Status:** Partial — **Competitive gap: all competitors have this**
 
-Current state: manual, specific, and auto approval strategies only. No amount-based routing, no delegation, no escalation. Every competitor offers configurable multi-level approval chains.
+Current state: manual, specific, auto, and chain approval strategies. Amount-based auto-approve, CFO gate, max-amount rejection, multi-level chains, segregation of duties, and delegation are implemented. No escalation, email/Slack approval, or visual matrix builder yet.
 
-- [ ] Amount-based routing — auto-route to different approvers by invoice amount threshold
+- [x] Amount-based auto-approve (auto_approve_below threshold)
+- [x] CFO role gate (require_cfo_above threshold)
+- [x] Max invoice amount rejection (max_invoice_amount)
+- [x] Multi-level approval chains (strategy="chain", ApprovalLevelConfig)
+- [x] Segregation of duties (require_segregation, uploaded_by_id)
+- [x] Delegation / out-of-office (delegate_to_id, delegate_until, /api/auth/delegation)
 - [ ] Department/GL-based routing — route by cost center, GL code, or department
-- [ ] Multi-level approval chains — sequential approval (clerk → manager → CFO for large invoices)
 - [ ] Parallel approvals — multiple approvers review simultaneously, require all/any
-- [ ] Delegation / out-of-office — designate a proxy approver with date range
 - [ ] Escalation rules — auto-escalate after N hours/days without action
 - [ ] Email approval — approve/reject directly from email notification without logging in
 - [ ] Slack/Teams approval — approve/reject from Slack message buttons
-- [ ] Segregation of duties — prevent same user from creating and approving an invoice
 - [ ] Approval matrix UI — visual configuration of routing rules per org
 
 **Competitors:** Coupa (matrix approval), Tipalti (parallel + Slack), Stampli (email/Slack), Airbase (Slack-native), Basware (conditional chains)
