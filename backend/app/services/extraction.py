@@ -46,10 +46,13 @@ async def run_extraction(
     *,
     actor_id: uuid.UUID | None = None,
     org_settings: dict | None = None,
+    ctrl_db: AsyncSession | None = None,
 ) -> None:
     """Extract invoice fields from the uploaded file and update the invoice.
 
     This is called as a background task after file upload.
+    ``ctrl_db`` is the control-plane session used for ExtractionUsage tracking
+    (the ``extraction_usage`` table lives in the control DB, not the tenant DB).
     """
     # Cache IDs before try block — after rollback, invoice attrs may be expired
     invoice_id = invoice.id
@@ -225,7 +228,7 @@ async def run_extraction(
         )
         db.add(extraction_result)
 
-        # Track usage for billing
+        # Track usage for billing (extraction_usage lives in the control DB)
         program_type = config.get("program_type", "platform")
         usage = ExtractionUsage(
             invoice_id=invoice.id,
@@ -235,7 +238,9 @@ async def run_extraction(
             success=True,
             organization_id=invoice.organization_id,
         )
-        db.add(usage)
+        if ctrl_db is not None:
+            ctrl_db.add(usage)
+            await ctrl_db.commit()
 
         # Transition pending → ready_for_review
         await transition_invoice(
@@ -276,18 +281,20 @@ async def run_extraction(
             await db.commit()
             return
 
-        # Track failed usage
+        # Track failed usage (extraction_usage lives in the control DB)
         try:
-            config = _resolve_extraction_config(org_settings)
-            usage = ExtractionUsage(
-                invoice_id=invoice_id,
-                provider=config.get("provider", "unknown"),
-                program_type=config.get("program_type", "platform"),
-                period=datetime.now(UTC).strftime("%Y-%m"),
-                success=False,
-                organization_id=invoice_org_id,
-            )
-            db.add(usage)
+            if ctrl_db is not None:
+                config = _resolve_extraction_config(org_settings)
+                usage = ExtractionUsage(
+                    invoice_id=invoice_id,
+                    provider=config.get("provider", "unknown"),
+                    program_type=config.get("program_type", "platform"),
+                    period=datetime.now(UTC).strftime("%Y-%m"),
+                    success=False,
+                    organization_id=invoice_org_id,
+                )
+                ctrl_db.add(usage)
+                await ctrl_db.commit()
         except Exception:
             pass
 

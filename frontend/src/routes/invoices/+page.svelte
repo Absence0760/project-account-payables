@@ -16,24 +16,43 @@
 	let showAdvancedSearch = $state(false);
 	let advancedFilters = $state<AdvancedSearchFilters>({ ...EMPTY_ADVANCED_FILTERS });
 	let uploading = $state(false);
+	let uploadProgress = $state('');
 	let fileInput: HTMLInputElement;
 
 	async function handleUpload(e: Event) {
 		const input = e.target as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file) return;
+		const files = input.files;
+		if (!files || files.length === 0) return;
 		uploading = true;
-		try {
-			await api.upload('/api/invoices/upload', file);
-			await invoiceStore.fetch(buildParams());
-			await invoiceStore.fetchCounts();
-			toast('Invoice uploaded successfully', 'success');
-		} catch (err: unknown) {
-			toast(err instanceof Error ? err.message : 'Upload failed', 'error');
-		} finally {
-			uploading = false;
-			input.value = '';
+
+		const total = files.length;
+		let succeeded = 0;
+		let failed = 0;
+
+		for (let i = 0; i < total; i++) {
+			const file = files[i];
+			uploadProgress = total > 1 ? `Uploading ${i + 1} of ${total}...` : 'Uploading...';
+			try {
+				await api.upload('/api/invoices/upload', file);
+				succeeded++;
+			} catch (err: unknown) {
+				failed++;
+				toast(`Failed to upload ${file.name}: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
+			}
 		}
+
+		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetchCounts();
+
+		if (total === 1 && succeeded === 1) {
+			toast('Invoice uploaded successfully', 'success');
+		} else if (total > 1) {
+			toast(`Uploaded ${succeeded} of ${total} invoice${total > 1 ? 's' : ''}${failed ? ` (${failed} failed)` : ''}`, succeeded > 0 ? 'success' : 'error');
+		}
+
+		uploading = false;
+		uploadProgress = '';
+		input.value = '';
 	}
 
 	// Build query params from current filters and fetch from API
@@ -318,9 +337,9 @@
 				{/if}
 			</button>
 		</div>
-		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" bind:this={fileInput} onchange={handleUpload} hidden />
+		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple bind:this={fileInput} onchange={handleUpload} hidden />
 		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
-			{uploading ? 'Uploading...' : '+ Upload Invoice'}
+			{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
 		</button>
 	</header>
 
