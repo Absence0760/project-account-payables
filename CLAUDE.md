@@ -157,6 +157,7 @@ Workflow definitions are snapshotted per-invoice — editing a definition does n
 | `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
 | `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |
 | `AP_MFA_ENABLED` | `false` | Master MFA switch — keep `false` in local dev, flip on in deployed envs |
+| `AP_HSTS_ENABLED` | `false` | Emit `Strict-Transport-Security` on every response — keep `false` in local HTTP dev, flip on in deployed envs |
 
 Full list in `backend/app/config.py`.
 

@@ -76,9 +76,10 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 
 | Control | Status | Where it lives |
 |---|---|---|
-| TLS in transit (frontend + API) | Done in prod | CloudFront/ALB config (`infra/`) — verify HSTS header |
+| TLS in transit (frontend + API) | Done | CloudFront/ALB (`infra/`) + HSTS middleware (`backend/app/main.py` `SecurityHeadersMiddleware`). Post-deploy smoke test: `backend/scripts/verify_tls.py` |
+| HSTS + security response headers | Done | `backend/app/main.py` `SecurityHeadersMiddleware` — HSTS gated on `AP_HSTS_ENABLED`; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` always set. Tests: `backend/tests/test_security_headers.py` |
 | Encryption at rest — RDS | Done in prod | RDS storage encryption flag (Terraform) |
-| Encryption at rest — S3 | Done in prod | S3 bucket encryption (Terraform) |
+| Encryption at rest — S3 | Done | `infra/s3.tf` — SSE-KMS via the customer-managed key from `infra/kms.tf` |
 | Encryption at rest — secrets | Done | SOPS + AWS KMS (`backend/.env.sops`) |
 | KMS key rotation procedure | Done | `docs/secrets-rotation.md` |
 | Plaintext secrets in CI | None | All secrets via GitHub Actions `secrets:` context |
@@ -110,7 +111,8 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Control | Status | Where it lives |
 |---|---|---|
 | Automated RDS backups | Done in prod | RDS automated snapshots, 7-day retention |
-| S3 object versioning | Pending verify | Confirm `versioning = enabled` in Terraform |
+| S3 object versioning | Done | `infra/s3.tf` — `aws_s3_bucket_versioning` = Enabled on every bucket |
+| S3 Object Lock (WORM) | Done | `infra/s3.tf` — invoice-files = GOVERNANCE 365d, audit-logs = COMPLIANCE 2555d |
 | Documented backup + restore runbook | Done | `docs/backup-disaster-recovery.md` |
 | Quarterly restore test | Pending | Schedule + record; runbook describes the procedure |
 | Documented RTO/RPO | Done | `docs/backup-disaster-recovery.md` |
@@ -122,7 +124,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Secrets encrypted at rest (SOPS + KMS) | Done | `backend/.env.sops`, `infra/terraform.tfvars.sops` |
 | Documented rotation cadence + procedure | Done | `docs/secrets-rotation.md` |
 | 90-day rotation for app secrets | Pending | Document accepted; track rotations in vendor dashboard |
-| KMS key rotation | Pending | AWS KMS auto-rotation flag (Terraform) |
+| KMS key rotation | Done | `infra/kms.tf` — `enable_key_rotation = true` on the app KMS key. SOPS bootstrap key is rotated separately via the procedure in `docs/secrets-rotation.md`. |
 
 ### Change management
 
@@ -182,9 +184,12 @@ Renewals (Type II + pen test annually) are around **$25–40K/yr** thereafter.
 - Concurrent session limit (Redis sorted-set per user)
 - Centralized audit-log shipping (tenant audit_log → CloudWatch Logs / S3 Object Lock)
 - Auth event audit log (login/logout/MFA events into `audit_log`)
-- KMS key auto-rotation flag (Terraform)
-- S3 versioning verification (Terraform)
-- HSTS header (CloudFront/ALB config)
+- Migrate existing S3 buckets onto Object Lock. Object Lock can only be
+  enabled at bucket creation — the invoice-files and audit-logs buckets in
+  `infra/s3.tf` are net-new. For any pre-existing bucket: create a new
+  bucket with `object_lock_enabled = true`, `aws s3 sync` the contents,
+  switch `AP_S3_BUCKET` to the new name, delete the old bucket once
+  retention on the new one is verified.
 
 **Pending — process work** (founder, not engineer):
 - Pick + sign with a compliance vendor
