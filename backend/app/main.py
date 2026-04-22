@@ -15,6 +15,8 @@ from app.api import (
     invoices,
     organization,
     payments,
+    portal,
+    portal_auth,
     purchase_orders,
     scim,
     signup,
@@ -86,6 +88,8 @@ app.include_router(auth_sso.router, prefix="/api")
 app.include_router(scim.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")
+app.include_router(portal_auth.router, prefix="/api")
+app.include_router(portal.router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -32,6 +32,8 @@ from app.api import (
     invoices,
     organization,
     payments,
+    portal,
+    portal_auth,
     purchase_orders,
     scim,
     signup,
@@ -48,6 +50,7 @@ from app.api.deps import (
     get_current_user,
     require_roles,
 )
+from app.api.portal_deps import get_current_vendor_user
 
 # ---------- Endpoints that legitimately don't take a JWT --------------------
 
@@ -82,6 +85,9 @@ NO_AUTH_REQUIRED = {
     ("DELETE", "/scim/v2/Users/{user_id}"),
     ("GET", "/scim/v2/ServiceProviderConfig"),
     ("GET", "/scim/v2/Schemas/{schema_id}"),
+    # portal_auth.py — pre-login + logout (Bearer header, not as Depends)
+    ("POST", "/portal/auth/login"),
+    ("POST", "/portal/auth/logout"),
 }
 
 # Routers wired into the app at /api — same set as app/main.py.
@@ -97,6 +103,8 @@ ROUTERS = [
     invoices.router,
     organization.router,
     payments.router,
+    portal.router,
+    portal_auth.router,
     purchase_orders.router,
     scim.router,
     signup.router,
@@ -118,22 +126,19 @@ def _iter_endpoints(routers: Iterable) -> Iterable[tuple[str, str, callable]]:
 
 
 def _has_auth_dep(endpoint: callable) -> bool:
-    """True if the endpoint signature includes a `Depends(get_current_user)`
-    or `Depends(require_roles(...))` parameter."""
+    """True if the endpoint signature includes a `Depends(get_current_user)`,
+    `Depends(require_roles(...))`, or `Depends(get_current_vendor_user)`
+    parameter."""
     sig = inspect.signature(endpoint)
     for p in sig.parameters.values():
         default = p.default
-        # FastAPI Depends instances expose a `.dependency` attribute pointing
-        # at the callable. Every protected endpoint should ultimately resolve
-        # through `get_current_user`.
         dep = getattr(default, "dependency", None)
         if dep is None:
             continue
-        if dep is get_current_user:
+        if dep is get_current_user or dep is get_current_vendor_user:
             return True
         # require_roles returns a closure named "checker" that itself
-        # depends on get_current_user. Detect either by name or by
-        # walking the closure's cellvars.
+        # depends on get_current_user.
         if getattr(dep, "__name__", "") == "checker":
             return True
     return False
