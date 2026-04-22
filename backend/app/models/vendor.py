@@ -41,3 +41,6 @@ class Vendor(Base, TimestampMixin):
     )
 
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="vendor_rel")  # noqa: F821
+    portal_users: Mapped[list["VendorUser"]] = relationship(  # noqa: F821
+        back_populates="vendor", cascade="all, delete-orphan"
+    )

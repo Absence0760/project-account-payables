@@ -331,21 +331,27 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 **Competitive gap: all competitors have a supplier portal**
 
 ### Vendor Self-Service
-**Status:** Planned
+**Status:** Partial — Phase 1 MVP shipped (separate auth, invoice submission, status/payment tracking). See [`backend/docs/supplier-portal.md`](../backend/docs/supplier-portal.md).
 
 Separate portal for vendors to interact with the AP system. Biggest workflow gap — forces email/manual invoice intake without this. Every competitor (Coupa CSP, Tipalti Supplier Hub, Basware Network, Stampli) offers this.
 
-- [ ] Vendor login (separate auth, linked to vendor record)
-- [ ] Submit invoices directly (upload PDF or enter manually)
+- [x] Vendor login (separate auth, linked to vendor record) — `VendorUser` tenant-scoped, JWT `typ=vendor` prevents cross-contamination with AP-app tokens
+- [x] Submit invoices directly (upload PDF) — routes into the existing extraction pipeline with `vendor_id` pre-filled and a `source=supplier_portal` audit breadcrumb
+- [x] Check invoice status and payment status
+- [x] View payment history — joins `payments` ↔ `invoices` on `vendor_id`
+- [x] Admin invite flow — `POST /api/vendors/{id}/portal-users` mints a temp password + welcome email
 - [ ] PO flip — create invoice from PO (pre-populate fields)
-- [ ] Check invoice status and payment status
-- [ ] View payment history and download remittances
+- [ ] Download remittances (PDF generation)
 - [ ] Update company info, bank details, tax ID
 - [ ] Bank detail change requires AP admin approval (fraud prevention)
 - [ ] W-9/W-8 form upload and management
 - [ ] Notification preferences (email on payment, on rejection)
 - [ ] Virtual card detail viewing (secure, one-time access)
 - [ ] Early payment discount offers (tie into dynamic discounting)
+- [ ] In-app per-invoice chat between vendor and AP team
+- [ ] MFA for portal users
+
+**Files:** `backend/app/api/portal.py`, `backend/app/api/portal_auth.py`, `backend/app/models/vendor_user.py`, `frontend/src/routes/portal/`
 
 **Competitors:** Coupa (CSP, free for suppliers), Tipalti (full supplier hub), Basware (Basware Network), Stampli (invoice submission + status)
 

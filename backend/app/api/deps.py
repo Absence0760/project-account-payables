@@ -36,6 +36,22 @@ def create_access_token(user_id: uuid.UUID, org_id: uuid.UUID) -> str:
     payload = {
         "sub": str(user_id),
         "org": str(org_id),
+        "typ": "user",
+        "jti": jti,
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
+def create_vendor_access_token(vendor_user_id: uuid.UUID, vendor_id: uuid.UUID) -> str:
+    """Mint a supplier-portal JWT. `typ=vendor` is the gate that stops a vendor
+    JWT from resolving through `get_current_user` (and vice versa)."""
+    jti = str(uuid.uuid4())
+    expire = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
+    payload = {
+        "sub": str(vendor_user_id),
+        "ven": str(vendor_id),
+        "typ": "vendor",
         "jti": jti,
         "exp": expire,
     }
@@ -59,6 +75,11 @@ async def get_current_user(
 
     token = authorization.removeprefix("Bearer ")
     payload = decode_token(token)
+
+    # Reject vendor-portal JWTs — they resolve through `get_current_vendor_user`
+    # and must not acquire an AP-app User session by mistake.
+    if payload.get("typ") == "vendor":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     try:
         user_id = uuid.UUID(payload["sub"])

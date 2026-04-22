@@ -74,6 +74,8 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 | `/auth` | Login, logout, profile (JWT + Redis blocklist), MFA enroll/verify/disable, MFA challenge |
 | `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
 | `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra (per-tenant bearer auth) |
+| `/portal/auth` | Supplier-portal auth (VendorUser, JWT `typ=vendor`) — login, logout, me, change-password |
+| `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, vendor-scoped |
 | `/admin` | User CRUD, role assignment |
 | `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
 | `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send |
@@ -186,6 +188,7 @@ Full list in `backend/app/config.py`.
 | Getting started | `docs/getting-started.md` — first-run setup |
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
+| Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |
 | Roadmap | `docs/roadmap.md` — feature backlog with status and competitive context |
 | Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 

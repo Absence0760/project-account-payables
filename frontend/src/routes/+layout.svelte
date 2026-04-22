@@ -15,6 +15,12 @@
 	// Routes that render without a tenant context (signup flow).
 	const PUBLIC_PATHS = ['/signup', '/verify'];
 
+	// The supplier portal runs on the tenant subdomain but uses a separate
+	// auth surface (VendorUser, not User). Bypass the root-layout's
+	// employee-auth logic for any /portal path — `/portal/+layout.svelte`
+	// handles portal-specific routing.
+	const PORTAL_PREFIX = '/portal';
+
 	$effect(() => {
 		if (browser) {
 			tenant = getTenantSlug();
@@ -25,6 +31,9 @@
 		if (!tenant) return;
 
 		const path = $page.url.pathname;
+
+		// Portal has its own auth tree — don't interleave the two.
+		if (path.startsWith(PORTAL_PREFIX)) return;
 
 		if (!auth.loggedIn && !path.startsWith('/login')) {
 			goto('/login');
@@ -48,6 +57,8 @@
 
 {#if tenant === undefined}
 	<!-- SSR / hydration: tenant not resolved yet, render nothing to avoid flash -->
+{:else if $page.url.pathname.startsWith(PORTAL_PREFIX)}
+	<slot />
 {:else if PUBLIC_PATHS.includes($page.url.pathname)}
 	<slot />
 {:else if tenant === null}
