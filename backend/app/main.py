@@ -35,21 +35,29 @@ async def lifespan(app: FastAPI):
     # AP_EXTRACTION_REAPER_ENABLED so tests / one-shot CLI runs can disable it.
     import asyncio
 
+    from app.services.audit_log_shipper import run_shipper_loop
     from app.services.extraction_reaper import run_reaper_loop
 
     reaper_task: asyncio.Task | None = None
+    shipper_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
+    # Centralized audit-log shipper (SOC 2). Disabled by default so local
+    # dev doesn't spin up AWS clients; flip AP_AUDIT_SHIPPING_ENABLED on in
+    # deployed envs.
+    if settings.audit_shipping_enabled:
+        shipper_task = asyncio.create_task(run_shipper_loop(), name="audit-log-shipper")
 
     try:
         yield
     finally:
-        if reaper_task is not None:
-            reaper_task.cancel()
-            try:
-                await reaper_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for task in (reaper_task, shipper_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         from app.database import dispose_all_engines
 
