@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     # Auth / JWT
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 30
+    # Maximum concurrent sessions per user. When a user logs in and already
+    # has this many active sessions, the oldest JTI is evicted onto the Redis
+    # blocklist. Set to 0 to disable the cap. Default 5 — a reasonable mix of
+    # desktop + mobile + tablet without encouraging shared credentials.
+    max_concurrent_sessions: int = 5
 
     # S3 / MinIO
     s3_endpoint_url: str = "http://localhost:9000"
