@@ -2,18 +2,21 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import create_access_token, decode_token, get_current_user
+from app.api.deps import (
+    create_access_token_with_jti,
+    decode_token,
+    get_current_user,
+)
 from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
-from app.redis import block_token
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -28,7 +31,9 @@ from app.schemas.auth import (
     UserResponse,
 )
 from app.services import mfa
+from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.session_management import end_session, register_session
 from app.utils.passwords import PasswordError, validate_password_complexity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -78,21 +83,48 @@ async def _send_email_otp(user: User, code: str) -> None:
     await adapter.send(msg)
 
 
+def _client_ip(request: Request | None) -> str | None:
+    if request is None or request.client is None:
+        return None
+    return request.client.host
+
+
 # ---------------------------------------------------------------------------
 # Login + MFA flow
 # ---------------------------------------------------------------------------
 
 
 @router.post("/login")
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_control_db)):
+async def login(
+    body: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_control_db),
+):
     """Password login. Returns either a final access token or — if MFA is in
     play — a short-lived challenge token the browser trades for one."""
+    ip = _client_ip(request)
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
     if not user or not user.hashed_password:
+        # Failed login for an unknown user — still audit-log so abuse is
+        # visible. Without an organization_id we can't pick a tenant DB,
+        # so the write is simply dropped (logged at WARN inside the helper).
+        if user is not None:
+            await dispatch_auth_audit(
+                organization_id=user.organization_id,
+                actor_id=None,
+                action="auth.login.failure",
+                details={"email": body.email, "ip": ip, "reason": "no_password"},
+            )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not pwd_context.verify(body.password, user.hashed_password):
+        await dispatch_auth_audit(
+            organization_id=user.organization_id,
+            actor_id=None,
+            action="auth.login.failure",
+            details={"email": body.email, "ip": ip, "reason": "bad_password"},
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     org = await _load_user_org(db, user.organization_id)
@@ -114,13 +146,32 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_control_db)):
         # user under org-enforcement we still offer email so they can prove
         # ownership of the inbox before we let them enroll.
         methods.append("email")
+        await dispatch_auth_audit(
+            organization_id=user.organization_id,
+            actor_id=user.id,
+            action="auth.mfa.challenge_issued",
+            entity_id=user.id,
+            details={
+                "methods": methods,
+                "ip": ip,
+                "must_enroll": org_required and not user.mfa_enabled,
+            },
+        )
         return MFAChallengeResponse(
             mfa_challenge_token=challenge_token,
             methods=methods,
             must_enroll=org_required and not user.mfa_enabled,
         )
 
-    token = create_access_token(user.id, user.organization_id)
+    token, jti = create_access_token_with_jti(user.id, user.organization_id)
+    await register_session(user.id, jti)
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.login.success",
+        entity_id=user.id,
+        details={"ip": ip, "method": "password"},
+    )
     return TokenResponse(
         access_token=token,
         must_change_password=user.must_change_password,
@@ -151,8 +202,13 @@ async def request_email_otp(
 
 
 @router.post("/mfa/verify", response_model=TokenResponse)
-async def verify_mfa(body: MFAVerifyRequest, db: AsyncSession = Depends(get_control_db)):
+async def verify_mfa(
+    body: MFAVerifyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_control_db),
+):
     """Trade a challenge token + valid code for a real access token."""
+    ip = _client_ip(request)
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
@@ -168,12 +224,41 @@ async def verify_mfa(body: MFAVerifyRequest, db: AsyncSession = Depends(get_cont
         if not user.mfa_enabled or not user.mfa_secret:
             raise HTTPException(status_code=400, detail="TOTP not enrolled for this account")
         if not mfa.verify_totp(user.mfa_secret, body.code):
+            await dispatch_auth_audit(
+                organization_id=user.organization_id,
+                actor_id=user.id,
+                action="auth.mfa.verify.failure",
+                entity_id=user.id,
+                details={"method": "totp", "ip": ip},
+            )
             raise HTTPException(status_code=401, detail="Invalid code")
     elif body.method == "email":
         if not await mfa.verify_email_otp(user.id, body.code):
+            await dispatch_auth_audit(
+                organization_id=user.organization_id,
+                actor_id=user.id,
+                action="auth.mfa.verify.failure",
+                entity_id=user.id,
+                details={"method": "email", "ip": ip},
+            )
             raise HTTPException(status_code=401, detail="Invalid or expired code")
 
-    token = create_access_token(user.id, user.organization_id)
+    token, jti = create_access_token_with_jti(user.id, user.organization_id)
+    await register_session(user.id, jti)
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.mfa.verify.success",
+        entity_id=user.id,
+        details={"method": body.method, "ip": ip},
+    )
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.login.success",
+        entity_id=user.id,
+        details={"ip": ip, "method": f"password+mfa:{body.method}"},
+    )
     return TokenResponse(
         access_token=token,
         must_change_password=user.must_change_password,
@@ -261,18 +346,41 @@ async def disable_mfa(
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(authorization: str = Header()):
-    """Revoke the current token by adding it to the Redis blocklist."""
+async def logout(request: Request, authorization: str = Header()):
+    """Revoke the current token by adding it to the Redis blocklist and
+    untracking it from the user's active-session set."""
     token = authorization.removeprefix("Bearer ")
     payload = decode_token(token)
     jti = payload.get("jti")
-    if jti:
+    sub = payload.get("sub")
+    org_raw = payload.get("org")
+    if jti and sub:
         exp = payload.get("exp", 0)
-        # Block for the remaining lifetime of the token
         import time
+        import uuid as _uuid
 
         ttl = max(int(exp - time.time()), 1)
-        await block_token(jti, ttl)
+        try:
+            user_id = _uuid.UUID(sub)
+            await end_session(user_id, jti, ttl)
+        except (ValueError, TypeError):
+            # Fallback: at minimum blocklist the token even if the sub is malformed
+            from app.redis import block_token as _block_token
+
+            await _block_token(jti, ttl)
+            user_id = None
+
+        if user_id and org_raw:
+            try:
+                await dispatch_auth_audit(
+                    organization_id=_uuid.UUID(org_raw),
+                    actor_id=user_id,
+                    action="auth.logout",
+                    entity_id=user_id,
+                    details={"ip": _client_ip(request)},
+                )
+            except (ValueError, TypeError):
+                pass
 
 
 @router.get("/me", response_model=UserResponse)
