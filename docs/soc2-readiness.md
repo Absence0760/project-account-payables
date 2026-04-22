@@ -90,7 +90,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Application audit log (writes, approvals, transitions) | Done | `backend/app/services/audit.py` → `AuditLog` table per tenant |
 | RBAC denial logging | Done | `app/api/deps.py` `require_roles()` writes WARNING with actor + path |
 | Auth event logging (login, logout, MFA events) | **Partial** | Login/logout/MFA happen but aren't reliably written to the audit log — needs a pass |
-| **Centralized + WORM-compliant audit log shipping** | **Pending** | Tenant-DB `AuditLog` table is per-tenant; no central immutable store. Need to ship to CloudWatch Logs (or S3 with object lock) |
+| **Centralized + WORM-compliant audit log shipping** | Done | `backend/app/services/audit_log_shipper.py` + `services/audit_shipping/` adapters — background loop ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock. See `backend/docs/audit-log-shipping.md`. |
 | Centralized application logs (stderr) | Done in prod | ECS → CloudWatch Logs |
 | Alerting on 5xx + RBAC-denial spikes | Pending | CloudWatch Alarms or Datadog |
 | Uptime monitoring | Pending | UptimeRobot, Pingdom, or Better Stack |
@@ -176,11 +176,11 @@ Renewals (Type II + pen test annually) are around **$25–40K/yr** thereafter.
 - `docs/secrets-rotation.md` — secrets rotation procedure
 - `backend/scripts/access_review.py` — quarterly access-review CSV export
 - `.github/workflows/security.yml` — CodeQL (SAST) + Trivy (container scan), weekly + on push
+- `backend/app/services/audit_log_shipper.py` + `audit_shipping/` adapters — centralized, WORM-compliant audit-log shipping (CloudWatch Logs + S3 Object Lock)
 
 **Pending — needs a code change** (next work):
 - Forced logout on role change (Redis denylist hook in `admin.update_user`)
 - Concurrent session limit (Redis sorted-set per user)
-- Centralized audit-log shipping (tenant audit_log → CloudWatch Logs / S3 Object Lock)
 - Auth event audit log (login/logout/MFA events into `audit_log`)
 - KMS key auto-rotation flag (Terraform)
 - S3 versioning verification (Terraform)

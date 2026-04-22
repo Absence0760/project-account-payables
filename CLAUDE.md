@@ -104,6 +104,7 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 | `invoice_warnings.py` | Generates warnings and exceptions (duplicates, fraud, etc.) |
 | `payment_erp_sync.py` | Syncs payment status back to ERP |
 | `storage.py` | S3/MinIO file upload/download |
+| `audit_log_shipper.py` | Background loop that ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock (SOC 2 centralized WORM store) |
 
 ### Adapter patterns (pluggable providers)
 
@@ -111,6 +112,7 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 - **ERP** (`services/erp_adapters/`): merge_dev (unified), dynamics_365_bc, netsuite, mock. Registry via `@register_adapter` decorator. Config `integration_method: "merge_dev"|"direct"` selects path.
 - **Cards** (`services/card_adapters/`): lithic, nium, mock. Both have sandbox modes.
 - **Payments** (`services/payment_adapters/`): modern_treasury, mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
+- **Audit shipping** (`services/audit_shipping/`): mock, cloudwatch, s3_objectlock. Registry via `@register_audit_shipping_adapter` decorator. Sinks for the centralized SOC 2 audit trail; list configured via `AP_AUDIT_SHIPPING_PROVIDERS`.
 
 To add a new adapter: copy `mock_adapter.py`, implement the interface, register with the decorator.
 
@@ -157,6 +159,10 @@ Workflow definitions are snapshotted per-invoice — editing a definition does n
 | `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
 | `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |
 | `AP_MFA_ENABLED` | `false` | Master MFA switch — keep `false` in local dev, flip on in deployed envs |
+| `AP_AUDIT_SHIPPING_ENABLED` | `false` | Master switch for the centralized audit-log shipper — keep `false` in local dev, flip on in deployed envs |
+| `AP_AUDIT_SHIPPING_PROVIDERS` | `mock` | Comma-separated adapter names (e.g. `cloudwatch,s3_objectlock`). All must succeed before rows are marked shipped. |
+| `AP_AUDIT_SHIPPING_S3_BUCKET` | (empty) | Object-Lock-enabled S3 bucket for the WORM copy; required when the `s3_objectlock` provider is enabled |
+| `AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP` | `/ap/audit` | CloudWatch Logs group for shipped audit events |
 
 Full list in `backend/app/config.py`.
 
@@ -183,6 +189,7 @@ Full list in `backend/app/config.py`.
 | Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
 | SOC 2 readiness | `docs/soc2-readiness.md` — vendor comparison, control mapping, kickoff plan |
+| Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
 | Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |
