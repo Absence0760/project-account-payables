@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     # Auth / JWT
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 30
+    # Maximum concurrent sessions per user. When a user logs in and already
+    # has this many active sessions, the oldest JTI is evicted onto the Redis
+    # blocklist. Set to 0 to disable the cap. Default 5 — a reasonable mix of
+    # desktop + mobile + tablet without encouraging shared credentials.
+    max_concurrent_sessions: int = 5
 
     # S3 / MinIO
     s3_endpoint_url: str = "http://localhost:9000"
@@ -36,6 +41,27 @@ class Settings(BaseSettings):
     # Audit
     audit_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_audit_queue_url: str = ""  # required when audit_mode = "lambda"
+
+    # Centralized audit-log shipping (SOC 2). A background task sweeps every
+    # tenant DB, pulls unshipped `audit_log` rows in batches, and ships them
+    # to the configured WORM-compliant sinks (CloudWatch Logs, S3 with Object
+    # Lock). Default disabled — local dev doesn't need it and we don't want
+    # to fire AWS calls from a developer laptop. Flip on in deployed envs.
+    audit_shipping_enabled: bool = False
+    audit_shipping_interval_seconds: int = 60
+    audit_shipping_batch_size: int = 500
+    # Comma-separated list of adapter names to fan out to. Every adapter in
+    # the list must ACK before the rows get marked shipped — if any one
+    # fails, none are marked shipped and the next tick retries.
+    audit_shipping_providers: str = "mock"
+    # CloudWatch Logs group name. Tenant log streams are created under this
+    # group as `<tenant_db>/<YYYY-MM-DD>`.
+    audit_shipping_cloudwatch_group: str = "/ap/audit"
+    # S3 bucket must have Object Lock enabled (Governance or Compliance
+    # mode) with a default retention period set on the bucket. The shipper
+    # verifies the bucket exists on startup but does not configure Object
+    # Lock itself — that's a bucket-provisioning concern (Terraform).
+    audit_shipping_s3_bucket: str | None = None
 
     # AI Extraction (platform-level key — used when customers choose "Platform" extraction)
     anthropic_api_key: str = ""  # your Anthropic API key for Claude Vision
@@ -106,6 +132,17 @@ class Settings(BaseSettings):
     # Hash (not reversible) of the per-tenant SCIM bearer token is what gets
     # stored. The plaintext token is shown to the admin ONCE on generation.
     scim_url_path: str = "/api/scim/v2"
+
+    # Security headers (SOC 2 — TLS + tablestakes hardening)
+    # HSTS is gated off by default so local HTTP dev isn't broken. Deployed
+    # environments should set AP_HSTS_ENABLED=true.
+    hsts_enabled: bool = False
+    # Two years is the value required by browsers that consider preload
+    # submissions (hstspreload.org). Keep it as a setting so ops can dial it
+    # down during a cert migration without a code push.
+    hsts_max_age: int = 63072000
+    hsts_include_subdomains: bool = True
+    hsts_preload: bool = True
 
     # App
     debug: bool = True

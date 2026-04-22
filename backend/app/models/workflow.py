@@ -82,3 +82,8 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Populated by the centralized audit-log shipper once the row has been
+    # written to the WORM-compliant sink(s) (CloudWatch Logs + S3 Object
+    # Lock). NULL means "not yet shipped" — the background loop picks those
+    # up on the next tick. See services/audit_log_shipper.py.
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

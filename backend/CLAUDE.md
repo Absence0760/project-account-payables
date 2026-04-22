@@ -22,6 +22,7 @@ Deep-dive docs live in `backend/docs/`:
 | Docker Compose services | `docs/docker.md` |
 | Redis | `docs/redis.md` |
 | MinIO / S3 | `docs/minio.md` |
+| Audit-log shipping (SOC 2) | `docs/audit-log-shipping.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -144,6 +145,15 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 
 **Snapshot pattern**: `WorkflowInstance.steps_config_snapshot` freezes the active definition at invoice creation. All runtime logic reads the snapshot, not the live definition.
 
+## Key background services
+
+| Service | What it does |
+|---------|-------------|
+| `services/extraction_reaper.py` | Sweeps every tenant DB on a timer; transitions invoices stuck in `pending` extraction to `failed`. |
+| `services/audit_log_shipper.py` | Centralized audit-log shipper (SOC 2). Sweeps every tenant DB, reads unshipped `audit_log` rows in batches, fans them out to every configured `audit_shipping` adapter (CloudWatch Logs + S3 Object Lock), then marks `shipped_at=now()`. All adapters must ACK before rows are marked; failures leave rows unshipped so the next tick retries. Disabled by default — flip `AP_AUDIT_SHIPPING_ENABLED` on in deployed envs. See `docs/audit-log-shipping.md`. |
+
+Both are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
+
 ## Adapter patterns
 
 ### Extraction adapters (`services/extraction_adapters/`)
@@ -198,6 +208,19 @@ Registered: `mock`, `modern_treasury`.
 `execute_payment_run` dispatches via the adapter; webhook handler at `/api/payments/webhook/{tenant_slug}/{provider}` drives the `submitted → completed/failed` transition. Tenant comes from the URL path (no JWT, no header). Idempotent on the payment's `correlation_id`.
 
 Per-org config in `Organization.settings.payments`. See `../docs/payments.md` § Payment processor adapters.
+
+### Audit-shipping adapters (`services/audit_shipping/`)
+
+```python
+@register_audit_shipping_adapter("my_sink")
+class MySinkAdapter(AuditShippingAdapter):
+    async def ship(self, rows: list[AuditLogRow]) -> None: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock`, `cloudwatch`, `s3_objectlock`.
+
+The `audit_log_shipper` background loop instantiates every adapter named in `AP_AUDIT_SHIPPING_PROVIDERS` and ships each batch to all of them; all must succeed before the rows are marked shipped. See `docs/audit-log-shipping.md`.
 
 ## Dispatch modes
 

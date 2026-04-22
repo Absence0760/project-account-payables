@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
     admin,
@@ -34,21 +35,29 @@ async def lifespan(app: FastAPI):
     # AP_EXTRACTION_REAPER_ENABLED so tests / one-shot CLI runs can disable it.
     import asyncio
 
+    from app.services.audit_log_shipper import run_shipper_loop
     from app.services.extraction_reaper import run_reaper_loop
 
     reaper_task: asyncio.Task | None = None
+    shipper_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
+    # Centralized audit-log shipper (SOC 2). Disabled by default so local
+    # dev doesn't spin up AWS clients; flip AP_AUDIT_SHIPPING_ENABLED on in
+    # deployed envs.
+    if settings.audit_shipping_enabled:
+        shipper_task = asyncio.create_task(run_shipper_loop(), name="audit-log-shipper")
 
     try:
         yield
     finally:
-        if reaper_task is not None:
-            reaper_task.cancel()
-            try:
-                await reaper_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for task in (reaper_task, shipper_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         from app.database import dispose_all_engines
 
@@ -60,6 +69,37 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach SOC 2 tablestakes security headers to every response.
+
+    - `Strict-Transport-Security` (HSTS) is gated on `AP_HSTS_ENABLED` so the
+      local HTTP dev server doesn't accidentally pin `localhost` to HTTPS in
+      developer browsers. Flip the flag on in deployed envs.
+    - The other three headers have no HTTP/HTTPS dependency and are always
+      set — auditors look for them alongside HSTS and they cost nothing.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        if settings.hsts_enabled:
+            parts = [f"max-age={settings.hsts_max_age}"]
+            if settings.hsts_include_subdomains:
+                parts.append("includeSubDomains")
+            if settings.hsts_preload:
+                parts.append("preload")
+            response.headers["Strict-Transport-Security"] = "; ".join(parts)
+
+        # Always-on tablestakes headers.
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS — allow any subdomain of localhost or the production domain
 app.add_middleware(

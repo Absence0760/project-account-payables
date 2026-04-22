@@ -65,6 +65,45 @@ TTL:    remaining seconds until token expiry
 
 If Redis is unavailable, the blocklist check is skipped — tokens behave as standard stateless JWTs. This is a deliberate choice: a Redis outage should not lock out all users. The trade-off is that tokens cannot be revoked during the outage.
 
+## Session management (concurrent cap + forced logout)
+
+Every successful login, MFA verify, and SSO callback **also** registers the newly-minted JTI in a per-user Redis sorted set (`active_jtis:<user_id>`, scored by issue time). This gives the app two SOC 2-relevant controls on top of the blocklist:
+
+### Concurrent session limit
+
+Configured by `AP_MAX_CONCURRENT_SESSIONS` (default `5`; set to `0` to disable). On each login, `track_session` adds the JTI and — if the user is over the cap — evicts the oldest entries and adds them to the blocklist. The evicted sessions stop authenticating on their next request.
+
+### Forced logout on role change
+
+`PATCH /api/admin/users/{id}` snapshots the target's role set before applying changes. If roles change or `is_active` flips from true to false, the admin path calls `revoke_user_sessions(user_id)`, which blocklists every tracked JTI and clears the set. `DELETE /api/admin/users/{id}` does the same on deletion so a tombstoned user can't keep calling the API.
+
+### Session set TTL
+
+The sorted set carries a TTL equal to the access-token lifetime, refreshed on every login. Inactive users' sets age out naturally — Redis never accumulates stale entries.
+
+### Logout
+
+`POST /api/auth/logout` now both blocklists the current JTI **and** drops it from the tracking set (via `end_session`). A user who logs out gains a free slot under the concurrent-session cap for their next login.
+
+## Auth event audit logging
+
+Every auth action writes a row to the tenant `audit_log` table via `app/services/audit_dispatch.py::dispatch_auth_audit`. Because auth endpoints run on the control-plane DB (where users live) but the audit log is tenant-scoped, the helper resolves the tenant DB from the user's `organization_id` and opens a short-lived session to write the row. Failures are caught + logged at WARN level — auth itself never errors because the audit write couldn't complete.
+
+Action names:
+
+| Event | Action |
+|---|---|
+| Successful password login | `auth.login.success` |
+| Failed password login (bad password / no password) | `auth.login.failure` |
+| Logout | `auth.logout` |
+| MFA challenge issued during login | `auth.mfa.challenge_issued` |
+| Successful MFA verify | `auth.mfa.verify.success` |
+| Failed MFA verify | `auth.mfa.verify.failure` |
+| Successful SSO login | `auth.sso.login.success` |
+| Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
+
+Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`.
+
 ### Database separation
 
 - **Auth routes** (`/api/auth/*`) read from the control-plane DB (`account_payables`) — this is where `users`, `organizations`, and `roles` tables live
@@ -85,7 +124,8 @@ If Redis is unavailable, the blocklist check is skipped — tokens behave as sta
 |-----------------|----------------------------|---------------------------|
 | `AP_SECRET_KEY` | `change-me-in-production`  | JWT signing key           |
 | `AP_ACCESS_TOKEN_EXPIRE_MINUTES` | `30`      | Token lifetime in minutes |
-| `AP_REDIS_URL`  | `redis://localhost:6379`   | Redis URL for blocklist   |
+| `AP_REDIS_URL`  | `redis://localhost:6379`   | Redis URL for blocklist + active-session tracking |
+| `AP_MAX_CONCURRENT_SESSIONS` | `5`        | Concurrent sessions per user. `0` disables the cap. |
 
 Set `AP_SECRET_KEY` to a strong, random value in production.
 

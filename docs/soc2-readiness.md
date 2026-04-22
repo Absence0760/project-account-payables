@@ -68,17 +68,18 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Token revocation on logout (Redis blocklist) | Done | `backend/app/redis.py` |
 | Session timeout (JWT lifetime ≤ 30 min) | Done | `AP_ACCESS_TOKEN_EXPIRE_MINUTES` |
 | Quarterly access reviews (auditor-friendly export) | Done | `backend/scripts/access_review.py` |
-| Forced logout on role change | **Pending** | Needs a hook in `admin.update_user` to write `jti` denylist entries for the affected user |
-| Concurrent session limit | Pending | Track active `jti` set per user in Redis; revoke oldest beyond limit |
+| Forced logout on role change | Done | `app/api/admin.py` → `update_user` / `delete_user` call `services.session_management.revoke_user_sessions` on role change or deactivation |
+| Concurrent session limit | Done | Redis sorted-set per user (`active_jtis:<user_id>`) populated on login / MFA verify / SSO callback; oldest evicted via `AP_MAX_CONCURRENT_SESSIONS` (default 5) |
 | SSO-only mode (disable password login when SSO is configured) | Pending | Org-settings flag; gate `/auth/login` |
 
 ### Encryption
 
 | Control | Status | Where it lives |
 |---|---|---|
-| TLS in transit (frontend + API) | Done in prod | CloudFront/ALB config (`infra/`) — verify HSTS header |
+| TLS in transit (frontend + API) | Done | CloudFront/ALB (`infra/`) + HSTS middleware (`backend/app/main.py` `SecurityHeadersMiddleware`). Post-deploy smoke test: `backend/scripts/verify_tls.py` |
+| HSTS + security response headers | Done | `backend/app/main.py` `SecurityHeadersMiddleware` — HSTS gated on `AP_HSTS_ENABLED`; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` always set. Tests: `backend/tests/test_security_headers.py` |
 | Encryption at rest — RDS | Done in prod | RDS storage encryption flag (Terraform) |
-| Encryption at rest — S3 | Done in prod | S3 bucket encryption (Terraform) |
+| Encryption at rest — S3 | Done | `infra/s3.tf` — SSE-KMS via the customer-managed key from `infra/kms.tf` |
 | Encryption at rest — secrets | Done | SOPS + AWS KMS (`backend/.env.sops`) |
 | KMS key rotation procedure | Done | `docs/secrets-rotation.md` |
 | Plaintext secrets in CI | None | All secrets via GitHub Actions `secrets:` context |
@@ -89,8 +90,8 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 |---|---|---|
 | Application audit log (writes, approvals, transitions) | Done | `backend/app/services/audit.py` → `AuditLog` table per tenant |
 | RBAC denial logging | Done | `app/api/deps.py` `require_roles()` writes WARNING with actor + path |
-| Auth event logging (login, logout, MFA events) | **Partial** | Login/logout/MFA happen but aren't reliably written to the audit log — needs a pass |
-| **Centralized + WORM-compliant audit log shipping** | **Pending** | Tenant-DB `AuditLog` table is per-tenant; no central immutable store. Need to ship to CloudWatch Logs (or S3 with object lock) |
+| Auth event logging (login, logout, MFA events) | Done | `app/services/audit_dispatch.py::dispatch_auth_audit` resolves the tenant DB from the org id and writes an `auth.*` row for every login / logout / MFA / SSO event |
+| **Centralized + WORM-compliant audit log shipping** | Done | `backend/app/services/audit_log_shipper.py` + `services/audit_shipping/` adapters — background loop ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock. See `backend/docs/audit-log-shipping.md`. |
 | Centralized application logs (stderr) | Done in prod | ECS → CloudWatch Logs |
 | Alerting on 5xx + RBAC-denial spikes | Pending | CloudWatch Alarms or Datadog |
 | Uptime monitoring | Pending | UptimeRobot, Pingdom, or Better Stack |
@@ -110,7 +111,8 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Control | Status | Where it lives |
 |---|---|---|
 | Automated RDS backups | Done in prod | RDS automated snapshots, 7-day retention |
-| S3 object versioning | Pending verify | Confirm `versioning = enabled` in Terraform |
+| S3 object versioning | Done | `infra/s3.tf` — `aws_s3_bucket_versioning` = Enabled on every bucket |
+| S3 Object Lock (WORM) | Done | `infra/s3.tf` — invoice-files = GOVERNANCE 365d, audit-logs = COMPLIANCE 2555d |
 | Documented backup + restore runbook | Done | `docs/backup-disaster-recovery.md` |
 | Quarterly restore test | Pending | Schedule + record; runbook describes the procedure |
 | Documented RTO/RPO | Done | `docs/backup-disaster-recovery.md` |
@@ -122,7 +124,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Secrets encrypted at rest (SOPS + KMS) | Done | `backend/.env.sops`, `infra/terraform.tfvars.sops` |
 | Documented rotation cadence + procedure | Done | `docs/secrets-rotation.md` |
 | 90-day rotation for app secrets | Pending | Document accepted; track rotations in vendor dashboard |
-| KMS key rotation | Pending | AWS KMS auto-rotation flag (Terraform) |
+| KMS key rotation | Done | `infra/kms.tf` — `enable_key_rotation = true` on the app KMS key. SOPS bootstrap key is rotated separately via the procedure in `docs/secrets-rotation.md`. |
 
 ### Change management
 
@@ -170,21 +172,26 @@ Renewals (Type II + pen test annually) are around **$25–40K/yr** thereafter.
 
 ## What's in this repo today vs. pending
 
-**Shipped engineering controls** (this PR series):
+**Shipped engineering controls:**
 - `docs/soc2-readiness.md` — this document
 - `docs/backup-disaster-recovery.md` — backup + DR runbook with RTO/RPO
 - `docs/secrets-rotation.md` — secrets rotation procedure
 - `backend/scripts/access_review.py` — quarterly access-review CSV export
 - `.github/workflows/security.yml` — CodeQL (SAST) + Trivy (container scan), weekly + on push
+- Concurrent session limit (Redis sorted set per user, configurable cap)
+- Forced logout on role change + account deactivation
+- Auth event audit logging (login/logout/MFA/SSO → tenant `audit_log`)
+- `backend/app/services/audit_log_shipper.py` + `audit_shipping/` adapters — centralized, WORM-compliant audit-log shipping (CloudWatch Logs + S3 Object Lock)
+- HSTS + security-header middleware (`backend/app/main.py`), TLS smoke script (`backend/scripts/verify_tls.py`)
+- KMS auto-rotation + S3 versioning + Object Lock in Terraform (`infra/kms.tf`, `infra/s3.tf`)
 
 **Pending — needs a code change** (next work):
-- Forced logout on role change (Redis denylist hook in `admin.update_user`)
-- Concurrent session limit (Redis sorted-set per user)
-- Centralized audit-log shipping (tenant audit_log → CloudWatch Logs / S3 Object Lock)
-- Auth event audit log (login/logout/MFA events into `audit_log`)
-- KMS key auto-rotation flag (Terraform)
-- S3 versioning verification (Terraform)
-- HSTS header (CloudFront/ALB config)
+- Migrate existing S3 buckets onto Object Lock. Object Lock can only be
+  enabled at bucket creation — the invoice-files and audit-logs buckets in
+  `infra/s3.tf` are net-new. For any pre-existing bucket: create a new
+  bucket with `object_lock_enabled = true`, `aws s3 sync` the contents,
+  switch `AP_S3_BUCKET` to the new name, delete the old bucket once
+  retention on the new one is verified.
 
 **Pending — process work** (founder, not engineer):
 - Pick + sign with a compliance vendor

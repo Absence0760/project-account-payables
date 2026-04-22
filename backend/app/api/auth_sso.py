@@ -21,16 +21,18 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import create_access_token
+from app.api.deps import create_access_token_with_jti
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
+from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.session_management import register_session
 from app.services.sso import (
     SSOConfigError,
     SSOValidationError,
@@ -113,10 +115,12 @@ async def sso_authorize(slug: str, db: AsyncSession = Depends(get_control_db)):
 @router.post("/callback", response_model=SSOCallbackResponse)
 async def sso_callback(
     body: SSOCallbackRequest,
+    request: Request,
     db: AsyncSession = Depends(get_control_db),
 ):
     """Second leg: consume state, exchange code, validate ID token, JIT
     provision the user, mint our own JWT."""
+    ip = request.client.host if request.client else None
     try:
         bound = await consume_state(body.state)
     except SSOValidationError as exc:
@@ -137,21 +141,45 @@ async def sso_callback(
             discovery, config.client_id, config.client_secret, body.code, tenant_slug
         )
     except SSOValidationError as exc:
+        await dispatch_auth_audit(
+            organization_id=org.id,
+            actor_id=None,
+            action="auth.sso.login.failure",
+            details={"tenant": tenant_slug, "ip": ip, "reason": "code_exchange_failed"},
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     id_token = tokens.get("id_token")
     if not id_token:
+        await dispatch_auth_audit(
+            organization_id=org.id,
+            actor_id=None,
+            action="auth.sso.login.failure",
+            details={"tenant": tenant_slug, "ip": ip, "reason": "no_id_token"},
+        )
         raise HTTPException(status_code=400, detail="Identity provider did not return an ID token.")
 
     try:
         claims = await validate_id_token(id_token, discovery, config.client_id, expected_nonce)
     except SSOValidationError as exc:
+        await dispatch_auth_audit(
+            organization_id=org.id,
+            actor_id=None,
+            action="auth.sso.login.failure",
+            details={"tenant": tenant_slug, "ip": ip, "reason": "id_token_invalid"},
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Entra sometimes uses `upn` (user principal name) instead of `email`
     email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
     sub = claims.get("sub")
     if not email or not sub:
+        await dispatch_auth_audit(
+            organization_id=org.id,
+            actor_id=None,
+            action="auth.sso.login.failure",
+            details={"tenant": tenant_slug, "ip": ip, "reason": "missing_claims"},
+        )
         raise HTTPException(status_code=400, detail="IdP did not return an email or subject id.")
 
     email = email.lower().strip()
@@ -160,6 +188,17 @@ async def sso_callback(
     if config.allowed_email_domains:
         domain = email.rsplit("@", 1)[-1]
         if domain not in config.allowed_email_domains:
+            await dispatch_auth_audit(
+                organization_id=org.id,
+                actor_id=None,
+                action="auth.sso.login.failure",
+                details={
+                    "tenant": tenant_slug,
+                    "ip": ip,
+                    "email": email,
+                    "reason": "domain_blocked",
+                },
+            )
             raise HTTPException(
                 status_code=403,
                 detail="Your email domain isn't allowed to sign in to this workspace.",
@@ -167,7 +206,15 @@ async def sso_callback(
 
     user = await _jit_provision(db, org, email, sub, config.provider, claims)
 
-    token = create_access_token(user.id, user.organization_id)
+    token, jti = create_access_token_with_jti(user.id, user.organization_id)
+    await register_session(user.id, jti)
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="auth.sso.login.success",
+        entity_id=user.id,
+        details={"tenant": tenant_slug, "ip": ip, "provider": config.provider, "email": email},
+    )
     return SSOCallbackResponse(
         access_token=token,
         must_change_password=user.must_change_password,

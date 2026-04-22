@@ -43,7 +43,8 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_MFA_EMAIL_OTP_TTL_SECONDS` | `360`                                                           | Lifetime of email-OTP backup codes |
 | `AP_MFA_CHALLENGE_TTL_SECONDS` | `300`                                                           | Lifetime of the post-password "still need MFA" challenge token |
 | `AP_ACCESS_TOKEN_EXPIRE_MINUTES` | `30`                                                          | JWT lifetime in minutes |
-| `AP_REDIS_URL`        | `redis://localhost:6379`                                                 | Redis connection — required at runtime (auth blocklist, MFA, SSO state, rate limit) |
+| `AP_MAX_CONCURRENT_SESSIONS` | `5`                                                                | Concurrent sessions per user. When a user logs in with this many already active, the oldest JTI is evicted to the blocklist. `0` disables the cap. |
+| `AP_REDIS_URL`        | `redis://localhost:6379`                                                 | Redis connection — required at runtime (auth blocklist + active-session tracking, MFA, SSO state, rate limit) |
 | `AP_CORS_ORIGINS`     | `["http://localhost:7777","http://localhost:5173"]`                      | Comma-separated allowed origins (also matched by regex on subdomain) |
 | `AP_EXTRACTION_MODE`  | `local`                                                                  | `local` (in-process thread) or `lambda` (dispatch to SQS) |
 | `AP_EXTRACTION_TIMEOUT_SECONDS` | `600`                                                          | How long an invoice may sit in `pending` before the reaper transitions it to `failed`. |
@@ -54,6 +55,12 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_SQS_EXTRACTION_QUEUE_URL` | (empty)                                                          | Required when `AP_EXTRACTION_MODE=lambda` |
 | `AP_SQS_ERP_QUEUE_URL` | (empty)                                                                 | Required when `AP_ERP_MODE=lambda` |
 | `AP_SQS_AUDIT_QUEUE_URL` | (empty)                                                               | Required when `AP_AUDIT_MODE=lambda` |
+| `AP_AUDIT_SHIPPING_ENABLED` | `false`                                                            | Master switch for the centralized audit-log shipper (SOC 2). Disabled in local dev; flip on in deployed envs. |
+| `AP_AUDIT_SHIPPING_INTERVAL_SECONDS` | `60`                                                      | How often the shipper sweeps every tenant DB for unshipped `audit_log` rows. |
+| `AP_AUDIT_SHIPPING_BATCH_SIZE` | `500`                                                          | Max rows shipped per tenant per sweep. |
+| `AP_AUDIT_SHIPPING_PROVIDERS` | `mock`                                                          | Comma-separated adapter names — typical prod value `cloudwatch,s3_objectlock`. |
+| `AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP` | `/ap/audit`                                              | CloudWatch Logs group for the shipped events. |
+| `AP_AUDIT_SHIPPING_S3_BUCKET` | (empty)                                                         | Object-Lock-enabled S3 bucket. Required when the `s3_objectlock` provider is enabled. |
 | `AP_ANTHROPIC_API_KEY` | (empty)                                                                 | Platform Claude Vision key (used when org chooses "Platform" extraction) |
 | `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514`                                               | Default extraction model for the platform program |
 | `AP_LITHIC_API_KEY`   | (empty)                                                                  | Platform Lithic key for virtual cards |
@@ -73,6 +80,10 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_EMBEDDING_MODEL`  | `text-embedding-3-small`                                                 | Embedding model name |
 | `AP_EMBEDDING_DIMENSIONS` | `1536`                                                               | Embedding vector size — must match the column type in pgvector |
 | `AP_DUPLICATE_SIMILARITY_THRESHOLD` | `0.95`                                                     | Cosine threshold for flagging near-duplicate invoices |
+| `AP_HSTS_ENABLED`     | `false`                                                                  | Master switch for the `Strict-Transport-Security` response header. Keep `false` in local HTTP dev; set `true` in deployed environments behind HTTPS. |
+| `AP_HSTS_MAX_AGE`     | `63072000`                                                               | HSTS `max-age` in seconds. Default is two years — the minimum for `hstspreload.org` submission. |
+| `AP_HSTS_INCLUDE_SUBDOMAINS` | `true`                                                            | Emit the `includeSubDomains` directive (recommended; subdomains inherit the pin). |
+| `AP_HSTS_PRELOAD`     | `true`                                                                   | Emit the `preload` directive. Only meaningful if you actually submit to the preload list. |
 
 Copy the example file (optional — defaults work with Docker Compose):
 
