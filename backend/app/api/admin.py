@@ -21,6 +21,7 @@ from app.schemas.admin import (
     RoleResponse,
     UpdateUserRequest,
 )
+from app.services.session_management import revoke_user_sessions
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -131,6 +132,10 @@ async def update_user(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Snapshot pre-state so we can decide whether to force-logout the target.
+    previous_role_names = sorted(r.name for r in target.roles)
+    was_active = target.is_active
+
     if body.full_name is not None:
         target.full_name = body.full_name
     if body.email is not None:
@@ -145,7 +150,10 @@ async def update_user(
     if body.password is not None:
         target.hashed_password = pwd_context.hash(body.password)
 
+    roles_changed = False
     if body.role_names is not None:
+        new_role_names = sorted(set(body.role_names))
+        roles_changed = new_role_names != previous_role_names
         await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_id))
         if body.role_names:
             result = await db.execute(select(Role).where(Role.name.in_(body.role_names)))
@@ -160,6 +168,15 @@ async def update_user(
     )
     target = result.scalar_one()
     await db.commit()
+
+    # SOC 2: a role change (elevation or demotion) and account deactivation
+    # must both drop the user's existing sessions. The previous JWT was signed
+    # before the permission change and would otherwise keep the old role set
+    # alive until it expired (up to 30 min).
+    deactivated = was_active and body.is_active is False
+    if roles_changed or deactivated:
+        await revoke_user_sessions(user_id)
+
     return _user_to_response(target)
 
 
@@ -183,3 +200,7 @@ async def delete_user(
     await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_id))
     await db.delete(target)
     await db.commit()
+
+    # Deletion → revoke any active JWT so the tombstoned user can't keep
+    # hitting the API until their token expires.
+    await revoke_user_sessions(user_id)

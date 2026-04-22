@@ -227,3 +227,129 @@ def test_user_response_includes_mfa_fields():
     data = resp.model_dump()
     assert data["mfa_enabled"] is True
     assert data["mfa_required_by_org"] is True
+
+
+# ---------- Audit-log coverage for MFA paths ----------------------------
+#
+# SOC 2 wants every auth event (including MFA success + failure) to land
+# in the audit trail. These tests mock out dispatch_auth_audit and assert
+# the expected action names get written — the full integration tests live
+# in test_auth_events.py alongside the login/logout paths.
+
+
+@pytest.mark.asyncio
+async def test_verify_mfa_success_writes_audit_actions():
+    from unittest.mock import patch as _patch
+
+    import pyotp
+
+    from app.api import auth as auth_mod
+    from app.schemas.auth import MFAVerifyRequest
+    from app.services import mfa as mfa_svc
+
+    user = _mfa_user(enrolled=True)
+    db = _single_user_db(user)
+
+    audit_calls: list[str] = []
+
+    async def _fake_audit(**kwargs):
+        audit_calls.append(kwargs["action"])
+
+    async def _fake_register(user_id, jti):
+        pass
+
+    challenge = mfa_svc.create_challenge_token(user.id)
+    code = pyotp.TOTP(user.mfa_secret).now()
+
+    with (
+        _patch.object(auth_mod, "dispatch_auth_audit", _fake_audit),
+        _patch.object(auth_mod, "register_session", _fake_register),
+        _patch.object(auth_mod.settings, "mfa_enabled", True),
+    ):
+        await auth_mod.verify_mfa(
+            MFAVerifyRequest(challenge_token=challenge, code=code, method="totp"),
+            _mfa_request(),
+            db,
+        )
+
+    assert "auth.mfa.verify.success" in audit_calls
+    assert "auth.login.success" in audit_calls
+
+
+@pytest.mark.asyncio
+async def test_verify_mfa_failure_writes_audit_action():
+    from unittest.mock import patch as _patch
+
+    import pyotp
+    from fastapi import HTTPException
+
+    from app.api import auth as auth_mod
+    from app.schemas.auth import MFAVerifyRequest
+    from app.services import mfa as mfa_svc
+
+    user = _mfa_user(enrolled=True)
+    user.mfa_secret = pyotp.random_base32()
+    db = _single_user_db(user)
+
+    audit_calls: list[str] = []
+
+    async def _fake_audit(**kwargs):
+        audit_calls.append(kwargs["action"])
+
+    challenge = mfa_svc.create_challenge_token(user.id)
+
+    with (
+        _patch.object(auth_mod, "dispatch_auth_audit", _fake_audit),
+        _patch.object(auth_mod.settings, "mfa_enabled", True),
+    ):
+        with pytest.raises(HTTPException):
+            await auth_mod.verify_mfa(
+                MFAVerifyRequest(challenge_token=challenge, code="000000", method="totp"),
+                _mfa_request(),
+                db,
+            )
+
+    assert "auth.mfa.verify.failure" in audit_calls
+    assert "auth.mfa.verify.success" not in audit_calls
+    assert "auth.login.success" not in audit_calls
+
+
+# --- tiny local helpers for the two tests above ----------------------
+
+
+def _mfa_user(*, enrolled: bool):
+    from types import SimpleNamespace
+
+    import pyotp
+
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        email="a@b.c",
+        full_name="A",
+        hashed_password=None,
+        organization_id=uuid.uuid4(),
+        is_active=True,
+        must_change_password=False,
+        mfa_enabled=enrolled,
+        mfa_secret=pyotp.random_base32() if enrolled else None,
+    )
+
+
+def _single_user_db(user):
+    from unittest.mock import AsyncMock, MagicMock
+
+    db = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=user)
+    db.execute = AsyncMock(return_value=result)
+    db.commit = AsyncMock()
+    return db
+
+
+def _mfa_request():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    req = MagicMock()
+    req.client = SimpleNamespace(host="127.0.0.1")
+    return req

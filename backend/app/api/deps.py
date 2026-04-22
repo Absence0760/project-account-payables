@@ -31,6 +31,17 @@ ALL_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)
 
 
 def create_access_token(user_id: uuid.UUID, org_id: uuid.UUID) -> str:
+    token, _jti = create_access_token_with_jti(user_id, org_id)
+    return token
+
+
+def create_access_token_with_jti(user_id: uuid.UUID, org_id: uuid.UUID) -> tuple[str, str]:
+    """Mint an access token and return both the encoded JWT and the JTI.
+
+    Callers that need to track the session in Redis (login, MFA verify, SSO
+    callback) use this variant so they can register the JTI without having
+    to re-decode the token.
+    """
     jti = str(uuid.uuid4())
     expire = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {
@@ -40,7 +51,7 @@ def create_access_token(user_id: uuid.UUID, org_id: uuid.UUID) -> str:
         "jti": jti,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM), jti
 
 
 def create_vendor_access_token(vendor_user_id: uuid.UUID, vendor_id: uuid.UUID) -> str:
