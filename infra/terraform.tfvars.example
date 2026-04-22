@@ -16,6 +16,21 @@ project = "account-payables"
 # Environment (prod, staging, etc.). Becomes part of resource names + tags.
 environment = "prod"
 
+# --- S3 bucket names --------------------------------------------------------
+# Globally unique. Include a short random suffix so re-creation doesn't
+# conflict with the bucket name's 30-day cooldown (AWS keeps deleted bucket
+# names reserved briefly to prevent takeover).
+invoice_files_bucket_name = "account-payables-invoices-prod-REPLACE"
+audit_logs_bucket_name    = "account-payables-audit-logs-prod-REPLACE"
+
+# --- Object Lock retention --------------------------------------------------
+# Days an object stays locked after it lands. Invoices run in Governance mode
+# (legitimate override possible); audit logs run in Compliance mode (no
+# override even with root). Defaults match SOC 2 expectations — override if
+# your data-retention policy calls for a different number.
+# invoice_retention_days = 365
+# audit_retention_days   = 2555
+
 # --- Placeholders for future real resources ---
 #
 # When the ECS/ALB/RDS/CloudFront stack lands, put its secrets here:
