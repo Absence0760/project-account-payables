@@ -6,17 +6,15 @@
 # Plaintext terraform.tfvars is gitignored. The encrypted terraform.tfvars.sops
 # is what gets committed. See .sops.yaml and backend/CLAUDE.md § Secrets
 # management.
-#
-# This file is a skeleton. No Terraform-managed AWS resources exist in this
-# repo yet — add them alongside real variables as production infra is built
-# out. See docs/production-deployment.md for the planned AWS shape (ECS,
-# ALB, CloudFront, RDS).
 
 # Primary AWS region.
 aws_region = "us-east-1"
 
 # Project name used for tagging and resource naming.
 project = "account-payables"
+
+# Environment (prod, staging, etc.). Becomes part of resource names + tags.
+environment = "prod"
 
 # --- Placeholders for future real resources ---
 #
