@@ -107,6 +107,17 @@ class Settings(BaseSettings):
     # stored. The plaintext token is shown to the admin ONCE on generation.
     scim_url_path: str = "/api/scim/v2"
 
+    # Security headers (SOC 2 — TLS + tablestakes hardening)
+    # HSTS is gated off by default so local HTTP dev isn't broken. Deployed
+    # environments should set AP_HSTS_ENABLED=true.
+    hsts_enabled: bool = False
+    # Two years is the value required by browsers that consider preload
+    # submissions (hstspreload.org). Keep it as a setting so ops can dial it
+    # down during a cert migration without a code push.
+    hsts_max_age: int = 63072000
+    hsts_include_subdomains: bool = True
+    hsts_preload: bool = True
+
     # App
     debug: bool = True
 

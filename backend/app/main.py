@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
     admin,
@@ -60,6 +61,37 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach SOC 2 tablestakes security headers to every response.
+
+    - `Strict-Transport-Security` (HSTS) is gated on `AP_HSTS_ENABLED` so the
+      local HTTP dev server doesn't accidentally pin `localhost` to HTTPS in
+      developer browsers. Flip the flag on in deployed envs.
+    - The other three headers have no HTTP/HTTPS dependency and are always
+      set — auditors look for them alongside HSTS and they cost nothing.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        if settings.hsts_enabled:
+            parts = [f"max-age={settings.hsts_max_age}"]
+            if settings.hsts_include_subdomains:
+                parts.append("includeSubDomains")
+            if settings.hsts_preload:
+                parts.append("preload")
+            response.headers["Strict-Transport-Security"] = "; ".join(parts)
+
+        # Always-on tablestakes headers.
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS — allow any subdomain of localhost or the production domain
 app.add_middleware(
