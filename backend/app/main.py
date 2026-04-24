@@ -10,6 +10,7 @@ from app.api import (
     auth_sso,
     cards,
     dashboard,
+    email_intake,
     erp_webhook,
     exceptions,
     gl_accounts,
@@ -21,6 +22,7 @@ from app.api import (
     purchase_orders,
     scim,
     signup,
+    tax,
     vendors,
     workflow,
     workflow_definitions,
@@ -130,6 +132,9 @@ app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")
 app.include_router(portal_auth.router, prefix="/api")
 app.include_router(portal.router, prefix="/api")
+app.include_router(email_intake.public_router, prefix="/api")
+app.include_router(email_intake.admin_router, prefix="/api")
+app.include_router(tax.router, prefix="/api")
 
 
 @app.get("/api/health")

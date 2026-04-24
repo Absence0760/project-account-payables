@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # a missing ``pytesseract`` / ``tesseract`` binary degrades to a silent no-op.
     extraction_auto_rotate: bool = True
 
+    # Email-to-invoice intake (see backend/docs/email-intake.md).
+    # ``email_intake_domain`` is the hostname used in the recipient address
+    # (``invoices+<token>@<domain>``). Leave empty to disable intake.
+    email_intake_domain: str = ""
+    # HMAC-SHA256 signing secret for the webhook body. When empty, signature
+    # verification is skipped (dev only — set this in every deployed env).
+    email_intake_signing_secret: str = ""
+
     # ERP
     erp_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_erp_queue_url: str = ""  # required when erp_mode = "lambda"

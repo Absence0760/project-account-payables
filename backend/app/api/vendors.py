@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from passlib.context import CryptContext
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,7 @@ from app.schemas.portal import (
     PortalUserResponse,
 )
 from app.schemas.vendor import VendorCreate, VendorResponse, VendorUpdate
+from app.services.csv_import import import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.vendor_sync import sync_vendors_from_erp
 from app.tenant import get_tenant, get_tenant_db
@@ -245,6 +246,31 @@ async def sync_vendors_from_erp_endpoint(
         ),
         **result,
     }
+
+
+@router.post("/import-csv", status_code=status.HTTP_200_OK)
+async def import_vendors_from_csv(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Bulk-create vendors from a CSV export.
+
+    Columns (case-insensitive, order-free): ``name`` (required), ``code``,
+    ``email``, ``phone``, ``address``, ``tax_id``, ``payment_terms``,
+    ``accepts_virtual_cards``. Duplicate detection uses ``code`` first, then
+    case-insensitive ``name``. See ``backend/docs/csv-import.md``.
+    """
+    raw = await file.read()
+    try:
+        csv_text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
+
+    result = await import_vendors_csv(db, org_id, csv_text)
+    await db.commit()
+    return result.to_dict()
 
 
 # ---------- Supplier-portal user management ----------

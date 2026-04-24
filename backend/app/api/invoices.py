@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
@@ -19,6 +19,7 @@ from app.api.deps import (
     ROLE_AP_MANAGER,
     ROLE_CFO,
     get_current_user,
+    get_org_id,
     require_roles,
 )
 from app.models.exception import Exception as ExceptionModel
@@ -38,6 +39,7 @@ from app.schemas.invoice import (
     InvoiceResponse,
     InvoiceUpdate,
 )
+from app.services.csv_import import import_invoices_csv
 from app.services.invoice_warnings import refresh_warnings
 from app.tenant import get_tenant_db
 
@@ -364,6 +366,31 @@ def _invoice_to_export_dict(inv: Invoice) -> dict:
         "cost_center": inv.cost_center,
         "correlation_id": str(inv.correlation_id),
     }
+
+
+@router.post("/import-csv", status_code=status.HTTP_200_OK)
+async def import_invoices_from_csv(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Bulk-import historical invoices from a CSV export.
+
+    Use this to load a new tenant's open AP + historical invoices on Day 0.
+    Unknown vendors are auto-created with ``status='unverified'`` so rows
+    always land. Duplicate detection: ``(vendor, invoice_number)``. See
+    ``backend/docs/csv-import.md`` for the column list and template.
+    """
+    raw = await file.read()
+    try:
+        csv_text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
+
+    result = await import_invoices_csv(db, org_id, csv_text)
+    await db.commit()
+    return result.to_dict()
 
 
 @router.post("/bulk/delete", response_model=BulkDeleteResponse)

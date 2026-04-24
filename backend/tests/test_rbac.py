@@ -26,6 +26,7 @@ from app.api import (
     auth_sso,
     cards,
     dashboard,
+    email_intake,
     erp_webhook,
     exceptions,
     gl_accounts,
@@ -37,6 +38,7 @@ from app.api import (
     purchase_orders,
     scim,
     signup,
+    tax,
     vendors,
     workflow,
     workflow_definitions,
@@ -88,6 +90,8 @@ NO_AUTH_REQUIRED = {
     # portal_auth.py — pre-login + logout (Bearer header, not as Depends)
     ("POST", "/portal/auth/login"),
     ("POST", "/portal/auth/logout"),
+    # email_intake.py — webhook authenticated by HMAC + per-tenant token in address
+    ("POST", "/email-intake/inbound/{provider}"),
 }
 
 # Routers wired into the app at /api — same set as app/main.py.
@@ -97,6 +101,8 @@ ROUTERS = [
     auth_sso.router,
     cards.router,
     dashboard.router,
+    email_intake.admin_router,
+    email_intake.public_router,
     erp_webhook.router,
     exceptions.router,
     gl_accounts.router,
@@ -108,6 +114,7 @@ ROUTERS = [
     purchase_orders.router,
     scim.router,
     signup.router,
+    tax.router,
     vendors.router,
     workflow.router,
     workflow_definitions.router,

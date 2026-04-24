@@ -192,6 +192,10 @@ Full list in `backend/app/config.py`.
 | Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
 | SOC 2 readiness | `docs/soc2-readiness.md` — vendor comparison, control mapping, kickoff plan |
+| Founder runbooks (non-code) | `docs/founder-runbooks/` — legal, prod deploy, Stripe, payment rails, SOC 2 vendor, support + status |
+| CSV data import | `backend/docs/csv-import.md` — pilot Day-0 vendor + invoice migration |
+| Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
+| 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
 | Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
