@@ -19,8 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.extraction_adapters.base import ExtractionResult, ExtractedField
-
+from app.services.extraction_adapters.base import ExtractedField, ExtractionResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -156,21 +155,15 @@ def _patch_extraction_internals(extraction_result: ExtractionResult):
     )
 
     # Invoice warnings
-    stack.enter_context(
-        patch("app.services.invoice_warnings.refresh_warnings", AsyncMock())
-    )
+    stack.enter_context(patch("app.services.invoice_warnings.refresh_warnings", AsyncMock()))
 
     # Workflow engine — these are imported at the top of extraction.py so
     # patch via the extraction module's namespace.
-    stack.enter_context(
-        patch("app.services.extraction.transition_invoice", AsyncMock())
-    )
+    stack.enter_context(patch("app.services.extraction.transition_invoice", AsyncMock()))
     stack.enter_context(
         patch("app.services.extraction.get_workflow_instance", AsyncMock(return_value=None))
     )
-    stack.enter_context(
-        patch("app.services.extraction.advance_workflow", AsyncMock())
-    )
+    stack.enter_context(patch("app.services.extraction.advance_workflow", AsyncMock()))
 
     return stack
 
@@ -244,9 +237,7 @@ async def test_usage_contains_correct_fields_on_success():
         await run_extraction(db, invoice, actor_id=uuid.uuid4(), ctrl_db=ctrl_db)
 
     usage = next(
-        c.args[0]
-        for c in ctrl_db.add.call_args_list
-        if isinstance(c.args[0], ExtractionUsage)
+        c.args[0] for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)
     )
     assert usage.invoice_id == invoice.id
     assert usage.organization_id == invoice.organization_id
@@ -301,9 +292,7 @@ async def test_failed_usage_added_to_ctrl_db_on_extraction_failure():
     with _patch_extraction_internals(_failing_extraction_result()):
         await run_extraction(db, invoice, ctrl_db=ctrl_db)
 
-    usage_calls = [
-        c for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)
-    ]
+    usage_calls = [c for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)]
     assert len(usage_calls) == 1
     usage: ExtractionUsage = usage_calls[0].args[0]
     assert usage.invoice_id == invoice.id
@@ -392,8 +381,6 @@ async def test_unexpected_error_still_writes_failed_usage_to_ctrl_db():
         )
         await run_extraction(db, invoice, ctrl_db=ctrl_db)
 
-    usage_calls = [
-        c for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)
-    ]
+    usage_calls = [c for c in ctrl_db.add.call_args_list if isinstance(c.args[0], ExtractionUsage)]
     assert len(usage_calls) == 1
     assert usage_calls[0].args[0].success is False

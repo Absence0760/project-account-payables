@@ -1,10 +1,11 @@
 """Unit tests for the pilot-data CSV importers.
 
 DB-free: the async session is replaced with a mock that always reports
-"row not found" on select, and captures what gets added. The goal is to
-prove parsing + row-level validation + dedup logic; the integration
-path (actual SQL writes) is covered by the API contract tests hitting a
-real Postgres in the smoke stack.
+"row not found" on select, and captures what gets added. Coverage
+scope is parsing + row-level validation + dedup branching. The SQL
+execution path (real ``INSERT`` round-trip) is not covered by any
+automated test — verify manually against seed data or a staging tenant
+when changing the service. See ``backend/scripts/seed.py``.
 """
 
 from __future__ import annotations

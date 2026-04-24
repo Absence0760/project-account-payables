@@ -109,18 +109,8 @@ it speculatively).
 
 ## Insurance
 
-Separate from support but in the same "pre-customer admin" bucket:
-
-- **Cyber liability** — Required by most enterprise DPAs. $1M–$5M
-  coverage. Coalition, Vouch, and Embroker all quote online. ~$1500–
-  5000/yr for a pre-revenue SaaS.
-- **Errors & omissions (E&O / Tech E&O)** — Covers claims that your
-  software caused customer harm. Bundle with cyber for ~$3000–8000/
-  yr total.
-- **General liability** — Required if anyone ever visits an office.
-  ~$500/yr.
-
-Wait on D&O insurance until you raise a priced round.
+Insurance is its own pre-customer checklist — see
+[`insurance.md`](./insurance.md).
 
 ## Checklist
 

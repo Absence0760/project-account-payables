@@ -1027,6 +1027,7 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 method="ach",
                 status="completed",
                 reference="ACH-20240325-001",
+                completed_at=datetime(2024, 3, 25, 14, 30, tzinfo=UTC),
             )
         )
 
@@ -1052,6 +1053,7 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 method="virtual_card",
                 status="completed",
                 reference="CARD-4242",
+                completed_at=datetime(2024, 3, 20, 10, 0, tzinfo=UTC),
             )
         )
 

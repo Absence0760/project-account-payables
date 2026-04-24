@@ -9,11 +9,10 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,9 +64,7 @@ async def test_max_amount_rejects():
     invoice = _make_invoice(amount=50000)
     instance = _make_instance({"max_invoice_amount": 10000})
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         with pytest.raises(HTTPException) as exc_info:
             await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
@@ -85,9 +82,7 @@ async def test_max_amount_allows_under():
     invoice = _make_invoice(amount=5000)
     instance = _make_instance({"max_invoice_amount": 10000})
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         # Must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
@@ -101,9 +96,7 @@ async def test_max_amount_allows_exact_limit():
     invoice = _make_invoice(amount=10000)
     instance = _make_instance({"max_invoice_amount": 10000})
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         # Must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
@@ -117,9 +110,7 @@ async def test_cfo_required_blocks_non_cfo():
     invoice = _make_invoice(amount=50000)
     instance = _make_instance({"require_cfo_above": 10000})
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         with pytest.raises(HTTPException) as exc_info:
             await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
 
@@ -136,9 +127,7 @@ async def test_cfo_required_allows_cfo():
     invoice = _make_invoice(amount=50000)
     instance = _make_instance({"require_cfo_above": 10000})
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         # Must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles={"cfo"})
 
@@ -152,9 +141,7 @@ async def test_cfo_required_allows_amount_at_or_below_threshold():
     invoice = _make_invoice(amount=10000)
     instance = _make_instance({"require_cfo_above": 10000})
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         # Exactly at threshold — must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
 
@@ -168,9 +155,7 @@ async def test_no_config_passes():
     invoice = _make_invoice(amount=999999)
     instance = _make_instance({})  # empty config
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         # Must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
@@ -183,9 +168,7 @@ async def test_no_instance_passes():
     db = _db_mock()
     invoice = _make_invoice(amount=999999)
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=None)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=None)):
         # Must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
@@ -199,9 +182,7 @@ async def test_instance_with_no_snapshot_passes():
     invoice = _make_invoice(amount=999999)
     instance = SimpleNamespace(id=uuid.uuid4(), steps_config_snapshot=None)
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         # Must not raise
         await _enforce_approval_thresholds(db, invoice, actor_roles=set())
 
@@ -216,9 +197,7 @@ async def test_both_max_amount_and_cfo_gate_enforced():
     invoice = _make_invoice(amount=100000)
     instance = _make_instance({"max_invoice_amount": 10000, "require_cfo_above": 5000})
 
-    with patch(
-        "app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)
-    ):
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
         with pytest.raises(HTTPException) as exc_info:
             await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
 

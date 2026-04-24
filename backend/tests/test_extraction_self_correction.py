@@ -17,7 +17,6 @@ from app.services.extraction_adapters.base import (
     ExtractionResult,
 )
 from app.services.extraction_self_correction import (
-    CONFIDENCE_PENALTY,
     SelfCorrectionReport,
     run_self_correction,
 )
@@ -128,7 +127,7 @@ async def test_total_reconciliation_skips_missing_subtotal():
     silently rather than flag a spurious violation."""
     result = _result(
         amount=_field("110"),
-        subtotal=_blank(),   # value is None
+        subtotal=_blank(),  # value is None
         tax_amount=_field("10"),
     )
     report = await run_self_correction(result)
@@ -290,7 +289,7 @@ async def test_disabled_via_org_settings():
     an empty report without running any checks — even for obviously wrong data."""
     result = _result(
         amount=_field("999"),
-        subtotal=_field("1"),   # will never reconcile with 999
+        subtotal=_field("1"),  # will never reconcile with 999
         tax_amount=_field("1"),
         invoice_date=_field("2024-06-01"),
         due_date=_field("2024-01-01"),  # before invoice_date
@@ -323,7 +322,7 @@ async def test_overall_confidence_recomputed():
         # average is deterministic.
         invoice_number=_field("INV-001", confidence=0.9),
         vendor_name=_field("Acme", confidence=0.9),
-        amount=_blank(),   # no value → excluded from recompute
+        amount=_blank(),  # no value → excluded from recompute
     )
     original_overall = result.overall_confidence
 

@@ -1,10 +1,11 @@
 """Tests for the 1099 reporting service.
 
 Pure-function tests cover the dataclass → dict conversions + threshold
-logic. The full query path is covered by the API contract tests
-(hitting real Postgres in the smoke stack) because SQLAlchemy's eager
-loading + outer-join + aggregate + date extraction is hard to fake
-without actually running SQL.
+logic. The SQL aggregation path (``build_1099_report`` against real
+data) is not covered by any automated test — the outer-join +
+aggregate + date-extract query is hard to fake without actually
+running SQL. Verify manually against seed data after any change to
+the query shape. See ``backend/scripts/seed.py``.
 """
 
 from __future__ import annotations

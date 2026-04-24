@@ -17,7 +17,6 @@ validates against VALID_TRANSITIONS before mutating the DB row.
 
 from __future__ import annotations
 
-
 # ---------------------------------------------------------------------------
 # get_step_config
 # ---------------------------------------------------------------------------
