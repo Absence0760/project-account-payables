@@ -26,7 +26,7 @@ Feature backlog for the AP automation platform, ordered by impact.
 - [x] Extraction config in organization settings UI
 - [x] Usage tracking (ExtractionUsage model) for billing
 - [x] Support multi-page PDFs — `_pdf_to_images()` converts all pages (up to 20) to PNG; vision adapters (Ollama, OpenAI) send all page images in one API call. Claude Vision handles multi-page natively via document mode. Text-mode already extracted all pages.
-- [ ] Handle scanned/rotated/low-quality images — auto-deskew via PyMuPDF OSD before extraction
+- [x] Handle rotated scans — Tesseract OSD auto-rotation in `app/services/image_preprocess.py`, called from `OllamaAdapter._pdf_to_images`. Gated on `AP_EXTRACTION_AUTO_ROTATE` (default on); soft-depends on `pytesseract` + the `tesseract` binary — missing deps silently no-op. Small-angle deskew (1–5° tilt) and low-quality enhancement still open if real data demands them.
 - [x] Auto-approve extraction above configurable threshold — `auto_approve_enabled` + `auto_approve_threshold` on extraction step config; also checks `auto_approve_below` from approval step. Invoices skip review and go directly to `approved` with `approved_by="system (auto-approve)"`
 - [x] Custom chart of accounts in extraction prompt — org's active GLAccount rows queried and injected into extraction prompt via `config["gl_account_catalog"]`. Falls back to hardcoded default list
 - [x] Extraction self-correction pass — `services/extraction_self_correction.py` verifies arithmetic (subtotal+tax≈amount), date ordering, line-item math. Violations lower confidence (-0.2) and add warnings. Controlled by `org_settings.extraction.self_correction_enabled`

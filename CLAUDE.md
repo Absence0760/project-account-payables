@@ -155,6 +155,7 @@ Workflow definitions are snapshotted per-invoice — editing a definition does n
 | `AP_ERP_MODE` | `local` | `local` or `lambda` |
 | `AP_ANTHROPIC_API_KEY` | (empty) | Claude Vision for platform extraction |
 | `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514` | AI model for extraction |
+| `AP_EXTRACTION_AUTO_ROTATE` | `true` | Run Tesseract OSD on rendered PDF pages before sending to vision adapters. No-ops if `pytesseract` / `tesseract` missing. |
 | `AP_REDIS_URL` | `redis://localhost:6379` | Token blocklist |
 | `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
 | `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |

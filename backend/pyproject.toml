@@ -33,6 +33,14 @@ dev = [
     "httpx>=0.28,<1",
     "ruff>=0.11,<1",
 ]
+# Optional: auto-rotation of scanned invoice pages via Tesseract OSD.
+# Install with `pip install -e ".[ocr]"` and ensure the `tesseract` binary
+# (plus the `osd` traineddata file) is on PATH. Missing → auto-rotate
+# degrades to a silent no-op in `services.image_preprocess`.
+ocr = [
+    "pytesseract>=0.3.10,<1",
+    "Pillow>=10,<12",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

@@ -125,7 +125,11 @@ class OllamaAdapter(ExtractionAdapter):
         """Convert all pages of a PDF to PNG images. Fallback for scanned PDFs.
 
         Returns a list of PNG byte buffers (one per page), capped at max_pages
-        to avoid blowing up token budgets on unusually long documents.
+        to avoid blowing up token budgets on unusually long documents. Pages
+        are passed through :func:`image_preprocess.auto_rotate_pages` so
+        90/180/270-off-upright scans are sent to the vision adapter the right
+        way up. The rotation pass is gated on ``settings.extraction_auto_rotate``
+        and degrades to a no-op when Tesseract is not available on the host.
         """
         try:
             import fitz  # PyMuPDF
@@ -137,9 +141,16 @@ class OllamaAdapter(ExtractionAdapter):
                     break
                 pix = page.get_pixmap(dpi=200)
                 images.append(pix.tobytes("png"))
-            return images
         except Exception:
             return []
+
+        from app.config import settings
+
+        if settings.extraction_auto_rotate and images:
+            from app.services.image_preprocess import auto_rotate_pages
+
+            images = auto_rotate_pages(images)
+        return images
 
     def _base_url(self) -> str:
         return self.config.get("base_url", "http://localhost:11434")

@@ -59,6 +59,33 @@ Extract text from PDF (PyMuPDF)
 
 **For Ollama specifically:** Digital PDFs work with any Ollama model — even text-only models like `qwen2.5-coder` or `llama3`. You only need a vision model (`llama3.2-vision`, `llava`) for scanned invoices or photos.
 
+### Auto-rotation for scanned / cameraphone uploads
+
+Before rendered pages are sent to a vision adapter, each one passes through
+Tesseract OSD (Orientation and Script Detection) in
+`app/services/image_preprocess.py::auto_rotate_pages`. OSD detects 90 / 180 /
+270° rotations (the common failure mode of cameraphone captures, faxed docs,
+and misconfigured scanners) and rotates the image upright before the
+extraction call, which materially improves output quality on Textract and
+local LLaVA / Llama 3.2 Vision runs. Claude Vision and GPT-4V handle minor
+rotation acceptably on their own, but still benefit from upright input.
+
+Gated on `AP_EXTRACTION_AUTO_ROTATE` (default `true`). The dependency is
+optional — install with:
+
+```bash
+cd backend && .venv/bin/pip install -e ".[ocr]"
+# + the tesseract binary on PATH, with the osd traineddata file
+#   macOS:  brew install tesseract
+#   Debian: apt install tesseract-ocr tesseract-ocr-osd
+```
+
+When `pytesseract` or the `tesseract` binary is unavailable, auto-rotate
+degrades to a silent no-op — extraction still succeeds, pages just go out
+at whatever orientation they arrived. Small-angle deskew (1–5° tilt) and
+low-quality enhancement are not yet implemented; see
+`docs/roadmap.md` § Real AI Extraction.
+
 ### Requirements
 
 PDF text extraction and image conversion require PyMuPDF:

@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     extraction_timeout_seconds: int = 600
     extraction_reaper_interval_seconds: int = 60
     extraction_reaper_enabled: bool = True
+    # Run Tesseract OSD on rendered PDF pages before sending to vision adapters,
+    # rotating 90/180/270-off-upright scans back to upright. Safe to leave on —
+    # a missing ``pytesseract`` / ``tesseract`` binary degrades to a silent no-op.
+    extraction_auto_rotate: bool = True
 
     # ERP
     erp_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
