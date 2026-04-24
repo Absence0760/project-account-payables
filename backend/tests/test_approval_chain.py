@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -112,6 +111,40 @@ def test_segregation_skips_null_uploaded_by():
 
     # Must not raise even though require_segregation is True
     check_segregation(invoice, actor_id, config)
+
+
+def test_segregation_defaults_on_when_key_missing():
+    """Empty approval config (no require_segregation key) still blocks the uploader.
+
+    SoD is default-on as of the SOC 2 baseline pass — orgs must explicitly
+    opt out by setting the key to False.
+    """
+    from app.services.approval_chain import check_segregation
+
+    actor_id = uuid.uuid4()
+    invoice = _make_invoice(uploaded_by_id=actor_id)
+    config: dict = {}  # no require_segregation key
+
+    with pytest.raises(HTTPException) as exc_info:
+        check_segregation(invoice, actor_id, config)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_default_steps_config_has_segregation_enabled():
+    """New workflow definitions default to require_segregation=True on the approval step."""
+    from app.services.workflow_engine import DEFAULT_STEPS_CONFIG
+
+    approval = next(s for s in DEFAULT_STEPS_CONFIG["steps"] if s["type"] == "approval")
+    assert approval["config"].get("require_segregation") is True
+
+
+def test_approval_step_schema_defaults_segregation_on():
+    """The Pydantic schema defaults require_segregation to True."""
+    from app.schemas.workflow import ApprovalStepConfig
+
+    cfg = ApprovalStepConfig()
+    assert cfg.require_segregation is True
 
 
 # ---------------------------------------------------------------------------

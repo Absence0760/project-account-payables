@@ -31,11 +31,15 @@ def check_segregation(
 ) -> None:
     """Raise 403 if the approver is the same user who uploaded the invoice.
 
+    SoD is the classic AP invariant and a SOC 2 baseline — default-on. Orgs
+    that need to disable it (e.g. single-operator accounts) must set
+    ``require_segregation: false`` explicitly on the approval step config.
+
     Skips when:
-    - require_segregation is False in the approval config
+    - require_segregation is explicitly set to False in the approval config
     - uploaded_by_id is NULL (pre-existing invoices)
     """
-    if not approval_config.get("require_segregation", False):
+    if approval_config.get("require_segregation", True) is False:
         return
     if invoice.uploaded_by_id is None:
         return

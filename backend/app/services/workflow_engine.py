@@ -61,6 +61,7 @@ DEFAULT_STEPS_CONFIG = {
                 "required": False,
                 "approver_id": None,
                 "approver_strategy": "manual",
+                "require_segregation": True,
             },
         },
         {

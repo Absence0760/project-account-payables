@@ -135,7 +135,7 @@ Current state: manual, specific, auto, and chain approval strategies. Amount-bas
 - [x] Return 403 Forbidden (not just hide UI elements)
 - [x] Unit tests for `require_roles` semantics + coverage gate that fails CI if a new endpoint ships without an auth dependency
 - [x] Log unauthorized access attempts at WARN level (sufficient for monitoring; persistent audit-log entries deferred to SOC 2 prep)
-- [ ] Segregation of duties enforcement (approver ≠ creator) — classic AP invariant, follow-up
+- [x] Segregation of duties enforcement (approver ≠ creator) — default-on baseline; `check_segregation` runs on every `approve_invoice` call. Opt-out per workflow via `require_segregation: false` for single-operator orgs
 - [ ] Per-org custom roles — currently the 4 roles are fixed
 
 **Files:** `backend/app/api/deps.py`, every `backend/app/api/*.py` router, `backend/tests/test_rbac.py`
@@ -375,14 +375,14 @@ No SSO = no enterprise sale. OIDC (Okta + Entra) + SCIM 2.0 user provisioning ar
 - [x] MFA — TOTP enrollment + email-OTP backup, opt-in per user with org-level enforcement toggle (`AP_MFA_ENABLED` master switch; default off in dev)
 - [ ] MFA — WebAuthn / passkeys (TOTP shipped first; passkeys are a separate code path)
 - [ ] MFA — mobile app support (Flutter login currently expects `TokenResponse` only)
-- [ ] Session management — concurrent session limits, forced logout
+- [x] Session management — per-user concurrent session cap + forced logout on role change / deactivation (see SOC 2 Readiness below)
 
 **Competitors:** All competitors support SSO. Coupa, SAP Concur, and Basware also support SCIM.
 
 ---
 
 ### SOC 2 Readiness
-**Status:** Engineering prereqs in motion — **kickoff plan + most code controls landed; process work pending founder sign-off**
+**Status:** Engineering prereqs complete — **all code controls landed; process work pending founder sign-off**
 
 SOC 2 Type I (design) → Type II (operating over time) is the table-stakes security attestation for selling to finance teams. Full plan in [`docs/soc2-readiness.md`](soc2-readiness.md) — vendor comparison, control mapping, timeline, and what the founder still needs to do as a human.
 
@@ -393,12 +393,12 @@ SOC 2 Type I (design) → Type II (operating over time) is the table-stakes secu
 - [x] Vulnerability scanning in CI — Dependabot (shipped) + CodeQL SAST (Python + JS) + Trivy on the backend container, weekly + on push (`.github/workflows/security.yml`)
 - [x] RBAC enforcement at API layer (separate roadmap item — already done)
 - [x] MFA support + org-level enforcement (separate roadmap item — already done)
-- [ ] Session management — concurrent session limits, forced logout on role change
-- [ ] Centralized audit log shipping — tenant-DB `audit_log` → CloudWatch Logs / S3 Object Lock
-- [ ] Auth event audit log — login/logout/MFA events into the audit log table reliably
-- [ ] HSTS header + verify TLS coverage end-to-end
-- [ ] KMS key auto-rotation flag in Terraform
-- [ ] S3 versioning + Object Lock verified in Terraform
+- [x] Session management — per-user concurrent session cap (Redis sorted set, `AP_MAX_CONCURRENT_SESSIONS`), forced logout on role change / deactivation (`services.session_management.revoke_user_sessions`)
+- [x] Centralized audit log shipping — background shipper loop + adapters (CloudWatch Logs + S3 Object Lock) at `backend/app/services/audit_log_shipper.py` + `services/audit_shipping/`. See `backend/docs/audit-log-shipping.md`.
+- [x] Auth event audit log — login/logout/MFA/SSO events written via `app/services/audit_dispatch.py::dispatch_auth_audit` into the tenant `audit_log` table
+- [x] HSTS header + security-header middleware (`backend/app/main.py` `SecurityHeadersMiddleware`, gated on `AP_HSTS_ENABLED`); TLS smoke script at `backend/scripts/verify_tls.py`
+- [x] KMS key auto-rotation flag in Terraform — `infra/kms.tf` `enable_key_rotation = true`
+- [x] S3 versioning + Object Lock in Terraform — `infra/s3.tf` (versioning Enabled; invoice-files GOVERNANCE 365d, audit-logs COMPLIANCE 2555d)
 
 **Process / attestation work** (founder, not engineer):
 - [ ] Vendor selection — Vanta, Drata, Secureframe, or Sprinto. See `docs/soc2-readiness.md` § Vendor comparison.
@@ -587,7 +587,7 @@ Tipalti, Coupa, Medius, and Basware all screen vendors against sanctions lists. 
 Enhance the existing audit trail to meet SOX (Sarbanes-Oxley) compliance requirements.
 
 - [ ] Immutable audit log — prevent any modification or deletion of audit entries
-- [ ] Segregation of duties enforcement — same user can't create and approve
+- [x] Segregation of duties enforcement — default-on in the approval step; see `app/services/approval_chain.py::check_segregation`
 - [ ] Access control audit — log who viewed what, not just who changed what
 - [ ] Periodic access reviews — flag users with unused elevated permissions
 - [ ] Retention policies — configurable retention periods, archival

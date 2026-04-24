@@ -65,6 +65,7 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | SCIM 2.0 provisioning | Done (`/Users` only) | `backend/app/api/scim.py` |
 | Forced password change on first login | Done | `User.must_change_password` |
 | RBAC enforcement at the API layer | Done | `backend/app/api/deps.py` `require_roles()` + every router |
+| Segregation of duties (approver ≠ uploader) | Done | `backend/app/services/approval_chain.py::check_segregation` — default-on; opt-out per workflow via `require_segregation: false` |
 | Token revocation on logout (Redis blocklist) | Done | `backend/app/redis.py` |
 | Session timeout (JWT lifetime ≤ 30 min) | Done | `AP_ACCESS_TOKEN_EXPIRE_MINUTES` |
 | Quarterly access reviews (auditor-friendly export) | Done | `backend/scripts/access_review.py` |

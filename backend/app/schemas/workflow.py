@@ -32,7 +32,7 @@ class ApprovalStepConfig(BaseModel):
     require_cfo_above: float | None = None  # require CFO approval above this amount
     max_invoice_amount: float | None = None  # reject invoices above this amount
     approval_chain: list[ApprovalLevelConfig] = []  # used when strategy="chain"
-    require_segregation: bool = False  # approver ≠ uploader
+    require_segregation: bool = True  # approver ≠ uploader (classic AP invariant; SOC 2 baseline)
 
 
 class ErpExportStepConfig(BaseModel):
