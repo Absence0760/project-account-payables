@@ -151,3 +151,129 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint
         run: shellcheck bin/*.sh
+
+  e2e:
+    name: Frontend e2e (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: account_payables
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+      AP_REDIS_URL: redis://localhost:6379
+      AP_SECRET_KEY: ci-test-secret
+      AP_DEBUG: "true"
+      AP_PUBLIC_URL: http://localhost:7777
+      AP_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Backend
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend deps
+        working-directory: backend
+        run: pip install -e ".[dev]"
+
+      - name: Seed database (creates `acme` tenant + demo users)
+        working-directory: backend
+        run: python scripts/seed.py
+
+      - name: Start backend in background
+        working-directory: backend
+        run: |
+          nohup python main.py > /tmp/backend.log 2>&1 &
+          echo $! > /tmp/backend.pid
+
+      - name: Wait for backend health
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; then
+              echo "backend up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::backend did not respond on /api/health within 30s"
+          tail -100 /tmp/backend.log || true
+          exit 1
+
+      # Frontend + Playwright
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright suite
+        working-directory: frontend
+        env:
+          PUBLIC_API_URL: http://localhost:8000
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/tests-e2e/playwright-report
+            frontend/tests-e2e/test-results
+          retention-days: 7
+
+      - name: Upload backend log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-log
+          path: /tmp/backend.log
+          retention-days: 7
