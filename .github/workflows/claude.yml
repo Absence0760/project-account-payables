@@ -10,20 +10,10 @@ on:
   pull_request_review:
     types: [submitted]
 
-# Opt every JS-based action into Node 24 ahead of GitHub's 2026-06-02
-# forced upgrade. Without this, the runner emits a deprecation warning
-# per action invocation because each one's action.yml still declares
-# `runs.using: node20`.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   claude:
-    # Restrict who can summon Claude on the repo. Set the
-    # CLAUDE_ALLOWED_USERS variable in repo settings → Variables, comma-
-    # separated GitHub usernames. Without it, the gate is closed.
     if: |
-      contains(vars.CLAUDE_ALLOWED_USERS, github.actor) && (
+      github.actor == vars.CLAUDE_AUTHORIZED_USER && (
         (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
         (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
         (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
@@ -37,7 +27,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -46,4 +36,4 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: "--max-turns 40 --allowedTools 'Bash(npm *),Bash(pnpm *),Bash(git *),Bash(gh *),Read,Write,Edit,Glob,Grep'"
+          claude_args: "--max-turns 40 --allowedTools 'Bash(pnpm *),Bash(git *),Bash(gh *),Read,Write,Edit,Glob,Grep'"

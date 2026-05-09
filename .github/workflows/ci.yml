@@ -6,93 +6,124 @@ on:
   pull_request:
     branches: [main]
 
-# Opt every JS-based action into Node 24 ahead of GitHub's 2026-06-02
-# forced upgrade.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-# Cancel any in-flight CI runs on the same ref when a new push lands.
-# Saves runner minutes on rapid-fire pushes; main-branch runs are
-# preserved (sha distinguishes them).
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 jobs:
-  # --------------------------------------------------------------------------
-  # Terraform — fmt + validate every stack. No `plan`/`apply` from CI;
-  # those run interactively from a workstation with SSO credentials.
-  # --------------------------------------------------------------------------
-  terraform:
-    name: Terraform fmt + validate
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: account_payables
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    defaults:
+      run:
+        working-directory: backend
+
     steps:
-      - uses: actions/checkout@v6
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          terraform_version: "1.15.2"
-      - name: terraform fmt (recursive, check-only)
-        run: terraform fmt -check -recursive infra/
-      - name: terraform validate — bootstrap
-        working-directory: infra/bootstrap
-        run: |
-          terraform init -backend=false
-          terraform validate
-      - name: terraform validate — github-oidc
-        working-directory: infra/github-oidc
-        run: |
-          terraform init -backend=false
-          terraform validate
-      - name: terraform validate — modules/sops-kms
-        working-directory: infra/modules/sops-kms
-        run: |
-          terraform init -backend=false
-          terraform validate
-      - name: terraform validate — envs/preview
-        working-directory: infra/envs/preview
-        run: |
-          terraform init -backend=false
-          terraform validate
-      - name: terraform validate — envs/prod
-        working-directory: infra/envs/prod
-        run: |
-          terraform init -backend=false
-          terraform validate
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
 
-  # --------------------------------------------------------------------------
-  # Shell scripts — shellcheck across bin/.
-  # --------------------------------------------------------------------------
-  shellcheck:
-    name: ShellCheck (bin/)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
       - name: Lint
-        run: shellcheck bin/*.sh bin/lib/*.sh
+        run: ruff check .
 
-  # --------------------------------------------------------------------------
-  # Application — placeholder.
-  #
-  # Wire this up when the app lands. Suggested shape:
-  #   - npm install (or pnpm install --frozen-lockfile)
-  #   - npm run typecheck
-  #   - npm run test
-  #   - npm run build
-  # Plus a separate e2e job that boots the dev server + runs Playwright
-  # under chromium, with a Playwright report uploaded on failure.
-  # --------------------------------------------------------------------------
-  # app:
-  #   name: App build + test
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v6
-  #     - uses: actions/setup-node@v6
-  #       with:
-  #         node-version: 24
-  #         cache: npm
-  #     - run: npm ci
-  #     - run: npm run typecheck
-  #     - run: npm test
-  #     - run: npm run build
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Run tests
+        env:
+          AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
+          AP_REDIS_URL: redis://localhost:6379
+          AP_SECRET_KEY: ci-test-secret
+        run: pytest
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Typecheck
+        env:
+          PUBLIC_API_URL: http://localhost:8000
+        run: pnpm check
+
+      - name: Build
+        env:
+          PUBLIC_API_URL: http://localhost:8000
+        run: pnpm build
+
+  mobile:
+    name: Mobile
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test

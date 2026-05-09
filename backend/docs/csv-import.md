@@ -1,0 +1,115 @@
+# CSV import — Day-0 data migration
+
+New tenants rarely start from a blank slate. They bring an existing
+vendor list and a stack of open AP from whatever tool they're replacing.
+The CSV importers let you load both in a few minutes instead of
+hand-keying them or building a throw-away Bill.com → Better-AP ETL.
+
+Two endpoints, both `admin` / `ap_manager` only:
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/vendors/import-csv` | Bulk-create vendors. Dedup by `code` > case-insensitive `name`. |
+| `POST /api/invoices/import-csv` | Bulk-create invoices. Unknown vendors get auto-created stubs. Dedup by `(vendor, invoice_number)`. |
+
+Both accept `multipart/form-data` with a single `file` field. Response is
+JSON with `imported`, `skipped`, and a per-row `errors` list. Files must
+be UTF-8.
+
+## Vendor CSV columns
+
+Only `name` is required. Unknown columns are ignored — hand us the raw
+export from the customer's existing system.
+
+| Column | Required | Notes |
+|---|---|---|
+| `name` | yes | Vendor display name |
+| `code` | no | Internal vendor code / ERP ID. Used for dedup first. |
+| `email` | no | AP contact email |
+| `phone` | no | |
+| `address` | no | |
+| `tax_id` | no | TIN / EIN / VAT number |
+| `payment_terms` | no | e.g. "Net 30" |
+| `accepts_virtual_cards` | no | `true` / `false` / `yes` / `no` / `1` / `0` |
+
+Example:
+
+```csv
+name,code,email,payment_terms,accepts_virtual_cards
+Acme Supplies,ACME,ap@acme.com,Net 30,true
+Globex Corp,GLBX,billing@globex.com,Net 15,false
+```
+
+Newly-created vendors land with `status='unverified'` — the AP Manager
+should review them on the Vendors page before paying any invoices.
+
+## Invoice CSV columns
+
+| Column | Required | Notes |
+|---|---|---|
+| `invoice_number` | yes | |
+| `vendor_name` | either | Resolved case-insensitive against existing vendors |
+| `vendor_code` | either | Tried first; falls back to name |
+| `amount` | yes | Accepts `1234.56`, `"$1,234.56"`, `"1,000"` (quote if it contains commas!) |
+| `currency` | no | Default `USD` |
+| `invoice_date` | no | `YYYY-MM-DD`, `MM/DD/YYYY`, `DD/MM/YYYY`, `YYYY/MM/DD` |
+| `due_date` | no | Same formats |
+| `po_number` | no | |
+| `description` | no | |
+| `gl_account` | no | |
+| `cost_center` | no | |
+| `status` | no | Default `done` for historical loads. Any valid invoice status works. |
+
+Example:
+
+```csv
+invoice_number,vendor_name,amount,invoice_date,due_date,status,po_number
+INV-1001,Acme Supplies,1250.00,2025-12-01,2026-01-01,done,PO-9001
+INV-1002,Globex Corp,"$2,500.50",2026-01-15,2026-02-15,paid,
+```
+
+## Choosing the right status
+
+For a Day-0 historical load (invoices that already existed and were
+already paid in the old system), use `done` or `paid` so they don't
+re-enter the approval pipeline. For open AP that still needs to be paid,
+use `approved` — they'll show up in the payment queue immediately.
+
+## What the import does NOT do
+
+- **No file attachment.** The importer creates the AP records; it does
+  not upload the original PDF. If you need the file stored, upload it
+  through the normal invoice upload endpoint after the row lands.
+- **No extraction.** No AI is run on imported rows. Confidence is
+  blank, line items are empty.
+- **No ERP sync.** Imported invoices stay local until they flow through
+  the ERP-export step like any other invoice.
+- **No workflow instance.** Terminal-status imports (`done`, `paid`)
+  skip the workflow engine. If you import with an in-flight status
+  (`ready_for_review`, etc.), you may need to attach a workflow
+  instance manually — the common path is to land them as `done`.
+
+## Preparing a customer's export
+
+Most AP tools can export to CSV directly. A few quick translations:
+
+- **Bill.com**: Vendors and Bills both export from `Reports → Bills` /
+  `Reports → Vendors`. Rename `Vendor Name` → `vendor_name`,
+  `Amount` → `amount`, etc.
+- **QuickBooks Online**: `Reports → Expenses by Vendor Summary` for
+  vendors; `Reports → Bills and Applied Payments` for open AP.
+- **Xero**: `Contacts → Export`; `Bills to Pay` view → export.
+- **NetSuite**: Saved search → CSV export.
+
+Customers with unusual exports can hand you their raw CSV and you
+rename the columns. The importer tolerates extra unknown columns so
+you don't have to strip them.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `CSV must be UTF-8 encoded` | Re-save from Excel as "CSV UTF-8". Don't use the default `CSV (Comma delimited)` option on Windows. |
+| `status invalid: '2026-03-01'` | An amount had an unquoted comma and shifted all columns. Wrap comma-containing values in double quotes. |
+| Many `vendor_name or vendor_code is required` errors | The vendor column name in the CSV doesn't match. Rename it before upload. |
+| Duplicate vendors show up twice | Customer export has inconsistent casing. Add a `code` column to dedup cleanly. |

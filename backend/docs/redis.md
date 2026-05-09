@@ -1,0 +1,71 @@
+# Redis
+
+Redis 7 — required at runtime for auth, MFA, SSO, and rate-limiting. Not optional.
+
+## Running
+
+Started as part of the Docker Compose stack:
+
+```bash
+cd backend
+docker compose up -d redis
+```
+
+## Access
+
+- **Host:** `localhost`
+- **Port:** `6379`
+- **No password** (development only)
+- Configurable via `AP_REDIS_URL` (default `redis://localhost:6379`)
+
+## What's stored
+
+Every key has a TTL — Redis is used as a transient store, not a database.
+
+| Key prefix | TTL | What it does |
+|---|---|---|
+| `token:blocked:<jti>` | remaining JWT lifetime | JWT blocklist. `POST /api/auth/logout` writes here; `get_current_user` checks every authenticated request. |
+| `mfa:email_otp:<user_id>` | `AP_MFA_EMAIL_OTP_TTL_SECONDS` (default 6 min) | SHA-256 of an outstanding email-OTP backup code. Single-use. |
+| `sso:state:<state>` | `AP_SSO_STATE_TTL_SECONDS` (default 10 min) | OIDC state + nonce binding. CSRF + replay protection across the authorize/callback hop. |
+| `sso:discovery:<sha256(url)>` | 1 day | Cached OIDC discovery document. |
+| `sso:jwks:<sha256(uri)>` | 1 day | Cached IdP JWKS for ID-token signature verification. |
+| `ratelimit:signup:<ip>` | sliding window | Self-service signup rate limiter (`AP_SIGNUP_RATE_LIMIT_PER_HOUR`). |
+
+Code: `app/redis.py` (blocklist), `app/services/mfa.py` (email-OTP), `app/services/sso.py` (state, discovery, JWKS), `app/services/rate_limit.py` (signup).
+
+## Operational impact
+
+- **A Redis outage takes auth down.** The blocklist check is on every request; a connection error becomes a 500. Plan for an HA Redis (ElastiCache + replica or similar) in production.
+- **Restart loses sessions.** Without persistence, all blocklist entries vanish on Redis restart — already-revoked tokens become valid again until they naturally expire (≤30 min). Configure RDB/AOF persistence or accept the bounded risk.
+- **Don't share with other apps.** Key prefixes are unscoped; running another service against the same Redis risks key collisions.
+
+## Connecting via CLI
+
+```bash
+# Using redis-cli directly
+redis-cli -h localhost -p 6379
+
+# Or via Docker
+docker exec -it backend-redis-1 redis-cli
+
+# Test connection
+> PING
+PONG
+```
+
+## Inspecting state
+
+```bash
+# Outstanding email-OTPs (debugging MFA delivery)
+redis-cli --scan --pattern 'mfa:email_otp:*'
+
+# Outstanding SSO state bindings
+redis-cli --scan --pattern 'sso:state:*'
+
+# Active blocklist (revoked tokens)
+redis-cli --scan --pattern 'token:blocked:*'
+```
+
+## Data persistence
+
+Redis is in-memory and is **not** persisted across container restarts in the current Docker Compose config. This is fine for dev. Production must enable persistence (RDB snapshots or AOF) or use a managed service — see operational impact above.

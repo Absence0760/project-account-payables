@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sample Invoice</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; color: #333; }
+  .header { display: flex; justify-content: space-between; margin-bottom: 30px; }
+  .company { font-size: 24px; font-weight: bold; color: #2563eb; }
+  .company-details { font-size: 12px; color: #666; margin-top: 5px; }
+  .invoice-title { font-size: 32px; font-weight: bold; color: #333; text-align: right; }
+  .invoice-meta { text-align: right; font-size: 13px; margin-top: 8px; }
+  .invoice-meta strong { display: inline-block; width: 120px; text-align: right; margin-right: 10px; }
+  .addresses { display: flex; justify-content: space-between; margin: 30px 0; }
+  .address-block { width: 45%; }
+  .address-label { font-size: 11px; font-weight: bold; text-transform: uppercase; color: #888; margin-bottom: 5px; }
+  .address-content { font-size: 13px; line-height: 1.5; }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  th { background: #f3f4f6; text-align: left; padding: 10px 12px; font-size: 12px; text-transform: uppercase; color: #666; border-bottom: 2px solid #ddd; }
+  td { padding: 10px 12px; border-bottom: 1px solid #eee; font-size: 13px; }
+  .right { text-align: right; }
+  .totals { width: 300px; margin-left: auto; margin-top: 20px; }
+  .totals table { margin: 0; }
+  .totals td { padding: 6px 12px; border: none; }
+  .totals .total-row { font-weight: bold; font-size: 16px; border-top: 2px solid #333; }
+  .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #888; }
+  .terms { margin-top: 20px; font-size: 12px; color: #666; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="company">Acme Consulting Group</div>
+    <div class="company-details">
+      456 Business Park Drive, Suite 300<br>
+      Austin, TX 78701<br>
+      Phone: (512) 555-0199<br>
+      Email: billing@acmeconsulting.com<br>
+      Tax ID: 74-3219876
+    </div>
+  </div>
+  <div>
+    <div class="invoice-title">INVOICE</div>
+    <div class="invoice-meta">
+      <div><strong>Invoice #:</strong> ACG-2024-0847</div>
+      <div><strong>Date:</strong> March 15, 2024</div>
+      <div><strong>Due Date:</strong> April 14, 2024</div>
+      <div><strong>PO Number:</strong> PO-2024-100</div>
+      <div><strong>Terms:</strong> Net 30</div>
+    </div>
+  </div>
+</div>
+
+<div class="addresses">
+  <div class="address-block">
+    <div class="address-label">Bill To</div>
+    <div class="address-content">
+      <strong>Acme Corp</strong><br>
+      123 Main St, Suite 100<br>
+      San Francisco, CA 94105<br>
+      Attn: Accounts Payable
+    </div>
+  </div>
+  <div class="address-block">
+    <div class="address-label">Remit To</div>
+    <div class="address-content">
+      <strong>Acme Consulting Group</strong><br>
+      PO Box 8847<br>
+      Austin, TX 78713
+    </div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Item</th>
+      <th>Description</th>
+      <th class="right">Qty</th>
+      <th class="right">Unit Price</th>
+      <th class="right">Amount</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>CONS-001</td>
+      <td>Strategic consulting - February 2024</td>
+      <td class="right">40</td>
+      <td class="right">$175.00</td>
+      <td class="right">$7,000.00</td>
+    </tr>
+    <tr>
+      <td>CONS-002</td>
+      <td>Market research analysis</td>
+      <td class="right">1</td>
+      <td class="right">$2,500.00</td>
+      <td class="right">$2,500.00</td>
+    </tr>
+    <tr>
+      <td>TRAVEL-01</td>
+      <td>Travel expenses - client site visit</td>
+      <td class="right">1</td>
+      <td class="right">$843.50</td>
+      <td class="right">$843.50</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="totals">
+  <table>
+    <tr>
+      <td>Subtotal</td>
+      <td class="right">$10,343.50</td>
+    </tr>
+    <tr>
+      <td>Tax (8.25%)</td>
+      <td class="right">$853.34</td>
+    </tr>
+    <tr>
+      <td>Shipping</td>
+      <td class="right">$0.00</td>
+    </tr>
+    <tr class="total-row">
+      <td>Total Due</td>
+      <td class="right">$11,196.84</td>
+    </tr>
+  </table>
+</div>
+
+<div class="terms">
+  <strong>Payment Method:</strong> ACH preferred. Wire transfer accepted.<br>
+  <strong>Bank:</strong> First National Bank | Routing: 021000021 | Account: 1234567890
+</div>
+
+<div class="footer">
+  Thank you for your business. Please reference invoice number ACG-2024-0847 with your payment.
+</div>
+
+</body>
+</html>

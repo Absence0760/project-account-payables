@@ -1,0 +1,260 @@
+<script lang="ts">
+	import { auth, type MFAChallenge } from '$lib/stores/auth.svelte';
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+
+	let challenge = $state<MFAChallenge | null>(null);
+	let method = $state<'totp' | 'email'>('totp');
+	let code = $state('');
+	let error = $state('');
+	let loading = $state(false);
+	let emailSent = $state(false);
+
+	onMount(() => {
+		const raw = sessionStorage.getItem('mfa_challenge');
+		if (!raw) {
+			goto('/login');
+			return;
+		}
+		try {
+			challenge = JSON.parse(raw) as MFAChallenge;
+			method = challenge.methods.includes('totp') ? 'totp' : 'email';
+		} catch {
+			goto('/login');
+		}
+	});
+
+	async function sendEmailCode() {
+		if (!challenge) return;
+		error = '';
+		try {
+			await auth.requestEmailMfa(challenge.mfa_challenge_token);
+			emailSent = true;
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to send email code';
+		}
+	}
+
+	async function handleSubmit(e: Event) {
+		e.preventDefault();
+		if (!challenge) return;
+		error = '';
+		loading = true;
+		try {
+			await auth.completeMfa(challenge.mfa_challenge_token, code, method);
+			sessionStorage.removeItem('mfa_challenge');
+			// If the org enforces MFA but the user wasn't enrolled, send them
+			// straight to the enrollment screen on the profile.
+			if (challenge.must_enroll) {
+				goto('/profile');
+			} else {
+				goto('/');
+			}
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Verification failed';
+		} finally {
+			loading = false;
+		}
+	}
+
+	function switchMethod(next: 'totp' | 'email') {
+		method = next;
+		code = '';
+		error = '';
+		emailSent = false;
+	}
+</script>
+
+<div class="login-page">
+	<form class="login-card" onsubmit={handleSubmit}>
+		<h1>Two-factor verification</h1>
+		<p class="subtitle">
+			{#if method === 'totp'}
+				Enter the 6-digit code from your authenticator app.
+			{:else}
+				We'll email a one-time code to your account address.
+			{/if}
+		</p>
+
+		{#if error}
+			<div class="error">{error}</div>
+		{/if}
+
+		{#if challenge && challenge.must_enroll && method === 'email'}
+			<div class="info">
+				Your organization requires MFA. After verifying with email, you'll be
+				asked to set up an authenticator app.
+			</div>
+		{/if}
+
+		{#if method === 'email' && !emailSent}
+			<button type="button" class="secondary" onclick={sendEmailCode}>
+				Email me a code
+			</button>
+		{/if}
+
+		{#if method === 'totp' || emailSent}
+			<label>
+				<span>Verification code</span>
+				<input
+					type="text"
+					inputmode="numeric"
+					pattern="[0-9]*"
+					autocomplete="one-time-code"
+					bind:value={code}
+					maxlength="8"
+					required
+				/>
+			</label>
+			<button type="submit" disabled={loading || code.length < 6}>
+				{loading ? 'Verifying...' : 'Verify'}
+			</button>
+		{/if}
+
+		{#if challenge && challenge.methods.length > 1}
+			<div class="divider"><span>or</span></div>
+			{#if method === 'totp'}
+				<button type="button" class="secondary" onclick={() => switchMethod('email')}>
+					Use email instead
+				</button>
+			{:else}
+				<button type="button" class="secondary" onclick={() => switchMethod('totp')}>
+					Use authenticator app
+				</button>
+			{/if}
+		{/if}
+	</form>
+</div>
+
+<style>
+	.login-page {
+		min-height: 100vh;
+		display: grid;
+		place-items: center;
+		background: var(--bg);
+	}
+
+	.login-card {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 40px 36px;
+		width: min(400px, 90vw);
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	h1 {
+		margin: 0;
+		font-size: 1.3rem;
+		font-weight: 700;
+		color: var(--text);
+	}
+
+	.subtitle {
+		margin: -8px 0 8px;
+		font-size: 0.88rem;
+		color: var(--text-muted);
+	}
+
+	.error {
+		background: rgba(224, 64, 64, 0.1);
+		border: 1px solid rgba(224, 64, 64, 0.3);
+		color: #e04040;
+		padding: 10px 14px;
+		border-radius: 4px;
+		font-size: 0.85rem;
+	}
+
+	.info {
+		background: rgba(99, 140, 255, 0.08);
+		border: 1px solid rgba(99, 140, 255, 0.25);
+		color: var(--text);
+		padding: 10px 14px;
+		border-radius: 4px;
+		font-size: 0.82rem;
+	}
+
+	label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	label span {
+		font-size: 0.78rem;
+		font-weight: 500;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	input {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 10px 12px;
+		font-size: 1.05rem;
+		letter-spacing: 0.15em;
+		text-align: center;
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	input:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
+	}
+
+	button {
+		margin-top: 8px;
+		padding: 10px;
+		border-radius: 4px;
+		border: none;
+		background: var(--accent);
+		color: #fff;
+		font-size: 0.9rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	button:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	button:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.secondary {
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text);
+	}
+	.secondary:hover:not(:disabled) {
+		border-color: var(--text-muted);
+		opacity: 1;
+	}
+
+	.divider {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		color: var(--text-muted);
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		margin: 4px 0;
+	}
+	.divider::before,
+	.divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border);
+	}
+</style>

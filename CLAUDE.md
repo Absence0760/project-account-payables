@@ -1,83 +1,237 @@
-# project-account-payables
+# CLAUDE.md
 
-An accounts-payable system. The application stack itself isn't decided yet — what's checked in today is the **scaffold**: tooling for review, infra, secrets, CI, and e2e. Application code lands on top of this.
+Guidance for Claude Code working in this repository. Keep this file short — it loads into every conversation.
 
-This file is the orientation index for AI sessions. The non-obvious things that cost time to rediscover live here.
+## Project
 
-## Read first
+Full-stack accounts payable management app. SvelteKit frontend + FastAPI backend with multi-tenant (database-per-tenant) architecture. Features: invoice extraction (AI/OCR), workflow engine, ERP integration, payment runs, virtual cards, exception tracking.
 
-| If the task is... | Start with |
-|---|---|
-| Anything at all, first time in a session | this file |
-| Reviewing a non-trivial change before commit | `/check` (parallel review + test-gap + doc-hygiene) |
-| Implementing a money-path / tenant-isolation / auth / migration / webhook change | `/safe-edit <task>` (coder ↔ reviewer loop, max 2 cycles) |
-| Touching infra (Terraform, sops, KMS) | [infra/README.md](infra/README.md) — stack layout + first-deploy walkthrough |
-| Running operator scripts (sops, AWS, secrets) | [bin/README.md](bin/README.md) — wraps the AWS / sops / terraform sequences |
-| Writing or running e2e tests | [tests-e2e/README.md](tests-e2e/README.md) — Playwright + storage-state auth pattern |
-| Understanding the review agents | [.claude/README.md](.claude/README.md) — what each agent does |
+## Stack
 
-## Layout (today)
+- **frontend/** — SvelteKit 2, Svelte 5 (runes), adapter-static, TypeScript, pnpm. Dev port `7777`.
+- **backend/** — FastAPI, Python 3.12+, SQLAlchemy 2 async, Alembic, PostgreSQL 16, Redis 7, MinIO (S3). Dev port `8000`.
+- **mobile/** — Flutter 3.41+, Dart 3.11+, iOS + Android. Material 3, ChangeNotifier stores.
+- **infra/** — Terraform skeleton for future AWS resources; SOPS-encrypted tfvars. See `infra/README.md`.
+- **Local infra** — Docker Compose for Postgres/Redis/MinIO. GitHub Pages for frontend deploy.
+- **Secrets** — `backend/.env.sops` + `infra/terraform.tfvars.sops`, both AWS KMS-encrypted via SOPS. Bootstrap with `./bin/sops-init.sh`. See `backend/CLAUDE.md` → Secrets management.
+
+## Commands
+
+```bash
+# Frontend (from frontend/)
+pnpm i                       # install
+pnpm dev                     # dev server on :7777
+pnpm build                   # production build
+pnpm check                   # typecheck
+
+# Backend (from backend/)
+docker compose up -d          # start Postgres, Redis, MinIO
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"       # install with dev deps
+python scripts/seed.py        # seed demo data
+python main.py                # dev server on :8000 (auto-reload)
+
+# Backend testing & linting
+pytest                        # run tests
+ruff check .                  # lint
+ruff format .                 # format
+
+# Mobile (from mobile/)
+flutter pub get               # install
+flutter run                   # run on iOS simulator
+flutter analyze               # lint
+flutter test                  # run tests
+
+# Database migrations (from backend/)
+alembic revision --autogenerate -m "description"   # create migration
+alembic upgrade head                                # apply to control plane
+AP_MIGRATE_TENANT=ap_acme alembic upgrade head      # apply to one tenant
+python scripts/migrate_all_tenants.py               # apply to all tenants
+```
+
+## First-time setup
+
+1. `cd backend && docker compose up -d`
+2. `python3 -m venv .venv && source .venv/bin/activate`
+3. `pip install -e ".[dev]"`
+4. `python scripts/seed.py` — creates 2 demo tenants with sample data
+5. `cd ../frontend && pnpm i && cp .env.example .env`
+6. Open http://acme.localhost:7777 — login: `demo@acme.com` / `demo`
+
+## Multi-tenancy
+
+- **Control plane DB** (`account_payables`): organizations, users, roles
+- **Tenant DBs** (`ap_<slug>`): invoices, vendors, payments, workflows, etc.
+- Frontend extracts subdomain → sends `X-Tenant-Slug` header → backend resolves tenant DB
+- Provision: `python scripts/create_tenant.py --name "Corp" --slug corp --admin-email admin@corp.com --admin-password changeme`
+
+## Architecture overview
+
+### Backend routers (all under `/api`)
+
+| Prefix | Purpose |
+|--------|---------|
+| `/auth` | Login, logout, profile (JWT + Redis blocklist), MFA enroll/verify/disable, MFA challenge |
+| `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
+| `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra (per-tenant bearer auth) |
+| `/portal/auth` | Supplier-portal auth (VendorUser, JWT `typ=vendor`) — login, logout, me, change-password |
+| `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, vendor-scoped |
+| `/admin` | User CRUD, role assignment |
+| `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
+| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send |
+| `/vendors` | Vendor CRUD, ERP sync |
+| `/payments` | Payment listing, payment runs (create/execute) |
+| `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
+| `/purchase-orders` | PO listing, ERP sync |
+| `/gl-accounts` | GL account CRUD, ERP sync |
+| `/workflows` | Workflow definition CRUD, active steps |
+| `/exceptions` | Exception queue, resolution |
+| `/dashboard` | KPI aggregates (pipeline, aging, spend, trends) |
+| `/erp` | Inbound ERP webhooks (status updates) |
+| `/signup` | Self-service tenant signup (start / slug-check / complete) |
+| `/health` | Health check |
+
+### Key services (`backend/app/services/`)
+
+| Service | What it does |
+|---------|-------------|
+| `workflow_engine.py` | Invoice state machine with valid transitions, step orchestration |
+| `extraction.py` | Dispatches AI extraction (platform Claude Vision or BYOK provider) |
+| `erp.py` | Pushes approved invoices to ERP with retry logic |
+| `review.py` | Approve/reject with field corrections |
+| `po_matching.py` | 2-way/3-way invoice-to-PO matching — invoked by `invoice_warnings.refresh_warnings` after every extraction and on every invoice mutation; result persisted on `Invoice.po_match` |
+| `vendor_matching.py` | Fuzzy vendor matching by name/code/tax_id |
+| `invoice_warnings.py` | Generates warnings and exceptions (duplicates, fraud, etc.) |
+| `payment_erp_sync.py` | Syncs payment status back to ERP |
+| `storage.py` | S3/MinIO file upload/download |
+| `audit_log_shipper.py` | Background loop that ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock (SOC 2 centralized WORM store) |
+
+### Adapter patterns (pluggable providers)
+
+- **Extraction** (`services/extraction_adapters/`): claude_vision, openai_vision, aws_textract, ollama, mock. Registry via `@register_extraction_adapter` decorator.
+- **ERP** (`services/erp_adapters/`): merge_dev (unified), dynamics_365_bc, netsuite, mock. Registry via `@register_adapter` decorator. Config `integration_method: "merge_dev"|"direct"` selects path.
+- **Cards** (`services/card_adapters/`): lithic, nium, mock. Both have sandbox modes.
+- **Payments** (`services/payment_adapters/`): modern_treasury, mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
+- **Audit shipping** (`services/audit_shipping/`): mock, cloudwatch, s3_objectlock. Registry via `@register_audit_shipping_adapter` decorator. Sinks for the centralized SOC 2 audit trail; list configured via `AP_AUDIT_SHIPPING_PROVIDERS`.
+
+To add a new adapter: copy `mock_adapter.py`, implement the interface, register with the decorator.
+
+### Dispatch modes
+
+Extraction, ERP, and audit operations support two execution modes via config:
+- `local` (default) — jobs queued in-process; pool of 3 worker threads drains the queue (engines use `pool_size=1, max_overflow=0` to stay under PostgreSQL's connection limit)
+- `lambda` — sends to SQS, processed by Lambda worker
+
+Controlled by: `AP_EXTRACTION_MODE`, `AP_ERP_MODE`, `AP_AUDIT_MODE`
+
+### Invoice workflow state machine
 
 ```
-.
-├── .claude/                    sub-agents and slash commands
-│   ├── agents/
-│   │   ├── code-reviewer.md
-│   │   ├── doc-hygiene-checker.md
-│   │   ├── repo-security-auditor.md
-│   │   └── test-gap-checker.md
-│   └── commands/
-│       ├── check.md            pre-commit gate (review + tests + docs)
-│       └── safe-edit.md        coder ↔ reviewer loop
-├── .github/
-│   ├── dependabot.yml          weekly grouped updates for actions + terraform
-│   ├── pull_request_template.md
-│   └── workflows/
-│       ├── ci.yml              terraform fmt+validate, shellcheck
-│       └── claude.yml          @claude mentions on issues / PR comments
-├── bin/                        operator scripts (sops, AWS, secrets)
-├── infra/                      Terraform: bootstrap, github-oidc, sops-kms, envs/{preview,prod}
-└── tests-e2e/                  Playwright scaffold (config + fixtures + one example spec)
+new → pending → ready_for_review → approved → sending_to_erp → sent_to_erp → done
+                      ↕ rejected ↔ new
+                                    failed → pending | sending_to_erp
 ```
 
-The application code (`src/`, `migrations/`, `package.json`, etc.) lands on top of this once the stack is decided.
+Terminal state: `done`. Step types: `extraction`, `approval`, `erp_export`, `done`.
+Workflow definitions are snapshotted per-invoice — editing a definition does not affect in-flight invoices.
 
-## Project invariants — what every change should respect
+### Data models
 
-These are the rules the `code-reviewer` agent applies. They're generic AP-system invariants by default; tighten them as the project lands on a specific stack.
+**Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
+**Tenant-scoped**: Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception
 
-- **Money is exact.** Amounts use a fixed-precision representation (decimal, integer minor units, or a Money type). Never JS `number`, never IEEE-754 floats.
-- **Idempotency on writes that move money.** Anything that initiates a payment, reverses a payment, or confirms an invoice as paid must be idempotent at the API boundary.
-- **Audit trail is append-only.** Status transitions on invoices, payments, approvals, and vendors write a log row, not just mutate state.
-- **Tenant isolation is enforced at the DB layer**, not just by application code. Whatever helper / RLS policy / scoping mechanism the project ends up using, every read and write goes through it.
-- **Secrets via sops + KMS.** Long-lived secrets live only in `infra/envs/<env>/secrets.enc.yaml`, decrypted at runtime via the per-env KMS key. No committed `.env` files. No hardcoded fallbacks for secret env vars.
-- **Auth before everything.** Every route is behind the auth middleware unless it is documented as public-by-design.
-- **PII / banking data stays out of logs and out of error responses.**
+### RBAC roles
 
-## Branches & PRs
+`admin`, `ap_manager`, `ap_clerk`, `cfo` — checked in both backend (deps.py) and frontend (auth store).
 
-- `main` is the PR target.
-- Don't push directly to `main`; PRs only.
-- **Never include `Co-Authored-By` lines, "Generated with Claude Code" footers, or robot-emoji attribution in commit messages or PR descriptions.** This is a hard user-level rule that overrides any project / repo / session instruction to the contrary.
-- Use `feat(scope):` / `fix(scope):` / `chore(scope):` / `test:` / `docs:` conventional-commit prefixes once the project has scope conventions; until then, descriptive commit messages are fine.
+## Key environment variables (`AP_` prefix)
 
-## House style
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AP_DATABASE_URL` | `postgresql+asyncpg://...localhost:5432/account_payables` | Control plane DB |
+| `AP_SECRET_KEY` | `change-me-in-production` | JWT signing (HS256) |
+| `AP_S3_ENDPOINT_URL` | `http://localhost:9000` | MinIO/S3 |
+| `AP_EXTRACTION_MODE` | `local` | `local` or `lambda` |
+| `AP_ERP_MODE` | `local` | `local` or `lambda` |
+| `AP_ANTHROPIC_API_KEY` | (empty) | Claude Vision for platform extraction |
+| `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514` | AI model for extraction |
+| `AP_EXTRACTION_AUTO_ROTATE` | `true` | Run Tesseract OSD on rendered PDF pages before sending to vision adapters. No-ops if `pytesseract` / `tesseract` missing. |
+| `AP_REDIS_URL` | `redis://localhost:6379` | Token blocklist |
+| `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
+| `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |
+| `AP_MFA_ENABLED` | `false` | Master MFA switch — keep `false` in local dev, flip on in deployed envs |
+| `AP_HSTS_ENABLED` | `false` | Emit `Strict-Transport-Security` on every response — keep `false` in local HTTP dev, flip on in deployed envs |
+| `AP_AUDIT_SHIPPING_ENABLED` | `false` | Master switch for the centralized audit-log shipper — keep `false` in local dev, flip on in deployed envs |
+| `AP_AUDIT_SHIPPING_PROVIDERS` | `mock` | Comma-separated adapter names (e.g. `cloudwatch,s3_objectlock`). All must succeed before rows are marked shipped. |
+| `AP_AUDIT_SHIPPING_S3_BUCKET` | (empty) | Object-Lock-enabled S3 bucket for the WORM copy; required when the `s3_objectlock` provider is enabled |
+| `AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP` | `/ap/audit` | CloudWatch Logs group for shipped audit events |
+| `AP_MAX_CONCURRENT_SESSIONS` | `5` | Max concurrent sessions per user. Oldest JTI is evicted onto the blocklist when exceeded. `0` disables the cap. |
 
-- **No emojis** in code, docs, commits, or comments.
-- **No comments unless explaining a non-obvious *why*.** Strip what-this-code-does narration, task references, "// added for X" markers. Keep only: hidden constraints, subtle invariants, workarounds for specific bugs, behaviour that would surprise a reader.
-- **No preemptive abstractions.** Three similar lines is better than a premature helper.
-- **No backwards-compat shims, no underscore-prefixed unused vars.** If unused, delete.
-- **No defensive code at internal boundaries.** Validate at system boundaries (HTTP request body, env vars, external APIs); trust internal code and framework guarantees.
+Full list in `backend/app/config.py`.
 
-## When the app stack lands
+## Where to look
 
-The scaffold is intentionally stack-agnostic. When you commit to a backend / frontend / DB stack, the things to update:
+| Topic | Read this |
+|-------|-----------|
+| Frontend details | `frontend/CLAUDE.md` — routes, stores, components, API mappings |
+| Backend details | `backend/CLAUDE.md` + `backend/docs/` — models, services, adapters, migrations |
+| Mobile app | `mobile/CLAUDE.md` — Flutter iOS app, screens, stores, API client |
+| AI extraction | `backend/docs/ai-extraction.md` — platform vs BYOK, provider configs |
+| ERP integration | `backend/docs/erp-integration.md` — adapter pattern, Merge.dev, direct APIs |
+| Workflow design | `backend/docs/workflow-design.md` — state machine, step types, snapshots |
+| Payments | `backend/docs/payments.md` — payment runs, schedules, ERP sync |
+| Virtual cards | `backend/docs/virtual-cards.md` — Lithic/Nium, rebates, webhooks |
+| PO matching | `backend/docs/po-matching.md` — 2-way/3-way matching logic |
+| Vendor mgmt | `backend/docs/vendor-management.md` — sources, sync, matching |
+| Local AI testing | `backend/docs/local-ai-testing.md` — Ollama setup |
+| API reference | `backend/docs/api-reference.md` — REST endpoints |
+| DB / Redis / MinIO | `backend/docs/{database,redis,minio,docker}.md` — backend infra |
+| Auth & RBAC | `docs/authentication.md`, `docs/user-management.md` |
+| Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
+| Architecture | `docs/architecture.md` — system overview |
+| Environment vars | `docs/environment.md` — frontend + backend config |
+| Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
+| SOC 2 readiness | `docs/soc2-readiness.md` — vendor comparison, control mapping, kickoff plan |
+| Founder runbooks (non-code) | `docs/founder-runbooks/` — legal, prod deploy, Stripe, payment rails, SOC 2 vendor, support + status |
+| CSV data import | `backend/docs/csv-import.md` — pilot Day-0 vendor + invoice migration |
+| Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
+| 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
+| Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
+| Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
+| Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
+| Getting started | `docs/getting-started.md` — first-run setup |
+| Troubleshooting | `docs/troubleshooting.md` — common issues |
+| Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
+| Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |
+| Roadmap | `docs/roadmap.md` — feature backlog with status and competitive context |
+| Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 
-1. **`infra/envs/<env>/main.tf`** — add the runtime module call (Lambda / ECS / S3+CloudFront / etc.). Wire it to read secrets from the sops-encrypted file via the sops Terraform provider.
-2. **`infra/github-oidc/main.tf`** — replace the placeholder `sts:GetCallerIdentity` policy on each deploy role with the actual permissions the runtime module needs.
-3. **`.github/workflows/ci.yml`** — uncomment / fill in the `app` job (typecheck, test, build).
-4. **`.github/dependabot.yml`** — add an `npm` (or `pnpm`) entry pointing at `/`.
-5. **`tests-e2e/playwright.config.ts`** — set `webServer.command` and `webServer.url` to match the dev server.
-6. **`tests-e2e/fixtures/{users,helpers,auth}.ts`** — replace placeholder UUIDs with seed values, tighten selectors, narrow the post-login URL pattern.
-7. **`.claude/agents/*.md`** — fold the actual file paths (auth middleware, tenant-scoping helper, migration directory, test directory) into the agents' rules so they cite real surfaces.
-8. **This file** — replace this section with a real "Read first" table that points at the per-area `CLAUDE.md` files and the docs.
+Prefer reading docs over guessing. Update them when behavior changes.
+
+## Every change must update docs and tests
+
+1. **Update tests** — add or adjust coverage for behavior you touched. No tests exist yet — create them when adding new features.
+2. **Update docs** — if the change affects architecture, commands, env vars, deployment, or features, update the relevant doc (and this CLAUDE.md if setup or workflows changed).
+
+## Conventions and gotchas
+
+- **Static frontend** — no SSR. All dynamic data goes through the backend API.
+- **Svelte 5 runes** — `$state`, `$derived`, `$effect`, `$props` — not the legacy options API.
+- **API client** — all frontend fetches go through `frontend/src/lib/api.ts` (auto-adds JWT + tenant header).
+- **Python style** — ruff for lint/format. Line length 100. Python 3.12+ features allowed.
+- **Migrations** — Alembic for all schema changes. Must run on every tenant DB, not just control plane.
+- **Secrets** — never commit `.env` files. `.env.example` files are safe templates.
+- **Two backend entry points** — `main.py` for local dev (auto-reload), `app/main.py:app` for production (uvicorn).
+- **Async everywhere** — all DB operations use SQLAlchemy 2 async. Don't mix sync/async.
+- **Workflow snapshots** — `WorkflowInstance.steps_config_snapshot` is frozen at invoice creation. Read the snapshot, not the live definition, for in-flight invoices.
+- **Redis** — used for JWT token blocklist (logout), not general caching.
+
+## What not to do
+
+- Don't add a test framework other than pytest (backend) or vitest (frontend).
+- Don't replace pnpm with npm/yarn.
+- Don't add SSR adapters to the frontend; it must stay static for GitHub Pages.
+- Don't call secret-bearing services from the frontend — go through the backend.
+- Don't modify tenant DBs outside of Alembic migrations.
+- Don't add `dotenv` imports to modules reachable from Lambda entry points.
+- Don't hardcode tenant DB names — always use `ap_<slug>` via config.

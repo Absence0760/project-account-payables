@@ -1,0 +1,175 @@
+"""Audit dispatch — routes audit log writes to local in-process or SQS/Lambda."""
+
+import json
+import logging
+import uuid
+
+import boto3
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+async def dispatch_audit(
+    db: AsyncSession,
+    *,
+    correlation_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None = None,
+    action: str,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    details: dict | None = None,
+):
+    """Write audit log locally or dispatch to SQS for Lambda processing."""
+    if settings.audit_mode == "lambda":
+        tenant_db_name = await _resolve_tenant_db_name(organization_id)
+        _send_to_sqs(
+            tenant_db_name=tenant_db_name,
+            correlation_id=correlation_id,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details,
+        )
+    else:
+        from app.services.audit import log_action
+
+        await log_action(
+            db,
+            correlation_id=correlation_id,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details,
+        )
+
+
+async def _resolve_tenant_db_name(organization_id: uuid.UUID) -> str:
+    """Look up the tenant DB name from the control plane."""
+    from app.database import control_session_factory
+    from app.models.organization import Organization
+
+    async with control_session_factory() as ctrl_db:
+        result = await ctrl_db.execute(
+            select(Organization.db_name).where(Organization.id == organization_id)
+        )
+        db_name = result.scalar_one_or_none()
+        if not db_name:
+            raise ValueError(f"Organization {organization_id} not found")
+        return db_name
+
+
+async def dispatch_auth_audit(
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    action: str,
+    entity_id: uuid.UUID | None = None,
+    details: dict | None = None,
+) -> None:
+    """Write an auth-event audit entry into the tenant audit_log.
+
+    Auth endpoints run on the control-plane session but the AuditLog table
+    lives on the tenant DB. This helper resolves the tenant DB from the
+    organization_id and opens its own short-lived session to write the row.
+
+    Any exception is caught + logged at WARNING so auth itself never fails
+    because of an audit-infrastructure blip (Redis blocklist degrades the
+    same way). SOC 2 wants auth hardened *and* observable — but auth
+    available first.
+    """
+    correlation_id = uuid.uuid4()
+    # AuditLog.entity_id is nullable, but most writers pass one. Fall back to
+    # the correlation_id so dashboards that GROUP BY entity_id still work.
+    _entity_id = entity_id or correlation_id
+    try:
+        if settings.audit_mode == "lambda":
+            tenant_db_name = await _resolve_tenant_db_name(organization_id)
+            _send_to_sqs(
+                tenant_db_name=tenant_db_name,
+                correlation_id=correlation_id,
+                organization_id=organization_id,
+                actor_id=actor_id,
+                action=action,
+                entity_type="auth",
+                entity_id=_entity_id,
+                details=details,
+            )
+            return
+
+        # Local mode: open a tenant session and write directly.
+        from app.database import get_tenant_engine
+        from app.services.audit import log_action
+
+        tenant_db_name = await _resolve_tenant_db_name(organization_id)
+        engine = get_tenant_engine(tenant_db_name)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as tenant_db:
+            try:
+                await log_action(
+                    tenant_db,
+                    correlation_id=correlation_id,
+                    organization_id=organization_id,
+                    actor_id=actor_id,
+                    action=action,
+                    entity_type="auth",
+                    entity_id=_entity_id,
+                    details=details,
+                )
+                await tenant_db.commit()
+            except Exception:
+                await tenant_db.rollback()
+                raise
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "auth audit dispatch failed: action=%s org=%s actor=%s err=%s",
+            action,
+            organization_id,
+            actor_id,
+            exc,
+        )
+
+
+def _send_to_sqs(
+    *,
+    tenant_db_name: str,
+    correlation_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    action: str,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    details: dict | None,
+) -> None:
+    """Put audit event on SQS for Lambda to pick up."""
+    client = boto3.client(
+        "sqs",
+        endpoint_url=settings.s3_endpoint_url,
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name="us-east-1",
+    )
+    client.send_message(
+        QueueUrl=settings.sqs_audit_queue_url,
+        MessageBody=json.dumps(
+            {
+                "tenant_db_name": tenant_db_name,
+                "correlation_id": str(correlation_id),
+                "organization_id": str(organization_id),
+                "actor_id": str(actor_id) if actor_id else None,
+                "action": action,
+                "entity_type": entity_type,
+                "entity_id": str(entity_id),
+                "details": details,
+            }
+        ),
+        MessageGroupId=str(correlation_id),
+    )

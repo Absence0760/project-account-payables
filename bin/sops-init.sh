@@ -1,147 +1,318 @@
 #!/usr/bin/env bash
 #
-# sops-init.sh — resolves the placeholder KMS ARNs in
-# `infra/.sops.yaml` after `terraform apply` on the per-env stack
-# creates the keys, and seeds an empty `secrets.enc.yaml` for any env
-# that doesn't have one yet.
+# sops-init.sh — one-time SOPS bootstrap for this repo, AWS KMS backend
 #
-# Idempotent: re-running detects already-resolved placeholders and
-# already-seeded files, prints a "nothing to do" status, and exits 0.
+# What this does:
+#
+#   1. Checks sops + aws + jq are installed
+#   2. Verifies AWS CLI authentication (aws sts get-caller-identity)
+#   3. Checks whether the project's KMS alias already exists; if not,
+#      creates a new KMS key + alias in the configured region
+#      IDEMPOTENT: a second run reuses the existing key, never creates a duplicate
+#   4. Writes the alias ARN into .sops.yaml, replacing the placeholders
+#   5. Seeds encrypted files from the examples if they don't already exist:
+#        - infra/terraform.tfvars.sops
+#        - backend/.env.sops
+#   6. Tells you what to do next
+#
+# Cost: KMS keys are $1/month. One key per project means this repo will
+# incur ~$1/month on your AWS bill. Delete the key via the AWS console (or
+# with `aws kms schedule-key-deletion`) to stop the charge; note that KMS
+# deletions have a 7–30 day pending window.
+#
+# Recovery: if you lose your laptop, your AWS login still grants access to
+# the KMS key (via the account root user or any IAM identity with
+# kms:Decrypt permission on it). Restore the repo on a new machine, run
+# `aws configure`, and sops works again immediately. No key file backup
+# required — AWS is the backup.
+#
+# Partial-failure recovery: if first-run fails BETWEEN `aws kms create-key`
+# and `aws kms create-alias`, you'll have an orphan KMS key with no alias.
+# The next run of this script won't find the alias (so describe-key fails),
+# and will create a SECOND key — you don't want that. If you see this
+# situation:
+#
+#   1. Find the orphan key:
+#        aws kms list-keys --region <region> \
+#          | jq '.Keys[].KeyId'
+#      (The most recent one without an alias is probably the orphan; check
+#       tags with `aws kms list-resource-tags --key-id <id>` to confirm.)
+#   2. Either attach the expected alias to it:
+#        aws kms create-alias \
+#          --alias-name alias/account-payables-sops \
+#          --target-key-id <orphan-key-id>
+#      …then re-run this script (it'll find the alias and reuse the key).
+#   3. Or schedule the orphan for deletion and re-run:
+#        aws kms schedule-key-deletion \
+#          --key-id <orphan-key-id> \
+#          --pending-window-in-days 7
+#
+# The 7-day minimum pending-delete window means you will be billed for the
+# orphan key for at least a week. The cost is trivial (~$0.23) but annoying.
 #
 # Usage:
-#   bin/sops-init.sh                   # all envs that have terraform state
-#   bin/sops-init.sh preview           # just preview
-#   bin/sops-init.sh prod              # just prod
-#   bin/sops-init.sh preview prod      # both, explicit
 #
-# Prereqs:
-#   - sops, aws, jq, terraform on PATH
-#   - aws sts get-caller-identity succeeds (i.e. SSO login active)
-#   - `terraform apply` already ran on each env you want to bootstrap
-#     so `terraform output -raw kms_key_arn` returns a value
+#   ./bin/sops-init.sh
 #
-# Recovery: if you blow away an env and recreate it, the new KMS ARN
-# replaces the old one in `.sops.yaml`. Existing encrypted files
-# decrypt against whatever key they were encrypted with (the metadata
-# is in the file), so they keep working until you `sops updatekeys`
-# them under the new key — see bin/key-rotate.sh.
+# Environment overrides:
+#
+#   KMS_REGION    — AWS region for the KMS key (default: us-east-1)
+#   KMS_ALIAS     — Alias name without the "alias/" prefix
+#                   (default: account-payables-sops)
 
 set -euo pipefail
 
-. "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOPS_CONFIG="$REPO_ROOT/.sops.yaml"
+KMS_REGION="${KMS_REGION:-us-east-1}"
+KMS_ALIAS_NAME="${KMS_ALIAS:-account-payables-sops}"
+KMS_ALIAS_PATH="alias/$KMS_ALIAS_NAME"
+REGION_PLACEHOLDER="KMS_REGION_PLACEHOLDER"
+ACCOUNT_PLACEHOLDER="KMS_ACCOUNT_PLACEHOLDER"
 
-SOPS_CONFIG="$REPO_ROOT/infra/.sops.yaml"
-
+# sops reads .sops.yaml starting from the current working directory. Force
+# CWD to the repo root so creation_rules always resolve correctly regardless
+# of where the operator invokes this script from.
 cd "$REPO_ROOT"
 
-declare -a ENVS
-if [[ $# -eq 0 ]]; then
-	ENVS=(preview prod)
+# ----------------------------------------------------------------------------
+# Output helpers
+# ----------------------------------------------------------------------------
+
+if [[ -t 1 ]]; then
+	C_RESET=$'\033[0m'
+	C_BOLD=$'\033[1m'
+	C_GREEN=$'\033[32m'
+	C_YELLOW=$'\033[33m'
+	C_RED=$'\033[31m'
+	C_BLUE=$'\033[34m'
 else
-	ENVS=("$@")
+	C_RESET=""; C_BOLD=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_BLUE=""
 fi
 
-for e in "${ENVS[@]}"; do
-	case "$e" in
-		preview|prod) ;;
-		*) fatal "Unknown env: $e (expected preview or prod)" ;;
-	esac
-done
+step()  { printf "\n${C_BOLD}${C_BLUE}==> %s${C_RESET}\n" "$*"; }
+log()   { printf "    %s\n" "$*"; }
+ok()    { printf "    ${C_GREEN}v${C_RESET} %s\n" "$*"; }
+warn()  { printf "    ${C_YELLOW}!${C_RESET} %s\n" "$*" >&2; }
+err()   { printf "    ${C_RED}x${C_RESET} %s\n" "$*" >&2; }
+fatal() { err "$*"; exit 1; }
 
-step "Checking prereqs"
-for cmd in sops aws jq terraform; do
-	need_cmd "$cmd"
-	ok "$cmd installed"
-done
+# ----------------------------------------------------------------------------
+# 1. Prerequisites
+# ----------------------------------------------------------------------------
 
-need_aws_auth
-ok "AWS auth OK ($(aws sts get-caller-identity --query Arn --output text))"
-
-if [[ ! -f "$SOPS_CONFIG" ]]; then
-	fatal "$SOPS_CONFIG missing — restore from git"
-fi
-
-placeholder_for() {
-	case "$1" in
-		preview) echo "REPLACE_PREVIEW_KMS_ARN" ;;
-		prod)    echo "REPLACE_PROD_KMS_ARN" ;;
-	esac
-}
-
-env_dir_for() {
-	echo "$REPO_ROOT/infra/envs/$1"
-}
-
-# Pick a placeholder secret to seed each env with. The first read of a
-# fresh secrets file needs at least one key for sops to consider it
-# valid yaml — DATABASE_URL is the canonical "this is a runtime secret"
-# stub. Operators replace it with the real value via secret-set.sh.
-SEED_KEY="DATABASE_URL"
-
-for env in "${ENVS[@]}"; do
-	step "Bootstrapping env: $env"
-	env_dir="$(env_dir_for "$env")"
-	placeholder="$(placeholder_for "$env")"
-	secrets_file="$env_dir/secrets.enc.yaml"
-
-	pushd "$env_dir" >/dev/null
-
-	if ! terraform output -raw kms_key_arn >/dev/null 2>&1; then
-		warn "terraform output is missing kms_key_arn for $env"
-		warn "Run 'terraform init && terraform apply' in $env_dir first, then re-run this script."
-		popd >/dev/null
-		continue
-	fi
-
-	arn="$(terraform output -raw kms_key_arn)"
-	popd >/dev/null
-
-	if ! [[ "$arn" =~ ^arn:aws:kms:[a-z0-9-]+:[0-9]+:key/[a-f0-9-]+$ ]]; then
-		fatal "$env: terraform returned an unexpected kms_key_arn: $arn"
-	fi
-	ok "$env KMS ARN: $arn"
-
-	if grep -qF "$placeholder" "$SOPS_CONFIG"; then
-		# Use a non-/ delimiter because the ARN contains slashes.
-		sed -i "s|$placeholder|$arn|" "$SOPS_CONFIG"
-		ok "Replaced $placeholder in infra/.sops.yaml"
-	else
-		ok "$placeholder already resolved in infra/.sops.yaml — skipping"
-	fi
-
-	if [[ -f "$secrets_file" ]]; then
-		ok "$secrets_file already exists — leaving it alone"
-	else
-		log "Seeding $secrets_file (encrypted, with a placeholder key)"
-		# Use `sops --output` instead of shell redirect: the redirect
-		# truncates the target file BEFORE sops runs, so a sops failure
-		# (KMS auth, network) leaves an empty file that breaks the
-		# idempotence check on re-run.
-		printf '%s: replace-me\n' "$SEED_KEY" \
-			| sops --config "$SOPS_CONFIG" --input-type yaml --output-type yaml \
-				--output "$secrets_file" --encrypt /dev/stdin
-		if ! sops --decrypt "$secrets_file" >/dev/null 2>&1; then
-			rm -f "$secrets_file"
-			fatal "Seed of $secrets_file failed to decrypt round-trip; removed. Investigate KMS auth + .sops.yaml routing."
+check_prereqs() {
+	step "Checking prerequisites"
+	local missing=0
+	for tool in sops aws jq; do
+		if command -v "$tool" >/dev/null 2>&1; then
+			ok "$tool is installed"
+		else
+			err "$tool is not installed"
+			missing=1
 		fi
-		ok "Seeded $secrets_file"
+	done
+	if (( missing )); then
+		log "On macOS: brew install sops awscli jq"
+		fatal "Install the missing tools and re-run."
 	fi
-done
 
-step "Verifying .sops.yaml is fully resolved"
-if grep -qE 'REPLACE_(PROD|PREVIEW)_KMS_ARN' "$SOPS_CONFIG"; then
-	warn ".sops.yaml still has placeholder ARNs — some envs aren't applied yet:"
-	grep -nE 'REPLACE_(PROD|PREVIEW)_KMS_ARN' "$SOPS_CONFIG" >&2
-	warn "Apply the missing env(s) and re-run this script."
-	exit 0
-fi
-ok "All placeholders resolved"
+	if aws sts get-caller-identity >/dev/null 2>&1; then
+		AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+		AWS_CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text)"
+		ok "AWS authenticated as $AWS_CALLER_ARN"
+		log "Account: $AWS_ACCOUNT_ID"
+		log "Region:  $KMS_REGION"
+	else
+		err "AWS CLI is not authenticated."
+		log "Run: aws configure"
+		log "Or set AWS_PROFILE to a profile that has kms:CreateKey permission."
+		exit 1
+	fi
+}
 
-step "Next steps"
-log "Edit secrets:    sops infra/envs/<env>/secrets.enc.yaml"
-log "Set one secret:  echo -n \"\$VALUE\" | bin/secret-set.sh <env> <KEY>"
-log "Re-apply env:    cd infra/envs/<env> && terraform apply"
-log "Verify decrypt:  sops --decrypt infra/envs/<env>/secrets.enc.yaml"
-log ""
-log "On every key rotation:"
-log "  bin/key-rotate.sh <env>"
+# ----------------------------------------------------------------------------
+# 2. KMS key — discover existing alias, or create a new key + alias
+# ----------------------------------------------------------------------------
+
+ensure_kms_key() {
+	step "Ensuring KMS key exists ($KMS_ALIAS_PATH)"
+
+	# Check whether the alias already resolves to a key. describe-key accepts
+	# an alias name as the key ID, so this is a single-call existence check.
+	local existing_key_id
+	if existing_key_id=$(aws kms describe-key \
+			--region "$KMS_REGION" \
+			--key-id "$KMS_ALIAS_PATH" \
+			--query 'KeyMetadata.KeyId' \
+			--output text 2>/dev/null); then
+		ok "Alias $KMS_ALIAS_PATH already resolves to key $existing_key_id"
+		log "Reusing existing key — no new KMS resources created."
+	else
+		log "Creating a new KMS key for SOPS secrets..."
+		local key_id
+		key_id=$(aws kms create-key \
+			--region "$KMS_REGION" \
+			--description "SOPS secrets encryption for account-payables" \
+			--key-usage ENCRYPT_DECRYPT \
+			--tags TagKey=project,TagValue=account-payables \
+			       TagKey=purpose,TagValue=sops-secrets \
+			--query 'KeyMetadata.KeyId' \
+			--output text)
+		ok "Created KMS key $key_id"
+
+		log "Creating alias $KMS_ALIAS_PATH..."
+		aws kms create-alias \
+			--region "$KMS_REGION" \
+			--alias-name "$KMS_ALIAS_PATH" \
+			--target-key-id "$key_id"
+		ok "Alias created"
+
+		# Turn on annual automatic key material rotation — a best-practice
+		# that costs nothing and requires no action to maintain.
+		aws kms enable-key-rotation \
+			--region "$KMS_REGION" \
+			--key-id "$key_id"
+		ok "Annual key material rotation enabled"
+
+		warn "You just created a new KMS key. Cost: ~\$1/month on your AWS bill."
+		warn "See 'Tearing everything down' in infra/README.md to remove it."
+	fi
+
+	KMS_ARN="arn:aws:kms:${KMS_REGION}:${AWS_ACCOUNT_ID}:${KMS_ALIAS_PATH}"
+	log "ARN for .sops.yaml: $KMS_ARN"
+}
+
+# ----------------------------------------------------------------------------
+# 3. Wire the KMS ARN into .sops.yaml
+# ----------------------------------------------------------------------------
+
+update_sops_config() {
+	step "Updating .sops.yaml with the KMS ARN"
+
+	if [[ ! -f "$SOPS_CONFIG" ]]; then
+		fatal ".sops.yaml is missing from the repo root — check out a clean copy"
+	fi
+
+	if grep -q "$REGION_PLACEHOLDER" "$SOPS_CONFIG" \
+	   || grep -q "$ACCOUNT_PLACEHOLDER" "$SOPS_CONFIG"; then
+		sed -i.bak \
+			-e "s|$REGION_PLACEHOLDER|$KMS_REGION|g" \
+			-e "s|$ACCOUNT_PLACEHOLDER|$AWS_ACCOUNT_ID|g" \
+			"$SOPS_CONFIG"
+		rm -f "$SOPS_CONFIG.bak"
+		ok "Placeholders replaced — .sops.yaml now references $KMS_ARN"
+	else
+		if grep -q "kms:" "$SOPS_CONFIG"; then
+			ok ".sops.yaml already has a populated KMS ARN — leaving untouched"
+			log "Current kms entries:"
+			grep "kms:" "$SOPS_CONFIG" | sed 's/^/      /'
+		else
+			warn ".sops.yaml has no placeholders AND no kms: entries — inspect manually"
+		fi
+	fi
+}
+
+# ----------------------------------------------------------------------------
+# 4. Seed encrypted files from examples
+# ----------------------------------------------------------------------------
+
+seed_encrypted_file() {
+	local plain_example="$1"
+	local encrypted_out="$2"
+	local label="$3"
+
+	if [[ -f "$encrypted_out" ]]; then
+		ok "$label already exists — leaving untouched"
+		return
+	fi
+
+	if [[ ! -f "$plain_example" ]]; then
+		warn "$plain_example not found — cannot seed $encrypted_out"
+		return
+	fi
+
+	log "Seeding $label from $plain_example"
+	# Place the file at the target path first so .sops.yaml creation_rules
+	# match on the filename, then encrypt in place.
+	cp "$plain_example" "$encrypted_out"
+	sops --encrypt --in-place "$encrypted_out"
+	ok "$label created and encrypted"
+}
+
+seed_encrypted_files() {
+	step "Seeding encrypted files from examples"
+	seed_encrypted_file \
+		"$REPO_ROOT/infra/terraform.tfvars.example" \
+		"$REPO_ROOT/infra/terraform.tfvars.sops" \
+		"infra/terraform.tfvars.sops"
+	seed_encrypted_file \
+		"$REPO_ROOT/backend/.env.example" \
+		"$REPO_ROOT/backend/.env.sops" \
+		"backend/.env.sops"
+}
+
+# ----------------------------------------------------------------------------
+# 5. Final instructions
+# ----------------------------------------------------------------------------
+
+print_next_steps() {
+	step "Setup complete"
+	cat <<EOF
+
+${C_BOLD}Next steps:${C_RESET}
+
+  1. Edit the encrypted files with sops:
+
+       sops infra/terraform.tfvars.sops
+       sops backend/.env.sops
+
+     SOPS decrypts each file via AWS KMS, opens the plaintext in \$EDITOR,
+     and re-encrypts on save. Never commit the plaintext sibling files —
+     .gitignore keeps them out.
+
+  2. Commit the encrypted files and the updated .sops.yaml:
+
+       git add .sops.yaml infra/terraform.tfvars.sops backend/.env.sops
+       git commit -m "ops: wire up SOPS + KMS for secrets"
+
+  3. For local dev, decrypt backend/.env.sops whenever you need a fresh .env:
+
+       sops -d backend/.env.sops > backend/.env
+
+     The plaintext .env is gitignored. Local dev with Docker Compose works
+     fine with backend/.env (copied from .env.example) — only deployed
+     environments consume backend/.env.sops.
+
+${C_BOLD}Daily workflow:${C_RESET}
+  - Edit a secret:      sops <file>.sops
+  - Rotate one value:   sops <file>.sops   (edit, save)
+  - Add a collaborator: grant them kms:Decrypt on the KMS key (IAM policy),
+                        no changes to .sops.yaml or re-encryption needed.
+
+${C_BOLD}Recovery from laptop loss:${C_RESET}
+  Your AWS login is the backup. On a new machine: install sops + awscli,
+  clone the repo, run \`aws configure\`, and you can decrypt immediately.
+  There is NO key file to back up.
+
+${C_BOLD}KMS key details:${C_RESET}
+  Region:  $KMS_REGION
+  Alias:   $KMS_ALIAS_PATH
+  ARN:     $KMS_ARN
+
+EOF
+}
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+
+main() {
+	check_prereqs
+	ensure_kms_key
+	update_sops_config
+	seed_encrypted_files
+	print_next_steps
+}
+
+main "$@"

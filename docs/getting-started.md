@@ -1,0 +1,86 @@
+# Getting Started
+
+Full-stack accounts payable application with multi-tenant support. Everything runs locally for development.
+
+## Prerequisites
+
+- **Node.js** + **pnpm** (frontend)
+- **Python 3.12+** (backend)
+- **Docker & Docker Compose** (PostgreSQL, Redis, MinIO)
+
+## Quick Start
+
+### 1. Start infrastructure (PostgreSQL, Redis, MinIO)
+
+```bash
+cd backend
+docker compose up -d
+```
+
+This starts:
+- **PostgreSQL 16** on `localhost:5432` (includes `account_payables`, `ap_acme`, `ap_techflow` databases)
+- **Redis 7** on `localhost:6379`
+- **MinIO** on `localhost:9000` (console: `localhost:9001`)
+
+> **Note:** If you have a local Postgres running on port 5432 (e.g. via Homebrew), stop it first:
+> `brew services stop postgresql@17`
+
+### 2. Start the backend API
+
+```bash
+cd backend
+python3 -m venv .venv        # first time only
+source .venv/bin/activate
+pip install -e ".[dev]"       # first time only
+python scripts/seed.py        # first time only — seeds control plane + 2 tenants
+python main.py
+```
+
+### 3. Start the frontend
+
+```bash
+cd frontend
+pnpm i                    # first time only
+cp .env.example .env      # first time only
+pnpm dev
+```
+
+### 4. Open the app
+
+Access the app via a tenant subdomain:
+
+- **Acme Corp:** http://acme.localhost:7777
+- **TechFlow Inc:** http://techflow.localhost:7777
+
+> `*.localhost` works natively in Chrome, Firefox, and Edge. See [multi-tenancy.md](multi-tenancy.md) for Safari setup.
+
+## Demo Logins
+
+All demo accounts use password `demo`.
+
+**Acme Corp** (http://acme.localhost:7777):
+
+| Email                      | Name            | Role       |
+|----------------------------|-----------------|------------|
+| `demo@acme.com`            | Alice Admin     | Admin      |
+| `demo+apmanager@acme.com`  | Marcus Manager  | AP Manager |
+| `demo+apclerk@acme.com`    | Clara Clerk     | AP Clerk   |
+| `demo+cfo@acme.com`        | Frank CFO       | CFO        |
+
+**TechFlow Inc** (http://techflow.localhost:7777):
+
+| Email                   | Name           | Role     |
+|-------------------------|----------------|----------|
+| `admin@techflow.com`    | Tina TechAdmin | Admin    |
+| `clerk@techflow.com`    | Carlos Clerk   | AP Clerk |
+
+The seed script creates 2 organizations, 6 users, 4 roles, 10 vendors, and 10 invoices per tenant.
+
+## What's Running Where
+
+| Service        | URL                       |
+|----------------|---------------------------|
+| Frontend       | http://acme.localhost:7777 (or any tenant subdomain) |
+| Backend API    | http://localhost:8000      |
+| Swagger docs   | http://localhost:8000/docs |
+| MinIO console  | http://localhost:9001      |

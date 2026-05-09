@@ -1,0 +1,141 @@
+# Secrets rotation
+
+What we rotate, how often, and the procedure for each. The auditor expects every secret with material blast radius to have a documented owner, cadence, and rotation playbook.
+
+This is a SOC 2 prerequisite (`docs/soc2-readiness.md` § Secrets management).
+
+---
+
+## Inventory + cadence
+
+| Secret | Where it lives | Cadence | Blast radius if leaked |
+|---|---|---|---|
+| `AP_SECRET_KEY` (JWT signing) | `backend/.env.sops` | **90 days** | Forge any user's JWT; full impersonation |
+| AWS KMS key for SOPS | AWS KMS | **365 days (auto)** | Decrypt every encrypted secret in the repo |
+| RDS master password | AWS Secrets Manager | **90 days** | Full DB read/write |
+| `AP_ANTHROPIC_API_KEY` (platform Claude Vision) | `backend/.env.sops` | **180 days** | Anthropic billing fraud, prompt extraction abuse |
+| `AP_LITHIC_API_KEY` (virtual cards — platform) | `backend/.env.sops` | **180 days** | Issue cards on our account |
+| `AP_NIUM_CLIENT_*` (virtual cards — platform) | `backend/.env.sops` | **180 days** | Issue cards on our account |
+| `AP_HCAPTCHA_SECRET` (signup) | `backend/.env.sops` | **365 days** (or on suspected leak) | Bypass signup captcha |
+| AWS SES credentials (transactional email) | IAM role (preferred) or `backend/.env.sops` | **365 days** if static | Send email from our domain |
+| GitHub Actions OIDC role | AWS IAM role (no static keys) | n/a — short-lived | n/a |
+| Per-tenant SCIM bearer tokens | `Organization.settings.sso.scim_bearer_hash` (sha256) | **On request** by tenant admin via `POST /api/organization/sso/scim-token` | Read/write users on that one tenant |
+| Per-tenant OIDC client secret | `Organization.settings.sso.client_secret` (encrypted at row) | **On request** by tenant admin | Mint OIDC tokens for that one tenant |
+
+**Triggers for an out-of-band rotation** — do these even if the cadence hasn't fired:
+- Suspected leak (commit, log, screenshot, employee departure)
+- Vendor breach affecting the third party that holds the secret
+- Engineer who handled the secret leaves the team
+
+---
+
+## Procedures
+
+### `AP_SECRET_KEY` (JWT signing key)
+
+The riskiest secret in the system — leaks let an attacker forge any user's session.
+
+1. Generate a new key:
+   ```bash
+   openssl rand -hex 32
+   ```
+2. Edit the SOPS file:
+   ```bash
+   sops backend/.env.sops
+   ```
+   Update `AP_SECRET_KEY` to the new value.
+3. Deploy. **Every existing JWT becomes invalid immediately** — all users are forced to re-login. This is the intended behaviour.
+4. Record the rotation in the compliance vendor's evidence locker (date, who rotated, ticket if any).
+
+If you need a graceful rollover, support two keys (current + previous) for one rotation cycle. Not implemented today — accepted because forced re-login is acceptable for the user count.
+
+### AWS KMS key (SOPS encryption)
+
+The KMS key encrypts every secret in `backend/.env.sops` and `infra/terraform.tfvars.sops`.
+
+**Auto-rotation** — preferred. AWS KMS rotates the key material annually with no operator action when the `EnableKeyRotation` flag is set:
+```bash
+aws kms enable-key-rotation --key-id alias/ap-sops
+aws kms get-key-rotation-status --key-id alias/ap-sops
+```
+
+**Manual rotation to a brand-new key** — if the key needs to be replaced (compromised IAM principal, audit finding):
+1. Create a new key + alias:
+   ```bash
+   aws kms create-key --description 'AP SOPS rotation' --key-usage ENCRYPT_DECRYPT
+   aws kms create-alias --alias-name alias/ap-sops-new --target-key-id <new-key-id>
+   ```
+2. Update `.sops.yaml` to point at the new alias.
+3. Re-encrypt every SOPS file under the new key:
+   ```bash
+   sops updatekeys backend/.env.sops
+   sops updatekeys infra/terraform.tfvars.sops
+   ```
+4. Commit + push.
+5. After 30 days with no incidents, schedule deletion of the old key:
+   ```bash
+   aws kms schedule-key-deletion --key-id <old-key-id> --pending-window-in-days 30
+   ```
+
+### RDS master password
+
+1. Pick a new password (≥ 32 chars, generated):
+   ```bash
+   openssl rand -base64 32 | tr -d '/+=' | head -c 40
+   ```
+2. Update via the AWS Console or CLI:
+   ```bash
+   aws rds modify-db-instance --db-instance-identifier ap-prod \
+     --master-user-password '<new>' --apply-immediately
+   ```
+3. Update `AP_DATABASE_URL` in `backend/.env.sops`.
+4. Deploy. Application reconnects with the new password.
+5. Rotate any other consumers (read replicas, BI tools).
+
+### Third-party API keys (Anthropic, Lithic, Nium, hCaptcha, SES)
+
+Same pattern for each:
+1. Mint a new key in the provider's dashboard.
+2. Update the corresponding env var in `backend/.env.sops`.
+3. Deploy.
+4. Verify a request succeeds against the new key (e.g. trigger an extraction → log shows new key, billing dashboard logs a request).
+5. Revoke the old key in the provider's dashboard.
+
+For Anthropic + OpenAI specifically, **never reuse a key across environments** (dev/staging/prod each have their own). If a key is leaked from a single env, the blast radius is contained.
+
+### Per-tenant SCIM bearer
+
+Tenant admin self-serves rotation by re-calling `POST /api/organization/sso/scim-token`. The new token is shown once in the response; the old hash is overwritten in `org.settings.sso.scim_bearer_hash`. Any IdP still using the old token starts getting 401s — this is the desired behaviour because it forces the IdP to be reconfigured with the fresh token.
+
+### Per-tenant OIDC client secret
+
+Tenant admin updates the secret in their Okta/Entra app, then PATCHes `org.settings.sso.client_secret` via `PATCH /api/organization`. SSO handshakes after the change use the new secret. **No grace period** — coordinate with the IdP cutover.
+
+---
+
+## Logging + audit
+
+Every rotation must leave a paper trail:
+
+- **Code rotations** (`AP_SECRET_KEY`, third-party keys) — visible in git history because they touch `backend/.env.sops`. The rotator notes the secret name + date in the commit message (don't mention values).
+- **AWS rotations** (KMS, RDS) — CloudTrail captures the API call. Compliance vendor pulls it as evidence.
+- **Tenant rotations** (SCIM, OIDC) — application audit log writes a `tenant.scim_token_rotated` / `tenant.sso_secret_rotated` row (auth audit logging is on the SOC 2 prereq list — see `docs/soc2-readiness.md` § Logging).
+
+---
+
+## Things that should never be secrets
+
+If any of these end up in a SOPS file, they're misclassified — move them out:
+
+- Non-sensitive endpoint URLs (already in plain `backend/.env.example`)
+- Feature flags (use config, not secrets)
+- Tenant slugs, plan names, feature toggles
+- AWS region, account ID (treated as low-sensitivity by AWS itself)
+
+---
+
+## What we don't have yet
+
+- **HashiCorp Vault or AWS Secrets Manager dynamic credentials** — DB credentials are still long-lived. Once volume warrants it, switch RDS auth to IAM tokens (15-minute lifetime, no static password to rotate).
+- **Automated rotation runners** — Vanta/Drata can ping us to rotate; AWS Secrets Manager can do it for RDS automatically. Pending until SOC 2 is live.
+- **SBOM + signed images** — supply-chain hardening is on the roadmap, separate from secrets.

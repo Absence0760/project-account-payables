@@ -1,0 +1,224 @@
+"""Tests for the PO matching → invoice_warnings → exception queue wiring.
+
+The matching algorithm itself is pure-Python and gets covered indirectly here.
+What we want to lock down is the *integration*: the post-extraction hook now
+runs PO matching, persists the structured result on `invoice.po_match`, and
+routes mismatches into the exception queue. Skipping any of those steps
+silently regresses the "PO-gated invoice" workflow.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import asdict
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+# ---------- MatchResult shape contract -------------------------------------
+
+
+def test_match_result_serialises_to_jsonb_friendly_dict():
+    """`po_match` is a JSONB column. Every field must round-trip through
+    `asdict` cleanly — no enums, no datetimes, no Decimals."""
+    from app.services.po_matching import MatchResult
+
+    m = MatchResult(
+        match_type="2-way",
+        status="matched",
+        po_id="po-uuid",
+        po_number="PO-001",
+        po_total=1000.0,
+        amount_variance=10.0,
+        amount_variance_pct=1.0,
+        within_tolerance=True,
+        issues=["minor variance"],
+        details={"k": "v"},
+    )
+    d = asdict(m)
+    # Sanity-check the keys the frontend reads
+    for key in (
+        "status",
+        "match_type",
+        "po_id",
+        "po_number",
+        "po_total",
+        "amount_variance",
+        "amount_variance_pct",
+        "within_tolerance",
+        "issues",
+        "details",
+    ):
+        assert key in d
+
+
+# ---------- _refresh_po_match integration ---------------------------------
+
+
+def _fake_invoice(*, po_number="PO-001", amount=100.0, status_value="ready_for_review"):
+    """Minimal Invoice stand-in — only the attrs the PO-match code touches."""
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        po_number=po_number,
+        amount=amount,
+        po_match=None,
+        status=SimpleNamespace(value=status_value),
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_po_match_persists_matched_result_without_exception():
+    """A clean match writes po_match but doesn't add a warning or exception."""
+    from app.services import invoice_warnings
+    from app.services.po_matching import MatchResult
+
+    inv = _fake_invoice()
+    warnings: list[dict] = []
+    fake_match = MatchResult(
+        match_type="2-way",
+        status="matched",
+        po_id="x",
+        po_number="PO-001",
+        po_total=100.0,
+        amount_variance=0.0,
+        amount_variance_pct=0.0,
+        within_tolerance=True,
+    )
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock(return_value=fake_match)),
+        patch.object(invoice_warnings, "_ensure_exception", AsyncMock()) as ensure,
+    ):
+        await invoice_warnings._refresh_po_match(db=AsyncMock(), invoice=inv, warnings=warnings)
+
+    assert warnings == []
+    ensure.assert_not_awaited()
+    assert inv.po_match["status"] == "matched"
+    assert inv.po_match["po_number"] == "PO-001"
+
+
+@pytest.mark.asyncio
+async def test_refresh_po_match_creates_exception_on_amount_mismatch():
+    from app.services import invoice_warnings
+    from app.services.po_matching import MatchResult
+
+    inv = _fake_invoice(amount=120.0)
+    warnings: list[dict] = []
+    fake_match = MatchResult(
+        match_type="2-way",
+        status="mismatch",
+        po_id="x",
+        po_number="PO-001",
+        po_total=100.0,
+        amount_variance=20.0,
+        amount_variance_pct=20.0,
+        within_tolerance=False,
+        issues=["Amount mismatch: invoice $120.00 vs PO $100.00 (+20.0%)"],
+    )
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock(return_value=fake_match)),
+        patch.object(invoice_warnings, "_ensure_exception", AsyncMock()) as ensure,
+    ):
+        await invoice_warnings._refresh_po_match(db=AsyncMock(), invoice=inv, warnings=warnings)
+
+    assert len(warnings) == 1
+    assert warnings[0]["type"] == "po_mismatch"
+    assert warnings[0]["severity"] == "warning"
+    assert "20.0%" in warnings[0]["message"]
+    ensure.assert_awaited_once()
+    # Exception type must match the registered EXCEPTION_TYPE_LABELS key.
+    assert ensure.await_args.args[2] == "po_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_refresh_po_match_creates_error_when_po_not_found():
+    """A reference to a non-existent PO is the loudest signal — error severity."""
+    from app.services import invoice_warnings
+    from app.services.po_matching import MatchResult
+
+    inv = _fake_invoice()
+    warnings: list[dict] = []
+    fake_match = MatchResult(status="no_po", issues=["PO PO-001 not found"])
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock(return_value=fake_match)),
+        patch.object(invoice_warnings, "_ensure_exception", AsyncMock()) as ensure,
+    ):
+        await invoice_warnings._refresh_po_match(db=AsyncMock(), invoice=inv, warnings=warnings)
+
+    assert warnings[0]["severity"] == "error"
+    assert ensure.await_args.kwargs == {} or ensure.await_args.args[3] == "error"
+
+
+@pytest.mark.asyncio
+async def test_refresh_po_match_partial_is_info_severity():
+    """A partial 3-way match (goods in transit) is informational, not an error."""
+    from app.services import invoice_warnings
+    from app.services.po_matching import MatchResult
+
+    inv = _fake_invoice()
+    warnings: list[dict] = []
+    fake_match = MatchResult(
+        match_type="3-way",
+        status="partial",
+        po_number="PO-001",
+        po_total=100.0,
+        within_tolerance=True,
+        issues=["Partial receipt: 60% of ordered quantity received"],
+    )
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock(return_value=fake_match)),
+        patch.object(invoice_warnings, "_ensure_exception", AsyncMock()),
+    ):
+        await invoice_warnings._refresh_po_match(db=AsyncMock(), invoice=inv, warnings=warnings)
+
+    assert warnings[0]["severity"] == "info"
+
+
+# ---------- refresh_warnings skips PO matching when there's no po_number ----
+
+
+@pytest.mark.asyncio
+async def test_refresh_warnings_clears_po_match_when_po_number_removed():
+    """If a reviewer removes the po_number from an invoice, the stale po_match
+    must be cleared — otherwise the modal keeps showing the old result."""
+    from app.services import invoice_warnings
+
+    inv = _fake_invoice(po_number=None)
+    inv.po_match = {"status": "matched", "po_number": "PO-OLD"}  # stale
+    inv.vendor_name = "Acme"
+    inv.invoice_number = "INV-1"
+    inv.amount = 100.0
+    inv.invoice_date = None
+    inv.due_date = None
+    inv.vendor_id = None
+    inv.warnings = None
+
+    with (
+        patch.object(invoice_warnings, "match_invoice_to_po", AsyncMock()) as match,
+        patch("sqlalchemy.ext.asyncio.AsyncSession.execute"),
+    ):
+        # Stub out duplicate-check db call
+        db = AsyncMock()
+        db.execute.return_value.scalar = lambda: 0
+        await invoice_warnings.refresh_warnings(db, inv)
+
+    match.assert_not_awaited()
+    assert inv.po_match is None
+
+
+# ---------- API contract --------------------------------------------------
+
+
+def test_invoice_response_includes_po_match():
+    """Frontend depends on this field to render the PO Match panel."""
+    from app.schemas.invoice import InvoiceResponse
+
+    fields = InvoiceResponse.model_fields
+    assert "po_match" in fields
+    # Must be optional / nullable — invoices without a PO have no match.
+    assert fields["po_match"].default is None

@@ -1,41 +1,71 @@
-# project-account-payables
+# Account Payables
 
-An accounts-payable system. The application stack is undecided as of this commit; what's checked in today is the scaffold the app will land on top of.
+Full-stack accounts payable management application built with SvelteKit, FastAPI, and PostgreSQL.
 
-## What's here
-
-- **`.claude/`** — review agents and slash commands (`/check`, `/safe-edit`).
-- **`.github/`** — CI (terraform validate + shellcheck), Claude Code action, dependabot.
-- **`bin/`** — operator scripts: `aws-login`, `aws-preflight`, `sops-init`, `secret-set`, `key-rotate`. See [`bin/README.md`](bin/README.md).
-- **`infra/`** — Terraform: state bucket bootstrap, GitHub Actions OIDC + deploy roles, per-env sops KMS keys. See [`infra/README.md`](infra/README.md).
-- **`tests-e2e/`** — Playwright scaffold (config, fixtures, one example spec). See [`tests-e2e/README.md`](tests-e2e/README.md).
-- **`CLAUDE.md`** — orientation for AI sessions. House rules, project invariants, what to update when the app stack lands.
-
-## First-time setup (infra path)
+## Quick Start
 
 ```bash
-# 1. Authenticate to AWS via SSO
-bin/aws-login.sh
+# 1. Start infrastructure (Postgres, Redis, MinIO)
+cd backend && docker compose up -d
 
-# 2. Stand up the Terraform state bucket (one-time, local state)
-cd infra/bootstrap && terraform init && terraform apply && cd -
+# 2. Start backend
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+python scripts/seed.py
+python main.py
 
-# 3. Stand up the GitHub OIDC provider + deploy roles
-cd infra/github-oidc && terraform init && terraform apply -var "github_repo=<owner>/project-account-payables" && cd -
-
-# 4. Stand up the preview env's KMS key
-cd infra/envs/preview && cp terraform.tfvars.example terraform.tfvars   # edit operator_role_arns
-terraform init && terraform apply && cd -
-
-# 5. Wire sops to the new key + seed an empty secrets file
-bin/sops-init.sh preview
-
-# 6. Verify the round-trip
-sops -d infra/envs/preview/secrets.enc.yaml
+# 3. Start frontend
+cd frontend
+pnpm i && cp .env.example .env
+pnpm dev
 ```
 
-Repeat steps 4–6 with `prod` instead of `preview` once you're ready.
+Open http://acme.localhost:7777 — login with `demo@acme.com` / `demo`
 
-## Adding the app
+## Documentation
 
-Once you commit to a stack, see [`CLAUDE.md` § "When the app stack lands"](CLAUDE.md#when-the-app-stack-lands) for the punchlist.
+Cross-cutting docs live in [`/docs`](docs/). Backend-specific docs live in [`/backend/docs`](backend/docs/). Frontend and mobile details live in their subproject `CLAUDE.md` files.
+
+**Cross-cutting (`/docs`)**
+
+| Document | Description |
+|----------|-------------|
+| [Getting Started](docs/getting-started.md) | Prerequisites, setup, and first run |
+| [Architecture](docs/architecture.md) | System overview, tech stack, project structure |
+| [Authentication](docs/authentication.md) | JWT auth flow, RBAC, frontend/backend integration |
+| [User Management](docs/user-management.md) | Role matrix, user admin |
+| [Multi-Tenancy](docs/multi-tenancy.md) | Subdomain routing, DB-per-tenant, provisioning |
+| [Environment Variables](docs/environment.md) | Frontend and backend configuration |
+| [Production Deployment](docs/production-deployment.md) | AWS, CloudFront, ALB, ECS |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
+| [Roadmap](docs/roadmap.md) | Feature backlog with status |
+| [Competitive Analysis](docs/competitive-analysis.md) | Market landscape |
+| [Implementation Plan](docs/plan.md) | 5-phase delivery roadmap |
+
+**Backend (`/backend/docs`)**
+
+| Document | Description |
+|----------|-------------|
+| [API Reference](backend/docs/api-reference.md) | All REST endpoints with parameters |
+| [Database](backend/docs/database.md) | PostgreSQL schema, models, Alembic migrations |
+| [Docker](backend/docs/docker.md) | Docker Compose services, commands, health checks |
+| [Redis](backend/docs/redis.md) | Token blocklist and cache |
+| [MinIO](backend/docs/minio.md) | S3-compatible object storage setup |
+| [AI Extraction](backend/docs/ai-extraction.md) | Platform vs BYOK, provider configs |
+| [ERP Integration](backend/docs/erp-integration.md) | Adapter pattern, Merge.dev, direct APIs |
+| [Workflow Design](backend/docs/workflow-design.md) | State machine, step types |
+| [Workflow Snapshots](backend/docs/workflow-snapshots.md) | Frozen definition semantics |
+| [Payments](backend/docs/payments.md) | Payment runs, schedules, ERP sync |
+| [Virtual Cards](backend/docs/virtual-cards.md) | Lithic/Nium, rebates, webhooks |
+| [PO Matching](backend/docs/po-matching.md) | 2-way/3-way matching logic |
+| [Vendor Management](backend/docs/vendor-management.md) | Sources, sync, matching |
+| [Local AI Testing](backend/docs/local-ai-testing.md) | Ollama setup |
+
+**Subproject guides**
+
+| File | Purpose |
+|------|---------|
+| [`backend/CLAUDE.md`](backend/CLAUDE.md) | Backend structure, adapters, conventions |
+| [`frontend/CLAUDE.md`](frontend/CLAUDE.md) | Routes, stores, components, API mappings |
+| [`mobile/CLAUDE.md`](mobile/CLAUDE.md) | Flutter screens, stores, API client |

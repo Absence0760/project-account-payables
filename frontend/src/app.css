@@ -1,0 +1,23 @@
+:root {
+	font-family: system-ui, -apple-system, sans-serif;
+	--bg: #0f1117;
+	--surface: #181a23;
+	--border: #2a2d3a;
+	--text: #e2e4ea;
+	--text-muted: #8a8fa0;
+	--accent: #638cff;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html, body {
+	margin: 0;
+	padding: 0;
+	background: var(--bg);
+	color: var(--text);
+	-webkit-font-smoothing: antialiased;
+}

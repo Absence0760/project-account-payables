@@ -1,0 +1,55 @@
+# Founder runbooks — what you (human) have to do before shipping
+
+Everything in this directory is non-code work. The engineering side is
+largely ready; these are the signatures, contracts, and external
+accounts needed to take money from a paying customer.
+
+## Recommended order
+
+Block time to grind through these in roughly this order. The parallel
+branches ("do anytime") can slot in whenever there's dead time waiting
+on the critical path.
+
+```
+CRITICAL PATH
+│
+├── 1. Legal foundation       ← can't invoice without it
+│     └── legal-entity.md
+│
+├── 2. Production deployment  ← can't demo to a buyer without it
+│     └── production-deployment.md
+│
+├── 3. Stripe billing         ← can't charge without it
+│     └── stripe-billing.md
+│
+├── 4. Payment rails          ← can't pay vendors without it (long lead time — start early)
+│     └── payment-rails-onboarding.md
+│
+└── 5. SOC 2 kickoff          ← can't pass security review without it
+      └── soc2-vendor.md
+
+DO ANYTIME (parallel)
+│
+├── Support + status page     ← expected before first customer
+│     └── support-and-status.md
+│
+└── Insurance                 ← required before most procurement reviews
+      └── insurance.md
+```
+
+## Done vs. pending
+
+Use `status.md` in this directory to track what's signed, what's live,
+and what's still pending. Keep it up to date — it doubles as the
+go/no-go checklist for your first paying customer.
+
+## When to pull the trigger
+
+The critical path (1–5) is roughly 4–8 weeks of calendar time. The
+payment-rails step has the longest lead time (bank KYC can take 3+
+weeks) — start that on week 1 and do everything else in parallel.
+
+Don't wait until all five are "done" to talk to prospects. A signed LOI
+from a pilot customer is what calibrates whether you need (say) SAML or
+international payments *right now* vs. in 6 months. Hunt a pilot while
+the paperwork happens in the background.
