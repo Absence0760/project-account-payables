@@ -169,4 +169,8 @@ __pycache__/
 # ---------------------------------------------------------------------------
 # Local agent / AI tooling state
 # ---------------------------------------------------------------------------
-.claude/
+# .claude/agents/ and .claude/commands/ ARE checked in — the agents and
+# slash commands are part of the repo's review surface and should be
+# shared across contributors. Only ignore the per-user / runtime bits.
+.claude/settings.local.json
+.claude/*.lock
