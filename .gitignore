@@ -137,3 +137,26 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Playwright (tests-e2e/)
+tests-e2e/.auth/
+tests-e2e/test-results/
+tests-e2e/playwright-report/
+tests-e2e/blob-report/
+tests-e2e/playwright/.cache/
+
+# Claude Code runtime state (agents/ and commands/ ARE checked in)
+.claude/*.lock
+.claude/settings.local.json
+
+# Terraform working state (infra/.gitignore handles tfstate / .terraform/)
+# but pick up stray files at repo root too
+*.tfstate
+*.tfstate.backup
+
+# OS files
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
