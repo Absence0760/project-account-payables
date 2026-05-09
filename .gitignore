@@ -176,15 +176,17 @@ __pycache__/
 .claude/*.lock
 
 # ---------------------------------------------------------------------------
-# Playwright (frontend/tests-e2e/)
+# Playwright
 # ---------------------------------------------------------------------------
-# .auth/ holds storage-state JSON with live session cookies — never commit.
-# The other paths are test artifacts.
+# Playwright resolves output dirs relative to the runner's cwd
+# (frontend/), not testDir (frontend/tests-e2e/). The .auth/ storage
+# state lives next to the config — never commit; it holds live session
+# cookies.
 frontend/tests-e2e/.auth/
-frontend/tests-e2e/test-results/
-frontend/tests-e2e/playwright-report/
-frontend/tests-e2e/blob-report/
-frontend/tests-e2e/playwright/.cache/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/playwright/.cache/
 
 # ---------------------------------------------------------------------------
 # IDE / editor / OS scratch files
