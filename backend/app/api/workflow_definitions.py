@@ -3,7 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, get_current_user, get_org_id, require_roles
@@ -141,16 +141,9 @@ async def update_workflow(
         defn.description = body.description
     if body.is_active is not None:
         if body.is_active and not defn.is_active:
-            # Deactivate all other workflows for this org
-            await db.execute(
-                select(WorkflowDefinition).where(
-                    WorkflowDefinition.organization_id == org_id,
-                    WorkflowDefinition.id != workflow_id,
-                    WorkflowDefinition.is_active == True,  # noqa: E712
-                )
-            )
-            from sqlalchemy import update as sql_update
-
+            # Enforce the one-active-workflow invariant: when this
+            # workflow flips inactive → active, deactivate any peer
+            # that's currently active in this org.
             await db.execute(
                 sql_update(WorkflowDefinition)
                 .where(
