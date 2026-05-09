@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { signInAndWait } from './fixtures/helpers';
+import { signInAndWait } from '../fixtures/helpers';
 
 /**
  * /vendors — list view + status filtering. Seed creates 10 acme

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { signInAndWait } from './fixtures/helpers';
+import { signInAndWait } from '../fixtures/helpers';
 
 /**
  * /invoices — the core surface of the app. The seed creates 10 acme

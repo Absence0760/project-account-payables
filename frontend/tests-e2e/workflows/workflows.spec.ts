@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { signInAndWait } from './fixtures/helpers';
+import { signInAndWait } from '../fixtures/helpers';
 
 /**
  * /workflows — admin-only surface. Seed creates one default workflow

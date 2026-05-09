@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { signInAndWait } from './fixtures/helpers';
+import { signInAndWait } from '../fixtures/helpers';
 
 /**
  * /admin — admin-only user management. Seed creates 4 acme users

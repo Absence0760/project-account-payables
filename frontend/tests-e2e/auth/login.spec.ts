@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { ACME_ADMIN, signIn } from './fixtures/helpers';
+import { ACME_ADMIN, signIn } from '../fixtures/helpers';
 
 /**
  * Login surface — anonymous-visitor + happy-path smoke.

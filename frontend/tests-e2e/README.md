@@ -6,12 +6,30 @@ Playwright end-to-end tests for the frontend. Targets the seeded `acme` tenant o
 
 ```
 tests-e2e/
-├── playwright.config.ts        config; webServer block boots `pnpm dev`
+├── playwright.config.ts                config; webServer block boots `pnpm dev`
 ├── fixtures/
-│   └── helpers.ts              ACME_ADMIN credentials + signIn() helper
-├── .auth/                      gitignored — reserved for future storage-state work
-└── login.spec.ts               anon visitor, bad creds, happy-path login
+│   └── helpers.ts                      seeded credentials + signIn / signOut helpers
+├── .auth/                              gitignored — reserved for storage-state work
+├── auth/                               entry surface — auth, RBAC, tenant isolation
+│   ├── auth-wall.spec.ts               protected routes redirect anon to /login
+│   ├── login.spec.ts                   form renders / bad creds / happy path / no-tenant
+│   ├── signout.spec.ts                 Log Out clears session + post-logout redirect
+│   ├── signup.spec.ts                  /signup form + slug-check accept/reject
+│   ├── rbac.spec.ts                    sidebar visibility per role (clerk / mgr / cfo)
+│   └── tenant-isolation.spec.ts        techflow JWT cannot reach acme data
+├── invoices/                           invoice surface
+│   ├── list.spec.ts                    list renders, search interactive
+│   ├── status-filter.spec.ts           filter chips narrow / restore the table
+│   └── detail.spec.ts                  modal heading / line items / activity / close
+├── payments/payments.spec.ts           summary cards, tabs, run detail modal
+├── vendors/vendors.spec.ts             list, default chip, server-side search
+├── workflows/workflows.spec.ts         seeded default workflow + new-workflow modal
+├── exceptions/exceptions.spec.ts       seeded exception cards + summary chips
+├── admin/admin.spec.ts                 user list + "You" badge + Invite modal
+└── smoke/nav.spec.ts                   admin reaches every sidebar route
 ```
+
+`testDir: '.'` in playwright.config.ts walks recursively, so adding a new spec file under any of these folders picks up automatically. Single-spec folders (payments / vendors / workflows / exceptions / admin) are intentional — they're future-proof for when each surface grows beyond one file.
 
 ## Local dev loop
 

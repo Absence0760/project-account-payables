@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { ACME_MANAGER, signInAndWait } from './fixtures/helpers';
+import { ACME_MANAGER, signInAndWait } from '../fixtures/helpers';
 
 /**
  * /exceptions — manager + admin can view. Seed creates 4 exceptions

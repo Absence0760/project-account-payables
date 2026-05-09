@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { signInAndWait, signOut } from './fixtures/helpers';
+import { signInAndWait, signOut } from '../fixtures/helpers';
 
 /**
  * Sign-out flow + post-logout protection. The two assertions together

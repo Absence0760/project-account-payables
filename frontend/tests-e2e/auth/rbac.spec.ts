@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { ACME_CFO, ACME_CLERK, ACME_MANAGER, signInAndWait } from './fixtures/helpers';
+import { ACME_CFO, ACME_CLERK, ACME_MANAGER, signInAndWait } from '../fixtures/helpers';
 
 /**
  * RBAC — sidebar nav visibility per role.

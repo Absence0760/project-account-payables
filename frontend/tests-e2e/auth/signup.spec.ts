@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { NO_TENANT_BASE } from './fixtures/helpers';
+import { NO_TENANT_BASE } from '../fixtures/helpers';
 
 /**
  * Self-service signup — anonymous-tenant route at /signup. Renders only

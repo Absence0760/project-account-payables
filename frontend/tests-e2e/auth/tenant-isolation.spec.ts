@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { ACME_BASE, signInAndWait, TECHFLOW_ADMIN, TECHFLOW_BASE } from './fixtures/helpers';
+import { ACME_BASE, signInAndWait, TECHFLOW_ADMIN, TECHFLOW_BASE } from '../fixtures/helpers';
 
 /**
  * Tenant isolation — a JWT minted for the techflow tenant must not be
