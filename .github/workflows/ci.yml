@@ -6,6 +6,20 @@ on:
   pull_request:
     branches: [main]
 
+# Opt every JS-based action into Node 24 ahead of GitHub's 2026-06-02
+# forced upgrade. Without this, the runner emits a deprecation warning
+# per action invocation because each one's action.yml still declares
+# runs.using: node20.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Cancel in-flight CI runs on the same ref when a new push lands.
+# Saves runner minutes on rapid-fire pushes; main-branch runs are
+# preserved (cancel only on non-main refs).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   backend:
     name: Backend
@@ -127,3 +141,13 @@ jobs:
 
       - name: Run tests
         run: flutter test
+
+  shellcheck:
+    name: ShellCheck (bin/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint
+        run: shellcheck bin/*.sh

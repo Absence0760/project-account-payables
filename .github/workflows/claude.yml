@@ -10,6 +10,13 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Opt every JS-based action into Node 24 ahead of GitHub's 2026-06-02
+# forced upgrade. Without this, the runner emits a deprecation warning
+# per action invocation because each one's action.yml still declares
+# runs.using: node20.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   claude:
     if: |

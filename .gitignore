@@ -174,3 +174,21 @@ __pycache__/
 # shared across contributors. Only ignore the per-user / runtime bits.
 .claude/settings.local.json
 .claude/*.lock
+
+# ---------------------------------------------------------------------------
+# Playwright (tests-e2e/)
+# ---------------------------------------------------------------------------
+# .auth/ holds storage-state JSON with live session cookies — never commit.
+# The other paths are test artifacts.
+tests-e2e/.auth/
+tests-e2e/test-results/
+tests-e2e/playwright-report/
+tests-e2e/blob-report/
+tests-e2e/playwright/.cache/
+
+# ---------------------------------------------------------------------------
+# IDE / editor / OS scratch files
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
