@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Opt every JS-based action into Node 24 ahead of GitHub's 2026-06-02
+# forced upgrade.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Cancel any in-flight CI runs on the same ref when a new push lands.
+# Saves runner minutes on rapid-fire pushes; main-branch runs are
+# preserved (sha distinguishes them).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Terraform — fmt + validate every stack. No `plan`/`apply` from CI;
+  # those run interactively from a workstation with SSO credentials.
+  # --------------------------------------------------------------------------
+  terraform:
+    name: Terraform fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.13.0"
+      - name: terraform fmt (recursive, check-only)
+        run: terraform fmt -check -recursive infra/
+      - name: terraform validate — bootstrap
+        working-directory: infra/bootstrap
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: terraform validate — github-oidc
+        working-directory: infra/github-oidc
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: terraform validate — modules/sops-kms
+        working-directory: infra/modules/sops-kms
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: terraform validate — envs/preview
+        working-directory: infra/envs/preview
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: terraform validate — envs/prod
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  # --------------------------------------------------------------------------
+  # Shell scripts — shellcheck across bin/.
+  # --------------------------------------------------------------------------
+  shellcheck:
+    name: ShellCheck (bin/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint
+        run: shellcheck bin/*.sh bin/lib/*.sh
+
+  # --------------------------------------------------------------------------
+  # Application — placeholder.
+  #
+  # Wire this up when the app lands. Suggested shape:
+  #   - npm install (or pnpm install --frozen-lockfile)
+  #   - npm run typecheck
+  #   - npm run test
+  #   - npm run build
+  # Plus a separate e2e job that boots the dev server + runs Playwright
+  # under chromium, with a Playwright report uploaded on failure.
+  # --------------------------------------------------------------------------
+  # app:
+  #   name: App build + test
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: actions/setup-node@v6
+  #       with:
+  #         node-version: 24
+  #         cache: npm
+  #     - run: npm ci
+  #     - run: npm run typecheck
+  #     - run: npm test
+  #     - run: npm run build
