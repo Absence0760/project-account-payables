@@ -28,9 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.13.0"
+          terraform_version: "1.15.2"
       - name: terraform fmt (recursive, check-only)
         run: terraform fmt -check -recursive infra/
       - name: terraform validate — bootstrap
