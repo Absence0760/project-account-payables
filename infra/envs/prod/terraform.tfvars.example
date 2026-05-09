@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+#
+# operator_role_arns lists every IAM principal that should be able to
+# encrypt / decrypt the prod sops file. At minimum, include:
+#   - the prod deploy role ARN (from infra/github-oidc outputs)
+#   - any human IAM Identity Center role(s) that need to edit secrets
+#     (often a small set — prod secrets shouldn't be widely accessible)
+# The account root is added automatically by the module.
+
+# operator_role_arns = [
+#   "arn:aws:iam::123456789012:role/ap-deploy-prod",
+#   "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdministratorAccess_xxxxxxxx",
+# ]
