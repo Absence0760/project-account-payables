@@ -14,6 +14,16 @@ export const ACME_CLERK = {
 	password: 'demo'
 } as const;
 
+export const ACME_MANAGER = {
+	email: 'demo+apmanager@acme.com',
+	password: 'demo'
+} as const;
+
+export const ACME_CFO = {
+	email: 'demo+cfo@acme.com',
+	password: 'demo'
+} as const;
+
 export const TECHFLOW_ADMIN = {
 	email: 'admin@techflow.com',
 	password: 'demo'

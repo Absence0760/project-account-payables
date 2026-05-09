@@ -23,6 +23,7 @@ from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, Purchas
 from app.models.usage import ExtractionUsage
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
+from app.models.workflow import AuditLog, WorkflowDefinition
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -397,6 +398,55 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
         session.add_all(all_vendors)
         await session.flush()
 
+        # Default workflow definition — enable extraction + approval +
+        # erp_export so the UI's status filter chips render against the
+        # full status set the seeded invoices use. The default created
+        # lazily by the API has all steps disabled, which would hide
+        # most chips and make the demo (and e2e tests) shallow.
+        session.add(
+            WorkflowDefinition(
+                organization_id=org_id,
+                name="Default Workflow",
+                description="Full pipeline: extraction → approval → ERP export.",
+                is_active=True,
+                is_default=True,
+                steps_config={
+                    "steps": [
+                        {
+                            "number": 1,
+                            "type": "extraction",
+                            "name": "Data Extraction",
+                            "enabled": True,
+                            "config": {
+                                "auto_approve_enabled": False,
+                                "auto_approve_threshold": 0.95,
+                            },
+                        },
+                        {
+                            "number": 2,
+                            "type": "approval",
+                            "name": "Manager Approval",
+                            "enabled": True,
+                            "config": {
+                                "required": True,
+                                "approver_id": None,
+                                "approver_strategy": "manual",
+                                "require_segregation": True,
+                            },
+                        },
+                        {
+                            "number": 3,
+                            "type": "erp_export",
+                            "name": "ERP Export",
+                            "enabled": True,
+                            "config": {"erp_system": "default"},
+                        },
+                    ]
+                },
+            )
+        )
+        await session.flush()
+
         # Invoices — linked to vendor records via vendor_id
         bill_to = "123 Main St, Suite 100, San Francisco, CA 94105"
         invoices = [
@@ -622,6 +672,41 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
             ),
         ]
         session.add_all(invoices)
+        await session.flush()
+
+        # Audit log — at minimum a "created" row per invoice so the
+        # /api/invoices/<id>/audit-log endpoint returns something and the
+        # InvoiceModal's Activity timeline renders. Matches what the API
+        # itself emits via app.services.audit.log_action when an invoice
+        # is created or transitioned. Status-transition rows are layered
+        # on top for the few invoices that are already past 'new'.
+        seed_actor = ACME_USER_ID if org_id == ACME_ORG_ID else TECH_USER_ID
+        audit_entries: list[AuditLog] = []
+        for inv in invoices:
+            audit_entries.append(
+                AuditLog(
+                    correlation_id=inv.correlation_id,
+                    organization_id=org_id,
+                    actor_id=seed_actor,
+                    action="invoice.created",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details={"source": "seed", "status": inv.status},
+                )
+            )
+            if inv.status in ("ready_for_review", "approved", "posted_in_erp"):
+                audit_entries.append(
+                    AuditLog(
+                        correlation_id=inv.correlation_id,
+                        organization_id=org_id,
+                        actor_id=seed_actor,
+                        action="invoice.status_changed",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details={"from": "new", "to": inv.status},
+                    )
+                )
+        session.add_all(audit_entries)
         await session.flush()
 
         # Purchase Orders — linked to vendors, some match invoices
