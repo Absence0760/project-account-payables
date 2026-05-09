@@ -38,9 +38,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
 	if (res.status === 401) {
-		clearToken();
-		window.location.href = '/login';
-		throw new Error('Unauthorized');
+		// Auto-redirect only fires when an existing session went stale.
+		// For anonymous requests (e.g. /api/auth/login itself), 401
+		// means "wrong credentials" — let the caller's catch handle it
+		// so forms can render error banners instead of being torn down
+		// mid-render by a navigation.
+		if (token) {
+			clearToken();
+			window.location.href = '/login';
+		}
+		const body = await res.json().catch(() => ({}));
+		throw new Error(body.detail || 'Unauthorized');
 	}
 
 	if (!res.ok) {
