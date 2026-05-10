@@ -24,10 +24,9 @@ test.describe('/exceptions (acme manager)', () => {
 	});
 
 	test('summary chip totals are visible', async ({ page }) => {
-		// `.summary-chips` only renders when summary !== null. Each chip
-		// shows its label + count. The 'Open' chip is the default
-		// active filter.
-		await expect(page.locator('.summary-chips .chip', { hasText: /^Open\s/ })).toBeVisible({
+		// .filter-row only renders when summary !== null. Each chip shows its
+		// label + count. The Open chip is the default active filter.
+		await expect(page.locator('.filter-chip', { hasText: /^Open\s/ })).toBeVisible({
 			timeout: 5_000
 		});
 	});

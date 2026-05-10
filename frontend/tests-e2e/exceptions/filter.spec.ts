@@ -23,7 +23,7 @@ test.describe('/exceptions status filter (acme admin)', () => {
 	});
 
 	test('Open chip is the default and shows only open cards', async ({ page }) => {
-		await expect(page.locator('.chip', { hasText: /^Open/ })).toHaveClass(/active/);
+		await expect(page.locator('.filter-chip', { hasText: /^Open/ })).toHaveClass(/active/);
 
 		// All visible cards' status badge reads "open".
 		const cards = page.locator('.exception-card');
@@ -38,10 +38,10 @@ test.describe('/exceptions status filter (acme admin)', () => {
 		const filtered = page.waitForResponse(
 			(r) => r.url().includes('/api/exceptions') && r.url().includes('status=resolved')
 		);
-		await page.locator('.chip', { hasText: /^Resolved/ }).click();
+		await page.locator('.filter-chip', { hasText: /^Resolved/ }).click();
 		await filtered;
 
-		await expect(page.locator('.chip', { hasText: /^Resolved/ })).toHaveClass(/active/);
+		await expect(page.locator('.filter-chip', { hasText: /^Resolved/ })).toHaveClass(/active/);
 		const cards = page.locator('.exception-card');
 		const total = await cards.count();
 		// Seed has at least 1 resolved per tenant.
@@ -64,10 +64,10 @@ test.describe('/exceptions status filter (acme admin)', () => {
 			(r) =>
 				r.url().includes('/api/exceptions?') && !r.url().includes('status=')
 		);
-		await page.locator('.chip', { hasText: /^All/ }).click();
+		await page.locator('.filter-chip', { hasText: /^All/ }).click();
 		await filtered;
 
-		await expect(page.locator('.chip', { hasText: /^All/ })).toHaveClass(/active/);
+		await expect(page.locator('.filter-chip', { hasText: /^All/ })).toHaveClass(/active/);
 		await expect(page.locator('.exception-card')).toHaveCount(totalApi);
 	});
 
@@ -79,7 +79,7 @@ test.describe('/exceptions status filter (acme admin)', () => {
 		const body = (await summary.json()) as { open: number };
 
 		await expect(
-			page.locator('.chip', { hasText: /^Open/ }).locator('.chip-count')
+			page.locator('.filter-chip', { hasText: /^Open/ }).locator('.count')
 		).toHaveText(String(body.open));
 	});
 });

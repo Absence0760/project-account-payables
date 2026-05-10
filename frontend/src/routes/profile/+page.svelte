@@ -114,10 +114,12 @@
 	}
 </script>
 
-<div class="page">
-	<div class="container">
+<div class="workspace">
+	<header class="toolbar">
 		<h1>Profile & Security</h1>
+	</header>
 
+	<div class="sections">
 		<section class="card">
 			<h2>Account</h2>
 			<form
@@ -290,21 +292,31 @@
 </div>
 
 <style>
-	.page {
-		padding: 32px 24px;
-	}
-
-	.container {
-		max-width: 720px;
+	.workspace {
+		max-width: 1280px;
 		margin: 0 auto;
+		padding: 24px 20px;
 		display: flex;
 		flex-direction: column;
-		gap: 20px;
+		gap: 16px;
+		min-height: 100vh;
+	}
+
+	.toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.sections {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
 	}
 
 	h1 {
 		margin: 0;
-		font-size: 1.4rem;
+		font-size: 1.3rem;
 		font-weight: 700;
 	}
 

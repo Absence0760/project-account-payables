@@ -123,23 +123,26 @@
 <div class="workspace">
 	<header class="toolbar">
 		<h1>Exceptions</h1>
-		{#if summary}
-			<div class="summary-chips">
-				<span class="chip" class:active={statusFilter === 'open'} onclick={() => (statusFilter = 'open')}>
-					Open <span class="chip-count">{summary.open}</span>
-				</span>
-				<span class="chip" class:active={statusFilter === 'escalated'} onclick={() => (statusFilter = 'escalated')}>
-					Escalated <span class="chip-count">{summary.escalated}</span>
-				</span>
-				<span class="chip" class:active={statusFilter === 'resolved'} onclick={() => (statusFilter = 'resolved')}>
-					Resolved <span class="chip-count">{summary.resolved}</span>
-				</span>
-				<span class="chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>
-					All
-				</span>
-			</div>
-		{/if}
 	</header>
+
+	{#if summary}
+		<div class="filter-row">
+			<nav class="filters">
+				<button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>
+					All <span class="count">{summary.open + summary.escalated + summary.resolved + summary.dismissed}</span>
+				</button>
+				<button class="filter-chip" class:active={statusFilter === 'open'} onclick={() => (statusFilter = 'open')}>
+					Open <span class="count">{summary.open}</span>
+				</button>
+				<button class="filter-chip" class:active={statusFilter === 'escalated'} onclick={() => (statusFilter = 'escalated')}>
+					Escalated <span class="count">{summary.escalated}</span>
+				</button>
+				<button class="filter-chip" class:active={statusFilter === 'resolved'} onclick={() => (statusFilter = 'resolved')}>
+					Resolved <span class="count">{summary.resolved}</span>
+				</button>
+			</nav>
+		</div>
+	{/if}
 
 	{#if summary && summary.open > 0}
 		<div class="type-summary">
@@ -255,39 +258,50 @@
 		margin: 0;
 	}
 
-	.summary-chips {
+	.filter-row {
 		display: flex;
-		gap: 6px;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
 	}
 
-	.chip {
-		padding: 5px 12px;
-		border-radius: 16px;
+	.filters {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.filter-chip {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 14px;
+		border-radius: 20px;
 		border: 1px solid var(--border);
 		background: var(--surface);
 		color: var(--text-muted);
 		font-size: 0.82rem;
 		font-weight: 500;
 		cursor: pointer;
-		display: flex;
-		align-items: center;
-		gap: 5px;
+		transition: all 0.15s;
+		font-family: inherit;
 	}
 
-	.chip:hover {
+	.filter-chip:hover {
 		border-color: var(--accent);
 		color: var(--text);
 	}
 
-	.chip.active {
+	.filter-chip.active {
 		background: var(--accent);
 		color: #fff;
 		border-color: var(--accent);
 	}
 
-	.chip-count {
+	.filter-chip .count {
 		font-size: 0.72rem;
-		font-weight: 600;
+		opacity: 0.7;
 	}
 
 	/* Type summary */
