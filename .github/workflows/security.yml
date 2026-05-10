@@ -44,10 +44,13 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: python
-          # Default security suite. `security-extended` was taking 30–60s
-          # extra on a tiny codebase with no additional hits; if the
-          # signal-to-noise ever justifies it, flip back.
-          queries: security
+          # Omit `queries:` to run the default suite. Earlier versions
+          # had `queries: security`, which is NOT a published pack name
+          # — CodeQL aborted with "Query pack security cannot be
+          # found." Valid named suites are `security-extended` and
+          # `security-and-quality`; both were measured to add 30–60s
+          # to a tiny codebase with no additional hits, so we stay on
+          # the default.
       - uses: github/codeql-action/analyze@v3
         with:
           category: '/language:python'
@@ -61,7 +64,8 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: javascript-typescript
-          queries: security
+          # See note in `codeql-python` job — the default suite, no
+          # `queries:` override.
       - uses: github/codeql-action/analyze@v3
         with:
           category: '/language:javascript-typescript'

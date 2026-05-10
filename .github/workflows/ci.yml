@@ -27,7 +27,12 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        # pgvector/pgvector image — Postgres 16 with the `vector`
+        # extension preinstalled. Required because `seed.py` runs
+        # `CREATE EXTENSION vector` for invoice_embeddings (RAG).
+        # Stock postgres:16 doesn't ship the extension; CI without
+        # this fails with "extension 'vector' is not available".
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -159,7 +164,12 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        # pgvector/pgvector image — Postgres 16 with the `vector`
+        # extension preinstalled. Required because `seed.py` runs
+        # `CREATE EXTENSION vector` for invoice_embeddings (RAG).
+        # Stock postgres:16 doesn't ship the extension; CI without
+        # this fails with "extension 'vector' is not available".
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
