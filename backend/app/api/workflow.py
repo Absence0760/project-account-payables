@@ -582,8 +582,22 @@ async def export_invoice(
 
 @router.get("/file/{file_key:path}")
 async def get_invoice_file(file_key: str, user: User = Depends(get_current_user)):
-    """Proxy the file from S3 to the browser."""
+    """Proxy the file from S3 to the browser.
+
+    File keys are stamped as ``<org_id>/<invoice_id>/<filename>`` at
+    upload time. The user must belong to the org whose UUID is the
+    first segment — otherwise an authenticated user in tenant A
+    could read tenant B's files by passing a crafted key. UUIDs are
+    long enough to resist guessing but the explicit check is the
+    actual gate (and forensic evidence in audit logs).
+    """
     from fastapi.responses import Response
+
+    prefix = file_key.split("/", 1)[0]
+    if prefix != str(user.organization_id):
+        # Same 404 either way — leaking "wrong org" vs "no such file"
+        # would help an attacker enumerate prefixes by response code.
+        raise HTTPException(status_code=404, detail="File not found")
 
     try:
         content, content_type = get_file(file_key)

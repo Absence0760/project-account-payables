@@ -1,5 +1,6 @@
 """S3/MinIO file storage service."""
 
+import re
 import uuid
 
 import boto3
@@ -15,6 +16,23 @@ ALLOWED_CONTENT_TYPES = {
     "image/tiff",
 }
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
+
+# Strips path separators, parent-directory tokens, and control chars
+# from a user-supplied filename before it's interpolated into the S3
+# key. Without this, a crafted filename like `../../other-org/x.pdf`
+# could land under another tenant's prefix.
+_SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_filename(name: str | None) -> str:
+    """Return a filesystem-safe basename. None / empty / all-stripped
+    inputs fall back to a synthetic name so a missing client header
+    doesn't end up with an empty S3 key segment."""
+    base = (name or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    cleaned = _SAFE_FILENAME.sub("_", base)
+    # Strip leading dots so an attacker can't store a dotfile.
+    cleaned = cleaned.lstrip(".")
+    return cleaned or "upload"
 
 
 def _get_client():
@@ -48,7 +66,7 @@ async def upload_invoice_file(
     if content_type not in ALLOWED_CONTENT_TYPES:
         raise ValueError(f"File type '{content_type}' not allowed. Accepted: PDF, PNG, JPEG, TIFF")
 
-    file_key = f"{org_id}/{invoice_id}/{file.filename}"
+    file_key = f"{org_id}/{invoice_id}/{_safe_filename(file.filename)}"
 
     client = _get_client()
     _ensure_bucket(client)
