@@ -26,6 +26,12 @@
 	let statusFilter = $state('all');
 	let syncing = $state(false);
 
+	const PAGE_SIZE = 20;
+	let total = $state(0);
+	let page = $state(1);
+	let loadingMore = $state(false);
+	let hasMore = $derived(vendors.length < total);
+
 	const STATUS_LABELS: Record<string, string> = {
 		active: 'Active',
 		unverified: 'Unverified',
@@ -49,15 +55,32 @@
 		fetchVendors();
 	});
 
-	async function fetchVendors() {
+	async function fetchVendors(opts: { append?: boolean; nextPage?: number } = {}) {
 		try {
-			const params = new URLSearchParams({ page_size: '100' });
+			const nextPage = opts.nextPage ?? 1;
+			const params = new URLSearchParams({
+				page: String(nextPage),
+				page_size: String(PAGE_SIZE)
+			});
 			if (search.trim()) params.set('search', search.trim());
 			if (statusFilter !== 'all') params.set('status', statusFilter);
-			const data = await api.get<{ items: Vendor[] }>(`/api/vendors?${params}`);
-			vendors = data.items;
+			const data = await api.get<{ items: Vendor[]; total: number }>(
+				`/api/vendors?${params}`
+			);
+			vendors = opts.append ? [...vendors, ...data.items] : data.items;
+			total = data.total;
+			page = nextPage;
 		} catch {
 			toast('Failed to load vendors', 'error');
+		}
+	}
+
+	async function loadMoreVendors() {
+		loadingMore = true;
+		try {
+			await fetchVendors({ append: true, nextPage: page + 1 });
+		} finally {
+			loadingMore = false;
 		}
 	}
 
@@ -179,6 +202,18 @@
 			</tbody>
 		</table>
 	</div>
+
+	{#if hasMore}
+		<div class="load-more-row">
+			<button class="btn-load-more" onclick={loadMoreVendors} disabled={loadingMore}>
+				{loadingMore ? 'Loading…' : `Load more (${vendors.length} of ${total})`}
+			</button>
+		</div>
+	{:else if total > 0}
+		<div class="load-more-row">
+			<span class="load-more-end">Showing all {total} vendor{total === 1 ? '' : 's'}</span>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -467,5 +502,32 @@
 	.btn-reject-sm:hover {
 		border-color: #e04040;
 		color: #e04040;
+	}
+	.load-more-row {
+		display: flex;
+		justify-content: center;
+		padding: 8px 0 4px;
+	}
+	.btn-load-more {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.btn-load-more:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.btn-load-more:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.load-more-end {
+		font-size: 0.78rem;
+		color: var(--text-muted);
 	}
 </style>

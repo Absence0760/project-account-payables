@@ -39,6 +39,11 @@
 	let showCreate = $state(false);
 	let applyTargetId = $state<string | null>(null);
 
+	const PAGE_SIZE = 20;
+	let total = $state(0);
+	let page = $state(1);
+	let loadingMore = $state(false);
+
 	let newMemoNumber = $state('');
 	let newVendorId = $state('');
 	let newAmount = $state('');
@@ -63,16 +68,34 @@
 		loading = false;
 	}
 
-	async function loadMemos() {
+	async function loadMemos(opts: { append?: boolean; nextPage?: number } = {}) {
 		try {
+			const nextPage = opts.nextPage ?? 1;
 			const params = new URLSearchParams();
 			if (statusFilter !== 'all') params.set('status', statusFilter);
-			const data = await api.get<{ items: CreditMemo[] }>(`/api/credit-memos?${params}`);
-			memos = data.items;
+			params.set('page', String(nextPage));
+			params.set('page_size', String(PAGE_SIZE));
+			const data = await api.get<{ items: CreditMemo[]; total: number }>(
+				`/api/credit-memos?${params}`
+			);
+			memos = opts.append ? [...memos, ...data.items] : data.items;
+			total = data.total;
+			page = nextPage;
 		} catch {
 			toast('Failed to load credit memos', 'error');
 		}
 	}
+
+	async function loadMoreMemos() {
+		loadingMore = true;
+		try {
+			await loadMemos({ append: true, nextPage: page + 1 });
+		} finally {
+			loadingMore = false;
+		}
+	}
+
+	let hasMore = $derived(memos.length < total);
 
 	async function loadVendors() {
 		try {
@@ -208,6 +231,18 @@
 			</tbody>
 		</table>
 	</div>
+
+	{#if hasMore}
+		<div class="load-more-row">
+			<button class="btn-load-more" onclick={loadMoreMemos} disabled={loadingMore}>
+				{loadingMore ? 'Loading…' : `Load more (${memos.length} of ${total})`}
+			</button>
+		</div>
+	{:else if total > 0}
+		<div class="load-more-row">
+			<span class="load-more-end">Showing all {total} credit memo{total === 1 ? '' : 's'}</span>
+		</div>
+	{/if}
 </div>
 
 {#if showCreate}
@@ -486,5 +521,32 @@
 	.required {
 		color: #e04040;
 		font-style: normal;
+	}
+	.load-more-row {
+		display: flex;
+		justify-content: center;
+		padding: 8px 0 4px;
+	}
+	.btn-load-more {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.btn-load-more:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.btn-load-more:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.load-more-end {
+		font-size: 0.78rem;
+		color: var(--text-muted);
 	}
 </style>

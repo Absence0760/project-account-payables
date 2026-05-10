@@ -71,7 +71,7 @@
 	}
 
 	function buildParams(): Record<string, string> {
-		const params: Record<string, string> = { page_size: '100' };
+		const params: Record<string, string> = {};
 		if (activeStatuses.length > 0) params.status = activeStatuses.join(',');
 		if (search.trim()) params.search = search.trim();
 		const af = advancedFilters;
@@ -516,6 +516,18 @@
 			</tbody>
 		</table>
 	</div>
+
+	{#if invoiceStore.hasMore}
+		<div class="load-more-row">
+			<button class="btn-load-more" onclick={() => invoiceStore.loadMore()} disabled={invoiceStore.loading}>
+				{invoiceStore.loading ? 'Loading…' : `Load more (${invoiceStore.all.length} of ${invoiceStore.total})`}
+			</button>
+		</div>
+	{:else if invoiceStore.total > 0}
+		<div class="load-more-row">
+			<span class="load-more-end">Showing all {invoiceStore.total} invoice{invoiceStore.total === 1 ? '' : 's'}</span>
+		</div>
+	{/if}
 </div>
 
 {#if editing}
@@ -1015,5 +1027,32 @@
 	.bulk-apply-btn:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+	.load-more-row {
+		display: flex;
+		justify-content: center;
+		padding: 8px 0 4px;
+	}
+	.btn-load-more {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.btn-load-more:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.btn-load-more:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.load-more-end {
+		font-size: 0.78rem;
+		color: var(--text-muted);
 	}
 </style>

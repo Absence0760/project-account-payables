@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -59,20 +59,32 @@ async def list_credit_memos(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
     status_filter: str | None = Query(None, alias="status"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
 ):
-    query = select(CreditMemo, Vendor.name, Invoice.invoice_number).outerjoin(
-        Vendor, CreditMemo.vendor_id == Vendor.id
-    ).outerjoin(Invoice, CreditMemo.invoice_id == Invoice.id)
+    base = select(CreditMemo)
     if status_filter:
-        query = query.where(CreditMemo.status == status_filter)
-    query = query.order_by(CreditMemo.created_at.desc())
-    result = await db.execute(query)
-    rows = result.all()
+        base = base.where(CreditMemo.status == status_filter)
+
+    total_q = await db.execute(select(func.count()).select_from(base.subquery()))
+    total = int(total_q.scalar() or 0)
+
+    paged = (
+        select(CreditMemo, Vendor.name, Invoice.invoice_number)
+        .outerjoin(Vendor, CreditMemo.vendor_id == Vendor.id)
+        .outerjoin(Invoice, CreditMemo.invoice_id == Invoice.id)
+        .order_by(CreditMemo.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    if status_filter:
+        paged = paged.where(CreditMemo.status == status_filter)
+    result = await db.execute(paged)
     items = [
         _to_response(memo, vendor_name=vendor_name, invoice_number=invoice_number)
-        for memo, vendor_name, invoice_number in rows
+        for memo, vendor_name, invoice_number in result.all()
     ]
-    return CreditMemoListResponse(items=items, total=len(items))
+    return CreditMemoListResponse(items=items, total=total)
 
 
 @router.post("", response_model=CreditMemoResponse, status_code=status.HTTP_201_CREATED)
