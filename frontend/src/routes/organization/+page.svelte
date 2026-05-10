@@ -1049,7 +1049,7 @@
 
 <style>
 	.workspace {
-		max-width: 800px;
+		max-width: 1280px;
 		margin: 0 auto;
 		padding: 24px 20px;
 		display: flex;
