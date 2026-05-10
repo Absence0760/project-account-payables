@@ -46,7 +46,7 @@
 			title: 'Settings',
 			items: [
 				{ label: 'Organization', href: '/organization', icon: 'organization', requiredRoles: ['admin'] },
-				{ label: 'Admin', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
+				{ label: 'Users', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
 			],
 		},
 	];
