@@ -5,6 +5,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import BulkBar from '$lib/components/BulkBar.svelte';
 	import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
+	import SearchBox from '$lib/components/SearchBox.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
 	let showCreateModal = $state(false);
@@ -210,10 +211,11 @@
 	<header class="toolbar">
 		<h1>Users</h1>
 		<div class="toolbar-actions">
-			<div class="search-box">
-				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-				<input type="text" placeholder="Search name or email..." bind:value={search} aria-label="Search users" />
-			</div>
+			<SearchBox
+				bind:value={search}
+				placeholder="Search name or email..."
+				ariaLabel="Search users"
+			/>
 			<button class="btn-primary" onclick={openCreate}>+ Invite User</button>
 		</div>
 	</header>
@@ -500,32 +502,6 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
-	}
-
-	.search-box {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 20px;
-		padding: 6px 14px;
-		max-width: 300px;
-		color: var(--text-muted);
-	}
-
-	.search-box input {
-		border: none;
-		background: none;
-		outline: none;
-		font-size: 0.85rem;
-		width: 100%;
-		color: var(--text);
-		font-family: inherit;
-	}
-
-	.search-box input::placeholder {
-		color: var(--text-muted);
 	}
 
 	.load-more-row {

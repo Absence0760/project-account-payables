@@ -7,6 +7,7 @@
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
+	import SearchBox from '$lib/components/SearchBox.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 
@@ -320,12 +321,11 @@
 <div class="workspace">
 	<header class="toolbar">
 		<div class="search-group">
-			<div class="search-box">
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
-				</svg>
-				<input type="text" placeholder="Search invoices..." bind:value={search} />
-			</div>
+			<SearchBox
+				bind:value={search}
+				placeholder="Search invoices..."
+				ariaLabel="Search invoices"
+			/>
 			<button
 				class="advanced-btn"
 				class:has-filters={hasAdvancedFilters}
@@ -566,19 +566,6 @@
 		flex: 1;
 	}
 
-	.search-box {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 20px;
-		padding: 8px 14px;
-		flex: 1;
-		max-width: 480px;
-		color: var(--text-muted);
-	}
-
 	.advanced-btn {
 		position: relative;
 		display: grid;
@@ -612,20 +599,6 @@
 		height: 7px;
 		border-radius: 50%;
 		background: var(--accent);
-	}
-
-	.search-box input {
-		border: none;
-		background: none;
-		outline: none;
-		font-size: 0.9rem;
-		width: 100%;
-		color: var(--text);
-		font-family: inherit;
-	}
-
-	.search-box input::placeholder {
-		color: var(--text-muted);
 	}
 
 	.filters {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import SearchBox from '$lib/components/SearchBox.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
 	interface Vendor {
@@ -131,12 +132,7 @@
 	</header>
 
 	<div class="filter-row">
-		<div class="search-box">
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
-			</svg>
-			<input type="text" placeholder="Search vendors..." bind:value={search} />
-		</div>
+		<SearchBox bind:value={search} placeholder="Search vendors..." ariaLabel="Search vendors" />
 		<nav class="filters">
 			<button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>
 				All <span class="count">{vendors.length}</span>
@@ -274,32 +270,6 @@
 		align-items: center;
 		gap: 12px;
 		flex-wrap: wrap;
-	}
-
-	.search-box {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 20px;
-		padding: 8px 14px;
-		max-width: 320px;
-		color: var(--text-muted);
-	}
-
-	.search-box input {
-		border: none;
-		background: none;
-		outline: none;
-		font-size: 0.9rem;
-		width: 100%;
-		color: var(--text);
-		font-family: inherit;
-	}
-
-	.search-box input::placeholder {
-		color: var(--text-muted);
 	}
 
 	.filters {
