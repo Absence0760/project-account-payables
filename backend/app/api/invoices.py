@@ -309,6 +309,7 @@ async def update_invoice(
     invoice_id: uuid.UUID,
     body: InvoiceUpdate,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     # selectinload extraction_results — see get_invoice for the why.
@@ -333,7 +334,7 @@ async def update_invoice(
     for field, value in update_data.items():
         setattr(invoice, field, value)
 
-    await refresh_warnings(db, invoice)
+    await refresh_warnings(db, invoice, org_settings=org.settings)
     await db.flush()
     # The in-memory `invoice` already reflects setattr + refresh_warnings,
     # and selectinload(extraction_results) was applied on the initial fetch
@@ -453,6 +454,7 @@ async def bulk_delete(
 async def bulk_status_change(
     body: BulkStatusRequest,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
     ids = [uuid.UUID(i) for i in body.ids]
@@ -466,7 +468,7 @@ async def bulk_status_change(
             skipped.append(str(inv.id))
         else:
             inv.status = body.status.value
-            await refresh_warnings(db, inv)
+            await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
     await db.commit()
 

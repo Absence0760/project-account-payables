@@ -320,7 +320,7 @@ async def run_extraction(
         # exceptions surfaced in the queue) the moment extraction lands.
         from app.services.invoice_warnings import refresh_warnings
 
-        await refresh_warnings(db, invoice)
+        await refresh_warnings(db, invoice, org_settings=org_settings)
 
         # Save extraction result with priors metadata (what the UI will show
         # for transparency — which cache overrides and RAG neighbors shaped

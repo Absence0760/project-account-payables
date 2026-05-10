@@ -17,6 +17,7 @@ from app.api.deps import (
 )
 from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceStatus
+from app.models.organization import Organization
 from app.models.user import User
 from app.models.workflow import AuditLog, WorkflowInstance, WorkflowStep
 from app.schemas.invoice import InvoiceResponse
@@ -43,7 +44,7 @@ from app.services.workflow_engine import (
     is_step_enabled,
     transition_invoice,
 )
-from app.tenant import get_tenant_db
+from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/invoices", tags=["workflow"])
 
@@ -55,6 +56,7 @@ router = APIRouter(prefix="/invoices", tags=["workflow"])
 async def upload_invoice(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
@@ -127,7 +129,7 @@ async def upload_invoice(
         else:
             # No extraction — leave as new for manual entry
             await create_workflow_step(db, instance, "upload")
-            await refresh_warnings(db, invoice)
+            await refresh_warnings(db, invoice, org_settings=org.settings)
             await db.commit()
             await db.refresh(invoice)
 
@@ -377,6 +379,7 @@ async def retry_erp(
 async def complete_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
@@ -407,7 +410,7 @@ async def complete_invoice(
     approval_enabled = await is_step_enabled(db, org_id, "approval", invoice_id=invoice.id)
     erp_enabled = await is_step_enabled(db, org_id, "erp_export", invoice_id=invoice.id)
 
-    await refresh_warnings(db, invoice)
+    await refresh_warnings(db, invoice, org_settings=org.settings)
 
     if invoice.status == InvoiceStatus.new and approval_enabled:
         # Check auto_approve_below — skip review for small invoices

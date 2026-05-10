@@ -4,14 +4,71 @@ Also creates exception records for issues that need human resolution.
 """
 
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.exception import Exception as APException
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice, InvoiceStatus
 from app.services.po_matching import match_invoice_to_po
+
+# ---------- Fraud rules: per-org tunable thresholds -----------------------
+#
+# Defaults are conservative — they should never fire on a healthy AP flow.
+# Org admins override via PATCH /api/organization with `settings.fraud_rules`.
+# Every rule key listed here is honored by `_fraud_config()`; unknown keys
+# are ignored so we can ship new rules without a settings migration.
+
+_DEFAULT_FRAUD_RULES: dict = {
+    # Master switch per rule. False suppresses both the warning and the
+    # exception so an org can opt out of noisy rules without our help.
+    "round_amount_enabled": True,
+    "future_date_enabled": True,
+    "bank_change_enabled": True,
+    "stat_anomaly_enabled": True,
+    "rush_payment_enabled": True,
+    "new_vendor_large_enabled": True,
+    "personal_email_enabled": True,
+    "llm_anomaly_enabled": False,  # opt-in: costs an LLM call per invoice
+    # Threshold knobs. Whatever the org sets here drives the warning.
+    "round_amount_min": "1000",  # amounts >= this AND % 1000 == 0 flag
+    "rush_payment_max_days": 3,  # due_date within N days of invoice_date
+    "new_vendor_max_age_days": 30,  # vendor created within N days
+    "new_vendor_large_amount": "10000",
+    "stat_anomaly_sigma": 2.0,  # amount > mean + N*stdev
+    "stat_anomaly_min_history": 3,  # need at least N prior approved invoices
+    # Generic personal-email domains — case-insensitive match on the
+    # vendor's email host. Anything outside this list is treated as a
+    # business address (not perfect, but good enough as a flag).
+    "personal_email_domains": [
+        "gmail.com",
+        "yahoo.com",
+        "hotmail.com",
+        "outlook.com",
+        "aol.com",
+        "icloud.com",
+        "protonmail.com",
+        "proton.me",
+        "live.com",
+        "msn.com",
+        "yandex.com",
+        "mail.com",
+        "gmx.com",
+    ],
+}
+
+
+def _fraud_config(org_settings: dict | None) -> dict:
+    """Merge org overrides over the defaults. Org settings.fraud_rules
+    can omit keys to inherit; unknown keys are dropped silently."""
+    overrides = (org_settings or {}).get("fraud_rules") or {}
+    merged = dict(_DEFAULT_FRAUD_RULES)
+    for k, v in overrides.items():
+        if k in merged:
+            merged[k] = v
+    return merged
 
 
 def _status_str(status) -> str:
@@ -29,12 +86,19 @@ def _status_str(status) -> str:
     return getattr(status, "value", status) if not isinstance(status, str) else status
 
 
-async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
+async def refresh_warnings(
+    db: AsyncSession, invoice: Invoice, *, org_settings: dict | None = None
+) -> list[dict]:
     """Recompute warnings for a single invoice and persist them on the row.
 
     Also creates exception records for actionable issues.
+
+    `org_settings` drives the configurable fraud rules. When omitted (the
+    common case from existing call sites that haven't threaded it
+    through), the defaults in `_DEFAULT_FRAUD_RULES` are used.
     """
     warnings: list[dict] = []
+    cfg = _fraud_config(org_settings)
 
     # Missing required fields
     if not invoice.vendor_name or not invoice.vendor_name.strip():
@@ -73,9 +137,10 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
                 db, invoice, "duplicate", "warning", "Duplicate invoice number for this vendor"
             )
 
-    # Fraud flags
-    if invoice.amount and invoice.amount > 0:
-        if invoice.amount >= 1000 and invoice.amount % 1000 == 0:
+    # Fraud: round amounts (legacy rule; configurable threshold)
+    if cfg["round_amount_enabled"] and invoice.amount and invoice.amount > 0:
+        threshold = Decimal(str(cfg["round_amount_min"]))
+        if invoice.amount >= threshold and invoice.amount % 1000 == 0:
             warnings.append(
                 {
                     "type": "fraud_round_amount",
@@ -87,7 +152,8 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
                 db, invoice, "fraud_flag", "info", f"Suspicious round amount: ${invoice.amount}"
             )
 
-    if invoice.invoice_date and invoice.invoice_date > date.today():
+    # Fraud: future invoice date
+    if cfg["future_date_enabled"] and invoice.invoice_date and invoice.invoice_date > date.today():
         warnings.append(
             {
                 "type": "fraud_future_date",
@@ -99,6 +165,22 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
             db, invoice, "fraud_flag", "warning", "Invoice date is in the future"
         )
 
+    # Fraud: rush payment pattern. Very short window between invoice_date
+    # and due_date is a classic social-engineering signal — fraudsters
+    # push for "pay today" to skip controls.
+    if (
+        cfg["rush_payment_enabled"]
+        and invoice.invoice_date
+        and invoice.due_date
+        and (invoice.due_date - invoice.invoice_date).days <= int(cfg["rush_payment_max_days"])
+        and (invoice.due_date - invoice.invoice_date).days >= 0
+    ):
+        days = (invoice.due_date - invoice.invoice_date).days
+        msg = f"Rush payment: due in {days} day(s) of invoice date"
+        warnings.append({"type": "fraud_rush_payment", "severity": "warning", "message": msg})
+        await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+
+    # Past-due flag (informational, not fraud — but lives in the same block).
     if (
         invoice.due_date
         and invoice.due_date < date.today()
@@ -108,27 +190,145 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
             {"type": "past_due", "severity": "warning", "message": "Invoice is past due"}
         )
 
-    # Unverified vendor
+    # Vendor-scoped fraud rules. All require `vendor_id` so we can pull
+    # historical context — no point comparing the new invoice to itself.
     if invoice.vendor_id:
         from app.models.vendor import Vendor
 
-        v_result = await db.execute(select(Vendor.status).where(Vendor.id == invoice.vendor_id))
-        vendor_status = v_result.scalar_one_or_none()
-        if vendor_status == "unverified":
-            warnings.append(
-                {
-                    "type": "unverified_vendor",
-                    "severity": "warning",
-                    "message": "Vendor is unverified",
-                }
-            )
-            await _ensure_exception(
-                db,
-                invoice,
-                "unverified_vendor",
-                "warning",
-                "Invoice linked to an unverified vendor",
-            )
+        v_result = await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
+        vendor = v_result.scalar_one_or_none()
+
+        if vendor is not None:
+            # Unverified vendor (existing rule)
+            if vendor.status == "unverified":
+                warnings.append(
+                    {
+                        "type": "unverified_vendor",
+                        "severity": "warning",
+                        "message": "Vendor is unverified",
+                    }
+                )
+                await _ensure_exception(
+                    db,
+                    invoice,
+                    "unverified_vendor",
+                    "warning",
+                    "Invoice linked to an unverified vendor",
+                )
+
+            # Personal-email-domain flag. The vendor's email is set during
+            # onboarding/sync; if it falls in a generic domain list, the
+            # invoice rides through with extra scrutiny.
+            if cfg["personal_email_enabled"] and vendor.email:
+                _, _, host = vendor.email.partition("@")
+                host = host.lower().strip()
+                personal = {d.lower() for d in cfg["personal_email_domains"]}
+                if host and host in personal:
+                    msg = f"Vendor email uses personal domain: {host}"
+                    warnings.append(
+                        {"type": "fraud_personal_email", "severity": "warning", "message": msg}
+                    )
+                    await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+
+            # New-vendor + large-amount. A brand-new vendor making a huge
+            # first ask is the canonical phishing pattern.
+            if cfg["new_vendor_large_enabled"] and vendor.created_at and invoice.amount:
+                vendor_age = datetime.now(vendor.created_at.tzinfo) - vendor.created_at
+                large = Decimal(str(cfg["new_vendor_large_amount"]))
+                if (
+                    vendor_age <= timedelta(days=int(cfg["new_vendor_max_age_days"]))
+                    and invoice.amount >= large
+                ):
+                    msg = (
+                        f"New vendor (created {vendor_age.days} day(s) ago) submitting "
+                        f"large invoice ${invoice.amount}"
+                    )
+                    warnings.append(
+                        {"type": "fraud_new_vendor_large", "severity": "warning", "message": msg}
+                    )
+                    await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+
+            # Bank-account / remit-to change. We compare the incoming
+            # invoice's `remit_to_address` to the most recent approved
+            # invoice's value for this vendor — a mid-relationship change
+            # is the bank-redirect attack signature.
+            if cfg["bank_change_enabled"] and invoice.remit_to_address:
+                last_remit_q = await db.execute(
+                    select(Invoice.remit_to_address)
+                    .where(
+                        Invoice.vendor_id == invoice.vendor_id,
+                        Invoice.id != invoice.id,
+                        Invoice.status.in_(
+                            [
+                                InvoiceStatus.approved.value,
+                                InvoiceStatus.posted_in_erp.value,
+                                InvoiceStatus.payment_scheduled.value,
+                                InvoiceStatus.paid.value,
+                            ]
+                        ),
+                        Invoice.remit_to_address.isnot(None),
+                    )
+                    .order_by(Invoice.created_at.desc())
+                    .limit(1)
+                )
+                prior_remit = last_remit_q.scalar_one_or_none()
+                if prior_remit and prior_remit.strip() != (invoice.remit_to_address or "").strip():
+                    msg = "Remit-to address changed since the last approved invoice for this vendor"
+                    warnings.append(
+                        {"type": "fraud_bank_change", "severity": "error", "message": msg}
+                    )
+                    await _ensure_exception(db, invoice, "fraud_flag", "error", msg)
+
+            # Statistical amount anomaly. Pull last N approved invoice
+            # amounts; if the new one is more than `sigma` above the
+            # mean, flag. Only kicks in once we have enough history —
+            # otherwise every second invoice is "anomalous."
+            if cfg["stat_anomaly_enabled"] and invoice.amount:
+                hist_q = await db.execute(
+                    select(Invoice.amount)
+                    .where(
+                        Invoice.vendor_id == invoice.vendor_id,
+                        Invoice.id != invoice.id,
+                        Invoice.status.in_(
+                            [
+                                InvoiceStatus.approved.value,
+                                InvoiceStatus.posted_in_erp.value,
+                                InvoiceStatus.payment_scheduled.value,
+                                InvoiceStatus.paid.value,
+                            ]
+                        ),
+                        Invoice.amount.isnot(None),
+                    )
+                    .order_by(Invoice.created_at.desc())
+                    .limit(20)
+                )
+                amounts = [Decimal(str(a)) for a in hist_q.scalars().all() if a is not None]
+                if len(amounts) >= int(cfg["stat_anomaly_min_history"]):
+                    mean = sum(amounts) / Decimal(len(amounts))
+                    variance = sum((a - mean) ** 2 for a in amounts) / Decimal(len(amounts))
+                    stdev = variance.sqrt() if variance > 0 else Decimal(0)
+                    threshold_amount = mean + Decimal(str(cfg["stat_anomaly_sigma"])) * stdev
+                    if invoice.amount > threshold_amount and stdev > 0:
+                        sigma_count = (Decimal(str(invoice.amount)) - mean) / stdev
+                        msg = (
+                            f"Amount ${invoice.amount} is {sigma_count:.1f}σ above this "
+                            f"vendor's historical mean (${mean:.2f})"
+                        )
+                        warnings.append(
+                            {
+                                "type": "fraud_stat_anomaly",
+                                "severity": "warning",
+                                "message": msg,
+                            }
+                        )
+                        await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+
+            # LLM anomaly detection (opt-in). Costs an LLM call; gated
+            # behind a per-org flag. When the rule fires, the LLM's
+            # explanation rides the warning message so the reviewer
+            # sees *why* — vital for AI-derived flags to be actionable.
+            if cfg["llm_anomaly_enabled"]:
+                await _llm_anomaly_check(db, invoice, vendor, warnings, org_settings)
 
     # Missing data (no amount after extraction)
     has_missing = any(w["type"] == "missing_field" for w in warnings)
@@ -223,3 +423,68 @@ async def _ensure_exception(
             organization_id=invoice.organization_id,
         )
     )
+
+
+async def _llm_anomaly_check(
+    db: AsyncSession,
+    invoice: Invoice,
+    vendor,
+    warnings: list[dict],
+    org_settings: dict | None,
+) -> None:
+    """Pull last-N approved invoices for this vendor, run LLM anomaly
+    detection, and append a warning + exception when flagged.
+
+    Lives in this file so it can share the SQL session and ensure-
+    exception machinery; the actual prompt + LLM I/O is in
+    `services.llm_fraud_detection`.
+    """
+    from app.config import settings as app_settings
+    from app.services.llm_fraud_detection import (
+        HISTORY_SIZE,
+        detect_anomaly,
+        invoice_to_candidate,
+        invoice_to_history,
+    )
+
+    # API key resolution: org BYOK overrides the platform default.
+    api_key = ((org_settings or {}).get("extraction") or {}).get(
+        "api_key"
+    ) or app_settings.anthropic_api_key
+    if not api_key:
+        return
+
+    # Pull approved history (same set the stat-anomaly rule uses).
+    hist_q = await db.execute(
+        select(Invoice)
+        .where(
+            Invoice.vendor_id == vendor.id,
+            Invoice.id != invoice.id,
+            Invoice.status.in_(
+                [
+                    InvoiceStatus.approved.value,
+                    InvoiceStatus.posted_in_erp.value,
+                    InvoiceStatus.payment_scheduled.value,
+                    InvoiceStatus.paid.value,
+                ]
+            ),
+        )
+        .order_by(Invoice.created_at.desc())
+        .limit(HISTORY_SIZE)
+    )
+    history_invoices = list(hist_q.scalars().all())
+    if not history_invoices:
+        return
+
+    # Order oldest → newest in the prompt for natural reading.
+    history_invoices.reverse()
+
+    candidate = invoice_to_candidate(invoice)
+    history = [invoice_to_history(h) for h in history_invoices]
+    candidate.vendor_name = invoice.vendor_name or vendor.name or "Unknown vendor"
+
+    result = await detect_anomaly(candidate, history, api_key=api_key)
+    if result.is_anomaly and result.reason:
+        msg = f"AI-flagged anomaly: {result.reason}"
+        warnings.append({"type": "fraud_llm_anomaly", "severity": "warning", "message": msg})
+        await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
