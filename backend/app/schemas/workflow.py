@@ -2,6 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,25 @@ class ExtractionStepConfig(BaseModel):
     auto_approve_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
 
 
+# Fields the routing engine knows how to read off an Invoice. Anything not
+# in this set is silently ignored by `_evaluate_routing_rules` so a stale
+# UI config can't hard-fail the approval flow.
+RoutingField = Literal["gl_account", "cost_center", "department", "vendor_id"]
+RoutingOperator = Literal["eq", "ne", "in", "not_in", "starts_with"]
+
+
+class RoutingRule(BaseModel):
+    """One conditional clause that decides whether a chain level applies.
+
+    Multiple rules on the same level AND together. `value` accepts a string
+    for scalar operators (eq, ne, starts_with) or a list of strings for set
+    operators (in, not_in)."""
+
+    field: RoutingField
+    operator: RoutingOperator
+    value: str | list[str]
+
+
 class ApprovalLevelConfig(BaseModel):
     """One level in a multi-level approval chain."""
 
@@ -21,6 +41,18 @@ class ApprovalLevelConfig(BaseModel):
     approver_ids: list[str] = []
     required_approvals: int = 1
     name: str = ""
+    # Optional dept/GL/vendor filter — level only applies when every rule
+    # evaluates True against the invoice. Empty list = no filter.
+    routing_rules: list[RoutingRule] = []
+    # "any": `required_approvals` distinct users from approver_ids satisfies
+    # the level (default; matches legacy behaviour). "all": every listed
+    # approver_id must have approved.
+    parallel_mode: Literal["any", "all"] = "any"
+    # Escalation knobs. After this many hours sitting at the current level,
+    # the sweeper appends `escalation_to_user_ids` to `approver_ids` so
+    # those users become eligible to approve. None disables escalation.
+    escalation_hours: int | None = Field(default=None, ge=1)
+    escalation_to_user_ids: list[str] = []
 
 
 class ApprovalStepConfig(BaseModel):

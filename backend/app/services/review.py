@@ -150,9 +150,12 @@ async def approve_invoice(
 
         # Initialize chain state on first approval if not yet initialized
         if not (instance.state_data or {}).get("approval_levels"):
+            from app.services.approval_chain import invoice_routing_attrs
+
             applicable = resolve_applicable_levels(
                 approval_config.get("approval_chain", []),
                 float(invoice.amount or 0),
+                invoice_attrs=invoice_routing_attrs(invoice),
             )
             if applicable:
                 init_chain_state(instance, applicable)

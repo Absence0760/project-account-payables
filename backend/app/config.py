@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     extraction_timeout_seconds: int = 600
     extraction_reaper_interval_seconds: int = 60
     extraction_reaper_enabled: bool = True
+    # Approval escalation sweeper: scans every tenant's active workflow
+    # instances and appends `escalation_to_user_ids` onto any chain level
+    # that has been waiting longer than its `escalation_hours`. Disabled
+    # by default in local dev (no clock to escalate against in a one-shot
+    # demo); flip on in deployed envs.
+    approval_escalation_enabled: bool = False
+    approval_escalation_interval_seconds: int = 600
     # Run Tesseract OSD on rendered PDF pages before sending to vision adapters,
     # rotating 90/180/270-off-upright scans back to upright. Safe to leave on —
     # a missing ``pytesseract`` / ``tesseract`` binary degrades to a silent no-op.

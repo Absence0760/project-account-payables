@@ -97,11 +97,11 @@ Dedicated page for handling flagged invoices — mismatches, rejections, anomali
 - [x] Resolution actions: resolve, escalate, dismiss (with resolution note)
 - [x] Summary: counts by status, breakdown by type
 - [x] Link back to invoice from exception
-- [ ] Assignment — route to specific users based on exception type
-- [ ] SLA tracking — time to resolution
-- [ ] Bulk resolution for common patterns
+- [x] Assignment — `POST /api/exceptions/{id}/assign` (org-scoped user lookup); auto-assignment from `Organization.settings.exceptions.auto_assign_by_type` at creation; `?assigned_to_user_id` filter on list
+- [x] SLA tracking — `due_at` (sla_hours_by_type / default_sla_hours) + `is_overdue` flag in list payload; `time_to_resolution_hours` populated only on terminal transitions (resolve / dismiss)
+- [x] Bulk resolution — `POST /api/exceptions/bulk/resolve` with partial-success contract `{updated, skipped:[{id, reason}]}` matching the invoice bulk endpoints
 
-**Files:** `backend/app/routers/exceptions.py`, `backend/app/models/exception.py`
+**Files:** `backend/app/api/exceptions.py`, `backend/app/models/exception.py`, `backend/alembic/versions/0013_exception_assignment_sla.py`, `backend/tests/test_exception_assignment.py`, `frontend/tests-e2e/exceptions/assign-bulk.spec.ts`
 
 ---
 
@@ -116,12 +116,12 @@ Current state: manual, specific, auto, and chain approval strategies. Amount-bas
 - [x] Multi-level approval chains (strategy="chain", ApprovalLevelConfig)
 - [x] Segregation of duties (require_segregation, uploaded_by_id)
 - [x] Delegation / out-of-office (delegate_to_id, delegate_until, /api/auth/delegation)
-- [ ] Department/GL-based routing — route by cost center, GL code, or department
-- [ ] Parallel approvals — multiple approvers review simultaneously, require all/any
-- [ ] Escalation rules — auto-escalate after N hours/days without action
-- [ ] Email approval — approve/reject directly from email notification without logging in
-- [ ] Slack/Teams approval — approve/reject from Slack message buttons
-- [ ] Approval matrix UI — visual configuration of routing rules per org
+- [x] Department/GL-based routing — `ApprovalLevelConfig.routing_rules` filters by gl_account / cost_center / department / vendor_id; AND-composes with min/max amount; unknown fields fail open so a stale UI config can't lock the chain
+- [x] Parallel approvals — `parallel_mode: "any" | "all"`. `any` = `required_approvals` distinct users (default, legacy behaviour). `all` = every listed approver_id must approve.
+- [x] Escalation rules — `escalation_hours` + `escalation_to_user_ids` per level. Background sweeper (`services/approval_escalation.py`) appends the targets onto the level's `approver_ids` once the level's `entered_at` is older than `escalation_hours`. Idempotent. Toggleable via `AP_APPROVAL_ESCALATION_ENABLED`.
+- [ ] Email approval — approve/reject directly from email notification without logging in *(skipped — needs SMTP / signed-token credentials)*
+- [ ] Slack/Teams approval — approve/reject from Slack message buttons *(skipped — needs Slack/Teams app + webhook secret)*
+- [ ] Approval matrix UI — visual configuration of routing rules per org *(in progress, see Task #62)*
 
 **Competitors:** Coupa (matrix approval), Tipalti (parallel + Slack), Stampli (email/Slack), Airbase (Slack-native), Basware (conditional chains)
 
