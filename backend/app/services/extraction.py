@@ -125,6 +125,11 @@ async def run_extraction(
             .order_by(GLAccount.code)
         )
         gl_accounts = gl_result.scalars().all()
+        # Set of valid codes used post-extraction to validate AI suggestions
+        # against the org's actual chart. Empty when the org hasn't synced
+        # any GL accounts yet \u2014 in that mode we accept whatever the AI
+        # produces (since there's nothing to validate against).
+        active_gl_codes: set[str] = {gl.code for gl in gl_accounts}
         if gl_accounts:
             gl_lines = [
                 f"{gl.code} \u2014 {gl.name}" + (f" [{gl.account_type}]" if gl.account_type else "")
@@ -175,8 +180,16 @@ async def run_extraction(
             invoice.warnings = existing_warnings
             print(f"[extraction] Self-correction: {len(correction_report.violations)} violation(s)")
 
-        # Save line items if extracted
+        # Save line items if extracted. Drop GL codes that aren't in the
+        # active chart of accounts so the invoice can still post but the
+        # rejected codes don't end up in the ERP push.
+        invalid_gl_codes: list[str] = []
         for li in result.line_items:
+            li_gl = li.gl_account.value if li.gl_account.value else None
+            if li_gl and active_gl_codes and li_gl not in active_gl_codes:
+                invalid_gl_codes.append(li_gl)
+                li_gl = None  # don't persist a code that doesn't exist
+
             line_item = InvoiceLineItem(
                 invoice_id=invoice.id,
                 line_number=li.line_number,
@@ -186,15 +199,46 @@ async def run_extraction(
                 unit_price=_clean_decimal(li.unit_price.value) if li.unit_price.value else None,
                 tax=_clean_decimal(li.tax.value) if li.tax.value else None,
                 total=_clean_decimal(li.total.value) if li.total.value else None,
-                gl_account=li.gl_account.value if li.gl_account.value else None,
+                gl_account=li_gl,
             )
             db.add(line_item)
 
-        # Apply AI-suggested GL coding
-        if result.suggested_gl_account.value and result.suggested_gl_account.confidence >= 0.7:
-            invoice.gl_account = result.suggested_gl_account.value
+        # Apply AI-suggested GL coding. Validate against the org's active
+        # chart of accounts when one is configured — the AI is constrained
+        # via the prompt but can still hallucinate, especially without
+        # sufficient examples in the prompt's context window.
+        suggested_gl = result.suggested_gl_account.value
+        suggested_gl_conf = result.suggested_gl_account.confidence
+        if suggested_gl and suggested_gl_conf >= 0.7:
+            if active_gl_codes and suggested_gl not in active_gl_codes:
+                invalid_gl_codes.append(suggested_gl)
+            else:
+                invoice.gl_account = suggested_gl
+
         if result.suggested_cost_center.value and result.suggested_cost_center.confidence >= 0.7:
             invoice.cost_center = result.suggested_cost_center.value
+
+        # Surface invalid GL codes as a single aggregated warning so the
+        # reviewer sees the problem in the modal and can pick the right
+        # code from the dropdown.
+        if invalid_gl_codes:
+            existing_warnings = list(invoice.warnings or [])
+            existing_warnings.append(
+                {
+                    "type": "gl_account_invalid",
+                    "severity": "warning",
+                    "message": (
+                        "AI suggested GL code(s) not in active chart: "
+                        + ", ".join(sorted(set(invalid_gl_codes)))
+                    ),
+                    "codes": sorted(set(invalid_gl_codes)),
+                }
+            )
+            invoice.warnings = existing_warnings
+            print(
+                f"[extraction] GL validation: rejected "
+                f"{len(set(invalid_gl_codes))} unknown code(s)"
+            )
 
         # Vendor matching
         from app.services.vendor_matching import match_and_link_vendor
@@ -213,6 +257,32 @@ async def run_extraction(
         applied_priors = await apply_priors_to_invoice(db, invoice, result)
         if applied_priors:
             print(f"[extraction] Applied vendor priors: {applied_priors}")
+
+        # Priors can overwrite the AI-validated gl_account with a cached
+        # value that was valid at the time of prior caching but has since
+        # been deactivated in the chart. Re-check once after the overlay.
+        if (
+            "gl_account" in applied_priors
+            and active_gl_codes
+            and invoice.gl_account
+            and invoice.gl_account not in active_gl_codes
+        ):
+            stale_code = invoice.gl_account
+            invoice.gl_account = None
+            existing_warnings = list(invoice.warnings or [])
+            existing_warnings.append(
+                {
+                    "type": "gl_account_invalid",
+                    "severity": "warning",
+                    "message": (
+                        f"Cached vendor GL code '{stale_code}' is no longer "
+                        "in the active chart of accounts."
+                    ),
+                    "codes": [stale_code],
+                }
+            )
+            invoice.warnings = existing_warnings
+            print(f"[extraction] GL validation: rejected stale prior '{stale_code}'")
 
         # Semantic duplicate detection — reuses invoice_embeddings. Catches
         # near-duplicates that the rule-based (vendor_name + invoice_number)

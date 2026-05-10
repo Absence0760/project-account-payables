@@ -129,6 +129,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `POST`   | `/api/invoices/bulk/delete`         | admin/manager/cfo | Bulk delete |
 | `POST`   | `/api/invoices/bulk/status`         | admin/manager/cfo | Bulk status change |
 | `POST`   | `/api/invoices/bulk/export`         | *     | Bulk export (CSV/JSON/XML) |
+| `POST`   | `/api/invoices/bulk-recode-gl`      | admin | Bulk GL re-code via vendor priors (+ optional AI fallback). Defaults to dry-run. See [`ai-extraction.md`](ai-extraction.md) § Bulk re-coding. |
 
 **Query parameters for `GET /api/invoices`:** `page`, `page_size`, `status` (comma-sep), `vendor`, `invoice_number`, `po_number`, `description`, `amount_min`, `amount_max`, `due_date_from`, `due_date_to`, `search`.
 

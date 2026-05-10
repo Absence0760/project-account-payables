@@ -221,6 +221,21 @@ class BulkExportRequest(BaseModel):
     format: str = Field(default="csv", pattern=r"^(csv|json|xml)$")
 
 
+class BulkRecodeGLRequest(BaseModel):
+    """Bulk GL re-code filter. All filters are optional and AND-combined.
+
+    `dry_run` defaults to True so an accidentally-fired request reports
+    what would change without writing. `include_ai_fallback` is opt-in
+    because it bills the org per invoice.
+    """
+
+    from_date: date | None = None
+    to_date: date | None = None
+    vendor_ids: list[str] = Field(default_factory=list)
+    include_ai_fallback: bool = False
+    dry_run: bool = True
+
+
 class InvoiceLineItemResponse(BaseModel):
     id: str
     line_number: int | None

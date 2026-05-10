@@ -22,9 +22,11 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.database import get_control_db
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice import InvoiceStatus as DBInvoiceStatus
+from app.models.organization import Organization
 from app.models.payment import Payment, PaymentSchedule
 from app.models.user import User
 from app.models.workflow import WorkflowInstance, WorkflowStep
@@ -32,6 +34,7 @@ from app.schemas.invoice import (
     BulkDeleteRequest,
     BulkDeleteResponse,
     BulkExportRequest,
+    BulkRecodeGLRequest,
     BulkStatusRequest,
     BulkStatusResponse,
     InvoiceCreate,
@@ -40,9 +43,10 @@ from app.schemas.invoice import (
     InvoiceUpdate,
 )
 from app.services.csv_import import import_invoices_csv
+from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
 from app.services.workflow_engine import create_workflow_instance
-from app.tenant import get_tenant_db
+from app.tenant import get_tenant, get_tenant_db
 
 IMMUTABLE_STATUSES = {
     DBInvoiceStatus.sending_to_erp,
@@ -511,3 +515,51 @@ async def bulk_export(
 
     else:
         return rows
+
+
+@router.post("/bulk-recode-gl")
+async def bulk_recode_gl_endpoint(
+    body: BulkRecodeGLRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+):
+    """Re-apply GL codes to a date / vendor scoped slice of invoices.
+
+    Strategy: vendor priors first (free), then AI re-extraction for
+    invoices with no usable prior (billed, opt-in via
+    `include_ai_fallback`). Defaults to dry-run; the response includes
+    the changes that would land plus per-source counts.
+
+    Eligibility: invoices in immutable statuses (sending_to_erp through
+    paid) are skipped — re-coding a posted invoice would create
+    reconciliation drift with the ERP.
+    """
+    try:
+        vendor_uuids = [uuid.UUID(v) for v in body.vendor_ids]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid vendor_id: {exc}") from exc
+
+    if body.from_date and body.to_date and body.from_date > body.to_date:
+        raise HTTPException(status_code=400, detail="from_date must be <= to_date")
+
+    filt = RecodeFilter(
+        from_date=body.from_date,
+        to_date=body.to_date,
+        vendor_ids=vendor_uuids,
+    )
+
+    report = await bulk_recode_gl(
+        db,
+        organization_id=org_id,
+        filt=filt,
+        include_ai_fallback=body.include_ai_fallback,
+        dry_run=body.dry_run,
+        actor_id=user.id,
+        org_settings=org.settings,
+        ctrl_db=ctrl_db,
+    )
+
+    return report.as_dict()

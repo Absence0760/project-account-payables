@@ -7,6 +7,7 @@
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
+	import BulkRecodeGLModal from '$lib/components/BulkRecodeGLModal.svelte';
 	import SearchBox from '$lib/components/SearchBox.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
@@ -19,6 +20,7 @@
 	let uploading = $state(false);
 	let uploadProgress = $state('');
 	let fileInput: HTMLInputElement;
+	let showBulkRecode = $state(false);
 
 	async function handleUpload(e: Event) {
 		const input = e.target as HTMLInputElement;
@@ -322,9 +324,16 @@
 	<header class="toolbar">
 		<h1>Invoices</h1>
 		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple bind:this={fileInput} onchange={handleUpload} hidden />
-		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
-			{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
-		</button>
+		<div class="toolbar-actions">
+			{#if auth.isAdmin}
+				<button class="btn-secondary" onclick={() => (showBulkRecode = true)}>
+					Bulk Re-code GL
+				</button>
+			{/if}
+			<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
+				{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
+			</button>
+		</div>
 	</header>
 
 	<div class="filter-row">
@@ -542,6 +551,16 @@
 		filters={advancedFilters}
 		onclose={() => (showAdvancedSearch = false)}
 		onapply={(f) => (advancedFilters = f)}
+	/>
+{/if}
+
+{#if showBulkRecode}
+	<BulkRecodeGLModal
+		onclose={() => (showBulkRecode = false)}
+		onapplied={() => {
+			invoiceStore.fetch(buildParams());
+			invoiceStore.fetchCounts();
+		}}
 	/>
 {/if}
 
@@ -795,6 +814,12 @@
 		cursor: help;
 	}
 
+	.toolbar-actions {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+
 	.btn-upload {
 		padding: 8px 18px;
 		border-radius: 6px;
@@ -817,6 +842,25 @@
 	.btn-upload:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.btn-secondary {
+		padding: 8px 16px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	.btn-secondary:hover {
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 
 	.upload-error {

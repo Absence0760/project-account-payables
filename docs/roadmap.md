@@ -72,16 +72,16 @@ Conflict resolution: the per-vendor cache (see above) runs AFTER the AI output a
 ---
 
 ### AI Auto GL Coding
-**Status:** Done — included in the extraction prompt. Claude Vision suggests GL account and cost center based on vendor type and description. Auto-applied at >= 0.7 confidence.
+**Status:** Done. Claude Vision suggests GL code + cost center, constrained to the org's active chart of accounts; cached vendor priors and RAG-retrieved approved invoices both feed the prompt; suggestions are validated post-extraction; admins can backfill via bulk re-code.
 
 - [x] AI suggests GL code + cost center during extraction
 - [x] Confidence score per suggestion
 - [x] Auto-apply above 0.7 threshold
 - [x] Learn from corrections — reviewer corrections to `gl_account` / `cost_center` feed the per-vendor correction cache (see AI extraction section). Future extractions for the same vendor overlay the cached code on low-confidence suggestions.
-- [ ] Custom chart of accounts per org in the prompt — inject the org's active `GLAccount` rows as allowed values so the AI can't invent codes.
-- [ ] RAG-driven GL coding — at extraction time, retrieve the nearest-neighbor approved invoice (via the existing `invoice_embeddings`) and seed the prompt with its `gl_account`. Handles new vendors whose layout resembles a known one.
-- [ ] Bulk re-code capability — admin tool to re-run GL suggestion across a date range / vendor set.
-- [ ] GL code validation against chart of accounts — post-extraction check that `suggested_gl_account` is a live code for the org.
+- [x] Custom chart of accounts per org in the prompt — `services.extraction.run_extraction` queries the org's active `GLAccount` rows and injects them via `config["gl_account_catalog"]`; the Claude Vision adapter swaps the `{{GL_ACCOUNT_CATALOG}}` placeholder. Falls back to a static default list when the org hasn't synced a chart yet.
+- [x] RAG-driven GL coding — `services.rag.retrieve_similar` fetches nearest-neighbor approved invoices via `invoice_embeddings`; `SNAPSHOT_FIELDS` includes `gl_account` so the few-shot prompt prepended to extraction surfaces the historical code. New vendors whose layout resembles a known one inherit GL signal from the neighbor.
+- [x] Bulk re-code capability — `POST /api/invoices/bulk-recode-gl` (admin-only). Date / vendor scoped; priors-first then optional AI fallback. Defaults to `dry_run=true` and returns a `{matched, would_change, by_source, skipped, changes}` report. Admin UI: "Bulk Re-code GL" button on `/invoices` opens a preview-then-apply modal. Audit-logs each persisted change as `invoice.gl_recoded`.
+- [x] GL code validation against chart of accounts — post-extraction guard in `run_extraction` rejects any AI-suggested code (or cached vendor prior that's gone stale) that isn't in the org's active chart, drops it from the invoice header and line items, and emits a structured `gl_account_invalid` warning. No-ops when the org hasn't synced a chart yet.
 
 ---
 

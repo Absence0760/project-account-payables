@@ -185,6 +185,52 @@ The extraction prompt includes GL account suggestions based on the vendor type a
 
 The org's active `GLAccount` rows are queried and injected into the extraction prompt via `config["gl_account_catalog"]`, so the AI suggests from real codes. Falls back to the hardcoded default list above when no GL accounts are configured for the org.
 
+### Post-extraction validation
+
+Even with the chart pinned in the prompt, the model can still hallucinate a plausible-looking code. After extraction, `run_extraction` re-checks every assigned GL code (header `suggested_gl_account` + each `InvoiceLineItem.gl_account`) against the active chart. Codes that aren't in the chart are dropped to `None` and a single aggregated warning is appended to `invoice.warnings`:
+
+```json
+{
+  "type": "gl_account_invalid",
+  "severity": "warning",
+  "message": "AI suggested GL code(s) not in active chart: 9999",
+  "codes": ["9999"]
+}
+```
+
+The same guard runs again right after `apply_priors_to_invoice` overlays a cached vendor prior — if the cached value was valid when learned but has since been deactivated in the chart, the guard scrubs it and emits a `stale prior` warning.
+
+Validation no-ops when the org hasn't synced a chart yet (an empty active set means there's nothing to validate against). Sync via `POST /api/gl-accounts/sync-erp` or seed the chart with `POST /api/gl-accounts`.
+
+### Bulk re-coding
+
+`POST /api/invoices/bulk-recode-gl` (admin-only) re-applies GL codes to a date / vendor scoped slice of invoices using two strategies:
+
+1. **Vendor priors** — for each invoice, look up the cached `gl_account` correction for its vendor. Apply when it validates against the active chart. Free, fast, idempotent.
+2. **AI fallback** (opt-in via `include_ai_fallback=true`) — for invoices with no usable prior, re-run `services.extraction.run_extraction` end-to-end. Reuses the chart-of-accounts injection + RAG + post-extraction validation pipeline; produces an `ExtractionUsage` row per invoice.
+
+Eligibility: invoices in `IMMUTABLE_STATUSES` (sending_to_erp through paid) are skipped — re-coding a posted invoice would create reconciliation drift with the ERP.
+
+Defaults to `dry_run=true`. Response shape:
+
+```json
+{
+  "matched": 42,
+  "would_change": 18,        // "applied" when dry_run=false
+  "by_source": {"vendor_prior": 15, "ai": 3},
+  "skipped": {"immutable_status": 7, "no_vendor": 2, "no_change": 16,
+              "no_prior_no_ai": 4, "ai_failed": 1, "invalid_code": 0},
+  "changes": [{"invoice_id": "...", "old_gl": null, "new_gl": "6100",
+               "source": "vendor_prior", "vendor_name": "...",
+               "invoice_number": "..."}],
+  "dry_run": true
+}
+```
+
+Each persisted change writes an `invoice.gl_recoded` audit-log row with `{old_gl, new_gl, source, bulk_run_at}` so the activity is traceable on the invoice's history.
+
+Frontend: "Bulk Re-code GL" toolbar button on `/invoices` (admin-only) opens a preview-then-apply modal in `frontend/src/lib/components/BulkRecodeGLModal.svelte`.
+
 ## ExtractionResult Structure
 
 ```python
@@ -301,6 +347,9 @@ backend/app/models/usage.py              # ExtractionUsage model for billing
 | Usage billing dashboard | Planned |
 | Custom chart of accounts in prompt | **Done** |
 | Multi-page PDF support | **Done** — Claude native document mode; Ollama/OpenAI send all pages as images |
+| Post-extraction GL validation against active chart | **Done** |
+| RAG-driven GL coding (nearest-neighbor `gl_account` in few-shot) | **Done** |
+| Bulk GL re-code (`POST /api/invoices/bulk-recode-gl`) | **Done** |
 | Learning from corrections — per-vendor cache | **Done** |
 | Learning from corrections — RAG with pgvector | **Done** |
 
