@@ -64,6 +64,11 @@ async function fetchBlob(path: string): Promise<string> {
 	// For binary endpoints (image / PDF) that <img src> and <iframe src>
 	// can't reach because they don't carry the Bearer token. Caller is
 	// responsible for `URL.revokeObjectURL` on the returned URL.
+	const blob = await downloadBlob(path);
+	return URL.createObjectURL(blob);
+}
+
+async function downloadBlob(path: string): Promise<Blob> {
 	const token = getToken();
 	const headers: Record<string, string> = {};
 	if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -79,8 +84,7 @@ async function fetchBlob(path: string): Promise<string> {
 	if (!res.ok) {
 		throw new Error(`Failed to load file: ${res.status}`);
 	}
-	const blob = await res.blob();
-	return URL.createObjectURL(blob);
+	return res.blob();
 }
 
 export const api = {
@@ -99,4 +103,5 @@ export const api = {
 		});
 	},
 	fetchBlob,
+	downloadBlob,
 };

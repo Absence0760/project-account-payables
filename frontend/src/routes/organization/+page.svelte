@@ -337,6 +337,7 @@
 				paymentsOriginatingAccount = (pmt.originating_account_id as string) || '';
 				paymentsWebhookSecret = (pmt.webhook_secret as string) || '';
 				paymentsSandbox = (pmt.sandbox as boolean) ?? true;
+				paymentsCfoThreshold = (pmt.cfo_approval_above as number | null) ?? null;
 			}
 			// Extraction
 			const extraction = (data.settings as unknown as Record<string, unknown>).extraction as Record<string, unknown> | undefined;
@@ -379,6 +380,7 @@
 	let paymentsOriginatingAccount = $state('');
 	let paymentsWebhookSecret = $state('');
 	let paymentsSandbox = $state(true);
+	let paymentsCfoThreshold = $state<number | null>(null);
 	let savingPayments = $state(false);
 	let testingPayments = $state(false);
 	let paymentsTestResult = $state<{ success: boolean; message: string } | null>(null);
@@ -577,6 +579,7 @@
 					originating_account_id: paymentsOriginatingAccount,
 					webhook_secret: paymentsWebhookSecret,
 					sandbox: paymentsSandbox,
+					cfo_approval_above: paymentsCfoThreshold,
 				},
 			});
 		} catch (err) {
@@ -929,6 +932,28 @@
 						<code>{org.created_at ? `${window.location.origin.replace(window.location.host, org.slug + '.' + window.location.host)}/api/payments/webhook/${org.slug}/modern_treasury` : '...'}</code>
 					</p>
 				{/if}
+
+				<div class="form-grid">
+					<label>
+						<span>CFO sign-off threshold ($)</span>
+						<input
+							type="number"
+							min="0"
+							step="100"
+							placeholder="No threshold"
+							value={paymentsCfoThreshold ?? ''}
+							oninput={(e) => {
+								const v = (e.currentTarget as HTMLInputElement).value;
+								paymentsCfoThreshold = v ? parseFloat(v) : null;
+							}}
+						/>
+					</label>
+				</div>
+				<p class="card-hint">
+					Payment runs whose total exceeds this amount land in <em>pending CFO
+					approval</em> and refuse to execute until a user with the CFO role signs off.
+					Leave blank to disable the gate.
+				</p>
 
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingPayments} onclick={savePayments}>

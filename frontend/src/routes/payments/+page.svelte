@@ -172,6 +172,22 @@
 		return false;
 	}
 
+	async function downloadRemittance(p: Payment) {
+		try {
+			const blob = await api.downloadBlob(`/api/payments/${p.id}/remittance`);
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `remittance-${p.reference ?? p.id.slice(0, 8)}.pdf`;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Could not download remittance', 'error');
+		}
+	}
+
 	// Runs
 	interface RunItem {
 		id: string;
@@ -482,6 +498,9 @@
 							<td class="mono muted">{p.reference ?? '—'}</td>
 							<td class="muted">{formatDate(p.created_at)}</td>
 							<td class="actions">
+								{#if p.status === 'completed'}
+									<RowAction onclick={() => downloadRemittance(p)}>Remittance</RowAction>
+								{/if}
 								{#if canVoid(p)}
 									<RowAction variant="danger" onclick={() => openVoid(p)}>Void</RowAction>
 								{/if}

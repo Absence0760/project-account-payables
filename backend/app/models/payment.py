@@ -18,6 +18,13 @@ class PaymentRun(Base, TimestampMixin):
     initiated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Set at creation time when total_amount > org's cfo_approval_above
+    # threshold. While True, /execute returns 409 unless the actor holds
+    # the CFO role and `cfo_approved_at` is also set.
+    requires_cfo_approval: Mapped[bool] = mapped_column(default=False, nullable=False)
+    cfo_approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    cfo_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )

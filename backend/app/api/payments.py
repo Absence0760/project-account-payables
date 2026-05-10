@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -260,6 +260,73 @@ async def payment_summary(
     }
 
 
+@router.get("/{payment_id}/remittance")
+async def get_payment_remittance(
+    payment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Return a single-page remittance-advice PDF for the payment.
+
+    Currently includes the one invoice the Payment row points at — when
+    we group multiple invoices on a single payment in a future schema
+    bump, this endpoint will pick up the rest automatically (the line
+    item list is built from the row's invoice_id today, but the PDF
+    accepts a list)."""
+    from app.services.remittance_pdf import (
+        RemittanceContext,
+        RemittanceLine,
+        render_remittance_pdf,
+    )
+
+    result = await db.execute(
+        select(Payment, Invoice)
+        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
+        .where(Payment.id == payment_id)
+    )
+    row = result.one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    payment, invoice = row
+
+    company = (org.settings or {}).get("company") or {}
+
+    vendor_address: str | None = None
+    if invoice and invoice.vendor_id:
+        v_result = await db.execute(
+            select(Vendor.address).where(Vendor.id == invoice.vendor_id)
+        )
+        vendor_address = v_result.scalar_one_or_none()
+
+    ctx = RemittanceContext(
+        payer_name=org.name,
+        payer_address=company.get("address") or None,
+        vendor_name=invoice.vendor_name if invoice else "Unknown vendor",
+        vendor_address=vendor_address or (invoice.remit_to_address if invoice else None),
+        payment_date=payment.completed_at or payment.submitted_at or payment.created_at,
+        payment_method=payment.method or "ach",
+        payment_reference=payment.reference,
+        payment_amount=payment.amount,
+        currency=invoice.currency if invoice else "USD",
+        lines=[
+            RemittanceLine(
+                invoice_number=(invoice.invoice_number if invoice else str(payment.invoice_id)),
+                description=invoice.description if invoice else None,
+                amount=payment.amount,
+            )
+        ],
+    )
+    pdf_bytes = render_remittance_pdf(ctx)
+
+    filename = f"remittance-{payment.reference or str(payment.id)[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{payment_id}", response_model=PaymentResponse)
 async def get_payment(
     payment_id: uuid.UUID,
@@ -450,6 +517,7 @@ class CreatePaymentRunRequest(BaseModel):
 async def create_payment_run(
     body: CreatePaymentRunRequest,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
@@ -467,12 +535,31 @@ async def create_payment_run(
         inv = invoices[item.invoice_id]
         total += inv.amount
 
+    # CFO sign-off: org admins set `payments.cfo_approval_above` (a
+    # threshold in $) on the org settings. Runs whose total exceeds it
+    # land with `requires_cfo_approval=True` and refuse to /execute
+    # until a CFO PATCHes /approve.
+    pmt_cfg = (org.settings or {}).get("payments") or {}
+    cfo_threshold_raw = pmt_cfg.get("cfo_approval_above")
+    requires_cfo = False
+    if cfo_threshold_raw is not None:
+        try:
+            cfo_threshold = Decimal(str(cfo_threshold_raw))
+            if cfo_threshold > 0 and total > cfo_threshold:
+                requires_cfo = True
+        except (ValueError, ArithmeticError):
+            # Malformed threshold (typo in settings): fail open. The
+            # alternative — refuse to create runs — is far worse than
+            # missing the gate, which any audit will catch.
+            pass
+
     # Create the run
     run = PaymentRun(
         organization_id=org_id,
         status="draft",
         total_amount=total,
         initiated_by=user.id,
+        requires_cfo_approval=requires_cfo,
     )
     db.add(run)
     await db.flush()
@@ -497,8 +584,10 @@ async def create_payment_run(
         "status": run.status,
         "total_amount": float(total),
         "payment_count": len(body.items),
+        "requires_cfo_approval": run.requires_cfo_approval,
         "message": (
             f"Payment run created with {len(body.items)} payments totaling ${float(total):,.2f}"
+            + (" (CFO approval required)" if run.requires_cfo_approval else "")
         ),
     }
 
@@ -542,7 +631,63 @@ async def get_payment_run(
         "initiated_by": str(run.initiated_by) if run.initiated_by else None,
         "executed_at": run.executed_at.isoformat() if run.executed_at else None,
         "created_at": run.created_at.isoformat() if run.created_at else "",
+        "requires_cfo_approval": run.requires_cfo_approval,
+        "cfo_approved_by": str(run.cfo_approved_by) if run.cfo_approved_by else None,
+        "cfo_approved_at": run.cfo_approved_at.isoformat() if run.cfo_approved_at else None,
         "payments": payments,
+    }
+
+
+@router.post("/runs/{run_id}/approve")
+async def approve_payment_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_CFO)),
+):
+    """CFO sign-off on a draft run. Only valid from `draft` AND
+    `requires_cfo_approval=True`. After this lands, /execute will accept
+    the run from any actor with the standard payments role set."""
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Payment run not found")
+    if run.status != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Can only approve 'draft' runs, not '{run.status}'",
+        )
+    if not run.requires_cfo_approval:
+        raise HTTPException(
+            status_code=409,
+            detail="This run does not require CFO approval",
+        )
+    if run.cfo_approved_at is not None:
+        raise HTTPException(status_code=409, detail="Run is already CFO-approved")
+
+    now = datetime.now(UTC)
+    run.cfo_approved_by = user.id
+    run.cfo_approved_at = now
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment_run.cfo_approved",
+        entity_type="payment_run",
+        entity_id=run.id,
+        details={"total_amount": float(run.total_amount or 0)},
+    )
+    await db.commit()
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "cfo_approved_by": str(run.cfo_approved_by),
+        "cfo_approved_at": run.cfo_approved_at.isoformat(),
+        "message": "Run approved by CFO",
     }
 
 
@@ -633,6 +778,14 @@ async def execute_payment_run(
     if run.status != "draft":
         raise HTTPException(
             status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'"
+        )
+    if run.requires_cfo_approval and run.cfo_approved_at is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This run exceeds the org's CFO-approval threshold and is awaiting "
+                "sign-off from a user with the CFO role."
+            ),
         )
 
     payment_config = (org.settings or {}).get("payments") or {}

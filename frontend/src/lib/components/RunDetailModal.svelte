@@ -4,6 +4,7 @@
 	import { toast } from '$lib/components/Toast.svelte';
 	import { PAYMENT_METHOD_LABELS } from '$lib/types/payment';
 	import type { PaymentMethod } from '$lib/types/payment';
+	import { auth } from '$lib/stores/auth.svelte';
 
 	let {
 		runId,
@@ -34,6 +35,9 @@
 		initiated_by: string | null;
 		executed_at: string | null;
 		created_at: string;
+		requires_cfo_approval: boolean;
+		cfo_approved_by: string | null;
+		cfo_approved_at: string | null;
 		payments: RunPayment[];
 	}
 
@@ -73,6 +77,24 @@
 			toast(err instanceof Error ? err.message : 'Execution failed', 'error');
 		} finally {
 			executing = false;
+		}
+	}
+
+	let approving = $state(false);
+
+	async function approveCfo() {
+		if (!run || !run.requires_cfo_approval || run.cfo_approved_at) return;
+		approving = true;
+		try {
+			await api.post(`/api/payments/runs/${runId}/approve`, {});
+			toast('Run approved by CFO', 'success');
+			await load();
+			onchange?.();
+		} catch (err) {
+			const e = err as { detail?: string; message?: string } | null;
+			toast(e?.detail ?? e?.message ?? 'Approve failed', 'error');
+		} finally {
+			approving = false;
 		}
 	}
 
@@ -187,10 +209,26 @@
 
 		<footer>
 			{#if run?.status === 'draft'}
-				<p class="footer-note">
-					This run is still a <strong>draft</strong>. No money will move until you
-					execute it.
-				</p>
+				{@const pendingCfo = run.requires_cfo_approval && !run.cfo_approved_at}
+				{@const cfoApproved = run.requires_cfo_approval && !!run.cfo_approved_at}
+
+				{#if pendingCfo}
+					<p class="footer-note pending">
+						<strong>Pending CFO approval.</strong> This run exceeds the org's
+						high-value threshold; a user with the CFO role must sign off before it can
+						execute.
+					</p>
+				{:else if cfoApproved}
+					<p class="footer-note approved">
+						✓ CFO-approved {fmtDate(run.cfo_approved_at)} · ready to execute.
+					</p>
+				{:else}
+					<p class="footer-note">
+						This run is still a <strong>draft</strong>. No money will move until you
+						execute it.
+					</p>
+				{/if}
+
 				<div class="actions">
 					<button class="btn-cancel" onclick={onclose}>Close</button>
 					{#if confirmCancel}
@@ -204,13 +242,27 @@
 					{:else}
 						<button
 							class="btn-discard"
-							disabled={cancelling || executing}
+							disabled={cancelling || executing || approving}
 							onclick={() => (confirmCancel = true)}
 						>
 							Cancel run
 						</button>
 					{/if}
-					<button class="btn-execute" disabled={executing || cancelling} onclick={execute}>
+					{#if pendingCfo && auth.isCfo}
+						<button
+							class="btn-approve"
+							disabled={approving}
+							onclick={approveCfo}
+						>
+							{approving ? 'Approving…' : 'Approve as CFO'}
+						</button>
+					{/if}
+					<button
+						class="btn-execute"
+						disabled={executing || cancelling || pendingCfo}
+						title={pendingCfo ? 'Awaiting CFO approval' : ''}
+						onclick={execute}
+					>
 						{executing ? 'Executing…' : `Execute · ${fmt(run.total_amount)}`}
 					</button>
 				</div>
@@ -505,5 +557,34 @@
 	.status-badge.cancelled {
 		background: rgba(138, 143, 160, 0.15);
 		color: var(--text-muted);
+	}
+
+	.footer-note.pending {
+		color: #d4940a;
+	}
+
+	.footer-note.approved {
+		color: #1fa86a;
+	}
+
+	.btn-approve {
+		padding: 8px 16px;
+		border-radius: 4px;
+		border: 1px solid var(--accent);
+		background: var(--accent);
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-approve:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+
+	.btn-approve:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 </style>
