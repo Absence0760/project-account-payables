@@ -38,6 +38,56 @@ async function patchInvoiceStatus(
 }
 
 /**
+ * Ensure the seeded acme tenant has at least one ready_for_review
+ * invoice before running tests in this file.
+ *
+ * Without this guard, a previous run's Reject/Approve flows have
+ * already drained the queue and the first test that calls
+ * fetchInvoiceByStatus('ready_for_review') gets null, then `expect(...
+ * .toBeTruthy())` fires unhelpfully. We promote a non-immutable
+ * invoice via PATCH (which doesn't enforce VALID_TRANSITIONS, so any
+ * mutable row will work). The invoice's old status is sacrificed —
+ * acceptable for a dev/CI seed that gets reset between sessions.
+ */
+async function ensureReadyForReviewQueueHasOne(page: import('@playwright/test').Page) {
+	const existing = await fetchInvoiceByStatus(page, 'ready_for_review');
+	if (existing) return;
+
+	const token = await authToken(page);
+	// Walk one page at the endpoint's max page_size (100) — that's
+	// plenty for the seed; if a real fixture ever needed more we'd add
+	// pagination here. The 'approved' bucket alone has multiple seed
+	// rows, so the first page virtually always contains a candidate.
+	const list = await page.request.get(`${API_BASE}/api/invoices?page_size=100`, {
+		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+	});
+	if (list.status() !== 200) {
+		throw new Error(`List invoices failed (${list.status()}); cannot prep ready_for_review`);
+	}
+	const body = (await list.json()) as {
+		items?: Array<{ id: string; status: string }>;
+	};
+	const items = body.items ?? [];
+	// Prefer `approved` since the rest of the suite assumes at least
+	// one approved invoice exists too — if we steal a rejected one
+	// instead we have a fallback supply. `new`/`pending`/`failed` are
+	// the last resort because promoting them skips the natural flow.
+	const promotable =
+		items.find((i) => i.status === 'approved') ||
+		items.find((i) => i.status === 'rejected') ||
+		items.find((i) => ['new', 'pending', 'failed'].includes(i.status));
+	if (!promotable) {
+		throw new Error(
+			'Cannot find a mutable invoice to promote into ready_for_review — seed exhausted?'
+		);
+	}
+	const resp = await patchInvoiceStatus(page, promotable.id, 'ready_for_review');
+	if (resp.status() !== 200) {
+		throw new Error(`Failed to promote invoice into ready_for_review: ${resp.status()}`);
+	}
+}
+
+/**
  * Invoice state-machine transitions exposed in the modal.
  *
  * Seed creates at least one invoice in `ready_for_review` status, which
@@ -54,6 +104,7 @@ async function patchInvoiceStatus(
 test.describe('/invoices status transitions', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
+		await ensureReadyForReviewQueueHasOne(page);
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');
 	});

@@ -57,6 +57,7 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 			matched: number;
 			would_change?: number;
 			applied?: number;
+			ai_candidates: number;
 			by_source: { vendor_prior: number; ai: number };
 			skipped: Record<string, number>;
 			changes: unknown[];
@@ -67,6 +68,10 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 		expect('would_change' in body).toBe(true);
 		expect('applied' in body).toBe(false);
 		expect(typeof body.matched).toBe('number');
+		expect(typeof body.ai_candidates).toBe('number');
+		// AI candidates is 0 when include_ai_fallback=false (no AI is
+		// considered for any invoice, regardless of priors coverage).
+		expect(body.ai_candidates).toBe(0);
 		expect(body.by_source).toMatchObject({ vendor_prior: 0, ai: 0 });
 		expect(Array.isArray(body.changes)).toBe(true);
 		// Skipped object lists every reason — locks the contract the UI

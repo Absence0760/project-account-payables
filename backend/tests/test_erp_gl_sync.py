@@ -1,0 +1,261 @@
+"""Tests for the ERP adapter `list_gl_accounts` contract.
+
+Mirrors `test_erp_po_sync.py` — the mock adapter's catalogue is the
+contract `/api/gl-accounts/sync-erp` relies on, the Merge.dev adapter
+is HTTP-mocked to lock the request shape and the response→payload
+mapping, and the unimplemented adapters inherit the empty-list default.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+# Trigger @register_adapter side effects on these modules so tests
+# can resolve adapters by type via the dispatcher.
+import app.services.erp_adapters.dynamics_365_bc  # noqa: F401, E402
+import app.services.erp_adapters.merge_dev  # noqa: F401, E402
+import app.services.erp_adapters.mock_adapter  # noqa: F401, E402
+import app.services.erp_adapters.netsuite  # noqa: F401, E402
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+# ---------- Mock adapter --------------------------------------------------
+
+
+def test_mock_adapter_list_gl_accounts_returns_canonical_catalogue():
+    """The local-dev sync flow renders the same 20-row chart every
+    time; the data lives in the adapter, not the API endpoint. The
+    Auto GL Coding pipeline (chart-of-accounts injection + post-
+    extraction validation) needs at least the seven expense rows
+    that match the default GL list."""
+    from app.services.erp_adapters.dispatcher import get_erp_adapter
+
+    adapter = get_erp_adapter({"type": "mock", "integration_method": "direct"})
+    accounts = _run(adapter.list_gl_accounts())
+
+    codes = {a.code for a in accounts}
+    # Spot-check the categories the AI prompt's default list includes.
+    assert {"6100", "6200", "6300", "6400", "6500", "6600", "6700"} <= codes
+    # `account_type` populated for every row so post-extraction
+    # validation has a normalized value to render in the UI.
+    for a in accounts:
+        assert a.account_type in {"asset", "liability", "equity", "revenue", "expense"}
+    # erp_account_id round-trips so re-syncs are idempotent.
+    for a in accounts:
+        assert a.erp_account_id == a.code
+
+
+def test_mock_adapter_list_gl_accounts_returns_independent_payloads():
+    """Caller-side mutation must not bleed into the next sync — same
+    contract as `list_pos`. Two consecutive calls return independently
+    constructed dataclasses."""
+    from app.services.erp_adapters.dispatcher import get_erp_adapter
+
+    adapter = get_erp_adapter({"type": "mock", "integration_method": "direct"})
+    first = _run(adapter.list_gl_accounts())
+    first[0].name = "MUTATED"
+    second = _run(adapter.list_gl_accounts())
+    assert second[0].name != "MUTATED"
+
+
+# ---------- Default empty-list inheritance --------------------------------
+
+
+@pytest.mark.parametrize("erp_type", ["dynamics_365_bc", "netsuite"])
+def test_unimplemented_adapter_list_gl_accounts_returns_empty(erp_type: str):
+    """Adapters without a `list_gl_accounts` override inherit the
+    base's []. Anything else (raise, None) breaks /api/gl-accounts/
+    sync-erp for tenants on those ERPs and the operator gets a 502
+    when the right outcome is "synced 0 new accounts"."""
+    from app.services.erp_adapters.dispatcher import _ADAPTER_REGISTRY
+
+    cls = _ADAPTER_REGISTRY[erp_type]
+    adapter = cls({"type": erp_type, "integration_method": "direct"})
+    assert _run(adapter.list_gl_accounts()) == []
+
+
+# ---------- Merge.dev mapping --------------------------------------------
+
+
+def _mock_response(status: int, body: dict | None) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    resp.content = b"{}" if body is not None else b""
+    resp.json = MagicMock(return_value=body or {})
+    resp.headers = {"content-type": "application/json"}
+    return resp
+
+
+def test_merge_dev_list_gl_accounts_maps_response_into_payloads():
+    """One Merge page → list of GLAccountPayload with the right field
+    mapping. The endpoint upserts on `code`; the test locks the keys
+    we read from upstream so a future refactor can't silently drop
+    `account_number`."""
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+    body = {
+        "results": [
+            {
+                "id": "merge-uuid-1",
+                "name": "Office Supplies",
+                "account_number": "6100",
+                "classification": "EXPENSE",
+            },
+            {
+                "id": "merge-uuid-2",
+                "name": "Cash on Hand",
+                "account_number": "1000",
+                "classification": "ASSET",
+            },
+        ],
+        "next": None,
+    }
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.get = AsyncMock(return_value=_mock_response(200, body))
+        out = _run(adapter.list_gl_accounts())
+
+    assert len(out) == 2
+    by_code = {a.code: a for a in out}
+    assert by_code["6100"].name == "Office Supplies"
+    assert by_code["6100"].account_type == "expense"
+    assert by_code["6100"].erp_account_id == "merge-uuid-1"
+    assert by_code["1000"].account_type == "asset"
+
+
+def test_merge_dev_list_gl_accounts_classification_normalization():
+    """Merge ships several classifications we map down to the same
+    internal type. Lock the table — losing one (e.g. EXPENSES vs
+    EXPENSE) would silently misclassify whole categories."""
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+    cases = {
+        "EXPENSE": "expense",
+        "EXPENSES": "expense",
+        "COST_OF_GOODS_SOLD": "expense",
+        "INCOME": "revenue",
+        "REVENUE": "revenue",
+        "ASSET": "asset",
+        "LIABILITY": "liability",
+        "EQUITY": "equity",
+        "novel_thing": None,  # default fallback
+    }
+    for raw, expected in cases.items():
+        body = {
+            "results": [{"name": "x", "account_number": "1", "classification": raw}],
+            "next": None,
+        }
+        with patch("httpx.AsyncClient") as cm:
+            client = cm.return_value.__aenter__.return_value
+            client.get = AsyncMock(return_value=_mock_response(200, body))
+            out = _run(adapter.list_gl_accounts())
+        assert out[0].account_type == expected, f"{raw} should map to {expected}"
+
+
+def test_merge_dev_list_gl_accounts_drops_account_with_no_code_and_no_name():
+    """Both keys missing means the upstream record is unkeyable for our
+    upsert. Better to drop than to import a row that the next sync
+    can't find again (and would re-create as a duplicate)."""
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+    body = {"results": [{"id": "merge-blank", "classification": "EXPENSE"}], "next": None}
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.get = AsyncMock(return_value=_mock_response(200, body))
+        out = _run(adapter.list_gl_accounts())
+    assert out == []
+
+
+def test_merge_dev_list_gl_accounts_falls_back_to_id_when_no_code():
+    """When Merge ships a name but no account_number, we still want
+    the row — fall back to the upstream id as the upsert key. Common
+    on QuickBooks-connected tenants where small businesses skip
+    numbering custom expense buckets."""
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+    body = {
+        "results": [{"id": "merge-id-77", "name": "Custom Bucket", "classification": "EXPENSE"}],
+        "next": None,
+    }
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.get = AsyncMock(return_value=_mock_response(200, body))
+        out = _run(adapter.list_gl_accounts())
+    assert len(out) == 1
+    assert out[0].code == "merge-id-77"
+
+
+def test_merge_dev_list_gl_accounts_follows_pagination_cursor():
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+    page1 = {"results": [{"name": "A", "account_number": "1"}], "next": "cursor-2"}
+    page2 = {"results": [{"name": "B", "account_number": "2"}], "next": None}
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.get = AsyncMock(side_effect=[_mock_response(200, page1), _mock_response(200, page2)])
+        out = _run(adapter.list_gl_accounts())
+        # Cursor passed through on second call.
+        assert client.get.await_args_list[1].kwargs["params"]["cursor"] == "cursor-2"
+    assert {a.code for a in out} == {"1", "2"}
+
+
+def test_merge_dev_list_gl_accounts_returns_empty_on_http_error():
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.get = AsyncMock(return_value=_mock_response(500, {"detail": "boom"}))
+        assert _run(adapter.list_gl_accounts()) == []
+
+
+def test_merge_dev_list_gl_accounts_returns_empty_on_network_error():
+    import httpx
+
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.get = AsyncMock(side_effect=httpx.ConnectError("dns fail"))
+        assert _run(adapter.list_gl_accounts()) == []
+
+
+# ---------- API endpoint integration -------------------------------------
+
+
+def test_sync_endpoint_uses_dispatcher_not_hardcoded_data():
+    """Lock the wiring: the endpoint imports get_erp_adapter and
+    calls list_gl_accounts. Catches a regression where someone
+    reverts to the old inline 20-row mock list."""
+    import inspect
+
+    from app.api import gl_accounts
+
+    src = inspect.getsource(gl_accounts.sync_gl_accounts_from_erp)
+    assert "get_erp_adapter" in src
+    assert "list_gl_accounts" in src
+    # The old hardcoded list lived inline — make sure no one quietly
+    # reintroduces it. Pick one of the rows that's distinctive.
+    assert "Office Supplies & Expenses" not in src
+    assert "Payroll Expense" not in src
+
+
+def test_base_adapter_list_gl_accounts_default_is_empty_not_raises():
+    from app.services.erp_adapters.base import ErpAdapter
+
+    class Bare(ErpAdapter):
+        erp_type = "bare"
+
+    assert _run(Bare({}).list_gl_accounts()) == []

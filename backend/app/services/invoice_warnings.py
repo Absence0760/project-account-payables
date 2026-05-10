@@ -14,6 +14,21 @@ from app.models.invoice import Invoice
 from app.services.po_matching import match_invoice_to_po
 
 
+def _status_str(status) -> str:
+    """Normalize an invoice status into a plain string.
+
+    Handles three shapes that reach us in practice:
+      - `InvoiceStatus` (StrEnum on the SQLA model) — `.value` works
+        but `str(...)` is also correct since StrEnum inherits from str.
+      - Plain string, e.g. after `setattr(invoice, "status", "x")` in
+        `update_invoice` — has no `.value` attribute. This was a real
+        500 in production until this helper landed.
+      - Test-fixture mocks like `SimpleNamespace(value=...)` — no
+        `__str__` override; `getattr(..., 'value', ...)` covers them.
+    """
+    return getattr(status, "value", status) if not isinstance(status, str) else status
+
+
 async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
     """Recompute warnings for a single invoice and persist them on the row.
 
@@ -87,7 +102,7 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
     if (
         invoice.due_date
         and invoice.due_date < date.today()
-        and invoice.status.value in ("new", "pending", "ready_for_review")
+        and _status_str(invoice.status) in ("new", "pending", "ready_for_review")
     ):
         warnings.append(
             {"type": "past_due", "severity": "warning", "message": "Invoice is past due"}
@@ -117,7 +132,7 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
 
     # Missing data (no amount after extraction)
     has_missing = any(w["type"] == "missing_field" for w in warnings)
-    if has_missing and invoice.status.value not in ("new",):
+    if has_missing and _status_str(invoice.status) not in ("new",):
         await _ensure_exception(
             db, invoice, "missing_data", "error", "Required fields missing after extraction"
         )
@@ -127,7 +142,7 @@ async def refresh_warnings(db: AsyncSession, invoice: Invoice) -> list[dict]:
     # Result is persisted on `invoice.po_match` so the modal can render it
     # without re-running. Mismatches and missing POs raise exceptions for
     # the queue. Skip on draft `new` invoices that haven't been extracted yet.
-    if invoice.po_number and invoice.status.value != "new":
+    if invoice.po_number and _status_str(invoice.status) != "new":
         await _refresh_po_match(db, invoice, warnings)
     else:
         invoice.po_match = None

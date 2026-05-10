@@ -91,6 +91,18 @@ class ErpAdapter:
         """
         ...
 
+    async def list_gl_accounts(self) -> list[GLAccountPayload]:
+        """Pull the chart of accounts for `POST /api/gl-accounts/sync-erp`.
+
+        Same default-empty pattern as `list_pos`. Currently overridden
+        by `mock` (canonical 20-row demo chart) and `merge_dev` (best-
+        effort against `/accounts`, paginated, classification-mapped).
+        Drives the Auto GL Coding pipeline — the chart-of-accounts
+        prompt injection only constrains AI suggestions when the org
+        has actually synced rows.
+        """
+        ...
+
     async def test_connection(self) -> bool:
         """Verify the ERP connection is working."""
         ...

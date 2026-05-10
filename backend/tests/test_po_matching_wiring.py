@@ -222,3 +222,35 @@ def test_invoice_response_includes_po_match():
     assert "po_match" in fields
     # Must be optional / nullable — invoices without a PO have no match.
     assert fields["po_match"].default is None
+
+
+# ---------- _status_str regression ---------------------------------------
+
+
+def test_status_str_handles_plain_string():
+    """Regression: PATCH /api/invoices/{id} sets `invoice.status` to a
+    plain string (after Pydantic→.value conversion + setattr). The
+    next call to refresh_warnings used to AttributeError on
+    `invoice.status.value`. The helper has to accept all three shapes
+    that reach refresh_warnings in practice."""
+    from app.services.invoice_warnings import _status_str
+
+    assert _status_str("ready_for_review") == "ready_for_review"
+
+
+def test_status_str_handles_strenum():
+    from app.models.invoice import InvoiceStatus
+    from app.services.invoice_warnings import _status_str
+
+    assert _status_str(InvoiceStatus.ready_for_review) == "ready_for_review"
+
+
+def test_status_str_handles_simplenamespace_mock():
+    """Existing pytest fixtures use SimpleNamespace(value=...) as a
+    cheap stand-in for the StrEnum. Don't break those — many tests
+    rely on the shape."""
+    from types import SimpleNamespace
+
+    from app.services.invoice_warnings import _status_str
+
+    assert _status_str(SimpleNamespace(value="approved")) == "approved"

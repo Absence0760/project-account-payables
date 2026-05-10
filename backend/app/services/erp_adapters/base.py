@@ -93,6 +93,25 @@ class PoPayload:
     line_items: list[PoLinePayload] = field(default_factory=list)
 
 
+@dataclass
+class GLAccountPayload:
+    """Normalized chart-of-accounts row returned by `ErpAdapter.list_gl_accounts`.
+
+    `account_type` should normalize to one of {"asset", "liability",
+    "equity", "revenue", "expense"} — the same vocabulary the rest of
+    the app expects. Adapters can pass None when the upstream system
+    doesn't classify the account; the API endpoint accepts that.
+    `erp_account_id` is the upstream's canonical identifier so future
+    pulls can detect renames.
+    """
+
+    code: str
+    name: str
+    account_type: str | None = None
+    erp_account_id: str | None = None
+    parent_code: str | None = None
+
+
 class ErpAdapter:
     """Base class for ERP integrations. Subclass and implement all methods."""
 
@@ -120,6 +139,17 @@ class ErpAdapter:
         don't yet support PO sync don't 500 the sync endpoint — the
         UI just reports "0 new POs". Adapters that *do* support it
         override this.
+        """
+        return []
+
+    async def list_gl_accounts(self) -> list[GLAccountPayload]:
+        """Pull the chart of accounts from the ERP.
+
+        Same contract as `list_pos`: default returns an empty list so
+        an adapter that doesn't expose a chart endpoint just leaves the
+        local chart untouched. The Auto GL Coding pipeline relies on
+        this — the prompt only constrains AI suggestions when the org
+        has synced a real chart.
         """
         return []
 

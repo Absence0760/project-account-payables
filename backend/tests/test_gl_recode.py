@@ -81,15 +81,42 @@ def _all_rows(rows: list):
     return obj
 
 
-def _make_db_for(*, active_codes, eligible_invoices, priors):
+def _scalar(value):
+    """Fake `.scalar()` for COUNT-returning queries."""
+    obj = MagicMock()
+    obj.scalar = MagicMock(return_value=value)
+    return obj
+
+
+def _make_db_for(
+    *,
+    active_codes,
+    eligible_invoices,
+    priors,
+    skipped_immutable: int = 0,
+    skipped_no_vendor: int = 0,
+):
+    """Sequence the SELECTs `bulk_recode_gl` issues:
+      1. _load_active_chart           → list of GL codes
+      2. _select_scope eligible       → list of Invoice rows
+                                        (already pre-filtered for
+                                        status NOT IN immutable AND
+                                        vendor_id IS NOT NULL — that's
+                                        the SQL's job now)
+      3. _select_scope immutable count
+      4. _select_scope no-vendor count
+      5. _load_priors                 → list of (vendor_id, value) tuples
+    """
     db = MagicMock()
     db.commit = AsyncMock()
     db.add = MagicMock()
     db.execute = _Stub(
         [
-            _scalars_all(active_codes),  # _load_active_chart
-            _scalars_all(eligible_invoices),  # _select_eligible
-            _all_rows([(vid, val) for vid, val in priors.items()]),  # _load_priors
+            _scalars_all(active_codes),
+            _scalars_all(eligible_invoices),
+            _scalar(skipped_immutable),
+            _scalar(skipped_no_vendor),
+            _all_rows([(vid, val) for vid, val in priors.items()]),
         ]
     )
     return db
@@ -99,43 +126,42 @@ def _make_db_for(*, active_codes, eligible_invoices, priors):
 
 
 @pytest.mark.asyncio
-async def test_immutable_statuses_skipped():
+async def test_immutable_status_count_surfaces_in_report():
     """Re-coding a posted/paid invoice would drift from the ERP.
-    Skip every immutable status without trying anything."""
+    Eligibility is now SQL-side, so we mock the count query and assert
+    it lands in `skipped_immutable` for the operator's report panel."""
     org_id = uuid.uuid4()
-    inv_paid = _make_invoice(vendor_id=uuid.uuid4(), status=InvoiceStatus.paid, gl_account="6100")
-    inv_posted = _make_invoice(
-        vendor_id=uuid.uuid4(), status=InvoiceStatus.posted_in_erp, gl_account="6100"
-    )
     inv_ready = _make_invoice(
         vendor_id=uuid.uuid4(), status=InvoiceStatus.ready_for_review, gl_account="6100"
     )
 
     db = _make_db_for(
         active_codes=["6100", "6200"],
-        eligible_invoices=[inv_paid, inv_posted, inv_ready],
+        eligible_invoices=[inv_ready],  # SQL pre-filters paid/posted out
         priors={inv_ready.vendor_id: "6200"},
+        skipped_immutable=2,  # the COUNT(*) query saw 2 immutable rows
     )
 
     report = await bulk_recode_gl(db, organization_id=org_id, filt=RecodeFilter(), dry_run=True)
 
     assert report.skipped_immutable == 2
-    assert report.matched == 1  # only ready_for_review counts
+    assert report.matched == 1
     assert len(report.changes) == 1
 
 
 @pytest.mark.asyncio
-async def test_invoices_without_vendor_skipped():
-    """No vendor → no prior lookup possible → can't help via the cheap
-    path. Don't pull the AI lever just to cover unmatched invoices."""
+async def test_no_vendor_count_surfaces_in_report():
+    """Same shape as immutable — vendor-less invoices are filtered out
+    in SQL, but the count is reported so the operator knows how many
+    fell through that bucket."""
     org_id = uuid.uuid4()
-    inv_no_vendor = _make_invoice(vendor_id=None, gl_account=None)
     inv_with_vendor = _make_invoice(vendor_id=uuid.uuid4(), gl_account=None)
 
     db = _make_db_for(
         active_codes=["6100"],
-        eligible_invoices=[inv_no_vendor, inv_with_vendor],
+        eligible_invoices=[inv_with_vendor],
         priors={inv_with_vendor.vendor_id: "6100"},
+        skipped_no_vendor=1,
     )
     report = await bulk_recode_gl(db, organization_id=org_id, filt=RecodeFilter(), dry_run=True)
 
@@ -268,22 +294,22 @@ async def test_no_prior_skipped_when_ai_fallback_disabled():
 
 
 @pytest.mark.asyncio
-async def test_ai_fallback_invoked_only_when_enabled_and_no_prior():
-    """Cheap path is preferred — the AI runner should NOT run for an
-    invoice the prior covers."""
+async def test_dry_run_with_ai_fallback_does_not_call_ai():
+    """Critical honesty contract: dry-run + AI must NOT call the AI
+    runner. `run_extraction` writes line items, vendor priors, RAG
+    rows, audit entries, and may transition the invoice's status —
+    none of that is cleanly reversible. A dry-run that secretly
+    mutates the DB is worse than one that doesn't try.
+
+    Operators get an `ai_candidates` count instead so they can decide
+    whether to re-issue with `dry_run=false`.
+    """
     vendor_with_prior = uuid.uuid4()
     vendor_without_prior = uuid.uuid4()
-    inv_priored = _make_invoice(
-        vendor_id=vendor_with_prior, gl_account=None, invoice_number="INV-A"
-    )
-    inv_no_prior = _make_invoice(
-        vendor_id=vendor_without_prior, gl_account=None, invoice_number="INV-B"
-    )
+    inv_priored = _make_invoice(vendor_id=vendor_with_prior, gl_account=None)
+    inv_no_prior = _make_invoice(vendor_id=vendor_without_prior, gl_account=None)
 
-    async def fake_ai_runner(db_, inv, *, actor_id, org_settings, ctrl_db):
-        inv.gl_account = "6100"  # AI assigns a valid code
-
-    ai_mock = AsyncMock(side_effect=fake_ai_runner)
+    ai_mock = AsyncMock()
 
     db = _make_db_for(
         active_codes=["6100", "6200"],
@@ -300,19 +326,57 @@ async def test_ai_fallback_invoked_only_when_enabled_and_no_prior():
         ai_runner=ai_mock,
     )
 
-    # AI runs once — only for inv_no_prior.
+    assert ai_mock.await_count == 0, "dry-run must not call the AI runner"
+    # The prior-covered invoice still produces a vendor_prior change.
+    assert report.by_source == {"vendor_prior": 1, "ai": 0}
+    # The no-prior invoice is reported as an AI candidate so the
+    # operator can size the cost of a non-dry pass.
+    assert report.ai_candidates == 1
+
+
+@pytest.mark.asyncio
+async def test_non_dry_run_invokes_ai_for_no_prior_invoices_only():
+    """Cheap path is preferred — the AI runner should NOT run for an
+    invoice the prior covers, even in non-dry mode. Locks the priors-
+    first ordering so a refactor can't accidentally double-bill."""
+    vendor_with_prior = uuid.uuid4()
+    vendor_without_prior = uuid.uuid4()
+    inv_priored = _make_invoice(vendor_id=vendor_with_prior, gl_account=None)
+    inv_no_prior = _make_invoice(vendor_id=vendor_without_prior, gl_account=None)
+
+    async def fake_ai_runner(db_, inv, *, actor_id, org_settings, ctrl_db):
+        inv.gl_account = "6100"
+
+    ai_mock = AsyncMock(side_effect=fake_ai_runner)
+
+    db = _make_db_for(
+        active_codes=["6100", "6200"],
+        eligible_invoices=[inv_priored, inv_no_prior],
+        priors={vendor_with_prior: "6200"},
+    )
+
+    report = await bulk_recode_gl(
+        db,
+        organization_id=uuid.uuid4(),
+        filt=RecodeFilter(),
+        dry_run=False,
+        include_ai_fallback=True,
+        ai_runner=ai_mock,
+    )
+
     assert ai_mock.await_count == 1
     assert ai_mock.await_args.args[1] is inv_no_prior
-
-    # Both invoices show up as changes — one prior-sourced, one AI-sourced.
     sources = sorted(c.source for c in report.changes)
     assert sources == ["ai", "vendor_prior"]
     assert report.by_source == {"vendor_prior": 1, "ai": 1}
+    assert report.ai_candidates == 0  # only populated in dry-run
 
 
 @pytest.mark.asyncio
 async def test_ai_fallback_failure_counted_not_raised():
-    """One AI call going wrong must not abort the whole bulk run."""
+    """One AI call going wrong must not abort the whole bulk run.
+    Now that dry-run skips AI, this scenario only applies in non-dry
+    mode."""
     vendor_id = uuid.uuid4()
     inv = _make_invoice(vendor_id=vendor_id, gl_account=None)
 
@@ -325,43 +389,12 @@ async def test_ai_fallback_failure_counted_not_raised():
         db,
         organization_id=uuid.uuid4(),
         filt=RecodeFilter(),
-        dry_run=True,
+        dry_run=False,
         include_ai_fallback=True,
         ai_runner=AsyncMock(side_effect=boom),
     )
     assert report.skipped_ai_failed == 1
     assert report.changes == []
-
-
-@pytest.mark.asyncio
-async def test_ai_fallback_dry_run_rolls_back_speculative_write():
-    """Dry-run must not persist via the AI path either. The runner can
-    set inv.gl_account during the call, but we restore the old value
-    so the caller can re-issue with dry_run=False knowing exactly what
-    the report claimed."""
-    vendor_id = uuid.uuid4()
-    inv = _make_invoice(vendor_id=vendor_id, gl_account="6100")
-
-    async def fake_ai_runner(db_, inv, *, actor_id, org_settings, ctrl_db):
-        inv.gl_account = "6200"
-
-    db = _make_db_for(
-        active_codes=["6100", "6200"],
-        eligible_invoices=[inv],
-        priors={},
-    )
-    report = await bulk_recode_gl(
-        db,
-        organization_id=uuid.uuid4(),
-        filt=RecodeFilter(),
-        dry_run=True,
-        include_ai_fallback=True,
-        ai_runner=AsyncMock(side_effect=fake_ai_runner),
-    )
-
-    assert len(report.changes) == 1
-    assert report.changes[0].new_gl == "6200"
-    assert inv.gl_account == "6100"  # rolled back
 
 
 # ---------- Audit log ----------------------------------------------------
@@ -446,6 +479,8 @@ def test_report_dict_uses_would_change_in_dry_run_else_applied():
     Don't change this shape without coordinating with the UI."""
     dry = RecodeReport(dry_run=True).as_dict()
     assert "would_change" in dry and "applied" not in dry
+    assert "ai_candidates" in dry  # always present, even when 0
 
     wet = RecodeReport(dry_run=False).as_dict()
     assert "applied" in wet and "would_change" not in wet
+    assert "ai_candidates" in wet

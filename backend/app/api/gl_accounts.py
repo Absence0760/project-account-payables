@@ -86,59 +86,64 @@ async def sync_gl_accounts_from_erp(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    """Pull chart of accounts from the connected ERP."""
+    """Pull chart of accounts from the connected ERP via its adapter."""
     erp_config = (org.settings or {}).get("erp")
     if not erp_config:
         raise HTTPException(status_code=400, detail="No ERP configured")
 
-    # TODO: call ERP adapter to fetch real chart of accounts
-    # For now, use mock data
-    mock_accounts = [
-        {"code": "1000", "name": "Cash and Cash Equivalents", "type": "asset"},
-        {"code": "1200", "name": "Accounts Receivable", "type": "asset"},
-        {"code": "1500", "name": "Fixed Assets - Equipment", "type": "asset"},
-        {"code": "2000", "name": "Accounts Payable", "type": "liability"},
-        {"code": "2100", "name": "Accrued Liabilities", "type": "liability"},
-        {"code": "3000", "name": "Owner's Equity", "type": "equity"},
-        {"code": "4000", "name": "Revenue - Services", "type": "revenue"},
-        {"code": "4100", "name": "Revenue - Products", "type": "revenue"},
-        {"code": "6100", "name": "Office Supplies & Expenses", "type": "expense"},
-        {"code": "6200", "name": "Software & Cloud Services", "type": "expense"},
-        {"code": "6300", "name": "Facilities & Maintenance", "type": "expense"},
-        {"code": "6400", "name": "Marketing & Advertising", "type": "expense"},
-        {"code": "6500", "name": "Legal & Professional Fees", "type": "expense"},
-        {"code": "6600", "name": "Meals & Entertainment", "type": "expense"},
-        {"code": "6700", "name": "Shipping & Freight", "type": "expense"},
-        {"code": "6800", "name": "Travel & Transportation", "type": "expense"},
-        {"code": "6900", "name": "Utilities & Telecom", "type": "expense"},
-        {"code": "7000", "name": "Insurance", "type": "expense"},
-        {"code": "7100", "name": "Depreciation & Amortization", "type": "expense"},
-        {"code": "8000", "name": "Payroll Expense", "type": "expense"},
-    ]
+    # Lazy-import adapter modules so the @register_adapter decorator
+    # populates the dispatcher registry. Same pattern as vendors.py
+    # and purchase_orders.py.
+    import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
+    import app.services.erp_adapters.merge_dev  # noqa: F401
+    import app.services.erp_adapters.mock_adapter  # noqa: F401
+    import app.services.erp_adapters.netsuite  # noqa: F401
+    from app.services.erp_adapters import get_erp_adapter
+
+    adapter = get_erp_adapter(erp_config)
+    try:
+        erp_accounts = await adapter.list_gl_accounts()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ERP request failed: {type(exc).__name__}",
+        ) from exc
 
     created = 0
     updated = 0
-    for acct in mock_accounts:
+    for acct in erp_accounts:
         result = await db.execute(
             select(GLAccount).where(
-                GLAccount.code == acct["code"],
+                GLAccount.code == acct.code,
                 GLAccount.organization_id == org_id,
             )
         )
         existing = result.scalar_one_or_none()
 
         if existing:
-            if existing.name != acct["name"]:
-                existing.name = acct["name"]
+            # Only count as updated when something actually changes —
+            # otherwise re-running the sync would inflate the metric.
+            changed = False
+            if existing.name != acct.name:
+                existing.name = acct.name
+                changed = True
+            if acct.account_type and existing.account_type != acct.account_type:
+                existing.account_type = acct.account_type
+                changed = True
+            if acct.erp_account_id and existing.erp_account_id != acct.erp_account_id:
+                existing.erp_account_id = acct.erp_account_id
+                changed = True
+            if changed:
                 updated += 1
         else:
             db.add(
                 GLAccount(
-                    code=acct["code"],
-                    name=acct["name"],
-                    account_type=acct["type"],
+                    code=acct.code,
+                    name=acct.name,
+                    account_type=acct.account_type,
+                    parent_code=acct.parent_code,
                     organization_id=org_id,
-                    erp_account_id=acct["code"],
+                    erp_account_id=acct.erp_account_id or acct.code,
                 )
             )
             created += 1
@@ -149,4 +154,5 @@ async def sync_gl_accounts_from_erp(
         "message": f"Synced {created} new, {updated} updated GL accounts",
         "created": created,
         "updated": updated,
+        "adapter": adapter.erp_type,
     }

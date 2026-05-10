@@ -84,6 +84,12 @@ class RecodeReport:
     skipped_no_prior_no_ai: int = 0
     skipped_ai_failed: int = 0
     skipped_invalid_code: int = 0
+    # Number of invoices a non-dry AI pass would attempt. Only populated
+    # when `dry_run=True and include_ai_fallback=True` — gives the
+    # operator a candidate count without actually firing (and billing
+    # for) the AI runner. In a non-dry run this stays 0; the actual
+    # AI work shows up in `by_source["ai"]` and `skipped_ai_failed`.
+    ai_candidates: int = 0
     by_source: dict[str, int] = field(default_factory=lambda: {"vendor_prior": 0, "ai": 0})
     changes: list[RecodeChange] = field(default_factory=list)
     dry_run: bool = True
@@ -92,6 +98,7 @@ class RecodeReport:
         return {
             "matched": self.matched,
             "would_change" if self.dry_run else "applied": len(self.changes),
+            "ai_candidates": self.ai_candidates,
             "by_source": dict(self.by_source),
             "skipped": {
                 "immutable_status": self.skipped_immutable,
@@ -150,29 +157,92 @@ async def _load_priors(db: AsyncSession, vendor_ids: set[uuid.UUID]) -> dict[uui
     return {row[0]: row[1] for row in rows}
 
 
-async def _select_eligible(
+@dataclass
+class _ScopeQuery:
+    """Eligible rows + the per-bucket skip counts that go in the report.
+
+    We could populate the skip buckets by streaming every row and
+    bucketing in Python, but for tenants with significant invoice
+    history that's a lot of memory for two integers. Two count queries
+    keep the heavy work in SQL.
+    """
+
+    eligible: list[Invoice]
+    skipped_immutable: int
+    skipped_no_vendor: int
+
+
+async def _select_scope(
     db: AsyncSession,
     organization_id: uuid.UUID,
     filt: RecodeFilter,
-) -> list[Invoice]:
-    """Resolve filter → list of eligible Invoice rows.
+) -> _ScopeQuery:
+    """Resolve filter → eligible rows + skip-bucket counts.
 
-    `from_date` / `to_date` filter on `invoice_date` (the natural date
-    a user thinks of for "the May invoices"). Falls back to including
-    rows with NULL `invoice_date` only when neither bound is given —
-    otherwise a date-bounded request would silently sweep up undated
-    rows that the caller didn't intend.
+    Eligibility (immutable-status + must-have-vendor) is pushed into
+    SQL so we don't ferry the org's entire invoice history into Python
+    just to discard most of it.
+
+    Date bounds are applied via `coalesce(invoice_date, received_date,
+    created_at::date)`. The naive form `invoice_date BETWEEN x AND y`
+    silently dropped invoices with a NULL `invoice_date` (PostgreSQL:
+    NULL <= date evaluates to NULL → false in WHERE), surprising
+    operators expecting a complete sweep. The coalesce chain keeps the
+    query honest — rows without a parsed invoice date fall back to
+    when they landed in the system, which is the next-most-meaningful
+    date for an admin re-code.
     """
-    q = select(Invoice).where(Invoice.organization_id == organization_id)
-    if filt.from_date is not None:
-        q = q.where(Invoice.invoice_date >= filt.from_date)
-    if filt.to_date is not None:
-        q = q.where(Invoice.invoice_date <= filt.to_date)
-    if filt.vendor_ids:
-        q = q.where(Invoice.vendor_id.in_(filt.vendor_ids))
+    from sqlalchemy import Date, cast, func
 
-    rows = (await db.execute(q)).scalars().all()
-    return list(rows)
+    effective_date = func.coalesce(
+        Invoice.invoice_date,
+        Invoice.received_date,
+        cast(Invoice.created_at, Date),
+    )
+
+    base_filters = [Invoice.organization_id == organization_id]
+    if filt.from_date is not None:
+        base_filters.append(effective_date >= filt.from_date)
+    if filt.to_date is not None:
+        base_filters.append(effective_date <= filt.to_date)
+    if filt.vendor_ids:
+        base_filters.append(Invoice.vendor_id.in_(filt.vendor_ids))
+
+    eligible_q = select(Invoice).where(
+        *base_filters,
+        Invoice.status.notin_(_IMMUTABLE_STATUSES),
+        Invoice.vendor_id.is_not(None),
+    )
+    rows = (await db.execute(eligible_q)).scalars().all()
+
+    immutable_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(Invoice)
+            .where(*base_filters, Invoice.status.in_(_IMMUTABLE_STATUSES))
+        )
+    ).scalar() or 0
+
+    # Count rows in scope that lost out on eligibility *only* because
+    # vendor_id is null (immutable rows are already counted above and
+    # we don't want them double-counted).
+    no_vendor_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(Invoice)
+            .where(
+                *base_filters,
+                Invoice.vendor_id.is_(None),
+                Invoice.status.notin_(_IMMUTABLE_STATUSES),
+            )
+        )
+    ).scalar() or 0
+
+    return _ScopeQuery(
+        eligible=list(rows),
+        skipped_immutable=int(immutable_count),
+        skipped_no_vendor=int(no_vendor_count),
+    )
 
 
 async def bulk_recode_gl(
@@ -198,18 +268,11 @@ async def bulk_recode_gl(
     report = RecodeReport(dry_run=dry_run)
 
     active_chart = await _load_active_chart(db, organization_id)
-    candidates = await _select_eligible(db, organization_id, filt)
+    scope = await _select_scope(db, organization_id, filt)
 
-    eligible: list[Invoice] = []
-    for inv in candidates:
-        if inv.status in _IMMUTABLE_STATUSES:
-            report.skipped_immutable += 1
-            continue
-        if inv.vendor_id is None:
-            report.skipped_no_vendor += 1
-            continue
-        eligible.append(inv)
-
+    eligible = scope.eligible
+    report.skipped_immutable = scope.skipped_immutable
+    report.skipped_no_vendor = scope.skipped_no_vendor
     report.matched = len(eligible)
 
     vendor_ids = {inv.vendor_id for inv in eligible if inv.vendor_id}
@@ -250,57 +313,60 @@ async def bulk_recode_gl(
             inv.gl_account = prior_code
 
     # Second pass: AI fallback for invoices with no usable prior.
-    if include_ai_fallback and needs_ai:
-        if ai_runner is None:
-            from app.services.extraction import run_extraction as _runner
+    #
+    # Critical: in dry-run mode we DO NOT call the AI runner at all.
+    # `run_extraction` writes line items, vendor priors, RAG entries,
+    # audit rows, and may transition the invoice's status — none of
+    # that is cleanly reversible by restoring `inv.gl_account`. A
+    # dry-run that secretly mutates the DB is a worse default than
+    # one that doesn't try. Operators get an `ai_candidates` count
+    # so they know what a non-dry pass would attempt; if that number
+    # looks reasonable they re-issue with `dry_run=false`.
+    if needs_ai and include_ai_fallback:
+        if dry_run:
+            report.ai_candidates = len(needs_ai)
+        else:
+            if ai_runner is None:
+                from app.services.extraction import run_extraction as _runner
 
-            ai_runner = _runner
+                ai_runner = _runner
 
-        for inv in needs_ai:
-            old_gl = inv.gl_account
-            try:
-                # Reuses the full extraction pipeline (chart-of-accounts
-                # injection + RAG + post-extraction validation), so the
-                # AI re-code lands inside the same guardrails as a fresh
-                # upload. Persists usage to ctrl_db when provided.
-                await ai_runner(
-                    db,
-                    inv,
-                    actor_id=actor_id,
-                    org_settings=org_settings,
-                    ctrl_db=ctrl_db,
+            for inv in needs_ai:
+                old_gl = inv.gl_account
+                try:
+                    # Reuses the full extraction pipeline (chart-of-
+                    # accounts injection + RAG + post-extraction
+                    # validation), so the AI re-code lands inside the
+                    # same guardrails as a fresh upload. Persists usage
+                    # to ctrl_db when provided.
+                    await ai_runner(
+                        db,
+                        inv,
+                        actor_id=actor_id,
+                        org_settings=org_settings,
+                        ctrl_db=ctrl_db,
+                    )
+                except Exception:
+                    logger.exception("AI re-code failed for invoice %s", inv.id)
+                    report.skipped_ai_failed += 1
+                    continue
+
+                new_gl = inv.gl_account
+                if new_gl is None or new_gl == old_gl:
+                    report.skipped_no_change += 1
+                    continue
+
+                report.changes.append(
+                    RecodeChange(
+                        invoice_id=inv.id,
+                        invoice_number=inv.invoice_number,
+                        vendor_name=inv.vendor_name or "",
+                        old_gl=old_gl,
+                        new_gl=new_gl,
+                        source="ai",
+                    )
                 )
-            except Exception:
-                logger.exception("AI re-code failed for invoice %s", inv.id)
-                report.skipped_ai_failed += 1
-                continue
-
-            # `run_extraction` may have updated `inv.gl_account` directly.
-            new_gl = inv.gl_account
-            if new_gl is None or new_gl == old_gl:
-                report.skipped_no_change += 1
-                if dry_run:
-                    # Roll back the speculative AI write so dry-run is
-                    # honest about not persisting anything. Not perfect —
-                    # `run_extraction` may have inserted line items / RAG
-                    # / vendor-prior side effects, so dry-run + AI is
-                    # documented as "exploratory only".
-                    inv.gl_account = old_gl
-                continue
-
-            report.changes.append(
-                RecodeChange(
-                    invoice_id=inv.id,
-                    invoice_number=inv.invoice_number,
-                    vendor_name=inv.vendor_name or "",
-                    old_gl=old_gl,
-                    new_gl=new_gl,
-                    source="ai",
-                )
-            )
-            report.by_source["ai"] += 1
-            if dry_run:
-                inv.gl_account = old_gl  # see comment above
+                report.by_source["ai"] += 1
 
     elif needs_ai and not include_ai_fallback:
         report.skipped_no_prior_no_ai += len(needs_ai)

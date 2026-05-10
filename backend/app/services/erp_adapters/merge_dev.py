@@ -8,6 +8,7 @@ from app.services.erp_adapters.base import (
     ErpAdapter,
     ErpInvoiceStatus,
     ErpPostResult,
+    GLAccountPayload,
     InvoicePayload,
     PoLinePayload,
     PoPayload,
@@ -37,6 +38,21 @@ _MERGE_PO_STATUS_MAP = {
     "CANCELLED": "cancelled",
     "CANCELED": "cancelled",
     "VOIDED": "cancelled",
+}
+
+# Merge's account-classification enum → our internal account_type
+# vocabulary. Anything not listed maps to None so the row still imports
+# but isn't miscategorized. `account_type` is a free-text column so
+# downstream this is informational, not a hard constraint.
+_MERGE_ACCOUNT_TYPE_MAP = {
+    "ASSET": "asset",
+    "LIABILITY": "liability",
+    "EQUITY": "equity",
+    "REVENUE": "revenue",
+    "INCOME": "revenue",
+    "EXPENSE": "expense",
+    "EXPENSES": "expense",
+    "COST_OF_GOODS_SOLD": "expense",
 }
 
 MERGE_API_BASE = "https://api.merge.dev/api/accounting/v1"
@@ -185,6 +201,47 @@ class MergeDevAdapter(ErpAdapter):
 
         return items
 
+    async def list_gl_accounts(self) -> list[GLAccountPayload]:
+        """Pull the chart of accounts via Merge's unified `/accounts`.
+
+        Best-effort with the same degradation policy as `list_pos`:
+        non-2xx → empty list, network error → empty list. The endpoint
+        runs as part of an admin sync flow that already shows
+        ERP-failure toasts, and silently no-op'ing here is friendlier
+        than 502'ing the click.
+        """
+        items: list[GLAccountPayload] = []
+        cursor: str | None = None
+        params = {"page_size": "100"}
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            for _ in range(20):  # 20 × 100 = 2000-account cap
+                if cursor:
+                    params["cursor"] = cursor
+                try:
+                    resp = await client.get(
+                        f"{MERGE_API_BASE}/accounts",
+                        params=params,
+                        headers=self._headers(),
+                    )
+                except httpx.HTTPError:
+                    break
+
+                if resp.status_code != 200:
+                    break
+
+                body = resp.json() if resp.content else {}
+                for raw in body.get("results", []) or []:
+                    payload = _merge_account_to_payload(raw)
+                    if payload is not None:
+                        items.append(payload)
+
+                cursor = body.get("next")
+                if not cursor:
+                    break
+
+        return items
+
     async def test_connection(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -236,4 +293,39 @@ def _merge_po_to_payload(raw: dict) -> PoPayload:
         total=total,
         status=status,
         line_items=line_items,
+    )
+
+
+def _merge_account_to_payload(raw: dict) -> GLAccountPayload | None:
+    """Map a Merge.dev account record to our GLAccountPayload.
+
+    Returns None when the record has no `account_number` and no `name`
+    — those are the two fields the upsert in
+    `api/gl_accounts.py:sync_gl_accounts_from_erp` keys on, and a row
+    missing both isn't useful. Better to drop than to import a row
+    keyed on an opaque Merge id.
+    """
+    code = raw.get("account_number") or raw.get("number")
+    name = raw.get("name")
+    if not code and not name:
+        return None
+    if not code:
+        # Merge sometimes ships the human name without a code (custom
+        # accounts on small ERPs). Fall back to the upstream id so we
+        # have *something* unique on the upsert key.
+        code = raw.get("id") or name
+    if not name:
+        name = code
+
+    raw_classification = (raw.get("classification") or "").upper()
+    account_type = _MERGE_ACCOUNT_TYPE_MAP.get(raw_classification)
+
+    return GLAccountPayload(
+        code=str(code),
+        name=str(name),
+        account_type=account_type,
+        erp_account_id=raw.get("id") or str(code),
+        parent_code=(
+            raw.get("parent_account") if isinstance(raw.get("parent_account"), str) else None
+        ),
     )

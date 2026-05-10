@@ -22,6 +22,7 @@
 		matched: number;
 		would_change?: number;
 		applied?: number;
+		ai_candidates: number;
 		by_source: { vendor_prior: number; ai: number };
 		skipped: {
 			immutable_status: number;
@@ -57,6 +58,18 @@
 		} finally {
 			busy = false;
 		}
+	}
+
+	function applyButtonLabel(p: RecodeReport): string {
+		const priorChanges = p.changes.length;
+		const aiCandidates = p.ai_candidates;
+		if (aiCandidates > 0 && priorChanges > 0) {
+			return `Apply ${priorChanges} + run AI on ${aiCandidates}`;
+		}
+		if (aiCandidates > 0) {
+			return `Run AI on ${aiCandidates} invoice(s)`;
+		}
+		return `Apply ${priorChanges} change(s)`;
 	}
 
 	async function applyChanges() {
@@ -133,8 +146,13 @@
 						<dd class="emph">{preview.would_change ?? preview.applied ?? 0}</dd>
 						<dt>From cached priors</dt>
 						<dd>{preview.by_source.vendor_prior}</dd>
-						<dt>From AI re-extraction</dt>
-						<dd>{preview.by_source.ai}</dd>
+						{#if include_ai_fallback}
+							<dt>AI candidates</dt>
+							<dd>
+								{preview.ai_candidates}
+								<span class="hint">(would re-extract on apply)</span>
+							</dd>
+						{/if}
 						<dt>Skipped (already coded)</dt>
 						<dd>{preview.skipped.no_change}</dd>
 						<dt>Skipped (immutable status)</dt>
@@ -183,9 +201,9 @@
 						<button
 							class="btn-primary"
 							onclick={applyChanges}
-							disabled={busy || preview.changes.length === 0}
+							disabled={busy || (preview.changes.length === 0 && preview.ai_candidates === 0)}
 						>
-							{busy ? 'Applying…' : `Apply ${preview.changes.length} change(s)`}
+							{busy ? 'Applying…' : applyButtonLabel(preview)}
 						</button>
 					</div>
 				</div>
@@ -328,6 +346,11 @@
 	}
 	.summary dd.emph {
 		color: var(--accent);
+	}
+	.summary .hint {
+		font-size: 0.72rem;
+		color: var(--text-muted);
+		margin-left: 6px;
 	}
 	.report h3 {
 		margin: 6px 0 4px;
