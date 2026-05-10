@@ -10,6 +10,7 @@
 	let editing = $state<Role | null>(null);
 	let editDescription = $state('');
 	let confirmDeleteId = $state<string | null>(null);
+	let saving = $state(false);
 
 	$effect(() => {
 		adminStore.fetchRoles();
@@ -18,6 +19,7 @@
 	async function handleCreate() {
 		const name = newName.trim();
 		if (!name) return;
+		saving = true;
 		try {
 			await adminStore.createRole({
 				name,
@@ -29,6 +31,8 @@
 			newDescription = '';
 		} catch (err) {
 			toast(extractError(err), 'error');
+		} finally {
+			saving = false;
 		}
 	}
 
@@ -39,12 +43,17 @@
 
 	async function handleEdit() {
 		if (!editing) return;
+		saving = true;
 		try {
-			await adminStore.updateRole(editing.id, { description: editDescription.trim() || undefined });
+			await adminStore.updateRole(editing.id, {
+				description: editDescription.trim() || undefined,
+			});
 			toast('Role updated', 'success');
 			editing = null;
 		} catch (err) {
 			toast(extractError(err), 'error');
+		} finally {
+			saving = false;
 		}
 	}
 
@@ -59,6 +68,15 @@
 		}
 	}
 
+	function handleWindowClick(e: MouseEvent) {
+		if (
+			confirmDeleteId &&
+			!(e.target as HTMLElement).closest('.delete-btn')
+		) {
+			confirmDeleteId = null;
+		}
+	}
+
 	function extractError(err: unknown): string {
 		const e = err as { detail?: string; message?: string } | null;
 		return e?.detail ?? e?.message ?? 'Request failed';
@@ -67,6 +85,8 @@
 	let systemRoles = $derived(adminStore.roles.filter((r) => r.is_system));
 	let customRoles = $derived(adminStore.roles.filter((r) => !r.is_system));
 </script>
+
+<svelte:window onclick={handleWindowClick} />
 
 <div class="workspace">
 	<header class="toolbar">
@@ -77,88 +97,113 @@
 	</header>
 
 	<section class="role-section">
-		<h2>System roles</h2>
-		<p class="section-hint">
-			The four built-in roles gate hardcoded routes and cannot be edited or deleted.
-		</p>
-		<table>
-			<thead>
-				<tr>
-					<th>Name</th>
-					<th>Description</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each systemRoles as role (role.id)}
-					<tr>
-						<td><span class="badge system">{role.name}</span></td>
-						<td>{role.description ?? '—'}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	</section>
-
-	<section class="role-section">
-		<h2>Custom roles</h2>
-		<p class="section-hint">
-			Mint additional role names for this organization. Custom roles can be assigned to users
-			and referenced in approval-chain configuration.
-		</p>
-		{#if customRoles.length === 0}
-			<p class="empty-state">No custom roles yet.</p>
-		{:else}
+		<div class="section-header">
+			<h2>System roles</h2>
+			<p class="section-hint">
+				Built-in roles gate hardcoded routes and cannot be edited or deleted.
+			</p>
+		</div>
+		<div class="grid-container">
 			<table>
 				<thead>
 					<tr>
 						<th>Name</th>
 						<th>Description</th>
-						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each systemRoles as role (role.id)}
+						<tr>
+							<td>
+								<span class="role-badge system">{role.name}</span>
+							</td>
+							<td class="muted-cell">{role.description ?? '—'}</td>
+						</tr>
+					{:else}
+						<tr><td colspan="2" class="empty">No system roles configured.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	</section>
+
+	<section class="role-section">
+		<div class="section-header">
+			<h2>Custom roles</h2>
+			<p class="section-hint">
+				Mint additional role names for this organization. Custom roles can be assigned to
+				users and referenced in approval-chain configuration.
+			</p>
+		</div>
+		<div class="grid-container">
+			<table>
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Description</th>
+						<th class="actions-col"></th>
 					</tr>
 				</thead>
 				<tbody>
 					{#each customRoles as role (role.id)}
 						<tr>
-							<td><span class="badge">{role.name}</span></td>
-							<td>{role.description ?? '—'}</td>
-							<td class="row-actions">
-								<button class="link-btn" onclick={() => openEdit(role)}>Edit</button>
-								{#if confirmDeleteId === role.id}
-									<button
-										class="link-btn danger armed"
-										onclick={() => handleDelete(role.id)}
-									>Confirm delete</button>
-								{:else}
-									<button
-										class="link-btn danger"
-										onclick={() => (confirmDeleteId = role.id)}
-									>Delete</button>
-								{/if}
+							<td>
+								<span class="role-badge">{role.name}</span>
+							</td>
+							<td class="muted-cell">{role.description ?? '—'}</td>
+							<td class="actions">
+								<button class="edit-btn" onclick={() => openEdit(role)}>Edit</button>
+								<button
+									class="delete-btn"
+									class:armed={confirmDeleteId === role.id}
+									onclick={(e) => {
+										e.stopPropagation();
+										if (confirmDeleteId === role.id) {
+											handleDelete(role.id);
+										} else {
+											confirmDeleteId = role.id;
+										}
+									}}
+								>
+									{#if confirmDeleteId === role.id}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+									{:else}
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+									{/if}
+								</button>
 							</td>
 						</tr>
+					{:else}
+						<tr><td colspan="3" class="empty">No custom roles yet.</td></tr>
 					{/each}
 				</tbody>
 			</table>
-		{/if}
+		</div>
 	</section>
 </div>
 
 {#if creating}
-	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) (creating = false); }}>
+	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) creating = false; }}>
 		<div class="modal" role="dialog" aria-label="Create role">
 			<h2>Create role</h2>
+			<p class="modal-hint">
+				The name is referenced by approval-chain configs once it's been created — pick
+				something stable.
+			</p>
 			<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 				<label>
-					Name<em class="required">*</em>
-					<input bind:value={newName} required maxlength="50" autofocus />
+					<span>Name</span>
+					<input type="text" bind:value={newName} required maxlength="50" placeholder="e.g. Approver" />
 				</label>
 				<label>
-					Description
-					<input bind:value={newDescription} maxlength="255" />
+					<span>Description</span>
+					<input type="text" bind:value={newDescription} maxlength="255" placeholder="Optional" />
 				</label>
 				<div class="modal-footer">
 					<button type="button" class="btn-cancel" onclick={() => (creating = false)}>Cancel</button>
-					<button type="submit" class="btn-primary" disabled={!newName.trim()}>Create</button>
+					<button type="submit" class="btn-primary" disabled={!newName.trim() || saving}>
+						{saving ? 'Creating…' : 'Create'}
+					</button>
 				</div>
 			</form>
 		</div>
@@ -166,21 +211,23 @@
 {/if}
 
 {#if editing}
-	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) (editing = null); }}>
+	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) editing = null; }}>
 		<div class="modal" role="dialog" aria-label="Edit role">
 			<h2>Edit "{editing.name}"</h2>
+			<p class="modal-hint">
+				Role names are immutable — they're referenced by approval-chain configs. Edit the
+				description only.
+			</p>
 			<form onsubmit={(e) => { e.preventDefault(); handleEdit(); }}>
-				<p class="hint">
-					Role names are immutable — they're referenced by approval-chain configs.
-					Edit the description only.
-				</p>
 				<label>
-					Description
-					<input bind:value={editDescription} maxlength="255" />
+					<span>Description</span>
+					<input type="text" bind:value={editDescription} maxlength="255" />
 				</label>
 				<div class="modal-footer">
 					<button type="button" class="btn-cancel" onclick={() => (editing = null)}>Cancel</button>
-					<button type="submit" class="btn-primary">Save</button>
+					<button type="submit" class="btn-primary" disabled={saving}>
+						{saving ? 'Saving…' : 'Save'}
+					</button>
 				</div>
 			</form>
 		</div>
@@ -194,7 +241,8 @@
 		padding: 24px 20px;
 		display: flex;
 		flex-direction: column;
-		gap: 24px;
+		gap: 16px;
+		min-height: 100vh;
 	}
 
 	.toolbar {
@@ -206,163 +254,30 @@
 
 	.toolbar h1 {
 		margin: 0;
-		font-size: 1.5rem;
-	}
-
-	.role-section h2 {
-		margin: 0 0 4px;
-		font-size: 1.1rem;
-	}
-
-	.section-hint {
-		margin: 0 0 12px;
-		color: var(--text-secondary, #6b7280);
-		font-size: 0.875rem;
-	}
-
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		background: white;
-		border: 1px solid var(--border, #e5e7eb);
-		border-radius: 8px;
-		overflow: hidden;
-	}
-
-	th,
-	td {
-		text-align: left;
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border, #f3f4f6);
-		font-size: 0.875rem;
-	}
-
-	tr:last-child td {
-		border-bottom: none;
-	}
-
-	.badge {
-		display: inline-block;
-		padding: 2px 10px;
-		border-radius: 999px;
-		background: var(--accent-soft, #eff6ff);
-		color: var(--accent, #2563eb);
-		font-weight: 500;
-		font-size: 0.8rem;
-	}
-
-	.badge.system {
-		background: #f3f4f6;
-		color: #4b5563;
-	}
-
-	.empty-state {
-		color: var(--text-secondary, #6b7280);
-		font-size: 0.875rem;
-		font-style: italic;
-	}
-
-	.row-actions {
-		display: flex;
-		gap: 12px;
-		justify-content: flex-end;
-	}
-
-	.link-btn {
-		background: none;
-		border: none;
-		color: var(--accent, #2563eb);
-		cursor: pointer;
-		padding: 0;
-		font-size: 0.85rem;
-	}
-
-	.link-btn.danger {
-		color: #b91c1c;
-	}
-
-	.link-btn.danger.armed {
+		font-size: 1.4rem;
 		font-weight: 600;
+		color: var(--text);
 	}
 
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.4);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 50;
-	}
-
-	.modal {
-		background: white;
-		border-radius: 8px;
-		padding: 24px;
-		width: 480px;
-		max-width: 90vw;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-	}
-
-	.modal h2 {
-		margin: 0;
-		font-size: 1.2rem;
-	}
-
-	.modal form {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
-	.modal label {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		font-size: 0.875rem;
-	}
-
-	.modal input {
-		padding: 8px 10px;
-		border: 1px solid var(--border, #e5e7eb);
-		border-radius: 6px;
-		font-size: 0.875rem;
-	}
-
-	.required {
-		color: #b91c1c;
-		font-style: normal;
-		margin-left: 2px;
-	}
-
-	.hint {
-		margin: 0;
-		color: var(--text-secondary, #6b7280);
-		font-size: 0.8rem;
-	}
-
-	.modal-footer {
+	.toolbar-actions {
 		display: flex;
 		gap: 8px;
-		justify-content: flex-end;
-		margin-top: 4px;
-	}
-
-	.btn-primary,
-	.btn-cancel {
-		padding: 8px 16px;
-		border-radius: 6px;
-		font-size: 0.875rem;
-		cursor: pointer;
-		border: 1px solid var(--border, #e5e7eb);
 	}
 
 	.btn-primary {
-		background: var(--accent, #2563eb);
+		padding: 8px 18px;
+		border-radius: 4px;
+		border: 1px solid var(--accent);
+		background: var(--accent);
 		color: white;
-		border-color: var(--accent, #2563eb);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-primary:hover {
+		filter: brightness(1.1);
 	}
 
 	.btn-primary:disabled {
@@ -370,7 +285,242 @@
 		cursor: not-allowed;
 	}
 
+	.role-section {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.section-header h2 {
+		margin: 0 0 2px;
+		font-size: 0.95rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.section-hint {
+		margin: 0;
+		color: var(--text-muted);
+		font-size: 0.82rem;
+	}
+
+	.grid-container {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		overflow-x: auto;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.875rem;
+	}
+
+	th {
+		background: var(--bg);
+		text-align: left;
+		padding: 10px 14px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		border-bottom: 1px solid var(--border);
+		white-space: nowrap;
+	}
+
+	td {
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--border);
+		color: var(--text);
+		vertical-align: middle;
+	}
+
+	tr:last-child td {
+		border-bottom: none;
+	}
+
+	tbody tr:hover {
+		background: rgba(99, 140, 255, 0.04);
+	}
+
+	.muted-cell {
+		color: var(--text-muted);
+	}
+
+	.empty {
+		text-align: center;
+		padding: 28px 14px;
+		color: var(--text-muted);
+		font-style: italic;
+	}
+
+	.role-badge {
+		display: inline-block;
+		padding: 2px 10px;
+		border-radius: 10px;
+		background: rgba(99, 140, 255, 0.1);
+		color: var(--accent);
+		font-size: 0.78rem;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+
+	.role-badge.system {
+		background: rgba(138, 143, 160, 0.1);
+		color: var(--text-muted);
+	}
+
+	.actions-col {
+		width: 140px;
+	}
+
+	.actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		white-space: nowrap;
+	}
+
+	.edit-btn {
+		padding: 4px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.edit-btn:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.delete-btn {
+		padding: 4px 8px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		cursor: pointer;
+		font-family: inherit;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 30px;
+	}
+
+	.delete-btn:hover {
+		border-color: #e04040;
+		color: #e04040;
+	}
+
+	.delete-btn.armed {
+		border-color: #e04040;
+		color: #e04040;
+		background: rgba(224, 64, 64, 0.08);
+	}
+
+	/* --- Modal --- */
+
+	.backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		display: grid;
+		place-items: center;
+		z-index: 100;
+		backdrop-filter: blur(2px);
+	}
+
+	.modal {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		width: min(440px, 92vw);
+		padding: 24px;
+		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+	}
+
+	.modal h2 {
+		margin: 0 0 4px;
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.modal-hint {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		margin: 0 0 16px;
+	}
+
+	.modal form {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.modal label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.modal label span {
+		font-size: 0.78rem;
+		font-weight: 500;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.modal input[type='text'] {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 8px 10px;
+		font-size: 0.88rem;
+		color: var(--text);
+		font-family: inherit;
+		width: 100%;
+		box-sizing: border-box;
+	}
+
+	.modal input:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
+	}
+
+	.modal-footer {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		padding-top: 8px;
+		border-top: 1px solid var(--border);
+	}
+
 	.btn-cancel {
-		background: white;
+		padding: 8px 18px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-cancel:hover {
+		background: var(--bg);
+		color: var(--text);
 	}
 </style>

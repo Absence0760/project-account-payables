@@ -340,10 +340,10 @@
 	}
 
 	.level-card {
-		border: 1px solid var(--border, #e5e7eb);
+		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 16px;
-		background: var(--card-bg, #fafafa);
+		background: var(--bg);
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
@@ -357,19 +357,26 @@
 	}
 
 	.level-name {
-		font-size: 1rem;
+		font-size: 0.95rem;
 		font-weight: 600;
-		border: none;
+		border: 1px solid transparent;
 		background: transparent;
-		padding: 4px 0;
+		padding: 4px 8px;
 		flex: 1;
 		min-width: 0;
+		color: var(--text);
+		border-radius: 4px;
+		font-family: inherit;
+	}
+
+	.level-name:hover {
+		border-color: var(--border);
 	}
 
 	.level-name:focus {
-		outline: 1px solid var(--accent, #2563eb);
-		outline-offset: 2px;
-		border-radius: 4px;
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
 	}
 
 	.level-actions {
@@ -383,11 +390,18 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		border: 1px solid var(--border, #e5e7eb);
-		border-radius: 6px;
-		background: white;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--surface);
+		color: var(--text-muted);
 		cursor: pointer;
 		font-size: 14px;
+		font-family: inherit;
+	}
+
+	.icon-btn:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 
 	.icon-btn:disabled {
@@ -395,10 +409,9 @@
 		cursor: not-allowed;
 	}
 
-	.icon-btn.danger:hover {
-		background: #fee2e2;
-		border-color: #fca5a5;
-		color: #b91c1c;
+	.icon-btn.danger:hover:not(:disabled) {
+		border-color: #e04040;
+		color: #e04040;
 	}
 
 	.row {
@@ -415,9 +428,11 @@
 
 	.field-label,
 	.field > span {
-		font-size: 0.875rem;
+		font-size: 0.72rem;
 		font-weight: 500;
-		color: var(--text-secondary, #6b7280);
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
 	.field-label-row {
@@ -428,11 +443,20 @@
 
 	.field input,
 	.field select {
-		padding: 6px 10px;
-		border: 1px solid var(--border, #e5e7eb);
-		border-radius: 6px;
-		font-size: 0.875rem;
-		background: white;
+		padding: 8px 10px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		font-size: 0.85rem;
+		background: var(--surface);
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.field input:focus,
+	.field select:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
 	}
 
 	.user-chips {
@@ -443,17 +467,24 @@
 
 	.chip {
 		padding: 4px 10px;
-		border: 1px solid var(--border, #e5e7eb);
+		border: 1px solid var(--border);
 		border-radius: 999px;
-		background: white;
-		font-size: 0.8rem;
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.78rem;
 		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.chip:hover:not(.on) {
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 
 	.chip.on {
-		background: var(--accent, #2563eb);
+		background: var(--accent);
 		color: white;
-		border-color: var(--accent, #2563eb);
+		border-color: var(--accent);
 	}
 
 	.rule-row {
@@ -466,39 +497,54 @@
 	.rule-row select,
 	.rule-row input {
 		padding: 6px 8px;
-		border: 1px solid var(--border, #e5e7eb);
-		border-radius: 6px;
-		font-size: 0.875rem;
-		background: white;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		font-size: 0.85rem;
+		background: var(--surface);
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.rule-row select:focus,
+	.rule-row input:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
 	}
 
 	.link-btn {
 		background: none;
 		border: none;
-		color: var(--accent, #2563eb);
+		color: var(--accent);
 		cursor: pointer;
-		font-size: 0.85rem;
+		font-size: 0.78rem;
 		padding: 0;
+		font-family: inherit;
+	}
+
+	.link-btn:hover {
+		filter: brightness(1.2);
 	}
 
 	.add-level-btn {
 		padding: 10px 14px;
-		border: 1px dashed var(--border, #d1d5db);
+		border: 1px dashed var(--border);
 		border-radius: 8px;
 		background: transparent;
 		cursor: pointer;
-		font-size: 0.9rem;
-		color: var(--text-secondary, #6b7280);
+		font-size: 0.85rem;
+		color: var(--text-muted);
+		font-family: inherit;
 	}
 
 	.add-level-btn:hover {
-		border-color: var(--accent, #2563eb);
-		color: var(--accent, #2563eb);
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 
 	.hint {
-		font-size: 0.8rem;
-		color: var(--text-secondary, #6b7280);
+		font-size: 0.78rem;
+		color: var(--text-muted);
 		margin: 4px 0 0 0;
 	}
 </style>
