@@ -39,7 +39,7 @@ dev = [
 # degrades to a silent no-op in `services.image_preprocess`.
 ocr = [
     "pytesseract>=0.3.10,<1",
-    "Pillow>=10,<12",
+    "Pillow>=12.2.0,<13",
 ]
 
 [tool.setuptools.packages.find]
