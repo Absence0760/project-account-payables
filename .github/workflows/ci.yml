@@ -65,7 +65,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          # Match backend/Dockerfile — runtime parity catches bugs
+          # that only manifest on 3.14 (e.g. removed deprecated APIs).
+          python-version: '3.14'
           cache: pip
           cache-dependency-path: backend/pyproject.toml
 
@@ -206,7 +208,8 @@ jobs:
       # Backend
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          # Match backend/Dockerfile (3.14-slim).
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: backend/pyproject.toml
 
