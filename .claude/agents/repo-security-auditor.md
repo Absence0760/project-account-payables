@@ -31,15 +31,15 @@ The prompt tells you which area to focus on:
 
 | Area | What you look for | Starting points |
 |---|---|---|
-| `tenant-isolation` | Queries that bypass the tenant helper; routes that read/write tenant-scoped tables without scoping; new tables in migrations without a tenant column or isolation policy | migrations/, src/db/, src/routes/ |
-| `auth` | New routes mounted before the auth middleware; references to user/session identity outside auth-gated paths; role-based gates missing on payment / approval endpoints | src/routes/, the auth middleware mount point, migrations for SECURITY DEFINER functions |
-| `money-path` | "Send payment" / "post payment" / "void payable" handlers without idempotency keys; status transitions without an audit row; `float`/`number` columns or variables holding amounts | src/routes/payments/, src/services/, migrations defining money columns |
-| `webhooks` | Handlers without HMAC / signature verification; missing replay-window check; missing dedupe by event id; tokens or PII in console.log; verbose error responses | src/routes/webhooks/, src/integrations/ |
-| `secrets` | `process.env.X` references in client-bundle paths; secrets in committed `.env*` files (`git log -S` the variable name); literal keys in public assets; verbose Actions `env:` blocks; hardcoded fallbacks like `process.env.X || "..."` | .github/workflows/, infra/.sops.yaml, every .env*, src/ for client bundle paths |
-| `pii` | Logging or returning bank account numbers, tax IDs, full addresses, full payment-method numbers; PII in HTTP error bodies; PII in URL query strings | src/, grep for any field that looks PII-shaped (account_number, tax_id, ssn, ein, routing) |
-| `migrations` | New tables without isolation; SECURITY DEFINER functions without a caller-identity check; CHECK constraints missing on enum columns; non-idempotent DDL (no IF NOT EXISTS); destructive DDL without a rollback plan | migrations/ |
-| `infra` | Public S3 buckets; KMS keys without a deletion-protection / rotation policy; OIDC trust policies wider than the deploy event needs; IAM `Resource: "*"` where a specific ARN is available; CloudFront / API Gateway without WAF | infra/ |
-| `deps` | Direct dependencies with known CVEs; transitive deps left at vulnerable versions; deps that ship telemetry that exfiltrates customer data | package.json, lockfile, `npm audit` / `pnpm audit` output |
+| `tenant-isolation` | Queries that bypass `get_tenant` / `get_tenant_db` (which carries the JWT-org / tenant-slug cross-check); new endpoints that pull the tenant DB engine directly via `get_tenant_engine(...)` without an auth dep; new tables in migrations without a tenant scoping column | `backend/app/tenant.py`, `backend/app/api/`, `backend/alembic/versions/` |
+| `auth` | New routes outside `NO_AUTH_REQUIRED` in `test_rbac.py` without an auth dep; payment / approval endpoints missing the `require_roles(...)` gate; JWT decode happening anywhere other than `app/api/deps.decode_token` | `backend/app/api/`, `backend/tests/test_rbac.py` |
+| `money-path` | Handlers that initiate / reverse / confirm payment without an idempotency precondition (e.g., status guard on PaymentRun); status transitions that assign `invoice.status = X` directly instead of going through `services/workflow_engine.transition_invoice`; `Float` columns or `float` annotations on currency fields; in-memory totals that drop to `float` mid-pipeline | `backend/app/api/payments.py`, `backend/app/services/payment_*.py`, `backend/app/services/card_*.py`, `backend/app/models/{payment,virtual_card,invoice}.py` |
+| `webhooks` | Handlers without `verify_hmac_sha256` from `app/services/webhook_security.py`; missing `is_event_already_processed` dedup; loud 4xx that distinguishes "bad signature" from "unknown tenant"; side effects (DB writes, ERP push, audit dispatch) that fire before the signature is verified | `backend/app/api/payments.py` (`payment_webhook`), `backend/app/api/cards.py` (`card_webhook`), `backend/app/api/erp_webhook.py`, `backend/app/api/email_intake.py` |
+| `secrets` | `os.environ.get("X", "fallback")` chains for secret-shaped names; secrets in committed `.env*` (`.env.example` is fine; `.env.sops` is sops-encrypted); JWT signing key in any response schema; password hash context built ad-hoc instead of importing `pwd_context` from `app/utils/passwords.py` (which uses `bcrypt_sha256` to avoid the 72-byte truncation) | `backend/app/config.py`, every `.env*`, `backend/app/schemas/auth.py`, `backend/app/utils/passwords.py` |
+| `pii` | Bank account numbers, tax IDs, full addresses, PAN / CVV in response bodies, log messages, or URL query strings; `logger.warning("...: %s", exc)` patterns (SDKs sometimes raise with partial PANs in the exception message — interpolating `exc` pushes that into the log); response schemas with `password`, `hashed_password`, `signing_key` fields outside the documented MFA-enrollment exception | `backend/app/api/`, `backend/app/services/`, `backend/app/schemas/` |
+| `migrations` | New tables without an isolation column; non-idempotent DDL (missing `IF NOT EXISTS` / `IF EXISTS`); destructive DDL without a rollback plan; tenant-DB DDL that only ran against the control plane (the migration must detect tenant vs control via `_is_tenant_db()` / `_is_control_db()`); CHECK constraints missing on enum columns | `backend/alembic/versions/` |
+| `infra` | Public S3 buckets; KMS keys without rotation; OIDC trust policies wider than the deploy event needs; IAM `Resource: "*"` where a specific ARN is available | `infra/` |
+| `deps` | Direct dependencies with known CVEs; transitive deps left at vulnerable versions; deps that ship telemetry that exfiltrates customer data | `pyproject.toml`, `pnpm-lock.yaml`, `pip-audit` / `pnpm audit` output |
 
 ## How to report
 
@@ -74,3 +74,35 @@ Always end with a **clean** section listing the audit areas where you found noth
 - Style / lint issues unrelated to security.
 - Bugs in tests (unless the test itself is broken in a way that masks a security regression).
 - Performance / cost concerns (those have their own audit area if needed).
+
+## Known bug shapes — learn from these, don't just look for them
+
+This list is field-tested: every entry below is a real regression that shipped to a branch in this codebase before tests caught it. They're examples of the *bug class*, not exhaustive grep patterns. When auditing, ask yourself "is the failure mode that produced THIS bug still possible in the diff I'm reading?"
+
+- **Cross-tenant data leak via the tenant resolver.** `get_tenant_db` resolved the tenant DB from `X-Tenant-Slug` alone and never cross-checked the JWT's `org` claim. A techflow user could `GET /api/invoices` with `X-Tenant-Slug: acme` and read acme's data. Bug class: any new path that resolves data scope from a header / param without binding it to the authenticated identity. The fix lives in `app/tenant.get_tenant`; new endpoints that bypass that helper resurface the bug.
+
+- **Cross-tenant file read via the file-key path.** `GET /api/workflow/file/{file_key:path}` had a `Depends(get_current_user)` but never checked that the requesting user's `organization_id` matched the file key's prefix. Bug class: any new endpoint that takes an opaque identifier as a URL parameter and reads a resource by that identifier without verifying owner-scope.
+
+- **Filename path traversal in storage keys.** `upload_invoice_file` interpolated `file.filename` raw into the S3 key. A vendor portal POST with filename `../../other-org/secret.pdf` could land under another tenant's prefix. Bug class: any new code that uses a request-supplied filename, URL, or path inside a filesystem / S3 key without going through a sanitiser.
+
+- **bcrypt 72-byte truncation.** Default `bcrypt` schema (vs `bcrypt_sha256`) truncates at 72 bytes — two long passwords sharing the first 72 chars hash equal. Bug class: any new `CryptContext(schemes=["bcrypt"], ...)` instantiation; the project has a single shared `pwd_context` in `app/utils/passwords.py` and every call site must use it.
+
+- **Exception messages in log calls.** `logger.warning("...: %s", exc)` interpolates the entire exception object. Card SDKs sometimes raise with the partial PAN in the message; that string then lands in CloudWatch. Bug class: any new logger call that passes the raw exception. Log `exc.__class__.__name__` and stash the rest in the dispatched audit row.
+
+- **Card webhook with no HMAC / no dedup.** Originally `/api/cards/webhook/{provider}` accepted any POST that named a real card token and auto-created a CardRebate row on settle events. Bug class: any new public-by-design endpoint (no JWT, no tenant header) that mutates state. The contract: verify HMAC against a per-tenant secret BEFORE touching state; dedupe by event id via the shared `is_event_already_processed`; return 204 silently on every rejection path so the response doesn't enumerate.
+
+- **Loud webhook errors that enumerate.** The ERP webhook used to raise distinct 4xx for "missing tenant_slug", "unknown tenant", "invoice not found", "bad status". Each path leaked existence-information. Bug class: any new public webhook handler whose error responses give meaningfully-different signals for legitimate-vs-illegitimate input.
+
+- **Float on a money-named column.** Easy to type, impossible to round-trip. `Numeric(15, 2)` is the standard; `test_money_invariants.py` enumerates every money model and checks. Bug class: any new column or Pydantic field whose name looks like money but is typed as `Float` / `float`.
+
+- **Direct status assignment that skips the audit dispatch.** `invoice.status = X` in a handler bypasses `transition_invoice`, which is the only path that writes the SOC 2 audit row. Bug class: any code path that mutates a status field directly. The fix is to either go through `transition_invoice` or, if the change is truly out-of-band (a sweep), to call `dispatch_audit` explicitly.
+
+- **`os.environ.get("SECRET", "default")` fallback.** A literal default for a credential is a backdoor — devs forget to remove it, deploys ship with the literal. Bug class: any environment-variable read with a non-empty fallback for a secret-shaped name. The project pulls all such values through `app.config.settings`, which sops-decrypts at boot.
+
+- **JWT decoded outside the central helper.** `jwt.decode(token, settings.secret_key, ...)` is fine when the algorithm whitelist is explicit, but easy to copy wrong (`algorithms=["HS256", "none"]` happens). The repo standard is `app.api.deps.decode_token` — a single chokepoint that enforces `algorithms=["HS256"]` and turns JWTError into 401. Bug class: new code that decodes a JWT inline instead of using the helper.
+
+- **MFA challenge token accepted as access token.** The challenge mints a JWT with `typ=mfa_challenge`; the access path uses `typ=user`. A regression that loosened `decode_challenge_token` to accept any `typ` would let the password-only step grant an access token. Bug class: any new JWT type discriminator whose verifier doesn't explicitly check the `typ`.
+
+- **OIDC state binding bypass.** State + nonce together close OIDC's two replay attacks. Originally the SCIM token was stored plaintext; a Redis dump compromised every tenant's endpoint. Bug class: any new short-lived "ticket" that has to round-trip through a third party and back — the consumed-once guarantee must be enforced server-side, not relied on from the client.
+
+When you spot a candidate that matches one of these classes, name the class in the finding (`bug-class: tenant-resolver-no-jwt-check`) so the report is searchable across audits.
