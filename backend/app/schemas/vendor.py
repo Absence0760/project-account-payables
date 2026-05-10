@@ -1,6 +1,21 @@
 from pydantic import BaseModel, Field
 
 
+class VendorBankDetails(BaseModel):
+    """Subset of `Vendor.bank_details` JSONB the UI is allowed to set.
+
+    The processor's counterparty / external ID is the bridge to live
+    payment rails — Modern Treasury and friends key payment-orders off
+    that. Last4s of routing + account number are stored alongside for
+    display, never the full account numbers (those live with the
+    processor)."""
+
+    counterparty_id: str | None = Field(default=None, max_length=255)
+    account_last4: str | None = Field(default=None, max_length=4)
+    routing_last4: str | None = Field(default=None, max_length=4)
+    bank_name: str | None = Field(default=None, max_length=255)
+
+
 class VendorBase(BaseModel):
     name: str = Field(..., max_length=255)
     code: str | None = Field(default=None, max_length=50)
@@ -10,6 +25,7 @@ class VendorBase(BaseModel):
     tax_id: str | None = Field(default=None, max_length=50)
     payment_terms: str | None = Field(default=None, max_length=100)
     accepts_virtual_cards: bool = False
+    bank_details: VendorBankDetails | None = None
 
 
 class VendorCreate(VendorBase):
@@ -26,6 +42,7 @@ class VendorUpdate(BaseModel):
     payment_terms: str | None = None
     accepts_virtual_cards: bool | None = None
     status: str | None = None
+    bank_details: VendorBankDetails | None = None
 
 
 class VendorResponse(BaseModel):
@@ -46,11 +63,23 @@ class VendorResponse(BaseModel):
     erp_synced_at: str | None
     invoice_count: int = 0
     created_at: str
+    bank_details: VendorBankDetails | None = None
 
     model_config = {"from_attributes": True}
 
     @classmethod
     def from_db(cls, v, invoice_count: int = 0) -> "VendorResponse":
+        bank_details = None
+        if v.bank_details:
+            # Pydantic strips unknown keys via VendorBankDetails — keeps
+            # the legacy JSONB shape (which historically held arbitrary
+            # processor metadata) from leaking out to the UI.
+            bank_details = VendorBankDetails(
+                counterparty_id=v.bank_details.get("counterparty_id"),
+                account_last4=v.bank_details.get("account_last4"),
+                routing_last4=v.bank_details.get("routing_last4"),
+                bank_name=v.bank_details.get("bank_name"),
+            )
         return cls(
             id=str(v.id),
             name=v.name,
@@ -69,4 +98,5 @@ class VendorResponse(BaseModel):
             erp_synced_at=v.erp_synced_at.isoformat() if v.erp_synced_at else None,
             invoice_count=invoice_count,
             created_at=v.created_at.isoformat() if v.created_at else "",
+            bank_details=bank_details,
         )

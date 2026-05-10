@@ -4,6 +4,13 @@
 	import SearchBox from '$lib/components/SearchBox.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
+	interface BankDetails {
+		counterparty_id: string | null;
+		account_last4: string | null;
+		routing_last4: string | null;
+		bank_name: string | null;
+	}
+
 	interface Vendor {
 		id: string;
 		name: string;
@@ -21,9 +28,46 @@
 		erp_synced_at: string | null;
 		invoice_count: number;
 		created_at: string;
+		bank_details: BankDetails | null;
 	}
 
 	let vendors = $state<Vendor[]>([]);
+	let bankEditing = $state<Vendor | null>(null);
+	let bankForm = $state<BankDetails>({
+		counterparty_id: '',
+		account_last4: '',
+		routing_last4: '',
+		bank_name: ''
+	});
+	let savingBank = $state(false);
+
+	function openBankEditor(v: Vendor) {
+		bankEditing = v;
+		bankForm = {
+			counterparty_id: v.bank_details?.counterparty_id ?? '',
+			account_last4: v.bank_details?.account_last4 ?? '',
+			routing_last4: v.bank_details?.routing_last4 ?? '',
+			bank_name: v.bank_details?.bank_name ?? ''
+		};
+	}
+
+	async function saveBankDetails() {
+		if (!bankEditing) return;
+		savingBank = true;
+		try {
+			const updated = await api.patch<Vendor>(`/api/vendors/${bankEditing.id}`, {
+				bank_details: bankForm
+			});
+			vendors = vendors.map((v) => (v.id === updated.id ? updated : v));
+			toast('Counterparty saved', 'success');
+			bankEditing = null;
+		} catch (err) {
+			const e = err as { detail?: string; message?: string } | null;
+			toast(e?.detail ?? e?.message ?? 'Save failed', 'error');
+		} finally {
+			savingBank = false;
+		}
+	}
 	let search = $state('');
 	let statusFilter = $state('all');
 	let syncing = $state(false);
@@ -191,6 +235,9 @@
 								<RowAction variant="success" onclick={() => verifyVendor(v.id)}>Verify</RowAction>
 								<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>Reject</RowAction>
 							{/if}
+							<RowAction onclick={() => openBankEditor(v)}>
+								{v.bank_details?.counterparty_id ? 'Bank ✓' : 'Bank'}
+							</RowAction>
 						</td>
 					</tr>
 				{:else}
@@ -212,6 +259,50 @@
 		</div>
 	{/if}
 </div>
+
+{#if bankEditing}
+	<div
+		class="backdrop"
+		onclick={(e) => { if (e.target === e.currentTarget) (bankEditing = null); }}
+	>
+		<div class="modal" role="dialog" aria-label="Vendor bank counterparty">
+			<h2>{bankEditing.name} — bank details</h2>
+			<p class="modal-hint">
+				These values bridge to your payment processor (e.g. Modern Treasury). The
+				<code>counterparty_id</code> is the processor's identifier; the last4s are stored
+				here for display only — full account / routing numbers belong with the processor.
+			</p>
+			<form onsubmit={(e) => { e.preventDefault(); saveBankDetails(); }}>
+				<label>
+					<span>Processor counterparty ID</span>
+					<input type="text" maxlength="255" bind:value={bankForm.counterparty_id} />
+				</label>
+				<label>
+					<span>Bank name</span>
+					<input type="text" maxlength="255" bind:value={bankForm.bank_name} />
+				</label>
+				<div class="form-row">
+					<label>
+						<span>Account last 4</span>
+						<input type="text" maxlength="4" bind:value={bankForm.account_last4} />
+					</label>
+					<label>
+						<span>Routing last 4</span>
+						<input type="text" maxlength="4" bind:value={bankForm.routing_last4} />
+					</label>
+				</div>
+				<div class="modal-footer">
+					<button type="button" class="btn-cancel" onclick={() => (bankEditing = null)}>
+						Cancel
+					</button>
+					<button type="submit" class="btn-primary" disabled={savingBank}>
+						{savingBank ? 'Saving…' : 'Save'}
+					</button>
+				</div>
+			</form>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.workspace {
@@ -471,5 +562,130 @@
 	.load-more-end {
 		font-size: 0.78rem;
 		color: var(--text-muted);
+	}
+
+	/* --- Bank-counterparty modal --- */
+	.backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		display: grid;
+		place-items: center;
+		z-index: 100;
+		backdrop-filter: blur(2px);
+	}
+
+	.modal {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		width: min(480px, 92vw);
+		padding: 24px;
+		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+	}
+
+	.modal h2 {
+		margin: 0 0 4px;
+		font-size: 1.05rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.modal-hint {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		margin: 0 0 16px;
+	}
+
+	.modal-hint code {
+		font-family: 'SF Mono', 'Cascadia Code', monospace;
+		font-size: 0.78rem;
+		color: var(--text);
+	}
+
+	.modal form {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.modal label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.modal label span {
+		font-size: 0.72rem;
+		font-weight: 500;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.modal input {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 8px 10px;
+		font-size: 0.88rem;
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.modal input:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
+	}
+
+	.form-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 12px;
+	}
+
+	.modal-footer {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		padding-top: 8px;
+		border-top: 1px solid var(--border);
+	}
+
+	.btn-cancel,
+	.btn-primary {
+		padding: 8px 18px;
+		border-radius: 4px;
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-cancel {
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+	}
+
+	.btn-cancel:hover {
+		background: var(--bg);
+		color: var(--text);
+	}
+
+	.btn-primary {
+		border: 1px solid var(--accent);
+		background: var(--accent);
+		color: #fff;
+		font-weight: 500;
+	}
+
+	.btn-primary:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+
+	.btn-primary:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 </style>

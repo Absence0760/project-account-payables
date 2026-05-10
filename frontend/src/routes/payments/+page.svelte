@@ -275,11 +275,25 @@
 	let cards = $state<CardItem[]>([]);
 	let loadingCards = $state(false);
 
+	interface CardDashboard {
+		active_cards: number;
+		active_cards_value: number;
+		spend_this_month: number;
+		rebates_this_month: number;
+		rebates_ytd: number;
+		projected_annual_rebates: number;
+	}
+	let cardDashboard = $state<CardDashboard | null>(null);
+
 	async function loadCards() {
 		loadingCards = true;
 		try {
-			const data = await api.get<{ items: CardItem[] }>('/api/cards');
-			cards = data.items;
+			const [list, dash] = await Promise.all([
+				api.get<{ items: CardItem[] }>('/api/cards'),
+				api.get<CardDashboard>('/api/cards/dashboard').catch(() => null)
+			]);
+			cards = list.items;
+			cardDashboard = dash;
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Failed to load cards', 'error');
 		} finally {
@@ -601,6 +615,31 @@
 				</tbody>
 			</table>
 		{:else if activeTab === 'cards'}
+			{#if cardDashboard}
+				<div class="rebate-grid">
+					<div class="rebate-card">
+						<span class="rebate-label">Rebates this month</span>
+						<span class="rebate-value">{formatCurrency(cardDashboard.rebates_this_month)}</span>
+					</div>
+					<div class="rebate-card">
+						<span class="rebate-label">Rebates YTD</span>
+						<span class="rebate-value">{formatCurrency(cardDashboard.rebates_ytd)}</span>
+					</div>
+					<div class="rebate-card highlight">
+						<span class="rebate-label">Projected annual</span>
+						<span class="rebate-value">{formatCurrency(cardDashboard.projected_annual_rebates)}</span>
+						<span class="rebate-hint">at current run rate</span>
+					</div>
+					<div class="rebate-card">
+						<span class="rebate-label">Active cards</span>
+						<span class="rebate-value">
+							{cardDashboard.active_cards}
+							<span class="rebate-sub">{formatCurrency(cardDashboard.active_cards_value)}</span>
+						</span>
+					</div>
+				</div>
+			{/if}
+
 			<table>
 				<thead>
 					<tr>
@@ -1391,6 +1430,59 @@
 	.btn-danger:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.rebate-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+		gap: 12px;
+		margin-bottom: 16px;
+	}
+
+	.rebate-card {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 14px 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.rebate-card.highlight {
+		border-color: rgba(31, 168, 106, 0.4);
+		background: rgba(31, 168, 106, 0.05);
+	}
+
+	.rebate-label {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+
+	.rebate-value {
+		font-size: 1.4rem;
+		font-weight: 700;
+		color: var(--text);
+		line-height: 1.1;
+	}
+
+	.rebate-card.highlight .rebate-value {
+		color: #1fa86a;
+	}
+
+	.rebate-sub {
+		display: block;
+		font-size: 0.78rem;
+		font-weight: 400;
+		color: var(--text-muted);
+		margin-top: 2px;
+	}
+
+	.rebate-hint {
+		font-size: 0.7rem;
+		color: var(--text-muted);
 	}
 
 	.card-badge {

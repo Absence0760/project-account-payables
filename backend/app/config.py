@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # demo); flip on in deployed envs.
     approval_escalation_enabled: bool = False
     approval_escalation_interval_seconds: int = 600
+    # Payment-status reconciler: backstop polling for processors whose
+    # webhooks have gone missing. Disabled by default in local dev (the
+    # mock adapter settles synchronously, so there's nothing to
+    # reconcile); flip on in deployed envs alongside Modern Treasury.
+    payment_reconcile_enabled: bool = False
+    payment_reconcile_interval_seconds: int = 300
+    payment_reconcile_after_minutes: int = 10
+    payment_reconcile_max_age_hours: int = 72
     # Run Tesseract OSD on rendered PDF pages before sending to vision adapters,
     # rotating 90/180/270-off-upright scans back to upright. Safe to leave on —
     # a missing ``pytesseract`` / ``tesseract`` binary degrades to a silent no-op.

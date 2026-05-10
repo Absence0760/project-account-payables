@@ -177,13 +177,13 @@ section on `/organization` (UI maps onto `settings.fraud_rules`).
 - [x] Create payment run — select invoices in the queue, choose method per row, totals shown
 - [x] Run detail modal — status, total, payments table, references; opens after creating a draft and from any row in the Runs tab
 - [x] Execute payment run — separate from create, so a draft can be reviewed before money moves
-- [ ] Early-pay discount highlighting with savings calculation
-- [ ] Void/cancel payment capability — backend doesn't support it yet
-- [ ] Cancel a draft run before executing — backend doesn't support it yet
-- [ ] Payment remittance generation (PDF/email to vendor)
-- [ ] Approval workflow on a draft run (CFO sign-off before execute)
+- [x] Early-pay discount highlighting with savings calculation — queue surfaces discount banner + chip column when `PaymentSchedule.discount_date` is in window
+- [x] Void/cancel payment capability — `POST /api/payments/{id}/void` (RBAC: admin/manager), adapter-level void with `voided` status + audit row
+- [x] Cancel a draft run before executing — `POST /api/payments/runs/{id}/cancel` releases the invoices back to `ready_for_review`
+- [x] Payment remittance generation (PDF/email to vendor) — `GET /api/payments/{id}/remittance` returns reportlab-rendered PDF
+- [x] Approval workflow on a draft run (CFO sign-off before execute) — `requires_cfo_approval` gate + `POST /api/payments/runs/{id}/approve` (CFO-only)
 
-**Files:** `backend/app/api/payments.py`, `backend/app/models/payment.py`
+**Files:** `backend/app/api/payments.py`, `backend/app/models/payment.py`, `backend/app/services/remittance_pdf.py`, `frontend/src/lib/components/RunDetailModal.svelte`
 
 **See also:** [payments.md](../backend/docs/payments.md)
 
@@ -205,11 +205,11 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 - [x] Platform/BYOK dual model — platform keys in env vars, customer keys in org settings
 - [x] Card config in organization settings UI — region auto-selects provider
 - [x] Vendor `accepts_virtual_cards` field
-- [ ] Card list in payments page (show card payments with badges in History tab)
-- [ ] Card generation in payment run — batch creation when virtual card method selected
-- [ ] Vendor email notification — send card details on generation
-- [ ] Rebate dashboard — monthly earnings, projected savings, YTD totals
-- [ ] Supplier portal integration — secure card detail viewing for vendors
+- [x] Card list in payments page — dedicated Cards tab + card_last_four/card_provider join on history rows
+- [x] Card generation in payment run — `execute_payment_run` calls `card_issuance.issue_card_for_invoice` when `method == "virtual_card"`
+- [x] Vendor email notification — pluggable email adapter sends single-use reveal URL on issuance
+- [x] Rebate dashboard — monthly earnings + YTD totals block on payments page
+- [x] Supplier portal integration — `GET /portal/cards/{token}` returns full card detail once (sha256-hashed token, 7-day expiry)
 
 ### International Payments
 **Status:** Planned — **Competitive gap: Tipalti, Coupa, Basware, Airbase, Medius have this**
@@ -239,8 +239,8 @@ Current state: domestic-only payment methods. Blocks entire non-US market. Tipal
 - [x] Webhook handler (`POST /api/payments/webhook/{tenant_slug}/{provider}`) — drives `submitted → completed/failed` transitions
 - [x] `payments.provider`, `provider_payment_id`, `failure_reason`, `submitted_at`, `completed_at` columns (alembic 0007)
 - [x] `execute_payment_run` dispatches via adapter; run status reflects rollup (`completed` / `partial` / `submitted` / `failed`)
-- [ ] Vendor counterparty management UI — admins currently set `Vendor.bank_details.counterparty_id` directly
-- [ ] Reconciliation job — periodically reconcile against the processor for missing webhooks
+- [x] Vendor counterparty management UI — `Bank` action on the vendors grid opens a counterparty modal
+- [x] Reconciliation job — `services/payment_reconciler.py` sweeps every tenant on a timer, re-polls non-terminal payments, force-fails past `AP_PAYMENT_RECONCILE_MAX_AGE_HOURS`. Disabled by default in local dev.
 - [ ] Stripe Treasury / Increase / Column adapters (Modern Treasury covers the most demand)
 
 Connect to actual payment rails for non-card payments.

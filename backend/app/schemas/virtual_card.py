@@ -49,6 +49,10 @@ class CardDashboardResponse(BaseModel):
     spend_this_month: float
     rebates_this_month: float
     rebates_ytd: float
+    # Projected annual = (rebates_ytd / months_elapsed) × 12. Falls back
+    # to rebates_this_month × 12 in January when YTD is short. Surfaces
+    # to the rebate dashboard as the "on track for" headline.
+    projected_annual_rebates: float = 0.0
 
 
 class RebateResponse(BaseModel):

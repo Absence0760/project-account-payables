@@ -129,7 +129,23 @@ async def update_vendor(
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    payload = body.model_dump(exclude_unset=True)
+
+    # bank_details is JSONB — merge instead of replacing so unrelated
+    # processor metadata (legacy fields) survives a partial UI update.
+    if "bank_details" in payload:
+        incoming = payload.pop("bank_details") or {}
+        merged = dict(vendor.bank_details or {})
+        for k, v in incoming.items():
+            # Treat empty string + None as "clear this key" so the UI
+            # can remove a counterparty without sending a magic value.
+            if v is None or v == "":
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        vendor.bank_details = merged or None
+
+    for field, value in payload.items():
         setattr(vendor, field, value)
 
     await db.flush()

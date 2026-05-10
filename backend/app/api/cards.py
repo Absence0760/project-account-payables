@@ -162,12 +162,22 @@ async def card_dashboard(
     )
     rebate_ytd = (await db.execute(rebate_ytd_q)).scalar() or 0
 
+    # Projected annual: (YTD / months elapsed) × 12. In January where
+    # YTD is short, the per-day rate is too noisy, so we fall back to
+    # rebates_this_month × 12 if we haven't accrued any YTD yet.
+    months_elapsed = now.month
+    if rebate_ytd:
+        projected_annual = float(rebate_ytd) / months_elapsed * 12
+    else:
+        projected_annual = float(rebate_month) * 12
+
     return CardDashboardResponse(
         active_cards=active_count or 0,
         active_cards_value=float(active_value),
         spend_this_month=float(spend_this_month),
         rebates_this_month=float(rebate_month),
         rebates_ytd=float(rebate_ytd),
+        projected_annual_rebates=projected_annual,
     )
 
 
