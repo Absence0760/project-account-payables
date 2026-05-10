@@ -17,10 +17,11 @@ import { ACME_CFO, ACME_CLERK, ACME_MANAGER, signInAndWait } from '../fixtures/h
  * | Credit Memos |       |   ✓    |  ✓  |  ✓    |
  * | Payments     |       |   ✓    |  ✓  |  ✓    |
  * | Vendors      |       |   ✓    |  ✓  |  ✓    |
+ * | Purchase Orders |    |   ✓    |  ✓  |  ✓    |
  * | Exceptions   |       |   ✓    |     |  ✓    |
  * | Workflows    |       |        |     |  ✓    |
  * | Organization |       |        |     |  ✓    |
- * | Admin        |       |        |     |  ✓    |
+ * | Users        |       |        |     |  ✓    |
  *
  * Admin coverage is implicit in nav.spec.ts (admin reaches every
  * route). Here we focus on the non-admin gates.
@@ -44,7 +45,7 @@ test.describe('RBAC — sidebar visibility', () => {
 		await assertSidebarLinks(page, ['/', '/invoices']);
 	});
 
-	test('manager: Dashboard, Invoices, Credit Memos, Payments, Vendors, Exceptions', async ({
+	test('manager: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, Exceptions', async ({
 		page
 	}) => {
 		await signInAndWait(page, ACME_MANAGER);
@@ -54,11 +55,12 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/credit-memos',
 			'/payments',
 			'/vendors',
+			'/purchase-orders',
 			'/exceptions'
 		]);
 	});
 
-	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors (no Exceptions, no Admin)', async ({
+	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs (no Exceptions, no Users)', async ({
 		page
 	}) => {
 		await signInAndWait(page, ACME_CFO);
@@ -67,7 +69,8 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/invoices',
 			'/credit-memos',
 			'/payments',
-			'/vendors'
+			'/vendors',
+			'/purchase-orders'
 		]);
 	});
 });
