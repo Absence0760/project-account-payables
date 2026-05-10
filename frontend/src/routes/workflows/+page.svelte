@@ -15,9 +15,68 @@
 	let newDescription = $state('');
 	let creating = $state(false);
 
+	let selectedIds = $state<Set<string>>(new Set());
+	let bulkDeleting = $state(false);
+
 	$effect(() => {
 		workflowStore.fetch();
 	});
+
+	let selectableIds = $derived(
+		workflowStore.all.filter((w) => !w.is_default).map((w) => w.id)
+	);
+	let allSelected = $derived(
+		selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
+	);
+
+	function toggleSelect(id: string) {
+		const next = new Set(selectedIds);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selectedIds = next;
+	}
+
+	function toggleSelectAll() {
+		selectedIds = allSelected ? new Set() : new Set(selectableIds);
+	}
+
+	async function handleBulkDelete() {
+		if (selectedIds.size === 0) return;
+		bulkDeleting = true;
+		try {
+			const result = await workflowStore.bulkRemove([...selectedIds]);
+			selectedIds = new Set();
+			if (result.failed.length === 0) {
+				toast(`Deleted ${result.deleted.length} workflow${result.deleted.length === 1 ? '' : 's'}`, 'success');
+			} else if (result.deleted.length === 0) {
+				toast(`No workflows deleted — ${describeBulkFailure(result.failed[0])}`, 'error');
+			} else {
+				toast(
+					`Deleted ${result.deleted.length}; ${result.failed.length} blocked`,
+					'success',
+				);
+			}
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Bulk delete failed', 'error');
+		} finally {
+			bulkDeleting = false;
+		}
+	}
+
+	function describeBulkFailure(f: { reason: string; instance_count: number | null }): string {
+		switch (f.reason) {
+			case 'default':
+				return 'cannot delete the default workflow';
+			case 'active':
+				return 'workflow is active — deactivate it first';
+			case 'instances':
+				return `workflow has ${f.instance_count} in-flight invoice${f.instance_count === 1 ? '' : 's'}`;
+			case 'not_found':
+				return 'workflow not found';
+			default:
+				return 'blocked';
+		}
+	}
 
 	function stepSummary(wf: WorkflowDefinition): string {
 		const steps = wf.steps_config?.steps ?? [];
@@ -97,10 +156,28 @@
 		<button class="btn-create" onclick={() => (showCreate = true)}>+ New Workflow</button>
 	</header>
 
+	{#if selectedIds.size > 0}
+		<div class="bulk-bar">
+			<span class="bulk-count">{selectedIds.size} selected</span>
+			<button class="btn-bulk-clear" onclick={() => (selectedIds = new Set())}>Clear</button>
+			<button class="btn-bulk-delete" disabled={bulkDeleting} onclick={handleBulkDelete}>
+				{bulkDeleting ? 'Deleting…' : `Delete ${selectedIds.size}`}
+			</button>
+		</div>
+	{/if}
+
 	<div class="grid-container">
 		<table>
 			<thead>
 				<tr>
+					<th class="checkbox-col">
+						<input
+							type="checkbox"
+							checked={allSelected}
+							onchange={toggleSelectAll}
+							aria-label="Select all workflows"
+						/>
+					</th>
 					<th>Name</th>
 					<th>Steps</th>
 					<th>Status</th>
@@ -110,7 +187,17 @@
 			</thead>
 			<tbody>
 				{#each workflowStore.all as wf (wf.id)}
-					<tr>
+					<tr class:row-selected={selectedIds.has(wf.id)}>
+						<td class="checkbox-col">
+							{#if !wf.is_default}
+								<input
+									type="checkbox"
+									checked={selectedIds.has(wf.id)}
+									onchange={() => toggleSelect(wf.id)}
+									aria-label="Select {wf.name}"
+								/>
+							{/if}
+						</td>
 						<td>
 							<a href="/workflows/{wf.id}" class="wf-name">
 								{wf.name}
@@ -140,7 +227,7 @@
 					</tr>
 				{:else}
 					<tr>
-						<td colspan="5" class="empty">
+						<td colspan="6" class="empty">
 							{workflowStore.loading ? 'Loading...' : 'No workflows configured.'}
 						</td>
 					</tr>
@@ -220,6 +307,75 @@
 
 	.btn-create:hover {
 		opacity: 0.85;
+	}
+
+	.bulk-bar {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 14px;
+		background: var(--surface);
+		border: 1px solid var(--accent);
+		border-radius: 6px;
+	}
+
+	.bulk-count {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--accent);
+		flex: 1;
+	}
+
+	.btn-bulk-clear {
+		padding: 6px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.82rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-bulk-clear:hover {
+		color: var(--text);
+	}
+
+	.btn-bulk-delete {
+		padding: 6px 16px;
+		border-radius: 4px;
+		border: none;
+		background: #e04040;
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-bulk-delete:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.btn-bulk-delete:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.checkbox-col {
+		width: 36px;
+		text-align: center;
+		padding-left: 10px;
+		padding-right: 4px;
+	}
+
+	.checkbox-col input[type='checkbox'] {
+		cursor: pointer;
+		accent-color: var(--accent);
+	}
+
+	tbody tr.row-selected {
+		background: rgba(99, 140, 255, 0.08);
 	}
 
 	.error-bar {

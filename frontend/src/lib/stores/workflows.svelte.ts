@@ -62,6 +62,25 @@ function createWorkflowStore() {
 		workflows = workflows.filter((w) => w.id !== id);
 	}
 
+	interface BulkDeleteFailure {
+		workflow_id: string;
+		reason: 'not_found' | 'default' | 'active' | 'instances';
+		instance_count: number | null;
+	}
+	interface BulkDeleteResult {
+		deleted: string[];
+		failed: BulkDeleteFailure[];
+	}
+
+	async function bulkRemove(ids: string[]): Promise<BulkDeleteResult> {
+		const result = await api.post<BulkDeleteResult>('/api/workflows/bulk-delete', {
+			workflow_ids: ids
+		});
+		const deletedSet = new Set(result.deleted);
+		workflows = workflows.filter((w) => !deletedSet.has(w.id));
+		return result;
+	}
+
 	async function fetchActiveSteps() {
 		try {
 			const data = await api.get<Record<string, unknown>>('/api/workflows/active/steps');
@@ -92,6 +111,7 @@ function createWorkflowStore() {
 		create,
 		update,
 		remove,
+		bulkRemove,
 	};
 }
 

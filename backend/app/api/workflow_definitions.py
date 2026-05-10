@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import func, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -215,3 +216,75 @@ async def delete_workflow(
         )
 
     await db.delete(defn)
+
+
+class BulkDeleteWorkflowRequest(BaseModel):
+    workflow_ids: list[str]
+
+
+class BulkDeleteWorkflowFailure(BaseModel):
+    workflow_id: str
+    reason: str  # "not_found" | "default" | "active" | "instances"
+    instance_count: int | None = None
+
+
+class BulkDeleteWorkflowResponse(BaseModel):
+    deleted: list[str]
+    failed: list[BulkDeleteWorkflowFailure]
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteWorkflowResponse)
+async def bulk_delete_workflows(
+    body: BulkDeleteWorkflowRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Best-effort delete of multiple workflows.
+
+    Each id is processed independently. The same three guards apply
+    per-id as the single-delete endpoint: default / active / has
+    instances.
+    """
+    deleted: list[str] = []
+    failed: list[BulkDeleteWorkflowFailure] = []
+
+    for raw_id in body.workflow_ids:
+        try:
+            wf_uuid = uuid.UUID(raw_id)
+        except ValueError:
+            failed.append(BulkDeleteWorkflowFailure(workflow_id=raw_id, reason="not_found"))
+            continue
+
+        result = await db.execute(
+            select(WorkflowDefinition).where(
+                WorkflowDefinition.id == wf_uuid,
+                WorkflowDefinition.organization_id == org_id,
+            )
+        )
+        defn = result.scalar_one_or_none()
+        if not defn:
+            failed.append(BulkDeleteWorkflowFailure(workflow_id=raw_id, reason="not_found"))
+            continue
+        if defn.is_default:
+            failed.append(BulkDeleteWorkflowFailure(workflow_id=raw_id, reason="default"))
+            continue
+        if defn.is_active:
+            failed.append(BulkDeleteWorkflowFailure(workflow_id=raw_id, reason="active"))
+            continue
+
+        instance_count = await _workflow_instance_count(db, wf_uuid)
+        if instance_count:
+            failed.append(
+                BulkDeleteWorkflowFailure(
+                    workflow_id=raw_id,
+                    reason="instances",
+                    instance_count=instance_count,
+                )
+            )
+            continue
+
+        await db.delete(defn)
+        deleted.append(raw_id)
+
+    return BulkDeleteWorkflowResponse(deleted=deleted, failed=failed)
