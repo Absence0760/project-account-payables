@@ -38,7 +38,7 @@ dev = [
 # (plus the `osd` traineddata file) is on PATH. Missing → auto-rotate
 # degrades to a silent no-op in `services.image_preprocess`.
 ocr = [
-    "pytesseract>=0.3.10,<1",
+    "pytesseract>=0.3.13,<1",
     "Pillow>=10,<12",
 ]
 
