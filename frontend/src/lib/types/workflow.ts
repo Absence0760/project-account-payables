@@ -17,12 +17,40 @@ export interface ExtractionStepConfig {
 	auto_approve_threshold: number;
 }
 
+export type RoutingField = 'gl_account' | 'cost_center' | 'department' | 'vendor_id';
+export type RoutingOperator = 'eq' | 'ne' | 'in' | 'not_in' | 'starts_with';
+
+export interface RoutingRule {
+	field: RoutingField;
+	operator: RoutingOperator;
+	value: string | string[];
+}
+
+export const ROUTING_FIELD_LABELS: Record<RoutingField, string> = {
+	gl_account: 'GL account',
+	cost_center: 'Cost center',
+	department: 'Department',
+	vendor_id: 'Vendor',
+};
+
+export const ROUTING_OPERATOR_LABELS: Record<RoutingOperator, string> = {
+	eq: 'equals',
+	ne: 'does not equal',
+	in: 'is one of',
+	not_in: 'is not one of',
+	starts_with: 'starts with',
+};
+
 export interface ApprovalLevelConfig {
 	min_amount: number | null;
 	max_amount: number | null;
 	approver_ids: string[];
 	required_approvals: number;
 	name: string;
+	routing_rules: RoutingRule[];
+	parallel_mode: 'any' | 'all';
+	escalation_hours: number | null;
+	escalation_to_user_ids: string[];
 }
 
 export interface ApprovalStepConfig {

@@ -4,12 +4,14 @@
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/Toast.svelte';
+	import ApprovalMatrixEditor from '$lib/components/ApprovalMatrixEditor.svelte';
 	import type {
 		WorkflowDefinition,
 		WorkflowStep,
 		WorkflowStepType,
 		ExtractionStepConfig,
 		ApprovalStepConfig,
+		ApprovalLevelConfig,
 		ErpExportStepConfig,
 		ErpExportFormat,
 	} from '$lib/types/workflow';
@@ -353,6 +355,7 @@
 								>
 									<option value="manual">Manual — assign per invoice</option>
 									<option value="specific">Specific — always same approver</option>
+									<option value="chain">Chain — multi-level matrix</option>
 									<option value="auto">Auto — skip approval step</option>
 								</select>
 							</div>
@@ -432,6 +435,23 @@
 								<p class="field-hint warning">
 									Invoices will be automatically approved without human review. Use with caution.
 								</p>
+							{/if}
+
+							{#if cfg.approver_strategy === 'chain'}
+								<div class="field">
+									<label>Approval matrix</label>
+									<p class="field-hint">
+										Define one or more approval levels. Each level can filter by amount or
+										invoice attributes (department, GL, vendor) and supports parallel approvers
+										and time-based escalation.
+									</p>
+									<ApprovalMatrixEditor
+										chain={cfg.approval_chain ?? []}
+										users={adminStore.users}
+										onchange={(next: ApprovalLevelConfig[]) =>
+											updateStepConfig(selectedIndex, 'approval_chain', next)}
+									/>
+								</div>
 							{/if}
 
 							<div class="field-divider"></div>

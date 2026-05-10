@@ -121,7 +121,7 @@ Current state: manual, specific, auto, and chain approval strategies. Amount-bas
 - [x] Escalation rules — `escalation_hours` + `escalation_to_user_ids` per level. Background sweeper (`services/approval_escalation.py`) appends the targets onto the level's `approver_ids` once the level's `entered_at` is older than `escalation_hours`. Idempotent. Toggleable via `AP_APPROVAL_ESCALATION_ENABLED`.
 - [ ] Email approval — approve/reject directly from email notification without logging in *(skipped — needs SMTP / signed-token credentials)*
 - [ ] Slack/Teams approval — approve/reject from Slack message buttons *(skipped — needs Slack/Teams app + webhook secret)*
-- [ ] Approval matrix UI — visual configuration of routing rules per org *(in progress, see Task #62)*
+- [x] Approval matrix UI — `frontend/src/lib/components/ApprovalMatrixEditor.svelte` plugged into `/workflows/[id]` when `approver_strategy=chain`. Edits levels (name, amount range, parallel mode, approvers, routing rules, escalation hours + targets); persists through the existing `PATCH /api/workflows/{id}` path.
 
 **Competitors:** Coupa (matrix approval), Tipalti (parallel + Slack), Stampli (email/Slack), Airbase (Slack-native), Basware (conditional chains)
 
