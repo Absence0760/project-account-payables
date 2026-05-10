@@ -189,12 +189,14 @@
 		<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Credit Memo</button>
 	</header>
 
-	<nav class="filter-chips">
-		<button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>All</button>
-		<button class="filter-chip" class:active={statusFilter === 'open'} onclick={() => (statusFilter = 'open')}>Open</button>
-		<button class="filter-chip" class:active={statusFilter === 'applied'} onclick={() => (statusFilter = 'applied')}>Applied</button>
-		<button class="filter-chip" class:active={statusFilter === 'void'} onclick={() => (statusFilter = 'void')}>Void</button>
-	</nav>
+	<div class="filter-row">
+		<nav class="filters">
+			<button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>All</button>
+			<button class="filter-chip" class:active={statusFilter === 'open'} onclick={() => (statusFilter = 'open')}>Open</button>
+			<button class="filter-chip" class:active={statusFilter === 'applied'} onclick={() => (statusFilter = 'applied')}>Applied</button>
+			<button class="filter-chip" class:active={statusFilter === 'void'} onclick={() => (statusFilter = 'void')}>Void</button>
+		</nav>
+	</div>
 
 	<div class="grid-container">
 		<table>
@@ -341,19 +343,36 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	.filter-chips {
+	.filter-row {
 		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+	.filters {
+		display: flex;
+		align-items: center;
 		gap: 6px;
+		flex-wrap: wrap;
 	}
 	.filter-chip {
-		padding: 5px 14px;
-		border-radius: 16px;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 14px;
+		border-radius: 20px;
 		border: 1px solid var(--border);
 		background: var(--surface);
 		color: var(--text-muted);
 		font-size: 0.82rem;
+		font-weight: 500;
 		cursor: pointer;
+		transition: all 0.15s;
 		font-family: inherit;
+	}
+	.filter-chip:hover {
+		border-color: var(--accent);
+		color: var(--text);
 	}
 	.filter-chip.active {
 		background: var(--accent);

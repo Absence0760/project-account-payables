@@ -320,6 +320,14 @@
 
 <div class="workspace">
 	<header class="toolbar">
+		<h1>Invoices</h1>
+		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple bind:this={fileInput} onchange={handleUpload} hidden />
+		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
+			{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
+		</button>
+	</header>
+
+	<div class="filter-row">
 		<div class="search-group">
 			<SearchBox
 				bind:value={search}
@@ -343,22 +351,17 @@
 				{/if}
 			</button>
 		</div>
-		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple bind:this={fileInput} onchange={handleUpload} hidden />
-		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
-			{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
-		</button>
-	</header>
-
-	<nav class="filters">
-		<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
-			All <span class="count">{totalCount}</span>
-		</button>
-		{#each visibleStatuses as s}
-			<button class="filter-chip" class:active={activeStatuses.includes(s)} onclick={() => toggleStatus(s)}>
-				{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
+		<nav class="filters">
+			<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
+				All <span class="count">{totalCount}</span>
 			</button>
-		{/each}
-	</nav>
+			{#each visibleStatuses as s}
+				<button class="filter-chip" class:active={activeStatuses.includes(s)} onclick={() => toggleStatus(s)}>
+					{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
+				</button>
+			{/each}
+		</nav>
+	</div>
 
 	{#if selected.size > 0}
 		<div class="bulk-bar">
@@ -559,11 +562,17 @@
 		gap: 16px;
 	}
 
+	.filter-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+
 	.search-group {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		flex: 1;
 	}
 
 	.advanced-btn {

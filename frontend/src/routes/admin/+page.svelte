@@ -210,15 +210,16 @@
 <div class="workspace">
 	<header class="toolbar">
 		<h1>Users</h1>
-		<div class="toolbar-actions">
-			<SearchBox
-				bind:value={search}
-				placeholder="Search name or email..."
-				ariaLabel="Search users"
-			/>
-			<button class="btn-primary" onclick={openCreate}>+ Invite User</button>
-		</div>
+		<button class="btn-primary" onclick={openCreate}>+ Invite User</button>
 	</header>
+
+	<div class="filter-row">
+		<SearchBox
+			bind:value={search}
+			placeholder="Search name or email..."
+			ariaLabel="Search users"
+		/>
+	</div>
 
 	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
 		{#snippet actions()}
@@ -498,10 +499,11 @@
 		cursor: not-allowed;
 	}
 
-	.toolbar-actions {
+	.filter-row {
 		display: flex;
 		align-items: center;
 		gap: 12px;
+		flex-wrap: wrap;
 	}
 
 	.load-more-row {
