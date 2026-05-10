@@ -58,7 +58,8 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 
 | Control | Status | Where it lives |
 |---|---|---|
-| Password complexity + storage (bcrypt) | Done | `backend/app/utils/passwords.py` |
+| Password complexity + storage (bcrypt_sha256) | Done | `backend/app/utils/passwords.py` — single shared `pwd_context` uses `bcrypt_sha256` (SHA-256 pre-hash → bcrypt) to side-step bcrypt's 72-byte truncation. Legacy `$2b$` hashes still verify via the schemes list. |
+| Cross-tenant guard (JWT-org vs X-Tenant-Slug) | Done | `backend/app/tenant.py::get_tenant` — refuses to resolve the tenant when the employee JWT's `org` claim doesn't match the header. Tests: `backend/tests/test_tenant_isolation.py` + `frontend/tests-e2e/auth/tenant-isolation.spec.ts`. |
 | MFA support (TOTP + email backup) | Done | `backend/app/services/mfa.py` |
 | MFA enforcement (org-level toggle) | Done | `Organization.settings.mfa.required` |
 | SSO (OIDC — Okta, Entra) | Done | `backend/app/api/auth_sso.py` |
@@ -92,6 +93,8 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 | Application audit log (writes, approvals, transitions) | Done | `backend/app/services/audit.py` → `AuditLog` table per tenant |
 | RBAC denial logging | Done | `app/api/deps.py` `require_roles()` writes WARNING with actor + path |
 | Auth event logging (login, logout, MFA events) | Done | `app/services/audit_dispatch.py::dispatch_auth_audit` resolves the tenant DB from the org id and writes an `auth.*` row for every login / logout / MFA / SSO event |
+| Webhook HMAC verification + event dedup | Done | `backend/app/services/webhook_security.py` (`verify_hmac_sha256` constant-time + `is_event_already_processed` Redis SET NX EX with 24h TTL). Applied to `/api/payments/webhook/...`, `/api/cards/webhook/{provider}`, `/api/erp/webhook/{erp_type}`. All four rejection paths return 204 silently so the response doesn't enumerate. |
+| File-upload sanitisation + cross-tenant download check | Done | `backend/app/services/storage.py::_safe_filename` strips path separators + control chars before interpolating into the S3 key; `GET /api/workflow/file/{file_key}` verifies the key's first segment equals the requesting user's `organization_id`. |
 | **Centralized + WORM-compliant audit log shipping** | Done | `backend/app/services/audit_log_shipper.py` + `services/audit_shipping/` adapters — background loop ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock. See `backend/docs/audit-log-shipping.md`. |
 | Centralized application logs (stderr) | Done in prod | ECS → CloudWatch Logs |
 | Alerting on 5xx + RBAC-denial spikes | Pending | CloudWatch Alarms or Datadog |

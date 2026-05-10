@@ -109,6 +109,27 @@ Login-failure rows for unknown emails are dropped — without an `organization_i
 - **Auth routes** (`/api/auth/*`) read from the control-plane DB (`account_payables`) — this is where `users`, `organizations`, and `roles` tables live
 - **Business routes** (`/api/invoices`, `/api/vendors`, `/api/dashboard`) read from the tenant DB (`ap_<slug>`) — resolved via the `X-Tenant-Slug` header
 
+### Cross-tenant guard
+
+`app/tenant.py::get_tenant` is the single chokepoint every business
+route flows through. It refuses to resolve a tenant if the caller's
+JWT identifies a different organization than the slug — the header
+alone is **not** trusted to decide which tenant's data is read.
+
+For employee tokens (`typ` is anything other than `"vendor"`), the
+guard requires `payload["org"] == organization.id`. Mismatch → 403.
+Vendor-portal tokens (`typ="vendor"`) are exempt because `VendorUser`
+rows live in the per-tenant DB and a cross-tenant attempt fails
+naturally on the user-lookup query in
+`app/api/portal_deps.py::get_current_vendor_user`. Unauthenticated
+requests pass through to the downstream auth dep (which 401s).
+
+Without this guard, an authenticated user from tenant A could read
+or mutate tenant B's data simply by sending
+`X-Tenant-Slug: <other-tenant>` on the request. The guard is pinned
+by `backend/tests/test_tenant_isolation.py` (unit) and
+`frontend/tests-e2e/auth/tenant-isolation.spec.ts` (e2e).
+
 ## Frontend Implementation
 
 - Auth state is managed in `src/lib/stores/auth.svelte.ts` (Svelte 5 runes)

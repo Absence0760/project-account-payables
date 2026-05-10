@@ -127,13 +127,15 @@ Controlled by: `AP_EXTRACTION_MODE`, `AP_ERP_MODE`, `AP_AUDIT_MODE`
 ### Invoice workflow state machine
 
 ```
-new → pending → ready_for_review → approved → sending_to_erp → sent_to_erp → done
-                      ↕ rejected ↔ new
-                                    failed → pending | sending_to_erp
+new → pending → ready_for_review → approved → sending_to_erp → sent_to_erp → posted_in_erp → payment_scheduled → paid → done
+                      ↕ rejected ↔ new                                   ↘                                  ↑
+                                    failed → pending | sending_to_erp     approved ----------------- (direct schedule, no ERP)
+                                                                          ↑ (void) ←──────────────────────────────┘
 ```
 
 Terminal state: `done`. Step types: `extraction`, `approval`, `erp_export`, `done`.
 Workflow definitions are snapshotted per-invoice — editing a definition does not affect in-flight invoices.
+The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled` or `paid` back to `approved` so the invoice re-enters the queue. Authoritative graph: `backend/app/services/workflow_engine.py::VALID_TRANSITIONS`.
 
 ### Data models
 
@@ -243,9 +245,10 @@ These are the rules the `.claude/agents/code-reviewer.md` agent cites. A diff th
 - **Money is exact.** Amounts use `Decimal` (never `float`), and SQLAlchemy columns for currency use `Numeric(precision, scale)` (never `Float` / `Real`). A new column or in-memory total typed as `float` for currency is `Critical`.
 - **Idempotency on writes that move money.** Anything that initiates a payment, reverses a payment, or confirms an invoice as paid must be idempotent at the API boundary. The mechanism is whichever the backend already uses (idempotency-key header, request-id table, or a DB-level unique constraint on the operation tuple). A new "send payment" / "post payment" / "confirm payable" handler with no idempotency story is `Critical`.
 - **Audit trail is append-only.** Status transitions on invoices, payments, approvals, and vendors write a log row through the audit-shipping infrastructure (`services/audit_shipping/` — see `## Architecture overview`), not just mutate state. A status change that overwrites without producing an audit row is `Improvement` at minimum, `Critical` if the field is regulated (`paid_at`, `approved_at`, `void_at`).
-- **Tenant isolation is enforced at the data layer, not just by application code.** Every read / write resolves the tenant DB via the `X-Tenant-Slug` header → `ap_<slug>` mapping (see `## Multi-tenancy`). A new query that runs against the control-plane DB while reading tenant data, or hardcodes a tenant DB name, is `Critical`.
+- **Tenant isolation is enforced at the data layer, not just by application code.** Every read / write resolves the tenant DB via the `X-Tenant-Slug` header → `ap_<slug>` mapping (see `## Multi-tenancy`). `backend/app/tenant.py::get_tenant` is the chokepoint and cross-checks the JWT's `org` claim against the resolved tenant — so a leaked / spoofed header alone can't widen access. A new query that runs against the control-plane DB while reading tenant data, hardcodes a tenant DB name, or constructs a tenant engine outside `get_tenant_db` is `Critical`.
 - **Auth before everything.** Every route under `/api` is behind the auth middleware unless it is documented public-by-design. A new route mounted before the auth dependency, or one that references the user's identity without the auth dependency injected, is `Critical`. Approval / payment endpoints also check role / RBAC, not just authentication.
 - **Secrets via sops + AWS KMS, no hardcoded fallback.** Long-lived secrets live only in `*.sops` files, decrypted via the project's KMS key. A new `os.environ["X"]` with a fallback like `or "some-default"` for a secret is `Critical`. No committed `.env` files (`.env.example` templates are fine).
 - **PII / banking data stays out of logs and error responses.** Bank account numbers, tax IDs, full vendor addresses, and full payment-method numbers must not appear in `logger` output, in HTTP error bodies, or in URL query strings. A `print` / `logger.info(...)` containing one of those fields is `Critical`.
 - **Migrations are idempotent and run on every tenant DB.** New Alembic revisions use safe DDL (`IF NOT EXISTS` / `IF EXISTS` where applicable). A schema change that lands as control-plane-only when the change should fan out to every tenant is `Critical` — see `Don't modify tenant DBs outside of Alembic migrations` in `## What not to do`.
-- **Webhook handlers verify signatures and dedupe by event id.** A new handler that doesn't verify the provider's HMAC, or doesn't dedupe by `event.id`, is `Critical` — webhook providers retry on any non-2xx and dedup is the only thing keeping a one-time effect one-time.
+- **Webhook handlers verify signatures and dedupe by event id.** A new handler that doesn't verify the provider's HMAC, or doesn't dedupe by `event.id`, is `Critical` — webhook providers retry on any non-2xx and dedup is the only thing keeping a one-time effect one-time. The shared helpers live in `backend/app/services/webhook_security.py` (`verify_hmac_sha256`, `is_event_already_processed`, `extract_signature_header`); every webhook also returns 204 silently on every rejection path so the response doesn't enumerate.
+- **Passwords use the shared `bcrypt_sha256` context.** `backend/app/utils/passwords.py::pwd_context` is the single hash context across the codebase; it uses `bcrypt_sha256` to side-step bcrypt's 72-byte truncation. A new `CryptContext(schemes=["bcrypt"], ...)` instantiation anywhere is `Critical` — see `.claude/hooks/security-patterns.sh` rule `bcrypt-truncation`.

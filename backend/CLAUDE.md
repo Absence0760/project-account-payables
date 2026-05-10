@@ -127,17 +127,24 @@ backend/
 
 ```python
 VALID_TRANSITIONS = {
-    new:              {pending, ready_for_review, done},
-    pending:          {ready_for_review, failed},
-    ready_for_review: {approved, rejected},
-    approved:         {sending_to_erp, done},
-    rejected:         {ready_for_review, new},
-    sending_to_erp:   {sent_to_erp, failed},
-    sent_to_erp:      {done},
-    done:             {},  # terminal
-    failed:           {pending, sending_to_erp},
+    new:                {pending, ready_for_review, approved, done},
+    pending:            {ready_for_review, approved, failed},
+    ready_for_review:   {approved, rejected},
+    approved:           {sending_to_erp, payment_scheduled, done},
+    rejected:           {ready_for_review, new},
+    sending_to_erp:     {sent_to_erp, failed},
+    sent_to_erp:        {posted_in_erp, done},
+    posted_in_erp:      {payment_scheduled, done},
+    payment_scheduled:  {paid, approved},      # void → back to approved
+    paid:               {done, approved},      # void → back to approved
+    done:               {},                    # terminal
+    failed:             {pending, sending_to_erp},
 }
 ```
+
+`payment_scheduled → approved` and `paid → approved` are back-edges
+used by the void-payment path (`POST /api/payments/{id}/void`) to
+re-enter the payment queue. Everything else is forward-only.
 
 Step types: `extraction` → `approval` → `erp_export` → `done`
 
@@ -222,6 +229,30 @@ Registered: `mock`, `cloudwatch`, `s3_objectlock`.
 
 The `audit_log_shipper` background loop instantiates every adapter named in `AP_AUDIT_SHIPPING_PROVIDERS` and ships each batch to all of them; all must succeed before the rows are marked shipped. See `docs/audit-log-shipping.md`.
 
+## Webhook security (`services/webhook_security.py`)
+
+Every inbound webhook handler — payments, cards, ERP, email-intake — verifies the provider's HMAC over the raw request body and dedupes by event id before mutating state (project invariant #9). Shared helpers:
+
+- `verify_hmac_sha256(secret, raw_body, provided_hex)` — constant-time HMAC-SHA256 check via `hmac.compare_digest`. Empty / missing secret or signature fail closed.
+- `is_event_already_processed(provider, event_id, ttl_seconds=86400)` — Redis `SET NX EX` dedup. First delivery returns `False`; replays within the TTL window return `True` so the handler short-circuits.
+- `extract_signature_header(headers, *candidates)` — case-insensitive multi-candidate header lookup (different providers use different header names).
+
+Per-tenant secrets:
+
+| Endpoint | Settings path |
+|---|---|
+| `/api/payments/webhook/...` | `Organization.settings.payments.webhook_secret` (verified inside the adapter's `parse_webhook`) |
+| `/api/cards/webhook/{provider}` | `Organization.settings.cards.webhook_signing_secret` |
+| `/api/erp/webhook/{erp_type}` | `Organization.settings.erp.webhook_signing_secret` |
+
+Every webhook handler returns **204 silently** on every rejection path (bad signature, unknown tenant, missing event id, unknown card / invoice / payment). Distinct 4xx responses would enumerate tenant slugs or card tokens. Tests: `backend/tests/test_webhook_security.py`, `tests/test_payment_webhook_security.py`.
+
+## Security utilities
+
+- **Passwords**: a single shared `pwd_context` in `app/utils/passwords.py` uses `bcrypt_sha256` (SHA-256 pre-hash → bcrypt) to side-step bcrypt's 72-byte truncation. Every call site (auth, admin, portal, vendors, tenant_provisioning, scripts/seed) imports from there — never construct a fresh `CryptContext`. Complexity rules in `validate_password_complexity` (min 12 chars, upper/lower/digit).
+- **Filename sanitiser**: `app/services/storage.py::_safe_filename` strips path separators, `..`, leading dots (no dotfiles), and control / non-printable characters. Used by `upload_invoice_file` before interpolating the filename into the S3 key. Without it, a vendor portal POST with filename `../../other-org/secret.pdf` could land under another tenant's prefix.
+- **File download cross-tenant check**: `GET /api/workflow/file/{file_key:path}` verifies the key's first segment equals the requesting user's `organization_id`. Same 404 for wrong-org and missing-file so the response doesn't enumerate prefixes.
+
 ## Dispatch modes
 
 Extraction, ERP push, and audit logging support two execution modes:
@@ -270,12 +301,17 @@ Stored in `Organization.settings`:
 {
   "company": { "name", "tax_id", "address", "phone", "website", "logo_url" },
   "invoice_defaults": { "currency", "payment_terms", "number_prefix", "default_gl_account", "default_cost_center" },
-  "erp": { "type", "integration_method", "credentials": { ... } },
+  "erp": { "type", "integration_method", "credentials": { ... }, "webhook_signing_secret": "..." },
   "extraction": { "program_type": "platform"|"byok", "provider", "api_key", "model" },
-  "cards": { "program_type": "platform"|"byok", "provider", ... },
-  "mfa": { "required": true|false }
+  "cards": { "program_type": "platform"|"byok", "provider", "webhook_signing_secret": "...", ... },
+  "payments": { "provider", "credentials": { ... }, "webhook_secret": "...", "cfo_approval_above": Decimal },
+  "mfa": { "required": true|false },
+  "sso": { ... },
+  "fraud_rules": { ... }
 }
 ```
+
+The three `webhook_*_secret` fields are HMAC keys used by the inbound webhook handlers — see "Webhook security" above.
 
 ## Exception types
 

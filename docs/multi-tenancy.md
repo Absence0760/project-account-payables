@@ -30,16 +30,21 @@ Every API request includes an `X-Tenant-Slug` header (added automatically by `sr
 
 The dependency chain in `app/tenant.py`:
 ```
-X-Tenant-Slug header
-  → get_tenant_slug()        # extract from header
+X-Tenant-Slug header + Authorization Bearer <JWT>
+  → get_tenant_slug()        # extract slug from header
   → get_tenant()             # look up org in control-plane DB by slug
+                             # CROSS-CHECK: payload["org"] must equal org.id
+                             #              for employee tokens (typ != "vendor")
+                             #              → 403 on mismatch
   → get_tenant_db()          # yield a session on the tenant's DB
 ```
+
+The cross-check in `get_tenant` is the load-bearing security control. Without it, an authenticated user from tenant A could read or mutate tenant B's data by sending `X-Tenant-Slug: <other-tenant>`. Vendor-portal tokens (`typ="vendor"`) are exempt — they're scoped naturally because `VendorUser` rows live in the per-tenant DB. See `docs/authentication.md § Cross-tenant guard`.
 
 ### 4. Routes use the correct database
 
 - **Auth routes** (`/api/auth/*`) use the control-plane DB — users and orgs live there
-- **Business routes** (`/api/invoices`, `/api/vendors`, `/api/dashboard`) use the tenant DB — data is fully isolated per tenant
+- **Business routes** (`/api/invoices`, `/api/vendors`, `/api/dashboard`) use the tenant DB — data is fully isolated per tenant. Every route flows through `get_tenant` so the cross-check fires uniformly.
 
 ## Database Layout
 
