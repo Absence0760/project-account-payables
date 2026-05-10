@@ -8,12 +8,27 @@ class VendorBankDetails(BaseModel):
     payment rails — Modern Treasury and friends key payment-orders off
     that. Last4s of routing + account number are stored alongside for
     display, never the full account numbers (those live with the
-    processor)."""
+    processor).
+
+    International fields:
+      - `iban_last4`: the last 4 chars of the IBAN, displayed in the UI.
+        The FULL IBAN lives in `Vendor.bank_details` JSONB and is read
+        only by the payment orchestrator — it is never returned to the
+        browser. A full IBAN is effectively an account identifier in
+        SEPA-zone countries.
+      - `swift_bic`: the bank's SWIFT/BIC code. Public bank routing
+        information (same trust level as a US ABA routing number),
+        safe to surface in the UI.
+      - `country`: ISO 3166-1 alpha-2 country code for the destination
+        bank; used by the corridor selector."""
 
     counterparty_id: str | None = Field(default=None, max_length=255)
     account_last4: str | None = Field(default=None, max_length=4)
     routing_last4: str | None = Field(default=None, max_length=4)
     bank_name: str | None = Field(default=None, max_length=255)
+    iban_last4: str | None = Field(default=None, max_length=4)
+    swift_bic: str | None = Field(default=None, max_length=11)
+    country: str | None = Field(default=None, max_length=2)
 
 
 class VendorBase(BaseModel):
@@ -74,11 +89,16 @@ class VendorResponse(BaseModel):
             # Pydantic strips unknown keys via VendorBankDetails — keeps
             # the legacy JSONB shape (which historically held arbitrary
             # processor metadata) from leaking out to the UI.
+            full_iban = (v.bank_details.get("iban") or "").strip()
+            iban_last4 = full_iban[-4:] if len(full_iban) >= 4 else None
             bank_details = VendorBankDetails(
                 counterparty_id=v.bank_details.get("counterparty_id"),
                 account_last4=v.bank_details.get("account_last4"),
                 routing_last4=v.bank_details.get("routing_last4"),
                 bank_name=v.bank_details.get("bank_name"),
+                iban_last4=iban_last4,
+                swift_bic=v.bank_details.get("swift_bic"),
+                country=v.bank_details.get("country"),
             )
         return cls(
             id=str(v.id),

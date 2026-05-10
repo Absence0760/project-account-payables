@@ -58,6 +58,15 @@ def _payment(*, method="ach", amount: Decimal = Decimal("100.00")):
         completed_at=None,
         failure_reason=None,
         correlation_id=uuid.uuid4(),
+        # International fields (migration 0017) — None on domestic
+        # same-currency payments, populated by the orchestrator on
+        # cross-border ones. See `services/international_payments.py`.
+        source_currency=None,
+        source_amount=None,
+        fx_rate=None,
+        fx_locked_at=None,
+        corridor=None,
+        target_country=None,
     )
 
 

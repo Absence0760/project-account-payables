@@ -31,21 +31,42 @@ import pytest
 
 def test_vendor_bank_details_schema_only_exposes_last_four():
     """`VendorBankDetails` is the UI-visible subset of the JSONB
-    column. It must not declare full-account-number or
-    full-routing-number fields — only the last-4 partials and the
-    processor counterparty id."""
+    column. It must not declare full-account-number or full-IBAN
+    fields — only the partials (`account_last4`, `routing_last4`,
+    `iban_last4`), the processor counterparty id, and public bank
+    routing identifiers (SWIFT/BIC, country)."""
     from app.schemas.vendor import VendorBankDetails
 
     fields = set(VendorBankDetails.model_fields.keys())
     # Allow-list: the schema must only declare these names. New keys
     # require a deliberate review for leak potential.
-    allowed = {"counterparty_id", "account_last4", "routing_last4", "bank_name"}
+    allowed = {
+        "counterparty_id",
+        "account_last4",
+        "routing_last4",
+        "bank_name",
+        # International additions — SWIFT/BIC is a public bank routing
+        # identifier (same trust level as a US ABA routing number);
+        # country is ISO 3166-1; iban_last4 is the truncated form of
+        # the IBAN. The FULL IBAN lives in the bank_details JSONB and
+        # is read only by the payment orchestrator — it is never
+        # returned through this schema. See `app/schemas/vendor.py`.
+        "iban_last4",
+        "swift_bic",
+        "country",
+    }
     extra = fields - allowed
     assert not extra, (
         f"VendorBankDetails grew unfamiliar fields {extra}; review for PII leak"
     )
-    # And the forbidden full-detail names must NOT be present.
-    forbidden = {"account_number", "routing_number", "iban", "swift", "full_account"}
+    # The forbidden full-detail names must NOT be present.
+    forbidden = {
+        "account_number",
+        "routing_number",
+        "iban",            # full IBAN must never be exposed; iban_last4 is OK
+        "swift",           # legacy / ambiguous name; use swift_bic instead
+        "full_account",
+    }
     leak = fields & forbidden
     assert not leak, f"VendorBankDetails exposes raw banking fields: {leak}"
 

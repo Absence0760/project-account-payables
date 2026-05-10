@@ -51,6 +51,13 @@ class PaymentPayload:
     each processor models bank accounts differently (Modern Treasury uses
     `counterparty_id`; Increase uses an external account ID; mock ignores it).
     The orchestrator looks up the right shape per processor.
+
+    International fields are populated by
+    `services.international_payments.prepare_international_payment` when
+    the corridor needs an FX leg or a foreign rail. Adapters that don't
+    support international rails ignore them; ones that do (Wise, future
+    Tipalti) use them to set the FX quote ID + destination corridor on
+    the outbound request.
     """
 
     correlation_id: str
@@ -59,10 +66,15 @@ class PaymentPayload:
     vendor_name: str
     amount: Decimal
     currency: str
-    method: str  # "ach" | "wire" | "check" | "rtp"
+    method: str  # "ach" | "wire" | "rtp" | "check" | "sepa" | "international_wire"
     description: str | None = None
     vendor_bank: dict | None = None
     metadata: dict | None = None
+    # International leg — None on domestic same-currency payments.
+    source_currency: str | None = None
+    source_amount: Decimal | None = None
+    fx_rate: Decimal | None = None
+    target_country: str | None = None
 
 
 @dataclass

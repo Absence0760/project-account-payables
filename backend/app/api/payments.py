@@ -3,6 +3,7 @@
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
@@ -877,6 +878,65 @@ async def execute_payment_run(
                 failed += 1
             continue
 
+        # International leg: if the invoice's currency isn't the org's
+        # home currency (or the payment was already prepared via
+        # prepare_international_payment), lock an FX rate before the
+        # adapter call and persist the source-side outflow + rate on
+        # the row. The corridor lookup also decides whether the row
+        # needs to flip to `sepa` / `international_wire`.
+        invoice_currency = (invoice.currency if invoice else "USD").upper()
+        org_home_currency = (
+            ((org.settings or {}).get("payments") or {}).get("home_currency")
+            or "USD"
+        ).upper()
+        has_intl_bank_fields = bool(
+            vendor_bank
+            and (vendor_bank.get("iban") or vendor_bank.get("swift_bic"))
+        )
+        if (
+            invoice is not None
+            and (
+                invoice_currency != org_home_currency
+                or payment.method in {"sepa", "international_wire"}
+                or has_intl_bank_fields
+            )
+            and payment.fx_rate is None  # not already prepared
+        ):
+            from app.services.fx_adapters import get_fx_adapter
+            from app.services.international_payments import (
+                InternationalPaymentError,
+                prepare_international_payment,
+            )
+
+            v_for_corridor = SimpleNamespace(
+                bank_details=vendor_bank or {},
+                address_country=getattr(invoice, "vendor_country", None),
+            )
+            fx_cfg = (org.settings or {}).get("fx") or {}
+            fx_adapter = get_fx_adapter(fx_cfg)
+            try:
+                prepared = await prepare_international_payment(
+                    invoice=invoice,
+                    vendor=v_for_corridor,
+                    org_home_currency=org_home_currency,
+                    fx_adapter=fx_adapter,
+                    requested_method=payment.method,
+                )
+            except InternationalPaymentError as exc:
+                payment.status = "failed"
+                payment.failure_reason = f"international_payment_error: {exc}"
+                payment.completed_at = now
+                failed += 1
+                continue
+
+            payment.method = prepared.corridor.method
+            payment.source_currency = prepared.payment.source_currency
+            payment.source_amount = prepared.payment.source_amount
+            payment.fx_rate = prepared.payment.fx_rate
+            payment.fx_locked_at = prepared.payment.fx_locked_at
+            payment.corridor = prepared.payment.corridor
+            payment.target_country = prepared.payment.target_country
+
         payload = PaymentPayload(
             correlation_id=str(payment.correlation_id or payment.id),
             invoice_id=str(payment.invoice_id),
@@ -888,6 +948,10 @@ async def execute_payment_run(
             description=invoice.description if invoice else None,
             vendor_bank=vendor_bank,
             metadata={"organization_id": str(org.id)},
+            source_currency=payment.source_currency,
+            source_amount=payment.source_amount,
+            fx_rate=payment.fx_rate,
+            target_country=payment.target_country,
         )
 
         result_obj = await adapter.create_payment(payload)

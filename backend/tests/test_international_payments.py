@@ -1,0 +1,561 @@
+"""International payments — orchestration + FX gain/loss + e2e flow
+through `execute_payment_run`.
+
+Stack pinned here:
+
+  1. `prepare_international_payment`
+     - Picks the corridor and locks the rate at submission time
+     - Computes source-side outflow correctly (target / rate)
+     - Refuses to build a SEPA payment when the IBAN is malformed
+     - Refuses to build an international wire without a valid SWIFT
+     - Skips FX lookup on same-currency corridors
+
+  2. `compute_fx_gain_loss`
+     - Returns a gain when EUR weakened between booking and payment
+     - Returns a loss when EUR strengthened
+     - Returns 0 on same-currency
+
+  3. `is_international_payment`
+     - True when fx_rate is set
+     - True when corridor is `sepa` / `international_wire`
+     - False on a domestic ACH row
+
+  4. End-to-end: a EUR invoice flows through `execute_payment_run`
+     with the mock processor + mock FX adapter; the Payment row
+     comes out with source_currency, source_amount, fx_rate,
+     fx_locked_at, corridor, target_country all populated and the
+     invoice flipped to payment_scheduled.
+
+The mock FX adapter is fed pinned rates via `mock_rates` so the
+arithmetic is deterministic.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.models.invoice import InvoiceStatus
+from app.services.fx_adapters.mock_adapter import MockFXAdapter
+from app.services.international_payments import (
+    InternationalPaymentError,
+    compute_fx_gain_loss,
+    is_international_payment,
+    prepare_international_payment,
+)
+from app.services.payment_adapters import PaymentStatus
+
+
+def _invoice(*, amount=Decimal("1000.00"), currency="EUR"):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        amount=amount,
+        currency=currency,
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        invoice_number="INV-99",
+        vendor_name="European Vendor GmbH",
+        description=None,
+    )
+
+
+def _vendor(*, iban=None, swift=None, country=None):
+    bank = {}
+    if iban is not None:
+        bank["iban"] = iban
+    if swift is not None:
+        bank["swift_bic"] = swift
+    if country is not None:
+        bank["country"] = country
+    return SimpleNamespace(
+        bank_details=bank or None,
+        address_country=None,
+    )
+
+
+# Valid IBAN/SWIFT pairs we reuse across the file.
+_VALID_DE_IBAN = "DE89370400440532013000"
+_VALID_DEUTSCHE_BIC = "DEUTDEFF"
+
+
+# ---------------------------------------------------------------------------
+# prepare_international_payment — happy paths.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prepare_eur_invoice_from_us_org_picks_intl_wire_with_fx_lock():
+    """USD home → EUR invoice → international_wire, rate locked,
+    source_amount = target / rate. With mock rate USD→EUR=0.92,
+    paying 1000 EUR costs ~1086.96 USD."""
+    fx = MockFXAdapter({"mock_rates": {"EUR": "0.92"}})
+    inv = _invoice(amount=Decimal("1000.00"), currency="EUR")
+    vendor = _vendor(iban=_VALID_DE_IBAN, swift=_VALID_DEUTSCHE_BIC, country="DE")
+
+    prepared = await prepare_international_payment(
+        invoice=inv,
+        vendor=vendor,
+        org_home_currency="USD",
+        fx_adapter=fx,
+    )
+
+    assert prepared.corridor.method == "international_wire"
+    assert prepared.corridor.requires_fx is True
+    assert prepared.fx_rate is not None
+    assert prepared.fx_rate.rate == Decimal("0.92")
+
+    p = prepared.payment
+    assert p.amount == Decimal("1000.00")
+    assert p.source_currency == "USD"
+    # 1000 / 0.92 = 1086.9565… → 1086.96 quantized.
+    assert p.source_amount == Decimal("1086.96")
+    assert p.fx_rate == Decimal("0.92")
+    assert p.fx_locked_at is not None
+    assert p.target_country == "DE"
+    assert p.corridor == "international_wire"
+
+
+@pytest.mark.asyncio
+async def test_prepare_eur_to_eur_within_sepa_uses_sepa_no_fx():
+    """EUR home → EUR invoice to a German vendor → SEPA, no FX
+    lookup, source_amount = invoice amount, target_country = DE."""
+    fx = MockFXAdapter()
+    fx.get_rate = AsyncMock(side_effect=AssertionError("must not call FX for same-currency"))
+    inv = _invoice(amount=Decimal("500.00"), currency="EUR")
+    vendor = _vendor(iban=_VALID_DE_IBAN, country="DE")
+
+    prepared = await prepare_international_payment(
+        invoice=inv,
+        vendor=vendor,
+        org_home_currency="EUR",
+        fx_adapter=fx,
+    )
+
+    assert prepared.corridor.method == "sepa"
+    assert prepared.fx_rate is None
+    p = prepared.payment
+    assert p.source_currency == "EUR"
+    assert p.source_amount == Decimal("500.00")
+    assert p.fx_rate is None
+    assert p.fx_locked_at is None
+    assert p.corridor == "sepa"
+    assert p.target_country == "DE"
+
+
+@pytest.mark.asyncio
+async def test_prepare_us_domestic_skips_fx_and_iban_requirements():
+    """USD → USD to a US vendor — no FX call, no IBAN/SWIFT demands.
+    Pin that domestic flows aren't pulled through the international
+    requirements check."""
+    fx = MockFXAdapter()
+    fx.get_rate = AsyncMock(side_effect=AssertionError("must not call FX"))
+    inv = _invoice(amount=Decimal("250.00"), currency="USD")
+    vendor = _vendor(country="US")  # no IBAN/SWIFT — that's fine for ACH
+
+    prepared = await prepare_international_payment(
+        invoice=inv,
+        vendor=vendor,
+        org_home_currency="USD",
+        fx_adapter=fx,
+    )
+
+    assert prepared.corridor.method == "ach"
+    assert prepared.payment.fx_rate is None
+    assert prepared.payment.source_amount == Decimal("250.00")
+
+
+@pytest.mark.asyncio
+async def test_prepare_falls_back_to_iban_country_when_vendor_lacks_address_country():
+    """No vendor.bank_details.country, no vendor.address_country —
+    extract the country from the IBAN prefix. This is the common
+    case for vendors that only filled in their IBAN."""
+    fx = MockFXAdapter()
+    inv = _invoice(amount=Decimal("100.00"), currency="EUR")
+    vendor = _vendor(iban=_VALID_DE_IBAN)  # no country, no address_country
+
+    prepared = await prepare_international_payment(
+        invoice=inv,
+        vendor=vendor,
+        org_home_currency="EUR",
+        fx_adapter=fx,
+    )
+    # Country was derived from the IBAN's DE prefix → SEPA corridor.
+    assert prepared.payment.target_country == "DE"
+    assert prepared.corridor.method == "sepa"
+
+
+# ---------------------------------------------------------------------------
+# prepare_international_payment — refusal paths.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prepare_refuses_sepa_without_valid_iban():
+    """SEPA corridor demands an IBAN; vendor has none → error
+    raised BEFORE the FX call (which would be a wasted round trip
+    anyway)."""
+    fx = MockFXAdapter()
+    fx.get_rate = AsyncMock()
+    inv = _invoice(currency="EUR")
+    vendor = _vendor(country="DE")  # no IBAN
+
+    with pytest.raises(InternationalPaymentError, match="IBAN"):
+        await prepare_international_payment(
+            invoice=inv, vendor=vendor, org_home_currency="EUR", fx_adapter=fx,
+        )
+    fx.get_rate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prepare_refuses_intl_wire_without_valid_swift():
+    """Cross-currency → international_wire → SWIFT required. Bad
+    or missing SWIFT → error before FX lookup."""
+    fx = MockFXAdapter()
+    fx.get_rate = AsyncMock()
+    inv = _invoice(currency="JPY")
+    vendor = _vendor(country="JP", swift="BAD")  # too short
+
+    with pytest.raises(InternationalPaymentError, match="SWIFT"):
+        await prepare_international_payment(
+            invoice=inv, vendor=vendor, org_home_currency="USD", fx_adapter=fx,
+        )
+    fx.get_rate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prepare_refuses_when_fx_provider_returns_zero_rate():
+    """A misbehaving FX provider returning rate=0 must NOT produce a
+    DivisionByZero in source_amount computation — refuse the
+    payment outright."""
+    fx = MockFXAdapter()
+    fx.get_rate = AsyncMock(return_value=SimpleNamespace(
+        source="USD", target="EUR", rate=Decimal("0"),
+        as_of=datetime.now(UTC), provider="mock",
+    ))
+    inv = _invoice(currency="EUR")
+    vendor = _vendor(iban=_VALID_DE_IBAN, swift=_VALID_DEUTSCHE_BIC, country="DE")
+
+    with pytest.raises(InternationalPaymentError, match="non-positive rate"):
+        await prepare_international_payment(
+            invoice=inv, vendor=vendor, org_home_currency="USD", fx_adapter=fx,
+        )
+
+
+# ---------------------------------------------------------------------------
+# compute_fx_gain_loss.
+# ---------------------------------------------------------------------------
+
+
+def test_fx_gain_loss_positive_when_eur_weakens_between_booking_and_payment():
+    """Invoice booked at USD→EUR=0.90 (1 EUR = 1.111 USD) accrued
+    $1111.11. By payment time, EUR weakened to 0.92 (1 EUR = 1.087
+    USD), so 1000 EUR only cost us $1086.96. Realized gain ≈ $24.16."""
+    gain = compute_fx_gain_loss(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="EUR",
+        paid_source_amount=Decimal("1086.96"),
+        paid_source_currency="USD",
+        fx_rate_at_invoice=Decimal("0.90"),
+        fx_rate_at_payment=Decimal("0.92"),
+    )
+    assert gain == Decimal("24.15")  # 1111.11 - 1086.96
+
+
+def test_fx_gain_loss_negative_when_eur_strengthens():
+    """Inverse case: EUR strengthened (0.90 → 0.85). Paying 1000 EUR
+    cost $1176.47 vs the $1111.11 accrued → realized loss of -65.36."""
+    loss = compute_fx_gain_loss(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="EUR",
+        paid_source_amount=Decimal("1176.47"),
+        paid_source_currency="USD",
+        fx_rate_at_invoice=Decimal("0.90"),
+        fx_rate_at_payment=Decimal("0.85"),
+    )
+    assert loss == Decimal("-65.36")
+
+
+def test_fx_gain_loss_zero_on_same_currency():
+    """Same-currency invoice = no FX exposure → 0 regardless of
+    what rates are passed (defensive against caller mistakes)."""
+    assert compute_fx_gain_loss(
+        invoice_amount=Decimal("1000.00"),
+        invoice_currency="USD",
+        paid_source_amount=Decimal("1000.00"),
+        paid_source_currency="USD",
+        fx_rate_at_invoice=Decimal("1.0"),
+        fx_rate_at_payment=Decimal("1.0"),
+    ) == Decimal("0.00")
+
+
+def test_fx_gain_loss_refuses_zero_invoice_rate():
+    """A zero rate at booking shouldn't divide-by-zero — explicit
+    ValueError instead."""
+    with pytest.raises(ValueError):
+        compute_fx_gain_loss(
+            invoice_amount=Decimal("1000.00"),
+            invoice_currency="EUR",
+            paid_source_amount=Decimal("1000.00"),
+            paid_source_currency="USD",
+            fx_rate_at_invoice=Decimal("0"),
+            fx_rate_at_payment=Decimal("0.92"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# is_international_payment.
+# ---------------------------------------------------------------------------
+
+
+def test_is_international_true_when_fx_rate_locked():
+    p = SimpleNamespace(fx_rate=Decimal("0.92"), corridor="international_wire")
+    assert is_international_payment(p) is True
+
+
+def test_is_international_true_for_sepa_even_without_fx():
+    """EUR→EUR SEPA has no FX leg but is still an international
+    payment from the org's perspective if home currency is USD."""
+    p = SimpleNamespace(fx_rate=None, corridor="sepa")
+    assert is_international_payment(p) is True
+
+
+def test_is_international_false_for_domestic_ach():
+    p = SimpleNamespace(fx_rate=None, corridor="ach")
+    assert is_international_payment(p) is False
+
+
+def test_is_international_false_for_payment_without_corridor_set():
+    """Legacy rows from before migration 0017 have corridor=None."""
+    p = SimpleNamespace(fx_rate=None, corridor=None)
+    assert is_international_payment(p) is False
+
+
+# ---------------------------------------------------------------------------
+# End-to-end through execute_payment_run.
+# ---------------------------------------------------------------------------
+
+
+def _run():
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        status="draft",
+        total_amount=Decimal("1000.00"),
+        organization_id=uuid.uuid4(),
+        requires_cfo_approval=False,
+        cfo_approved_at=None,
+        cfo_approved_by=None,
+        executed_at=None,
+    )
+
+
+def _payment(*, method="international_wire"):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        payment_run_id=None,
+        invoice_id=uuid.uuid4(),
+        amount=Decimal("1000.00"),
+        method=method,
+        status="pending",
+        provider=None,
+        provider_payment_id=None,
+        reference=None,
+        submitted_at=None,
+        completed_at=None,
+        failure_reason=None,
+        correlation_id=uuid.uuid4(),
+        source_currency=None,
+        source_amount=None,
+        fx_rate=None,
+        fx_locked_at=None,
+        corridor=None,
+        target_country=None,
+    )
+
+
+def _eur_invoice():
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        status=InvoiceStatus.approved,
+        invoice_number="INV-EUR-1",
+        vendor_name="European Vendor GmbH",
+        vendor_id=uuid.uuid4(),
+        currency="EUR",
+        description="services",
+        amount=Decimal("1000.00"),
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        vendor_country="DE",
+    )
+
+
+def _org_with_fx_and_bank(home_currency="USD"):
+    """Org settings include `payments.home_currency` and an `fx`
+    block that hard-codes the mock rate so this test is
+    deterministic."""
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        slug="acme",
+        name="Acme",
+        settings={
+            "payments": {"provider": "mock", "home_currency": home_currency},
+            "fx": {"provider": "mock", "mock_rates": {"EUR": "0.92"}},
+        },
+    )
+
+
+def _user():
+    return SimpleNamespace(id=uuid.uuid4(), full_name="Tester", roles=["admin"])
+
+
+def _mock_db(*, run, payment, invoice, vendor_bank):
+    """Build the execute-sequence the executor walks through:
+      1. run lookup
+      2. payments fan-out
+      3. per-payment invoice lookup
+      4. per-payment vendor.bank_details lookup (because the invoice
+         has a vendor_id)
+    """
+    run_res = MagicMock(); run_res.scalar_one_or_none = MagicMock(return_value=run)
+    pay_res = MagicMock()
+    pay_scalars = MagicMock(); pay_scalars.all = MagicMock(return_value=[payment])
+    pay_res.scalars = MagicMock(return_value=pay_scalars)
+    inv_res = MagicMock(); inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
+    bank_res = MagicMock(); bank_res.scalar_one_or_none = MagicMock(return_value=vendor_bank)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[run_res, pay_res, inv_res, bank_res])
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_execute_payment_run_locks_fx_and_populates_intl_fields_for_eur_invoice():
+    """End-to-end: a EUR invoice on a USD-home org flows through
+    execute_payment_run. After execution, the Payment row carries
+    source_currency=USD, source_amount≈1086.96, fx_rate=0.92,
+    fx_locked_at set, corridor=international_wire, target_country=DE.
+    The invoice flips to payment_scheduled."""
+    from app.api.payments import execute_payment_run
+
+    run = _run()
+    pay = _payment(method=None)  # not pre-set; orchestrator decides
+    inv = _eur_invoice()
+    bank = {
+        "iban": _VALID_DE_IBAN,
+        "swift_bic": _VALID_DEUTSCHE_BIC,
+        "country": "DE",
+    }
+    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank)
+
+    adapter = MagicMock()
+    adapter.provider_name = "mock"
+    adapter.create_payment = AsyncMock(return_value=SimpleNamespace(
+        success=True, status=PaymentStatus.completed,
+        provider_payment_id="prov_intl_1", reference="REF-1", failure_reason=None,
+    ))
+
+    captured_payload: dict = {}
+    async def _capture(payload):
+        captured_payload["payload"] = payload
+        return await adapter.create_payment.__wrapped__(payload) if hasattr(adapter.create_payment, "__wrapped__") else SimpleNamespace(
+            success=True, status=PaymentStatus.completed,
+            provider_payment_id="prov_intl_1", reference="REF-1", failure_reason=None,
+        )
+    adapter.create_payment = AsyncMock(side_effect=_capture)
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+    ):
+        result = await execute_payment_run(
+            run_id=run.id, db=db, org=_org_with_fx_and_bank(), user=_user()
+        )
+
+    assert run.status == "completed"
+    assert pay.status == "completed"
+    assert pay.source_currency == "USD"
+    # 1000 / 0.92 = 1086.96
+    assert pay.source_amount == Decimal("1086.96")
+    assert pay.fx_rate == Decimal("0.92")
+    assert pay.fx_locked_at is not None
+    assert pay.corridor == "international_wire"
+    assert pay.target_country == "DE"
+    assert pay.method == "international_wire"
+    # Invoice flipped to payment_scheduled.
+    assert inv.status == InvoiceStatus.payment_scheduled
+    # The PaymentPayload sent to the adapter carries the intl fields.
+    payload = captured_payload["payload"]
+    assert payload.source_currency == "USD"
+    assert payload.source_amount == Decimal("1086.96")
+    assert payload.fx_rate == Decimal("0.92")
+    assert payload.target_country == "DE"
+
+
+@pytest.mark.asyncio
+async def test_execute_payment_run_with_eur_home_org_and_de_invoice_uses_sepa():
+    """EUR-home org paying a DE vendor a EUR invoice → SEPA, no FX
+    rate locked, source_amount equals invoice amount."""
+    from app.api.payments import execute_payment_run
+
+    run = _run()
+    pay = _payment(method=None)
+    inv = _eur_invoice()
+    bank = {"iban": _VALID_DE_IBAN, "country": "DE"}
+    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank)
+
+    adapter = MagicMock()
+    adapter.provider_name = "mock"
+    adapter.create_payment = AsyncMock(return_value=SimpleNamespace(
+        success=True, status=PaymentStatus.completed,
+        provider_payment_id="x", reference="r", failure_reason=None,
+    ))
+
+    org = _org_with_fx_and_bank(home_currency="EUR")
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+    ):
+        await execute_payment_run(run_id=run.id, db=db, org=org, user=_user())
+
+    assert pay.corridor == "sepa"
+    assert pay.method == "sepa"
+    assert pay.source_currency == "EUR"
+    assert pay.source_amount == Decimal("1000.00")
+    assert pay.fx_rate is None
+    assert pay.fx_locked_at is None
+
+
+@pytest.mark.asyncio
+async def test_execute_payment_run_fails_payment_when_orchestrator_rejects_bank_fields():
+    """Bad IBAN → orchestrator raises → payment row goes to
+    `failed` with a failure_reason; run rolls up to `failed`. The
+    adapter MUST NOT have been called (no double-charge risk)."""
+    from app.api.payments import execute_payment_run
+
+    run = _run()
+    pay = _payment(method=None)
+    inv = _eur_invoice()
+    bank = {"iban": "INVALID-IBAN", "country": "DE"}  # malformed
+    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank)
+
+    adapter = MagicMock()
+    adapter.provider_name = "mock"
+    adapter.create_payment = AsyncMock()
+
+    org = _org_with_fx_and_bank(home_currency="EUR")
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+    ):
+        result = await execute_payment_run(run_id=run.id, db=db, org=org, user=_user())
+
+    assert pay.status == "failed"
+    assert "IBAN" in (pay.failure_reason or "")
+    assert run.status == "failed"
+    adapter.create_payment.assert_not_called()
