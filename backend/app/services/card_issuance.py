@@ -36,6 +36,29 @@ class CardIssueResult:
     failure_reason: str | None = None
 
 
+DEFAULT_CARD_EXPIRY_DAYS = 30
+
+
+def _coerce_expiry_days(raw) -> int:
+    """Coerce an org-supplied `default_expiry_days` into a sane int.
+
+    Tenant settings come from a JSONB column, so the value could be a
+    string like "14" pasted into an admin form, a float, or garbage.
+    Anything that doesn't reduce to a positive int falls back to the
+    platform default. Returning a bogus expiry here would either mint
+    cards that expired in the past or cards that never expire.
+    """
+    if raw is None:
+        return DEFAULT_CARD_EXPIRY_DAYS
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CARD_EXPIRY_DAYS
+    if days <= 0:
+        return DEFAULT_CARD_EXPIRY_DAYS
+    return days
+
+
 def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
     """Mirror of `app.api.cards._resolve_card_config` but pure — no
     Organization model, no FastAPI deps. Returns None if the org hasn't
@@ -46,6 +69,7 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
 
     program_type = org_cards.get("program_type", "platform")
     region = org_cards.get("region", "US")
+    expiry_days = _coerce_expiry_days(org_cards.get("default_expiry_days"))
 
     if program_type == "byok":
         return {
@@ -57,6 +81,7 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
             "customer_hash_id": org_cards.get("customer_hash_id", ""),
             "wallet_hash_id": org_cards.get("wallet_hash_id", ""),
             "sandbox": org_cards.get("sandbox", True),
+            "default_expiry_days": expiry_days,
         }
 
     from app.services.card_adapters.dispatcher import get_default_provider
@@ -68,6 +93,7 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
             "region": region,
             "api_key": app_settings.lithic_api_key,
             "sandbox": app_settings.lithic_sandbox,
+            "default_expiry_days": expiry_days,
         }
     return {
         "provider": "nium",
@@ -77,6 +103,7 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
         "customer_hash_id": app_settings.nium_customer_hash_id,
         "wallet_hash_id": app_settings.nium_wallet_hash_id,
         "sandbox": app_settings.nium_sandbox,
+        "default_expiry_days": expiry_days,
     }
 
 
@@ -112,7 +139,7 @@ async def issue_card_for_invoice(
     from app.services.card_adapters import VirtualCardPayload, get_card_adapter
 
     adapter = get_card_adapter(config)
-    expiry_days = config.get("default_expiry_days", 30)
+    expiry_days = config.get("default_expiry_days", DEFAULT_CARD_EXPIRY_DAYS)
 
     payload = VirtualCardPayload(
         correlation_id=str(invoice.correlation_id) if invoice.correlation_id else "",

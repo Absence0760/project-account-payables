@@ -170,7 +170,9 @@ async def seed_control_plane():
             print("  Control plane already seeded. Skipping.")
             return
 
-        # Orgs
+        # Orgs. The two tenants intentionally diverge on settings so a
+        # local "compare-the-two-tabs" demo exercises the org-config
+        # surface (card expiry, payment provider) without scripts.
         session.add(
             Organization(
                 id=ACME_ORG_ID,
@@ -178,6 +180,16 @@ async def seed_control_plane():
                 slug="acme",
                 plan="pro",
                 db_name="ap_acme",
+                settings={
+                    "cards": {
+                        "enabled": True,
+                        "program_type": "platform",
+                        "region": "US",
+                        # Default 30 days — exercises the no-override path
+                        # in `_resolve_card_config`.
+                    },
+                    "payments": {"provider": "mock"},
+                },
             )
         )
         session.add(
@@ -187,6 +199,18 @@ async def seed_control_plane():
                 slug="techflow",
                 plan="pro",
                 db_name="ap_techflow",
+                settings={
+                    "cards": {
+                        "enabled": True,
+                        "program_type": "platform",
+                        "region": "US",
+                        # 14-day expiry exercises the org-override path
+                        # — proves `default_expiry_days` propagates from
+                        # settings → resolver → adapter payload.
+                        "default_expiry_days": 14,
+                    },
+                    "payments": {"provider": "mock"},
+                },
             )
         )
 

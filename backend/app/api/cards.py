@@ -41,9 +41,12 @@ def _resolve_card_config(org: Organization) -> dict:
     - "platform": use platform-level keys from app settings (you earn rebates)
     - "byok": use customer's own keys from org settings (they earn rebates)
     """
+    from app.services.card_issuance import _coerce_expiry_days
+
     org_cards = (org.settings or {}).get("cards", {})
     program_type = org_cards.get("program_type", "platform")
     region = org_cards.get("region", "US")
+    expiry_days = _coerce_expiry_days(org_cards.get("default_expiry_days"))
 
     if program_type == "byok":
         # Customer provided their own keys
@@ -56,6 +59,7 @@ def _resolve_card_config(org: Organization) -> dict:
             "customer_hash_id": org_cards.get("customer_hash_id", ""),
             "wallet_hash_id": org_cards.get("wallet_hash_id", ""),
             "sandbox": org_cards.get("sandbox", True),
+            "default_expiry_days": expiry_days,
         }
     else:
         # Platform keys — auto-select provider by region
@@ -69,6 +73,7 @@ def _resolve_card_config(org: Organization) -> dict:
                 "region": region,
                 "api_key": settings.lithic_api_key,
                 "sandbox": settings.lithic_sandbox,
+                "default_expiry_days": expiry_days,
             }
         else:
             return {
@@ -79,6 +84,7 @@ def _resolve_card_config(org: Organization) -> dict:
                 "customer_hash_id": settings.nium_customer_hash_id,
                 "wallet_hash_id": settings.nium_wallet_hash_id,
                 "sandbox": settings.nium_sandbox,
+                "default_expiry_days": expiry_days,
             }
 
 
@@ -203,8 +209,10 @@ async def generate_cards(
     import app.services.card_adapters.nium  # noqa: F401
     from app.services.card_adapters import VirtualCardPayload, get_card_adapter
 
+    from app.services.card_issuance import DEFAULT_CARD_EXPIRY_DAYS
+
     adapter = get_card_adapter(card_config)
-    expiry_days = card_config.get("default_expiry_days", 30)
+    expiry_days = card_config.get("default_expiry_days", DEFAULT_CARD_EXPIRY_DAYS)
 
     # Load invoices
     ids = [uuid.UUID(i) for i in body.invoice_ids]
