@@ -3,12 +3,12 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update as sql_update
+from sqlalchemy import func, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, get_current_user, get_org_id, require_roles
 from app.models.user import User
-from app.models.workflow import WorkflowDefinition
+from app.models.workflow import WorkflowDefinition, WorkflowInstance
 from app.schemas.workflow import (
     WorkflowDefinitionCreate,
     WorkflowDefinitionResponse,
@@ -161,6 +161,21 @@ async def update_workflow(
     return WorkflowDefinitionResponse.from_db(defn)
 
 
+async def _workflow_instance_count(db: AsyncSession, workflow_id: uuid.UUID) -> int:
+    """Count workflow_instances bound to this definition.
+
+    Each instance freezes a steps_config snapshot at invoice creation,
+    so deleting the definition out from under live instances would
+    leave them with a dangling FK and confuse the editor history.
+    """
+    result = await db.execute(
+        select(func.count())
+        .select_from(WorkflowInstance)
+        .where(WorkflowInstance.definition_id == workflow_id)
+    )
+    return int(result.scalar() or 0)
+
+
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_workflow(
     workflow_id: uuid.UUID,
@@ -179,4 +194,24 @@ async def delete_workflow(
         raise HTTPException(status_code=404, detail="Workflow not found")
     if defn.is_default:
         raise HTTPException(status_code=409, detail="Cannot delete the default workflow")
+    if defn.is_active:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete an active workflow — deactivate it first",
+        )
+
+    instance_count = await _workflow_instance_count(db, workflow_id)
+    if instance_count:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "Cannot delete workflow — it is the snapshot source for "
+                    f"{instance_count} in-flight invoice"
+                    f"{'s' if instance_count != 1 else ''}."
+                ),
+                "instance_count": instance_count,
+            },
+        )
+
     await db.delete(defn)
