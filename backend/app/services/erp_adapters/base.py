@@ -67,6 +67,32 @@ class ErpPostResult:
     raw_response: dict | None = None
 
 
+@dataclass
+class PoLinePayload:
+    description: str | None = None
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    total: Decimal | None = None
+    gl_account: str | None = None
+
+
+@dataclass
+class PoPayload:
+    """Normalized purchase order returned by `ErpAdapter.list_pos`.
+
+    `status` is one of {"open", "closed", "cancelled"} — the same set
+    `PurchaseOrder.status` accepts. Adapters that get something exotic
+    from their ERP should normalize to one of these or default to
+    "open" rather than passing the raw vendor string through.
+    """
+
+    po_number: str
+    vendor_name: str | None = None
+    total: Decimal = Decimal("0")
+    status: str = "open"
+    line_items: list[PoLinePayload] = field(default_factory=list)
+
+
 class ErpAdapter:
     """Base class for ERP integrations. Subclass and implement all methods."""
 
@@ -86,6 +112,16 @@ class ErpAdapter:
     async def void_invoice(self, erp_document_id: str) -> bool:
         """Request cancellation of a posted invoice."""
         raise NotImplementedError
+
+    async def list_pos(self) -> list[PoPayload]:
+        """Pull purchase orders from the ERP.
+
+        Default implementation returns an empty list so adapters that
+        don't yet support PO sync don't 500 the sync endpoint — the
+        UI just reports "0 new POs". Adapters that *do* support it
+        override this.
+        """
+        return []
 
     async def test_connection(self) -> bool:
         """Verify the ERP connection is working."""

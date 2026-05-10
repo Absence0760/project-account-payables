@@ -1,7 +1,7 @@
 """Purchase Order endpoints — list, detail, sync from ERP."""
 
+import logging
 import uuid
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -21,6 +21,8 @@ from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.tenant import get_tenant, get_tenant_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/purchase-orders", tags=["purchase-orders"])
 
@@ -113,9 +115,7 @@ async def get_purchase_order(
         vendor_name = v.scalar_one_or_none()
 
     inv_q = await db.execute(
-        select(Invoice)
-        .where(Invoice.po_number == po.po_number)
-        .order_by(Invoice.created_at.desc())
+        select(Invoice).where(Invoice.po_number == po.po_number).order_by(Invoice.created_at.desc())
     )
     linked_invoices = [
         {
@@ -148,87 +148,39 @@ async def sync_pos_from_erp(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    """Pull purchase orders from the connected ERP."""
+    """Pull purchase orders from the connected ERP via its adapter."""
     erp_config = (org.settings or {}).get("erp")
     if not erp_config:
         raise HTTPException(status_code=400, detail="No ERP configured")
 
-    # Look up vendors by name for linking
+    # Lazy-import adapter modules so the @register_adapter decorator
+    # populates the dispatcher registry. Same pattern as vendors.py.
+    import app.services.erp_adapters.dynamics_365_bc  # noqa: F401
+    import app.services.erp_adapters.merge_dev  # noqa: F401
+    import app.services.erp_adapters.mock_adapter  # noqa: F401
+    import app.services.erp_adapters.netsuite  # noqa: F401
+    from app.services.erp_adapters import get_erp_adapter
+
+    adapter = get_erp_adapter(erp_config)
+    try:
+        erp_pos = await adapter.list_pos()
+    except Exception as exc:
+        logger.exception("ERP list_pos failed for org %s", org_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"ERP request failed: {type(exc).__name__}",
+        ) from exc
+
+    # Vendor lookup map for linking POs to existing vendor rows.
     v_result = await db.execute(select(Vendor).where(Vendor.organization_id == org_id))
     vendor_map = {v.name.lower(): v.id for v in v_result.scalars().all()}
 
-    # TODO: call ERP adapter to fetch real POs
-    # For now, use mock data
-    mock_pos = [
-        {
-            "po_number": "PO-2024-200",
-            "vendor_name": "Office Supplies Co",
-            "total": "2500.00",
-            "status": "open",
-            "lines": [
-                {
-                    "description": "Printer paper - bulk",
-                    "quantity": "20",
-                    "unit_price": "45.00",
-                    "total": "900.00",
-                },
-                {
-                    "description": "Ink cartridges",
-                    "quantity": "10",
-                    "unit_price": "80.00",
-                    "total": "800.00",
-                },
-                {
-                    "description": "Desk organizers",
-                    "quantity": "16",
-                    "unit_price": "50.00",
-                    "total": "800.00",
-                },
-            ],
-        },
-        {
-            "po_number": "PO-2024-201",
-            "vendor_name": "Cloud Services Inc",
-            "total": "15000.00",
-            "status": "open",
-            "lines": [
-                {
-                    "description": "Annual SaaS license",
-                    "quantity": "1",
-                    "unit_price": "12000.00",
-                    "total": "12000.00",
-                },
-                {
-                    "description": "Premium support addon",
-                    "quantity": "1",
-                    "unit_price": "3000.00",
-                    "total": "3000.00",
-                },
-            ],
-        },
-        {
-            "po_number": "PO-2024-202",
-            "vendor_name": "Tech Hardware Corp",
-            "total": "24000.00",
-            "status": "open",
-            "lines": [
-                {
-                    "description": "Laptop Model X Pro",
-                    "quantity": "10",
-                    "unit_price": "2400.00",
-                    "total": "24000.00",
-                },
-            ],
-        },
-    ]
-
     created = 0
     skipped = 0
-    for mock_po in mock_pos:
-        # Check if PO already exists
+    for erp_po in erp_pos:
         existing = await db.execute(
             select(PurchaseOrder).where(
-                PurchaseOrder.po_number == mock_po["po_number"],
+                PurchaseOrder.po_number == erp_po.po_number,
                 PurchaseOrder.organization_id == org_id,
             )
         )
@@ -236,26 +188,26 @@ async def sync_pos_from_erp(
             skipped += 1
             continue
 
-        vendor_id = vendor_map.get(mock_po["vendor_name"].lower())
+        vendor_id = vendor_map.get(erp_po.vendor_name.lower()) if erp_po.vendor_name else None
 
         po = PurchaseOrder(
-            po_number=mock_po["po_number"],
+            po_number=erp_po.po_number,
             vendor_id=vendor_id,
-            total=Decimal(mock_po["total"]),
-            status=mock_po["status"],
+            total=erp_po.total,
+            status=erp_po.status,
             organization_id=org_id,
         )
         db.add(po)
         await db.flush()
 
-        for line in mock_po.get("lines", []):
+        for line in erp_po.line_items:
             db.add(
                 POLineItem(
                     po_id=po.id,
-                    description=line.get("description"),
-                    quantity=Decimal(line["quantity"]) if line.get("quantity") else None,
-                    unit_price=Decimal(line["unit_price"]) if line.get("unit_price") else None,
-                    total=Decimal(line["total"]) if line.get("total") else None,
+                    description=line.description,
+                    quantity=line.quantity,
+                    unit_price=line.unit_price,
+                    total=line.total,
                 )
             )
 
@@ -267,4 +219,5 @@ async def sync_pos_from_erp(
         "message": f"Synced {created} new POs, {skipped} already exist",
         "created": created,
         "skipped": skipped,
+        "adapter": adapter.erp_type,
     }

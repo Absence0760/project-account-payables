@@ -1,5 +1,7 @@
 """Merge.dev unified API adapter — one integration for all ERPs."""
 
+from decimal import Decimal, InvalidOperation
+
 import httpx
 
 from app.services.erp_adapters.base import (
@@ -7,8 +9,35 @@ from app.services.erp_adapters.base import (
     ErpInvoiceStatus,
     ErpPostResult,
     InvoicePayload,
+    PoLinePayload,
+    PoPayload,
 )
 from app.services.erp_adapters.dispatcher import register_adapter
+
+
+def _to_decimal(v) -> Decimal | None:
+    if v is None:
+        return None
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+# Merge.dev's PO status enum → our internal vocabulary. Anything not
+# listed maps to "open" (the safest default — it shows up in the
+# matching pool but doesn't mark an unfamiliar PO as closed/cancelled
+# and exclude it).
+_MERGE_PO_STATUS_MAP = {
+    "OPEN": "open",
+    "PENDING": "open",
+    "DRAFT": "open",
+    "CLOSED": "closed",
+    "FULFILLED": "closed",
+    "CANCELLED": "cancelled",
+    "CANCELED": "cancelled",
+    "VOIDED": "cancelled",
+}
 
 MERGE_API_BASE = "https://api.merge.dev/api/accounting/v1"
 
@@ -117,6 +146,45 @@ class MergeDevAdapter(ErpAdapter):
         # Merge.dev doesn't support direct voiding — depends on ERP capability
         return False
 
+    async def list_pos(self) -> list[PoPayload]:
+        """Pull purchase orders via Merge's unified `/purchase-orders`.
+
+        Best-effort: any non-2xx returns an empty list rather than
+        propagating, because the sync endpoint should degrade to
+        "synced 0 POs" instead of 500ing the request. The underlying
+        Merge call is paginated; we follow `next` cursors so the full
+        list comes back, capped at 1000 to bound memory.
+        """
+        items: list[PoPayload] = []
+        cursor: str | None = None
+        params = {"page_size": "100", "expand": "vendor,line_items"}
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            for _ in range(10):  # 10 pages × 100 = 1000 PO cap
+                if cursor:
+                    params["cursor"] = cursor
+                try:
+                    resp = await client.get(
+                        f"{MERGE_API_BASE}/purchase-orders",
+                        params=params,
+                        headers=self._headers(),
+                    )
+                except httpx.HTTPError:
+                    break
+
+                if resp.status_code != 200:
+                    break
+
+                body = resp.json() if resp.content else {}
+                for raw in body.get("results", []) or []:
+                    items.append(_merge_po_to_payload(raw))
+
+                cursor = body.get("next")
+                if not cursor:
+                    break
+
+        return items
+
     async def test_connection(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -127,3 +195,45 @@ class MergeDevAdapter(ErpAdapter):
             return resp.status_code == 200
         except Exception:
             return False
+
+
+def _merge_po_to_payload(raw: dict) -> PoPayload:
+    """Map a Merge.dev PO record to our normalized PoPayload.
+
+    Merge's `vendor` field is either an expanded object (when
+    `expand=vendor` was passed) or a bare ID string. We only get a
+    name back in the expanded case — fall back to None otherwise so
+    the API endpoint can still create the PO row, just without a
+    vendor link.
+    """
+    vendor = raw.get("vendor")
+    vendor_name: str | None = None
+    if isinstance(vendor, dict):
+        vendor_name = vendor.get("name") or vendor.get("contact_name")
+
+    raw_status = (raw.get("status") or "").upper()
+    status = _MERGE_PO_STATUS_MAP.get(raw_status, "open")
+
+    line_items: list[PoLinePayload] = []
+    for li in raw.get("line_items") or []:
+        if not isinstance(li, dict):
+            continue
+        line_items.append(
+            PoLinePayload(
+                description=li.get("description") or li.get("memo"),
+                quantity=_to_decimal(li.get("quantity")),
+                unit_price=_to_decimal(li.get("unit_price")),
+                total=_to_decimal(li.get("total_line_amount")),
+                gl_account=(li.get("account") if isinstance(li.get("account"), str) else None),
+            )
+        )
+
+    total = _to_decimal(raw.get("total_amount")) or Decimal("0")
+
+    return PoPayload(
+        po_number=raw.get("number") or raw.get("transaction_number") or raw.get("id") or "UNKNOWN",
+        vendor_name=vendor_name,
+        total=total,
+        status=status,
+        line_items=line_items,
+    )

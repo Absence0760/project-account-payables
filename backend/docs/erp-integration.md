@@ -82,6 +82,15 @@ class ErpAdapter:
         """Request cancellation of a posted invoice. Returns success."""
         ...
 
+    async def list_pos(self) -> list[PoPayload]:
+        """Pull purchase orders from the ERP for the PO management UI.
+
+        Default returns []. Adapters that don't implement PO sync
+        cause `POST /api/purchase-orders/sync-erp` to no-op rather
+        than 500 — currently overridden by `mock` and `merge_dev`.
+        """
+        ...
+
     async def test_connection(self) -> bool:
         """Verify the ERP connection is working."""
         ...
@@ -681,7 +690,7 @@ backend/app/api/erp_webhook.py        # POST /api/erp/webhook/{erp_type}
 ### Adding a New Direct Adapter
 
 1. Create `backend/app/services/erp_adapters/your_erp.py`
-2. Subclass `ErpAdapter` and implement `post_invoice`, `get_invoice_status`, `void_invoice`, `test_connection`
+2. Subclass `ErpAdapter` and implement `post_invoice`, `get_invoice_status`, `void_invoice`, `test_connection`. Optionally override `list_pos` if the ERP supports listing purchase orders (otherwise the default `[]` is used and `/api/purchase-orders/sync-erp` reports zero new POs)
 3. Decorate the class with `@register_adapter("your_erp_type")`
 4. Import the module in `_call_erp()` in `erp.py` to trigger registration
 5. Add the ERP type to the frontend `ERP_TYPES` array in the organization page
