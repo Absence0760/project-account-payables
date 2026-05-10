@@ -27,10 +27,20 @@ VALID_TRANSITIONS: dict[InvoiceStatus, set[InvoiceStatus]] = {
         InvoiceStatus.failed,
     },
     InvoiceStatus.ready_for_review: {InvoiceStatus.approved, InvoiceStatus.rejected},
-    InvoiceStatus.approved: {InvoiceStatus.sending_to_erp, InvoiceStatus.done},
+    InvoiceStatus.approved: {
+        InvoiceStatus.sending_to_erp,
+        InvoiceStatus.payment_scheduled,
+        InvoiceStatus.done,
+    },
     InvoiceStatus.rejected: {InvoiceStatus.ready_for_review, InvoiceStatus.new},
     InvoiceStatus.sending_to_erp: {InvoiceStatus.sent_to_erp, InvoiceStatus.failed},
-    InvoiceStatus.sent_to_erp: {InvoiceStatus.done},
+    InvoiceStatus.sent_to_erp: {InvoiceStatus.posted_in_erp, InvoiceStatus.done},
+    InvoiceStatus.posted_in_erp: {
+        InvoiceStatus.payment_scheduled,
+        InvoiceStatus.done,
+    },
+    InvoiceStatus.payment_scheduled: {InvoiceStatus.paid, InvoiceStatus.approved},
+    InvoiceStatus.paid: {InvoiceStatus.done, InvoiceStatus.approved},
     InvoiceStatus.done: set(),  # terminal
     InvoiceStatus.failed: {InvoiceStatus.pending, InvoiceStatus.sending_to_erp},
 }
