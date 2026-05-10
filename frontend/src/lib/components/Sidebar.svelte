@@ -49,6 +49,7 @@
 			items: [
 				{ label: 'Organization', href: '/organization', icon: 'organization', requiredRoles: ['admin'] },
 				{ label: 'Users', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
+				{ label: 'Roles', href: '/admin/roles', icon: 'admin', requiredRoles: ['admin'] },
 			],
 		},
 	];
@@ -58,9 +59,21 @@
 		return auth.hasAnyRole(...item.requiredRoles);
 	}
 
+	const allHrefs = navGroups.flatMap((g) => g.items.map((i) => i.href));
+
 	function isActive(href: string): boolean {
 		if (href === '/') return page.url.pathname === '/';
-		return page.url.pathname.startsWith(href);
+		if (page.url.pathname === href) return true;
+		// Prefix match — but only if no sibling href is a more specific
+		// prefix (eg. /admin must not light up when on /admin/roles).
+		if (!page.url.pathname.startsWith(href + '/')) return false;
+		const hasMoreSpecific = allHrefs.some(
+			(other) =>
+				other !== href &&
+				other.startsWith(href + '/') &&
+				(page.url.pathname === other || page.url.pathname.startsWith(other + '/'))
+		);
+		return !hasMoreSpecific;
 	}
 </script>
 

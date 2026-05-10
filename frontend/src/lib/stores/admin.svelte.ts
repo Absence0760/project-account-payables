@@ -111,6 +111,23 @@ function createAdminStore() {
 		return result;
 	}
 
+	async function createRole(data: { name: string; description?: string }): Promise<Role> {
+		const created = await api.post<Role>('/api/admin/roles', data);
+		roles = [...roles, created];
+		return created;
+	}
+
+	async function updateRole(id: string, changes: { description?: string }): Promise<Role> {
+		const updated = await api.patch<Role>(`/api/admin/roles/${id}`, changes);
+		roles = roles.map((r) => (r.id === id ? updated : r));
+		return updated;
+	}
+
+	async function deleteRole(id: string): Promise<void> {
+		await api.delete(`/api/admin/roles/${id}`);
+		roles = roles.filter((r) => r.id !== id);
+	}
+
 	return {
 		get users() { return users; },
 		get roles() { return roles; },
@@ -126,6 +143,9 @@ function createAdminStore() {
 		updateUser,
 		deleteUser,
 		bulkDeleteUsers,
+		createRole,
+		updateRole,
+		deleteRole,
 	};
 }
 

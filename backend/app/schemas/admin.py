@@ -7,8 +7,21 @@ class RoleResponse(BaseModel):
     id: str
     name: str
     description: str | None = None
+    # `is_system=True` for the four built-in roles (admin, ap_manager,
+    # ap_clerk, cfo) — those gate hardcoded routes and can't be edited
+    # or deleted. False for org-minted custom roles.
+    is_system: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class CreateRoleRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=255)
+
+
+class UpdateRoleRequest(BaseModel):
+    description: str | None = Field(default=None, max_length=255)
 
 
 class AdminUserResponse(BaseModel):

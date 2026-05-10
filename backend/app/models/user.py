@@ -12,8 +12,15 @@ class Role(Base, TimestampMixin):
     __tablename__ = "roles"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255))
+    # NULL = system role (admin / ap_manager / ap_clerk / cfo) — applies
+    # across every tenant. Non-NULL = a custom role minted by an org admin
+    # via /api/admin/roles. Uniqueness is on (name, organization_id), so
+    # two orgs can both define their own "Approver" without collision.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), index=True
+    )
 
     users: Mapped[list["User"]] = relationship(secondary="user_roles", back_populates="roles")
 

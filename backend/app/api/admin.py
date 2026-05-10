@@ -11,16 +11,18 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import ROLE_ADMIN, get_org_id, require_roles
+from app.api.deps import ALL_ROLES, ROLE_ADMIN, get_org_id, require_roles
 from app.database import get_control_db, get_tenant_engine
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
 from app.schemas.admin import (
     AdminUserListResponse,
     AdminUserResponse,
+    CreateRoleRequest,
     CreateUserRequest,
     CreateUserResponse,
     RoleResponse,
+    UpdateRoleRequest,
     UpdateUserRequest,
 )
 from app.services.session_management import revoke_user_sessions
@@ -34,15 +36,22 @@ def _generate_temp_password(length: int = 12) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def _role_to_response(role: Role) -> RoleResponse:
+    return RoleResponse(
+        id=str(role.id),
+        name=role.name,
+        description=role.description,
+        is_system=role.organization_id is None,
+    )
+
+
 def _user_to_response(user: User) -> AdminUserResponse:
     return AdminUserResponse(
         id=str(user.id),
         email=user.email,
         full_name=user.full_name,
         is_active=user.is_active,
-        roles=[
-            RoleResponse(id=str(r.id), name=r.name, description=r.description) for r in user.roles
-        ],
+        roles=[_role_to_response(r) for r in user.roles],
         created_at=user.created_at.isoformat() if user.created_at else "",
     )
 
@@ -82,10 +91,116 @@ async def list_users(
 async def list_roles(
     db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
-    result = await db.execute(select(Role).order_by(Role.name))
-    roles = result.scalars().all()
-    return [RoleResponse(id=str(r.id), name=r.name, description=r.description) for r in roles]
+    """System roles + this org's custom roles. The four built-ins
+    (organization_id IS NULL) gate hardcoded routes; custom rows are
+    org-scoped."""
+    result = await db.execute(
+        select(Role)
+        .where((Role.organization_id.is_(None)) | (Role.organization_id == org_id))
+        .order_by(Role.organization_id.is_not(None), Role.name)
+    )
+    return [_role_to_response(r) for r in result.scalars().all()]
+
+
+@router.post("/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
+async def create_role(
+    body: CreateRoleRequest,
+    db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Mint a custom role for this org. The name must not collide with a
+    system role, since the route-level RBAC gates would silently treat the
+    custom role as the built-in one."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Role name cannot be empty")
+    if name in ALL_ROLES:
+        raise HTTPException(
+            status_code=400, detail=f"'{name}' is a reserved system role name"
+        )
+    # Per-org uniqueness on (name, organization_id) — DB enforces it via
+    # uq_roles_name_org, but we 409 explicitly so the UI can show a clean
+    # message instead of an IntegrityError surfaced as 500.
+    existing = await db.execute(
+        select(Role).where(Role.name == name, Role.organization_id == org_id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Role name already exists for this org")
+
+    role = Role(name=name, description=body.description, organization_id=org_id)
+    db.add(role)
+    await db.commit()
+    await db.refresh(role)
+    return _role_to_response(role)
+
+
+@router.patch("/roles/{role_id}", response_model=RoleResponse)
+async def update_role(
+    role_id: uuid.UUID,
+    body: UpdateRoleRequest,
+    db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Edit a custom role. System roles are read-only — renaming `admin`
+    would silently break every `require_roles(ROLE_ADMIN)` gate. Only the
+    description is mutable on custom roles too, since the name is
+    referenced by approval-chain configs and changing it would break
+    them."""
+    role = (
+        await db.execute(select(Role).where(Role.id == role_id))
+    ).scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.organization_id is None:
+        raise HTTPException(status_code=403, detail="System roles cannot be edited")
+    if role.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    if body.description is not None:
+        role.description = body.description
+    await db.commit()
+    await db.refresh(role)
+    return _role_to_response(role)
+
+
+@router.delete("/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_role(
+    role_id: uuid.UUID,
+    db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Delete a custom role. Refuses if any user still holds it (409 with
+    `users_count`) so the operator can detach it first instead of leaving
+    orphaned UserRole rows. System roles are protected."""
+    role = (
+        await db.execute(select(Role).where(Role.id == role_id))
+    ).scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.organization_id is None:
+        raise HTTPException(status_code=403, detail="System roles cannot be deleted")
+    if role.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    in_use = (
+        await db.execute(
+            select(func.count()).select_from(UserRole).where(UserRole.role_id == role_id)
+        )
+    ).scalar() or 0
+    if in_use:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Role is assigned to {in_use} user(s); detach it first",
+        )
+
+    await db.delete(role)
+    await db.commit()
+    return None
 
 
 @router.post("/users", response_model=CreateUserResponse, status_code=status.HTTP_201_CREATED)
@@ -111,9 +226,16 @@ async def create_user(
     db.add(new_user)
     await db.flush()
 
-    # Assign roles
+    # Assign roles. Restrict the lookup to system roles + this org's
+    # custom roles so an admin from acme can't accidentally (or
+    # otherwise) grant a role minted by techflow.
     if body.role_names:
-        result = await db.execute(select(Role).where(Role.name.in_(body.role_names)))
+        result = await db.execute(
+            select(Role).where(
+                Role.name.in_(body.role_names),
+                (Role.organization_id.is_(None)) | (Role.organization_id == org_id),
+            )
+        )
         roles = result.scalars().all()
         for role in roles:
             db.add(UserRole(user_id=new_user.id, role_id=role.id))
@@ -171,7 +293,12 @@ async def update_user(
         roles_changed = new_role_names != previous_role_names
         await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_id))
         if body.role_names:
-            result = await db.execute(select(Role).where(Role.name.in_(body.role_names)))
+            result = await db.execute(
+                select(Role).where(
+                    Role.name.in_(body.role_names),
+                    (Role.organization_id.is_(None)) | (Role.organization_id == org_id),
+                )
+            )
             roles = result.scalars().all()
             for role in roles:
                 db.add(UserRole(user_id=user_id, role_id=role.id))

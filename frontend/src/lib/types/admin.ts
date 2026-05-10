@@ -2,6 +2,7 @@ export interface Role {
 	id: string;
 	name: string;
 	description: string | null;
+	is_system: boolean;
 }
 
 export interface AdminUser {
