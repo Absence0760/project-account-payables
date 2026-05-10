@@ -39,6 +39,24 @@ _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 router = APIRouter(prefix="/vendors", tags=["vendors"])
 
 
+def _merge_bank_details(existing: dict | None, incoming: dict | None) -> dict | None:
+    """Merge an incoming `bank_details` partial into the stored JSONB.
+
+    The column has historically held arbitrary processor metadata, so a
+    PATCH that only sets `counterparty_id` must not clobber sibling
+    keys. Empty string and ``None`` are treated as "clear this key" so
+    the UI can remove a counterparty without inventing a magic value.
+    A fully-cleared dict is collapsed back to ``None``.
+    """
+    merged = dict(existing or {})
+    for k, v in (incoming or {}).items():
+        if v is None or v == "":
+            merged.pop(k, None)
+        else:
+            merged[k] = v
+    return merged or None
+
+
 @router.get("")
 async def list_vendors(
     page: int = Query(1, ge=1),
@@ -131,19 +149,8 @@ async def update_vendor(
 
     payload = body.model_dump(exclude_unset=True)
 
-    # bank_details is JSONB — merge instead of replacing so unrelated
-    # processor metadata (legacy fields) survives a partial UI update.
     if "bank_details" in payload:
-        incoming = payload.pop("bank_details") or {}
-        merged = dict(vendor.bank_details or {})
-        for k, v in incoming.items():
-            # Treat empty string + None as "clear this key" so the UI
-            # can remove a counterparty without sending a magic value.
-            if v is None or v == "":
-                merged.pop(k, None)
-            else:
-                merged[k] = v
-        vendor.bank_details = merged or None
+        vendor.bank_details = _merge_bank_details(vendor.bank_details, payload.pop("bank_details"))
 
     for field, value in payload.items():
         setattr(vendor, field, value)
