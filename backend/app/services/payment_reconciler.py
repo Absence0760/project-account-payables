@@ -61,8 +61,13 @@ async def reconcile_once(*, now: datetime | None = None) -> ReconcileResult:
             result.payments_resolved += outcome["resolved"]
             result.payments_aged_out += outcome["aged_out"]
         except Exception as exc:  # noqa: BLE001
+            # Log the exception class, not the message — a processor
+            # SDK could surface partial PAN / account numbers in its
+            # error string (invariant #7).
             logger.warning(
-                "[payment-reconciler] failed to sweep %s: %s", org.db_name, exc
+                "[payment-reconciler] failed to sweep %s: %s",
+                org.db_name,
+                exc.__class__.__name__,
             )
             result.failures += 1
 
@@ -144,11 +149,12 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                 try:
                     upstream = await adapter.get_payment_status(payment.provider_payment_id)
                 except Exception as exc:  # noqa: BLE001
+                    # See note above — log the class, not the message.
                     logger.info(
                         "[payment-reconciler] adapter %s raised on %s: %s",
                         adapter.provider_name,
                         payment.id,
-                        exc,
+                        exc.__class__.__name__,
                     )
                     continue
 

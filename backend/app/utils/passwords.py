@@ -1,14 +1,33 @@
-"""Password generation + complexity checks for self-service signup."""
+"""Password generation, complexity checks, and the shared hash context.
+
+The hash context lives here (not duplicated in every router that hashes
+passwords) so we get one consistent algorithm choice across the
+codebase. `bcrypt_sha256` pre-hashes the input with SHA-256 before
+running bcrypt, which side-steps bcrypt's 72-byte truncation — a user
+who picks a 100-char password is fully protected by the suffix. The
+legacy `bcrypt` scheme is kept in the schemes list so existing
+`$2b$...` hashes still verify; new hashes are emitted as
+`$bcrypt-sha256$...` and the deprecated="auto" policy will re-hash on
+verify when a user with a legacy hash next logs in.
+"""
 
 from __future__ import annotations
 
 import re
 import secrets
 
+from passlib.context import CryptContext
+
 # Minimum constraints for a user-chosen password. The auto-generated
 # temporary password (generate_temp_password) already satisfies these by
 # virtue of token_urlsafe's output alphabet and length.
 MIN_LENGTH = 12
+
+pwd_context = CryptContext(
+    schemes=["bcrypt_sha256", "bcrypt"],
+    deprecated=["bcrypt"],
+    default="bcrypt_sha256",
+)
 
 _UPPER = re.compile(r"[A-Z]")
 _LOWER = re.compile(r"[a-z]")

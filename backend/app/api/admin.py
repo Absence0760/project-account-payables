@@ -5,7 +5,6 @@ import string
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,9 +25,9 @@ from app.schemas.admin import (
     UpdateUserRequest,
 )
 from app.services.session_management import revoke_user_sessions
+from app.utils.passwords import pwd_context
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def _generate_temp_password(length: int = 12) -> str:

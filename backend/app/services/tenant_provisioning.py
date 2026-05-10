@@ -13,7 +13,6 @@ import uuid
 from dataclasses import dataclass
 
 import asyncpg
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -22,10 +21,9 @@ from app.database import _make_tenant_url, control_session_factory
 from app.models import Base
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
+from app.utils.passwords import pwd_context
 
 logger = logging.getLogger(__name__)
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Tables that live in the CONTROL plane DB and must NOT be created inside a
 # tenant DB. Anything not in this set belongs to the tenant schema.

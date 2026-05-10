@@ -128,11 +128,15 @@ async def issue_card_for_invoice(
     try:
         result = await adapter.create_card(payload)
     except Exception as exc:  # noqa: BLE001
+        # Log the exception type, never the message. A card-provider
+        # adapter could surface a partial PAN / merchant token in its
+        # error string; interpolating `exc` would push that into the
+        # log sink (invariant #7).
         logger.warning(
             "[card_issuance] adapter %s raised on invoice %s: %s",
             adapter.provider_name,
             invoice.id,
-            exc,
+            exc.__class__.__name__,
         )
         return CardIssueResult(
             card=None, success=False, failure_reason=f"adapter_error:{exc.__class__.__name__}"

@@ -6,7 +6,6 @@ from datetime import UTC, date
 from decimal import Decimal
 
 import asyncpg
-from passlib.context import CryptContext
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -24,8 +23,7 @@ from app.models.usage import ExtractionUsage
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog, WorkflowDefinition
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from app.utils.passwords import pwd_context
 
 # Fixed UUIDs for reproducibility
 ACME_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")

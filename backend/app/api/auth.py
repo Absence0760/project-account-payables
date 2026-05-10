@@ -3,7 +3,6 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,11 +33,13 @@ from app.services import mfa
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.session_management import end_session, register_session
-from app.utils.passwords import PasswordError, validate_password_complexity
+from app.utils.passwords import (
+    PasswordError,
+    pwd_context,
+    validate_password_complexity,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ---------------------------------------------------------------------------

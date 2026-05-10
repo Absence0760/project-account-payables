@@ -9,7 +9,6 @@ import time
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,11 +24,13 @@ from app.schemas.portal import (
     PortalTokenResponse,
 )
 from app.tenant import get_tenant_db
-from app.utils.passwords import PasswordError, validate_password_complexity
+from app.utils.passwords import (
+    PasswordError,
+    pwd_context,
+    validate_password_complexity,
+)
 
 router = APIRouter(prefix="/portal/auth", tags=["portal-auth"])
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 @router.post("/login", response_model=PortalTokenResponse)

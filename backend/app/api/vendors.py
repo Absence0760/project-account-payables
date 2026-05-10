@@ -5,7 +5,6 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from passlib.context import CryptContext
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,9 +31,9 @@ from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.vendor_sync import sync_vendors_from_erp
 from app.tenant import get_tenant, get_tenant_db
 from app.utils.passwords import generate_temp_password
+from app.utils.passwords import pwd_context as _pwd
 
 logger = logging.getLogger(__name__)
-_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
 
