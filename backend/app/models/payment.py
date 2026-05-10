@@ -73,3 +73,13 @@ class Payment(Base, TimestampMixin):
     # ops dashboards without parsing audit logs.
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # International / multi-currency. NULL on domestic same-currency
+    # payments; populated by `services.international_payments` when
+    # the corridor needs an FX leg. See migration 0017.
+    source_currency: Mapped[str | None] = mapped_column(String(3))
+    source_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    fx_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    corridor: Mapped[str | None] = mapped_column(String(40))
+    target_country: Mapped[str | None] = mapped_column(String(2))
