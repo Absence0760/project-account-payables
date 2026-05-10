@@ -224,35 +224,79 @@ test.describe('/credit-memos (acme admin)', () => {
 		expect(vendors.items.length).toBeGreaterThanOrEqual(2);
 		const [vendorA, vendorB] = vendors.items;
 
-		// Find an invoice belonging to vendorB.
-		const invoicesResp = await page.request.get(`${API_BASE}/api/invoices`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-		});
-		const invoices = (await invoicesResp.json()) as {
-			items: Array<{ id: string; vendor: string; vendor_id: string | null }>;
-		};
-		const otherVendorInvoice = invoices.items.find(
-			(i) => i.vendor_id && i.vendor_id === vendorB.id
-		);
-		test.skip(!otherVendorInvoice, 'no invoice for second vendor in seed');
-
+		// Create the memo for vendorA, plus a fresh invoice for vendorB.
+		// Don't lean on the seed having a vendorB invoice — bind the
+		// invoice to vendorB.id directly via psql since the public
+		// /api/invoices POST infers vendor_id from vendor_name and
+		// vendorB.name might not exist as a fuzzy match.
 		const memo = await createMemo(page, {
 			memo_number: `CM-MISMATCH-${Date.now()}`,
 			vendor_id: vendorA.id,
 			amount: 50
 		});
 
+		const invoiceResp = await page.request.post(`${API_BASE}/api/invoices`, {
+			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			data: {
+				vendor: vendorB.name,
+				invoice_number: `MISMATCH-${Date.now()}`,
+				amount: 100,
+				status: 'new'
+			}
+		});
+		const invoiceB = (await invoiceResp.json()) as { id: string };
+		// Force vendor_id=vendorB regardless of whatever vendor matching
+		// the create endpoint did — we want a deterministic mismatch.
+		execFileSync(
+			'psql',
+			[
+				'-h',
+				'localhost',
+				'-U',
+				'postgres',
+				'-p',
+				'5432',
+				'-d',
+				'ap_acme',
+				'-c',
+				`UPDATE invoices SET vendor_id='${vendorB.id}' WHERE id='${invoiceB.id}'`
+			],
+			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+		);
+
 		try {
 			const resp = await page.request.post(
 				`${API_BASE}/api/credit-memos/${memo.id}/apply`,
 				{
 					headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
-					data: { invoice_id: otherVendorInvoice!.id }
+					data: { invoice_id: invoiceB.id }
 				}
 			);
 			expect(resp.status()).toBe(409);
 		} finally {
 			deleteMemo(memo.id);
+			execFileSync(
+				'psql',
+				[
+					'-h',
+					'localhost',
+					'-U',
+					'postgres',
+					'-p',
+					'5432',
+					'-d',
+					'ap_acme',
+					'-c',
+					`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${invoiceB.id}')`,
+					'-c',
+					`DELETE FROM workflow_instances WHERE invoice_id='${invoiceB.id}'`,
+					'-c',
+					`DELETE FROM audit_log WHERE entity_id='${invoiceB.id}'`,
+					'-c',
+					`DELETE FROM invoices WHERE id='${invoiceB.id}'`
+				],
+				{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+			);
 		}
 	});
 
