@@ -37,7 +37,41 @@ async def get_tenant(
 
 async def get_tenant_db(
     tenant: Organization = Depends(get_tenant),
+    authorization: str | None = Header(default=None),
 ) -> AsyncGenerator[AsyncSession]:
+    """Yield a SQLAlchemy session bound to the tenant's DB.
+
+    Cross-tenant guard: if the caller presents an employee JWT (typ
+    other than ``vendor``), the token's ``org`` claim must match the
+    tenant resolved from ``X-Tenant-Slug``. Without this check the
+    header alone decides which tenant's data the endpoint reads —
+    making it trivial for an authenticated user from tenant A to read
+    tenant B's rows by swapping the header.
+
+    Vendor-portal tokens are exempt: VendorUser rows live in the
+    per-tenant DB, so a cross-tenant attempt fails naturally on the
+    user-lookup query in ``get_current_vendor_user``. Unauthenticated
+    requests are also exempt — the downstream auth dependency will
+    reject them with 401 before any data is read.
+    """
+    if authorization and authorization.startswith("Bearer "):
+        # Local import avoids a circular dependency with `app.api.deps`,
+        # which itself imports from `app.tenant`.
+        from app.api.deps import decode_token
+
+        try:
+            payload = decode_token(authorization.removeprefix("Bearer "))
+        except HTTPException:
+            payload = None
+
+        if payload is not None and payload.get("typ") != "vendor":
+            token_org = payload.get("org")
+            if token_org and str(tenant.id) != token_org:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Token does not match the requested tenant",
+                )
+
     engine = get_tenant_engine(tenant.db_name)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:

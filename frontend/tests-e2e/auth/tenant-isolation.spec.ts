@@ -126,32 +126,44 @@ test.describe('tenant isolation — API', () => {
 		expect(r2.status()).toBe(401);
 	});
 
-	test('swapping the tenant header mid-session does not grant cross-tenant access', async ({
-		page
+	test('copying a token to a different origin does not grant cross-tenant access', async ({
+		page,
+		browser
 	}) => {
-		// Simulate an attacker tampering with their own browser: log in
-		// as techflow, then patch localStorage so the SPA thinks it's on
-		// acme. The Authorization header is still techflow's JWT.
+		// Simulate an attacker copying their own JWT into a different
+		// tenant's origin (different subdomain ⇒ separate localStorage).
+		// Even after the SPA reads the planted token, the backend must
+		// refuse any data request — the JWT carries `org=techflow` and
+		// the host's X-Tenant-Slug header says `acme`.
 		await signInAndWait(page, TECHFLOW_ADMIN);
-		await page.evaluate((slug) => {
-			// The frontend reads tenant from the subdomain, not storage,
-			// so we hop the origin instead — same effect.
-			void slug;
-		}, 'acme');
-
 		const techflowToken = await page.evaluate(() => localStorage.getItem('auth_token'));
 		expect(techflowToken).toBeTruthy();
 
-		// Hop to acme's app shell — the SPA there will run with
-		// techflow's token in localStorage (same origin? no — different
-		// subdomain so localStorage isolates). The point of the test is
-		// that even if the attacker copied the token over manually, the
-		// backend would reject.
-		await page.goto(`${ACME_BASE}/login`);
-		await page.evaluate((t) => localStorage.setItem('auth_token', t!), techflowToken);
+		// Use a fresh context for the acme origin — sharing the page
+		// context can drag cookies / state in non-obvious ways.
+		const acmeCtx = await browser.newContext();
+		try {
+			const r = await acmeCtx.request.get(`${API_URL}/api/invoices`, {
+				headers: {
+					Authorization: `Bearer ${techflowToken}`,
+					'X-Tenant-Slug': 'acme'
+				}
+			});
+			// 403 (tenant-mismatch guard) or 401 (in case the guard ever
+			// gets reshaped to fail-as-anon). The forbidden line is "any
+			// 2xx response" — that would mean the data leaked.
+			expect(r.status(), 'planted token must not read acme data').toBeGreaterThanOrEqual(
+				400
+			);
+			expect(r.status()).toBeLessThan(500);
 
-		await page.goto(`${ACME_BASE}/invoices`);
-		await page.waitForURL(/\/login/, { timeout: 10_000 });
-		expect(page.url()).toMatch(/^http:\/\/acme\.localhost:7777\//);
+			// Also verify nothing leaked in the body (defensive against
+			// a future change that returns 4xx but still includes a
+			// preview list).
+			const bodyText = await r.text();
+			expect(bodyText.toLowerCase()).not.toContain('"invoice_number"');
+		} finally {
+			await acmeCtx.close();
+		}
 	});
 });
