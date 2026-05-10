@@ -1,0 +1,407 @@
+"""PO matching algorithm — the actual variance / tolerance / 3-way
+upgrade logic inside `match_invoice_to_po`.
+
+`test_po_matching_wiring.py` covers the integration with
+`refresh_warnings` (does it persist? does it raise the right
+exception severity?). This file covers the *math* and *flow* of the
+matcher itself:
+
+  - amount_variance and amount_variance_pct calculation, including
+    the divide-by-zero edge case
+  - the tolerance boundary (default 5%, custom tolerances)
+  - 2-way → 3-way upgrade when a GR row exists for the PO
+  - partial-receipt downgrade: a matched 2-way invoice becomes
+    `partial` when GR.quantity_received < PO.quantity
+  - a mismatched invoice stays `mismatch` even when the GR is
+    partial (severity rules out partial-on-mismatch)
+  - PO lookup is vendor-scoped when invoice.vendor_id is set — the
+    matcher must NOT return a different vendor's PO that happens to
+    share the same po_number
+  - no po_number on the invoice → status `no_po` short-circuit,
+    no DB query
+  - po_number on the invoice but no matching PO row → status
+    `no_po` AND an issue describing which PO was missing
+
+A bug in the variance math is a real money risk: 5% off on a $50k
+invoice is $2.5k slipping through the matched gate without review.
+"""
+
+from __future__ import annotations
+
+import uuid
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.services.po_matching import MatchResult, match_invoice_to_po
+
+
+def _invoice(**overrides):
+    base = dict(
+        id=uuid.uuid4(),
+        amount=Decimal("1000.00"),
+        po_number="PO-100",
+        vendor_id=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _po(*, total: Decimal = Decimal("1000.00"), line_items=None, vendor_id=None):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        po_number="PO-100",
+        total=total,
+        vendor_id=vendor_id,
+        line_items=line_items or [],
+    )
+
+
+def _gr(*, line_items=None):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        line_items=line_items or [],
+    )
+
+
+def _li(quantity=None, received=None):
+    return SimpleNamespace(quantity=quantity, quantity_received=received)
+
+
+def _mk_db(*, po=None, gr=None):
+    """Two execute calls: PO lookup, then GR lookup (only if PO found)."""
+    po_res = MagicMock()
+    po_res.scalar_one_or_none = MagicMock(return_value=po)
+
+    gr_res = MagicMock()
+    gr_res.scalar_one_or_none = MagicMock(return_value=gr)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[po_res, gr_res])
+    return db
+
+
+# ---------------------------------------------------------------------------
+# Short-circuits — invoice has no po_number or PO doesn't exist.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_po_number_short_circuits_without_querying_db():
+    """An invoice without a po_number returns `no_po` without
+    touching the database. A regression that always queries would
+    waste a round-trip on every non-PO invoice."""
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=AssertionError("must not query"))
+    inv = _invoice(po_number=None)
+    result = await match_invoice_to_po(db, inv)
+    assert result.status == "no_po"
+    assert result.match_type == "none"
+    db.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_po_number_set_but_no_matching_po_returns_no_po_with_issue():
+    """The invoice cites a PO that doesn't exist in the system →
+    status `no_po` AND an issue describing which PO was missing."""
+    db = _mk_db(po=None)
+    db.execute = AsyncMock(side_effect=[
+        type("R", (), {"scalar_one_or_none": lambda self: None})()
+    ])
+    inv = _invoice(po_number="PO-GHOST")
+    result = await match_invoice_to_po(db, inv)
+    assert result.status == "no_po"
+    assert any("PO-GHOST" in i for i in result.issues)
+
+
+# ---------------------------------------------------------------------------
+# 2-way match — variance math and tolerance.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exact_amount_match_is_matched_with_zero_variance():
+    """Invoice $1000 vs PO $1000 → variance 0, within_tolerance True,
+    status `matched`, match_type `2-way`."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1000.00")))
+    assert result.status == "matched"
+    assert result.match_type == "2-way"
+    assert result.amount_variance == 0.0
+    assert result.amount_variance_pct == 0.0
+    assert result.within_tolerance is True
+
+
+@pytest.mark.asyncio
+async def test_invoice_higher_than_po_within_default_tolerance_is_matched():
+    """Invoice $1040 vs PO $1000 → +4% variance, within default 5%
+    tolerance → matched."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1040.00")))
+    assert result.status == "matched"
+    assert result.within_tolerance is True
+    assert result.amount_variance == pytest.approx(40.0)
+    assert result.amount_variance_pct == pytest.approx(4.0)
+
+
+@pytest.mark.asyncio
+async def test_invoice_outside_default_tolerance_is_mismatched():
+    """Invoice $1100 vs PO $1000 → +10% variance, above 5% tolerance
+    → status `mismatch`, issue lists both amounts and the variance %."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1100.00")))
+    assert result.status == "mismatch"
+    assert result.within_tolerance is False
+    assert result.amount_variance == pytest.approx(100.0)
+    assert result.amount_variance_pct == pytest.approx(10.0)
+    assert any("$1100.00" in i and "$1000.00" in i for i in result.issues)
+
+
+@pytest.mark.asyncio
+async def test_negative_variance_when_invoice_below_po_total():
+    """Invoice $900 vs PO $1000 → -10% variance, status mismatch.
+    Pin the sign — variance is `invoice - PO`, not abs()."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("900.00")))
+    assert result.status == "mismatch"
+    assert result.amount_variance == pytest.approx(-100.0)
+    assert result.amount_variance_pct == pytest.approx(-10.0)
+
+
+@pytest.mark.asyncio
+async def test_exact_tolerance_boundary_is_inclusive():
+    """+5% on the dot is `within_tolerance=True` — the boundary is
+    inclusive. A regression to `<` instead of `<=` flips every
+    invoice exactly at the limit into a 409."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1050.00")))
+    assert result.within_tolerance is True
+    assert result.status == "matched"
+
+
+@pytest.mark.asyncio
+async def test_custom_tolerance_overrides_default():
+    """`tolerance_pct=10` widens the gate so +9% passes."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(
+        db, _invoice(amount=Decimal("1090.00")), tolerance_pct=10.0
+    )
+    assert result.within_tolerance is True
+    assert result.status == "matched"
+
+
+@pytest.mark.asyncio
+async def test_custom_tolerance_can_be_tighter_than_default():
+    """`tolerance_pct=1` narrows the gate so +4% (which passes at
+    the default) now fails."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(
+        db, _invoice(amount=Decimal("1040.00")), tolerance_pct=1.0
+    )
+    assert result.status == "mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Edge case: PO total is zero.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_zero_po_total_with_positive_invoice_is_full_mismatch():
+    """PO total is 0 (data-quality issue or open-ended PO). A
+    positive invoice against it reports variance_pct = 100% — well
+    outside any tolerance — so it always mismatches. A regression
+    that divided by zero would crash the whole queue."""
+    db = _mk_db(po=_po(total=Decimal("0")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("500.00")))
+    assert result.amount_variance_pct == 100.0
+    assert result.status == "mismatch"
+
+
+@pytest.mark.asyncio
+async def test_zero_po_total_with_zero_invoice_is_zero_variance():
+    """PO 0, invoice 0 → variance_pct 0. Edge case for templated
+    "approve-on-receipt" workflows; not a fraud signal."""
+    db = _mk_db(po=_po(total=Decimal("0")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("0")))
+    assert result.amount_variance_pct == 0.0
+    assert result.status == "matched"
+
+
+# ---------------------------------------------------------------------------
+# 3-way matching — GR upgrades match_type and may downgrade status.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_matched_2way_upgrades_to_3way_when_gr_exists():
+    """A 2-way matched invoice gets `match_type=3-way` and a `gr_id`
+    populated when a GR row exists. Status stays `matched` if the
+    GR's quantities cover the PO."""
+    po_li = _li(quantity=10)
+    gr_li = _li(received=10)
+    db = _mk_db(
+        po=_po(total=Decimal("1000.00"), line_items=[po_li]),
+        gr=_gr(line_items=[gr_li]),
+    )
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1000.00")))
+    assert result.match_type == "3-way"
+    assert result.gr_id is not None
+    assert result.status == "matched"
+
+
+@pytest.mark.asyncio
+async def test_partial_gr_downgrades_matched_status_to_partial():
+    """PO ordered 10, GR received 6 → 60% receipt. Status drops from
+    `matched` to `partial`; issue describes the percentage."""
+    po_li = _li(quantity=10)
+    gr_li = _li(received=6)
+    db = _mk_db(
+        po=_po(total=Decimal("1000.00"), line_items=[po_li]),
+        gr=_gr(line_items=[gr_li]),
+    )
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1000.00")))
+    assert result.status == "partial"
+    assert result.match_type == "3-way"
+    assert any("60%" in i and "Partial" in i for i in result.issues)
+
+
+@pytest.mark.asyncio
+async def test_partial_gr_does_not_promote_mismatch_to_partial():
+    """An amount-mismatched invoice MUST NOT be silently demoted to
+    `partial` just because the GR is incomplete. Mismatch is the
+    higher-severity flag; the partial-receipt issue rides as a
+    secondary issue. A regression that overwrites `mismatch` with
+    `partial` would hide real variances behind a softer label."""
+    po_li = _li(quantity=10)
+    gr_li = _li(received=5)
+    db = _mk_db(
+        po=_po(total=Decimal("1000.00"), line_items=[po_li]),
+        gr=_gr(line_items=[gr_li]),
+    )
+    # Invoice well above the tolerance.
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1500.00")))
+    assert result.status == "mismatch"
+    # Partial-receipt info still surfaces as an issue, so the AP
+    # team sees both signals.
+    assert any("Partial" in i for i in result.issues)
+
+
+@pytest.mark.asyncio
+async def test_gr_without_line_items_keeps_status_unchanged():
+    """A GR exists but carries no line items (data still loading,
+    or older record). We still upgrade to 3-way (the GR row is
+    evidence of receipt) but we don't downgrade status — there's no
+    quantity to compare."""
+    db = _mk_db(
+        po=_po(total=Decimal("1000.00"), line_items=[_li(quantity=10)]),
+        gr=_gr(line_items=[]),
+    )
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1000.00")))
+    assert result.match_type == "3-way"
+    assert result.status == "matched"
+
+
+@pytest.mark.asyncio
+async def test_no_gr_keeps_match_type_as_2way():
+    """When no GR exists for the PO, match_type stays `2-way` and
+    `gr_id` stays None."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")), gr=None)
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1000.00")))
+    assert result.match_type == "2-way"
+    assert result.gr_id is None
+
+
+# ---------------------------------------------------------------------------
+# Vendor scoping — the matcher must NOT cross vendors on PO lookup.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vendor_id_on_invoice_constrains_po_lookup_to_same_vendor():
+    """When the invoice has a vendor_id, the matcher adds a vendor_id
+    filter to the PO query. Verify by inspecting the SQL — the
+    `where` clauses must include the vendor_id predicate. This is
+    how we avoid matching invoice A from vendor X against a PO from
+    vendor Y that happens to share po_number `PO-100`."""
+    captured: list = []
+    inv_vendor_id = uuid.uuid4()
+
+    class _FakeDb:
+        async def execute(self, q):  # noqa: ANN001
+            captured.append(str(q))
+            # First call returns a PO; second call returns no GR.
+            class R:
+                def scalar_one_or_none(self_):
+                    return _po(total=Decimal("1000.00"), vendor_id=inv_vendor_id) if len(captured) == 1 else None
+            return R()
+
+    inv = _invoice(amount=Decimal("1000.00"), vendor_id=inv_vendor_id)
+    await match_invoice_to_po(_FakeDb(), inv)
+    # The PO-lookup SQL must include the vendor_id WHERE predicate.
+    # `vendor_id` appears in the SELECT clause too, so we anchor on
+    # the WHERE form `purchase_orders.vendor_id = :`.
+    assert "purchase_orders.vendor_id = :" in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_invoice_without_vendor_id_runs_unscoped_po_query():
+    """No vendor_id on the invoice → the matcher runs an unscoped
+    po_number-only query. This is the path for invoices uploaded
+    before vendor matching ran."""
+    captured: list = []
+
+    class _FakeDb:
+        async def execute(self, q):  # noqa: ANN001
+            captured.append(str(q))
+            class R:
+                def scalar_one_or_none(self_):
+                    return _po(total=Decimal("1000.00")) if len(captured) == 1 else None
+            return R()
+
+    inv = _invoice(amount=Decimal("1000.00"), vendor_id=None)
+    await match_invoice_to_po(_FakeDb(), inv)
+    sql = captured[0]
+    # po_number predicate present; vendor_id WHERE predicate absent
+    # (it still appears in the SELECT list, which is fine — we just
+    # care that the matcher didn't add the scoping AND).
+    assert "purchase_orders.po_number = :" in sql
+    assert "purchase_orders.vendor_id = :" not in sql
+
+
+# ---------------------------------------------------------------------------
+# Result hydration — details dict captures the full picture.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_result_details_dict_carries_full_match_summary():
+    """The `details` dict is what the UI reads to render the match
+    panel without re-querying. Pin every documented field."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")), gr=_gr())
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1040.00")))
+    d = result.details
+    assert d["match_type"] == "3-way"
+    assert d["po_total"] == 1000.0
+    assert d["invoice_amount"] == 1040.0
+    assert d["variance"] == pytest.approx(40.0)
+    assert d["variance_pct"] == pytest.approx(4.0)
+    assert d["tolerance_pct"] == 5.0
+    assert d["within_tolerance"] is True
+    assert d["has_gr"] is True
+
+
+def test_match_result_defaults_make_sense_for_short_circuit_path():
+    """A bare MatchResult (no PO found path) must serialise to JSON
+    without surprises — all numeric defaults are 0.0, lists are
+    empty, optional strings are None."""
+    r = MatchResult()
+    assert r.match_type == "none"
+    assert r.status == "no_po"
+    assert r.po_id is None
+    assert r.amount_variance == 0.0
+    assert r.within_tolerance is False
+    assert r.issues == []
+    assert r.details == {}
