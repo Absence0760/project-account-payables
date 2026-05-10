@@ -18,6 +18,7 @@ import { ACME_CFO, ACME_CLERK, ACME_MANAGER, signInAndWait } from '../fixtures/h
  * | Payments     |       |   ✓    |  ✓  |  ✓    |
  * | Vendors      |       |   ✓    |  ✓  |  ✓    |
  * | Purchase Orders |    |   ✓    |  ✓  |  ✓    |
+ * | Goods Receipts |     |   ✓    |  ✓  |  ✓    |
  * | Exceptions   |       |   ✓    |     |  ✓    |
  * | Workflows    |       |        |     |  ✓    |
  * | Organization |       |        |     |  ✓    |
@@ -45,7 +46,7 @@ test.describe('RBAC — sidebar visibility', () => {
 		await assertSidebarLinks(page, ['/', '/invoices']);
 	});
 
-	test('manager: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, Exceptions', async ({
+	test('manager: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Exceptions', async ({
 		page
 	}) => {
 		await signInAndWait(page, ACME_MANAGER);
@@ -56,11 +57,12 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/payments',
 			'/vendors',
 			'/purchase-orders',
+			'/goods-receipts',
 			'/exceptions'
 		]);
 	});
 
-	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs (no Exceptions, no Users)', async ({
+	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs (no Exceptions, no Users)', async ({
 		page
 	}) => {
 		await signInAndWait(page, ACME_CFO);
@@ -70,7 +72,8 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/credit-memos',
 			'/payments',
 			'/vendors',
-			'/purchase-orders'
+			'/purchase-orders',
+			'/goods-receipts'
 		]);
 	});
 });
