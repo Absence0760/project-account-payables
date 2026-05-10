@@ -31,7 +31,12 @@ dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.25,<1",
     "httpx>=0.28.1,<1",
-    "ruff>=0.11,<1",
+    # Tight pin: ruff occasionally adds new lint rules in patch
+    # releases (0.15 added the I001 check that bit us once). Pinning
+    # to a single minor keeps CI's `pip install` from quietly picking
+    # up stricter rules than the local venv runs. Bump intentionally
+    # via dependabot or a manual upgrade pass.
+    "ruff>=0.15,<0.16",
 ]
 # Optional: auto-rotation of scanned invoice pages via Tesseract OSD.
 # Install with `pip install -e ".[ocr]"` and ensure the `tesseract` binary
