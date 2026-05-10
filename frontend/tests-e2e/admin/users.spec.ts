@@ -235,8 +235,8 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 			await expect(row).toBeVisible();
 
 			// First click arms (no DELETE issued yet).
-			await row.locator('button.delete-btn').click();
-			await expect(row.locator('button.delete-btn.armed')).toBeVisible();
+			await row.locator('button.row-action.variant-danger').click();
+			await expect(row.locator('button.row-action.variant-danger.armed')).toBeVisible();
 
 			// Second click commits.
 			const deleted = page.waitForResponse(
@@ -244,7 +244,7 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 					r.url().includes(`/api/admin/users/${created.id}`) &&
 					r.request().method() === 'DELETE'
 			);
-			await row.locator('button.delete-btn').click();
+			await row.locator('button.row-action.variant-danger').click();
 			const resp = await deleted;
 			expect(resp.status()).toBe(204);
 			didDelete = true;
@@ -259,6 +259,6 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 	test('Cannot delete yourself — current user has no delete button', async ({ page }) => {
 		const youRow = page.locator('table tbody tr', { hasText: 'demo@acme.com' });
 		await expect(youRow.locator('.you-badge')).toBeVisible();
-		await expect(youRow.locator('button.delete-btn')).toHaveCount(0);
+		await expect(youRow.locator('button.row-action.variant-danger')).toHaveCount(0);
 	});
 });

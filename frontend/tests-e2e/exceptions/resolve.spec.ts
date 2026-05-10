@@ -70,21 +70,22 @@ test.describe('/exceptions resolve actions (acme admin)', () => {
 		await page.waitForLoadState('networkidle');
 	});
 
-	test('Take Action reveals the resolve form with three action buttons', async ({ page }) => {
+	test('Resolve button opens the resolve modal with three action choices', async ({ page }) => {
 		const open = await listExceptions(page, 'open');
 		expect(open.length).toBeGreaterThan(0);
 
-		const card = page.locator('.exception-card').first();
-		await card.getByRole('button', { name: 'Take Action' }).click();
+		const row = page.locator('table tbody tr').first();
+		await row.getByRole('button', { name: 'Resolve' }).click();
 
-		await expect(card.locator('.resolve-input')).toBeVisible();
-		await expect(card.getByRole('button', { name: 'Resolve' })).toBeVisible();
-		await expect(card.getByRole('button', { name: 'Escalate' })).toBeVisible();
-		await expect(card.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+		const modal = page.getByRole('dialog', { name: 'Resolve exception' });
+		await expect(modal).toBeVisible();
+		await expect(modal.getByRole('button', { name: 'Resolve', exact: true })).toBeVisible();
+		await expect(modal.getByRole('button', { name: 'Escalate' })).toBeVisible();
+		await expect(modal.getByRole('button', { name: 'Dismiss' })).toBeVisible();
 
-		// Cancel hides the form again.
-		await card.getByRole('button', { name: 'Cancel' }).click();
-		await expect(card.locator('.resolve-input')).toHaveCount(0);
+		// Cancel closes the modal.
+		await modal.getByRole('button', { name: 'Cancel' }).click();
+		await expect(modal).toBeHidden();
 	});
 
 	test('Resolve flips an open exception to resolved status', async ({ page }) => {
@@ -93,12 +94,11 @@ test.describe('/exceptions resolve actions (acme admin)', () => {
 		const target = open[0];
 
 		try {
-			// Find the exception card by its (unique) description text. The
-			// API's invoice_number isn't shown directly on the card, but the
-			// description is. Fall back to "first card" if needed.
-			const card = page.locator('.exception-card').first();
-			await card.getByRole('button', { name: 'Take Action' }).click();
-			await card.locator('.resolve-input').fill('e2e: confirmed and closed');
+			const row = page.locator('table tbody tr').first();
+			await row.getByRole('button', { name: 'Resolve' }).click();
+
+			const modal = page.getByRole('dialog', { name: 'Resolve exception' });
+			await modal.locator('input[type="text"]').fill('e2e: confirmed and closed');
 
 			const posted = page.waitForResponse(
 				(r) =>
@@ -106,11 +106,10 @@ test.describe('/exceptions resolve actions (acme admin)', () => {
 					r.url().includes('/resolve') &&
 					r.request().method() === 'POST'
 			);
-			await card.getByRole('button', { name: 'Resolve' }).click();
+			await modal.getByRole('button', { name: 'Resolve', exact: true }).click();
 			const resp = await posted;
 			expect(resp.status()).toBe(200);
-			const body = (await resp.json()) as { id: string; status: string };
-			expect(body.status).toBe('resolved');
+			expect(((await resp.json()) as { status: string }).status).toBe('resolved');
 		} finally {
 			resetExceptionToOpen(target.id);
 		}
@@ -122,9 +121,11 @@ test.describe('/exceptions resolve actions (acme admin)', () => {
 		const target = open[0];
 
 		try {
-			const card = page.locator('.exception-card').first();
-			await card.getByRole('button', { name: 'Take Action' }).click();
-			await card.locator('.resolve-input').fill('e2e: needs CFO review');
+			const row = page.locator('table tbody tr').first();
+			await row.getByRole('button', { name: 'Resolve' }).click();
+
+			const modal = page.getByRole('dialog', { name: 'Resolve exception' });
+			await modal.locator('input[type="text"]').fill('e2e: needs CFO review');
 
 			const posted = page.waitForResponse(
 				(r) =>
@@ -132,7 +133,7 @@ test.describe('/exceptions resolve actions (acme admin)', () => {
 					r.url().includes('/resolve') &&
 					r.request().method() === 'POST'
 			);
-			await card.getByRole('button', { name: 'Escalate' }).click();
+			await modal.getByRole('button', { name: 'Escalate' }).click();
 			const resp = await posted;
 			expect(resp.status()).toBe(200);
 			expect(((await resp.json()) as { status: string }).status).toBe('escalated');
@@ -149,16 +150,18 @@ test.describe('/exceptions resolve actions (acme admin)', () => {
 		const target = open[0];
 
 		try {
-			const card = page.locator('.exception-card').first();
-			await card.getByRole('button', { name: 'Take Action' }).click();
-			// Frontend allows Dismiss with empty note — sends "dismissd by user".
+			const row = page.locator('table tbody tr').first();
+			await row.getByRole('button', { name: 'Resolve' }).click();
+
+			const modal = page.getByRole('dialog', { name: 'Resolve exception' });
+			// Dismiss accepts an empty note — sends "dismissd by user" server-side.
 			const posted = page.waitForResponse(
 				(r) =>
 					r.url().includes('/api/exceptions/') &&
 					r.url().includes('/resolve') &&
 					r.request().method() === 'POST'
 			);
-			await card.getByRole('button', { name: 'Dismiss' }).click();
+			await modal.getByRole('button', { name: 'Dismiss' }).click();
 			const resp = await posted;
 			expect(resp.status()).toBe(200);
 			expect(((await resp.json()) as { status: string }).status).toBe('dismissed');

@@ -27,7 +27,7 @@ test.describe('/workflows list (acme admin)', () => {
 		// Hiding the affordance is the UX contract; the API also
 		// rejects (asserted in lifecycle.spec.ts).
 		const defaultRow = page.locator('table tbody tr', { hasText: 'Default Workflow' });
-		await expect(defaultRow.locator('button.delete-btn')).toHaveCount(0);
+		await expect(defaultRow.locator('button.row-action.variant-danger')).toHaveCount(0);
 	});
 
 	test('step summary shows the enabled steps in pipeline order', async ({ page }) => {

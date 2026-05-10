@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import RowAction from '$lib/components/RowAction.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
 	interface CreditMemo {
@@ -222,8 +223,8 @@
 						<td><span class="badge {memo.status}">{memo.status}</span></td>
 						<td class="actions">
 							{#if memo.status === 'open'}
-								<button class="btn-apply" onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>Apply</button>
-								<button class="btn-void" onclick={() => handleVoid(memo.id)}>Void</button>
+								<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>Apply</RowAction>
+								<RowAction variant="danger" onclick={() => handleVoid(memo.id)}>Void</RowAction>
 							{/if}
 						</td>
 					</tr>
@@ -445,26 +446,9 @@
 	}
 	.actions {
 		display: flex;
+		align-items: center;
 		gap: 6px;
-	}
-	.btn-apply,
-	.btn-void {
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.btn-apply:hover {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-	.btn-void:hover {
-		border-color: #e04040;
-		color: #e04040;
+		white-space: nowrap;
 	}
 	.backdrop {
 		position: fixed;

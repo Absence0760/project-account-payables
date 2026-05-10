@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
+	import RowAction from '$lib/components/RowAction.svelte';
 	import type { Role } from '$lib/types/admin';
 
 	let creating = $state(false);
@@ -71,7 +72,7 @@
 	function handleWindowClick(e: MouseEvent) {
 		if (
 			confirmDeleteId &&
-			!(e.target as HTMLElement).closest('.delete-btn')
+			!(e.target as HTMLElement).closest('.row-action')
 		) {
 			confirmDeleteId = null;
 		}
@@ -152,10 +153,10 @@
 							</td>
 							<td class="muted-cell">{role.description ?? '—'}</td>
 							<td class="actions">
-								<button class="edit-btn" onclick={() => openEdit(role)}>Edit</button>
-								<button
-									class="delete-btn"
-									class:armed={confirmDeleteId === role.id}
+								<RowAction onclick={() => openEdit(role)}>Edit</RowAction>
+								<RowAction
+									variant="danger"
+									armed={confirmDeleteId === role.id}
 									onclick={(e) => {
 										e.stopPropagation();
 										if (confirmDeleteId === role.id) {
@@ -165,12 +166,8 @@
 										}
 									}}
 								>
-									{#if confirmDeleteId === role.id}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-									{:else}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-									{/if}
-								</button>
+									{confirmDeleteId === role.id ? 'Confirm' : 'Delete'}
+								</RowAction>
 							</td>
 						</tr>
 					{:else}
@@ -375,7 +372,7 @@
 	}
 
 	.actions-col {
-		width: 140px;
+		width: 160px;
 	}
 
 	.actions {
@@ -383,48 +380,6 @@
 		align-items: center;
 		gap: 6px;
 		white-space: nowrap;
-	}
-
-	.edit-btn {
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.edit-btn:hover {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-
-	.delete-btn {
-		padding: 4px 8px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 30px;
-	}
-
-	.delete-btn:hover {
-		border-color: #e04040;
-		color: #e04040;
-	}
-
-	.delete-btn.armed {
-		border-color: #e04040;
-		color: #e04040;
-		background: rgba(224, 64, 64, 0.08);
 	}
 
 	/* --- Modal --- */

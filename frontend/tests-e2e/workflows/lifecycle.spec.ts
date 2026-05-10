@@ -144,7 +144,7 @@ test.describe('workflow lifecycle (acme admin)', () => {
 				r.url().includes(`/api/workflows/${newId}`) &&
 				r.request().method() === 'DELETE'
 		);
-		await row.locator('button.delete-btn').click();
+		await row.locator('button.row-action.variant-danger').click();
 		await deleted;
 		await expect(row).toBeHidden({ timeout: 5_000 });
 	});

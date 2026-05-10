@@ -10,6 +10,7 @@
 	} from '$lib/types/workflow';
 	import BulkBar from '$lib/components/BulkBar.svelte';
 	import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
+	import RowAction from '$lib/components/RowAction.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
 	let showCreate = $state(false);
@@ -218,13 +219,11 @@
 							</span>
 						</td>
 						<td class="date-cell">{formatDate(wf.created_at)}</td>
-						<td>
-							<div class="actions">
-								<a href="/workflows/{wf.id}" class="edit-btn">Edit</a>
-								{#if !wf.is_default}
-									<button class="delete-btn" onclick={() => handleDelete(wf)}>Delete</button>
-								{/if}
-							</div>
+						<td class="actions">
+							<RowAction href="/workflows/{wf.id}">Edit</RowAction>
+							{#if !wf.is_default}
+								<RowAction variant="danger" onclick={() => handleDelete(wf)}>Delete</RowAction>
+							{/if}
 						</td>
 					</tr>
 				{:else}
@@ -458,40 +457,9 @@
 
 	.actions {
 		display: flex;
+		align-items: center;
 		gap: 6px;
-	}
-
-	.edit-btn {
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-		text-decoration: none;
-	}
-
-	.edit-btn:hover {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-
-	.delete-btn {
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.delete-btn:hover {
-		border-color: #e04040;
-		color: #e04040;
+		white-space: nowrap;
 	}
 
 	.empty {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import RowAction from '$lib/components/RowAction.svelte';
 	import SearchBox from '$lib/components/SearchBox.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
@@ -187,8 +188,8 @@
 						</td>
 						<td class="actions">
 							{#if v.status === 'unverified'}
-								<button class="btn-verify" onclick={() => verifyVendor(v.id)}>Verify</button>
-								<button class="btn-reject-sm" onclick={() => rejectVendor(v.id)}>Reject</button>
+								<RowAction variant="success" onclick={() => verifyVendor(v.id)}>Verify</RowAction>
+								<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>Reject</RowAction>
 							{/if}
 						</td>
 					</tr>
@@ -440,38 +441,9 @@
 
 	.actions {
 		display: flex;
+		align-items: center;
 		gap: 6px;
-	}
-
-	.btn-verify {
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid #1fa86a;
-		background: var(--surface);
-		color: #1fa86a;
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-verify:hover {
-		background: rgba(31, 168, 106, 0.1);
-	}
-
-	.btn-reject-sm {
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-reject-sm:hover {
-		border-color: #e04040;
-		color: #e04040;
+		white-space: nowrap;
 	}
 	.load-more-row {
 		display: flex;

@@ -8,6 +8,7 @@
 	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
 	import BulkRecodeGLModal from '$lib/components/BulkRecodeGLModal.svelte';
+	import RowAction from '$lib/components/RowAction.svelte';
 	import SearchBox from '$lib/components/SearchBox.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
@@ -302,7 +303,7 @@
 
 	function handleWindowClick(e: MouseEvent) {
 		const target = e.target as HTMLElement;
-		if (confirmDeleteId && !target.closest('.delete-btn')) {
+		if (confirmDeleteId && !target.closest('.row-action')) {
 			confirmDeleteId = null;
 		}
 		if (confirmBulkDelete && !target.closest('.bulk-delete-btn')) {
@@ -468,11 +469,11 @@
 					<tr class:row-selected={selected.has(invoice.id)}>
 						<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
 						<td class="actions">
-							<button class="edit-btn" onclick={() => (editing = invoice)}>Edit</button>
+							<RowAction onclick={() => (editing = invoice)}>Edit</RowAction>
 							{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
-								<button
-									class="delete-btn"
-									class:armed={confirmDeleteId === invoice.id}
+								<RowAction
+									variant="danger"
+									armed={confirmDeleteId === invoice.id}
 									disabled={deletingId === invoice.id}
 									onclick={(e) => {
 										e.stopPropagation();
@@ -483,14 +484,12 @@
 										}
 									}}
 								>
-									{#if deletingId === invoice.id}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
-									{:else if confirmDeleteId === invoice.id}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-									{:else}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-									{/if}
-								</button>
+									{deletingId === invoice.id
+										? '…'
+										: confirmDeleteId === invoice.id
+											? 'Confirm'
+											: 'Delete'}
+								</RowAction>
 							{/if}
 						</td>
 						<td class="mono">
@@ -734,56 +733,11 @@
 		text-align: right;
 	}
 
-	.edit-btn {
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.edit-btn:hover {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-
 	.actions {
 		display: flex;
 		align-items: center;
 		gap: 6px;
 		white-space: nowrap;
-	}
-
-	.delete-btn {
-		display: grid;
-		place-items: center;
-		width: 30px;
-		height: 28px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		cursor: pointer;
-		transition: all 0.15s;
-	}
-
-	.delete-btn:hover {
-		border-color: #e04040;
-		color: #e04040;
-	}
-
-	.delete-btn.armed {
-		border-color: #e04040;
-		background: rgba(224, 64, 64, 0.1);
-		color: #e04040;
-	}
-
-	.delete-btn:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
 	}
 
 	.empty {
