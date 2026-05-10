@@ -39,29 +39,16 @@ def _has_table(table_name: str) -> bool:
 def upgrade() -> None:
     # Tenant DB columns
     if _has_table("invoices"):
-        op.execute(
-            "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS uploaded_by_id UUID"
-        )
+        op.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS uploaded_by_id UUID")
 
     if _has_table("workflow_steps"):
-        op.execute(
-            "ALTER TABLE workflow_steps "
-            "ADD COLUMN IF NOT EXISTS original_assigned_to UUID"
-        )
-        op.execute(
-            "ALTER TABLE workflow_steps "
-            "ADD COLUMN IF NOT EXISTS approval_level INTEGER"
-        )
+        op.execute("ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS original_assigned_to UUID")
+        op.execute("ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS approval_level INTEGER")
 
     # Control plane columns
     if _has_table("users"):
-        op.execute(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS delegate_to_id UUID"
-        )
-        op.execute(
-            "ALTER TABLE users "
-            "ADD COLUMN IF NOT EXISTS delegate_until TIMESTAMPTZ"
-        )
+        op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS delegate_to_id UUID")
+        op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS delegate_until TIMESTAMPTZ")
 
 
 def downgrade() -> None:
@@ -69,13 +56,8 @@ def downgrade() -> None:
         op.execute("ALTER TABLE invoices DROP COLUMN IF EXISTS uploaded_by_id")
 
     if _has_table("workflow_steps"):
-        op.execute(
-            "ALTER TABLE workflow_steps "
-            "DROP COLUMN IF EXISTS original_assigned_to"
-        )
-        op.execute(
-            "ALTER TABLE workflow_steps DROP COLUMN IF EXISTS approval_level"
-        )
+        op.execute("ALTER TABLE workflow_steps DROP COLUMN IF EXISTS original_assigned_to")
+        op.execute("ALTER TABLE workflow_steps DROP COLUMN IF EXISTS approval_level")
 
     if _has_table("users"):
         op.execute("ALTER TABLE users DROP COLUMN IF EXISTS delegate_to_id")

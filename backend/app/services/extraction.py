@@ -236,8 +236,7 @@ async def run_extraction(
             )
             invoice.warnings = existing_warnings
             print(
-                f"[extraction] GL validation: rejected "
-                f"{len(set(invalid_gl_codes))} unknown code(s)"
+                f"[extraction] GL validation: rejected {len(set(invalid_gl_codes))} unknown code(s)"
             )
 
         # Vendor matching

@@ -97,15 +97,15 @@ def _make_db_for(
     skipped_no_vendor: int = 0,
 ):
     """Sequence the SELECTs `bulk_recode_gl` issues:
-      1. _load_active_chart           → list of GL codes
-      2. _select_scope eligible       → list of Invoice rows
-                                        (already pre-filtered for
-                                        status NOT IN immutable AND
-                                        vendor_id IS NOT NULL — that's
-                                        the SQL's job now)
-      3. _select_scope immutable count
-      4. _select_scope no-vendor count
-      5. _load_priors                 → list of (vendor_id, value) tuples
+    1. _load_active_chart           → list of GL codes
+    2. _select_scope eligible       → list of Invoice rows
+                                      (already pre-filtered for
+                                      status NOT IN immutable AND
+                                      vendor_id IS NOT NULL — that's
+                                      the SQL's job now)
+    3. _select_scope immutable count
+    4. _select_scope no-vendor count
+    5. _load_priors                 → list of (vendor_id, value) tuples
     """
     db = MagicMock()
     db.commit = AsyncMock()

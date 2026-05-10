@@ -95,9 +95,7 @@ async def get_goods_receipt(
 
     po_number: str | None = None
     if gr.po_id:
-        po_q = await db.execute(
-            select(PurchaseOrder.po_number).where(PurchaseOrder.id == gr.po_id)
-        )
+        po_q = await db.execute(select(PurchaseOrder.po_number).where(PurchaseOrder.id == gr.po_id))
         po_number = po_q.scalar_one_or_none()
 
     return {

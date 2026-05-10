@@ -59,13 +59,9 @@ async def list_users(
     base = select(User).where(User.organization_id == org_id)
     if search and search.strip():
         like = f"%{search.strip().lower()}%"
-        base = base.where(
-            (User.full_name.ilike(like)) | (User.email.ilike(like))
-        )
+        base = base.where((User.full_name.ilike(like)) | (User.email.ilike(like)))
 
-    total_q = await db.execute(
-        select(func.count()).select_from(base.subquery())
-    )
+    total_q = await db.execute(select(func.count()).select_from(base.subquery()))
     total = int(total_q.scalar() or 0)
 
     paged = (
@@ -207,9 +203,7 @@ class UserDeleteConflict(BaseModel):
     active_workflow_approver_in: int  # workflow_definitions.steps_config approver_ids contains user
 
 
-async def _user_reference_counts(
-    db_name: str, user_id: uuid.UUID
-) -> UserDeleteConflict:
+async def _user_reference_counts(db_name: str, user_id: uuid.UUID) -> UserDeleteConflict:
     """Count tenant-DB rows that reference this user and would be orphaned by delete.
 
     All three fields must be zero for a delete to proceed. Audit-log /
@@ -373,9 +367,7 @@ async def bulk_delete_users(
             or conflict.pending_approval_steps
             or conflict.active_workflow_approver_in
         ):
-            failed.append(
-                BulkDeleteFailure(user_id=raw_id, reason="blocked", references=conflict)
-            )
+            failed.append(BulkDeleteFailure(user_id=raw_id, reason="blocked", references=conflict))
             continue
 
         await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_uuid))
