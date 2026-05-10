@@ -6,12 +6,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from passlib.context import CryptContext
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import ROLE_ADMIN, get_org_id, require_roles
-from app.database import get_control_db
+from app.database import get_control_db, get_tenant_engine
+from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
 from app.schemas.admin import (
     AdminUserListResponse,
@@ -181,6 +183,73 @@ async def update_user(
     return _user_to_response(target)
 
 
+class UserDeleteConflict(BaseModel):
+    """Why a user can't be deleted — surfaced in the 409 body so the UI can list it."""
+
+    open_invoice_assignments: int  # invoices.assigned_to_id, status not in (done, rejected, paid)
+    pending_approval_steps: int  # workflow_steps.assigned_to (incomplete)
+    active_workflow_approver_in: int  # workflow_definitions.steps_config approver_ids contains user
+
+
+async def _user_reference_counts(
+    db_name: str, user_id: uuid.UUID
+) -> UserDeleteConflict:
+    """Count tenant-DB rows that reference this user and would be orphaned by delete.
+
+    All three fields must be zero for a delete to proceed. Audit-log /
+    payment-initiator / invoice-uploader references are intentionally
+    excluded — those are historical and must survive the user.
+    """
+    engine = get_tenant_engine(db_name)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        # Open invoices currently assigned to this user.
+        invoice_q = await session.execute(
+            text(
+                "SELECT COUNT(*) FROM invoices "
+                "WHERE assigned_to_id = :uid "
+                "AND status NOT IN ('done', 'rejected', 'paid')"
+            ),
+            {"uid": user_id},
+        )
+        open_invoices = int(invoice_q.scalar() or 0)
+
+        # Workflow steps awaiting their approval.
+        step_q = await session.execute(
+            text(
+                "SELECT COUNT(*) FROM workflow_steps "
+                "WHERE (assigned_to = :uid OR original_assigned_to = :uid) "
+                "AND completed_at IS NULL"
+            ),
+            {"uid": user_id},
+        )
+        pending_steps = int(step_q.scalar() or 0)
+
+        # Active workflow definitions whose approver_ids list contains this user.
+        # @> requires a JSONB containment check; the user_id can appear at the
+        # step.config.approver_ids level OR inside step.config.approval_chain[].approver_ids.
+        # JSON path '$ ?? @ == "uid"' isn't portable across pg versions; the
+        # straightforward route is a text-match, which is good enough for a
+        # blocklist (false positives only happen if a user's UUID literally
+        # appears as a substring elsewhere — UUIDs are uncorrelated, so the
+        # collision rate is effectively zero).
+        defn_q = await session.execute(
+            text(
+                "SELECT COUNT(*) FROM workflow_definitions "
+                "WHERE is_active = true "
+                "AND steps_config::text LIKE :pattern"
+            ),
+            {"pattern": f"%{user_id}%"},
+        )
+        active_defs = int(defn_q.scalar() or 0)
+
+        return UserDeleteConflict(
+            open_invoice_assignments=open_invoices,
+            pending_approval_steps=pending_steps,
+            active_workflow_approver_in=active_defs,
+        )
+
+
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: uuid.UUID,
@@ -196,6 +265,27 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     if target.id == current_user.id:
         raise HTTPException(status_code=409, detail="Cannot delete yourself")
+
+    # Pre-flight safety: refuse if the user is referenced by anything that
+    # would be silently orphaned. The admin must reassign references first.
+    org_q = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = org_q.scalar_one()
+    conflict = await _user_reference_counts(org.db_name, user_id)
+    if (
+        conflict.open_invoice_assignments
+        or conflict.pending_approval_steps
+        or conflict.active_workflow_approver_in
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "Cannot delete user — they are still referenced by "
+                    "in-flight work. Reassign these first, then retry."
+                ),
+                "references": conflict.model_dump(),
+            },
+        )
 
     # Remove role assignments first
     await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_id))
