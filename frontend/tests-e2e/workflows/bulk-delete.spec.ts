@@ -133,13 +133,16 @@ test.describe('/workflows bulk delete (acme admin)', () => {
 			.locator('td.checkbox-col input[type="checkbox"]')
 			.check();
 
+		// Armed-confirm pattern: first click arms, second click commits.
+		const bar = page.locator('.bulk-bar');
+		await bar.getByRole('button', { name: /^Delete 2$/ }).click();
 		const posted = page.waitForResponse(
 			(r) =>
 				r.url().endsWith('/api/workflows/bulk-delete') &&
 				r.request().method() === 'POST' &&
 				r.status() === 200
 		);
-		await page.locator('.bulk-bar').getByRole('button', { name: /Delete 2/ }).click();
+		await bar.getByRole('button', { name: /^Confirm Delete 2$/ }).click();
 		const resp = await posted;
 		const body = (await resp.json()) as { deleted: string[]; failed: unknown[] };
 		expect(body.deleted.sort()).toEqual([a, b].sort());

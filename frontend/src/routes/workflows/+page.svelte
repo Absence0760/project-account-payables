@@ -8,6 +8,8 @@
 		DEFAULT_APPROVAL_CONFIG,
 		DEFAULT_ERP_CONFIG,
 	} from '$lib/types/workflow';
+	import BulkBar from '$lib/components/BulkBar.svelte';
+	import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
 	let showCreate = $state(false);
@@ -156,15 +158,15 @@
 		<button class="btn-create" onclick={() => (showCreate = true)}>+ New Workflow</button>
 	</header>
 
-	{#if selectedIds.size > 0}
-		<div class="bulk-bar">
-			<span class="bulk-count">{selectedIds.size} selected</span>
-			<button class="btn-bulk-clear" onclick={() => (selectedIds = new Set())}>Clear</button>
-			<button class="btn-bulk-delete" disabled={bulkDeleting} onclick={handleBulkDelete}>
-				{bulkDeleting ? 'Deleting…' : `Delete ${selectedIds.size}`}
-			</button>
-		</div>
-	{/if}
+	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
+		{#snippet actions()}
+			<BulkDeleteButton
+				onconfirm={handleBulkDelete}
+				disabled={bulkDeleting}
+				label={`Delete ${selectedIds.size}`}
+			/>
+		{/snippet}
+	</BulkBar>
 
 	<div class="grid-container">
 		<table>
@@ -307,59 +309,6 @@
 
 	.btn-create:hover {
 		opacity: 0.85;
-	}
-
-	.bulk-bar {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 8px 14px;
-		background: var(--surface);
-		border: 1px solid var(--accent);
-		border-radius: 6px;
-	}
-
-	.bulk-count {
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: var(--accent);
-		flex: 1;
-	}
-
-	.btn-bulk-clear {
-		padding: 6px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-bulk-clear:hover {
-		color: var(--text);
-	}
-
-	.btn-bulk-delete {
-		padding: 6px 16px;
-		border-radius: 4px;
-		border: none;
-		background: #e04040;
-		color: #fff;
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-bulk-delete:hover:not(:disabled) {
-		opacity: 0.9;
-	}
-
-	.btn-bulk-delete:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
 	}
 
 	.checkbox-col {

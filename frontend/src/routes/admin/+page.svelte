@@ -3,6 +3,8 @@
 	import { ROLE_LABELS } from '$lib/types/admin';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import BulkBar from '$lib/components/BulkBar.svelte';
+	import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
 	import { toast } from '$lib/components/Toast.svelte';
 
 	let showCreateModal = $state(false);
@@ -216,19 +218,15 @@
 		</div>
 	</header>
 
-	{#if selectedIds.size > 0}
-		<div class="bulk-bar">
-			<span class="bulk-count">{selectedIds.size} selected</span>
-			<button class="btn-bulk-clear" onclick={() => (selectedIds = new Set())}>Clear</button>
-			<button
-				class="btn-bulk-delete"
+	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
+		{#snippet actions()}
+			<BulkDeleteButton
+				onconfirm={handleBulkDelete}
 				disabled={bulkDeleting}
-				onclick={handleBulkDelete}
-			>
-				{bulkDeleting ? 'Deleting…' : `Delete ${selectedIds.size}`}
-			</button>
-		</div>
-	{/if}
+				label={`Delete ${selectedIds.size}`}
+			/>
+		{/snippet}
+	</BulkBar>
 
 	<div class="grid-container">
 		<table>
@@ -562,60 +560,7 @@
 		color: var(--text-muted);
 	}
 
-	/* --- Bulk bar --- */
-
-	.bulk-bar {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 8px 14px;
-		background: var(--surface);
-		border: 1px solid var(--accent);
-		border-radius: 6px;
-	}
-
-	.bulk-count {
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: var(--accent);
-		flex: 1;
-	}
-
-	.btn-bulk-clear {
-		padding: 6px 12px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-bulk-clear:hover {
-		color: var(--text);
-	}
-
-	.btn-bulk-delete {
-		padding: 6px 16px;
-		border-radius: 4px;
-		border: none;
-		background: #e04040;
-		color: #fff;
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-bulk-delete:hover:not(:disabled) {
-		opacity: 0.9;
-	}
-
-	.btn-bulk-delete:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
+	/* --- Bulk-row checkbox column (BulkBar / BulkDeleteButton come from $lib/components) --- */
 
 	.checkbox-col {
 		width: 36px;

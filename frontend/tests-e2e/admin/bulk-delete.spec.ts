@@ -128,13 +128,16 @@ test.describe('/admin bulk delete (acme admin)', () => {
 		const bar = page.locator('.bulk-bar');
 		await expect(bar).toBeVisible();
 
+		// BulkDeleteButton uses an armed-confirm pattern (matches /invoices):
+		// first click flips icon to a checkmark, second click commits.
+		await bar.getByRole('button', { name: /^Delete 2$/ }).click();
 		const posted = page.waitForResponse(
 			(r) =>
 				r.url().endsWith('/api/admin/users/bulk-delete') &&
 				r.request().method() === 'POST' &&
 				r.status() === 200
 		);
-		await bar.getByRole('button', { name: /Delete 2/ }).click();
+		await bar.getByRole('button', { name: /^Confirm Delete 2$/ }).click();
 		const resp = await posted;
 		const body = (await resp.json()) as { deleted: string[]; failed: unknown[] };
 		expect(body.deleted.sort()).toEqual([a, b].sort());
