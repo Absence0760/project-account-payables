@@ -87,11 +87,22 @@ test.describe('/invoices modal edit + save', () => {
 		const next = `e2e-api-edited-${Date.now()}`;
 
 		try {
-			const patch = await page.request.patch(
+			// Use page.request.fetch with an explicit Content-Type to guard
+			// against an intermittent flake where Playwright's `data: {...}`
+			// shorthand drops the JSON content-type after enough requests
+			// in the same context, causing FastAPI to receive an empty
+			// body and exclude_unset=True to skip the description field
+			// (so the response echoes the seed value instead of `next`).
+			const patch = await page.request.fetch(
 				`${API_BASE}/api/invoices/${target!.id}`,
 				{
-					headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
-					data: { description: next }
+					method: 'PATCH',
+					headers: {
+						Authorization: `Bearer ${token}`,
+						'X-Tenant-Slug': 'acme',
+						'Content-Type': 'application/json'
+					},
+					data: JSON.stringify({ description: next })
 				}
 			);
 			expect(patch.status()).toBe(200);
@@ -103,9 +114,14 @@ test.describe('/invoices modal edit + save', () => {
 			});
 			expect(((await get.json()) as { description: string }).description).toBe(next);
 		} finally {
-			await page.request.patch(`${API_BASE}/api/invoices/${target!.id}`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
-				data: { description: original }
+			await page.request.fetch(`${API_BASE}/api/invoices/${target!.id}`, {
+				method: 'PATCH',
+				headers: {
+					Authorization: `Bearer ${token}`,
+					'X-Tenant-Slug': 'acme',
+					'Content-Type': 'application/json'
+				},
+				data: JSON.stringify({ description: original })
 			});
 		}
 	});

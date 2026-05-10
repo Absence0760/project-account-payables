@@ -105,6 +105,204 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 
 Access via: http://acme.localhost:7777 or http://techflow.localhost:7777
 
+## Design system & UI patterns
+
+Reuse these patterns instead of inventing new ones. Reach for the
+existing component first; only deviate with a written justification.
+
+### Page layout
+
+Every authenticated route is wrapped in `<div class="workspace">`:
+
+```css
+.workspace {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 100vh;
+}
+```
+
+This is what produces the consistent left/right gap between sidebar
+and content across pages — do not change `max-width` or `padding`
+per-route. A new route must use these exact values.
+
+The page title goes in `<header class="toolbar">`, with primary
+actions (e.g. `+ Invite User`, `+ Upload Invoices`) right-aligned in
+a `<div class="toolbar-actions">`.
+
+### Search (`SearchBox`)
+
+Pill-shaped search input with a magnifier-glass SVG. Single component:
+
+```svelte
+<script lang="ts">
+    import SearchBox from '$lib/components/SearchBox.svelte';
+    let search = $state('');
+</script>
+
+<SearchBox
+    bind:value={search}
+    placeholder="Search invoices..."
+    ariaLabel="Search invoices"
+/>
+```
+
+- Debounce search before fetching (250–300ms is the convention; see
+  `routes/admin/+page.svelte` and `routes/invoices/+page.svelte`).
+- Server-side filter via `?search=` param. Backend uses ILIKE on the
+  most natural fields for that entity (e.g. name + email, or
+  invoice_number + vendor_name).
+- Clearing the input must re-fire the request without `?search=`,
+  not just visually clear.
+- Do NOT re-implement the search-box markup inline. If you find
+  yourself writing `<svg ...><circle .../><path .../></svg>` next to
+  an `<input>`, you are diverging from the pattern.
+
+### Bulk selection (`BulkBar` + `BulkDeleteButton`)
+
+Floating, fixed-position bar at the bottom of the viewport that
+appears when one or more rows are selected:
+
+```svelte
+<script lang="ts">
+    import BulkBar from '$lib/components/BulkBar.svelte';
+    import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
+
+    let selected = $state<Set<string>>(new Set());
+</script>
+
+<BulkBar count={selected.size} onclear={() => (selected = new Set())}>
+    {#snippet actions()}
+        <BulkDeleteButton
+            onconfirm={handleBulkDelete}
+            disabled={busy}
+            label={`Delete ${selected.size}`}
+        />
+        <!-- additional .bulk-action-btn buttons go here -->
+    {/snippet}
+</BulkBar>
+```
+
+**Required behaviours:**
+- Selection lives in a `Set<string>` keyed by row id.
+- Header checkbox toggles select-all over the *selectable* subset
+  (e.g. excluding the current user, the default workflow, or
+  immutable-status invoices). Items that can't be selected render
+  their `<td class="checkbox-col">` empty rather than disabled.
+- Delete is always armed-confirm (one click arms; outside-click or
+  second click un-arms or commits). `BulkDeleteButton` does this.
+- Bulk endpoints return a partial-success shape — `{deleted: [],
+  failed: [{id, reason, ...}]}` — and the page surfaces the per-row
+  reason in a toast. See `bulk_delete_users` in `backend/app/api/admin.py`
+  for the canonical contract.
+
+**The one exception:** `/payments` queue uses a non-floating
+`<div class="pay-bar">` because it's a payment-run *builder*
+(selection drives the next step's UI, not row actions). Don't copy
+this pattern elsewhere.
+
+### Pagination + Load more
+
+Default page size is **20** across all list endpoints. Backend
+returns `{items, total, page, page_size}`; the front-end renders the
+items, then a centred Load More button below the table:
+
+```svelte
+{#if store.hasMore}
+    <div class="load-more-row">
+        <button class="btn-load-more" onclick={loadMore} disabled={store.loading}>
+            {store.loading ? 'Loading…' : `Load more (${store.items.length} of ${store.total})`}
+        </button>
+    </div>
+{:else if store.total > 0}
+    <div class="load-more-row">
+        <span class="load-more-end">Showing all {store.total} <thing>s</span>
+    </div>
+{/if}
+```
+
+- Append, don't replace. `loadMore` issues `page=N+1` and concatenates
+  the new items.
+- "Showing all N" is the empty-string-of-pagination state — confirms
+  for the user that they've reached the end.
+- Stores expose `total`, `page`, `hasMore`, and any mutating actions
+  (create / delete / bulk-delete) keep `total` in sync without a
+  refetch.
+
+### Status filter chips
+
+Inline, pill-shaped buttons above the table:
+
+```svelte
+<nav class="filters">
+    <button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>
+        All <span class="count">{total}</span>
+    </button>
+    {#each STATUSES as s}
+        <button class="filter-chip" class:active={statusFilter === s} onclick={() => (statusFilter = s)}>
+            {STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
+        </button>
+    {/each}
+</nav>
+```
+
+Active chip uses `var(--accent)` background + white text. The "All"
+chip always comes first.
+
+### Modals
+
+Backdrop + centred dialog:
+
+```svelte
+<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) onclose(); }}>
+    <div class="modal" role="dialog" aria-label="<Action>">
+        <h2><Heading></h2>
+        <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+            <!-- labelled fields -->
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
+                <button type="submit" class="btn-primary" disabled={saving}>
+                    {saving ? 'Saving…' : 'Save'}
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+```
+
+- Backdrop click on its own element (not propagated from children) closes.
+- Cancel sits left of the primary action in the footer.
+- Required-field markers use `<em class="required">*</em>`.
+
+### Per-row destructive actions
+
+Same armed-confirm idea as `BulkDeleteButton`, just inline in the row.
+The icon flips trash → checkmark; outside-click un-arms. See
+`routes/invoices/+page.svelte` for the canonical implementation.
+
+### Class-name conventions
+
+| Pattern | Class | Source |
+|---|---|---|
+| Page wrapper | `.workspace` | every route's `+page.svelte` |
+| Page header | `.toolbar` | each route |
+| Search input | `.search-box` | `$lib/components/SearchBox.svelte` |
+| Bulk bar | `.bulk-bar` | `$lib/components/BulkBar.svelte` |
+| Bulk delete | `.bulk-delete-btn` (+ `.armed`) | `$lib/components/BulkDeleteButton.svelte` |
+| Bulk action | `.bulk-action-btn` | per-route, but always inside a BulkBar |
+| Filter pill | `.filter-chip` (+ `.active`) | per-route, copy /invoices |
+| Load more | `.btn-load-more` / `.load-more-row` / `.load-more-end` | per-route, copy /admin |
+| Modal dialog | `.modal[role="dialog"]` + `.backdrop` | per-route |
+| Status badge | `<StatusBadge>` | `$lib/components/StatusBadge.svelte` |
+
+If you need a new pattern, add the component to `$lib/components/`
+and document it here. **Do not** invent a new class name for an
+existing pattern.
+
 ## Conventions
 
 - **Svelte 5 runes** — `$state`, `$derived`, `$effect`, `$props`. No legacy options API.
