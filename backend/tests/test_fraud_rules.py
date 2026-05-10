@@ -12,7 +12,7 @@ Covers the five additive rules introduced for the
 Each rule is exercised via `refresh_warnings` against a mocked
 AsyncSession so the tests stay hermetic. Org-config plumbing is
 covered via the `_fraud_config` helper (which merges org settings
-over `_DEFAULT_FRAUD_RULES`).
+over `DEFAULT_FRAUD_RULES`).
 """
 
 from __future__ import annotations
@@ -119,11 +119,11 @@ def _types(warnings):
 
 
 def test_fraud_config_returns_defaults_when_no_overrides():
-    from app.services.invoice_warnings import _DEFAULT_FRAUD_RULES, _fraud_config
+    from app.services.invoice_warnings import DEFAULT_FRAUD_RULES, _fraud_config
 
-    assert _fraud_config(None) == _DEFAULT_FRAUD_RULES
-    assert _fraud_config({}) == _DEFAULT_FRAUD_RULES
-    assert _fraud_config({"unrelated": "x"}) == _DEFAULT_FRAUD_RULES
+    assert _fraud_config(None) == DEFAULT_FRAUD_RULES
+    assert _fraud_config({}) == DEFAULT_FRAUD_RULES
+    assert _fraud_config({"unrelated": "x"}) == DEFAULT_FRAUD_RULES
 
 
 def test_fraud_config_org_settings_override_defaults():
@@ -148,11 +148,11 @@ def test_fraud_config_org_settings_override_defaults():
 
 def test_fraud_config_drops_unknown_keys_silently():
     """An old client that POSTs a dropped key shouldn't break the merge."""
-    from app.services.invoice_warnings import _DEFAULT_FRAUD_RULES, _fraud_config
+    from app.services.invoice_warnings import DEFAULT_FRAUD_RULES, _fraud_config
 
     cfg = _fraud_config({"fraud_rules": {"defunct_old_key": "x"}})
     assert "defunct_old_key" not in cfg
-    assert cfg == _DEFAULT_FRAUD_RULES
+    assert cfg == DEFAULT_FRAUD_RULES
 
 
 # ---------- Rush payment ---------------------------------------------------

@@ -54,6 +54,18 @@ async def get_organization(
     return _org_response(org)
 
 
+@router.get("/fraud-rules/defaults")
+async def get_fraud_rule_defaults(
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Return the canonical fraud-rule defaults baked into the warning
+    engine. The Org Settings UI uses this as a starting point so a stale
+    UI can't drift from what the engine actually evaluates."""
+    from app.services.invoice_warnings import DEFAULT_FRAUD_RULES
+
+    return DEFAULT_FRAUD_RULES
+
+
 @router.patch("", response_model=OrganizationResponse)
 async def update_organization(
     body: UpdateOrganizationRequest,

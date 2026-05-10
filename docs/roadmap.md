@@ -143,18 +143,24 @@ Current state: manual, specific, auto, and chain approval strategies. Amount-bas
 ---
 
 ### Enhanced Fraud Detection
-**Status:** Done (basic) + semantic duplicate detection shipped
+**Status:** Done
 
-Current: exact-match duplicate check (`vendor_name + invoice_number`), semantic duplicate via embeddings, round amounts, future dates, past due, unverified vendor. Needs:
+Eight fraud rules implemented in `services/invoice_warnings.py`, each
+gated by a per-org tunable. Rules raise both an inline warning on the
+invoice and an `Exception` row when the signal is actionable. Defaults
+in `DEFAULT_FRAUD_RULES`; org admins override via the Fraud Detection
+section on `/organization` (UI maps onto `settings.fraud_rules`).
 
 - [x] Semantic duplicate detection — cosine similarity on `invoice_embeddings` catches near-duplicates the exact-match rule misses. See `backend/docs/ai-extraction.md` § Duplicate detection.
-- [ ] Vendor bank account change detection (flag recent changes to `remit_to_address` / bank info)
-- [ ] LLM-based anomaly detection — feed the invoice + vendor history (last N approved invoices) to an LLM with a "is this in-pattern for this vendor?" prompt. Catches what rules can't: first-time payment method, unusual remit-to, amount 5σ from vendor mean, suspicious invoice date timing. Gated by org setting; cost is one LLM call per incoming invoice.
-- [ ] Rule-based invoice amount anomaly detection (vs. vendor history) — simpler statistical fallback if LLM isn't configured
-- [ ] Rush payment pattern detection
-- [ ] New vendor + large amount flag
-- [ ] Invoice from personal email domain flag
-- [ ] Configurable fraud rules per org
+- [x] Vendor bank account / remit-to change — flags when an invoice's `remit_to_address` differs from prior approved invoices for the same vendor.
+- [x] LLM-based anomaly detection — feeds the invoice + last N approved invoices to the configured extraction provider with a "in-pattern for this vendor?" prompt; opt-in (`llm_anomaly_enabled=False` by default; one LLM call per incoming invoice). Module: `services/llm_fraud_detection.py`.
+- [x] Statistical amount anomaly — fires when `amount > vendor_mean + N·σ` over the vendor's prior approved invoices. N + min-history are tunable.
+- [x] Rush payment pattern — `due_date - invoice_date <= rush_payment_max_days`.
+- [x] New vendor + large amount — vendor age < `new_vendor_max_age_days` AND amount ≥ `new_vendor_large_amount`.
+- [x] Personal email domain — flags vendors whose contact email matches a configurable allowlist of free-mail providers.
+- [x] Configurable fraud rules per org — `Organization.settings.fraud_rules` takes a partial override; unknown keys are dropped silently so we can ship new rules without a settings migration. Frontend editor at `/organization` Fraud Detection card.
+
+**Files:** `backend/app/services/invoice_warnings.py`, `backend/app/services/llm_fraud_detection.py`, `backend/app/api/organization.py:get_fraud_rule_defaults`, `frontend/src/routes/organization/+page.svelte` (Fraud Detection card), `backend/tests/test_fraud_rules.py` (23 tests), `backend/tests/test_llm_fraud_detection.py` (19 tests), `frontend/tests-e2e/organization/fraud-rules.spec.ts` (7 specs).
 
 ---
 

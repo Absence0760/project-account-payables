@@ -37,10 +37,29 @@
 		token_secret: string;
 	}
 
+	interface FraudRules {
+		round_amount_enabled: boolean;
+		future_date_enabled: boolean;
+		bank_change_enabled: boolean;
+		stat_anomaly_enabled: boolean;
+		rush_payment_enabled: boolean;
+		new_vendor_large_enabled: boolean;
+		personal_email_enabled: boolean;
+		llm_anomaly_enabled: boolean;
+		round_amount_min: string;
+		rush_payment_max_days: number;
+		new_vendor_max_age_days: number;
+		new_vendor_large_amount: string;
+		stat_anomaly_sigma: number;
+		stat_anomaly_min_history: number;
+		personal_email_domains: string[];
+	}
+
 	interface OrgSettings {
 		company: CompanyProfile;
 		invoice_defaults: InvoiceDefaults;
 		erp?: ErpConfig;
+		fraud_rules?: Partial<FraudRules>;
 	}
 
 	const ERP_TYPES = [
@@ -285,6 +304,27 @@
 				| Record<string, unknown>
 				| undefined;
 			mfaRequired = (mfaCfg?.required as boolean) ?? false;
+
+			// Fraud rules — fetch the canonical defaults once, then layer
+			// any org overrides on top. Both are stored so the Reset button
+			// has something to revert to.
+			if (!fraudDefaults) {
+				try {
+					fraudDefaults = await api.get<FraudRules>(
+						'/api/organization/fraud-rules/defaults'
+					);
+				} catch {
+					/* admin-only; non-critical for non-admin viewers */
+				}
+			}
+			if (fraudDefaults) {
+				const overrides =
+					((data.settings as unknown as Record<string, unknown>).fraud_rules as
+						| Partial<FraudRules>
+						| undefined) ?? {};
+				fraud = { ...fraudDefaults, ...overrides };
+				personalEmailDomainsText = fraud.personal_email_domains.join('\n');
+			}
 			// Payments
 			const pmt = (data.settings as unknown as Record<string, unknown>).payments as
 				| Record<string, unknown>
@@ -322,6 +362,14 @@
 	// Security
 	let mfaRequired = $state(false);
 	let savingSecurity = $state(false);
+
+	// Fraud detection — defaults loaded once from the backend; the form
+	// reflects (defaults ⊕ org overrides) so a stale UI can't drift from
+	// what the warning engine actually evaluates.
+	let fraudDefaults = $state<FraudRules | null>(null);
+	let fraud = $state<FraudRules | null>(null);
+	let personalEmailDomainsText = $state('');
+	let savingFraud = $state(false);
 
 	// Payments
 	let paymentsProvider = $state('mock');
@@ -491,6 +539,30 @@
 		} finally {
 			savingSecurity = false;
 		}
+	}
+
+	async function saveFraud() {
+		if (!fraud) return;
+		savingFraud = true;
+		try {
+			const domains = personalEmailDomainsText
+				.split(/[\n,]+/)
+				.map((d) => d.trim().toLowerCase())
+				.filter((d) => d.length > 0);
+			const payload: FraudRules = { ...fraud, personal_email_domains: domains };
+			await patchSettings('Fraud detection', { fraud_rules: payload });
+			fraud = payload;
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingFraud = false;
+		}
+	}
+
+	function resetFraudToDefaults() {
+		if (!fraudDefaults) return;
+		fraud = { ...fraudDefaults };
+		personalEmailDomainsText = fraudDefaults.personal_email_domains.join('\n');
 	}
 
 	async function savePayments() {
@@ -992,6 +1064,204 @@
 				</div>
 			</section>
 
+			{#if fraud}
+				<section class="card">
+					<h2>Fraud Detection</h2>
+					<p class="card-hint">
+						Each rule below is checked when an invoice is created or updated. Disabling
+						a rule suppresses both the warning and the auto-generated exception so the
+						queue stays clean.
+					</p>
+
+					<div class="fraud-grid">
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.round_amount_enabled} />
+							<span>
+								<strong>Round amounts</strong>
+								<span class="rule-hint">
+									Flag invoices ≥ ${fraud.round_amount_min} that are exact
+									multiples of $1,000.
+								</span>
+							</span>
+						</label>
+						<div class="threshold-row">
+							<label>
+								<span>Minimum amount ($)</span>
+								<input
+									type="number"
+									min="0"
+									step="100"
+									bind:value={fraud.round_amount_min}
+									disabled={!fraud.round_amount_enabled}
+								/>
+							</label>
+						</div>
+
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.future_date_enabled} />
+							<span>
+								<strong>Future invoice date</strong>
+								<span class="rule-hint">
+									Flag invoices whose <em>invoice_date</em> lands in the future.
+								</span>
+							</span>
+						</label>
+
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.rush_payment_enabled} />
+							<span>
+								<strong>Rush payment</strong>
+								<span class="rule-hint">
+									Flag invoices whose due date is within N days of the invoice
+									date.
+								</span>
+							</span>
+						</label>
+						<div class="threshold-row">
+							<label>
+								<span>Max days between invoice + due</span>
+								<input
+									type="number"
+									min="0"
+									max="30"
+									bind:value={fraud.rush_payment_max_days}
+									disabled={!fraud.rush_payment_enabled}
+								/>
+							</label>
+						</div>
+
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.new_vendor_large_enabled} />
+							<span>
+								<strong>New vendor + large amount</strong>
+								<span class="rule-hint">
+									Flag invoices ≥ ${fraud.new_vendor_large_amount} from vendors
+									created in the last {fraud.new_vendor_max_age_days} days — the
+									canonical phishing pattern.
+								</span>
+							</span>
+						</label>
+						<div class="threshold-row">
+							<label>
+								<span>Vendor age (days)</span>
+								<input
+									type="number"
+									min="1"
+									bind:value={fraud.new_vendor_max_age_days}
+									disabled={!fraud.new_vendor_large_enabled}
+								/>
+							</label>
+							<label>
+								<span>Large-amount threshold ($)</span>
+								<input
+									type="number"
+									min="0"
+									step="500"
+									bind:value={fraud.new_vendor_large_amount}
+									disabled={!fraud.new_vendor_large_enabled}
+								/>
+							</label>
+						</div>
+
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.bank_change_enabled} />
+							<span>
+								<strong>Bank / remit-to change</strong>
+								<span class="rule-hint">
+									Flag invoices when the vendor's <em>remit_to_address</em> on
+									this invoice differs from prior approved invoices.
+								</span>
+							</span>
+						</label>
+
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.personal_email_enabled} />
+							<span>
+								<strong>Personal email domain</strong>
+								<span class="rule-hint">
+									Flag invoices from vendors whose contact email uses a free /
+									personal mail provider.
+								</span>
+							</span>
+						</label>
+						<div class="threshold-row">
+							<label class="full">
+								<span>Personal email domains (one per line or comma-separated)</span>
+								<textarea
+									rows="4"
+									bind:value={personalEmailDomainsText}
+									disabled={!fraud.personal_email_enabled}
+								></textarea>
+							</label>
+						</div>
+
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.stat_anomaly_enabled} />
+							<span>
+								<strong>Statistical amount anomaly</strong>
+								<span class="rule-hint">
+									Compare the invoice amount to this vendor's prior approved
+									invoices. Fires when the amount is more than N standard
+									deviations above the mean.
+								</span>
+							</span>
+						</label>
+						<div class="threshold-row">
+							<label>
+								<span>σ (standard deviations)</span>
+								<input
+									type="number"
+									min="0.5"
+									step="0.1"
+									bind:value={fraud.stat_anomaly_sigma}
+									disabled={!fraud.stat_anomaly_enabled}
+								/>
+							</label>
+							<label>
+								<span>Min prior invoices</span>
+								<input
+									type="number"
+									min="2"
+									bind:value={fraud.stat_anomaly_min_history}
+									disabled={!fraud.stat_anomaly_enabled}
+								/>
+							</label>
+						</div>
+
+						<label class="switch-row">
+							<input type="checkbox" bind:checked={fraud.llm_anomaly_enabled} />
+							<span>
+								<strong>LLM-based anomaly check</strong>
+								<span class="rule-hint">
+									Send the invoice + vendor history to a language model and ask
+									"is this in pattern for this vendor?". Costs one LLM call per
+									incoming invoice — leave off unless you've configured an
+									extraction provider with a real key.
+								</span>
+							</span>
+						</label>
+					</div>
+
+					<div class="section-footer">
+						<button
+							type="button"
+							class="btn-link"
+							onclick={resetFraudToDefaults}
+							disabled={savingFraud}
+						>
+							Reset to defaults
+						</button>
+						<button
+							class="btn-save-section"
+							disabled={savingFraud}
+							onclick={saveFraud}
+						>
+							{savingFraud ? 'Saving...' : 'Save'}
+						</button>
+					</div>
+				</section>
+			{/if}
+
 			<section class="card">
 				<h2>Data Sync</h2>
 				<p class="card-hint">Pull data from your connected ERP. Requires ERP Integration to be configured above.</p>
@@ -1356,8 +1626,102 @@
 		flex-shrink: 0;
 	}
 
+	/* --- Fraud detection panel --- */
+
+	.fraud-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.fraud-grid label.switch-row {
+		align-items: flex-start;
+	}
+
+	.fraud-grid .rule-hint {
+		display: block;
+		margin-top: 2px;
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		font-weight: 400;
+	}
+
+	.threshold-row {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(180px, 1fr));
+		gap: 12px;
+		margin-left: 26px; /* align under the switch label */
+		margin-bottom: 4px;
+	}
+
+	.threshold-row label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.threshold-row label.full {
+		grid-column: 1 / -1;
+	}
+
+	.threshold-row label span {
+		font-size: 0.72rem;
+		font-weight: 500;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.threshold-row input,
+	.threshold-row textarea {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 8px 10px;
+		font-size: 0.88rem;
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.threshold-row textarea {
+		resize: vertical;
+		font-family: 'SF Mono', 'Cascadia Code', monospace;
+		font-size: 0.82rem;
+	}
+
+	.threshold-row input:focus,
+	.threshold-row textarea:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
+	}
+
+	.threshold-row input:disabled,
+	.threshold-row textarea:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.btn-link {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+		padding: 0;
+		margin-right: auto;
+	}
+
+	.btn-link:hover:not(:disabled) {
+		color: var(--accent);
+	}
+
 	@media (max-width: 600px) {
 		.form-grid {
+			grid-template-columns: 1fr;
+		}
+		.threshold-row {
 			grid-template-columns: 1fr;
 		}
 	}

@@ -21,7 +21,7 @@ from app.services.po_matching import match_invoice_to_po
 # Every rule key listed here is honored by `_fraud_config()`; unknown keys
 # are ignored so we can ship new rules without a settings migration.
 
-_DEFAULT_FRAUD_RULES: dict = {
+DEFAULT_FRAUD_RULES: dict = {
     # Master switch per rule. False suppresses both the warning and the
     # exception so an org can opt out of noisy rules without our help.
     "round_amount_enabled": True,
@@ -64,7 +64,7 @@ def _fraud_config(org_settings: dict | None) -> dict:
     """Merge org overrides over the defaults. Org settings.fraud_rules
     can omit keys to inherit; unknown keys are dropped silently."""
     overrides = (org_settings or {}).get("fraud_rules") or {}
-    merged = dict(_DEFAULT_FRAUD_RULES)
+    merged = dict(DEFAULT_FRAUD_RULES)
     for k, v in overrides.items():
         if k in merged:
             merged[k] = v
@@ -95,7 +95,7 @@ async def refresh_warnings(
 
     `org_settings` drives the configurable fraud rules. When omitted (the
     common case from existing call sites that haven't threaded it
-    through), the defaults in `_DEFAULT_FRAUD_RULES` are used.
+    through), the defaults in `DEFAULT_FRAUD_RULES` are used.
     """
     warnings: list[dict] = []
     cfg = _fraud_config(org_settings)
