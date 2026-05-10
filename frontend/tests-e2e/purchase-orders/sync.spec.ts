@@ -35,6 +35,23 @@ async function apiHeaders(page: import('@playwright/test').Page) {
 const MOCK_PO_NUMBERS = ['PO-2024-200', 'PO-2024-201', 'PO-2024-202'];
 
 test.describe('/api/purchase-orders/sync-erp (acme admin)', () => {
+	// Other suites (e.g. payments/execute) assume the seeded acme org
+	// has NO ERP configured — `dispatch_payment_sync` only runs the
+	// invoice → paid auto-bump when erp_config is present. Leaving the
+	// mock ERP wired up after this suite finishes makes the payments
+	// execute test see `paid` instead of `payment_scheduled`.
+	test.afterAll(async ({ browser }) => {
+		const context = await browser.newContext();
+		const page = await context.newPage();
+		await signInAndWait(page);
+		const headers = await apiHeaders(page);
+		await page.request.patch(`${API_BASE}/api/organization`, {
+			headers: { ...headers, 'Content-Type': 'application/json' },
+			data: { settings: { erp: null } }
+		});
+		await context.close();
+	});
+
 	test('returns 400 when no ERP is configured', async ({ page }) => {
 		await signInAndWait(page);
 		const headers = await apiHeaders(page);

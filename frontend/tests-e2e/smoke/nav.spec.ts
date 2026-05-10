@@ -14,7 +14,7 @@ import { signInAndWait } from '../fixtures/helpers';
 
 const ROUTES = [
 	{ path: '/', anchor: 'aside.sidebar' },
-	{ path: '/invoices', anchor: '.toolbar input[placeholder="Search invoices..." i]' },
+	{ path: '/invoices', anchor: '.filter-row input[placeholder="Search invoices..." i]' },
 	{ path: '/payments', anchor: 'aside.sidebar' },
 	{ path: '/vendors', anchor: 'aside.sidebar' },
 	{ path: '/exceptions', anchor: 'aside.sidebar' },

@@ -30,6 +30,22 @@ async function apiHeaders(page: import('@playwright/test').Page) {
  */
 
 test.describe('/api/gl-accounts/sync-erp (acme)', () => {
+	// See the matching afterAll in tests-e2e/purchase-orders/sync.spec.ts
+	// — leaving an `erp` config behind makes downstream specs (notably
+	// payments/execute) see auto-paid invoices instead of the expected
+	// payment_scheduled status.
+	test.afterAll(async ({ browser }) => {
+		const context = await browser.newContext();
+		const page = await context.newPage();
+		await signInAndWait(page);
+		const headers = await apiHeaders(page);
+		await page.request.patch(`${API_BASE}/api/organization`, {
+			headers: { ...headers, 'Content-Type': 'application/json' },
+			data: { settings: { erp: null } }
+		});
+		await context.close();
+	});
+
 	test('returns 400 when no ERP is configured', async ({ page }) => {
 		await signInAndWait(page);
 		const headers = await apiHeaders(page);
