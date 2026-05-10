@@ -334,33 +334,62 @@ async def cancel_card(
     return {"success": True, "message": "Card cancelled"}
 
 
-@router.post("/webhook/{provider}")
+@router.post("/webhook/{provider}", status_code=status.HTTP_204_NO_CONTENT)
 async def card_webhook(provider: str, request: Request):
-    """Handle charge/settlement webhooks from card providers."""
-    body = await request.json()
+    """Handle charge/settlement webhooks from card providers.
+
+    Authenticated by HMAC over the raw body. The signing secret is
+    looked up off the tenant whose card the event references — we
+    can't pick the right secret without first identifying the
+    tenant, so the flow is:
+
+      1. Parse the body for `card_token` + `event_id`
+      2. Find the owning tenant by `card_token`
+      3. Verify HMAC against that tenant's `cards.webhook_signing_secret`
+      4. Dedupe by event id (cross-tenant key) so re-delivery is a
+         silent no-op
+      5. Apply the state change inside a row-locked transaction
+
+    Bad signatures, unknown card tokens, missing event ids — every
+    failure returns 204 silently. Leaking the difference would help
+    an attacker probe for valid tokens.
+    """
+    raw_body = await request.body()
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return  # malformed JSON → silent 204
 
     # Normalize by provider
     if provider == "lithic":
         card_token = body.get("card_token") or body.get("card", {}).get("token")
         event_type = body.get("type", "")
+        event_id = body.get("event_id") or body.get("token") or body.get("id")
         amount = body.get("amount", 0)
         merchant = body.get("merchant", {}).get("descriptor")
     elif provider == "nium":
         card_token = body.get("cardHashId")
         event_type = body.get("eventType", "")
+        event_id = body.get("webhookId") or body.get("eventId") or body.get("id")
         amount = body.get("amount", 0)
         merchant = body.get("merchantName")
     else:
-        return {"received": True, "action": "ignored"}
+        return
 
     if not card_token:
-        return {"received": True, "action": "no_card_token"}
+        return
 
-    # Find the card across all tenant DBs — in production, include tenant info in webhook metadata
-    # For now, search by provider_card_id
+    # Find the card across tenant DBs. The lookup is fail-soft —
+    # if the card isn't anywhere, we return 204 silently rather than
+    # confirming "no such card" (enumeration vector).
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from app.database import control_session_factory, get_tenant_engine
+    from app.services.webhook_security import (
+        extract_signature_header,
+        is_event_already_processed,
+        verify_hmac_sha256,
+    )
 
     async with control_session_factory() as ctrl_db:
         orgs_result = await ctrl_db.execute(select(Organization))
@@ -377,6 +406,26 @@ async def card_webhook(provider: str, request: Request):
                 card = result.scalar_one_or_none()
                 if not card:
                     continue
+
+                # We've identified the owning tenant. Verify HMAC
+                # against that tenant's signing secret before doing
+                # anything else.
+                card_config = (org_obj.settings or {}).get("cards") or {}
+                signing_secret = card_config.get("webhook_signing_secret", "")
+                provided_sig = extract_signature_header(
+                    dict(request.headers),
+                    "Webhook-Signature",
+                    "X-Webhook-Signature",
+                    "X-Signature",
+                )
+                if not verify_hmac_sha256(signing_secret, raw_body, provided_sig):
+                    return  # silent 204 on bad / missing signature
+
+                # Dedup: if this event id has been processed already
+                # (across any tenant), short-circuit. Same response
+                # as first delivery so the provider doesn't retry.
+                if await is_event_already_processed(provider, str(event_id or "")):
+                    return
 
                 # Update card based on event
                 is_auth = "authorization" in event_type.lower() or "auth" in event_type.lower()
@@ -407,13 +456,13 @@ async def card_webhook(provider: str, request: Request):
                     db.add(rebate)
 
                 await db.commit()
-                return {"received": True, "action": "updated", "card_status": card.status}
+                return
 
             except Exception:
                 await db.rollback()
                 continue
 
-    return {"received": True, "action": "card_not_found"}
+    return
 
 
 @router.get("/rebates", response_model=RebateListResponse)

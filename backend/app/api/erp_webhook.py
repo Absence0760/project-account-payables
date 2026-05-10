@@ -2,13 +2,18 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database import control_session_factory, get_tenant_engine
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
+from app.services.webhook_security import (
+    extract_signature_header,
+    is_event_already_processed,
+    verify_hmac_sha256,
+)
 from app.services.workflow_engine import transition_invoice
 
 router = APIRouter(prefix="/erp", tags=["erp"])
@@ -33,25 +38,36 @@ ERP_STATUS_MAP = {
 }
 
 
-@router.post("/webhook/{erp_type}")
+@router.post("/webhook/{erp_type}", status_code=status.HTTP_204_NO_CONTENT)
 async def erp_webhook(
     erp_type: str,
     request: Request,
 ):
     """Receive status updates from ERPs or Merge.dev.
 
+    Authenticated by HMAC over the raw body. The signing secret is
+    looked up off the tenant named in the body — same pattern as the
+    card webhook. Bad signatures, unknown tenants, missing events all
+    return 204 silently. Leaking the distinction would help an
+    attacker enumerate tenant slugs or replay events.
+
     Expected body:
     {
         "tenant_slug": "acme",
         "correlation_id": "uuid" | null,
         "erp_document_id": "string" | null,
+        "event_id": "string" | null,
         "status": "Open" | "posted" | "paid" | ...,
         "details": { ... }  // optional extra data
     }
 
     For Merge.dev webhooks, the body structure may differ — we normalize it.
     """
-    body = await request.json()
+    raw_body = await request.body()
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return  # malformed JSON → silent 204
 
     # Normalize — Merge.dev sends a different shape
     if erp_type == "merge_dev" and "data" in body:
@@ -60,6 +76,7 @@ async def erp_webhook(
             "tenant_slug": body.get("linked_account_id"),
             "correlation_id": data.get("integration_params", {}).get("correlation_id"),
             "erp_document_id": data.get("id"),
+            "event_id": body.get("hook", {}).get("event") or body.get("event"),
             "status": data.get("status"),
             "details": data,
         }
@@ -68,25 +85,43 @@ async def erp_webhook(
     correlation_id = body.get("correlation_id")
     erp_document_id = body.get("erp_document_id")
     erp_status = body.get("status", "")
+    event_id = body.get("event_id") or erp_document_id or correlation_id
     details = body.get("details")
 
     if not tenant_slug:
-        raise HTTPException(status_code=400, detail="Missing tenant_slug")
+        return  # silent — body didn't name a tenant
     if not correlation_id and not erp_document_id:
-        raise HTTPException(status_code=400, detail="Need correlation_id or erp_document_id")
+        return  # silent — nothing to look up
 
-    # Look up the org
+    # Look up the org. A missing slug → silent 204 (no enumeration).
     async with control_session_factory() as ctrl_db:
         result = await ctrl_db.execute(select(Organization).where(Organization.slug == tenant_slug))
         org = result.scalar_one_or_none()
         if not org:
-            raise HTTPException(status_code=404, detail="Unknown tenant")
+            return
+
+    # Verify HMAC against the tenant's configured signing secret.
+    erp_config = (org.settings or {}).get("erp") or {}
+    signing_secret = erp_config.get("webhook_signing_secret", "")
+    provided_sig = extract_signature_header(
+        dict(request.headers),
+        "X-Webhook-Signature",
+        "X-Hub-Signature-256",
+        "X-Merge-Webhook-Signature",
+    )
+    if not verify_hmac_sha256(signing_secret, raw_body, provided_sig):
+        return  # silent 204 on bad / missing signature
+
+    # Dedup by event id. Cross-tenant key because event ids should be
+    # unique per provider; a duplicate within the TTL window is a
+    # replay regardless of tenant.
+    if await is_event_already_processed(f"erp:{erp_type}", str(event_id or "")):
+        return
 
     # Map ERP status to our internal status
     target_status = ERP_STATUS_MAP.get(erp_status)
     if not target_status:
-        # Unknown status — log but don't transition
-        return {"received": True, "action": "ignored", "reason": f"Unknown status: {erp_status}"}
+        return  # unknown status — silent ack
 
     # Open tenant DB and find the invoice
     engine = get_tenant_engine(org.db_name)
@@ -98,14 +133,13 @@ async def erp_webhook(
             if correlation_id:
                 query = query.where(Invoice.correlation_id == uuid.UUID(correlation_id))
             else:
-                # Fallback: search by ERP doc ID in workflow state_data
-                raise HTTPException(status_code=400, detail="correlation_id required for lookup")
+                return  # erp_document_id-only path not supported yet
 
             result = await db.execute(query)
             invoice = result.scalar_one_or_none()
 
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                return  # no matching invoice → silent ack
 
             # Only transition if the target is a valid forward step
             current = invoice.status
@@ -121,11 +155,7 @@ async def erp_webhook(
 
             allowed = valid_transitions.get(current, set())
             if target_status not in allowed:
-                return {
-                    "received": True,
-                    "action": "skipped",
-                    "reason": f"Cannot transition from {current.value} to {target_status.value}",
-                }
+                return  # not a legal forward step — silent ack
 
             await transition_invoice(
                 db,
@@ -140,16 +170,10 @@ async def erp_webhook(
                 },
             )
             await db.commit()
-
-            return {
-                "received": True,
-                "action": "transitioned",
-                "from": current.value,
-                "to": target_status.value,
-            }
+            return
 
         except HTTPException:
             raise
-        except Exception as exc:
+        except Exception:
             await db.rollback()
-            raise HTTPException(status_code=500, detail=str(exc))
+            return  # avoid leaking diagnostic detail in 500 body
