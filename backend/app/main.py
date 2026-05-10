@@ -9,6 +9,7 @@ from app.api import (
     auth,
     auth_sso,
     cards,
+    credit_memos,
     dashboard,
     email_intake,
     erp_webhook,
@@ -116,6 +117,7 @@ app.add_middleware(
 app.include_router(admin.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
+app.include_router(credit_memos.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")
 app.include_router(exceptions.router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")

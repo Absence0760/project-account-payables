@@ -1,4 +1,5 @@
 from app.models.base import Base
+from app.models.credit_memo import CreditMemo
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice_embedding import InvoiceEmbedding
@@ -37,5 +38,6 @@ __all__ = [
     "VendorExtractionPrior",
     "VendorUser",
     "APException",
+    "CreditMemo",
     "EmailVerification",
 ]

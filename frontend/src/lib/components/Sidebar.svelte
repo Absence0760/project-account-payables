@@ -30,6 +30,7 @@
 			title: 'Payables',
 			items: [
 				{ label: 'Invoices', href: '/invoices', icon: 'invoices' },
+				{ label: 'Credit Memos', href: '/credit-memos', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 				{ label: 'Payments', href: '/payments', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 				{ label: 'Vendors', href: '/vendors', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 			],

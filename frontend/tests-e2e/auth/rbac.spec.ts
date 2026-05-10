@@ -14,6 +14,7 @@ import { ACME_CFO, ACME_CLERK, ACME_MANAGER, signInAndWait } from '../fixtures/h
  * |--------------|-------|---------|-----|-------|
  * | Dashboard    |  ✓    |   ✓    |  ✓  |  ✓    |
  * | Invoices     |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Credit Memos |       |   ✓    |  ✓  |  ✓    |
  * | Payments     |       |   ✓    |  ✓  |  ✓    |
  * | Vendors      |       |   ✓    |  ✓  |  ✓    |
  * | Exceptions   |       |   ✓    |     |  ✓    |
@@ -43,21 +44,30 @@ test.describe('RBAC — sidebar visibility', () => {
 		await assertSidebarLinks(page, ['/', '/invoices']);
 	});
 
-	test('manager: Dashboard, Invoices, Payments, Vendors, Exceptions', async ({ page }) => {
+	test('manager: Dashboard, Invoices, Credit Memos, Payments, Vendors, Exceptions', async ({
+		page
+	}) => {
 		await signInAndWait(page, ACME_MANAGER);
 		await assertSidebarLinks(page, [
 			'/',
 			'/invoices',
+			'/credit-memos',
 			'/payments',
 			'/vendors',
 			'/exceptions'
 		]);
 	});
 
-	test('cfo: Dashboard, Invoices, Payments, Vendors (no Exceptions, no Admin)', async ({
+	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors (no Exceptions, no Admin)', async ({
 		page
 	}) => {
 		await signInAndWait(page, ACME_CFO);
-		await assertSidebarLinks(page, ['/', '/invoices', '/payments', '/vendors']);
+		await assertSidebarLinks(page, [
+			'/',
+			'/invoices',
+			'/credit-memos',
+			'/payments',
+			'/vendors'
+		]);
 	});
 });
