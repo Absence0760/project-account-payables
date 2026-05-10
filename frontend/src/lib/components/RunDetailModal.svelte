@@ -40,6 +40,8 @@
 	let run = $state<RunDetail | null>(null);
 	let loading = $state(true);
 	let executing = $state(false);
+	let cancelling = $state(false);
+	let confirmCancel = $state(false);
 	let error = $state('');
 
 	async function load() {
@@ -71,6 +73,24 @@
 			toast(err instanceof Error ? err.message : 'Execution failed', 'error');
 		} finally {
 			executing = false;
+		}
+	}
+
+	async function cancelDraft() {
+		if (!run || run.status !== 'draft') return;
+		cancelling = true;
+		try {
+			const result = await api.post<{ message: string; released_invoices: number }>(
+				`/api/payments/runs/${runId}/cancel`,
+				{}
+			);
+			toast(result.message, 'success');
+			onchange?.();
+			onclose();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Cancel failed', 'error');
+		} finally {
+			cancelling = false;
 		}
 	}
 
@@ -173,7 +193,24 @@
 				</p>
 				<div class="actions">
 					<button class="btn-cancel" onclick={onclose}>Close</button>
-					<button class="btn-execute" disabled={executing} onclick={execute}>
+					{#if confirmCancel}
+						<button
+							class="btn-discard armed"
+							disabled={cancelling}
+							onclick={cancelDraft}
+						>
+							{cancelling ? 'Cancelling…' : 'Confirm cancel'}
+						</button>
+					{:else}
+						<button
+							class="btn-discard"
+							disabled={cancelling || executing}
+							onclick={() => (confirmCancel = true)}
+						>
+							Cancel run
+						</button>
+					{/if}
+					<button class="btn-execute" disabled={executing || cancelling} onclick={execute}>
 						{executing ? 'Executing…' : `Execute · ${fmt(run.total_amount)}`}
 					</button>
 				</div>
@@ -436,5 +473,37 @@
 	.btn-execute:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.btn-discard {
+		padding: 8px 16px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-discard:hover:not(:disabled):not(.armed) {
+		border-color: #e04040;
+		color: #e04040;
+	}
+
+	.btn-discard.armed {
+		border-color: #e04040;
+		background: rgba(224, 64, 64, 0.1);
+		color: #e04040;
+	}
+
+	.btn-discard:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.status-badge.cancelled {
+		background: rgba(138, 143, 160, 0.15);
+		color: var(--text-muted);
 	}
 </style>

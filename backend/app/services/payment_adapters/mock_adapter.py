@@ -69,3 +69,8 @@ class MockPaymentAdapter(PaymentAdapter):
 
     async def test_connection(self) -> bool:
         return True
+
+    async def void_payment(self, provider_payment_id: str) -> bool:
+        # Mock accepts every void — gives test fixtures a working
+        # `voided_upstream` audit outcome without stubbing any HTTP.
+        return True

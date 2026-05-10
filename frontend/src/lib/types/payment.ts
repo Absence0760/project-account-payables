@@ -1,19 +1,30 @@
-export type PaymentStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+export type PaymentStatus =
+	| 'pending'
+	| 'submitted'
+	| 'processing'
+	| 'completed'
+	| 'failed'
+	| 'cancelled'
+	| 'voided';
 
 export const PAYMENT_STATUSES: PaymentStatus[] = [
 	'pending',
+	'submitted',
 	'processing',
 	'completed',
 	'failed',
-	'cancelled'
+	'cancelled',
+	'voided'
 ];
 
 export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
 	pending: 'Pending',
+	submitted: 'Submitted',
 	processing: 'Processing',
 	completed: 'Completed',
 	failed: 'Failed',
-	cancelled: 'Cancelled'
+	cancelled: 'Cancelled',
+	voided: 'Voided'
 };
 
 export type PaymentMethod = 'ach' | 'wire' | 'check' | 'virtual_card';

@@ -5,8 +5,10 @@
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/Toast.svelte';
 	import RunDetailModal from '$lib/components/RunDetailModal.svelte';
+	import RowAction from '$lib/components/RowAction.svelte';
 	import SearchBox from '$lib/components/SearchBox.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 
 	type Tab = 'queue' | 'history' | 'runs';
 	let activeTab = $state<Tab>('queue');
@@ -34,8 +36,13 @@
 		payment_terms: string | null;
 		status: string;
 		is_overdue: boolean;
+		discount_eligible: boolean;
+		discount_date: string | null;
+		discount_percent: number | null;
+		discount_amount: number | null;
 	}
 	let queue = $state<QueueItem[]>([]);
+	let queueTotalSavings = $state(0);
 
 	// Queue selection and payment run creation
 	let selectedQueue = $state<Set<string>>(new Set());
@@ -53,6 +60,12 @@
 
 	let selectedTotal = $derived(
 		queue.filter(q => selectedQueue.has(q.id)).reduce((sum, q) => sum + q.amount, 0)
+	);
+
+	let selectedSavings = $derived(
+		queue
+			.filter(q => selectedQueue.has(q.id) && q.discount_eligible && q.discount_amount)
+			.reduce((sum, q) => sum + (q.discount_amount ?? 0), 0)
 	);
 
 	function toggleQueueSelect(id: string) {
@@ -106,12 +119,57 @@
 	}
 
 	async function onRunChanged() {
-		// Called by the modal after a successful execute. Refresh everything
-		// the user might be looking at.
+		// Called by the modal after a successful execute or cancel.
+		// Refresh everything the user might be looking at.
 		await loadSummary();
 		await loadQueue();
 		await loadRuns();
 		if (activeTab === 'history') await paymentStore.fetch(buildParams());
+	}
+
+	// Void modal — cfo/admin can void a completed or in-flight payment.
+	let voidTarget = $state<Payment | null>(null);
+	let voidReason = $state('');
+	let voiding = $state(false);
+
+	function openVoid(p: Payment) {
+		voidTarget = p;
+		voidReason = '';
+	}
+
+	async function commitVoid() {
+		if (!voidTarget) return;
+		const reason = voidReason.trim();
+		if (!reason) {
+			toast('Reason is required for a void', 'error');
+			return;
+		}
+		voiding = true;
+		try {
+			await api.post(`/api/payments/${voidTarget.id}/void`, { reason });
+			toast('Payment voided', 'success');
+			voidTarget = null;
+			voidReason = '';
+			await Promise.all([
+				loadSummary(),
+				loadQueue(),
+				paymentStore.fetch(buildParams()),
+			]);
+		} catch (err) {
+			const e = err as { detail?: string; message?: string } | null;
+			toast(e?.detail ?? e?.message ?? 'Void failed', 'error');
+		} finally {
+			voiding = false;
+		}
+	}
+
+	function canVoid(p: Payment): boolean {
+		// Server-side gate: ROLE_ADMIN | ROLE_CFO. Status: anything that
+		// isn't already terminal-by-failure.
+		if (auth.user && (auth.isAdmin || auth.isCfo)) {
+			return p.status === 'completed' || p.status === 'submitted' || p.status === 'processing';
+		}
+		return false;
 	}
 
 	// Runs
@@ -171,8 +229,11 @@
 
 	async function loadQueue() {
 		try {
-			const data = await api.get<{ items: QueueItem[] }>('/api/payments/queue');
+			const data = await api.get<{ items: QueueItem[]; total_savings: number }>(
+				'/api/payments/queue'
+			);
 			queue = data.items;
+			queueTotalSavings = data.total_savings ?? 0;
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
 		}
@@ -274,7 +335,12 @@
 		{#if activeTab === 'queue'}
 			{#if selectedQueue.size > 0}
 				<div class="pay-bar">
-					<span class="pay-bar-count">{selectedQueue.size} selected — {formatCurrency(selectedTotal)}</span>
+					<span class="pay-bar-count">
+					{selectedQueue.size} selected — {formatCurrency(selectedTotal)}
+					{#if selectedSavings > 0}
+						<span class="pay-bar-savings">· save {formatCurrency(selectedSavings)}</span>
+					{/if}
+				</span>
 					{#if !showReview}
 						<button class="btn-pay" onclick={() => (showReview = true)}>
 							Review & Pay
@@ -325,6 +391,16 @@
 				</div>
 			{/if}
 
+			{#if queueTotalSavings > 0}
+				<div class="savings-banner">
+					<span class="savings-icon">💸</span>
+					<span>
+						<strong>{formatCurrency(queueTotalSavings)}</strong> in early-pay discounts
+						available — pay the highlighted invoices before their discount date to capture them.
+					</span>
+				</div>
+			{/if}
+
 			<table>
 				<thead>
 					<tr>
@@ -333,13 +409,18 @@
 						<th>Vendor</th>
 						<th class="right">Amount</th>
 						<th>Due Date</th>
+						<th>Discount</th>
 						<th>Terms</th>
 						<th>Status</th>
 					</tr>
 				</thead>
 				<tbody>
 					{#each queue as item (item.id)}
-						<tr class:overdue={item.is_overdue} class:row-selected={selectedQueue.has(item.id)}>
+						<tr
+							class:overdue={item.is_overdue}
+							class:row-selected={selectedQueue.has(item.id)}
+							class:discount-eligible={item.discount_eligible}
+						>
 							<td class="checkbox-col"><input type="checkbox" checked={selectedQueue.has(item.id)} onchange={() => toggleQueueSelect(item.id)} /></td>
 							<td class="mono">{item.invoice_number}</td>
 							<td>{item.vendor_name}</td>
@@ -350,11 +431,24 @@
 									<span class="overdue-badge">Overdue</span>
 								{/if}
 							</td>
+							<td>
+								{#if item.discount_eligible && item.discount_amount && item.discount_percent}
+									<span
+										class="discount-chip"
+										title="{item.discount_percent}% discount expires {formatDate(item.discount_date)}"
+									>
+										Save {formatCurrency(item.discount_amount, item.currency)}
+										<span class="discount-pct">{item.discount_percent}% by {formatDate(item.discount_date)}</span>
+									</span>
+								{:else}
+									<span class="muted">—</span>
+								{/if}
+							</td>
 							<td class="muted">{item.payment_terms ?? '—'}</td>
 							<td><StatusBadge status={item.status as import('$lib/types/invoice').InvoiceStatus} /></td>
 						</tr>
 					{:else}
-						<tr><td colspan="7" class="empty">No invoices ready for payment.</td></tr>
+						<tr><td colspan="8" class="empty">No invoices ready for payment.</td></tr>
 					{/each}
 				</tbody>
 			</table>
@@ -370,6 +464,7 @@
 						<th>Status</th>
 						<th>Reference</th>
 						<th>Date</th>
+						<th class="actions-col"></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -386,9 +481,14 @@
 							<td><span class="badge {p.status}">{PAYMENT_STATUS_LABELS[p.status]}</span></td>
 							<td class="mono muted">{p.reference ?? '—'}</td>
 							<td class="muted">{formatDate(p.created_at)}</td>
+							<td class="actions">
+								{#if canVoid(p)}
+									<RowAction variant="danger" onclick={() => openVoid(p)}>Void</RowAction>
+								{/if}
+							</td>
 						</tr>
 					{:else}
-						<tr><td colspan="7" class="empty">No payments match your filters.</td></tr>
+						<tr><td colspan="8" class="empty">No payments match your filters.</td></tr>
 					{/each}
 				</tbody>
 			</table>
@@ -430,6 +530,51 @@
 		onclose={() => (activeRunId = null)}
 		onchange={onRunChanged}
 	/>
+{/if}
+
+{#if voidTarget}
+	<div
+		class="backdrop"
+		onclick={(e) => { if (e.target === e.currentTarget) (voidTarget = null); }}
+	>
+		<div class="modal" role="dialog" aria-label="Void payment">
+			<h2>Void payment</h2>
+			<p class="modal-hint">
+				<strong>{voidTarget.invoice_number ?? voidTarget.id.slice(0, 8)}</strong>
+				{#if voidTarget.vendor_name}· {voidTarget.vendor_name}{/if}
+				· {formatCurrency(voidTarget.amount)}
+			</p>
+			<p class="modal-warn">
+				This flips the payment to <strong>voided</strong> and re-opens the invoice for
+				re-payment. If the processor supports it, we'll attempt an upstream reversal too.
+				Audit-logged.
+			</p>
+			<form onsubmit={(e) => { e.preventDefault(); commitVoid(); }}>
+				<label>
+					<span>Reason</span>
+					<input
+						type="text"
+						bind:value={voidReason}
+						placeholder="Why is this being voided?"
+						maxlength="500"
+						autofocus
+					/>
+				</label>
+				<div class="modal-footer">
+					<button type="button" class="btn-cancel" onclick={() => (voidTarget = null)}>
+						Cancel
+					</button>
+					<button
+						type="submit"
+						class="btn-danger"
+						disabled={voiding || !voidReason.trim()}
+					>
+						{voiding ? 'Voiding…' : 'Void payment'}
+					</button>
+				</div>
+			</form>
+		</div>
+	</div>
 {/if}
 
 <style>
@@ -786,6 +931,54 @@
 		flex: 1;
 	}
 
+	.pay-bar-savings {
+		color: #1fa86a;
+		font-weight: 600;
+	}
+
+	.savings-banner {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 10px 14px;
+		background: rgba(31, 168, 106, 0.08);
+		border: 1px solid rgba(31, 168, 106, 0.3);
+		border-radius: 6px;
+		font-size: 0.85rem;
+		color: var(--text);
+	}
+
+	.savings-icon {
+		font-size: 1.1rem;
+	}
+
+	tbody tr.discount-eligible {
+		background: rgba(31, 168, 106, 0.04);
+	}
+
+	tbody tr.discount-eligible:hover {
+		background: rgba(31, 168, 106, 0.08);
+	}
+
+	.discount-chip {
+		display: inline-flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 4px 8px;
+		border-radius: 6px;
+		background: rgba(31, 168, 106, 0.1);
+		color: #1fa86a;
+		font-size: 0.78rem;
+		font-weight: 600;
+		line-height: 1.2;
+	}
+
+	.discount-pct {
+		font-size: 0.7rem;
+		font-weight: 400;
+		color: var(--text-muted);
+	}
+
 	.btn-pay {
 		padding: 6px 16px;
 		border-radius: 4px;
@@ -896,6 +1089,142 @@
 
 	.btn-execute:disabled {
 		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	/* --- Actions / void modal --- */
+
+	.actions-col {
+		width: 90px;
+	}
+
+	.actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		white-space: nowrap;
+	}
+
+	.backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		display: grid;
+		place-items: center;
+		z-index: 100;
+		backdrop-filter: blur(2px);
+	}
+
+	.modal {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		width: min(480px, 92vw);
+		padding: 24px;
+		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+	}
+
+	.modal h2 {
+		margin: 0 0 4px;
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.modal-hint {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+		margin: 0 0 8px;
+	}
+
+	.modal-warn {
+		font-size: 0.82rem;
+		color: var(--text);
+		margin: 0 0 14px;
+		padding: 10px 12px;
+		background: rgba(224, 64, 64, 0.08);
+		border: 1px solid rgba(224, 64, 64, 0.3);
+		border-radius: 4px;
+	}
+
+	.modal form {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.modal label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.modal label span {
+		font-size: 0.78rem;
+		font-weight: 500;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.modal input[type='text'] {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 8px 10px;
+		font-size: 0.88rem;
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.modal input:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
+	}
+
+	.modal-footer {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		padding-top: 8px;
+		border-top: 1px solid var(--border);
+	}
+
+	.btn-cancel {
+		padding: 8px 18px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-cancel:hover {
+		background: var(--bg);
+		color: var(--text);
+	}
+
+	.btn-danger {
+		padding: 8px 18px;
+		border-radius: 4px;
+		border: 1px solid #e04040;
+		background: #e04040;
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-danger:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+
+	.btn-danger:disabled {
+		opacity: 0.6;
 		cursor: not-allowed;
 	}
 

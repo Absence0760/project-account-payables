@@ -128,3 +128,17 @@ class PaymentAdapter:
     async def test_connection(self) -> bool:
         """Hit a cheap read endpoint to verify credentials work."""
         raise NotImplementedError
+
+    async def void_payment(self, provider_payment_id: str) -> bool:
+        """Reverse / cancel an in-flight or settled payment upstream.
+
+        Optional — adapters that don't support it should return False.
+        Returning True means the processor accepted the void; the caller
+        is responsible for the local bookkeeping (flipping the row,
+        re-opening the invoice, audit log).
+
+        Raises only on programmer error or transport failure; the caller
+        treats exceptions as "void rejected" and records an adapter_error
+        outcome on the audit row.
+        """
+        return False

@@ -19,7 +19,7 @@ from app.api.deps import (
 from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
-from app.models.payment import Payment, PaymentRun
+from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.models.virtual_card import CardRebate
@@ -144,18 +144,38 @@ async def payment_queue(
     ]
 
     result = await db.execute(
-        select(Invoice)
+        select(Invoice, PaymentSchedule)
+        .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
         .where(
             Invoice.status.in_(payable_statuses),
             Invoice.id.notin_(paid_ids),
         )
         .order_by(Invoice.due_date.asc().nulls_last())
     )
-    invoices = result.scalars().all()
+    rows = result.all()
 
     today = date.today()
-    return {
-        "items": [
+    items: list[dict] = []
+    total_savings = Decimal("0")
+    for inv, sched in rows:
+        # Discount eligibility: schedule has a discount_date in the future
+        # AND the percent is set. Backfilled-without-schedule rows just don't
+        # surface a discount.
+        discount_amount: Decimal | None = None
+        discount_eligible = False
+        if (
+            sched is not None
+            and sched.discount_date is not None
+            and sched.discount_percent is not None
+            and sched.discount_date >= today
+        ):
+            discount_eligible = True
+            discount_amount = (inv.amount * sched.discount_percent / Decimal(100)).quantize(
+                Decimal("0.01")
+            )
+            total_savings += discount_amount
+
+        items.append(
             {
                 "id": str(inv.id),
                 "invoice_number": inv.invoice_number,
@@ -166,11 +186,25 @@ async def payment_queue(
                 "payment_terms": inv.payment_terms,
                 "status": inv.status.value if hasattr(inv.status, "value") else inv.status,
                 "is_overdue": inv.due_date is not None and inv.due_date < today,
+                # Discount surface — null when the row isn't eligible (no
+                # schedule, no discount_date, or the discount window has
+                # already passed).
+                "discount_eligible": discount_eligible,
+                "discount_date": sched.discount_date.isoformat()
+                if sched and sched.discount_date
+                else None,
+                "discount_percent": float(sched.discount_percent)
+                if sched and sched.discount_percent
+                else None,
+                "discount_amount": float(discount_amount) if discount_amount else None,
             }
-            for inv in invoices
-        ],
-        "total": len(invoices),
-        "total_amount": float(sum(inv.amount for inv in invoices)),
+        )
+
+    return {
+        "items": items,
+        "total": len(items),
+        "total_amount": float(sum(Decimal(str(it["amount"])) for it in items)),
+        "total_savings": float(total_savings),
     }
 
 
@@ -242,6 +276,97 @@ async def get_payment(
         raise HTTPException(status_code=404, detail="Payment not found")
     p, inv = row
     return PaymentResponse.from_db(p, inv)
+
+
+class VoidPaymentRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/{payment_id}/void")
+async def void_payment(
+    payment_id: uuid.UUID,
+    body: VoidPaymentRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+):
+    """Void a completed or in-flight payment.
+
+    Adapter dispatch: when the configured processor exposes
+    ``void_payment`` we ask it to reverse upstream. If it doesn't (mock /
+    legacy rows), we record the local void only — the AP team is
+    expected to chase the rail manually. Either way, the invoice flips
+    back to ``approved`` so it re-enters the payment queue.
+    """
+    result = await db.execute(
+        select(Payment, Invoice)
+        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
+        .where(Payment.id == payment_id)
+    )
+    row = result.one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    payment, invoice = row
+
+    if payment.status in ("voided", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Payment already {payment.status}")
+    if payment.status == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot void a failed payment (it never settled)",
+        )
+
+    # Adapter side: best-effort. A processor failure here doesn't block
+    # the local void — operators can chase the rail manually, but the
+    # accounting books should always reflect intent.
+    payment_config = (org.settings or {}).get("payments") or {}
+    adapter = get_payment_adapter(payment_config)
+    adapter_outcome: str | None = None
+    if payment.provider_payment_id:
+        try:
+            void_fn = getattr(adapter, "void_payment", None)
+            if callable(void_fn):
+                ok = await void_fn(payment.provider_payment_id)
+                adapter_outcome = "voided_upstream" if ok else "rejected_by_processor"
+            else:
+                adapter_outcome = "no_adapter_support"
+        except Exception as exc:  # noqa: BLE001
+            adapter_outcome = f"adapter_error:{exc.__class__.__name__}"
+
+    now = datetime.now(UTC)
+    payment.status = "voided"
+    payment.failure_reason = f"Voided by {user.full_name}: {body.reason}"
+    payment.completed_at = now
+
+    # Reopen the invoice for re-payment if it was scheduled by this row.
+    if invoice and invoice.status in (
+        InvoiceStatus.payment_scheduled,
+        InvoiceStatus.paid,
+    ):
+        invoice.status = InvoiceStatus.approved
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=payment.correlation_id or uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment.voided",
+        entity_type="payment",
+        entity_id=payment.id,
+        details={
+            "reason": body.reason,
+            "adapter_outcome": adapter_outcome,
+            "amount": float(payment.amount),
+            "previous_status": "completed"
+            if payment.completed_at and payment.completed_at <= now
+            else (payment.status or "unknown"),
+        },
+    )
+    await db.commit()
+    await db.refresh(payment)
+    return PaymentResponse.from_db(payment, invoice)
 
 
 @router.post("", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
@@ -418,6 +543,66 @@ async def get_payment_run(
         "executed_at": run.executed_at.isoformat() if run.executed_at else None,
         "created_at": run.created_at.isoformat() if run.created_at else "",
         "payments": payments,
+    }
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_payment_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Cancel a draft run before it executes. Only valid from `draft`;
+    flips the run to `cancelled` and removes its child payment rows so
+    the invoices return to the queue. Audit-logged."""
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Payment run not found")
+    if run.status != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Can only cancel 'draft' runs, not '{run.status}'",
+        )
+
+    pay_result = await db.execute(select(Payment).where(Payment.payment_run_id == run_id))
+    payments = pay_result.scalars().all()
+    invoice_ids = [p.invoice_id for p in payments]
+
+    # Drop the placeholder payment rows so the invoices re-enter the queue.
+    # The run itself stays in the table for history; status flips to
+    # `cancelled` so list filters can exclude it without losing the audit
+    # trail.
+    for p in payments:
+        await db.delete(p)
+    run.status = "cancelled"
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment_run.cancelled",
+        entity_type="payment_run",
+        entity_id=run.id,
+        details={
+            "invoice_ids": [str(i) for i in invoice_ids],
+            "payment_count": len(payments),
+            "total_amount": float(run.total_amount or 0),
+        },
+    )
+    await db.commit()
+
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "released_invoices": len(invoice_ids),
+        "message": (
+            f"Draft run cancelled; {len(invoice_ids)} invoice(s) returned to the queue."
+        ),
     }
 
 
