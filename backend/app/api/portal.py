@@ -17,6 +17,7 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
 from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
+from app.models.virtual_card import VirtualCard
 from app.schemas.portal import (
     PortalInvoiceListItem,
     PortalInvoiceListResponse,
@@ -251,3 +252,121 @@ async def list_my_payments(
         ],
         total=total,
     )
+
+
+# ---------- Card reveal (no auth — token is the credential) ----------
+
+
+@router.get("/cards/{token}")
+async def reveal_card(
+    token: str,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Vendor-facing single-use card reveal.
+
+    Resolves the URL-safe token, returns the live PAN/CVV/expiry on the
+    first hit, and marks the token used so a second visit returns
+    `gone`. The token itself is the credential — no portal-auth dep
+    here. Tokens expire after 7 days regardless of use.
+
+    Errors come back as small JSON bodies with stable shapes so the
+    portal UI can show a sensible message:
+      404 invalid    — wrong / unknown token
+      410 used       — already revealed once
+      410 expired    — past the expiry window
+    """
+    from app.services.audit_dispatch import dispatch_audit
+    from app.services.card_adapters import (
+        VirtualCardPayload,
+        get_card_adapter,
+    )
+    from app.services.card_reveal import consume_reveal_token
+
+    card, error = await consume_reveal_token(db, token)
+    if error == "invalid":
+        raise HTTPException(status_code=404, detail="Invalid token")
+    if error == "expired":
+        raise HTTPException(status_code=410, detail="This link has expired")
+    if error == "used":
+        raise HTTPException(status_code=410, detail="This link has already been used")
+    assert card is not None  # narrowing for mypy
+
+    # Re-fetch + decrypt the PAN via the adapter, same path the
+    # /api/cards/{id}/details endpoint uses internally.
+    org_settings_result = await db.execute(
+        select(Vendor).where(Vendor.id == card.vendor_id) if card.vendor_id else select(Vendor).limit(0)
+    )
+    _ = org_settings_result.scalar_one_or_none()  # not strictly needed; left for parity
+
+    # Build a config that matches the cards section of the org settings.
+    # Loading the Organization here is unusual — portal sessions don't
+    # carry one — so we read it directly via the org_id on the card.
+    from app.models.organization import Organization
+    from app.config import settings as app_settings
+    from app.database import control_session_factory
+
+    async with control_session_factory() as ctrl:
+        org_row = await ctrl.execute(
+            select(Organization).where(Organization.id == card.organization_id)
+        )
+        org = org_row.scalar_one_or_none()
+    org_cards = (org.settings or {}).get("cards") if org and org.settings else None
+
+    from app.services.card_issuance import _resolve_card_config
+
+    config = _resolve_card_config(org.settings if org else {}, app_settings)
+    if config is None:
+        # Org disabled cards after issuance — surface the saved last4
+        # only so the vendor still has something to call about.
+        await db.commit()
+        return {
+            "last_four": card.last_four,
+            "amount_limit": float(card.amount_limit),
+            "currency": card.currency,
+            "expires_at": card.expires_at.isoformat() if card.expires_at else None,
+            "pan": None,
+            "cvv": None,
+            "warning": "Card details are no longer available for retrieval.",
+        }
+
+    import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
+    import app.services.card_adapters.nium  # noqa: F401
+
+    adapter = get_card_adapter(config)
+    try:
+        details = await adapter.get_card_details(card.provider_card_id)
+    except Exception:  # noqa: BLE001
+        # Adapter outage — return the saved metadata so the vendor at
+        # least sees the link worked, and tell them to contact AP.
+        await db.commit()
+        return {
+            "last_four": card.last_four,
+            "amount_limit": float(card.amount_limit),
+            "currency": card.currency,
+            "expires_at": card.expires_at.isoformat() if card.expires_at else None,
+            "pan": None,
+            "cvv": None,
+            "warning": "Card details are temporarily unavailable. Please contact AP.",
+        }
+
+    await dispatch_audit(
+        db,
+        correlation_id=card.correlation_id or uuid.uuid4(),
+        organization_id=card.organization_id,
+        actor_id=None,  # vendor reveal — no internal user
+        action="card.revealed_via_token",
+        entity_type="virtual_card",
+        entity_id=card.id,
+        details={"last_four": card.last_four},
+    )
+    await db.commit()
+
+    return {
+        "last_four": card.last_four,
+        "amount_limit": float(card.amount_limit),
+        "currency": card.currency,
+        "expires_at": card.expires_at.isoformat() if card.expires_at else None,
+        "pan": details.pan,
+        "cvv": details.cvv,
+    }

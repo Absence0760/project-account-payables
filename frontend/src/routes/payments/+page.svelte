@@ -10,7 +10,7 @@
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 
-	type Tab = 'queue' | 'history' | 'runs';
+	type Tab = 'queue' | 'history' | 'runs' | 'cards';
 	let activeTab = $state<Tab>('queue');
 	let search = $state('');
 	let activeStatus = $state<PaymentStatus | 'all'>('all');
@@ -227,6 +227,8 @@
 			loadQueue();
 		} else if (activeTab === 'runs') {
 			loadRuns();
+		} else if (activeTab === 'cards') {
+			loadCards();
 		}
 	});
 
@@ -252,6 +254,59 @@
 			queueTotalSavings = data.total_savings ?? 0;
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
+		}
+	}
+
+	// --- Virtual cards tab ---
+	interface CardItem {
+		id: string;
+		invoice_id: string;
+		card_provider: string;
+		last_four: string | null;
+		amount_limit: number;
+		amount_charged: number | null;
+		currency: string;
+		status: string;
+		expires_at: string | null;
+		created_at: string;
+		vendor_name: string | null;
+		invoice_number: string | null;
+	}
+	let cards = $state<CardItem[]>([]);
+	let loadingCards = $state(false);
+
+	async function loadCards() {
+		loadingCards = true;
+		try {
+			const data = await api.get<{ items: CardItem[] }>('/api/cards');
+			cards = data.items;
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load cards', 'error');
+		} finally {
+			loadingCards = false;
+		}
+	}
+
+	let revealedCard = $state<{ pan: string; cvv: string; expires: string; last_four: string } | null>(
+		null
+	);
+
+	async function revealCard(cardId: string) {
+		try {
+			const resp = await api.get<{
+				pan: string;
+				cvv: string;
+				expires_at: string;
+				last_four: string;
+			}>(`/api/cards/${cardId}/details`);
+			revealedCard = {
+				pan: resp.pan,
+				cvv: resp.cvv,
+				expires: resp.expires_at,
+				last_four: resp.last_four
+			};
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Card not viewable', 'error');
 		}
 	}
 
@@ -321,6 +376,9 @@
 		</button>
 		<button class="tab" class:active={activeTab === 'history'} onclick={() => (activeTab = 'history')}>
 			History
+		</button>
+		<button class="tab" class:active={activeTab === 'cards'} onclick={() => (activeTab = 'cards')}>
+			Cards
 		</button>
 		<button class="tab" class:active={activeTab === 'runs'} onclick={() => (activeTab = 'runs')}>
 			Runs
@@ -491,6 +549,9 @@
 							<td>
 								<span class="method-badge" class:card-method={p.method === 'virtual_card'}>
 									{methodLabel(p.method)}
+									{#if p.method === 'virtual_card' && p.card_last_four}
+										<span class="card-meta">•••• {p.card_last_four}</span>
+									{/if}
 								</span>
 							</td>
 							<td class="right mono">{formatCurrency(p.amount)}</td>
@@ -539,6 +600,56 @@
 					{/each}
 				</tbody>
 			</table>
+		{:else if activeTab === 'cards'}
+			<table>
+				<thead>
+					<tr>
+						<th>Card</th>
+						<th>Vendor</th>
+						<th>Invoice</th>
+						<th class="right">Limit</th>
+						<th class="right">Charged</th>
+						<th>Status</th>
+						<th>Expires</th>
+						<th class="actions-col"></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each cards as card (card.id)}
+						<tr>
+							<td>
+								<span class="card-badge">
+									{card.card_provider}
+									{#if card.last_four}
+										<span class="card-meta">•••• {card.last_four}</span>
+									{/if}
+								</span>
+							</td>
+							<td>{card.vendor_name ?? '—'}</td>
+							<td class="mono">{card.invoice_number ?? '—'}</td>
+							<td class="right mono">{formatCurrency(card.amount_limit, card.currency)}</td>
+							<td class="right mono muted">
+								{card.amount_charged
+									? formatCurrency(card.amount_charged, card.currency)
+									: '—'}
+							</td>
+							<td><span class="badge {card.status}">{card.status}</span></td>
+							<td class="muted">{formatDate(card.expires_at)}</td>
+							<td class="actions">
+								{#if card.status === 'created' || card.status === 'sent' || card.status === 'active'}
+									<RowAction onclick={() => revealCard(card.id)}>Reveal</RowAction>
+								{/if}
+							</td>
+						</tr>
+					{:else}
+						<tr>
+							<td colspan="8" class="empty">
+								{loadingCards ? 'Loading cards…' : 'No virtual cards issued yet.'}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		{/if}
 	</div>
 </div>
@@ -549,6 +660,41 @@
 		onclose={() => (activeRunId = null)}
 		onchange={onRunChanged}
 	/>
+{/if}
+
+{#if revealedCard}
+	<div
+		class="backdrop"
+		onclick={(e) => { if (e.target === e.currentTarget) (revealedCard = null); }}
+	>
+		<div class="modal" role="dialog" aria-label="Card details">
+			<h2>Virtual card details</h2>
+			<p class="modal-hint">
+				These values are fetched on demand and the access is audit-logged. Treat them like
+				a credit card number — paste into the vendor's portal and close this dialog when
+				you're done.
+			</p>
+			<div class="card-details">
+				<div class="card-row">
+					<span class="card-label">Card number</span>
+					<span class="card-value mono">{revealedCard.pan}</span>
+				</div>
+				<div class="card-row">
+					<span class="card-label">CVV</span>
+					<span class="card-value mono">{revealedCard.cvv}</span>
+				</div>
+				<div class="card-row">
+					<span class="card-label">Expires</span>
+					<span class="card-value mono">{formatDate(revealedCard.expires)}</span>
+				</div>
+			</div>
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={() => (revealedCard = null)}>
+					Close
+				</button>
+			</div>
+		</div>
+	</div>
 {/if}
 
 {#if voidTarget}
@@ -1245,6 +1391,57 @@
 	.btn-danger:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.card-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 3px 10px;
+		border-radius: 10px;
+		background: rgba(99, 140, 255, 0.1);
+		color: var(--accent);
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: capitalize;
+	}
+
+	.card-meta {
+		font-family: 'SF Mono', 'Cascadia Code', monospace;
+		font-size: 0.72rem;
+		font-weight: 400;
+		color: var(--text-muted);
+	}
+
+	.card-details {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 14px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+	}
+
+	.card-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.card-label {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+
+	.card-value {
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: 0.06em;
 	}
 
 	@media (max-width: 768px) {

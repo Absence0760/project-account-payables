@@ -55,10 +55,16 @@ class PaymentResponse(BaseModel):
     vendor_name: str | None = None
     invoice_number: str | None = None
 
+    # Card metadata: surfaced when method=virtual_card so the History row
+    # can show "•••• 1234 · lithic" without an extra request.
+    card_last_four: str | None = None
+    card_provider: str | None = None
+    card_id: str | None = None
+
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_db(cls, p, invoice=None) -> "PaymentResponse":
+    def from_db(cls, p, invoice=None, card=None) -> "PaymentResponse":
         return cls(
             id=str(p.id),
             correlation_id=str(p.correlation_id) if p.correlation_id else None,
@@ -72,6 +78,9 @@ class PaymentResponse(BaseModel):
             updated_at=p.updated_at.isoformat() if p.updated_at else None,
             vendor_name=invoice.vendor_name if invoice else None,
             invoice_number=invoice.invoice_number if invoice else None,
+            card_last_four=card.last_four if card else None,
+            card_provider=card.card_provider if card else None,
+            card_id=str(card.id) if card else None,
         )
 
 

@@ -43,6 +43,26 @@ class VirtualCard(Base, TimestampMixin):
     )
 
 
+class CardRevealToken(Base, TimestampMixin):
+    """Single-use vendor-facing token. Mints when a card is issued; the
+    plaintext goes in the email link, only the sha256 hash is persisted.
+    The portal `/api/portal/cards/{token}` endpoint resolves the hash,
+    checks expires_at + used_at, and stamps used_at on first reveal."""
+
+    __tablename__ = "card_reveal_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    card_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("virtual_cards.id"), nullable=False, index=True
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CardRebate(Base, TimestampMixin):
     __tablename__ = "card_rebates"
 

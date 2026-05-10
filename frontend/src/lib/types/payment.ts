@@ -51,6 +51,9 @@ export interface Payment {
 	updated_at: string | null;
 	vendor_name: string | null;
 	invoice_number: string | null;
+	card_last_four: string | null;
+	card_provider: string | null;
+	card_id: string | null;
 }
 
 export interface PaymentRun {

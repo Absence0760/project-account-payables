@@ -129,12 +129,23 @@ async def test_get_current_vendor_user_rejects_revoked_token(monkeypatch):
 
 def test_portal_invoice_endpoints_use_vendor_auth():
     """Every handler in `app.api.portal` must declare `get_current_vendor_user`
-    — a handler missing it would bypass vendor-scoping entirely."""
+    — a handler missing it would bypass vendor-scoping entirely.
+
+    Exception: ``GET /portal/cards/{token}`` is the vendor-facing
+    one-time card-reveal link emailed during card issuance. The URL
+    token is the credential (sha256-hashed at rest, single-use, 7-day
+    expiry); a vendor-auth dep would defeat the no-account UX. It's
+    listed in test_rbac.NO_AUTH_REQUIRED so the auth-coverage gate
+    still flags any other auth-less route."""
     import inspect
 
     from app.api import portal
 
+    no_vendor_auth_allowed = {"/portal/cards/{token}"}
+
     for route in portal.router.routes:
+        if route.path in no_vendor_auth_allowed:
+            continue
         sig = inspect.signature(route.endpoint)
         has_vendor_dep = any(
             getattr(getattr(p.default, "dependency", None), "__name__", "")

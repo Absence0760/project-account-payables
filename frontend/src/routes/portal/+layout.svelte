@@ -15,7 +15,12 @@
 		if (!tenant) return;
 		const path = $page.url.pathname;
 
-		if (!portalAuth.loggedIn && path !== '/portal/login') {
+		// `/portal/cards/<token>` is the email-emitted single-use reveal
+		// link. The URL token is the credential — vendors don't need a
+		// portal login to use it. Skip the auth redirect for this path.
+		const isPublicCardReveal = path.startsWith('/portal/cards/');
+
+		if (!portalAuth.loggedIn && path !== '/portal/login' && !isPublicCardReveal) {
 			goto('/portal/login');
 			return;
 		}
@@ -43,7 +48,7 @@
 	<div class="no-tenant">
 		<p>The supplier portal is accessed through your customer's tenant URL.</p>
 	</div>
-{:else if $page.url.pathname === '/portal/login' || $page.url.pathname === '/portal/change-password'}
+{:else if $page.url.pathname === '/portal/login' || $page.url.pathname === '/portal/change-password' || $page.url.pathname.startsWith('/portal/cards/')}
 	<slot />
 {:else if portalAuth.loggedIn && portalAuth.user && !portalAuth.user.must_change_password}
 	<div class="portal-shell">

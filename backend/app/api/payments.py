@@ -22,7 +22,7 @@ from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.user import User
 from app.models.vendor import Vendor
-from app.models.virtual_card import CardRebate
+from app.models.virtual_card import CardRebate, VirtualCard
 from app.schemas.payment import (
     PaymentCreate,
     PaymentListResponse,
@@ -56,7 +56,11 @@ async def list_payments(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    query = select(Payment, Invoice).outerjoin(Invoice, Payment.invoice_id == Invoice.id)
+    query = (
+        select(Payment, Invoice, VirtualCard)
+        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
+        .outerjoin(VirtualCard, VirtualCard.payment_id == Payment.id)
+    )
 
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
@@ -116,7 +120,7 @@ async def list_payments(
     rows = result.all()
 
     return PaymentListResponse(
-        items=[PaymentResponse.from_db(p, inv) for p, inv in rows],
+        items=[PaymentResponse.from_db(p, inv, card) for p, inv, card in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -798,6 +802,7 @@ async def execute_payment_run(
     completed = 0
     failed = 0
     in_flight = 0
+    cards_issued = 0
 
     for payment in payments:
         # Resolve invoice + vendor for the payload
@@ -809,6 +814,68 @@ async def execute_payment_run(
                 select(Vendor.bank_details).where(Vendor.id == invoice.vendor_id)
             )
             vendor_bank = v_result.scalar_one_or_none()
+
+        # Virtual-card method: skip the payment adapter and mint a card
+        # via the card adapter instead. The Payment row still settles
+        # locally — the rebate flow runs off VirtualCard webhooks, not
+        # the payment status.
+        if payment.method == "virtual_card" and invoice is not None:
+            from app.config import settings as app_settings
+            from app.services.card_issuance import (
+                issue_card_for_invoice,
+                notify_vendor_of_card,
+            )
+
+            issue = await issue_card_for_invoice(
+                invoice=invoice,
+                organization_id=org.id,
+                org_settings=org.settings or {},
+                app_settings=app_settings,
+                payment_id=payment.id,
+                amount=payment.amount,
+            )
+            if issue.success and issue.card is not None:
+                db.add(issue.card)
+                await db.flush()  # need card.id for the reveal-token row
+                payment.status = "completed"
+                payment.provider = issue.card.card_provider
+                payment.completed_at = now
+                payment.submitted_at = now
+                payment.reference = (
+                    f"CARD-{issue.card.card_provider.upper()}-{issue.card.last_four or '????'}"
+                )
+                completed += 1
+                cards_issued += 1
+                if invoice.status.value in (
+                    "approved",
+                    "sent_to_erp",
+                    "posted_in_erp",
+                ):
+                    invoice.status = InvoiceStatus.payment_scheduled
+
+                # Best-effort vendor notification — single-use reveal
+                # link emailed to the vendor's contact address.
+                try:
+                    await notify_vendor_of_card(
+                        db,
+                        card=issue.card,
+                        invoice=invoice,
+                        org_name=org.name,
+                        org_slug=org.slug,
+                        public_url_template=app_settings.tenant_url_template,
+                    )
+                except Exception:  # noqa: BLE001
+                    # `notify_vendor_of_card` already swallows known
+                    # failures; this catch is the safety net for the
+                    # "the email path raised before the function could
+                    # log" edge case. Card issuance itself is committed.
+                    pass
+            else:
+                payment.status = "failed"
+                payment.failure_reason = issue.failure_reason or "card_issuance_failed"
+                payment.completed_at = now
+                failed += 1
+            continue
 
         payload = PaymentPayload(
             correlation_id=str(payment.correlation_id or payment.id),
@@ -883,11 +950,16 @@ async def execute_payment_run(
         "payments_completed": completed,
         "payments_in_flight": in_flight,
         "payments_failed": failed,
-        "message": _execute_message(adapter.provider_name, completed, in_flight, failed),
+        "cards_issued": cards_issued,
+        "message": _execute_message(
+            adapter.provider_name, completed, in_flight, failed, cards_issued
+        ),
     }
 
 
-def _execute_message(provider: str, completed: int, in_flight: int, failed: int) -> str:
+def _execute_message(
+    provider: str, completed: int, in_flight: int, failed: int, cards_issued: int = 0
+) -> str:
     parts: list[str] = []
     if completed:
         parts.append(f"{completed} completed")
@@ -895,6 +967,8 @@ def _execute_message(provider: str, completed: int, in_flight: int, failed: int)
         parts.append(f"{in_flight} in flight")
     if failed:
         parts.append(f"{failed} failed")
+    if cards_issued:
+        parts.append(f"{cards_issued} card(s) issued")
     body = ", ".join(parts) or "0 payments"
     return f"Payment run executed via {provider}: {body}."
 
