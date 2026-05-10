@@ -15,6 +15,7 @@ Deep-dive docs live in `backend/docs/`:
 | Workflow state machine | `docs/workflow-design.md` |
 | Workflow snapshot semantics | `docs/workflow-snapshots.md` |
 | Payment runs + ERP sync | `docs/payments.md` |
+| International payments (FX + SEPA + SWIFT) | `docs/international-payments.md` |
 | Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
 | PO matching (2-way / 3-way) | `docs/po-matching.md` |
 | Vendor management | `docs/vendor-management.md` |
@@ -215,6 +216,21 @@ Registered: `mock`, `modern_treasury`.
 `execute_payment_run` dispatches via the adapter; webhook handler at `/api/payments/webhook/{tenant_slug}/{provider}` drives the `submitted → completed/failed` transition. Tenant comes from the URL path (no JWT, no header). Idempotent on the payment's `correlation_id`.
 
 Per-org config in `Organization.settings.payments`. See `../docs/payments.md` § Payment processor adapters.
+
+### FX rate adapters (`services/fx_adapters/`)
+
+```python
+@register_fx_adapter("my_provider")
+class MyAdapter:
+    provider_name = "my_provider"
+    def __init__(self, config: dict | None = None): ...
+    async def get_rate(self, source: str, target: str) -> FXRate: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock`, `openexchangerates`. Wise / Tipalti slot in via the same pattern.
+
+`services/international_payments.prepare_international_payment` calls `get_rate` exactly once at payment-submission time, persists the locked rate + `fx_locked_at` on the Payment row, and never re-fetches even if the market moves before settlement. The corridor selector decides whether an FX leg is needed (`requires_fx` on `CorridorChoice`); same-currency payments skip the lookup entirely. Per-org config in `Organization.settings.fx`. See `docs/international-payments.md`.
 
 ### Audit-shipping adapters (`services/audit_shipping/`)
 

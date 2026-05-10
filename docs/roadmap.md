@@ -212,18 +212,16 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 - [x] Supplier portal integration — `GET /portal/cards/{token}` returns full card detail once (sha256-hashed token, 7-day expiry)
 
 ### International Payments
-**Status:** Planned — **Competitive gap: Tipalti, Coupa, Basware, Airbase, Medius have this**
+**Status:** Core in — see `backend/docs/international-payments.md`. Corridor selector + FX adapter pattern + orchestrator land in PR 0017; KYC/AML compliance still pending.
 
-Current state: domestic-only payment methods. Blocks entire non-US market. Tipalti supports 196 countries and 120 currencies.
-
-- [ ] Multi-currency payment execution — pay in vendor's local currency
-- [ ] FX rate management — real-time rates, rate lock at payment creation
-- [ ] Cross-border ACH (global ACH networks)
-- [ ] International wire transfers (SWIFT)
-- [ ] SEPA payments (EU)
-- [ ] Payment corridor optimization — cheapest route per destination
-- [ ] Regulatory compliance per corridor (KYC/AML)
-- [ ] FX gain/loss tracking and reporting
+- [x] Multi-currency payment execution — pay in vendor's local currency (`services/international_payments.py::prepare_international_payment` builds the Payment row with `source_currency`, `source_amount`, `fx_rate`, `fx_locked_at`, `corridor`, `target_country`)
+- [x] FX rate management — real-time rates, rate lock at payment creation. Pluggable adapter (`services/fx_adapters/`) — mock + Open Exchange Rates today; Wise / Tipalti slot in via `@register_fx_adapter`
+- [x] International wire transfers (SWIFT) — `method=international_wire`; SWIFT/BIC validation in `utils/banking.py`
+- [x] SEPA payments (EU) — `method=sepa`; IBAN mod-97 + SEPA zone membership in `utils/banking.py`; corridor picker auto-routes EUR→SEPA-country to SEPA
+- [x] FX gain/loss tracking — `compute_fx_gain_loss` (booked vs realized); columns persisted on `payments` for reporting
+- [ ] Cross-border ACH (global ACH networks) — niche third corridor, deferred
+- [ ] Payment corridor optimization — multi-route comparison (cheapest of N). Today we pick the obvious right corridor per (currency, country); not a price auction
+- [ ] Regulatory compliance per corridor (KYC/AML) — separate compliance subsystem
 
 **Competitors:** Tipalti (196 countries, 120 currencies), Coupa Pay, Basware Pay, Airbase
 
