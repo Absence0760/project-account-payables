@@ -116,7 +116,7 @@ Every authenticated route is wrapped in `<div class="workspace">`:
 
 ```css
 .workspace {
-    max-width: 1280px;
+    max-width: 1800px;
     margin: 0 auto;
     padding: 24px 20px;
     display: flex;
@@ -128,7 +128,10 @@ Every authenticated route is wrapped in `<div class="workspace">`:
 
 This is what produces the consistent left/right gap between sidebar
 and content across pages — do not change `max-width` or `padding`
-per-route. A new route must use these exact values.
+per-route. A new route must use these exact values. The 1800px cap
+is wide enough for grid pages on 1920–2560px monitors without leaving
+half the viewport empty; on a 13″ laptop the natural body width
+constrains it before the cap kicks in.
 
 The page title goes in `<header class="toolbar">`, with primary
 actions (e.g. `+ Invite User`, `+ Upload Invoices`) right-aligned in
@@ -278,11 +281,38 @@ Backdrop + centred dialog:
 - Cancel sits left of the primary action in the footer.
 - Required-field markers use `<em class="required">*</em>`.
 
-### Per-row destructive actions
+### Per-row actions
 
-Same armed-confirm idea as `BulkDeleteButton`, just inline in the row.
-The icon flips trash → checkmark; outside-click un-arms. See
-`routes/invoices/+page.svelte` for the canonical implementation.
+Use the shared `<RowAction>` component (`$lib/components/RowAction.svelte`)
+for every per-row button across every grid page. Variants:
+- `default` — neutral border, accent on hover (Edit, Apply, link buttons)
+- `success` — green border + text (Verify)
+- `danger` — neutral by default, red on hover; pass `armed` for the
+  filled-red two-click confirm (Delete, Reject, Void)
+
+Renders as `<a>` when given `href`, otherwise `<button>`. Never copy
+the `padding: 4px 12px; ...` recipe inline — use the component.
+
+The actions cell is **always the last column** (right side of the row),
+preceded by a header `<th class="actions-col"></th>`. The `<td>` uses
+`class="actions"` with the standard left-aligned flex layout:
+
+```css
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+```
+
+Buttons inside align left within the cell — do not use
+`justify-content: flex-end`.
+
+For the destructive armed-confirm pattern, outside-click un-arms by
+adding a `<svelte:window onclick>` that clears `confirmDeleteId` when
+the click target is not within `.row-action`. See
+`routes/admin/+page.svelte` for the canonical implementation.
 
 ### Class-name conventions
 
@@ -294,6 +324,7 @@ The icon flips trash → checkmark; outside-click un-arms. See
 | Bulk bar | `.bulk-bar` | `$lib/components/BulkBar.svelte` |
 | Bulk delete | `.bulk-delete-btn` (+ `.armed`) | `$lib/components/BulkDeleteButton.svelte` |
 | Bulk action | `.bulk-action-btn` | per-route, but always inside a BulkBar |
+| Per-row action | `<RowAction>` (variant + armed) | `$lib/components/RowAction.svelte` |
 | Filter pill | `.filter-chip` (+ `.active`) | per-route, copy /invoices |
 | Load more | `.btn-load-more` / `.load-more-row` / `.load-more-end` | per-route, copy /admin |
 | Modal dialog | `.modal[role="dialog"]` + `.backdrop` | per-route |

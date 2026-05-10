@@ -293,7 +293,7 @@
 
 <style>
 	.workspace {
-		max-width: 1280px;
+		max-width: 1800px;
 		margin: 0 auto;
 		padding: 24px 20px;
 		display: flex;

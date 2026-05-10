@@ -28,10 +28,10 @@ test.describe('/invoices invoice detail modal', () => {
 		page
 	}) => {
 		// Read the invoice number from the first row's "Invoice #"
-		// column (third column — id 0 = checkbox, 1 = actions, 2 =
-		// invoice number).
+		// column. Columns: 0 = checkbox, 1 = invoice number, 2 = vendor,
+		// ..., last = actions.
 		const firstInvoiceNumber = (
-			await page.locator('table tbody tr').first().locator('td').nth(2).textContent()
+			await page.locator('table tbody tr').first().locator('td').nth(1).textContent()
 		)?.trim();
 		expect(firstInvoiceNumber).toBeTruthy();
 

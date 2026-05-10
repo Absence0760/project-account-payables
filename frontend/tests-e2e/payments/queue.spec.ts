@@ -1,6 +1,57 @@
+import { execFileSync } from 'node:child_process';
+
 import { expect, test } from '@playwright/test';
 
 import { signInAndWait } from '../fixtures/helpers';
+
+const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+
+async function authToken(page: import('@playwright/test').Page) {
+	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
+	if (!t) throw new Error('not signed in');
+	return t;
+}
+
+async function createApprovedInvoice(
+	page: import('@playwright/test').Page,
+	invoiceNumber: string
+): Promise<string> {
+	const token = await authToken(page);
+	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
+		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		data: {
+			vendor: 'E2E Pluralization Vendor',
+			invoice_number: invoiceNumber,
+			amount: 250.0,
+			currency: 'USD',
+			status: 'approved'
+		}
+	});
+	expect(resp.status()).toBe(201);
+	const body = (await resp.json()) as { id: string };
+	return body.id;
+}
+
+/** Wipe an approved test invoice + its workflow rows + audit trail.
+ *  The PATCH/DELETE invoice endpoint won't touch approved rows, so
+ *  raw SQL is the only revertible path. Same psql shape used by
+ *  workflows/invoice-routing.spec.ts. */
+function hardDeleteInvoice(id: string): void {
+	execFileSync(
+		'psql',
+		[
+			'-h', 'localhost',
+			'-U', 'postgres',
+			'-p', '5432',
+			'-d', 'ap_acme',
+			'-c', `DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`,
+			'-c', `DELETE FROM workflow_instances WHERE invoice_id='${id}'`,
+			'-c', `DELETE FROM audit_log WHERE entity_id='${id}'`,
+			'-c', `DELETE FROM invoices WHERE id='${id}'`
+		],
+		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+	);
+}
 
 /**
  * /payments Queue tab — selection, Review & Pay panel, payment-method
@@ -103,16 +154,33 @@ test.describe('/payments queue selection (acme admin)', () => {
 	test('Review panel button label reflects selection size pluralization', async ({
 		page
 	}) => {
-		// Select two rows so the button reads "2 Invoices" (plural).
-		const rows = page.locator('table tbody tr');
-		const total = await rows.count();
-		test.skip(total < 2, 'Seed has <2 queue items; pluralization unreachable.');
+		// Seed produces only one approved invoice that's still in the
+		// queue (the other approved rows already have payment records).
+		// Mint two throwaway approved invoices so we can assert "2
+		// Invoices" pluralization, then hard-delete via psql.
+		const stamp = Date.now();
+		const created: string[] = [];
+		try {
+			created.push(await createApprovedInvoice(page, `E2E-PAY-${stamp}-A`));
+			created.push(await createApprovedInvoice(page, `E2E-PAY-${stamp}-B`));
 
-		await rows.nth(0).locator('input[type="checkbox"]').check();
-		await rows.nth(1).locator('input[type="checkbox"]').check();
-		await page.locator('.pay-bar').getByRole('button', { name: 'Review & Pay' }).click();
+			await page.reload();
+			await page.waitForLoadState('networkidle');
+			await page.locator('.tab', { hasText: 'Queue' }).click();
 
-		const executeBtn = page.locator('.review-panel .btn-execute');
-		await expect(executeBtn).toContainText('2 Invoices');
+			const rowA = page.locator('table tbody tr', { hasText: `E2E-PAY-${stamp}-A` });
+			const rowB = page.locator('table tbody tr', { hasText: `E2E-PAY-${stamp}-B` });
+			await expect(rowA).toBeVisible();
+			await expect(rowB).toBeVisible();
+
+			await rowA.locator('input[type="checkbox"]').check();
+			await rowB.locator('input[type="checkbox"]').check();
+			await page.locator('.pay-bar').getByRole('button', { name: 'Review & Pay' }).click();
+
+			const executeBtn = page.locator('.review-panel .btn-execute');
+			await expect(executeBtn).toContainText('2 Invoices');
+		} finally {
+			for (const id of created) hardDeleteInvoice(id);
+		}
 	});
 });

@@ -442,7 +442,6 @@
 		<table>
 			<colgroup>
 				<col style="width:40px" />
-				<col style="width:72px" />
 				<col style="width:11%" />
 				<col style="width:16%" />
 				<col />
@@ -450,11 +449,11 @@
 				<col style="width:9%" />
 				<col style="width:9%" />
 				<col style="width:15%" />
+				<col style="width:170px" />
 			</colgroup>
 			<thead>
 				<tr>
 					<th class="checkbox-col"><input type="checkbox" checked={allSelected} onchange={toggleSelectAll} /></th>
-					<th class="actions-col"></th>
 					<th>Invoice #</th>
 					<th>Vendor</th>
 					<th>Description</th>
@@ -462,36 +461,13 @@
 					<th class="right">Amount</th>
 					<th>Due Date</th>
 					<th>Status</th>
+					<th class="actions-col"></th>
 				</tr>
 			</thead>
 			<tbody>
 				{#each invoiceStore.all as invoice (invoice.id)}
 					<tr class:row-selected={selected.has(invoice.id)}>
 						<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
-						<td class="actions">
-							<RowAction onclick={() => (editing = invoice)}>Edit</RowAction>
-							{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
-								<RowAction
-									variant="danger"
-									armed={confirmDeleteId === invoice.id}
-									disabled={deletingId === invoice.id}
-									onclick={(e) => {
-										e.stopPropagation();
-										if (confirmDeleteId === invoice.id) {
-											deleteInvoice(invoice.id);
-										} else {
-											confirmDeleteId = invoice.id;
-										}
-									}}
-								>
-									{deletingId === invoice.id
-										? '…'
-										: confirmDeleteId === invoice.id
-											? 'Confirm'
-											: 'Delete'}
-								</RowAction>
-							{/if}
-						</td>
 						<td class="mono">
 							{invoice.invoice_number || '—'}
 							{#if invoice.warnings?.length}
@@ -518,6 +494,30 @@
 						<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
 						<td>{invoice.due_date}</td>
 						<td><StatusBadge status={invoice.status} /></td>
+						<td class="actions">
+							<RowAction onclick={() => (editing = invoice)}>Edit</RowAction>
+							{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
+								<RowAction
+									variant="danger"
+									armed={confirmDeleteId === invoice.id}
+									disabled={deletingId === invoice.id}
+									onclick={(e) => {
+										e.stopPropagation();
+										if (confirmDeleteId === invoice.id) {
+											deleteInvoice(invoice.id);
+										} else {
+											confirmDeleteId = invoice.id;
+										}
+									}}
+								>
+									{deletingId === invoice.id
+										? '…'
+										: confirmDeleteId === invoice.id
+											? 'Confirm'
+											: 'Delete'}
+								</RowAction>
+							{/if}
+						</td>
 					</tr>
 				{:else}
 					<tr>
@@ -565,7 +565,7 @@
 
 <style>
 	.workspace {
-		max-width: 1280px;
+		max-width: 1800px;
 		margin: 0 auto;
 		padding: 24px 20px;
 		display: flex;
