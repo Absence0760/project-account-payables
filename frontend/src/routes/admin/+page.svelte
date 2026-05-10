@@ -10,6 +10,10 @@
 	let createdCredentials = $state<{ email: string; password: string } | null>(null);
 	let confirmDeleteId = $state<string | null>(null);
 
+	// Bulk-select state
+	let selectedIds = $state<Set<string>>(new Set());
+	let bulkDeleting = $state(false);
+
 	// Create form
 	let newName = $state('');
 	let newEmail = $state('');
@@ -27,6 +31,65 @@
 		adminStore.fetchUsers();
 		adminStore.fetchRoles();
 	});
+
+	let selectableIds = $derived(
+		adminStore.users.filter((u) => u.id !== auth.user?.id).map((u) => u.id)
+	);
+	let allSelected = $derived(
+		selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
+	);
+
+	function toggleSelect(id: string) {
+		const next = new Set(selectedIds);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selectedIds = next;
+	}
+
+	function toggleSelectAll() {
+		if (allSelected) {
+			selectedIds = new Set();
+		} else {
+			selectedIds = new Set(selectableIds);
+		}
+	}
+
+	async function handleBulkDelete() {
+		if (selectedIds.size === 0) return;
+		bulkDeleting = true;
+		try {
+			const result = await adminStore.bulkDeleteUsers([...selectedIds]);
+			selectedIds = new Set();
+			if (result.failed.length === 0) {
+				toast(`Deleted ${result.deleted.length} user${result.deleted.length === 1 ? '' : 's'}`, 'success');
+			} else if (result.deleted.length === 0) {
+				const reason = describeBulkFailure(result.failed[0]);
+				toast(`No users deleted — ${reason}`, 'error');
+			} else {
+				toast(
+					`Deleted ${result.deleted.length}; ${result.failed.length} blocked (in-flight references)`,
+					'success',
+				);
+			}
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Bulk delete failed', 'error');
+		} finally {
+			bulkDeleting = false;
+		}
+	}
+
+	function describeBulkFailure(f: { reason: string; references: { open_invoice_assignments: number; pending_approval_steps: number; active_workflow_approver_in: number } | null }): string {
+		if (f.reason === 'self') return 'cannot delete yourself';
+		if (f.reason === 'not_found') return 'user not found';
+		if (f.reason === 'blocked' && f.references) {
+			const parts: string[] = [];
+			if (f.references.open_invoice_assignments) parts.push(`${f.references.open_invoice_assignments} open invoice${f.references.open_invoice_assignments === 1 ? '' : 's'}`);
+			if (f.references.pending_approval_steps) parts.push(`${f.references.pending_approval_steps} pending approval${f.references.pending_approval_steps === 1 ? '' : 's'}`);
+			if (f.references.active_workflow_approver_in) parts.push(`${f.references.active_workflow_approver_in} active workflow${f.references.active_workflow_approver_in === 1 ? '' : 's'}`);
+			return `still referenced by ${parts.join(', ')}`;
+		}
+		return 'blocked';
+	}
 
 	function openCreate() {
 		newName = '';
@@ -131,10 +194,32 @@
 		<button class="btn-primary" onclick={openCreate}>+ Invite User</button>
 	</header>
 
+	{#if selectedIds.size > 0}
+		<div class="bulk-bar">
+			<span class="bulk-count">{selectedIds.size} selected</span>
+			<button class="btn-bulk-clear" onclick={() => (selectedIds = new Set())}>Clear</button>
+			<button
+				class="btn-bulk-delete"
+				disabled={bulkDeleting}
+				onclick={handleBulkDelete}
+			>
+				{bulkDeleting ? 'Deleting…' : `Delete ${selectedIds.size}`}
+			</button>
+		</div>
+	{/if}
+
 	<div class="grid-container">
 		<table>
 			<thead>
 				<tr>
+					<th class="checkbox-col">
+						<input
+							type="checkbox"
+							checked={allSelected}
+							onchange={toggleSelectAll}
+							aria-label="Select all users"
+						/>
+					</th>
 					<th>Name</th>
 					<th>Email</th>
 					<th>Roles</th>
@@ -145,7 +230,17 @@
 			</thead>
 			<tbody>
 				{#each adminStore.users as user (user.id)}
-					<tr class:inactive={!user.is_active}>
+					<tr class:inactive={!user.is_active} class:row-selected={selectedIds.has(user.id)}>
+						<td class="checkbox-col">
+							{#if !isSelf(user.id)}
+								<input
+									type="checkbox"
+									checked={selectedIds.has(user.id)}
+									onchange={() => toggleSelect(user.id)}
+									aria-label="Select {user.full_name}"
+								/>
+							{/if}
+						</td>
 						<td class="name-cell">
 							{user.full_name}
 							{#if isSelf(user.id)}
@@ -201,7 +296,7 @@
 					</tr>
 				{:else}
 					<tr>
-						<td colspan="6" class="empty">No users found.</td>
+						<td colspan="7" class="empty">No users found.</td>
 					</tr>
 				{/each}
 			</tbody>
@@ -367,6 +462,77 @@
 	.btn-primary:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	/* --- Bulk bar --- */
+
+	.bulk-bar {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 14px;
+		background: var(--surface);
+		border: 1px solid var(--accent);
+		border-radius: 6px;
+	}
+
+	.bulk-count {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--accent);
+		flex: 1;
+	}
+
+	.btn-bulk-clear {
+		padding: 6px 12px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.82rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-bulk-clear:hover {
+		color: var(--text);
+	}
+
+	.btn-bulk-delete {
+		padding: 6px 16px;
+		border-radius: 4px;
+		border: none;
+		background: #e04040;
+		color: #fff;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-bulk-delete:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.btn-bulk-delete:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.checkbox-col {
+		width: 36px;
+		text-align: center;
+		padding-left: 10px;
+		padding-right: 4px;
+	}
+
+	.checkbox-col input[type='checkbox'] {
+		cursor: pointer;
+		accent-color: var(--accent);
+	}
+
+	tbody tr.row-selected {
+		background: rgba(99, 140, 255, 0.08);
 	}
 
 	/* --- Table --- */

@@ -295,3 +295,80 @@ async def delete_user(
     # Deletion → revoke any active JWT so the tombstoned user can't keep
     # hitting the API until their token expires.
     await revoke_user_sessions(user_id)
+
+
+class BulkDeleteRequest(BaseModel):
+    user_ids: list[str]
+
+
+class BulkDeleteFailure(BaseModel):
+    user_id: str
+    reason: str  # "not_found" | "self" | "blocked"
+    references: UserDeleteConflict | None = None
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted: list[str]
+    failed: list[BulkDeleteFailure]
+
+
+@router.post("/users/bulk-delete", response_model=BulkDeleteResponse)
+async def bulk_delete_users(
+    body: BulkDeleteRequest,
+    db: AsyncSession = Depends(get_control_db),
+    current_user: User = Depends(require_roles(ROLE_ADMIN)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Best-effort delete of multiple users.
+
+    Each id is processed independently; a single failure does not
+    short-circuit the others. The response splits successes from failures
+    so the UI can refresh the table and show a per-row reason for the
+    ones that didn't go through.
+    """
+    org_q = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = org_q.scalar_one()
+
+    deleted: list[str] = []
+    failed: list[BulkDeleteFailure] = []
+
+    for raw_id in body.user_ids:
+        try:
+            user_uuid = uuid.UUID(raw_id)
+        except ValueError:
+            failed.append(BulkDeleteFailure(user_id=raw_id, reason="not_found"))
+            continue
+
+        if user_uuid == current_user.id:
+            failed.append(BulkDeleteFailure(user_id=raw_id, reason="self"))
+            continue
+
+        result = await db.execute(
+            select(User).where(User.id == user_uuid, User.organization_id == org_id)
+        )
+        target = result.scalar_one_or_none()
+        if not target:
+            failed.append(BulkDeleteFailure(user_id=raw_id, reason="not_found"))
+            continue
+
+        conflict = await _user_reference_counts(org.db_name, user_uuid)
+        if (
+            conflict.open_invoice_assignments
+            or conflict.pending_approval_steps
+            or conflict.active_workflow_approver_in
+        ):
+            failed.append(
+                BulkDeleteFailure(user_id=raw_id, reason="blocked", references=conflict)
+            )
+            continue
+
+        await db.execute(UserRole.__table__.delete().where(UserRole.user_id == user_uuid))
+        await db.delete(target)
+        deleted.append(raw_id)
+
+    await db.commit()
+
+    for raw_id in deleted:
+        await revoke_user_sessions(uuid.UUID(raw_id))
+
+    return BulkDeleteResponse(deleted=deleted, failed=failed)

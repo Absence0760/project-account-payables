@@ -63,6 +63,29 @@ function createAdminStore() {
 		users = users.filter((u) => u.id !== id);
 	}
 
+	interface BulkDeleteFailure {
+		user_id: string;
+		reason: 'not_found' | 'self' | 'blocked';
+		references: {
+			open_invoice_assignments: number;
+			pending_approval_steps: number;
+			active_workflow_approver_in: number;
+		} | null;
+	}
+	interface BulkDeleteResult {
+		deleted: string[];
+		failed: BulkDeleteFailure[];
+	}
+
+	async function bulkDeleteUsers(ids: string[]): Promise<BulkDeleteResult> {
+		const result = await api.post<BulkDeleteResult>('/api/admin/users/bulk-delete', {
+			user_ids: ids
+		});
+		const deletedSet = new Set(result.deleted);
+		users = users.filter((u) => !deletedSet.has(u.id));
+		return result;
+	}
+
 	return {
 		get users() { return users; },
 		get roles() { return roles; },
@@ -72,6 +95,7 @@ function createAdminStore() {
 		createUser,
 		updateUser,
 		deleteUser,
+		bulkDeleteUsers,
 	};
 }
 
