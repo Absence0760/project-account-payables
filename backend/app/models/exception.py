@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +27,18 @@ class Exception(Base, TimestampMixin):
     resolved_by: Mapped[str | None] = mapped_column(String(255))  # user name
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assigned_to: Mapped[str | None] = mapped_column(String(255))  # user name for routing
+    # UUID-keyed assignee. Set by the auto-routing rule at creation, or
+    # by `PATCH /api/exceptions/{id}/assign`. Lives alongside the
+    # `assigned_to` string for backward compat — the API exposes both.
+    assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), index=True
+    )
+    # SLA: deadline derived from org settings at creation time. NULL =
+    # no SLA configured for this exception type.
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Populated when the exception flips to a terminal state. Stored
+    # in seconds for precision; the API surfaces it in hours.
+    time_to_resolution_seconds: Mapped[int | None] = mapped_column(Integer)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True

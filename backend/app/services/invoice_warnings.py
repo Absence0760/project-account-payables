@@ -134,7 +134,12 @@ async def refresh_warnings(
                 }
             )
             await _ensure_exception(
-                db, invoice, "duplicate", "warning", "Duplicate invoice number for this vendor"
+                db,
+                invoice,
+                "duplicate",
+                "warning",
+                "Duplicate invoice number for this vendor",
+                org_settings=org_settings,
             )
 
     # Fraud: round amounts (legacy rule; configurable threshold)
@@ -149,7 +154,12 @@ async def refresh_warnings(
                 }
             )
             await _ensure_exception(
-                db, invoice, "fraud_flag", "info", f"Suspicious round amount: ${invoice.amount}"
+                db,
+                invoice,
+                "fraud_flag",
+                "info",
+                f"Suspicious round amount: ${invoice.amount}",
+                org_settings=org_settings,
             )
 
     # Fraud: future invoice date
@@ -162,7 +172,12 @@ async def refresh_warnings(
             }
         )
         await _ensure_exception(
-            db, invoice, "fraud_flag", "warning", "Invoice date is in the future"
+            db,
+            invoice,
+            "fraud_flag",
+            "warning",
+            "Invoice date is in the future",
+            org_settings=org_settings,
         )
 
     # Fraud: rush payment pattern. Very short window between invoice_date
@@ -178,7 +193,9 @@ async def refresh_warnings(
         days = (invoice.due_date - invoice.invoice_date).days
         msg = f"Rush payment: due in {days} day(s) of invoice date"
         warnings.append({"type": "fraud_rush_payment", "severity": "warning", "message": msg})
-        await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+        await _ensure_exception(
+            db, invoice, "fraud_flag", "warning", msg, org_settings=org_settings
+        )
 
     # Past-due flag (informational, not fraud — but lives in the same block).
     if (
@@ -214,6 +231,7 @@ async def refresh_warnings(
                     "unverified_vendor",
                     "warning",
                     "Invoice linked to an unverified vendor",
+                    org_settings=org_settings,
                 )
 
             # Personal-email-domain flag. The vendor's email is set during
@@ -228,7 +246,9 @@ async def refresh_warnings(
                     warnings.append(
                         {"type": "fraud_personal_email", "severity": "warning", "message": msg}
                     )
-                    await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+                    await _ensure_exception(
+                        db, invoice, "fraud_flag", "warning", msg, org_settings=org_settings
+                    )
 
             # New-vendor + large-amount. A brand-new vendor making a huge
             # first ask is the canonical phishing pattern.
@@ -246,7 +266,9 @@ async def refresh_warnings(
                     warnings.append(
                         {"type": "fraud_new_vendor_large", "severity": "warning", "message": msg}
                     )
-                    await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+                    await _ensure_exception(
+                        db, invoice, "fraud_flag", "warning", msg, org_settings=org_settings
+                    )
 
             # Bank-account / remit-to change. We compare the incoming
             # invoice's `remit_to_address` to the most recent approved
@@ -277,7 +299,9 @@ async def refresh_warnings(
                     warnings.append(
                         {"type": "fraud_bank_change", "severity": "error", "message": msg}
                     )
-                    await _ensure_exception(db, invoice, "fraud_flag", "error", msg)
+                    await _ensure_exception(
+                        db, invoice, "fraud_flag", "error", msg, org_settings=org_settings
+                    )
 
             # Statistical amount anomaly. Pull last N approved invoice
             # amounts; if the new one is more than `sigma` above the
@@ -321,7 +345,9 @@ async def refresh_warnings(
                                 "message": msg,
                             }
                         )
-                        await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+                        await _ensure_exception(
+                            db, invoice, "fraud_flag", "warning", msg, org_settings=org_settings
+                        )
 
             # LLM anomaly detection (opt-in). Costs an LLM call; gated
             # behind a per-org flag. When the rule fires, the LLM's
@@ -334,7 +360,12 @@ async def refresh_warnings(
     has_missing = any(w["type"] == "missing_field" for w in warnings)
     if has_missing and _status_str(invoice.status) not in ("new",):
         await _ensure_exception(
-            db, invoice, "missing_data", "error", "Required fields missing after extraction"
+            db,
+            invoice,
+            "missing_data",
+            "error",
+            "Required fields missing after extraction",
+            org_settings=org_settings,
         )
 
     # PO matching — runs whenever the invoice has a po_number. The match
@@ -343,7 +374,7 @@ async def refresh_warnings(
     # without re-running. Mismatches and missing POs raise exceptions for
     # the queue. Skip on draft `new` invoices that haven't been extracted yet.
     if invoice.po_number and _status_str(invoice.status) != "new":
-        await _refresh_po_match(db, invoice, warnings)
+        await _refresh_po_match(db, invoice, warnings, org_settings)
     else:
         invoice.po_match = None
 
@@ -352,7 +383,12 @@ async def refresh_warnings(
     return warnings
 
 
-async def _refresh_po_match(db: AsyncSession, invoice: Invoice, warnings: list[dict]) -> None:
+async def _refresh_po_match(
+    db: AsyncSession,
+    invoice: Invoice,
+    warnings: list[dict],
+    org_settings: dict | None = None,
+) -> None:
     """Run PO matching and append to warnings + exceptions on issues.
 
     Stores the structured result on `invoice.po_match` for UI rendering.
@@ -375,6 +411,7 @@ async def _refresh_po_match(db: AsyncSession, invoice: Invoice, warnings: list[d
             "po_mismatch",
             "error",
             f"Invoice references PO {invoice.po_number} but no matching PO exists",
+            org_settings=org_settings,
         )
     elif match.status == "mismatch":
         # Lead with the most useful number — variance %.
@@ -383,7 +420,9 @@ async def _refresh_po_match(db: AsyncSession, invoice: Invoice, warnings: list[d
             f"(invoice ${invoice.amount} vs PO ${match.po_total:.2f})"
         )
         warnings.append({"type": "po_mismatch", "severity": "warning", "message": msg})
-        await _ensure_exception(db, invoice, "po_mismatch", "warning", msg)
+        await _ensure_exception(
+            db, invoice, "po_mismatch", "warning", msg, org_settings=org_settings
+        )
     elif match.status == "partial":
         # Partial 3-way receipt — informational. Reviewer needs to know but
         # it's not an error; goods may be in transit.
@@ -392,7 +431,7 @@ async def _refresh_po_match(db: AsyncSession, invoice: Invoice, warnings: list[d
             f"but only part of the ordered quantity has been received"
         )
         warnings.append({"type": "po_mismatch", "severity": "info", "message": msg})
-        await _ensure_exception(db, invoice, "po_mismatch", "info", msg)
+        await _ensure_exception(db, invoice, "po_mismatch", "info", msg, org_settings=org_settings)
 
 
 async def _ensure_exception(
@@ -401,6 +440,8 @@ async def _ensure_exception(
     exception_type: str,
     severity: str,
     description: str,
+    *,
+    org_settings: dict | None = None,
 ) -> None:
     """Create an exception if one doesn't already exist for this invoice + type."""
     existing = await db.execute(
@@ -413,6 +454,32 @@ async def _ensure_exception(
     if (existing.scalar() or 0) > 0:
         return  # already exists
 
+    # Auto-routing: org settings can map exception_type → user UUID
+    # (and a default-SLA-hours per type). Both are optional — when
+    # absent we fall back to a sensible default and leave the assignee
+    # unset.
+    exc_settings = (org_settings or {}).get("exceptions") or {}
+    auto_assign = (exc_settings.get("auto_assign_by_type") or {}).get(exception_type)
+    sla_map = exc_settings.get("sla_hours_by_type") or {}
+    sla_hours = sla_map.get(exception_type, exc_settings.get("default_sla_hours"))
+
+    assigned_to_user_id = None
+    if auto_assign:
+        try:
+            import uuid as _uuid
+
+            assigned_to_user_id = _uuid.UUID(auto_assign)
+        except (TypeError, ValueError):
+            assigned_to_user_id = None
+
+    due_at = None
+    if isinstance(sla_hours, (int, float)) and sla_hours > 0:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+
+        due_at = _dt.now(_UTC) + _td(hours=float(sla_hours))
+
     db.add(
         APException(
             invoice_id=invoice.id,
@@ -421,6 +488,8 @@ async def _ensure_exception(
             description=description,
             status="open",
             organization_id=invoice.organization_id,
+            assigned_to_user_id=assigned_to_user_id,
+            due_at=due_at,
         )
     )
 
@@ -487,4 +556,6 @@ async def _llm_anomaly_check(
     if result.is_anomaly and result.reason:
         msg = f"AI-flagged anomaly: {result.reason}"
         warnings.append({"type": "fraud_llm_anomaly", "severity": "warning", "message": msg})
-        await _ensure_exception(db, invoice, "fraud_flag", "warning", msg)
+        await _ensure_exception(
+            db, invoice, "fraud_flag", "warning", msg, org_settings=org_settings
+        )
