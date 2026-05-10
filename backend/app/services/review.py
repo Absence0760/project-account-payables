@@ -71,7 +71,7 @@ async def _enforce_approval_thresholds(
     max_amount = config.get("max_invoice_amount")
     if max_amount is not None and amount > max_amount:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount:,.2f}."),
         )
 

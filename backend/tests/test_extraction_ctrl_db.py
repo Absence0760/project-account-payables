@@ -67,8 +67,14 @@ def _make_invoice(*, status_value="pending"):
 
 def _make_db(re_fetch_invoice=None):
     """Build a tenant DB AsyncMock whose execute().scalar_one_or_none() returns
-    re_fetch_invoice (used in the failure re-fetch path)."""
+    re_fetch_invoice (used in the failure re-fetch path).
+
+    `db.add` is a regular MagicMock (not AsyncMock) because SQLAlchemy's
+    `Session.add` is synchronous — leaving it as AsyncMock leaks an
+    unawaited-coroutine RuntimeWarning per call.
+    """
     db = AsyncMock()
+    db.add = MagicMock()
     execute_result = MagicMock()
     execute_result.scalar_one_or_none = MagicMock(return_value=re_fetch_invoice)
     db.execute.return_value = execute_result
@@ -183,6 +189,7 @@ async def test_usage_added_to_ctrl_db_on_success():
     invoice = _make_invoice()
     db = _make_db()
     ctrl_db = AsyncMock()
+    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_successful_extraction_result()):
         await run_extraction(
@@ -213,6 +220,7 @@ async def test_usage_not_added_to_tenant_db_on_success():
     invoice = _make_invoice()
     db = _make_db()
     ctrl_db = AsyncMock()
+    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_successful_extraction_result()):
         await run_extraction(db, invoice, ctrl_db=ctrl_db)
@@ -232,6 +240,7 @@ async def test_usage_contains_correct_fields_on_success():
     invoice = _make_invoice()
     db = _make_db()
     ctrl_db = AsyncMock()
+    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_successful_extraction_result()):
         await run_extraction(db, invoice, actor_id=uuid.uuid4(), ctrl_db=ctrl_db)
@@ -288,6 +297,7 @@ async def test_failed_usage_added_to_ctrl_db_on_extraction_failure():
 
     db = _make_db(re_fetch_invoice=re_fetched)
     ctrl_db = AsyncMock()
+    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_failing_extraction_result()):
         await run_extraction(db, invoice, ctrl_db=ctrl_db)
@@ -312,6 +322,7 @@ async def test_failed_usage_not_added_to_tenant_db_on_failure():
 
     db = _make_db(re_fetch_invoice=re_fetched)
     ctrl_db = AsyncMock()
+    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_failing_extraction_result()):
         await run_extraction(db, invoice, ctrl_db=ctrl_db)
@@ -367,6 +378,7 @@ async def test_unexpected_error_still_writes_failed_usage_to_ctrl_db():
 
     db = _make_db(re_fetch_invoice=re_fetched)
     ctrl_db = AsyncMock()
+    ctrl_db.add = MagicMock()
 
     with _patch_extraction_internals(_successful_extraction_result()) as stack:
         # Override the adapter to raise instead of returning a result

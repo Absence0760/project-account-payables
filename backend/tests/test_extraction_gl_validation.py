@@ -81,8 +81,13 @@ def _make_db(active_codes: list[str]):
     `run_extraction` queries GLAccount very early; later execute() calls
     are catchalls that don't drive assertions in these tests, so we
     return a chainable stub for them.
+
+    `db.add` is a plain MagicMock (not AsyncMock) because SQLAlchemy's
+    `Session.add` is synchronous — without this, `db.add(...)` calls
+    in the production path leak unawaited-coroutine RuntimeWarnings.
     """
     db = AsyncMock()
+    db.add = MagicMock()
     gl_objs = [_make_gl(c) for c in active_codes]
 
     gl_scalars = MagicMock()

@@ -225,6 +225,10 @@ def _fake_tenant_session_factory(card):
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=card)
     db = AsyncMock()
+    # SQLAlchemy's Session.add is synchronous — override to a plain
+    # MagicMock so the handler's `db.add(rebate)` call doesn't leak
+    # an unawaited-coroutine RuntimeWarning.
+    db.add = MagicMock()
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
     db.rollback = AsyncMock()

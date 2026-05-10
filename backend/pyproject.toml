@@ -60,3 +60,14 @@ select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+filterwarnings = [
+    # passlib (1.7.4) still imports the deprecated stdlib `crypt` module
+    # on every import. We pin passlib via deps; nothing we can do until
+    # upstream releases a fix (tracked at https://foss.heptapod.net/python-libs/passlib/-/issues/188).
+    "ignore:'crypt' is deprecated:DeprecationWarning",
+    # authlib 1.x prints a per-import warning telling consumers to
+    # migrate to `joserfc`. We use authlib.jose in `app/services/sso.py`
+    # for the OIDC ID-token verify path. Migration is tracked but a
+    # third-party warning shouldn't pollute every test summary.
+    "ignore::authlib.deprecate.AuthlibDeprecationWarning",
+]
