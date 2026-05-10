@@ -92,6 +92,7 @@ async def create_user(
         full_name=body.full_name,
         hashed_password=pwd_context.hash(temp_password),
         organization_id=org_id,
+        must_change_password=True,
     )
     db.add(new_user)
     await db.flush()

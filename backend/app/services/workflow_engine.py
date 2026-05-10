@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowStep
@@ -126,8 +127,20 @@ def validate_transition(current: InvoiceStatus, target: InvoiceStatus) -> None:
 
 
 async def get_invoice_for_update(db: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
-    """Fetch an invoice with a row-level lock to prevent concurrent transitions."""
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id).with_for_update())
+    """Fetch an invoice with a row-level lock to prevent concurrent transitions.
+
+    Eager-loads `extraction_results` so callers that build an
+    InvoiceResponse from the returned row don't trigger an
+    async-illegal lazy load inside `_priors_summary`. Every
+    /api/invoices/<id>/* endpoint that returns InvoiceResponse goes
+    through here.
+    """
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice_id)
+        .with_for_update()
+    )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")

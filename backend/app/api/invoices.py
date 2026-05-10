@@ -41,6 +41,7 @@ from app.schemas.invoice import (
 )
 from app.services.csv_import import import_invoices_csv
 from app.services.invoice_warnings import refresh_warnings
+from app.services.workflow_engine import create_workflow_instance
 from app.tenant import get_tenant_db
 
 IMMUTABLE_STATUSES = {
@@ -129,7 +130,14 @@ async def get_invoice(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    # selectinload extraction_results so InvoiceResponse.from_db ->
+    # _priors_summary can read the relationship without triggering an
+    # async-illegal lazy load. list_invoices already does this.
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice_id)
+    )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -245,8 +253,10 @@ async def create_invoice(
     body: InvoiceCreate,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     invoice = Invoice(
+        organization_id=org_id,
         invoice_number=body.invoice_number,
         vendor_name=body.vendor,
         description=body.description,
@@ -276,7 +286,17 @@ async def create_invoice(
     )
     db.add(invoice)
     await db.flush()
-    await db.refresh(invoice)
+    # Snapshot the active workflow definition onto this invoice so any
+    # later config edits don't retroactively change its routing.
+    await create_workflow_instance(db, invoice)
+    # Re-fetch with extraction_results eager-loaded so InvoiceResponse.from_db
+    # → _priors_summary doesn't trigger an async-illegal lazy load.
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice.id)
+    )
+    invoice = result.scalar_one()
     return InvoiceResponse.from_db(invoice)
 
 
@@ -287,7 +307,12 @@ async def update_invoice(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    # selectinload extraction_results — see get_invoice for the why.
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice_id)
+    )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -306,7 +331,11 @@ async def update_invoice(
 
     await refresh_warnings(db, invoice)
     await db.flush()
-    await db.refresh(invoice)
+    # The in-memory `invoice` already reflects setattr + refresh_warnings,
+    # and selectinload(extraction_results) was applied on the initial fetch
+    # at the top of this function. Build the response directly from it —
+    # re-selecting hits the session's identity map and could surface stale
+    # state in some pool/connection interleavings.
     return InvoiceResponse.from_db(invoice)
 
 
