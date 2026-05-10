@@ -27,10 +27,26 @@
 
 	let saving = $state(false);
 
+	let search = $state('');
+	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
 	$effect(() => {
 		adminStore.fetchUsers();
 		adminStore.fetchRoles();
 	});
+
+	$effect(() => {
+		// React to search changes; debounce to avoid hammering the API.
+		const q = search;
+		if (searchTimer) clearTimeout(searchTimer);
+		searchTimer = setTimeout(() => {
+			adminStore.fetchUsers({ search: q });
+		}, 250);
+	});
+
+	async function loadMore() {
+		await adminStore.loadMoreUsers({ search });
+	}
 
 	let selectableIds = $derived(
 		adminStore.users.filter((u) => u.id !== auth.user?.id).map((u) => u.id)
@@ -191,7 +207,13 @@
 <div class="workspace">
 	<header class="toolbar">
 		<h1>Users</h1>
-		<button class="btn-primary" onclick={openCreate}>+ Invite User</button>
+		<div class="toolbar-actions">
+			<div class="search-box">
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+				<input type="text" placeholder="Search name or email..." bind:value={search} aria-label="Search users" />
+			</div>
+			<button class="btn-primary" onclick={openCreate}>+ Invite User</button>
+		</div>
 	</header>
 
 	{#if selectedIds.size > 0}
@@ -302,6 +324,18 @@
 			</tbody>
 		</table>
 	</div>
+
+	{#if adminStore.hasMore}
+		<div class="load-more-row">
+			<button class="btn-load-more" onclick={loadMore} disabled={adminStore.loading}>
+				{adminStore.loading ? 'Loading…' : `Load more (${adminStore.users.length} of ${adminStore.total})`}
+			</button>
+		</div>
+	{:else if adminStore.total > 0}
+		<div class="load-more-row">
+			<span class="load-more-end">Showing all {adminStore.total} user{adminStore.total === 1 ? '' : 's'}</span>
+		</div>
+	{/if}
 </div>
 
 <!-- Invite User Modal -->
@@ -462,6 +496,70 @@
 	.btn-primary:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.toolbar-actions {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.search-box {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 20px;
+		padding: 6px 14px;
+		max-width: 300px;
+		color: var(--text-muted);
+	}
+
+	.search-box input {
+		border: none;
+		background: none;
+		outline: none;
+		font-size: 0.85rem;
+		width: 100%;
+		color: var(--text);
+		font-family: inherit;
+	}
+
+	.search-box input::placeholder {
+		color: var(--text-muted);
+	}
+
+	.load-more-row {
+		display: flex;
+		justify-content: center;
+		padding: 8px 0 4px;
+	}
+
+	.btn-load-more {
+		padding: 8px 18px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-load-more:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.btn-load-more:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.load-more-end {
+		font-size: 0.78rem;
+		color: var(--text-muted);
 	}
 
 	/* --- Bulk bar --- */

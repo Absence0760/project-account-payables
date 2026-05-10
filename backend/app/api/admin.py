@@ -4,10 +4,10 @@ import secrets
 import string
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -52,17 +52,33 @@ async def list_users(
     db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
+    search: str | None = Query(None, description="Filter by full_name or email (case-insensitive)"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
 ):
-    result = await db.execute(
-        select(User)
-        .where(User.organization_id == org_id)
-        .options(selectinload(User.roles))
-        .order_by(User.created_at.desc())
+    base = select(User).where(User.organization_id == org_id)
+    if search and search.strip():
+        like = f"%{search.strip().lower()}%"
+        base = base.where(
+            (User.full_name.ilike(like)) | (User.email.ilike(like))
+        )
+
+    total_q = await db.execute(
+        select(func.count()).select_from(base.subquery())
     )
+    total = int(total_q.scalar() or 0)
+
+    paged = (
+        base.options(selectinload(User.roles))
+        .order_by(User.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(paged)
     users = result.scalars().all()
     return AdminUserListResponse(
         items=[_user_to_response(u) for u in users],
-        total=len(users),
+        total=total,
     )
 
 
