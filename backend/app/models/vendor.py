@@ -49,6 +49,16 @@ class Vendor(Base, TimestampMixin):
     w9_file_key: Mapped[str | None] = mapped_column(String(512))
     tin_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # KYC / AML. Drives whether `services.compliance` lets a
+    # high-risk-corridor payment through. See migration 0018 and
+    # `docs/international-payments.md` § KYC/AML.
+    kyc_status: Mapped[str] = mapped_column(
+        String(20), default="not_required"
+    )  # pending | verified | rejected | not_required
+    kyc_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    kyc_verified_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    beneficial_owner_data: Mapped[dict | None] = mapped_column(JSONB)
+
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )

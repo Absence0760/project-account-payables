@@ -426,14 +426,23 @@ def _user():
     return SimpleNamespace(id=uuid.uuid4(), full_name="Tester", roles=["admin"])
 
 
-def _mock_db(*, run, payment, invoice, vendor_bank):
+def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None):
     """Build the execute-sequence the executor walks through:
     1. run lookup
     2. payments fan-out
     3. per-payment invoice lookup
     4. per-payment vendor.bank_details lookup (because the invoice
        has a vendor_id)
-    """
+    5. per-payment full-vendor lookup for compliance (only fires on
+       the international branch — see `compliance_vendor`)
+    6. compliance trailing-12m spend SUM (only on the international
+       branch).
+
+    Pass `compliance_vendor` as the vendor SimpleNamespace the
+    compliance step should see; default is a KYC-verified vendor
+    using the same bank_details and country as the invoice. Pass
+    `compliance_vendor=False` to skip enqueuing the compliance
+    queries entirely (for non-international paths)."""
     run_res = MagicMock()
     run_res.scalar_one_or_none = MagicMock(return_value=run)
     pay_res = MagicMock()
@@ -445,8 +454,25 @@ def _mock_db(*, run, payment, invoice, vendor_bank):
     bank_res = MagicMock()
     bank_res.scalar_one_or_none = MagicMock(return_value=vendor_bank)
 
+    queue = [run_res, pay_res, inv_res, bank_res]
+
+    if compliance_vendor is not False:
+        v = compliance_vendor or SimpleNamespace(
+            id=invoice.vendor_id,
+            name=invoice.vendor_name,
+            tax_id=None,
+            bank_details=vendor_bank or {},
+            kyc_status="verified",
+            beneficial_owner_data=None,
+        )
+        vendor_lookup_res = MagicMock()
+        vendor_lookup_res.scalar_one_or_none = MagicMock(return_value=v)
+        spend_res = MagicMock()
+        spend_res.scalar = MagicMock(return_value=Decimal("0"))
+        queue.extend([vendor_lookup_res, spend_res])
+
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[run_res, pay_res, inv_res, bank_res])
+    db.execute = AsyncMock(side_effect=queue)
     db.commit = AsyncMock()
     db.add = MagicMock()
     return db
