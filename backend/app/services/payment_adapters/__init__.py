@@ -1,8 +1,13 @@
 """Payment processor adapters — unified interface for ACH/wire/RTP providers."""
 
 # Import adapters so they self-register with the dispatcher.
+from app.services.payment_adapters import checkeeper as _checkeeper  # noqa: F401
+from app.services.payment_adapters import column as _column  # noqa: F401
+from app.services.payment_adapters import dwolla as _dwolla  # noqa: F401
+from app.services.payment_adapters import increase as _increase  # noqa: F401
 from app.services.payment_adapters import mock_adapter as _mock  # noqa: F401
 from app.services.payment_adapters import modern_treasury as _modern_treasury  # noqa: F401
+from app.services.payment_adapters import stripe_treasury as _stripe_treasury  # noqa: F401
 from app.services.payment_adapters.base import (
     CorridorQuote,
     PaymentAdapter,
