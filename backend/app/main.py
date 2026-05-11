@@ -6,6 +6,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
     admin,
+    analytics,
     auth,
     auth_sso,
     cards,
@@ -135,6 +136,7 @@ app.include_router(invoices.router, prefix="/api")
 app.include_router(purchase_orders.router, prefix="/api")
 app.include_router(vendors.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
 app.include_router(organization.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(signup.router, prefix="/api")
