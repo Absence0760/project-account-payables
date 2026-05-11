@@ -251,35 +251,35 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 ## Priority 4: Analytics & Reporting
 
 ### Dashboard Enhancements
-**Status:** Partial (basic KPIs exist)
+**Status:** Done — operational metrics live on `GET /api/dashboard`. See `backend/docs/analytics.md`.
 
-- [ ] Spend by vendor chart (bar/pie)
-- [ ] Invoice aging chart (buckets: current, 30, 60, 90+ days)
-- [ ] Processing time metrics (avg time from upload to approval, to payment)
-- [ ] Approval bottleneck detection (which invoices are stuck, who's slow)
-- [ ] Monthly trend lines (invoice volume, total spend)
-- [ ] Discount capture rate (early-pay discounts taken vs. missed)
-- [ ] Touchless rate tracking (% of invoices processed without human intervention)
-- [ ] Export reports as PDF/CSV
-- [ ] Scheduled report delivery via email
+- [x] Spend by vendor chart — `vendor_spend` (top 10 by amount, served sorted)
+- [x] Invoice aging chart — `aging` (current / days_30 / days_60 / days_90_plus)
+- [x] Processing time metrics — `processing_time` (avg + median + p95 days from upload→approval and upload→paid; min-sample threshold collapses to 0 below 5 rows)
+- [x] Approval bottleneck detection — `approval_bottleneck` (per-approver pending count, oldest age, average age; unassigned rolls under a synthetic key)
+- [x] Monthly trend lines — `monthly_trend`
+- [x] Discount capture rate — `discount_capture` (eligible / captured / missed counts + amounts + capture_rate_pct)
+- [x] Touchless rate tracking — `touchless_rate`
+- [x] Export reports as CSV — `GET /api/analytics/export/{report}` for invoice_register / vendor_spend / payment_register / aging_snapshot. PDF deferred (separate reportlab/weasyprint piece).
+- [x] Scheduled report delivery via email — migration 0020 + `scheduled_reports` table + `services/scheduled_reports.execute_schedule`. Daily / weekly / monthly cadence; PII-safe failure messages; auto-disable after 5 consecutive failures.
 
 ---
 
 ### CFO / Finance-Leader Analytics
-**Status:** Planned — **Executive-buyer persona**
+**Status:** Done — see `GET /api/analytics/cfo` and `backend/docs/analytics.md`.
 
 Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and controllers buy on different metrics — the ones that show up in board decks and drive working-capital decisions. Separate surface because the audience and filter defaults differ (entity, period, currency, accrual vs cash).
 
-- [ ] Days Payable Outstanding (DPO) trend — monthly/quarterly, with benchmark overlay
-- [ ] Cash conversion cycle (DSO + DIO - DPO) where data available
-- [ ] Accruals view — open POs × GR ÷ invoices not yet posted
-- [ ] Working capital impact — "if we paid 5 days later across the board, how much cash unlocked"
-- [ ] Supplier concentration — % of spend going to top 10 / top 50 vendors; flag if a single vendor exceeds threshold
-- [ ] Fraud rate trend — exceptions raised / total invoices, by type
-- [ ] Early-pay discount ROI — captured vs missed, dollar value of missed
-- [ ] Rebate yield — virtual card rebates earned as % of spend + annualized run rate
-- [ ] Forecast variance — actual AP outflow vs forecast, monthly
-- [ ] Drill-through from every KPI to the contributing invoice set (don't make CFOs export CSVs to investigate)
+- [x] Days Payable Outstanding (DPO) trend — `dpo_current` + `dpo_trend` (last 6 months). Computed AP/COGS×period_days; benchmark overlay deferred until we ship industry-benchmark data.
+- [x] Cash conversion cycle — `cash_conversion_cycle`, returns NULL when DSO/DIO unavailable (we're AP-only) so the UI shows "needs receivables data" rather than a misleading 0.
+- [x] Accruals view — `accruals.{open_po_amount, received_amount, unposted_invoice_amount, total_accrual}`. `received_amount` is approximated 0 today pending a 3-way-match fan-out — flagged on the response.
+- [x] Working capital impact — `working_capital_impact_5_days` (avg_daily_outflow × 5; configurable via days-extended param when called via drill-through).
+- [x] Supplier concentration — `supplier_concentration` (top-10 / top-50 share, largest vendor, `flagged` when largest exceeds 25%).
+- [x] Fraud rate trend — `fraud_rate_trend` (exceptions per invoice per month, last 6 months).
+- [x] Early-pay discount ROI — `discount_capture` on the dashboard surfaces $ captured + $ missed; the CFO endpoint quotes the same numbers.
+- [x] Rebate yield — `rebate_yield.{yield_pct, annualised_rebates}` (virtual-card rebates / spend × 100 + 12/months annualisation).
+- [x] Forecast variance — `POST /api/analytics/forecast_variance` accepts a CFO-supplied forecast and returns actual vs forecast vs variance vs variance_pct per month. Forecasts are NOT persisted — the CFO pastes from their FP&A tool.
+- [x] Drill-through — `/api/analytics/drill/spend_concentration`, `/api/analytics/drill/dpo`. Per-metric drill is the design pattern; new metrics get a new drill endpoint as they ship.
 
 **Competitors:** Coupa (Spend Intelligence), Tipalti (CFO Insights), SAP Ariba (Spend Visibility), AppZen (audit analytics). This is where enterprise AP tools differentiate from SMB tools.
 
