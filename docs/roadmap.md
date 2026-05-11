@@ -212,16 +212,16 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 - [x] Supplier portal integration — `GET /portal/cards/{token}` returns full card detail once (sha256-hashed token, 7-day expiry)
 
 ### International Payments
-**Status:** Core in — see `backend/docs/international-payments.md`. Corridor selector + FX adapter pattern + orchestrator land in PR 0017; KYC/AML compliance still pending.
+**Status:** Complete — see `backend/docs/international-payments.md`. Migrations 0017 + 0018. Sanctions provider integration today ships as a `complyadvantage` skeleton with the wire shape correct; the live API key needs to be set in `Organization.settings.compliance.sanctions.api_key`. Wise / Tipalti payment-rail adapters slot in via `@register_payment_adapter` — Modern Treasury covers most demand for now.
 
 - [x] Multi-currency payment execution — pay in vendor's local currency (`services/international_payments.py::prepare_international_payment` builds the Payment row with `source_currency`, `source_amount`, `fx_rate`, `fx_locked_at`, `corridor`, `target_country`)
 - [x] FX rate management — real-time rates, rate lock at payment creation. Pluggable adapter (`services/fx_adapters/`) — mock + Open Exchange Rates today; Wise / Tipalti slot in via `@register_fx_adapter`
+- [x] Cross-border ACH (NACHA Global ACH / IAT) — `method=international_ach` for USD→CA / MX / GB / BR / select LATAM corridors; cheaper than SWIFT for low-value recurring payments
 - [x] International wire transfers (SWIFT) — `method=international_wire`; SWIFT/BIC validation in `utils/banking.py`
 - [x] SEPA payments (EU) — `method=sepa`; IBAN mod-97 + SEPA zone membership in `utils/banking.py`; corridor picker auto-routes EUR→SEPA-country to SEPA
+- [x] Payment corridor optimization — `services/corridor_quotes.compare_quotes` ranks N processor quotes (cheapest by default; `fastest` mode for urgent runs). Org enables via `payments.providers=[...]`; legacy single-provider config still works
+- [x] Regulatory compliance per corridor (KYC/AML) — sanctions / PEP screening (`services/sanctions_adapters/` — mock + ComplyAdvantage skeleton), KYC gating per high-risk corridor, AML trailing-12m-spend signal, append-only `sanctions_checks` audit log
 - [x] FX gain/loss tracking — `compute_fx_gain_loss` (booked vs realized); columns persisted on `payments` for reporting
-- [ ] Cross-border ACH (global ACH networks) — niche third corridor, deferred
-- [ ] Payment corridor optimization — multi-route comparison (cheapest of N). Today we pick the obvious right corridor per (currency, country); not a price auction
-- [ ] Regulatory compliance per corridor (KYC/AML) — separate compliance subsystem
 
 **Competitors:** Tipalti (196 countries, 120 currencies), Coupa Pay, Basware Pay, Airbase
 

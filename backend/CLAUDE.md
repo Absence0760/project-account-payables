@@ -232,6 +232,22 @@ Registered: `mock`, `openexchangerates`. Wise / Tipalti slot in via the same pat
 
 `services/international_payments.prepare_international_payment` calls `get_rate` exactly once at payment-submission time, persists the locked rate + `fx_locked_at` on the Payment row, and never re-fetches even if the market moves before settlement. The corridor selector decides whether an FX leg is needed (`requires_fx` on `CorridorChoice`); same-currency payments skip the lookup entirely. Per-org config in `Organization.settings.fx`. See `docs/international-payments.md`.
 
+### Sanctions / KYC adapters (`services/sanctions_adapters/`)
+
+```python
+@register_sanctions_adapter("my_provider")
+class MyAdapter:
+    provider_name = "my_provider"
+    def __init__(self, config: dict | None = None): ...
+    async def screen_vendor(self, *, vendor_name, vendor_country, vendor_tax_id=None,
+                            beneficial_owners=None) -> ScreeningResult: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock`, `complyadvantage` (skeleton — live key required). Same registry pattern as the others.
+
+`services/compliance.check_payment_compliance` is called by `execute_payment_run` between `prepare_international_payment` and `adapter.create_payment`. A `match` verdict refuses the payment outright; a `review_required` puts it on hold (`status="pending_compliance"`). Every screening writes an append-only `sanctions_checks` row. Per-org config in `Organization.settings.compliance`. See `docs/international-payments.md` § KYC / AML compliance.
+
 ### Audit-shipping adapters (`services/audit_shipping/`)
 
 ```python
