@@ -25,6 +25,29 @@ from decimal import Decimal
 
 from app.utils.banking import is_sepa_country
 
+# NACHA Global ACH supports USD-originated cross-border ACH to a small
+# set of countries via correspondent banks (typically a 2–3 day SLA at
+# ~$5 flat per transaction — cheaper than SWIFT for low-value
+# recurring payments). Anything outside this list falls back to
+# SWIFT wire when the destination is foreign-USD. Source: NACHA's
+# International ACH Transaction (IAT) corridor list.
+_GLOBAL_ACH_DESTINATIONS: frozenset[str] = frozenset(
+    {
+        "CA",  # Canada
+        "MX",  # Mexico
+        "GB",  # United Kingdom (post-Brexit GBP corridor; USD payment
+        # arrives via correspondent → local clearing)
+        "PA",  # Panama (USD-anchored)
+        "AR",  # Argentina (USD wires re-routed via IAT)
+        "BR",  # Brazil
+        "CL",  # Chile
+        "CO",  # Colombia
+        "DO",  # Dominican Republic
+        "PE",  # Peru
+        "VE",  # Venezuela (sanctions caveats apply — see KYC/AML layer)
+    }
+)
+
 
 @dataclass(frozen=True)
 class CorridorChoice:
@@ -63,6 +86,7 @@ _FEE_DOMESTIC_WIRE = Decimal("0.0050")
 _FEE_SEPA = Decimal("0.0005")  # ~free in practice
 _FEE_INTL_WIRE = Decimal("0.0250")  # SWIFT correspondent banks add up
 _FEE_RTP = Decimal("0.0020")
+_FEE_INTL_ACH = Decimal("0.0080")  # NACHA Global ACH — between SEPA and wire
 
 
 def pick_corridor(
@@ -99,6 +123,7 @@ def pick_corridor(
             "wire": _FEE_DOMESTIC_WIRE if not requires_fx else _FEE_INTL_WIRE,
             "rtp": _FEE_RTP,
             "sepa": _FEE_SEPA,
+            "international_ach": _FEE_INTL_ACH,
             "international_wire": _FEE_INTL_WIRE,
             "check": Decimal("0"),
             "virtual_card": Decimal("0"),
@@ -108,7 +133,12 @@ def pick_corridor(
             expected_fee_pct=fee,
             requires_fx=requires_fx,
             requires_swift=method in {"wire", "international_wire"} or requires_fx,
-            requires_iban=method == "sepa" or is_sepa_country(country),
+            # international_ach uses local account formats, not IBAN,
+            # but Canadian / European destinations may still carry one
+            # — we leave it to the orchestrator to enforce on the
+            # SEPA-country case if the caller forces it.
+            requires_iban=method == "sepa"
+            or (method != "international_ach" and is_sepa_country(country)),
             notes="explicit method override",
         )
 
@@ -142,10 +172,27 @@ def pick_corridor(
             notes="SEPA Credit Transfer (EU same-currency)",
         )
 
-    # Same currency, foreign country, not SEPA → SWIFT wire even
-    # without FX. This is the GBP→GBP-to-UK path (no longer SEPA
-    # post-Brexit but our SEPA list still includes GB for historical
-    # compat — see banking.SEPA_COUNTRIES) and the JPY→Japan path.
+    # USD outbound to a Global-ACH destination → IAT (international
+    # ACH). Cheaper than SWIFT for low-value payments to CA/MX/UK +
+    # selected LATAM corridors. The funding leg is USD; the receiving
+    # bank handles its own end-of-day conversion if the beneficiary
+    # account is local-currency. We treat this as "no FX" from our
+    # ledger's perspective — the rate at the receiving end isn't ours
+    # to lock.
+    if tgt == "USD" and country in _GLOBAL_ACH_DESTINATIONS:
+        return CorridorChoice(
+            method="international_ach",
+            expected_fee_pct=_FEE_INTL_ACH,
+            processor_hint="modern_treasury",
+            requires_fx=False,
+            requires_swift=False,
+            requires_iban=False,
+            notes=f"NACHA Global ACH (IAT) to {country}",
+        )
+
+    # Same currency, foreign country, not SEPA, not a Global-ACH
+    # destination → SWIFT wire. This is the GBP→GBP-to-UK path and
+    # the JPY→Japan path.
     return CorridorChoice(
         method="international_wire",
         expected_fee_pct=_FEE_INTL_WIRE,

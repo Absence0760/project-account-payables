@@ -206,10 +206,10 @@ def is_international_payment(payment: Payment) -> bool:
     A payment is international iff:
       - It has an explicit FX rate locked (cross-currency), OR
       - Its corridor is one of the international rails (`sepa`,
-        `international_wire`).
+        `international_wire`, `international_ach`).
     """
     if payment.fx_rate is not None and payment.fx_rate > 0:
         return True
-    if payment.corridor in ("sepa", "international_wire"):
+    if payment.corridor in ("sepa", "international_wire", "international_ach"):
         return True
     return False

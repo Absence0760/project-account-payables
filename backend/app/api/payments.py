@@ -891,7 +891,7 @@ async def execute_payment_run(
             invoice is not None
             and (
                 invoice_currency != org_home_currency
-                or payment.method in {"sepa", "international_wire"}
+                or payment.method in {"sepa", "international_wire", "international_ach"}
                 or has_intl_bank_fields
             )
             and payment.fx_rate is None  # not already prepared
@@ -930,6 +930,37 @@ async def execute_payment_run(
             payment.fx_locked_at = prepared.payment.fx_locked_at
             payment.corridor = prepared.payment.corridor
             payment.target_country = prepared.payment.target_country
+
+            # Compliance gate: run sanctions / KYC / AML checks against
+            # the vendor + the resolved corridor BEFORE the adapter
+            # call. A refusal fails the payment outright; a hold
+            # leaves it in pending_compliance for AP review.
+            from app.services.compliance import check_payment_compliance
+
+            v_result = await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
+            v_full = v_result.scalar_one_or_none() if invoice.vendor_id else None
+            if v_full is not None:
+                decision = await check_payment_compliance(
+                    db,
+                    vendor=v_full,
+                    payment_amount=payment.amount,
+                    payment_method=payment.method,
+                    org_settings=org.settings or {},
+                    organization_id=org.id,
+                    correlation_id=payment.correlation_id,
+                )
+                if decision.verdict == "refuse":
+                    payment.status = "failed"
+                    payment.failure_reason = "compliance_refusal: " + "; ".join(decision.reasons)
+                    payment.completed_at = now
+                    failed += 1
+                    continue
+                if decision.verdict == "hold":
+                    payment.status = "pending_compliance"
+                    payment.failure_reason = "compliance_hold: " + "; ".join(decision.reasons)
+                    in_flight += 1
+                    # Hold doesn't flip the invoice — money hasn't moved.
+                    continue
 
         payload = PaymentPayload(
             correlation_id=str(payment.correlation_id or payment.id),
