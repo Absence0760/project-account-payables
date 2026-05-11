@@ -1,0 +1,247 @@
+"""CSV report exporters.
+
+The exporters are pure functions: row iterable in, CSV string out.
+Tests pin the column shape (header row + per-row layout) so a
+regression that drops a column doesn't silently change the format
+finance teams import into their downstream tools.
+
+The format itself matters: trailing newline; Decimal columns
+quantized to 2dp; enum status reads `.value`; missing fields emit
+empty strings (not "None" or "null").
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import uuid
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from types import SimpleNamespace
+
+from app.services.report_export import (
+    EXPORTERS,
+    export_aging_snapshot,
+    export_invoice_register,
+    export_payment_register,
+    export_vendor_spend,
+)
+
+
+def _read(csv_text: str) -> list[list[str]]:
+    return list(csv.reader(io.StringIO(csv_text)))
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+
+def test_exporters_registry_lists_all_four_reports():
+    assert set(EXPORTERS) == {
+        "invoice_register",
+        "vendor_spend",
+        "payment_register",
+        "aging_snapshot",
+    }
+
+
+# ---------------------------------------------------------------------------
+# invoice_register
+# ---------------------------------------------------------------------------
+
+
+def test_invoice_register_header_matches_canonical_layout():
+    """Pin the exact column order. Finance imports rely on this —
+    a column reorder breaks every downstream pipeline."""
+    csv_text = export_invoice_register([])
+    rows = _read(csv_text)
+    assert rows[0] == [
+        "invoice_id",
+        "invoice_number",
+        "vendor_name",
+        "amount",
+        "currency",
+        "status",
+        "invoice_date",
+        "due_date",
+        "created_at",
+        "po_number",
+    ]
+
+
+def test_invoice_register_emits_one_data_row_per_invoice():
+    invs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            invoice_number="INV-001",
+            vendor_name="Acme",
+            amount=Decimal("123.45"),
+            currency="USD",
+            status="approved",
+            invoice_date=date(2026, 5, 1),
+            due_date=date(2026, 6, 1),
+            created_at=datetime(2026, 5, 1, 10, tzinfo=UTC),
+            po_number="PO-9",
+        ),
+    ]
+    rows = _read(export_invoice_register(invs))
+    assert len(rows) == 2  # header + one data row
+    assert rows[1][1] == "INV-001"
+    assert rows[1][3] == "123.45"
+    assert rows[1][5] == "approved"
+
+
+def test_invoice_register_handles_enum_status():
+    """The status column reads `.value` when the field is an enum
+    — so the CSV gets `approved`, not `InvoiceStatus.approved`."""
+
+    class _Status:
+        value = "ready_for_review"
+
+    inv = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_number="X",
+        vendor_name="V",
+        amount=Decimal("1"),
+        currency="USD",
+        status=_Status(),
+        invoice_date=None,
+        due_date=None,
+        created_at=None,
+        po_number=None,
+    )
+    rows = _read(export_invoice_register([inv]))
+    assert rows[1][5] == "ready_for_review"
+
+
+def test_invoice_register_missing_fields_emit_empty_not_none():
+    """Empty string in the cell — NOT the literal "None". Finance
+    teams parse on column position; a "None" string would import
+    as the literal text."""
+    inv = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_number=None,
+        vendor_name=None,
+        amount=None,
+        currency=None,
+        status=None,
+        invoice_date=None,
+        due_date=None,
+        created_at=None,
+        po_number=None,
+    )
+    rows = _read(export_invoice_register([inv]))
+    # Every non-id cell should be empty.
+    assert rows[1][1] == ""
+    assert rows[1][2] == ""
+    assert rows[1][3] == ""
+    assert rows[1][9] == ""
+
+
+# ---------------------------------------------------------------------------
+# vendor_spend
+# ---------------------------------------------------------------------------
+
+
+def test_vendor_spend_accepts_tuple_rows_from_sql_aggregation():
+    """SQL aggregation returns `(vendor_name, count, total)`
+    tuples; the exporter handles both tuples and ORM-like objects."""
+    rows_tuples = [
+        ("Acme", 5, Decimal("12345.67")),
+        ("Globex", 3, Decimal("9999.99")),
+    ]
+    csv_text = export_vendor_spend(rows_tuples)
+    rows = _read(csv_text)
+    assert rows[0] == ["vendor_name", "invoice_count", "total_amount"]
+    assert rows[1] == ["Acme", "5", "12345.67"]
+
+
+def test_vendor_spend_accepts_namespace_rows():
+    rows = [
+        SimpleNamespace(vendor_name="Acme", invoice_count=5, total_amount=Decimal("100")),
+    ]
+    out = _read(export_vendor_spend(rows))
+    assert out[1] == ["Acme", "5", "100.00"]
+
+
+# ---------------------------------------------------------------------------
+# payment_register
+# ---------------------------------------------------------------------------
+
+
+def test_payment_register_emits_paired_payment_and_invoice():
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        amount=Decimal("500"),
+        method="ach",
+        status="completed",
+        provider="modern_treasury",
+        reference="REF-123",
+        submitted_at=datetime(2026, 5, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 5, 3, tzinfo=UTC),
+    )
+    invoice = SimpleNamespace(invoice_number="INV-001", vendor_name="Acme", currency="USD")
+    out = _read(export_payment_register([(payment, invoice)]))
+    assert out[0] == [
+        "payment_id",
+        "invoice_id",
+        "invoice_number",
+        "vendor_name",
+        "amount",
+        "currency",
+        "method",
+        "status",
+        "provider",
+        "reference",
+        "submitted_at",
+        "completed_at",
+    ]
+    assert out[1][2] == "INV-001"
+    assert out[1][6] == "ach"
+    assert out[1][8] == "modern_treasury"
+
+
+def test_payment_register_handles_orphan_payment_with_no_invoice():
+    """If the invoice was deleted, the SQL outer-join returns
+    `(payment, None)`. We still emit the row (finance wants to see
+    the money out) with the invoice columns blank."""
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        amount=Decimal("100"),
+        method="ach",
+        status="failed",
+        provider=None,
+        reference=None,
+        submitted_at=None,
+        completed_at=None,
+    )
+    out = _read(export_payment_register([(payment, None)]))
+    assert len(out) == 2
+    assert out[1][2] == ""  # invoice_number blank
+
+
+# ---------------------------------------------------------------------------
+# aging_snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_aging_snapshot_emits_single_row_with_totals():
+    buckets = {
+        "current": Decimal("100"),
+        "days_30": Decimal("200"),
+        "days_60": Decimal("400"),
+        "days_90_plus": Decimal("800"),
+    }
+    out = _read(export_aging_snapshot(buckets, snapshot_date=date(2026, 5, 10)))
+    assert out[0] == ["as_of_date", "current", "days_30", "days_60", "days_90_plus", "total"]
+    # Total sums all four buckets.
+    assert out[1] == ["2026-05-10", "100.00", "200.00", "400.00", "800.00", "1500.00"]
+
+
+def test_aging_snapshot_empty_buckets_safe():
+    """Empty input → zero row, not a crash."""
+    out = _read(export_aging_snapshot({}))
+    assert out[1][1:] == ["0.00", "0.00", "0.00", "0.00", "0.00"]
