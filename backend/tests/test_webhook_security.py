@@ -114,9 +114,7 @@ def test_extract_signature_header_picks_first_present_candidate():
     from app.services.webhook_security import extract_signature_header
 
     headers = {"x-signature": "v1", "webhook-signature": "v2"}
-    assert (
-        extract_signature_header(headers, "Webhook-Signature", "X-Signature") == "v2"
-    )
+    assert extract_signature_header(headers, "Webhook-Signature", "X-Signature") == "v2"
 
 
 def test_extract_signature_header_returns_none_when_no_match():
@@ -569,9 +567,7 @@ async def test_erp_webhook_silently_returns_for_unknown_tenant(fake_redis):
         }
     ).encode("utf-8")
 
-    with patch(
-        "app.api.erp_webhook.control_session_factory", _ctrl_session_for_org(None)
-    ):
+    with patch("app.api.erp_webhook.control_session_factory", _ctrl_session_for_org(None)):
         result = await erp_webhook(
             erp_type="generic",
             request=_fake_request(body_bytes, {"X-Webhook-Signature": "sig"}),

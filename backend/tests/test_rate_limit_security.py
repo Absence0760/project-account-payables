@@ -135,9 +135,7 @@ async def test_check_rate_limit_passes_under_the_cap(fake_redis):
     from app.services.rate_limit import check_rate_limit
 
     for _ in range(5):
-        await check_rate_limit(
-            "signup", _fake_request(), limit=5, window_seconds=3600
-        )
+        await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=3600)
 
 
 @pytest.mark.asyncio
@@ -146,14 +144,10 @@ async def test_check_rate_limit_raises_429_over_the_cap(fake_redis):
     from app.services.rate_limit import RateLimitExceeded, check_rate_limit
 
     for _ in range(5):
-        await check_rate_limit(
-            "signup", _fake_request(), limit=5, window_seconds=3600
-        )
+        await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=3600)
 
     with pytest.raises(RateLimitExceeded) as exc:
-        await check_rate_limit(
-            "signup", _fake_request(), limit=5, window_seconds=3600
-        )
+        await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=3600)
     assert exc.value.status_code == 429
 
 
@@ -165,13 +159,9 @@ async def test_rate_limit_429_includes_retry_after_header(fake_redis):
     from app.services.rate_limit import RateLimitExceeded, check_rate_limit
 
     for _ in range(5):
-        await check_rate_limit(
-            "signup", _fake_request(), limit=5, window_seconds=60
-        )
+        await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=60)
     with pytest.raises(RateLimitExceeded) as exc:
-        await check_rate_limit(
-            "signup", _fake_request(), limit=5, window_seconds=60
-        )
+        await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=60)
     assert "Retry-After" in exc.value.headers
     # The hint must be a positive int seconds — not a float, not 0.
     retry_after = int(exc.value.headers["Retry-After"])
@@ -213,13 +203,9 @@ async def test_rate_limit_buckets_per_endpoint(fake_redis):
     from app.services.rate_limit import check_rate_limit
 
     for _ in range(5):
-        await check_rate_limit(
-            "signup", _fake_request(), limit=5, window_seconds=3600
-        )
+        await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=3600)
     # Same IP, different endpoint — fresh bucket.
-    await check_rate_limit(
-        "captcha", _fake_request(), limit=5, window_seconds=3600
-    )
+    await check_rate_limit("captcha", _fake_request(), limit=5, window_seconds=3600)
 
 
 @pytest.mark.asyncio
@@ -229,20 +215,14 @@ async def test_rate_limit_recovers_when_entries_age_out(fake_redis):
     from app.services.rate_limit import check_rate_limit
 
     for _ in range(5):
-        await check_rate_limit(
-            "signup", _fake_request(), limit=5, window_seconds=60
-        )
+        await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=60)
 
     # Manually walk every entry in the bucket backwards by 120s.
     bucket = next(iter(fake_redis.sset.store.values()))
-    fake_redis.sset.store[next(iter(fake_redis.sset.store))] = [
-        (m, s - 120) for m, s in bucket
-    ]
+    fake_redis.sset.store[next(iter(fake_redis.sset.store))] = [(m, s - 120) for m, s in bucket]
 
     # Under the cap again because the previous entries are stale.
-    await check_rate_limit(
-        "signup", _fake_request(), limit=5, window_seconds=60
-    )
+    await check_rate_limit("signup", _fake_request(), limit=5, window_seconds=60)
 
 
 # ---------------------------------------------------------------------------

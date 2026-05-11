@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.services.fx_adapters.base import FXAdapter, FXRate
+from app.services.fx_adapters.base import FXRate
 from app.services.fx_adapters.dispatcher import register_fx_adapter
 
 # Anchor rates against USD. Numbers are intentionally round so tests
@@ -73,8 +73,11 @@ class MockFXAdapter:
 
         if src == tgt:
             return FXRate(
-                source=src, target=tgt, rate=Decimal("1.0000"),
-                as_of=datetime.now(UTC), provider=self.provider_name,
+                source=src,
+                target=tgt,
+                rate=Decimal("1.0000"),
+                as_of=datetime.now(UTC),
+                provider=self.provider_name,
             )
 
         if src not in self._usd_rates:
@@ -85,8 +88,11 @@ class MockFXAdapter:
         # rate(src → tgt) = rate(USD → tgt) / rate(USD → src)
         rate = (self._usd_rates[tgt] / self._usd_rates[src]).quantize(Decimal("0.000001"))
         return FXRate(
-            source=src, target=tgt, rate=rate,
-            as_of=datetime.now(UTC), provider=self.provider_name,
+            source=src,
+            target=tgt,
+            rate=rate,
+            as_of=datetime.now(UTC),
+            provider=self.provider_name,
         )
 
     async def test_connection(self) -> bool:

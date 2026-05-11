@@ -115,19 +115,19 @@ async def test_aging_buckets_split_at_correct_day_boundaries():
     direction silently mis-reports millions in AR aging."""
     today = date.today()
     aging_rows = [
-        (today, Decimal("100.00")),                       # current (0 days past)
-        (today - timedelta(days=1), Decimal("200.00")),    # days_30 (1 day past)
-        (today - timedelta(days=30), Decimal("400.00")),   # days_30 (exactly 30)
-        (today - timedelta(days=31), Decimal("800.00")),   # days_60 (31 days)
+        (today, Decimal("100.00")),  # current (0 days past)
+        (today - timedelta(days=1), Decimal("200.00")),  # days_30 (1 day past)
+        (today - timedelta(days=30), Decimal("400.00")),  # days_30 (exactly 30)
+        (today - timedelta(days=31), Decimal("800.00")),  # days_60 (31 days)
         (today - timedelta(days=60), Decimal("1600.00")),  # days_60 (exactly 60)
         (today - timedelta(days=61), Decimal("3200.00")),  # days_90_plus
-        (today - timedelta(days=365), Decimal("6400.00")), # days_90_plus (way past)
+        (today - timedelta(days=365), Decimal("6400.00")),  # days_90_plus (way past)
     ]
     db = _mk_db(*_full_results(aging=aging_rows))
 
     result = await get_dashboard(db=db, user=_user())
     assert result["aging"]["current"] == 100.0
-    assert result["aging"]["days_30"] == 600.0   # 200 + 400
+    assert result["aging"]["days_30"] == 600.0  # 200 + 400
     assert result["aging"]["days_60"] == 2400.0  # 800 + 1600
     assert result["aging"]["days_90_plus"] == 9600.0  # 3200 + 6400
 
@@ -206,7 +206,7 @@ async def test_monthly_trend_is_sorted_ascending_by_month():
         (date(2026, 3, 4), Decimal("100")),
         (date(2026, 1, 22), Decimal("50")),
         (date(2026, 4, 1), Decimal("75")),
-        (date(2026, 1, 5), Decimal("25")),   # same month as Jan 22
+        (date(2026, 1, 5), Decimal("25")),  # same month as Jan 22
     ]
     db = _mk_db(*_full_results(trend=trend_rows))
     # Patch today() so the 180-day filter doesn't matter — endpoint
@@ -237,8 +237,8 @@ async def test_upcoming_payments_flag_overdue_only_when_due_date_before_today():
 
     today = date.today()
     upcoming_rows = [
-        (uuid.uuid4(), "INV-1", "Acme",   Decimal("100"), today - timedelta(days=1)),  # overdue
-        (uuid.uuid4(), "INV-2", "Bravo",  Decimal("100"), today),                       # on time
+        (uuid.uuid4(), "INV-1", "Acme", Decimal("100"), today - timedelta(days=1)),  # overdue
+        (uuid.uuid4(), "INV-2", "Bravo", Decimal("100"), today),  # on time
         (uuid.uuid4(), "INV-3", "Charlie", Decimal("100"), today + timedelta(days=3)),  # future
     ]
     db = _mk_db(*_full_results(upcoming=upcoming_rows))

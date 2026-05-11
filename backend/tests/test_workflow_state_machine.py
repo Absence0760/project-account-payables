@@ -253,9 +253,7 @@ def test_default_workflow_has_segregation_of_duties_on_for_approval():
     """The approval step's `require_segregation` flag prevents a user
     from approving their own submissions. Default-on is the safe
     posture; an admin can turn it off explicitly per workflow."""
-    approval_step = next(
-        s for s in DEFAULT_STEPS_CONFIG["steps"] if s["type"] == "approval"
-    )
+    approval_step = next(s for s in DEFAULT_STEPS_CONFIG["steps"] if s["type"] == "approval")
     assert approval_step["config"].get("require_segregation") is True, (
         "default workflow must enforce segregation of duties on the approval step"
     )

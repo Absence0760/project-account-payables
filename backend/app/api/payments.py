@@ -299,9 +299,7 @@ async def get_payment_remittance(
 
     vendor_address: str | None = None
     if invoice and invoice.vendor_id:
-        v_result = await db.execute(
-            select(Vendor.address).where(Vendor.id == invoice.vendor_id)
-        )
+        v_result = await db.execute(select(Vendor.address).where(Vendor.id == invoice.vendor_id))
         vendor_address = v_result.scalar_one_or_none()
 
     ctx = RemittanceContext(
@@ -750,9 +748,7 @@ async def cancel_payment_run(
         "id": str(run.id),
         "status": run.status,
         "released_invoices": len(invoice_ids),
-        "message": (
-            f"Draft run cancelled; {len(invoice_ids)} invoice(s) returned to the queue."
-        ),
+        "message": (f"Draft run cancelled; {len(invoice_ids)} invoice(s) returned to the queue."),
     }
 
 
@@ -886,12 +882,10 @@ async def execute_payment_run(
         # needs to flip to `sepa` / `international_wire`.
         invoice_currency = (invoice.currency if invoice else "USD").upper()
         org_home_currency = (
-            ((org.settings or {}).get("payments") or {}).get("home_currency")
-            or "USD"
+            ((org.settings or {}).get("payments") or {}).get("home_currency") or "USD"
         ).upper()
         has_intl_bank_fields = bool(
-            vendor_bank
-            and (vendor_bank.get("iban") or vendor_bank.get("swift_bic"))
+            vendor_bank and (vendor_bank.get("iban") or vendor_bank.get("swift_bic"))
         )
         if (
             invoice is not None

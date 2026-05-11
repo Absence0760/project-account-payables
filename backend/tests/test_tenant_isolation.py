@@ -59,9 +59,7 @@ async def test_get_tenant_refuses_mismatched_org_claim():
 
     acme_id = uuid.uuid4()
     other_org_id = uuid.uuid4()
-    token = _mint(
-        {"sub": str(uuid.uuid4()), "org": str(other_org_id), "typ": "user", "jti": "j1"}
-    )
+    token = _mint({"sub": str(uuid.uuid4()), "org": str(other_org_id), "typ": "user", "jti": "j1"})
 
     with pytest.raises(HTTPException) as exc:
         await get_tenant(
@@ -99,9 +97,7 @@ async def test_get_tenant_404_for_unknown_slug_takes_precedence_over_mismatch():
     *any* valid JWT."""
     from app.tenant import get_tenant
 
-    token = _mint(
-        {"sub": str(uuid.uuid4()), "org": str(uuid.uuid4()), "typ": "user", "jti": "j3"}
-    )
+    token = _mint({"sub": str(uuid.uuid4()), "org": str(uuid.uuid4()), "typ": "user", "jti": "j3"})
 
     with pytest.raises(HTTPException) as exc:
         await get_tenant(

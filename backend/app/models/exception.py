@@ -30,9 +30,7 @@ class Exception(Base, TimestampMixin):
     # UUID-keyed assignee. Set by the auto-routing rule at creation, or
     # by `PATCH /api/exceptions/{id}/assign`. Lives alongside the
     # `assigned_to` string for backward compat — the API exposes both.
-    assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     # SLA: deadline derived from org settings at creation time. NULL =
     # no SLA configured for this exception type.
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

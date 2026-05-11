@@ -208,7 +208,6 @@ async def generate_cards(
     import app.services.card_adapters.mock_adapter  # noqa: F401
     import app.services.card_adapters.nium  # noqa: F401
     from app.services.card_adapters import VirtualCardPayload, get_card_adapter
-
     from app.services.card_issuance import DEFAULT_CARD_EXPIRY_DAYS
 
     adapter = get_card_adapter(card_config)

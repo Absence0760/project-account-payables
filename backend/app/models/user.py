@@ -18,9 +18,7 @@ class Role(Base, TimestampMixin):
     # across every tenant. Non-NULL = a custom role minted by an org admin
     # via /api/admin/roles. Uniqueness is on (name, organization_id), so
     # two orgs can both define their own "Approver" without collision.
-    organization_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), index=True
-    )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
 
     users: Mapped[list["User"]] = relationship(secondary="user_roles", back_populates="roles")
 

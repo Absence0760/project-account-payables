@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import httpx
 
-from app.services.fx_adapters.base import FXAdapter, FXRate
+from app.services.fx_adapters.base import FXRate
 from app.services.fx_adapters.dispatcher import register_fx_adapter
 
 logger = logging.getLogger(__name__)
@@ -41,14 +41,15 @@ class OpenExchangeRatesAdapter:
         tgt = target.upper()
         if src == tgt:
             return FXRate(
-                source=src, target=tgt, rate=Decimal("1.0000"),
-                as_of=datetime.now(UTC), provider=self.provider_name,
+                source=src,
+                target=tgt,
+                rate=Decimal("1.0000"),
+                as_of=datetime.now(UTC),
+                provider=self.provider_name,
             )
 
         if not self.app_id:
-            raise RuntimeError(
-                "openexchangerates adapter requires `api_key` in fx config"
-            )
+            raise RuntimeError("openexchangerates adapter requires `api_key` in fx config")
 
         # OXR returns USD-base rates by default; we anchor on that and
         # compute the cross rate. `symbols=...` reduces payload size.
@@ -68,13 +69,14 @@ class OpenExchangeRatesAdapter:
         usd_to_src = _quantize(rates.get(src))
         usd_to_tgt = _quantize(rates.get(tgt))
         if usd_to_src is None or usd_to_tgt is None:
-            raise RuntimeError(
-                f"openexchangerates did not return rates for {src}/{tgt}"
-            )
+            raise RuntimeError(f"openexchangerates did not return rates for {src}/{tgt}")
 
         rate = (usd_to_tgt / usd_to_src).quantize(Decimal("0.000001"))
         return FXRate(
-            source=src, target=tgt, rate=rate, as_of=as_of,
+            source=src,
+            target=tgt,
+            rate=rate,
+            as_of=as_of,
             provider=self.provider_name,
         )
 

@@ -190,9 +190,7 @@ async def run_reconciler_loop() -> None:
             try:
                 await reconcile_once()
             except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "[payment-reconciler] sweep raised: %s", exc, exc_info=True
-                )
+                logger.error("[payment-reconciler] sweep raised: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[payment-reconciler] shutting down")

@@ -84,9 +84,7 @@ async def test_full_forward_path_walks_every_state_to_done():
     with patch("app.services.workflow_engine.dispatch_audit", new=recorder):
         for src, tgt, action in forward:
             assert invoice.status == src, f"expected {src}, got {invoice.status}"
-            await transition_invoice(
-                db=db, invoice=invoice, target_status=tgt, action_name=action
-            )
+            await transition_invoice(db=db, invoice=invoice, target_status=tgt, action_name=action)
 
     assert invoice.status == InvoiceStatus.done
     assert len(recorder.rows) == len(forward), (
@@ -109,12 +107,17 @@ async def test_reject_and_resubmit_loop_round_trips():
 
     with patch("app.services.workflow_engine.dispatch_audit", new=recorder):
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.rejected,
-            action_name="invoice.rejected", details={"reason": "wrong amount"},
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.rejected,
+            action_name="invoice.rejected",
+            details={"reason": "wrong amount"},
         )
         assert invoice.status == InvoiceStatus.rejected
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.ready_for_review,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.ready_for_review,
             action_name="invoice.resubmitted",
         )
 
@@ -139,7 +142,9 @@ async def test_void_payment_back_edge_re_enters_the_queue():
 
     with patch("app.services.workflow_engine.dispatch_audit", new=recorder):
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.approved,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.approved,
             action_name="invoice.void",
             details={"reason": "wrong bank account", "voided_payment_id": str(uuid.uuid4())},
         )
@@ -161,11 +166,15 @@ async def test_extraction_failure_retry_loop():
 
     with patch("app.services.workflow_engine.dispatch_audit", new=recorder):
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.failed,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.failed,
             action_name="invoice.extraction_timeout",
         )
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.pending,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.pending,
             action_name="invoice.extraction_retried",
         )
 
@@ -188,11 +197,15 @@ async def test_erp_failure_falls_into_retry_path():
 
     with patch("app.services.workflow_engine.dispatch_audit", new=recorder):
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.failed,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.failed,
             action_name="invoice.erp_send_failed",
         )
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.sending_to_erp,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.sending_to_erp,
             action_name="invoice.erp_send_retried",
         )
 
@@ -220,8 +233,11 @@ async def test_audit_details_include_action_specific_metadata():
 
     with patch("app.services.workflow_engine.dispatch_audit", new=recorder):
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.approved,
-            action_name="invoice.approved", details=custom,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.approved,
+            action_name="invoice.approved",
+            details=custom,
         )
 
     row_details = recorder.rows[0]["details"]
@@ -251,7 +267,10 @@ async def test_terminal_done_state_blocks_any_further_transition():
         ):
             with pytest.raises(HTTPException) as exc:
                 await transition_invoice(
-                    db=db, invoice=invoice, target_status=tgt, action_name="invoice.reopen",
+                    db=db,
+                    invoice=invoice,
+                    target_status=tgt,
+                    action_name="invoice.reopen",
                 )
             assert exc.value.status_code == 409
             # No audit row written on illegal transitions.
@@ -271,11 +290,15 @@ async def test_carries_correlation_id_across_lifecycle():
 
     with patch("app.services.workflow_engine.dispatch_audit", new=recorder):
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.pending,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.pending,
             action_name="invoice.extraction_started",
         )
         await transition_invoice(
-            db=db, invoice=invoice, target_status=InvoiceStatus.ready_for_review,
+            db=db,
+            invoice=invoice,
+            target_status=InvoiceStatus.ready_for_review,
             action_name="invoice.extraction_completed",
         )
 

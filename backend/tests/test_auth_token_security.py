@@ -78,9 +78,13 @@ def test_decode_rejects_alg_none_token():
         .decode()
         .rstrip("=")
     )
-    body = base64.urlsafe_b64encode(
-        json.dumps({"sub": str(uuid.uuid4()), "org": str(uuid.uuid4()), "typ": "user"}).encode()
-    ).decode().rstrip("=")
+    body = (
+        base64.urlsafe_b64encode(
+            json.dumps({"sub": str(uuid.uuid4()), "org": str(uuid.uuid4()), "typ": "user"}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
     token = f"{header}.{body}."  # empty signature segment
 
     with pytest.raises(HTTPException) as exc:

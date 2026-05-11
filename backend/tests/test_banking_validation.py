@@ -26,20 +26,19 @@ from app.utils.banking import (
     validate_swift_bic,
 )
 
-
 # Known-good IBANs from the ISO test set + a few real-world examples
 # that pass mod-97. The DE example is the standard ECB test number.
 _VALID_IBANS = [
-    "DE89 3704 0044 0532 0130 00",   # Germany, ECB test
-    "GB82 WEST 1234 5698 7654 32",   # UK, ECB test
+    "DE89 3704 0044 0532 0130 00",  # Germany, ECB test
+    "GB82 WEST 1234 5698 7654 32",  # UK, ECB test
     "FR14 2004 1010 0505 0001 3M02 606",  # France, ECB test
     "ES91 2100 0418 4502 0005 1332",  # Spain, ECB test
-    "NL91ABNA0417164300",            # Netherlands
-    "BE68539007547034",              # Belgium
-    "CH9300762011623852957",         # Switzerland
-    "AT611904300234573201",          # Austria
-    "IT60X0542811101000000123456",   # Italy
-    "PT50000201231234567890154",     # Portugal
+    "NL91ABNA0417164300",  # Netherlands
+    "BE68539007547034",  # Belgium
+    "CH9300762011623852957",  # Switzerland
+    "AT611904300234573201",  # Austria
+    "IT60X0542811101000000123456",  # Italy
+    "PT50000201231234567890154",  # Portugal
 ]
 
 
@@ -57,13 +56,13 @@ def test_valid_iban_passes_mod97_check(iban):
         None,
         "",
         "   ",
-        "DE",                              # too short
-        "DE0037040044053201300",           # bad checksum (one digit off)
-        "DE89 3704 0044 0532 0130 01",     # last digit flipped
-        "XX89 3704 0044 0532 0130 00",     # unknown country code
-        "1289 3704 0044 0532 0130 00",     # country code is digits
-        "DE89 3704 0044 0532 0130",        # too short for DE
-        "DE89370400440532013000A",         # bad: last char non-alphanumeric to ECB form? no, A is OK structurally → length wrong
+        "DE",  # too short
+        "DE0037040044053201300",  # bad checksum (one digit off)
+        "DE89 3704 0044 0532 0130 01",  # last digit flipped
+        "XX89 3704 0044 0532 0130 00",  # unknown country code
+        "1289 3704 0044 0532 0130 00",  # country code is digits
+        "DE89 3704 0044 0532 0130",  # too short for DE
+        "DE89370400440532013000A",  # wrong length for DE
         "!!!INVALID!!!",
     ],
 )
@@ -110,11 +109,11 @@ def test_country_from_iban_handles_garbage():
 @pytest.mark.parametrize(
     "bic",
     [
-        "DEUTDEFF",        # 8-char, Deutsche Bank Frankfurt
-        "DEUTDEFFXXX",     # 11-char primary branch
-        "BNPAFRPPXXX",     # 11-char BNP Paribas
-        "CHASUS33",        # 8-char Chase USA
-        "BARCGB22",        # 8-char Barclays UK
+        "DEUTDEFF",  # 8-char, Deutsche Bank Frankfurt
+        "DEUTDEFFXXX",  # 11-char primary branch
+        "BNPAFRPPXXX",  # 11-char BNP Paribas
+        "CHASUS33",  # 8-char Chase USA
+        "BARCGB22",  # 8-char Barclays UK
     ],
 )
 def test_valid_swift_bic_accepted(bic):
@@ -126,13 +125,13 @@ def test_valid_swift_bic_accepted(bic):
     [
         None,
         "",
-        "ABCDEFG",         # too short
-        "ABCDEFGHIJ",      # 10 chars (must be 8 or 11)
-        "ABCDEFGHIJKL",    # 12 chars
-        "1234DEFF",        # bank code must be letters
-        "DEUT12FF",        # country code must be letters
-        "DEUTDE0F",        # location starts with 0 (reserved test BIC)
-        "DEUTDEFF!!!",     # non-alphanumeric branch
+        "ABCDEFG",  # too short
+        "ABCDEFGHIJ",  # 10 chars (must be 8 or 11)
+        "ABCDEFGHIJKL",  # 12 chars
+        "1234DEFF",  # bank code must be letters
+        "DEUT12FF",  # country code must be letters
+        "DEUTDE0F",  # location starts with 0 (reserved test BIC)
+        "DEUTDEFF!!!",  # non-alphanumeric branch
     ],
 )
 def test_invalid_swift_bic_rejected(bic):

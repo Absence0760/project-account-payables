@@ -40,7 +40,6 @@ import pytest
 from app.models.invoice import InvoiceStatus
 from app.services.erp import retry_erp, send_to_erp
 
-
 _UNSET = object()
 
 

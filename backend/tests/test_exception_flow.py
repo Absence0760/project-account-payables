@@ -15,7 +15,7 @@ fraud_rules` plus tunable thresholds. These tests pin both directions:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -92,9 +92,7 @@ def test_fraud_config_returns_defaults_when_no_overrides():
 
 
 def test_fraud_config_lets_org_override_individual_keys():
-    cfg = _fraud_config(
-        {"fraud_rules": {"round_amount_min": "5000", "future_date_enabled": False}}
-    )
+    cfg = _fraud_config({"fraud_rules": {"round_amount_min": "5000", "future_date_enabled": False}})
     assert cfg["round_amount_min"] == "5000"
     assert cfg["future_date_enabled"] is False
     # Untouched keys still default.
@@ -137,10 +135,7 @@ async def test_missing_vendor_name_raises_error_warning():
     warnings = await refresh_warnings(db, inv)
     types = {w["type"] for w in warnings}
     assert "missing_field" in types
-    assert any(
-        w["type"] == "missing_field" and "vendor" in w["message"].lower()
-        for w in warnings
-    )
+    assert any(w["type"] == "missing_field" and "vendor" in w["message"].lower() for w in warnings)
 
 
 @pytest.mark.asyncio

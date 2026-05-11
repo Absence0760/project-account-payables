@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -46,8 +46,12 @@ def _snapshot(**overrides: bool) -> dict:
     return {
         "steps": [
             {"number": 1, "type": "extraction", "enabled": overrides.get("extraction", False)},
-            {"number": 2, "type": "approval", "enabled": overrides.get("approval", False),
-             "config": {"required": True, "approver_id": None}},
+            {
+                "number": 2,
+                "type": "approval",
+                "enabled": overrides.get("approval", False),
+                "config": {"required": True, "approver_id": None},
+            },
             {"number": 3, "type": "erp_export", "enabled": overrides.get("erp_export", False)},
         ]
     }
@@ -65,15 +69,16 @@ async def test_is_step_enabled_reads_snapshot_when_invoice_provided():
     defn = SimpleNamespace(steps_config=live_disabled)
 
     with (
-        patch("app.services.workflow_engine.get_workflow_instance", AsyncMock(return_value=instance)),
+        patch(
+            "app.services.workflow_engine.get_workflow_instance",
+            AsyncMock(return_value=instance),
+        ),
         patch(
             "app.services.workflow_engine.get_or_create_workflow_definition",
             AsyncMock(return_value=defn),
         ),
     ):
-        enabled = await is_step_enabled(
-            db, uuid.uuid4(), "approval", invoice_id=uuid.uuid4()
-        )
+        enabled = await is_step_enabled(db, uuid.uuid4(), "approval", invoice_id=uuid.uuid4())
     assert enabled is True
 
 
@@ -91,15 +96,16 @@ async def test_is_step_enabled_inverse_snapshot_wins_when_live_def_flipped_on():
     defn = SimpleNamespace(steps_config=live_enabled)
 
     with (
-        patch("app.services.workflow_engine.get_workflow_instance", AsyncMock(return_value=instance)),
+        patch(
+            "app.services.workflow_engine.get_workflow_instance",
+            AsyncMock(return_value=instance),
+        ),
         patch(
             "app.services.workflow_engine.get_or_create_workflow_definition",
             AsyncMock(return_value=defn),
         ),
     ):
-        enabled = await is_step_enabled(
-            db, uuid.uuid4(), "approval", invoice_id=uuid.uuid4()
-        )
+        enabled = await is_step_enabled(db, uuid.uuid4(), "approval", invoice_id=uuid.uuid4())
     assert enabled is False
 
 
@@ -130,15 +136,16 @@ async def test_is_step_enabled_falls_back_when_instance_has_null_snapshot():
     defn = SimpleNamespace(steps_config=_snapshot(approval=True))
 
     with (
-        patch("app.services.workflow_engine.get_workflow_instance", AsyncMock(return_value=instance)),
+        patch(
+            "app.services.workflow_engine.get_workflow_instance",
+            AsyncMock(return_value=instance),
+        ),
         patch(
             "app.services.workflow_engine.get_or_create_workflow_definition",
             AsyncMock(return_value=defn),
         ),
     ):
-        enabled = await is_step_enabled(
-            db, uuid.uuid4(), "approval", invoice_id=uuid.uuid4()
-        )
+        enabled = await is_step_enabled(db, uuid.uuid4(), "approval", invoice_id=uuid.uuid4())
     assert enabled is True
 
 
@@ -156,9 +163,7 @@ async def test_is_step_enabled_falls_back_when_instance_missing():
             AsyncMock(return_value=defn),
         ),
     ):
-        enabled = await is_step_enabled(
-            db, uuid.uuid4(), "erp_export", invoice_id=uuid.uuid4()
-        )
+        enabled = await is_step_enabled(db, uuid.uuid4(), "erp_export", invoice_id=uuid.uuid4())
     assert enabled is True
 
 
@@ -188,11 +193,15 @@ def test_get_step_config_returns_nested_config_dict():
     approver_id. Pin the lookup contract."""
     snapshot = {
         "steps": [
-            {"type": "approval", "enabled": True, "config": {
-                "approver_id": "user-123",
-                "approver_strategy": "manual",
-                "require_segregation": True,
-            }},
+            {
+                "type": "approval",
+                "enabled": True,
+                "config": {
+                    "approver_id": "user-123",
+                    "approver_strategy": "manual",
+                    "require_segregation": True,
+                },
+            },
         ]
     }
     cfg = get_step_config(snapshot, "approval")

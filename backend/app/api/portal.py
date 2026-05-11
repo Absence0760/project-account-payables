@@ -17,7 +17,6 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
 from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
-from app.models.virtual_card import VirtualCard
 from app.schemas.portal import (
     PortalInvoiceListItem,
     PortalInvoiceListResponse,
@@ -277,7 +276,6 @@ async def reveal_card(
     """
     from app.services.audit_dispatch import dispatch_audit
     from app.services.card_adapters import (
-        VirtualCardPayload,
         get_card_adapter,
     )
     from app.services.card_reveal import consume_reveal_token
@@ -294,23 +292,24 @@ async def reveal_card(
     # Re-fetch + decrypt the PAN via the adapter, same path the
     # /api/cards/{id}/details endpoint uses internally.
     org_settings_result = await db.execute(
-        select(Vendor).where(Vendor.id == card.vendor_id) if card.vendor_id else select(Vendor).limit(0)
+        select(Vendor).where(Vendor.id == card.vendor_id)
+        if card.vendor_id
+        else select(Vendor).limit(0)
     )
     _ = org_settings_result.scalar_one_or_none()  # not strictly needed; left for parity
 
     # Build a config that matches the cards section of the org settings.
     # Loading the Organization here is unusual — portal sessions don't
     # carry one — so we read it directly via the org_id on the card.
-    from app.models.organization import Organization
     from app.config import settings as app_settings
     from app.database import control_session_factory
+    from app.models.organization import Organization
 
     async with control_session_factory() as ctrl:
         org_row = await ctrl.execute(
             select(Organization).where(Organization.id == card.organization_id)
         )
         org = org_row.scalar_one_or_none()
-    org_cards = (org.settings or {}).get("cards") if org and org.settings else None
 
     from app.services.card_issuance import _resolve_card_config
 

@@ -136,6 +136,7 @@ def test_password_is_stored_as_bcrypt_sha256_hash_not_plaintext():
     at 72 bytes. Legacy `$2b$` hashes still verify (deprecated="auto")
     but new writes use the safer scheme."""
     from app.utils.passwords import pwd_context as ctx
+
     h = ctx.hash("Correct-Horse-1")
     assert h.startswith("$bcrypt-sha256$"), f"expected bcrypt_sha256 prefix, got: {h[:25]}"
     assert "Correct-Horse-1" not in h
@@ -146,6 +147,7 @@ def test_same_password_produces_different_hashes():
     return different outputs. If they were equal, the salt is broken
     and a rainbow table works against the whole user table."""
     from app.utils.passwords import pwd_context as ctx
+
     h1 = ctx.hash("Correct-Horse-1")
     h2 = ctx.hash("Correct-Horse-1")
     assert h1 != h2
@@ -156,6 +158,7 @@ def test_bcrypt_verify_accepts_correct_and_rejects_wrong():
     swap to a broken hasher (e.g., one that always returns True) is
     caught by tests rather than a customer."""
     from app.utils.passwords import pwd_context as ctx
+
     h = ctx.hash("Correct-Horse-1")
     assert ctx.verify("Correct-Horse-1", h) is True
     assert ctx.verify("wrong-password", h) is False
@@ -168,6 +171,7 @@ def test_bcrypt_handles_long_password_without_silent_truncation_collision():
     equal. passlib applies a SHA-256 pre-hash to avoid that — confirm
     our context inherits the safe behavior."""
     from app.utils.passwords import pwd_context as ctx
+
     base = "A" * 72 + "0aaaaaaaaa"  # first 72 bytes identical
     other = "A" * 72 + "0bbbbbbbbb"
     h = ctx.hash(base)

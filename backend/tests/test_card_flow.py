@@ -36,7 +36,6 @@ import pytest
 
 from app.services.card_issuance import (
     DEFAULT_CARD_EXPIRY_DAYS,
-    CardIssueResult,
     _coerce_expiry_days,
     _resolve_card_config,
     issue_card_for_invoice,
@@ -136,9 +135,7 @@ async def test_issue_card_returns_adapter_error_when_adapter_raises():
 
     adapter = MagicMock()
     adapter.provider_name = "lithic"
-    adapter.create_card = AsyncMock(
-        side_effect=ProviderTimeout("PAN 4111111111111111 timed out")
-    )
+    adapter.create_card = AsyncMock(side_effect=ProviderTimeout("PAN 4111111111111111 timed out"))
 
     with patch("app.services.card_adapters.get_card_adapter", return_value=adapter):
         result = await issue_card_for_invoice(
@@ -328,12 +325,12 @@ async def test_issue_card_defaults_expiry_to_30_days_when_unset():
     [
         (None, DEFAULT_CARD_EXPIRY_DAYS),
         (14, 14),
-        ("14", 14),         # form input arrives as a string
-        ("  21  ", 21),     # int() tolerates surrounding whitespace
-        (60.0, 60),         # float from old JSON
-        (0, DEFAULT_CARD_EXPIRY_DAYS),       # zero is rejected
-        (-5, DEFAULT_CARD_EXPIRY_DAYS),      # negative is rejected
-        ("abc", DEFAULT_CARD_EXPIRY_DAYS),   # non-numeric falls back
+        ("14", 14),  # form input arrives as a string
+        ("  21  ", 21),  # int() tolerates surrounding whitespace
+        (60.0, 60),  # float from old JSON
+        (0, DEFAULT_CARD_EXPIRY_DAYS),  # zero is rejected
+        (-5, DEFAULT_CARD_EXPIRY_DAYS),  # negative is rejected
+        ("abc", DEFAULT_CARD_EXPIRY_DAYS),  # non-numeric falls back
         ("", DEFAULT_CARD_EXPIRY_DAYS),
         ([1, 2], DEFAULT_CARD_EXPIRY_DAYS),  # weird shapes fall back
     ],
@@ -483,8 +480,9 @@ async def test_notify_vendor_returns_false_when_vendor_has_no_email():
     """Vendor row exists but `email` is None → skip silently. A
     regression that tried to send to None would crash the issuance
     path."""
-    inv = SimpleNamespace(vendor_id=uuid.uuid4(), id=uuid.uuid4(),
-                          invoice_number="INV-1", currency="USD")
+    inv = SimpleNamespace(
+        vendor_id=uuid.uuid4(), id=uuid.uuid4(), invoice_number="INV-1", currency="USD"
+    )
     card = SimpleNamespace(id=uuid.uuid4(), amount_limit=Decimal("100"))
     vendor = SimpleNamespace(name="Acme", email=None)
 
@@ -508,8 +506,9 @@ async def test_notify_vendor_returns_false_when_vendor_has_no_email():
 async def test_notify_vendor_returns_false_when_no_url_template():
     """Without `AP_TENANT_URL_TEMPLATE` we have nowhere to point the
     vendor — skip the email rather than send a broken link."""
-    inv = SimpleNamespace(vendor_id=uuid.uuid4(), id=uuid.uuid4(),
-                          invoice_number="INV-1", currency="USD")
+    inv = SimpleNamespace(
+        vendor_id=uuid.uuid4(), id=uuid.uuid4(), invoice_number="INV-1", currency="USD"
+    )
     card = SimpleNamespace(id=uuid.uuid4(), amount_limit=Decimal("100"))
     vendor = SimpleNamespace(name="Acme", email="ap@acme.com")
 

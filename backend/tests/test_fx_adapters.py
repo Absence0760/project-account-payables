@@ -22,7 +22,7 @@ rates folded into the requested pair).
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -30,7 +30,6 @@ import pytest
 from app.services.fx_adapters import FXRate, get_fx_adapter
 from app.services.fx_adapters.mock_adapter import MockFXAdapter, _UnknownCurrency
 from app.services.fx_adapters.openexchangerates import OpenExchangeRatesAdapter
-
 
 # ---------------------------------------------------------------------------
 # MockFXAdapter — the workhorse of every test below.
@@ -148,9 +147,7 @@ class _FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                "bad", request=MagicMock(), response=MagicMock()
-            )
+            raise httpx.HTTPStatusError("bad", request=MagicMock(), response=MagicMock())
 
 
 @pytest.mark.asyncio
@@ -163,16 +160,21 @@ async def test_openexchangerates_builds_request_with_app_id_and_symbols():
     class _FakeClient:
         def __init__(self, *a, **k):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def get(self, url, params=None):
             captured_params.update(params or {})
-            return _FakeResponse({
-                "timestamp": 1715000000,
-                "rates": {"USD": 1.0, "EUR": 0.92},
-            })
+            return _FakeResponse(
+                {
+                    "timestamp": 1715000000,
+                    "rates": {"USD": 1.0, "EUR": 0.92},
+                }
+            )
 
     adapter = OpenExchangeRatesAdapter({"api_key": "secret-123"})
     with patch("app.services.fx_adapters.openexchangerates.httpx.AsyncClient", _FakeClient):
@@ -199,18 +201,24 @@ async def test_openexchangerates_raises_without_api_key():
 async def test_openexchangerates_cross_rate_uses_usd_pivot():
     """GBP → EUR via USD pivot: rate(USD → EUR) / rate(USD → GBP).
     OXR returns both rates relative to USD in the same response."""
+
     class _FakeClient:
         def __init__(self, *a, **k):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def get(self, url, params=None):
-            return _FakeResponse({
-                "timestamp": 1715000000,
-                "rates": {"GBP": 0.79, "EUR": 0.92},
-            })
+            return _FakeResponse(
+                {
+                    "timestamp": 1715000000,
+                    "rates": {"GBP": 0.79, "EUR": 0.92},
+                }
+            )
 
     adapter = OpenExchangeRatesAdapter({"api_key": "k"})
     with patch("app.services.fx_adapters.openexchangerates.httpx.AsyncClient", _FakeClient):
@@ -224,13 +232,17 @@ async def test_openexchangerates_cross_rate_uses_usd_pivot():
 async def test_openexchangerates_missing_rate_raises():
     """Provider returned a body but the symbol we asked for isn't
     in it — defensive against a future provider regression."""
+
     class _FakeClient:
         def __init__(self, *a, **k):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def get(self, url, params=None):
             return _FakeResponse({"rates": {}, "timestamp": 1715000000})
 
@@ -246,7 +258,9 @@ def test_fxrate_is_immutable():
     later code path overwrite the locked rate during settlement,
     breaking the audit replay."""
     from datetime import UTC, datetime
-    rate = FXRate(source="USD", target="EUR", rate=Decimal("0.9"),
-                  as_of=datetime.now(UTC), provider="mock")
+
+    rate = FXRate(
+        source="USD", target="EUR", rate=Decimal("0.9"), as_of=datetime.now(UTC), provider="mock"
+    )
     with pytest.raises(Exception):  # FrozenInstanceError
         rate.rate = Decimal("1.0")  # type: ignore[misc]

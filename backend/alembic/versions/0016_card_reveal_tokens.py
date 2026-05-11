@@ -55,8 +55,7 @@ def upgrade() -> None:
         """
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_card_reveal_tokens_card_id "
-        "ON card_reveal_tokens (card_id)"
+        "CREATE INDEX IF NOT EXISTS ix_card_reveal_tokens_card_id ON card_reveal_tokens (card_id)"
     )
 
 

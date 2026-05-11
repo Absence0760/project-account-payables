@@ -128,9 +128,7 @@ async def issue_card_for_invoice(
     """
     config = _resolve_card_config(org_settings, app_settings)
     if config is None:
-        return CardIssueResult(
-            card=None, success=False, failure_reason="cards_not_enabled"
-        )
+        return CardIssueResult(card=None, success=False, failure_reason="cards_not_enabled")
 
     # Ensure the adapter classes register themselves with the dispatcher.
     import app.services.card_adapters.lithic  # noqa: F401
@@ -268,7 +266,5 @@ async def notify_vendor_of_card(
         )
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[card_issuance] vendor email send failed for card %s: %s", card.id, exc
-        )
+        logger.warning("[card_issuance] vendor email send failed for card %s: %s", card.id, exc)
         return False

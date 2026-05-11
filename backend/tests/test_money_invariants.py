@@ -211,6 +211,4 @@ def test_no_float_columns_on_money_named_fields():
             if isinstance(col.type, Float):
                 violations.append(f"{cls.__name__}.{col.name} ({type(col.type).__name__})")
 
-    assert not violations, (
-        f"money-named columns must not use Float / Real: {violations}"
-    )
+    assert not violations, f"money-named columns must not use Float / Real: {violations}"

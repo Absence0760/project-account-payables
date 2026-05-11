@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.models.payment import Payment
@@ -35,7 +35,6 @@ from app.services.fx_adapters import FXAdapter, FXRate
 from app.services.payment_corridor import CorridorChoice, pick_corridor
 from app.utils.banking import (
     country_from_iban,
-    is_sepa_country,
     validate_iban,
     validate_swift_bic,
 )
@@ -102,9 +101,7 @@ async def prepare_international_payment(
     iban = bank.get("iban") or ""
     swift = bank.get("swift_bic") or bank.get("swift") or bank.get("bic") or ""
     target_country = (
-        bank.get("country")
-        or getattr(vendor, "address_country", None)
-        or country_from_iban(iban)
+        bank.get("country") or getattr(vendor, "address_country", None) or country_from_iban(iban)
     )
     if isinstance(target_country, str):
         target_country = target_country.upper()
@@ -155,7 +152,7 @@ async def prepare_international_payment(
     payment = Payment(
         invoice_id=invoice_id or invoice.id,
         correlation_id=correlation_id or invoice.correlation_id,
-        amount=invoice.amount,                # paid in invoice currency
+        amount=invoice.amount,  # paid in invoice currency
         method=corridor.method,
         status="pending",
         source_currency=source_currency,

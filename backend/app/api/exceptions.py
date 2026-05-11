@@ -34,9 +34,7 @@ def _exception_dict(exc: APException, inv: Invoice | None) -> dict:
     the queue UI consumes. Centralised so the list, assign, and bulk
     handlers all return the same shape."""
     now = datetime.now(UTC)
-    is_overdue = bool(
-        exc.due_at and exc.status in ("open", "escalated") and exc.due_at < now
-    )
+    is_overdue = bool(exc.due_at and exc.status in ("open", "escalated") and exc.due_at < now)
     time_to_resolution_hours = (
         round(exc.time_to_resolution_seconds / 3600, 2)
         if exc.time_to_resolution_seconds is not None
@@ -196,9 +194,7 @@ async def bulk_resolve(
     except ValueError as exc_:
         raise HTTPException(status_code=400, detail=f"Invalid id: {exc_}") from exc_
 
-    rows = (
-        await db.execute(select(APException).where(APException.id.in_(ids)))
-    ).scalars().all()
+    rows = (await db.execute(select(APException).where(APException.id.in_(ids)))).scalars().all()
     seen_ids = {row.id for row in rows}
 
     updated = 0
@@ -273,7 +269,10 @@ async def assign_exception(
         # Lookup in the control plane: user must be in this org.
         u = (
             await ctrl_db.execute(
-                select(User).where(User.id == target_uuid, User.organization_id == user.organization_id)
+                select(User).where(
+                    User.id == target_uuid,
+                    User.organization_id == user.organization_id,
+                )
             )
         ).scalar_one_or_none()
         if u is None:

@@ -17,7 +17,6 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-
 # ---------- _ensure_exception: SLA + auto-assign --------------------------
 
 
@@ -91,9 +90,7 @@ def test_ensure_exception_auto_assigns_user_when_routing_set():
     inv = _invoice()
     db = _capture_db()
     target = uuid.uuid4()
-    org_settings = {
-        "exceptions": {"auto_assign_by_type": {"fraud_flag": str(target)}}
-    }
+    org_settings = {"exceptions": {"auto_assign_by_type": {"fraud_flag": str(target)}}}
     asyncio.run(_ensure_exception(db, inv, "fraud_flag", "warning", "x", org_settings=org_settings))
 
     persisted = db.add.call_args.args[0]

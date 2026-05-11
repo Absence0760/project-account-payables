@@ -45,9 +45,7 @@ def upgrade() -> None:
     if not _is_control_db():
         return
     op.execute("ALTER TABLE roles ADD COLUMN IF NOT EXISTS organization_id UUID")
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_roles_organization_id ON roles (organization_id)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS ix_roles_organization_id ON roles (organization_id)")
     # Drop the legacy single-column unique on name (the constraint name
     # comes from SQLAlchemy's default; we look it up via the catalog so
     # the migration is robust to differently-named seeds).
@@ -68,10 +66,7 @@ def upgrade() -> None:
         END $$;
         """
     )
-    op.execute(
-        "ALTER TABLE roles "
-        "ADD CONSTRAINT uq_roles_name_org UNIQUE (name, organization_id)"
-    )
+    op.execute("ALTER TABLE roles ADD CONSTRAINT uq_roles_name_org UNIQUE (name, organization_id)")
 
 
 def downgrade() -> None:

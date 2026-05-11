@@ -77,9 +77,7 @@ def test_list_my_payments_filters_by_invoice_vendor_id():
     assert "Invoice.vendor_id == vu.vendor_id" in src
     # And the count query for pagination must scope too.
     occurrences = src.count("Invoice.vendor_id == vu.vendor_id")
-    assert occurrences >= 2, (
-        "both the list query and the count query must filter on vendor_id"
-    )
+    assert occurrences >= 2, "both the list query and the count query must filter on vendor_id"
 
 
 # ---------------------------------------------------------------------------

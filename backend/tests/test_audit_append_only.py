@@ -47,9 +47,7 @@ def test_no_router_defines_a_put_patch_or_delete_on_audit_log():
         forbidden = set(route.methods or []) & {"PUT", "PATCH", "DELETE"}
         if forbidden:
             violations.append(f"{route.path} {forbidden}")
-    assert not violations, (
-        f"audit endpoints must be GET-only — violations: {violations}"
-    )
+    assert not violations, f"audit endpoints must be GET-only — violations: {violations}"
 
 
 def test_audit_log_get_endpoint_is_read_only_in_signature():
@@ -60,9 +58,7 @@ def test_audit_log_get_endpoint_is_read_only_in_signature():
     from app.main import app
 
     audit_get_routes = [
-        r
-        for r in app.routes
-        if isinstance(r, APIRoute) and "audit" in r.path.lower()
+        r for r in app.routes if isinstance(r, APIRoute) and "audit" in r.path.lower()
     ]
     assert audit_get_routes, "expected at least one audit-log GET endpoint"
     for r in audit_get_routes:
@@ -165,8 +161,10 @@ def test_audit_shipper_does_not_delete_rows_on_ship():
     src = inspect.getsource(audit_log_shipper)
     # Quick sanity: no DELETE FROM audit_log anywhere in the shipper.
     assert "DELETE FROM audit_log" not in src.upper()
-    assert "audit_log_shipper" not in src or "db.delete" not in src or (
-        "AuditLog" not in src.split("db.delete", 1)[1][:200] if "db.delete" in src else True
+    assert (
+        "audit_log_shipper" not in src
+        or "db.delete" not in src
+        or ("AuditLog" not in src.split("db.delete", 1)[1][:200] if "db.delete" in src else True)
     )
 
 

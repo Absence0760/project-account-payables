@@ -107,9 +107,7 @@ async def test_po_number_set_but_no_matching_po_returns_no_po_with_issue():
     """The invoice cites a PO that doesn't exist in the system →
     status `no_po` AND an issue describing which PO was missing."""
     db = _mk_db(po=None)
-    db.execute = AsyncMock(side_effect=[
-        type("R", (), {"scalar_one_or_none": lambda self: None})()
-    ])
+    db.execute = AsyncMock(side_effect=[type("R", (), {"scalar_one_or_none": lambda self: None})()])
     inv = _invoice(po_number="PO-GHOST")
     result = await match_invoice_to_po(db, inv)
     assert result.status == "no_po"
@@ -185,9 +183,7 @@ async def test_exact_tolerance_boundary_is_inclusive():
 async def test_custom_tolerance_overrides_default():
     """`tolerance_pct=10` widens the gate so +9% passes."""
     db = _mk_db(po=_po(total=Decimal("1000.00")))
-    result = await match_invoice_to_po(
-        db, _invoice(amount=Decimal("1090.00")), tolerance_pct=10.0
-    )
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1090.00")), tolerance_pct=10.0)
     assert result.within_tolerance is True
     assert result.status == "matched"
 
@@ -197,9 +193,7 @@ async def test_custom_tolerance_can_be_tighter_than_default():
     """`tolerance_pct=1` narrows the gate so +4% (which passes at
     the default) now fails."""
     db = _mk_db(po=_po(total=Decimal("1000.00")))
-    result = await match_invoice_to_po(
-        db, _invoice(amount=Decimal("1040.00")), tolerance_pct=1.0
-    )
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1040.00")), tolerance_pct=1.0)
     assert result.status == "mismatch"
 
 
@@ -332,10 +326,14 @@ async def test_vendor_id_on_invoice_constrains_po_lookup_to_same_vendor():
     class _FakeDb:
         async def execute(self, q):  # noqa: ANN001
             captured.append(str(q))
+
             # First call returns a PO; second call returns no GR.
             class R:
                 def scalar_one_or_none(self_):
-                    return _po(total=Decimal("1000.00"), vendor_id=inv_vendor_id) if len(captured) == 1 else None
+                    if len(captured) == 1:
+                        return _po(total=Decimal("1000.00"), vendor_id=inv_vendor_id)
+                    return None
+
             return R()
 
     inv = _invoice(amount=Decimal("1000.00"), vendor_id=inv_vendor_id)
@@ -356,9 +354,11 @@ async def test_invoice_without_vendor_id_runs_unscoped_po_query():
     class _FakeDb:
         async def execute(self, q):  # noqa: ANN001
             captured.append(str(q))
+
             class R:
                 def scalar_one_or_none(self_):
                     return _po(total=Decimal("1000.00")) if len(captured) == 1 else None
+
             return R()
 
     inv = _invoice(amount=Decimal("1000.00"), vendor_id=None)

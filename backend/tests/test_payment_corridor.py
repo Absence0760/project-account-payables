@@ -20,8 +20,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.services.payment_corridor import CorridorChoice, pick_corridor
-
+from app.services.payment_corridor import pick_corridor
 
 # ---------------------------------------------------------------------------
 # Cross-currency → international wire + FX leg.
@@ -214,9 +213,11 @@ def test_corridor_choice_is_immutable():
     can't be edited mid-flight by another code path."""
     c = pick_corridor(source_currency="USD", target_currency="USD", target_country="US")
     import dataclasses
+
     assert dataclasses.is_dataclass(c)
     # Frozen → setting an attribute raises.
     import pytest
+
     with pytest.raises(dataclasses.FrozenInstanceError):
         c.method = "wire"  # type: ignore[misc]
 

@@ -88,9 +88,7 @@ async def test_enroll_mfa_verify_refused_when_master_switch_off():
     db = AsyncMock()
     with patch("app.api.auth.settings.mfa_enabled", False):
         with pytest.raises(HTTPException) as exc:
-            await enroll_mfa_verify(
-                body=MFAEnrollVerifyRequest(code="123456"), user=user, db=db
-            )
+            await enroll_mfa_verify(body=MFAEnrollVerifyRequest(code="123456"), user=user, db=db)
     assert exc.value.status_code == 400
 
 
@@ -231,9 +229,7 @@ async def test_disable_mfa_requires_password_re_entry():
 
     with patch("app.api.auth.pwd_context.verify", return_value=False):
         with pytest.raises(HTTPException) as exc:
-            await disable_mfa(
-                body=MFADisableRequest(password="guess"), user=user, db=db
-            )
+            await disable_mfa(body=MFADisableRequest(password="guess"), user=user, db=db)
     assert exc.value.status_code == 400
     # State untouched.
     assert user.mfa_enabled is True
@@ -264,9 +260,7 @@ async def test_disable_mfa_refused_when_org_requires_mfa():
         patch("app.api.auth.mfa.org_requires_mfa", return_value=True),
     ):
         with pytest.raises(HTTPException) as exc:
-            await disable_mfa(
-                body=MFADisableRequest(password="correct"), user=user, db=db
-            )
+            await disable_mfa(body=MFADisableRequest(password="correct"), user=user, db=db)
     assert exc.value.status_code == 400
     assert "organization requires MFA" in exc.value.detail
     # Disable rejected → state intact.

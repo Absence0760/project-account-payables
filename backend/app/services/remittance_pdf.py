@@ -203,7 +203,7 @@ def render_remittance_pdf(ctx: RemittanceContext) -> bytes:
     story.append(
         Paragraph(
             "Questions about this remittance? Reply to this email and reference the payment "
-            f"number above.",
+            "number above.",
             ParagraphStyle(
                 "footer",
                 parent=body,

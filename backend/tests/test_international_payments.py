@@ -206,7 +206,10 @@ async def test_prepare_refuses_sepa_without_valid_iban():
 
     with pytest.raises(InternationalPaymentError, match="IBAN"):
         await prepare_international_payment(
-            invoice=inv, vendor=vendor, org_home_currency="EUR", fx_adapter=fx,
+            invoice=inv,
+            vendor=vendor,
+            org_home_currency="EUR",
+            fx_adapter=fx,
         )
     fx.get_rate.assert_not_called()
 
@@ -222,7 +225,10 @@ async def test_prepare_refuses_intl_wire_without_valid_swift():
 
     with pytest.raises(InternationalPaymentError, match="SWIFT"):
         await prepare_international_payment(
-            invoice=inv, vendor=vendor, org_home_currency="USD", fx_adapter=fx,
+            invoice=inv,
+            vendor=vendor,
+            org_home_currency="USD",
+            fx_adapter=fx,
         )
     fx.get_rate.assert_not_called()
 
@@ -233,16 +239,24 @@ async def test_prepare_refuses_when_fx_provider_returns_zero_rate():
     DivisionByZero in source_amount computation — refuse the
     payment outright."""
     fx = MockFXAdapter()
-    fx.get_rate = AsyncMock(return_value=SimpleNamespace(
-        source="USD", target="EUR", rate=Decimal("0"),
-        as_of=datetime.now(UTC), provider="mock",
-    ))
+    fx.get_rate = AsyncMock(
+        return_value=SimpleNamespace(
+            source="USD",
+            target="EUR",
+            rate=Decimal("0"),
+            as_of=datetime.now(UTC),
+            provider="mock",
+        )
+    )
     inv = _invoice(currency="EUR")
     vendor = _vendor(iban=_VALID_DE_IBAN, swift=_VALID_DEUTSCHE_BIC, country="DE")
 
     with pytest.raises(InternationalPaymentError, match="non-positive rate"):
         await prepare_international_payment(
-            invoice=inv, vendor=vendor, org_home_currency="USD", fx_adapter=fx,
+            invoice=inv,
+            vendor=vendor,
+            org_home_currency="USD",
+            fx_adapter=fx,
         )
 
 
@@ -414,18 +428,22 @@ def _user():
 
 def _mock_db(*, run, payment, invoice, vendor_bank):
     """Build the execute-sequence the executor walks through:
-      1. run lookup
-      2. payments fan-out
-      3. per-payment invoice lookup
-      4. per-payment vendor.bank_details lookup (because the invoice
-         has a vendor_id)
+    1. run lookup
+    2. payments fan-out
+    3. per-payment invoice lookup
+    4. per-payment vendor.bank_details lookup (because the invoice
+       has a vendor_id)
     """
-    run_res = MagicMock(); run_res.scalar_one_or_none = MagicMock(return_value=run)
+    run_res = MagicMock()
+    run_res.scalar_one_or_none = MagicMock(return_value=run)
     pay_res = MagicMock()
-    pay_scalars = MagicMock(); pay_scalars.all = MagicMock(return_value=[payment])
+    pay_scalars = MagicMock()
+    pay_scalars.all = MagicMock(return_value=[payment])
     pay_res.scalars = MagicMock(return_value=pay_scalars)
-    inv_res = MagicMock(); inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
-    bank_res = MagicMock(); bank_res.scalar_one_or_none = MagicMock(return_value=vendor_bank)
+    inv_res = MagicMock()
+    inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
+    bank_res = MagicMock()
+    bank_res.scalar_one_or_none = MagicMock(return_value=vendor_bank)
 
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=[run_res, pay_res, inv_res, bank_res])
@@ -455,27 +473,35 @@ async def test_execute_payment_run_locks_fx_and_populates_intl_fields_for_eur_in
 
     adapter = MagicMock()
     adapter.provider_name = "mock"
-    adapter.create_payment = AsyncMock(return_value=SimpleNamespace(
-        success=True, status=PaymentStatus.completed,
-        provider_payment_id="prov_intl_1", reference="REF-1", failure_reason=None,
-    ))
+    adapter.create_payment = AsyncMock(
+        return_value=SimpleNamespace(
+            success=True,
+            status=PaymentStatus.completed,
+            provider_payment_id="prov_intl_1",
+            reference="REF-1",
+            failure_reason=None,
+        )
+    )
 
     captured_payload: dict = {}
+
     async def _capture(payload):
         captured_payload["payload"] = payload
-        return await adapter.create_payment.__wrapped__(payload) if hasattr(adapter.create_payment, "__wrapped__") else SimpleNamespace(
-            success=True, status=PaymentStatus.completed,
-            provider_payment_id="prov_intl_1", reference="REF-1", failure_reason=None,
+        return SimpleNamespace(
+            success=True,
+            status=PaymentStatus.completed,
+            provider_payment_id="prov_intl_1",
+            reference="REF-1",
+            failure_reason=None,
         )
+
     adapter.create_payment = AsyncMock(side_effect=_capture)
 
     with (
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
     ):
-        result = await execute_payment_run(
-            run_id=run.id, db=db, org=_org_with_fx_and_bank(), user=_user()
-        )
+        await execute_payment_run(run_id=run.id, db=db, org=_org_with_fx_and_bank(), user=_user())
 
     assert run.status == "completed"
     assert pay.status == "completed"
@@ -511,10 +537,15 @@ async def test_execute_payment_run_with_eur_home_org_and_de_invoice_uses_sepa():
 
     adapter = MagicMock()
     adapter.provider_name = "mock"
-    adapter.create_payment = AsyncMock(return_value=SimpleNamespace(
-        success=True, status=PaymentStatus.completed,
-        provider_payment_id="x", reference="r", failure_reason=None,
-    ))
+    adapter.create_payment = AsyncMock(
+        return_value=SimpleNamespace(
+            success=True,
+            status=PaymentStatus.completed,
+            provider_payment_id="x",
+            reference="r",
+            failure_reason=None,
+        )
+    )
 
     org = _org_with_fx_and_bank(home_currency="EUR")
     with (
@@ -553,7 +584,7 @@ async def test_execute_payment_run_fails_payment_when_orchestrator_rejects_bank_
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
     ):
-        result = await execute_payment_run(run_id=run.id, db=db, org=org, user=_user())
+        await execute_payment_run(run_id=run.id, db=db, org=org, user=_user())
 
     assert pay.status == "failed"
     assert "IBAN" in (pay.failure_reason or "")

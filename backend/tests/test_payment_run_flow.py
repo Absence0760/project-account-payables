@@ -121,7 +121,11 @@ def _mock_db(*, run, payments, invoice_by_id):
 
 
 def _org():
-    return SimpleNamespace(id=uuid.uuid4(), slug="acme", settings={"payments": {"provider": "mock"}})
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        slug="acme",
+        settings={"payments": {"provider": "mock"}},
+    )
 
 
 def _user():
@@ -133,9 +137,10 @@ def _adapter_returning(*statuses: PaymentStatus, failure_reason: str | None = No
     given PaymentStatus values, one per call."""
     adapter = MagicMock()
     adapter.provider_name = "mock"
+    in_flight_statuses = (PaymentStatus.submitted, PaymentStatus.processing)
     results = [
         SimpleNamespace(
-            success=(s == PaymentStatus.completed or s in (PaymentStatus.submitted, PaymentStatus.processing)),
+            success=(s == PaymentStatus.completed or s in in_flight_statuses),
             status=s,
             provider_payment_id=f"px_{i}",
             reference=f"REF-{i}",
@@ -171,9 +176,7 @@ async def test_run_rolls_up_to_completed_when_all_payments_settle_synchronously(
         ),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()) as mk_sync,
     ):
-        result = await execute_payment_run(
-            run_id=run.id, db=db, org=_org(), user=_user()
-        )
+        result = await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
 
     assert run.status == "completed"
     assert run.executed_at is not None
@@ -207,9 +210,7 @@ async def test_run_rolls_up_to_failed_when_every_payment_fails():
         ),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()) as mk_sync,
     ):
-        result = await execute_payment_run(
-            run_id=run.id, db=db, org=_org(), user=_user()
-        )
+        result = await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
 
     assert run.status == "failed"
     assert result["payments_failed"] == 2
@@ -239,9 +240,7 @@ async def test_run_rolls_up_to_partial_on_mixed_outcomes():
         ),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()) as mk_sync,
     ):
-        result = await execute_payment_run(
-            run_id=run.id, db=db, org=_org(), user=_user()
-        )
+        result = await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
 
     assert run.status == "partial"
     assert result["payments_completed"] == 1
@@ -271,9 +270,7 @@ async def test_run_rolls_up_to_submitted_when_payments_are_in_flight():
         ),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()) as mk_sync,
     ):
-        result = await execute_payment_run(
-            run_id=run.id, db=db, org=_org(), user=_user()
-        )
+        result = await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
 
     assert run.status == "submitted"
     assert result["payments_in_flight"] == 2

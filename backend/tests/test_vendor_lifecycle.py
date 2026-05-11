@@ -32,8 +32,14 @@ from app.services.vendor_matching import (
 )
 
 
-def _v(name: str, *, tax_id: str | None = None, address: str | None = None,
-       status: str = "active", source: str = "manual"):
+def _v(
+    name: str,
+    *,
+    tax_id: str | None = None,
+    address: str | None = None,
+    status: str = "active",
+    source: str = "manual",
+):
     return SimpleNamespace(
         id=uuid.uuid4(),
         name=name,
@@ -83,8 +89,18 @@ def test_normalize_strips_corporate_suffixes_consistently():
     normalize to the same key so they bucket together for fuzzy
     matching. A regression that misses a suffix variant under-counts
     matches and creates a duplicate vendor row."""
-    targets = ["Acme Inc", "ACME Inc.", "Acme LLC", "acme corp", "Acme Company",
-               "Acme Limited", "Acme Group", "Acme Co.", "Acme Co", "Acme Corp."]
+    targets = [
+        "Acme Inc",
+        "ACME Inc.",
+        "Acme LLC",
+        "acme corp",
+        "Acme Company",
+        "Acme Limited",
+        "Acme Group",
+        "Acme Co.",
+        "Acme Co",
+        "Acme Corp.",
+    ]
     keys = {_normalize(t) for t in targets}
     assert keys == {"acme"}, f"normalize did not collapse to one key: {keys}"
 

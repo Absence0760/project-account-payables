@@ -151,9 +151,9 @@ async def test_create_workflow_step_uses_canonical_step_number_from_step_types()
 @pytest.mark.parametrize(
     "alias,canonical_number",
     [
-        ("upload", 1),     # alias for extraction
-        ("review", 2),     # alias for approval
-        ("erp_push", 3),   # alias for erp_export
+        ("upload", 1),  # alias for extraction
+        ("review", 2),  # alias for approval
+        ("erp_push", 3),  # alias for erp_export
     ],
 )
 @pytest.mark.asyncio

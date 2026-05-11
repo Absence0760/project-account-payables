@@ -58,10 +58,10 @@ class CorridorChoice:
 # Fee anchors — order-of-magnitude estimates, not contracts. Used to
 # render a "≈ $X" badge on the payment screen so the AP team can pick.
 # Real fees come from the processor on settlement.
-_FEE_ACH = Decimal("0.0010")       # 0.1 %
+_FEE_ACH = Decimal("0.0010")  # 0.1 %
 _FEE_DOMESTIC_WIRE = Decimal("0.0050")
-_FEE_SEPA = Decimal("0.0005")      # ~free in practice
-_FEE_INTL_WIRE = Decimal("0.0250") # SWIFT correspondent banks add up
+_FEE_SEPA = Decimal("0.0005")  # ~free in practice
+_FEE_INTL_WIRE = Decimal("0.0250")  # SWIFT correspondent banks add up
 _FEE_RTP = Decimal("0.0020")
 
 

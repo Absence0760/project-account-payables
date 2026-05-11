@@ -56,15 +56,13 @@ def test_vendor_bank_details_schema_only_exposes_last_four():
         "country",
     }
     extra = fields - allowed
-    assert not extra, (
-        f"VendorBankDetails grew unfamiliar fields {extra}; review for PII leak"
-    )
+    assert not extra, f"VendorBankDetails grew unfamiliar fields {extra}; review for PII leak"
     # The forbidden full-detail names must NOT be present.
     forbidden = {
         "account_number",
         "routing_number",
-        "iban",            # full IBAN must never be exposed; iban_last4 is OK
-        "swift",           # legacy / ambiguous name; use swift_bic instead
+        "iban",  # full IBAN must never be exposed; iban_last4 is OK
+        "swift",  # legacy / ambiguous name; use swift_bic instead
         "full_account",
     }
     leak = fields & forbidden
@@ -184,17 +182,13 @@ async def test_card_issuance_logger_does_not_log_pan_on_adapter_failure(caplog):
         result = await issue_card_for_invoice(
             invoice=invoice,
             organization_id=uuid.uuid4(),
-            org_settings={
-                "cards": {"enabled": True, "program_type": "platform", "region": "US"}
-            },
+            org_settings={"cards": {"enabled": True, "program_type": "platform", "region": "US"}},
             app_settings=app_settings,
         )
 
     assert result.success is False
     for record in caplog.records:
-        assert fake_pan not in record.getMessage(), (
-            f"PAN leaked into log: {record.getMessage()}"
-        )
+        assert fake_pan not in record.getMessage(), f"PAN leaked into log: {record.getMessage()}"
 
 
 # ---------------------------------------------------------------------------

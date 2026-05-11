@@ -58,9 +58,7 @@ async def lifespan(app: FastAPI):
     if settings.approval_escalation_enabled:
         escalation_task = asyncio.create_task(run_escalation_loop(), name="approval-escalation")
     if settings.payment_reconcile_enabled:
-        reconciler_task = asyncio.create_task(
-            run_reconciler_loop(), name="payment-reconciler"
-        )
+        reconciler_task = asyncio.create_task(run_reconciler_loop(), name="payment-reconciler")
 
     try:
         yield

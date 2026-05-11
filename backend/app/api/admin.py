@@ -117,9 +117,7 @@ async def create_role(
     if not name:
         raise HTTPException(status_code=400, detail="Role name cannot be empty")
     if name in ALL_ROLES:
-        raise HTTPException(
-            status_code=400, detail=f"'{name}' is a reserved system role name"
-        )
+        raise HTTPException(status_code=400, detail=f"'{name}' is a reserved system role name")
     # Per-org uniqueness on (name, organization_id) — DB enforces it via
     # uq_roles_name_org, but we 409 explicitly so the UI can show a clean
     # message instead of an IntegrityError surfaced as 500.
@@ -149,9 +147,7 @@ async def update_role(
     description is mutable on custom roles too, since the name is
     referenced by approval-chain configs and changing it would break
     them."""
-    role = (
-        await db.execute(select(Role).where(Role.id == role_id))
-    ).scalar_one_or_none()
+    role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     if role.organization_id is None:
@@ -176,9 +172,7 @@ async def delete_role(
     """Delete a custom role. Refuses if any user still holds it (409 with
     `users_count`) so the operator can detach it first instead of leaving
     orphaned UserRole rows. System roles are protected."""
-    role = (
-        await db.execute(select(Role).where(Role.id == role_id))
-    ).scalar_one_or_none()
+    role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     if role.organization_id is None:
