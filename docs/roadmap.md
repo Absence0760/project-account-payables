@@ -239,15 +239,12 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 - [x] `execute_payment_run` dispatches via adapter; run status reflects rollup (`completed` / `partial` / `submitted` / `failed`)
 - [x] Vendor counterparty management UI — `Bank` action on the vendors grid opens a counterparty modal
 - [x] Reconciliation job — `services/payment_reconciler.py` sweeps every tenant on a timer, re-polls non-terminal payments, force-fails past `AP_PAYMENT_RECONCILE_MAX_AGE_HOURS`. Disabled by default in local dev.
-- [ ] Stripe Treasury / Increase / Column adapters (Modern Treasury covers the most demand)
-
-Connect to actual payment rails for non-card payments.
-
-- [ ] ACH integration (e.g., Dwolla, Plaid, or bank API)
-- [ ] Wire transfer integration
-- [ ] Check printing service (e.g., Checkeeper)
-- [ ] Payment status webhooks from processor
-- [ ] Bank reconciliation — import statements, auto-match
+- [x] Stripe Treasury / Increase / Column adapters — ACH + wire (Stripe Treasury, Increase, Column) via the same `@register_payment_adapter` pattern. Idempotency, HMAC webhooks with replay protection on Stripe + Increase (timestamped signatures), plain HMAC on Column.
+- [x] ACH integration — Dwolla adapter (OAuth client-credentials + token caching) for ACH-specialist orgs; ACH also available via Stripe Treasury / Increase / Column for orgs using their other rails too. Plaid bank-link is a separate concern (vendor onboarding, not payment origination) and remains pending.
+- [x] Wire transfer integration — Modern Treasury, Stripe Treasury, Increase, Column all support `method=wire`. Domestic and international (SWIFT) wires both flow through the same path (`international_wire` via the corridor picker).
+- [x] Check printing service — Checkeeper adapter (`method=check`): prints + mails physical checks. Mailing-address validation refuses checks without a valid US address before submitting.
+- [x] Payment status webhooks from processor — every adapter implements `parse_webhook` with HMAC signature verification + Redis-based event dedup (`services/webhook_security.py`). Stripe + Increase use timestamped signatures with 5-min replay protection.
+- [x] Bank reconciliation — import statements, auto-match. CSV importer (`services/bank_reconciliation.py::parse_csv_statement`) handles the common bank export formats; the matcher runs three strategies (provider_id → amount+date → fuzzy vendor) with confidence scores 100 / 80 / 50–70. Unmatched debits surface as exceptions. See `backend/docs/bank-reconciliation.md`.
 
 ---
 

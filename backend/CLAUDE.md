@@ -16,6 +16,7 @@ Deep-dive docs live in `backend/docs/`:
 | Workflow snapshot semantics | `docs/workflow-snapshots.md` |
 | Payment runs + ERP sync | `docs/payments.md` |
 | International payments (FX + SEPA + SWIFT) | `docs/international-payments.md` |
+| Bank reconciliation | `docs/bank-reconciliation.md` |
 | Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
 | PO matching (2-way / 3-way) | `docs/po-matching.md` |
 | Vendor management | `docs/vendor-management.md` |
@@ -211,7 +212,7 @@ class MyAdapter(PaymentAdapter):
     async def test_connection(self) -> bool: ...
 ```
 
-Registered: `mock`, `modern_treasury`.
+Registered: `mock`, `modern_treasury`, `stripe_treasury`, `increase`, `column`, `dwolla` (ACH only), `checkeeper` (check printing).
 
 `execute_payment_run` dispatches via the adapter; webhook handler at `/api/payments/webhook/{tenant_slug}/{provider}` drives the `submitted → completed/failed` transition. Tenant comes from the URL path (no JWT, no header). Idempotent on the payment's `correlation_id`.
 
