@@ -1,6 +1,8 @@
 """Dashboard aggregation endpoints — rich KPIs for the main page."""
 
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -15,6 +17,31 @@ from app.models.virtual_card import CardRebate
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+# Lightweight row shapes the analytics service expects. Defined at
+# module level so they're cheap to instantiate inside the endpoint
+# and trivial to mock in tests.
+@dataclass
+class SimpleNamespaceTimings:
+    id: object
+    created_at: datetime | None
+    approved_at: datetime | None
+    paid_at: datetime | None
+
+
+@dataclass
+class SimpleNamespaceStep:
+    assigned_to: object | None
+    created_at: datetime | None
+    assignee_name: str | None
+
+
+@dataclass
+class SimpleNamespaceDiscount:
+    discount_eligible: bool
+    discount_amount: Decimal
+    paid_before_discount_date: bool
 
 
 @router.get("")
@@ -166,6 +193,128 @@ async def get_dashboard(
         open_exceptions = 0
         await db.rollback()
 
+    # ----- Processing-time metrics ----------------------------------
+    # Avg + median + p95 from invoice creation to (a) approval (read
+    # from the audit_log row stamped on `invoice.approved`) and (b)
+    # completed payment (read from Payment.completed_at). Both legs
+    # collapse to 0 when the sample is below the min threshold (see
+    # `services/analytics.compute_processing_time_metrics`).
+    from app.models.workflow import AuditLog
+    from app.services.analytics import compute_processing_time_metrics
+
+    invoice_legs: list = []
+    try:
+        approval_rows = await db.execute(
+            select(AuditLog.entity_id, AuditLog.created_at).where(
+                AuditLog.entity_type == "invoice",
+                AuditLog.action == "invoice.approved",
+            )
+        )
+        approved_at_by_invoice = {row[0]: row[1] for row in approval_rows.all()}
+        paid_rows = await db.execute(
+            select(Payment.invoice_id, func.min(Payment.completed_at))
+            .where(Payment.status == "completed")
+            .group_by(Payment.invoice_id)
+        )
+        paid_at_by_invoice = {row[0]: row[1] for row in paid_rows.all() if row[1]}
+        inv_rows = await db.execute(select(Invoice.id, Invoice.created_at))
+        for inv_id, created in inv_rows.all():
+            invoice_legs.append(
+                SimpleNamespaceTimings(
+                    id=inv_id,
+                    created_at=created,
+                    approved_at=approved_at_by_invoice.get(inv_id),
+                    paid_at=paid_at_by_invoice.get(inv_id),
+                )
+            )
+    except Exception:  # noqa: BLE001
+        # Tenants without the audit_log shipping pipeline enabled can
+        # still see the rest of the dashboard. Surface zeros and a
+        # note in the response.
+        await db.rollback()
+        invoice_legs = []
+
+    pt = compute_processing_time_metrics(invoice_legs)
+
+    # ----- Approval bottleneck --------------------------------------
+    # Per-approver pending counts + oldest age + average age. Reads
+    # from WorkflowStep rows where step_type='approval' and
+    # completed_at IS NULL.
+    from app.models.workflow import WorkflowStep
+    from app.services.analytics import compute_approval_bottleneck
+
+    try:
+        step_rows = await db.execute(
+            select(
+                WorkflowStep.assigned_to,
+                WorkflowStep.created_at,
+            ).where(
+                WorkflowStep.step_type == "approval",
+                WorkflowStep.completed_at.is_(None),
+            )
+        )
+        pending_steps = [
+            SimpleNamespaceStep(
+                assigned_to=row[0],
+                created_at=row[1],
+                assignee_name=None,
+            )
+            for row in step_rows.all()
+        ]
+    except Exception:  # noqa: BLE001
+        await db.rollback()
+        pending_steps = []
+    bottleneck_rows = compute_approval_bottleneck(pending_steps)
+
+    # ----- Discount capture rate ------------------------------------
+    # Join Invoice → PaymentSchedule → Payment(completed). Eligible
+    # iff `discount_percent` is set; captured iff paid before
+    # discount_date. The fold itself is in analytics so the dashboard
+    # response stays JSON-thin.
+    from app.models.payment import PaymentSchedule
+    from app.services.analytics import compute_discount_capture
+
+    try:
+        sched_rows = await db.execute(
+            select(
+                Invoice.amount,
+                PaymentSchedule.discount_percent,
+                PaymentSchedule.discount_date,
+                func.min(Payment.completed_at).label("paid_at"),
+            )
+            .join(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+            .outerjoin(
+                Payment,
+                (Payment.invoice_id == Invoice.id) & (Payment.status == "completed"),
+            )
+            .where(PaymentSchedule.discount_percent.isnot(None))
+            .group_by(
+                Invoice.id,
+                Invoice.amount,
+                PaymentSchedule.discount_percent,
+                PaymentSchedule.discount_date,
+            )
+        )
+        discount_input = []
+        for amount, pct, ddate, paid_at in sched_rows.all():
+            discount_amt = (Decimal(str(amount)) * Decimal(str(pct)) / Decimal("100")).quantize(
+                Decimal("0.01")
+            )
+            paid_before = bool(
+                paid_at is not None and ddate is not None and paid_at.date() <= ddate
+            )
+            discount_input.append(
+                SimpleNamespaceDiscount(
+                    discount_eligible=True,
+                    discount_amount=discount_amt,
+                    paid_before_discount_date=paid_before,
+                )
+            )
+    except Exception:  # noqa: BLE001
+        await db.rollback()
+        discount_input = []
+    discount = compute_discount_capture(discount_input)
+
     return {
         "total_invoices": total_invoices or 0,
         "total_amount": float(total_amount),
@@ -180,4 +329,32 @@ async def get_dashboard(
         "aging": aging,
         "monthly_trend": monthly_trend,
         "upcoming_payments": upcoming,
+        "processing_time": {
+            "avg_upload_to_approval_days": float(pt.avg_upload_to_approval_days),
+            "median_upload_to_approval_days": float(pt.median_upload_to_approval_days),
+            "p95_upload_to_approval_days": float(pt.p95_upload_to_approval_days),
+            "avg_upload_to_paid_days": float(pt.avg_upload_to_paid_days),
+            "median_upload_to_paid_days": float(pt.median_upload_to_paid_days),
+            "p95_upload_to_paid_days": float(pt.p95_upload_to_paid_days),
+            "count_approval_leg": pt.count_approval_leg,
+            "count_paid_leg": pt.count_paid_leg,
+        },
+        "approval_bottleneck": [
+            {
+                "approver_id": r.approver_id,
+                "approver_name": r.approver_name,
+                "pending_count": r.pending_count,
+                "oldest_pending_days": float(r.oldest_pending_days),
+                "avg_pending_days": float(r.avg_pending_days),
+            }
+            for r in bottleneck_rows[:10]
+        ],
+        "discount_capture": {
+            "eligible_count": discount.eligible_count,
+            "captured_count": discount.captured_count,
+            "missed_count": discount.missed_count,
+            "captured_amount": float(discount.captured_amount),
+            "missed_amount": float(discount.missed_amount),
+            "capture_rate_pct": float(discount.capture_rate_pct),
+        },
     }
