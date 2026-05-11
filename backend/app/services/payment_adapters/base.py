@@ -93,6 +93,46 @@ class PaymentResult:
 
 
 @dataclass
+class CorridorQuote:
+    """Per-provider price quote for one payment.
+
+    Returned by `quote_payment` and aggregated by
+    `services.corridor_quotes.compare_quotes` to pick the
+    cheapest / fastest route across N enabled processors.
+
+    `flat_fee` and `pct_fee` together describe the fee structure:
+    total = flat_fee + amount * pct_fee. The aggregator computes the
+    realized total for a given amount and ranks. `eta_business_days`
+    is the processor's stated settlement SLA; the aggregator uses it
+    for the "fastest" tiebreaker.
+
+    `available` is the load-bearing field: an adapter that doesn't
+    support the requested (method, currency_pair, country) corridor
+    returns `available=False` so the aggregator skips it. The
+    `unavailable_reason` carries the why for debugging.
+    """
+
+    provider: str
+    method: str
+    available: bool
+    flat_fee: Decimal = Decimal("0")
+    pct_fee: Decimal = Decimal("0")
+    eta_business_days: int = 0
+    fx_rate: Decimal | None = None
+    unavailable_reason: str | None = None
+
+    def total_cost(self, amount: Decimal) -> Decimal:
+        """Realised cost in source currency for the given amount.
+
+        Unavailable corridors return Decimal("Infinity") so they
+        never win a min() comparison. We use the unbounded value
+        instead of None so callers don't have to filter twice."""
+        if not self.available:
+            return Decimal("Infinity")
+        return self.flat_fee + (amount * self.pct_fee)
+
+
+@dataclass
 class WebhookEvent:
     """Normalised representation of a webhook from the processor.
 
@@ -154,3 +194,37 @@ class PaymentAdapter:
         outcome on the audit row.
         """
         return False
+
+    async def quote_payment(self, payload: PaymentPayload) -> CorridorQuote:
+        """Return a price quote for this payment WITHOUT submitting it.
+
+        Used by `services.corridor_quotes.compare_quotes` to pick the
+        cheapest of N configured processors. Default implementation
+        reports `available=True` iff the payload's `method` is in
+        `supported_methods`, with zero fees — concrete adapters
+        override this with their real fee schedule + a live call to
+        the processor's quote endpoint (Wise, Tipalti) when available,
+        or a static fee table when not (Modern Treasury).
+
+        Adapters that genuinely can't quote (no static table, no
+        live endpoint) MUST return `CorridorQuote(available=False,
+        unavailable_reason="no_quote_endpoint")` so the aggregator
+        falls back to the next provider.
+        """
+        if payload.method not in self.supported_methods:
+            return CorridorQuote(
+                provider=self.provider_name,
+                method=payload.method,
+                available=False,
+                unavailable_reason=(
+                    f"method '{payload.method}' not supported by {self.provider_name}"
+                ),
+            )
+        return CorridorQuote(
+            provider=self.provider_name,
+            method=payload.method,
+            available=True,
+            flat_fee=Decimal("0"),
+            pct_fee=Decimal("0"),
+            eta_business_days=0,
+        )

@@ -4,6 +4,7 @@
 from app.services.payment_adapters import mock_adapter as _mock  # noqa: F401
 from app.services.payment_adapters import modern_treasury as _modern_treasury  # noqa: F401
 from app.services.payment_adapters.base import (
+    CorridorQuote,
     PaymentAdapter,
     PaymentPayload,
     PaymentResult,
@@ -17,6 +18,7 @@ from app.services.payment_adapters.dispatcher import (
 )
 
 __all__ = [
+    "CorridorQuote",
     "PaymentAdapter",
     "PaymentPayload",
     "PaymentResult",

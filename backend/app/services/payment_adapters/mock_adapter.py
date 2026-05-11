@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from app.services.payment_adapters.base import (
+    CorridorQuote,
     PaymentAdapter,
     PaymentPayload,
     PaymentResult,
@@ -26,7 +28,71 @@ from app.services.payment_adapters.dispatcher import register_payment_adapter
 @register_payment_adapter("mock")
 class MockPaymentAdapter(PaymentAdapter):
     provider_name = "mock"
-    supported_methods = ("ach", "wire", "check", "rtp", "virtual_card")
+    supported_methods = (
+        "ach",
+        "wire",
+        "check",
+        "rtp",
+        "virtual_card",
+        "sepa",
+        "international_wire",
+        "international_ach",
+    )
+
+    # Default fee schedule baked in so the quote optimizer has
+    # something deterministic to rank. Tests can override via the
+    # adapter config: `{"provider": "mock", "fees": {"ach": "0.0050"}}`.
+    _DEFAULT_FEES: dict[str, Decimal] = {
+        "ach": Decimal("0.0010"),
+        "wire": Decimal("0.0050"),
+        "rtp": Decimal("0.0020"),
+        "check": Decimal("0"),
+        "sepa": Decimal("0.0005"),
+        "international_ach": Decimal("0.0080"),
+        "international_wire": Decimal("0.0250"),
+        "virtual_card": Decimal("0"),
+    }
+    _DEFAULT_ETA_DAYS: dict[str, int] = {
+        "ach": 2,
+        "wire": 0,
+        "rtp": 0,
+        "check": 5,
+        "sepa": 1,
+        "international_ach": 3,
+        "international_wire": 1,
+        "virtual_card": 0,
+    }
+
+    async def quote_payment(self, payload: PaymentPayload) -> CorridorQuote:
+        """Return a deterministic quote so the optimizer has data.
+
+        Honors `self.config["fees"]` / `self.config["eta_days"]` so a
+        test can inject "this mock is the cheapest" / "this mock is
+        the fastest" without subclassing. Methods not in
+        `supported_methods` come back unavailable."""
+        if payload.method not in self.supported_methods:
+            return CorridorQuote(
+                provider=self.provider_name,
+                method=payload.method,
+                available=False,
+                unavailable_reason=f"method '{payload.method}' not supported by mock",
+            )
+        fees_override = self.config.get("fees") or {}
+        eta_override = self.config.get("eta_days") or {}
+        # Per-config overrides win; otherwise use the baked defaults.
+        default_pct = self._DEFAULT_FEES.get(payload.method, Decimal("0"))
+        pct = fees_override.get(payload.method, default_pct)
+        default_eta = self._DEFAULT_ETA_DAYS.get(payload.method, 0)
+        eta = eta_override.get(payload.method, default_eta)
+        return CorridorQuote(
+            provider=self.provider_name,
+            method=payload.method,
+            available=True,
+            flat_fee=Decimal("0"),
+            pct_fee=Decimal(str(pct)),
+            eta_business_days=int(eta),
+            fx_rate=payload.fx_rate,
+        )
 
     async def create_payment(self, payload: PaymentPayload) -> PaymentResult:
         # Mock always settles immediately. Real processors take seconds to
