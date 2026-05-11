@@ -1,0 +1,387 @@
+"""Analytics service — pure-function computations.
+
+Each metric in `services/analytics.py` is a self-contained pure
+function so it can be unit-tested without a DB. The math itself is
+the load-bearing piece: a misread DPO number lands on the CFO's
+board deck unchallenged.
+
+Pins:
+  - processing_time bands collapse to 0 below the min-sample
+    threshold (no wild "avg = 17.3 days" from a 2-row sample)
+  - approval_bottleneck rolls up by approver_id, sorts by
+    pending_count desc, surfaces an `"unassigned"` synthetic key
+    when assigned_to is null
+  - discount_capture handles empty input (no eligible rows → 0%
+    rate, NOT a ZeroDivisionError)
+  - DPO formula AP/COGS×days; zero COGS → 0 (defensive)
+  - cash_conversion_cycle returns None when DSO/DIO unavailable
+  - working_capital_impact is monotone in days_extended
+  - supplier_concentration flags only when largest > threshold;
+    empty / zero-total inputs are zero-snapshots, never 500s
+  - fraud_rate_trend reads invoice_count + exception_count into
+    rate_pct; zero invoices → 0 (not divide-by-zero)
+  - rebate_yield exposes annualised run-rate scaled from the
+    period (months_in_period normaliser)
+  - forecast_variance sign convention: positive = paid out more
+    than forecast
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+
+from app.services.analytics import (
+    compute_accruals,
+    compute_approval_bottleneck,
+    compute_cash_conversion_cycle,
+    compute_discount_capture,
+    compute_dpo,
+    compute_dpo_trend,
+    compute_forecast_variance,
+    compute_fraud_rate_trend,
+    compute_processing_time_metrics,
+    compute_rebate_yield,
+    compute_supplier_concentration,
+    compute_working_capital_impact,
+)
+
+# ---------------------------------------------------------------------------
+# Processing time
+# ---------------------------------------------------------------------------
+
+
+def _inv(created, approved=None, paid=None):
+    return SimpleNamespace(created_at=created, approved_at=approved, paid_at=paid)
+
+
+def test_processing_time_collapses_to_zero_below_min_sample():
+    """Two invoices is too small a sample — return zeros rather
+    than a noisy "avg=11.7 days" derived from one outlier."""
+    base = datetime(2026, 5, 1, tzinfo=UTC)
+    invs = [
+        _inv(base, base + timedelta(days=1), base + timedelta(days=5)),
+        _inv(base, base + timedelta(days=12), base + timedelta(days=20)),
+    ]
+    pt = compute_processing_time_metrics(invs)
+    assert pt.avg_upload_to_approval_days == Decimal("0")
+    assert pt.p95_upload_to_paid_days == Decimal("0")
+    assert pt.count_approval_leg == 2  # sample size still reported
+    assert pt.count_paid_leg == 2
+
+
+def test_processing_time_reports_avg_median_p95_above_threshold():
+    """Five-row sample at the threshold — metrics populate. Verify
+    avg / median / p95 against a known distribution."""
+    base = datetime(2026, 5, 1, tzinfo=UTC)
+    # Approval lags: 1, 2, 3, 4, 5 days (avg 3, median 3, p95 ~4.8)
+    invs = [_inv(base, base + timedelta(days=d), paid=None) for d in (1, 2, 3, 4, 5)]
+    pt = compute_processing_time_metrics(invs)
+    assert pt.count_approval_leg == 5
+    assert pt.avg_upload_to_approval_days == Decimal("3.0")
+    assert pt.median_upload_to_approval_days == Decimal("3.0")
+    # p95 of [1..5] sits between 4 and 5; linear interpolation gives 4.8.
+    assert pt.p95_upload_to_approval_days == Decimal("4.8")
+
+
+def test_processing_time_paid_leg_independent_of_approval_leg():
+    """Some invoices approved, fewer paid — counts differ; only
+    rows with both timestamps contribute to the paid leg."""
+    base = datetime(2026, 5, 1, tzinfo=UTC)
+    invs = [
+        _inv(base, base + timedelta(days=1), base + timedelta(days=5)),
+        _inv(base, base + timedelta(days=1), base + timedelta(days=5)),
+        _inv(base, base + timedelta(days=1), base + timedelta(days=5)),
+        _inv(base, base + timedelta(days=1), base + timedelta(days=5)),
+        _inv(base, base + timedelta(days=2), None),  # approved not paid
+    ]
+    pt = compute_processing_time_metrics(invs)
+    assert pt.count_approval_leg == 5
+    assert pt.count_paid_leg == 4
+
+
+# ---------------------------------------------------------------------------
+# Approval bottleneck
+# ---------------------------------------------------------------------------
+
+
+def _step(assigned_to, age_days, name=None):
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+    return SimpleNamespace(
+        assigned_to=assigned_to,
+        assignee_name=name,
+        created_at=now - timedelta(days=age_days),
+    )
+
+
+def test_approval_bottleneck_rolls_up_per_approver():
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+    steps = [
+        _step("alice", 2, name="Alice"),
+        _step("alice", 4, name="Alice"),
+        _step("bob", 1, name="Bob"),
+    ]
+    rows = compute_approval_bottleneck(steps, now=now)
+    by_id = {r.approver_id: r for r in rows}
+    assert by_id["alice"].pending_count == 2
+    assert by_id["alice"].oldest_pending_days == Decimal("4.0")
+    assert by_id["alice"].avg_pending_days == Decimal("3.0")
+    assert by_id["bob"].pending_count == 1
+    # Sort: alice wins on count.
+    assert rows[0].approver_id == "alice"
+
+
+def test_approval_bottleneck_groups_unassigned_under_synthetic_key():
+    """Unassigned steps roll under the `unassigned` key — surfacing
+    them is its own routing-broken signal."""
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+    steps = [_step(None, 3), _step(None, 5)]
+    rows = compute_approval_bottleneck(steps, now=now)
+    assert len(rows) == 1
+    assert rows[0].approver_id == "unassigned"
+    assert rows[0].pending_count == 2
+
+
+def test_approval_bottleneck_empty_input_returns_empty_list():
+    assert compute_approval_bottleneck([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Discount capture
+# ---------------------------------------------------------------------------
+
+
+def _disc(eligible, amount, paid_before):
+    return SimpleNamespace(
+        discount_eligible=eligible,
+        discount_amount=amount,
+        paid_before_discount_date=paid_before,
+    )
+
+
+def test_discount_capture_counts_eligible_and_captured():
+    rows = [
+        _disc(True, Decimal("100"), True),
+        _disc(True, Decimal("50"), False),
+        _disc(False, Decimal("999"), False),  # ineligible — skipped
+    ]
+    d = compute_discount_capture(rows)
+    assert d.eligible_count == 2
+    assert d.captured_count == 1
+    assert d.missed_count == 1
+    assert d.captured_amount == Decimal("100.00")
+    assert d.missed_amount == Decimal("50.00")
+    assert d.capture_rate_pct == Decimal("50.0")
+
+
+def test_discount_capture_empty_returns_zero_rate_not_zero_division():
+    """Zero eligible → 0% rate, not a 500."""
+    d = compute_discount_capture([])
+    assert d.eligible_count == 0
+    assert d.capture_rate_pct == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# DPO
+# ---------------------------------------------------------------------------
+
+
+def test_dpo_basic_formula():
+    """AP $100k, COGS $1M, 365-day period → 36.5 days payable."""
+    assert compute_dpo(
+        accounts_payable=Decimal("100000"),
+        cogs=Decimal("1000000"),
+        period_days=365,
+    ) == Decimal("36.5")
+
+
+def test_dpo_zero_cogs_returns_zero_not_divide_by_zero():
+    assert compute_dpo(accounts_payable=Decimal("100000"), cogs=Decimal("0")) == Decimal("0")
+
+
+def test_dpo_trend_appends_dpo_per_row():
+    snapshots = [
+        {"month": "2026-04", "accounts_payable": Decimal("20000"), "cogs": Decimal("200000")},
+        {"month": "2026-05", "accounts_payable": Decimal("30000"), "cogs": Decimal("200000")},
+    ]
+    out = compute_dpo_trend(snapshots, period_days=30)
+    # (20000 / 200000) * 30 = 3.0; (30000 / 200000) * 30 = 4.5
+    assert out[0]["dpo"] == Decimal("3.0")
+    assert out[1]["dpo"] == Decimal("4.5")
+
+
+# ---------------------------------------------------------------------------
+# Cash conversion cycle
+# ---------------------------------------------------------------------------
+
+
+def test_ccc_returns_none_when_dso_or_dio_missing():
+    """AP-only product — no DSO/DIO data → None, not a misleading
+    zero."""
+    assert (
+        compute_cash_conversion_cycle(dso_days=None, dio_days=Decimal("40"), dpo_days=Decimal("36"))
+        is None
+    )
+    assert (
+        compute_cash_conversion_cycle(dso_days=Decimal("45"), dio_days=None, dpo_days=Decimal("36"))
+        is None
+    )
+
+
+def test_ccc_combines_three_legs():
+    """DSO 45 + DIO 40 − DPO 36 = 49 days."""
+    assert compute_cash_conversion_cycle(
+        dso_days=Decimal("45"), dio_days=Decimal("40"), dpo_days=Decimal("36")
+    ) == Decimal("49.0")
+
+
+# ---------------------------------------------------------------------------
+# Accruals
+# ---------------------------------------------------------------------------
+
+
+def test_accruals_subtracts_unposted_invoices():
+    """open_po + received − unposted = total_accrual. Order of
+    operations matters; pin it."""
+    a = compute_accruals(
+        open_po_amount=Decimal("50000"),
+        received_amount=Decimal("10000"),
+        unposted_invoice_amount=Decimal("8000"),
+    )
+    assert a.total_accrual == Decimal("52000.00")
+
+
+# ---------------------------------------------------------------------------
+# Working-capital impact
+# ---------------------------------------------------------------------------
+
+
+def test_working_capital_impact_monotone_in_days_extended():
+    """Extending 10 days unlocks 2× the cash of extending 5 days."""
+    base = compute_working_capital_impact(avg_daily_outflow=Decimal("1000"), days_extended=5)
+    doubled = compute_working_capital_impact(avg_daily_outflow=Decimal("1000"), days_extended=10)
+    assert doubled == base * Decimal("2")
+
+
+def test_working_capital_impact_zero_or_negative_returns_zero():
+    assert compute_working_capital_impact(
+        avg_daily_outflow=Decimal("1000"), days_extended=0
+    ) == Decimal("0")
+    assert compute_working_capital_impact(
+        avg_daily_outflow=Decimal("0"), days_extended=10
+    ) == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Supplier concentration
+# ---------------------------------------------------------------------------
+
+
+def test_supplier_concentration_flags_when_top_vendor_exceeds_threshold():
+    rows = [
+        {"vendor": "Big Vendor", "amount": Decimal("700000")},
+        {"vendor": "Small Vendor", "amount": Decimal("300000")},
+    ]
+    c = compute_supplier_concentration(rows)
+    # Top vendor share is 70% — well over the default 25% threshold.
+    assert c.flagged is True
+    assert c.largest_vendor == "Big Vendor"
+    assert c.largest_vendor_share_pct == Decimal("70.0")
+
+
+def test_supplier_concentration_no_flag_when_diversified():
+    rows = [{"vendor": f"V{i}", "amount": Decimal("10000")} for i in range(20)]
+    c = compute_supplier_concentration(rows)
+    assert c.flagged is False
+    # Top 10 of 20 equal vendors → exactly 50% share.
+    assert c.top_10_share_pct == Decimal("50.0")
+
+
+def test_supplier_concentration_empty_input_safe():
+    c = compute_supplier_concentration([])
+    assert c.total_spend == Decimal("0")
+    assert c.flagged is False
+    assert c.largest_vendor is None
+
+
+def test_supplier_concentration_zero_total_safe():
+    """Vendors listed but with zero amounts → don't divide by zero."""
+    rows = [{"vendor": "A", "amount": Decimal("0")}]
+    c = compute_supplier_concentration(rows)
+    assert c.total_spend == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Fraud rate trend
+# ---------------------------------------------------------------------------
+
+
+def test_fraud_rate_trend_zero_invoices_safe():
+    """One month had zero invoices — rate is 0, not divide-by-zero."""
+    rows = [{"month": "2026-05", "invoice_count": 0, "exception_count": 0}]
+    out = compute_fraud_rate_trend(rows)
+    assert out[0]["rate_pct"] == Decimal("0")
+
+
+def test_fraud_rate_trend_computes_rate_per_month():
+    rows = [
+        {"month": "2026-04", "invoice_count": 100, "exception_count": 5},
+        {"month": "2026-05", "invoice_count": 200, "exception_count": 20},
+    ]
+    out = compute_fraud_rate_trend(rows)
+    assert out[0]["rate_pct"] == Decimal("5.0")
+    assert out[1]["rate_pct"] == Decimal("10.0")
+
+
+# ---------------------------------------------------------------------------
+# Rebate yield
+# ---------------------------------------------------------------------------
+
+
+def test_rebate_yield_basic_share_and_annualised():
+    y = compute_rebate_yield(
+        rebates_total=Decimal("5000"),
+        total_spend=Decimal("500000"),
+        months_in_period=6,
+    )
+    # 5000 / 500000 × 100 = 1.0%
+    assert y["yield_pct"] == Decimal("1.00")
+    # Annualised: rebates × 12/months = 5000 × 2 = 10000
+    assert y["annualised_rebates"] == Decimal("10000.00")
+
+
+def test_rebate_yield_zero_spend_returns_zero():
+    y = compute_rebate_yield(
+        rebates_total=Decimal("0"),
+        total_spend=Decimal("0"),
+    )
+    assert y["yield_pct"] == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Forecast variance
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_variance_positive_when_actual_exceeds_forecast():
+    """Forecast $100k, actual $120k → +$20k variance, +20%."""
+    out = compute_forecast_variance(
+        [{"month": "2026-05", "forecast": "100000", "actual": "120000"}]
+    )
+    assert out[0]["variance"] == Decimal("20000.00")
+    assert out[0]["variance_pct"] == Decimal("20.0")
+
+
+def test_forecast_variance_negative_when_under_budget():
+    out = compute_forecast_variance([{"month": "2026-05", "forecast": "100000", "actual": "80000"}])
+    assert out[0]["variance"] == Decimal("-20000.00")
+    assert out[0]["variance_pct"] == Decimal("-20.0")
+
+
+def test_forecast_variance_zero_forecast_returns_zero_pct():
+    """Zero forecast — variance computes (just the actual), but
+    variance_pct returns 0 (avoid divide-by-zero)."""
+    out = compute_forecast_variance([{"month": "2026-05", "forecast": "0", "actual": "5000"}])
+    assert out[0]["variance"] == Decimal("5000.00")
+    assert out[0]["variance_pct"] == Decimal("0")
