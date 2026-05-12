@@ -5,7 +5,8 @@ import {
 	ACME_BASE,
 	ACME_CFO,
 	ACME_CLERK,
-	ACME_MANAGER
+	ACME_MANAGER,
+	escapeRegExp
 } from '../fixtures/helpers';
 
 /**
@@ -39,7 +40,7 @@ async function tokenAfterLogin(
 	await page.locator('input[type="email"]').fill(creds.email);
 	await page.locator('input[type="password"]').fill(creds.password);
 	await page.locator('form button[type="submit"]').click();
-	await page.waitForURL(new RegExp(`^${ACME_BASE.replace(/[/]/g, '\\/')}/?$`), {
+	await page.waitForURL(new RegExp(`^${escapeRegExp(ACME_BASE)}/?$`), {
 		timeout: 15_000
 	});
 	const token = await page.evaluate(() => localStorage.getItem('auth_token'));

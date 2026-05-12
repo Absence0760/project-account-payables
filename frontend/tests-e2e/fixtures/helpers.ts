@@ -34,6 +34,11 @@ export const ACME_BASE = 'http://acme.localhost:7777';
 export const TECHFLOW_BASE = 'http://techflow.localhost:7777';
 export const NO_TENANT_BASE = 'http://localhost:7777';
 
+/** Escape every regex metacharacter so a literal URL can be embedded in a RegExp. */
+export function escapeRegExp(input: string): string {
+	return input.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
 /**
  * Drive the email-password sign-in form on the seeded `acme` tenant.
  * The frontend's tenant resolution requires hitting an `<slug>.localhost`

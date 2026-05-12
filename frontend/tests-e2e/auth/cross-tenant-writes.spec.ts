@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import {
 	ACME_ADMIN,
 	ACME_BASE,
+	escapeRegExp,
 	signInAndWait,
 	TECHFLOW_ADMIN,
 	TECHFLOW_BASE
@@ -33,7 +34,7 @@ async function tokenAfterLogin(
 	await page.locator('input[type="email"]').fill(creds.email);
 	await page.locator('input[type="password"]').fill(creds.password);
 	await page.locator('form button[type="submit"]').click();
-	await page.waitForURL(new RegExp(`^${baseURL.replace(/[/]/g, '\\/')}/?$`), { timeout: 15_000 });
+	await page.waitForURL(new RegExp(`^${escapeRegExp(baseURL)}/?$`), { timeout: 15_000 });
 	const token = await page.evaluate(() => localStorage.getItem('auth_token'));
 	if (!token) throw new Error('expected auth_token after sign-in');
 	return token;
