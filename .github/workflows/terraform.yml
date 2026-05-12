@@ -1,0 +1,98 @@
+name: Terraform
+
+# Guards the `infra/` stack against three classes of regression:
+#   1. `terraform fmt` drift — keeps the formatter idempotent so the
+#      PR diff is the real change, not whitespace churn.
+#   2. `terraform validate` — syntax + provider-version + ref-shape
+#      checks. Doesn't touch state (we pass `-backend=false`), so the
+#      check can run without AWS credentials.
+#   3. Trivy IaC mode — known-bad patterns (public S3 buckets, IAM
+#      `Action: *`, security-group 0.0.0.0/0 ingress, etc.). Cheaper
+#      to surface in CI than discover after `terraform apply`. Trivy
+#      is reused from the security workflow so we don't introduce a
+#      second IaC scanner; the same SARIF flows to the Security tab.
+#
+# Runs on every PR that touches `infra/` and on every push to main.
+# Doesn't run on docs-only edits — the path filter below scopes it.
+#
+# The stack today is a single flat module at `infra/` (KMS key + S3
+# buckets for invoices + audit-log Object Lock + variables). When the
+# rest of `docs/production-deployment.md` lands (ECS, ALB, CloudFront,
+# RDS), break those into per-env stacks and convert the single-step
+# below into a matrix, mirroring project-running's pattern.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/terraform.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/terraform.yml'
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  fmt-validate:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          # Matches the `>= 1.6` floor pinned in `infra/main.tf`. Bump
+          # in lockstep when the floor moves. terraform_wrapper=false
+          # so the raw exit codes propagate to the job status.
+          terraform_version: '1.13.0'
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        working-directory: infra
+        run: terraform fmt -check -diff
+
+      - name: terraform init (backend=false)
+        working-directory: infra
+        # `-backend=false` skips the S3 state lookup — `validate`
+        # doesn't need it, and we don't want to give CI write access
+        # to the prod state bucket just to run a syntax check.
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        working-directory: infra
+        run: terraform validate -no-color
+
+  trivy-iac:
+    name: Trivy IaC scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          # `scan-type: config` runs the IaC ruleset across HCL / yaml
+          # / json (so it picks up the workflows too, harmlessly).
+          # Trivy bundles tfsec-derived checks so we get the same
+          # coverage without standing up tfsec separately.
+          scan-type: config
+          scan-ref: infra
+          format: sarif
+          output: trivy-iac.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+
+      - name: Upload Trivy IaC SARIF
+        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4
+        if: always()
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac

@@ -41,3 +41,15 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+
+  - package-ecosystem: terraform
+    directory: /infra
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      terraform-minor-patch:
+        update-types:
+          - minor
+          - patch
