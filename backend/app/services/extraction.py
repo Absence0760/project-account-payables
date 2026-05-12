@@ -70,10 +70,7 @@ async def run_extraction(
         from app.services.extraction_adapters import get_extraction_adapter
 
         adapter = get_extraction_adapter(config)
-        print(
-            f"[extraction] Using adapter: {adapter.provider_name}, "
-            f"config provider: {config.get('provider')}"
-        )
+        print(f"[extraction] Using adapter: {adapter.provider_name}")
 
         # Fetch file bytes from S3/MinIO directly (authenticated)
         import boto3 as _boto3

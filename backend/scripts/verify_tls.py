@@ -42,6 +42,9 @@ def _check_tls_handshake(host: str, port: int) -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     # Default context verifies the chain and hostname. A self-signed cert
     # or mismatched SAN raises ssl.SSLCertVerificationError here.
+    # Pin the minimum protocol version to TLS 1.2 — TLS 1.0/1.1 are deprecated
+    # by RFC 8996 and disallowed by every browser and modern compliance regime.
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
         with socket.create_connection((host, port), timeout=10) as raw:
             with ctx.wrap_socket(raw, server_hostname=host) as tls:

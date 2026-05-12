@@ -58,8 +58,10 @@ router = APIRouter(prefix="/signup", tags=["signup"])
 
 # Very permissive shape check — the real validation is the verification email
 # round-trip. Rejects obvious garbage (no @, trailing dots) and keeps us from
-# adding the email-validator dep.
-_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+# adding the email-validator dep. Domain side uses non-dot character classes
+# delimited by literal dots so the engine doesn't backtrack catastrophically
+# on adversarial inputs (avoids the polynomial-redos pattern).
+_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$")
 
 VERIFICATION_TTL = timedelta(hours=24)
 

@@ -211,7 +211,7 @@ def test_ses_adapter_parses_mime():
     parsed = parser(body, {})
 
     assert parsed is not None
-    assert parsed.sender.endswith("vendor.com")
+    assert parsed.sender == "ap@vendor.com"
     assert "invoices+tok@ap.example.com" in parsed.to
     pdfs = [a for a in parsed.attachments if a.content_type == "application/pdf"]
     assert len(pdfs) == 1

@@ -45,7 +45,8 @@ async def main():
     print(f"\nTenant '{args.slug}' is ready!")
     print(f"  Database:    {result.db_name}")
     print(f"  Login at:    http://{args.slug}.localhost:7777")
-    print(f"  Credentials: {args.admin_email} / {args.admin_password}")
+    print(f"  Login email: {args.admin_email}")
+    print("  Password:    (the one you supplied via --admin-password)")
 
     await control_engine.dispose()
 

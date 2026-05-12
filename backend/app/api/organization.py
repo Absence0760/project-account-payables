@@ -1,5 +1,7 @@
 """Organization settings endpoints."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,8 @@ from app.schemas.organization import (
 )
 from app.services.sso import generate_scim_token
 from app.tenant import get_tenant
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/organization", tags=["organization"])
 
@@ -114,8 +118,9 @@ async def test_erp_connection(
             }
         else:
             return {"success": False, "message": "Connection failed — check your credentials"}
-    except Exception as exc:
-        return {"success": False, "message": str(exc)}
+    except Exception:
+        logger.exception("ERP test_connection failed")
+        return {"success": False, "message": "Connection failed — check your credentials"}
 
 
 @router.post("/sso/scim-token", response_model=SCIMTokenResponse)
@@ -182,8 +187,9 @@ async def test_payment_connection(
                 ),
             }
         return {"success": False, "message": "Connection failed — check your configuration"}
-    except Exception as exc:
-        return {"success": False, "message": str(exc)}
+    except Exception:
+        logger.exception("Payments test_connection failed")
+        return {"success": False, "message": "Connection failed — check your configuration"}
 
 
 @router.post("/test-extraction")
@@ -222,5 +228,6 @@ async def test_extraction_connection(
                     ),
                 }
             return {"success": False, "message": "Connection failed — check your configuration"}
-    except Exception as exc:
-        return {"success": False, "message": str(exc)}
+    except Exception:
+        logger.exception("Extraction test_connection failed")
+        return {"success": False, "message": "Connection failed — check your configuration"}

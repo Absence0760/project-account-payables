@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -109,6 +110,23 @@ async def sso_authorize(slug: str, db: AsyncSession = Depends(get_control_db)):
     discovery = await fetch_discovery(config.discovery_url)
     state, nonce = await create_state(slug)
     url = build_authorize_url(discovery, config.client_id, state, nonce, slug)
+
+    # Defence in depth: the authorize_endpoint comes from the IdP's discovery
+    # doc, which the tenant admin configured. Reject a discovery doc that
+    # tries to send the user to a different host than the configured IdP, so
+    # a compromised / mis-served discovery URL can't pivot the redirect to
+    # an attacker-controlled domain.
+    discovery_host = urlparse(config.discovery_url).hostname
+    redirect_host = urlparse(url).hostname
+    if not discovery_host or redirect_host != discovery_host:
+        logger.warning(
+            "SSO authorize: discovery host %r does not match authorize host %r for slug %s",
+            discovery_host,
+            redirect_host,
+            slug,
+        )
+        raise HTTPException(status_code=400, detail="SSO is not configured correctly.")
+
     return RedirectResponse(url, status_code=302)
 
 
