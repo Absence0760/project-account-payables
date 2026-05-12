@@ -37,3 +37,14 @@ variable "audit_retention_days" {
   type        = number
   default     = 2555
 }
+
+variable "access_logs_bucket_name" {
+  description = "S3 bucket that aggregates server-access logs from the invoice + audit-log buckets. Required by AWS-0089 / SOC 2 CC7.2 — every data-bearing bucket must have access logging enabled."
+  type        = string
+}
+
+variable "access_logs_retention_days" {
+  description = "Lifecycle expiration (days) for objects in the access-logs bucket. 365d covers a full audit cycle without the storage cost of indefinite retention; access logs are signal-of-access, not the audit trail itself (that's the Object Lock bucket)."
+  type        = number
+  default     = 365
+}

@@ -4,6 +4,12 @@ on:
   release:
     types: [published]
 
+# Default to read-only. Jobs that need to publish to Pages elevate
+# at the job level (`pages: write` + `id-token: write` for the
+# Pages deployment); the mobile build jobs stay read-only.
+permissions:
+  contents: read
+
 jobs:
   frontend:
     name: Deploy Frontend to GitHub Pages
@@ -22,15 +28,15 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@739bfe42ca9233c5e6aca07c1a25a9d34aca49b0 # v6.0.2
         with:
           version: 9
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
         with:
           node-version: 20
           cache: pnpm
@@ -48,13 +54,13 @@ jobs:
           touch build/.nojekyll
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: frontend/build/
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
 
   mobile-android:
     name: Build Android APK
@@ -65,10 +71,10 @@ jobs:
         working-directory: mobile
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.1
         with:
           channel: stable
           cache: true
@@ -80,7 +86,7 @@ jobs:
         run: flutter build apk --release
 
       - name: Upload APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: android-apk-${{ github.event.release.tag_name }}
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
@@ -94,10 +100,10 @@ jobs:
         working-directory: mobile
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.1
         with:
           channel: stable
           cache: true

@@ -116,13 +116,22 @@ async def sso_authorize(slug: str, db: AsyncSession = Depends(get_control_db)):
     # tries to send the user to a different host than the configured IdP, so
     # a compromised / mis-served discovery URL can't pivot the redirect to
     # an attacker-controlled domain.
-    discovery_host = urlparse(config.discovery_url).hostname
-    redirect_host = urlparse(url).hostname
-    if not discovery_host or redirect_host != discovery_host:
+    #
+    # We require the redirect target to start with the same scheme+host as
+    # the configured discovery URL. `startswith` over a `scheme://host/`
+    # prefix is the sanitizer pattern CodeQL's py/url-redirection query
+    # recognises — a hostname-equality check alone (parsed.hostname == x)
+    # is not strong enough to wash the data-flow taint, even though it's
+    # semantically equivalent.
+    discovery_parsed = urlparse(config.discovery_url)
+    if not discovery_parsed.scheme or not discovery_parsed.netloc:
+        raise HTTPException(status_code=400, detail="SSO is not configured correctly.")
+    allowed_prefix = f"{discovery_parsed.scheme}://{discovery_parsed.netloc}/"
+    if not url.startswith(allowed_prefix):
         logger.warning(
-            "SSO authorize: discovery host %r does not match authorize host %r for slug %s",
-            discovery_host,
-            redirect_host,
+            "SSO authorize: authorize URL %r is not under discovery host %r for slug %s",
+            url,
+            discovery_parsed.netloc,
             slug,
         )
         raise HTTPException(status_code=400, detail="SSO is not configured correctly.")

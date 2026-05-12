@@ -78,6 +78,12 @@ resource "aws_s3_bucket_public_access_block" "invoice_files" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_logging" "invoice_files" {
+  bucket        = aws_s3_bucket.invoice_files.id
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "invoice-files/"
+}
+
 
 # --- Audit-log shipping bucket ----------------------------------------------
 # Receives rows exported from each tenant's `audit_log` table. Compliance
@@ -132,4 +138,92 @@ resource "aws_s3_bucket_public_access_block" "audit_logs" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_logging" "audit_logs" {
+  bucket        = aws_s3_bucket.audit_logs.id
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "audit-logs/"
+}
+
+
+# --- Server-access logs bucket ----------------------------------------------
+# Sink for `aws_s3_bucket_logging` from the data-bearing buckets above. SOC 2
+# CC7.2 (audit evidence of access) + AWS-0089 (Trivy IaC: "Bucket has logging
+# disabled") both require it. The logs themselves are signal-of-access, not
+# the system-of-record audit trail (that lives in the COMPLIANCE-mode bucket
+# above), so we keep them at SSE-KMS + 365-day lifecycle expiry rather than
+# Object Lock.
+#
+# IMPORTANT: this bucket MUST NOT have its own logging enabled — pointing a
+# logging bucket at itself produces an infinite-loop of log objects (each
+# write generates a log line that triggers another write). AWS rejects the
+# config, but the safety check is to leave the aws_s3_bucket_logging
+# resource off entirely.
+
+resource "aws_s3_bucket" "access_logs" {
+  bucket = var.access_logs_bucket_name
+
+  tags = {
+    Name    = var.access_logs_bucket_name
+    purpose = "s3-access-logs"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.app.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "access_logs" {
+  bucket                  = aws_s3_bucket.access_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# S3 access-log delivery uses the legacy "log delivery group" canned ACL,
+# which requires the bucket-owner-preferred ownership controls — without
+# this the logging.target_bucket reference fails at apply time with
+# "AccessControlListNotSupported".
+resource "aws_s3_bucket_ownership_controls" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    id     = "expire-old-access-logs"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = var.access_logs_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
 }
