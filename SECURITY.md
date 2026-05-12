@@ -1,37 +1,46 @@
-# Security policy
+# Security Policy
 
 Thank you for helping keep this project and its users safe.
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
-**Do not open a public GitHub issue for a suspected vulnerability.** Public
-issues are indexed and the moment a report lands the window between
-disclosure and a fix is the most dangerous one.
+**Do not open a public GitHub issue for a suspected vulnerability.**
+Public issues are indexed and disclosed the moment they land. We use
+GitHub's private vulnerability reporting workflow instead.
 
-Instead, use GitHub's private vulnerability reporting:
+### How to report
 
-1. Navigate to the [Security tab](../../security) of this repository.
-2. Click **Report a vulnerability**.
+1. Open the project's Security tab:
+   https://github.com/Absence0760/project-account-payables/security
+2. Click **Report a vulnerability** (or follow the direct link:
+   https://github.com/Absence0760/project-account-payables/security/advisories/new).
 3. Fill in the form. Steps-to-reproduce and a minimal proof-of-concept
    make triage faster; speculation about impact is welcome but not
    required.
 
-If private reporting is unavailable for any reason, open a draft GitHub
-discussion marked confidential, or contact the maintainers via the email
-on the repo owner's GitHub profile.
+If GitHub private reporting is unavailable for any reason, email the
+maintainer at the address listed on the repo owner's public profile:
+https://github.com/Absence0760
 
-We aim to acknowledge new reports within **3 business days** and to ship
-a fix or coordinate a disclosure timeline within **30 days** for
-high-severity issues. Lower-severity issues track the normal release
-cadence.
+### What to expect
+
+| Step | SLA |
+|------|-----|
+| Acknowledgement | 3 business days |
+| Severity triage + initial response | 7 business days |
+| Fix or coordinated-disclosure plan (High / Critical) | 30 days |
+| Fix (Medium / Low) | next release |
+
+We aim to credit reporters in the published GitHub Security Advisory
+unless you ask to remain anonymous.
 
 ## Scope
 
 In scope:
 
-- Backend (`backend/`): authentication, tenant isolation, money-moving
-  paths, secret handling, audit-log integrity, webhook signature
-  verification.
+- Backend (`backend/`): authentication, multi-tenant isolation,
+  money-moving paths, secret handling, audit-log integrity, webhook
+  signature verification.
 - Frontend (`frontend/`): cross-tenant data exposure, XSS in the
   rendered UI, JWT handling, CSP / cookie configuration.
 - Mobile (`mobile/`): credential storage, deep-link handling,
@@ -48,18 +57,38 @@ Out of scope:
   a tenant — those are scoped to "trusted operator", not "external
   attacker".
 - Reports on demo data or seed credentials (`backend/scripts/seed.py`).
-  These are intentionally weak; no production data is reachable through
-  them.
-- Bug reports unrelated to security (use issues / discussions for those).
+  These are intentionally weak; no production data is reachable
+  through them.
+- Bug reports unrelated to security (use issues / discussions for
+  those).
 
-## Supported versions
+## Supported Versions
 
 This project ships rolling releases off `main`. We do not maintain
 parallel security branches. Security fixes land on `main`; downstream
 consumers should track `main`.
 
-## Coordinated disclosure
+| Branch | Supported |
+|--------|-----------|
+| `main` | Yes |
+| anything else | No |
 
-If you would like credit, include the name + handle you'd like used in
-the public advisory. We default to attributing every fix in the
-GitHub-generated security advisory.
+## Safe Harbor
+
+Good-faith security research conducted under this policy is
+authorized. We will not pursue legal action against researchers who:
+
+- Stay within the scope above.
+- Avoid privacy violations, destruction of data, and interruption
+  of service.
+- Give us reasonable time to investigate and remediate before any
+  public disclosure (the SLAs above are the default).
+- Use only their own test accounts; do not interact with other
+  tenants' data.
+
+## References
+
+- GitHub's private vulnerability reporting docs:
+  https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities
+- OpenSSF Scorecard Security-Policy check:
+  https://github.com/ossf/scorecard/blob/main/docs/checks.md#security-policy

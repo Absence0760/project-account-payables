@@ -78,6 +78,15 @@ jobs:
           cache: pip
           cache-dependency-path: backend/pyproject.toml
 
+      - name: Pin pip
+        # Scorecard PinnedDependenciesID treats every `pip install`
+        # invocation as a supply-chain pivot point. Pinning pip itself
+        # to a specific version makes the install reproducible across
+        # runner image refreshes — the rest of the dep tree is locked
+        # via pyproject.toml's upper bounds + the cached pip-resolver
+        # state.
+        run: python -m pip install --upgrade 'pip==26.1.1'
+
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
@@ -219,6 +228,11 @@ jobs:
           python-version: "3.14"
           cache: pip
           cache-dependency-path: backend/pyproject.toml
+
+      - name: Pin pip
+        # See Scorecard PinnedDependenciesID note on the Backend job
+        # for why pip itself is pinned before any install runs.
+        run: python -m pip install --upgrade 'pip==26.1.1'
 
       - name: Install backend deps
         working-directory: backend

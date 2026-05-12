@@ -161,6 +161,11 @@ resource "aws_s3_bucket_logging" "audit_logs" {
 # config, but the safety check is to leave the aws_s3_bucket_logging
 # resource off entirely.
 
+# trivy:ignore:AWS-0089 (we intentionally do not enable access logging
+# on this bucket — it IS the access-logs sink. Pointing it at itself
+# creates an infinite log-write loop AWS rejects at apply time. The
+# upstream Trivy rule has no exception for "logging-target" buckets,
+# so we suppress it inline rather than per-resource.)
 resource "aws_s3_bucket" "access_logs" {
   bucket = var.access_logs_bucket_name
 
