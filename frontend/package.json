@@ -13,11 +13,11 @@
 		"test:e2e:ui": "playwright test --config=tests-e2e/playwright.config.ts --ui"
 	},
 	"devDependencies": {
-		"@iconify-json/material-symbols": "1.2.71",
+		"@iconify-json/material-symbols": "1.2.73",
 		"@playwright/test": "1.60.0",
 		"@sveltejs/adapter-static": "3.0.10",
 		"@sveltejs/adapter-vercel": "6.3.3",
-		"@sveltejs/kit": "2.59.1",
+		"@sveltejs/kit": "2.60.1",
 		"@sveltejs/vite-plugin-svelte": "7.1.2",
 		"mdsvex": "^0.12.7",
 		"normalize.css": "8.0.1",
@@ -25,10 +25,10 @@
 		"svelte-check": "4.4.8",
 		"typescript": "6.0.3",
 		"unplugin-icons": "23.0.1",
-		"vite": "8.0.12"
+		"vite": "8.0.13"
 	},
 	"type": "module",
 	"dependencies": {
-		"isomorphic-dompurify": "^3.12.0"
+		"isomorphic-dompurify": "^3.13.0"
 	}
 }
