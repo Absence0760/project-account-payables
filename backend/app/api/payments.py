@@ -36,6 +36,7 @@ from app.services.payment_adapters import (
     PaymentStatus,
     get_payment_adapter,
 )
+from app.services.workflow_engine import transition_invoice
 from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -413,7 +414,14 @@ async def void_payment(
         InvoiceStatus.payment_scheduled,
         InvoiceStatus.paid,
     ):
-        invoice.status = InvoiceStatus.approved
+        await transition_invoice(
+            db,
+            invoice,
+            InvoiceStatus.approved,
+            actor_id=user.id,
+            action_name="invoice.voided_return_to_approved",
+            details={"void_reason": body.reason, "payment_id": str(payment.id)},
+        )
 
     from app.services.audit_dispatch import dispatch_audit
 
@@ -848,7 +856,14 @@ async def execute_payment_run(
                     "sent_to_erp",
                     "posted_in_erp",
                 ):
-                    invoice.status = InvoiceStatus.payment_scheduled
+                    await transition_invoice(
+                        db,
+                        invoice,
+                        InvoiceStatus.payment_scheduled,
+                        actor_id=user.id,
+                        action_name="invoice.card_payment_scheduled",
+                        details={"payment_id": str(payment.id)},
+                    )
 
                 # Best-effort vendor notification — single-use reveal
                 # link emailed to the vendor's contact address.
@@ -994,7 +1009,14 @@ async def execute_payment_run(
                 "sent_to_erp",
                 "posted_in_erp",
             ):
-                invoice.status = InvoiceStatus.payment_scheduled
+                await transition_invoice(
+                    db,
+                    invoice,
+                    InvoiceStatus.payment_scheduled,
+                    actor_id=user.id,
+                    action_name="invoice.payment_scheduled",
+                    details={"payment_id": str(payment.id), "result": "completed"},
+                )
         elif result_obj.status in (PaymentStatus.submitted, PaymentStatus.processing):
             # Real money in flight; webhook will finalize.
             payment.status = result_obj.status.value
@@ -1004,7 +1026,14 @@ async def execute_payment_run(
                 "sent_to_erp",
                 "posted_in_erp",
             ):
-                invoice.status = InvoiceStatus.payment_scheduled
+                await transition_invoice(
+                    db,
+                    invoice,
+                    InvoiceStatus.payment_scheduled,
+                    actor_id=user.id,
+                    action_name="invoice.payment_scheduled",
+                    details={"payment_id": str(payment.id), "result": result_obj.status.value},
+                )
         else:
             # failed or cancelled
             payment.status = result_obj.status.value

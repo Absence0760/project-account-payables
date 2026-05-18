@@ -238,10 +238,16 @@ async def test_fail_invoice_safely_transitions_pending_to_failed():
 
     fake_invoice = SimpleNamespace(
         id=invoice_id,
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
         status=InvoiceStatus.pending,
     )
 
     db = AsyncMock()
+    # `transition_invoice` calls `db.add()` synchronously for the AuditLog row;
+    # AsyncMock would return a coroutine. Override with MagicMock so the
+    # synchronous-add path doesn't emit a "coroutine was never awaited" warning.
+    db.add = MagicMock()
     db.execute.return_value.scalar_one_or_none = MagicMock(return_value=fake_invoice)
 
     await mod._fail_invoice_safely(db, invoice_id, actor_id, "boom")
@@ -312,11 +318,17 @@ class _FakeDbSession:
     def __init__(self, scalar_return_value):
         self._scalar_rv = scalar_return_value
         self.committed = False
+        self.added: list = []
 
     async def execute(self, query):
         result = MagicMock()
         result.scalar_one_or_none = MagicMock(return_value=self._scalar_rv)
         return result
+
+    def add(self, entry) -> None:
+        # `transition_invoice` calls `dispatch_audit`, which adds an AuditLog
+        # row through `db.add()`. We capture but otherwise ignore it.
+        self.added.append(entry)
 
     async def commit(self):
         self.committed = True
@@ -338,7 +350,12 @@ async def test_mark_failed_transitions_pending_invoice_to_failed():
     org_id = uuid.uuid4()
 
     fake_org = SimpleNamespace(id=org_id, db_name="ap_test")
-    fake_invoice = SimpleNamespace(id=invoice_id, status=InvoiceStatus.pending)
+    fake_invoice = SimpleNamespace(
+        id=invoice_id,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        status=InvoiceStatus.pending,
+    )
 
     ctrl_session = _FakeDbSession(fake_org)
     tenant_session = _FakeDbSession(fake_invoice)

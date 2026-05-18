@@ -99,8 +99,16 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                         # Update invoice status to paid if currently payment_scheduled
                         if invoice and invoice.status.value == "payment_scheduled":
                             from app.models.invoice import InvoiceStatus
+                            from app.services.workflow_engine import transition_invoice
 
-                            invoice.status = InvoiceStatus.paid
+                            await transition_invoice(
+                                db,
+                                invoice,
+                                InvoiceStatus.paid,
+                                actor_id=None,
+                                action_name="invoice.paid_via_erp_sync",
+                                details={"payment_id": str(payment.id)},
+                            )
 
                         synced += 1
 

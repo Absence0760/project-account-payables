@@ -220,10 +220,19 @@ async def _fail_invoice_safely(
 
         from app.models.invoice import Invoice, InvoiceStatus
 
+        from app.services.workflow_engine import transition_invoice
+
         result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
         inv = result.scalar_one_or_none()
         if inv and inv.status == InvoiceStatus.pending:
-            inv.status = InvoiceStatus.failed
+            await transition_invoice(
+                db,
+                inv,
+                InvoiceStatus.failed,
+                actor_id=actor_id,
+                action_name="invoice.extraction_failed_fallback",
+                details={"error": error},
+            )
             await db.commit()
             print(f"[extraction] Fallback: marked invoice {invoice_id} as failed")
     except Exception:
@@ -256,10 +265,19 @@ async def _mark_failed(invoice_id: uuid.UUID, org_id: uuid.UUID, reason: str) ->
         try:
             tenant_factory = async_sessionmaker(tenant_engine, expire_on_commit=False)
             async with tenant_factory() as db:
+                from app.services.workflow_engine import transition_invoice
+
                 result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
                 invoice = result.scalar_one_or_none()
                 if invoice and invoice.status == InvoiceStatus.pending:
-                    invoice.status = InvoiceStatus.failed
+                    await transition_invoice(
+                        db,
+                        invoice,
+                        InvoiceStatus.failed,
+                        actor_id=None,
+                        action_name="invoice.extraction_timed_out",
+                        details={"reason": reason},
+                    )
                     await db.commit()
                     print(f"[extraction] Marked invoice {invoice_id} as failed: {reason}")
         finally:

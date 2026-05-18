@@ -70,9 +70,11 @@ def _payment(*, method="ach", amount: Decimal = Decimal("100.00")):
     )
 
 
-def _invoice(*, status=InvoiceStatus.approved, vendor_id=None):
+def _invoice(*, status=InvoiceStatus.approved, vendor_id=None, organization_id=None):
     return SimpleNamespace(
         id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        organization_id=organization_id or uuid.uuid4(),
         status=status,
         invoice_number="INV-1",
         vendor_name="Acme Corp",

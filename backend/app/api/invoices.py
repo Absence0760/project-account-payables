@@ -45,7 +45,7 @@ from app.schemas.invoice import (
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
-from app.services.workflow_engine import create_workflow_instance
+from app.services.workflow_engine import create_workflow_instance, transition_invoice
 from app.tenant import get_tenant, get_tenant_db
 
 IMMUTABLE_STATUSES = {
@@ -461,13 +461,20 @@ async def bulk_status_change(
     result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
     invoices = result.scalars().all()
 
+    target = DBInvoiceStatus(body.status.value)
     updated = 0
     skipped: list[str] = []
     for inv in invoices:
         if inv.status in IMMUTABLE_STATUSES:
             skipped.append(str(inv.id))
         else:
-            inv.status = body.status.value
+            await transition_invoice(
+                db,
+                inv,
+                target,
+                actor_id=user.id,
+                action_name="invoice.bulk_status_change",
+            )
             await refresh_warnings(db, inv, org_settings=org.settings)
             updated += 1
     await db.commit()
