@@ -63,12 +63,10 @@ mobile/
 ├── ios/                         # Xcode project (auto-managed by Flutter)
 ├── android/                     # Gradle project (auto-managed by Flutter)
 ├── pubspec.yaml                 # Dependencies
-└── analysis_options.yaml        # Lint rules (matches project-running style)
+└── analysis_options.yaml        # Lint rules
 ```
 
 ## Architecture patterns
-
-Follows the same patterns as `../project-running/apps/mobile_android/`:
 
 - **ChangeNotifier singletons** for stores — `AuthStore.instance`, `InvoiceStore.instance`, etc.
 - **ListenableBuilder** in widgets to react to store changes
@@ -161,4 +159,4 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - **No code generation** — manual `fromJson` factories (keeps things simple)
 - **Material 3** with `useMaterial3: true`
 - **iOS + Android** — no web/desktop targets
-- **Same lint rules** as project-running: `prefer_single_quotes`, `require_trailing_commas`, `sort_pub_dependencies`, `always_use_package_imports`
+- **Lint rules** (`analysis_options.yaml`): `prefer_single_quotes`, `require_trailing_commas`, `sort_pub_dependencies`, `always_use_package_imports`

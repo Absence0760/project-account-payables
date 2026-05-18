@@ -1,17 +1,26 @@
-# ap_mobile
+# mobile/
 
-A new Flutter project.
+Flutter app — iOS + Android client for the accounts-payable backend.
 
-## Getting Started
+## Quick start
 
-This project is a starting point for a Flutter application.
+```bash
+flutter pub get        # install dependencies
+flutter run            # launch on a connected device or simulator
+```
 
-A few resources to get you started if this is your first Flutter project:
+The app expects the backend on `http://localhost:8000` and a tenant slug entered on the login screen (use one of the seeded tenants, e.g. `acme` / `demo@acme.com` / `demo`). To point at a different host, edit `lib/config.dart`.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Common commands
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter analyze              # lint
+flutter test                 # unit + widget tests
+flutter build ios            # production iOS build
+flutter build apk            # production Android APK
+flutter build appbundle      # production Android App Bundle (Play Store)
+```
+
+## What's in here
+
+See [`mobile/CLAUDE.md`](CLAUDE.md) for the full layout — screens, stores, API client, role-based navigation, mobile-only features (camera OCR, push, biometrics, offline mode), and the parity matrix with the web frontend.

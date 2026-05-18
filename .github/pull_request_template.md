@@ -11,12 +11,14 @@
 
 ## Surface touched
 
-- [ ] Application code (`src/` once it lands)
-- [ ] Database migrations
+- [ ] Backend (`backend/app/`)
+- [ ] Frontend (`frontend/src/`)
+- [ ] Mobile (`mobile/lib/`)
+- [ ] Database migrations (`backend/alembic/versions/`)
 - [ ] Infrastructure (`infra/`)
 - [ ] Operator scripts (`bin/`)
 - [ ] CI / GitHub Actions (`.github/`)
-- [ ] E2E tests (`tests-e2e/`)
+- [ ] E2E tests (`frontend/tests-e2e/`)
 - [ ] Docs only
 
 ## Money / data safety checklist
@@ -29,7 +31,7 @@
 - [ ] No new query reads tenant-scoped data without scoping (or: the scoping helper is used)
 - [ ] No new endpoint is mounted before the auth middleware
 - [ ] No PII / banking data is logged or returned to unauthenticated callers
-- [ ] No secret has a hardcoded fallback (`process.env.X || "..."`)
+- [ ] No secret has a hardcoded fallback (`os.environ.get("X", "default")` for a secret-shaped name)
 - [ ] Money columns / variables use a fixed-precision type, not `float`/`number`
 
 ## Test plan

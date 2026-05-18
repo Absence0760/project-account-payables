@@ -6,7 +6,7 @@ Thanks for considering a contribution. This file describes how to work in this r
 
 - Open an issue (or comment on an existing one) describing what you want to change. For non-trivial changes, get rough agreement on the approach before opening a PR — it's easier to redirect a sentence than a 500-line diff.
 - Look at recent commits in the area you're touching for style cues.
-- Stack-specific dev setup is in `docs/STACK.md`.
+- Per-workspace dev setup lives next to the code: `backend/CLAUDE.md`, `frontend/CLAUDE.md`, `mobile/CLAUDE.md`. First-time bootstrap is in `docs/getting-started.md`.
 
 ## Branching
 
@@ -40,14 +40,28 @@ Per the rule in `CLAUDE.md`: every PR that touches code also touches tests and d
 
 ## Running the checks locally
 
+Each workspace has its own toolchain — run the ones that apply to your change:
+
 ```
-pnpm install               # bootstrap (or the stack's equivalent)
-pnpm check                 # typecheck across workspaces
-pnpm test                  # unit / integration tests
-pre-commit run --all-files # gitleaks + the other hygiene hooks
+# Backend (from backend/)
+ruff check .                  # lint
+ruff format --check .         # format
+pytest                        # unit / integration tests
+
+# Frontend (from frontend/)
+pnpm i
+pnpm check                    # svelte-check + tsc
+pnpm test:e2e                 # Playwright (backend must be up on :8000)
+
+# Mobile (from mobile/)
+flutter analyze
+flutter test
+
+# Repo-wide
+pre-commit run --all-files    # gitleaks + the other hygiene hooks
 ```
 
-Or, if Claude Code is available: `/check` runs all of the above in sequence and reports.
+Or, if Claude Code is available: `/check` runs the relevant gates against the working diff and reports.
 
 ## Opening a PR
 
