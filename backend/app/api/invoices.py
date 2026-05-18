@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,10 +213,28 @@ async def get_invoice_line_items(
     ]
 
 
+class _LineItemInput(BaseModel):
+    """Validated shape for a single line item posted to PUT /{id}/line-items.
+
+    The handler used to accept ``list[dict]``, which let any payload
+    through and threw a 500 on shape mismatches (with a full traceback
+    in debug mode). Defining the shape moves shape errors to a clean 422.
+    """
+
+    line_number: int | None = None
+    item_code: str | None = None
+    description: str | None = None
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    tax: Decimal | None = None
+    total: Decimal | None = None
+    gl_account: str | None = None
+
+
 @router.put("/{invoice_id}/line-items")
 async def save_invoice_line_items(
     invoice_id: uuid.UUID,
-    body: list[dict],
+    body: list[_LineItemInput],
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
@@ -235,16 +254,14 @@ async def save_invoice_line_items(
     for i, item in enumerate(body):
         li = InvoiceLineItem(
             invoice_id=invoice_id,
-            line_number=item.get("line_number", i + 1),
-            item_code=item.get("item_code"),
-            description=item.get("description"),
-            quantity=Decimal(str(item["quantity"])) if item.get("quantity") is not None else None,
-            unit_price=Decimal(str(item["unit_price"]))
-            if item.get("unit_price") is not None
-            else None,
-            tax=Decimal(str(item["tax"])) if item.get("tax") is not None else None,
-            total=Decimal(str(item["total"])) if item.get("total") is not None else None,
-            gl_account=item.get("gl_account"),
+            line_number=item.line_number if item.line_number is not None else i + 1,
+            item_code=item.item_code,
+            description=item.description,
+            quantity=item.quantity,
+            unit_price=item.unit_price,
+            tax=item.tax,
+            total=item.total,
+            gl_account=item.gl_account,
         )
         db.add(li)
 
