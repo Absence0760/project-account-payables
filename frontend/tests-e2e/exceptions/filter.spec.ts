@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures/helpers';
 
 import { signInAndWait } from '../fixtures/helpers';
 

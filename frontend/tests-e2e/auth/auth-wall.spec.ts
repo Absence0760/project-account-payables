@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures/helpers';
 
 /**
  * Auth wall — every tenant-scoped route under the app shell must

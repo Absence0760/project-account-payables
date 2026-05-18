@@ -1,6 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, ACME_BASE } from '../fixtures/helpers';
 
 import { ACME_ADMIN, signInAndWait } from '../fixtures/helpers';
+
+// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
+// asserts cross-tenant isolation that requires fixed tenant slugs. The
+// per-worker baseURL from fixtures/helpers.ts would otherwise route to
+// the wrong tenant. Multiple workers may share acme here — keep this
+// file's tests read-only or idempotent.
+test.use({ baseURL: ACME_BASE });
 
 /**
  * Password-security e2e — end-to-end coverage that complements the
@@ -21,7 +28,7 @@ import { ACME_ADMIN, signInAndWait } from '../fixtures/helpers';
 const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 
 async function adminToken(page: import('@playwright/test').Page): Promise<string> {
-	await signInAndWait(page, ACME_ADMIN);
+	await signInAndWait(page);
 	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
 	if (!t) throw new Error('not signed in as admin');
 	return t;

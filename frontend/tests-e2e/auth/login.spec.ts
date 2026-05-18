@@ -1,6 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, ACME_BASE } from '../fixtures/helpers';
 
 import { ACME_ADMIN, signIn } from '../fixtures/helpers';
+
+// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
+// asserts cross-tenant isolation that requires fixed tenant slugs. The
+// per-worker baseURL from fixtures/helpers.ts would otherwise route to
+// the wrong tenant. Multiple workers may share acme here — keep this
+// file's tests read-only or idempotent.
+test.use({ baseURL: ACME_BASE });
 
 /**
  * Login surface — anonymous-visitor + happy-path smoke.
@@ -33,7 +40,7 @@ test.describe('/login (acme tenant)', () => {
 	});
 
 	test('seeded admin signs in and lands on the app shell', async ({ page }) => {
-		await signIn(page, ACME_ADMIN);
+		await signIn(page);
 
 		// Successful login calls `goto('/')`. The exact landing chrome
 		// is the dashboard for an authenticated tenant user — assert on

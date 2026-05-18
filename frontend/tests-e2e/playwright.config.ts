@@ -33,7 +33,21 @@ export default defineConfig({
 	// Fail fast in CI; locally, run the whole suite even if the seed is
 	// stale so the developer can see the full damage.
 	forbidOnly: !!process.env.CI,
-	workers: 1,
+	// Workers run in parallel, each pinned to its own `e2e<N>` tenant via
+	// the worker-scoped `tenantSlug` fixture in fixtures/helpers.ts. The
+	// seed (`backend/scripts/seed.py`) provisions `AP_E2E_TENANT_COUNT`
+	// (default 4) such tenants. Bump both at once.
+	//
+	// `fullyParallel: false` keeps tests *within* a file serial — each
+	// file's tests share the worker's tenant, so a file that mutates
+	// state (creates a user, voids a payment) needs them ordered. Files
+	// across workers still run in parallel.
+	workers: parseInt(
+		process.env.PLAYWRIGHT_WORKERS ??
+			process.env.AP_E2E_TENANT_COUNT ??
+			(process.env.CI ? '4' : '4'),
+		10
+	),
 	fullyParallel: false,
 
 	reporter: process.env.CI ? [['github'], ['list']] : 'list',
@@ -55,10 +69,10 @@ export default defineConfig({
 	},
 
 	use: {
-		// Tenant subdomain so the frontend's auto-extracted X-Tenant-Slug
-		// header is "acme". Override per-test via page.goto with an
-		// explicit URL when an anon-tenant or different-tenant flow is
-		// the point of the test.
+		// Default baseURL — overridden per worker by the `tenantSlug`
+		// fixture in fixtures/helpers.ts. This value only ends up applied
+		// to specs that import `test` directly from `@playwright/test`
+		// (cross-tenant isolation specs that need a fixed tenant).
 		baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://acme.localhost:7777',
 		trace: 'on-first-retry',
 		screenshot: 'only-on-failure',

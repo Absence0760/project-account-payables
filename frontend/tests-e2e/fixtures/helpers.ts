@@ -1,8 +1,97 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, test as base, type Page } from '@playwright/test';
 
 /**
- * Seeded credentials, kept in lockstep with `backend/scripts/seed.py`.
- * Two tenants × roles — enough to assert role gates and tenant isolation.
+ * Per-worker tenant isolation for parallel Playwright execution.
+ *
+ * `backend/scripts/seed.py` provisions `AP_E2E_TENANT_COUNT` (default 4)
+ * `e2e<N>` tenants. Each Playwright worker maps to one tenant via
+ * `workerIndex`, so a worker that creates / deletes data in
+ * `e2e1` can't collide with another worker working in `e2e2`. Spec
+ * files import `test` from this module (not `@playwright/test`); the
+ * fixture below overrides `baseURL` and injects role-specific creds
+ * so most specs need no further changes.
+ */
+
+const E2E_TENANT_COUNT = parseInt(
+	process.env.E2E_TENANT_COUNT ?? process.env.AP_E2E_TENANT_COUNT ?? '4',
+	10
+);
+
+type TenantCreds = { email: string; password: string };
+
+type WorkerFixtures = {
+	tenantSlug: string;
+	tenantAdmin: TenantCreds;
+	tenantManager: TenantCreds;
+	tenantClerk: TenantCreds;
+	tenantCfo: TenantCreds;
+};
+
+function _tenantSlugFor(workerIndex: number): string {
+	return `e2e${(workerIndex % Math.max(E2E_TENANT_COUNT, 1)) + 1}`;
+}
+
+function _credsFor(slug: string, role: 'admin' | 'manager' | 'clerk' | 'cfo'): TenantCreds {
+	return { email: `demo+${role}@${slug}.localhost`, password: 'demo' };
+}
+
+export const test = base.extend<object, WorkerFixtures>({
+	tenantSlug: [
+		async ({}, use, workerInfo) => {
+			await use(_tenantSlugFor(workerInfo.workerIndex));
+		},
+		{ scope: 'worker' }
+	],
+	tenantAdmin: [
+		async ({ tenantSlug }, use) => {
+			await use(_credsFor(tenantSlug, 'admin'));
+		},
+		{ scope: 'worker' }
+	],
+	tenantManager: [
+		async ({ tenantSlug }, use) => {
+			await use(_credsFor(tenantSlug, 'manager'));
+		},
+		{ scope: 'worker' }
+	],
+	tenantClerk: [
+		async ({ tenantSlug }, use) => {
+			await use(_credsFor(tenantSlug, 'clerk'));
+		},
+		{ scope: 'worker' }
+	],
+	tenantCfo: [
+		async ({ tenantSlug }, use) => {
+			await use(_credsFor(tenantSlug, 'cfo'));
+		},
+		{ scope: 'worker' }
+	],
+	baseURL: async ({ tenantSlug }, use) => {
+		await use(`http://${tenantSlug}.localhost:7777`);
+	}
+});
+
+export { expect };
+
+/**
+ * Resolve a per-worker admin from `test.info()` for callers (signIn helpers)
+ * that don't take the fixture as an argument. Falls back to ACME_ADMIN when
+ * called outside a Playwright test context (e.g. globalSetup, unit tests).
+ */
+function _currentWorkerAdmin(): TenantCreds {
+	try {
+		const wi = base.info().workerIndex;
+		return _credsFor(_tenantSlugFor(wi), 'admin');
+	} catch {
+		return ACME_ADMIN;
+	}
+}
+
+/**
+ * Seeded credentials for the two non-e2e demo tenants (acme + techflow).
+ * These stay seeded so the cross-tenant isolation specs have a stable
+ * pair of distinct tenants to exercise. New parallel specs should prefer
+ * the `tenantAdmin` / `tenantClerk` worker fixtures above instead.
  */
 export const ACME_ADMIN = {
 	email: 'demo@acme.com',
@@ -34,6 +123,13 @@ export const ACME_BASE = 'http://acme.localhost:7777';
 export const TECHFLOW_BASE = 'http://techflow.localhost:7777';
 export const NO_TENANT_BASE = 'http://localhost:7777';
 
+/** Build a tenant origin from a slug — used by specs that want to address
+ *  the current worker's tenant explicitly (e.g. when overriding baseURL
+ *  on a specific page.goto). */
+export function tenantBase(slug: string): string {
+	return `http://${slug}.localhost:7777`;
+}
+
 /** Escape every regex metacharacter so a literal URL can be embedded in a RegExp. */
 export function escapeRegExp(input: string): string {
 	return input.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
@@ -56,13 +152,18 @@ export function escapeRegExp(input: string): string {
  */
 export async function signIn(
 	page: Page,
-	creds: { email: string; password: string } = ACME_ADMIN
+	creds?: { email: string; password: string }
 ) {
+	// Default to the current worker's tenant admin so a spec running in
+	// worker N signs into e2eN rather than acme. Specs that need a
+	// specific tenant (cross-tenant isolation tests, etc.) pass `creds`
+	// explicitly.
+	const resolved = creds ?? _currentWorkerAdmin();
 	await page.goto('/login');
 	await page.waitForLoadState('networkidle');
 
-	await page.locator('input[type="email"]').fill(creds.email);
-	await page.locator('input[type="password"]').fill(creds.password);
+	await page.locator('input[type="email"]').fill(resolved.email);
+	await page.locator('input[type="password"]').fill(resolved.password);
 	await page.locator('form button[type="submit"]').click();
 }
 
@@ -73,7 +174,7 @@ export async function signIn(
  */
 export async function signInAndWait(
 	page: Page,
-	creds: { email: string; password: string } = ACME_ADMIN
+	creds?: { email: string; password: string }
 ) {
 	await signIn(page, creds);
 	// The tenant root is the dashboard. URL must end in just '/' — using

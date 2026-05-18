@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures/helpers';
 
 import { NO_TENANT_BASE } from '../fixtures/helpers';
 

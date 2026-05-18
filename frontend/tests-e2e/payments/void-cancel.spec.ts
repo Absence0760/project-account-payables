@@ -1,8 +1,15 @@
 import { execFileSync } from 'node:child_process';
 
-import { expect, test } from '@playwright/test';
+import { expect, test, ACME_BASE } from '../fixtures/helpers';
 
 import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
+
+// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
+// asserts cross-tenant isolation that requires fixed tenant slugs. The
+// per-worker baseURL from fixtures/helpers.ts would otherwise route to
+// the wrong tenant. Multiple workers may share acme here — keep this
+// file's tests read-only or idempotent.
+test.use({ baseURL: ACME_BASE });
 
 const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 

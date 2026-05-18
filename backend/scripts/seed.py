@@ -25,11 +25,19 @@ from app.models.vendor import Vendor
 from app.models.workflow import AuditLog, WorkflowDefinition
 from app.utils.passwords import pwd_context
 
+import os
+
 # Fixed UUIDs for reproducibility
 ACME_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 ACME_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000010")
 TECH_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
 TECH_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
+
+# Per-worker e2e tenants. Playwright workers map (workerIndex % N) → e2eN, so
+# each parallel worker owns its own tenant DB and can mutate freely without
+# colliding with peers. Default N=4; bump via AP_E2E_TENANT_COUNT for higher
+# parallelism. Setting it to 0 skips the e2e seed entirely.
+E2E_TENANT_COUNT = int(os.environ.get("AP_E2E_TENANT_COUNT", "4"))
 
 CONTROL_TABLES = {
     "organizations",
@@ -1213,15 +1221,122 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
     await engine.dispose()
 
 
+def _e2e_org_id(idx: int) -> uuid.UUID:
+    """Deterministic UUID per e2e tenant index (1-based).
+
+    Tail format: ``e2e000000<idx:03d>`` (12 hex chars). ``e2e`` is the
+    self-documenting prefix marker — every e2e-tenant id eyeballs as
+    ``...-e2e000000001`` etc., easy to spot in SQL and log dumps.
+    """
+    return uuid.UUID(f"00000000-0000-0000-0000-e2e000000{idx:03d}")
+
+
+def _e2e_user_id(idx: int, role: str) -> uuid.UUID:
+    """Deterministic UUID per e2e tenant user. ``role`` is one of
+    'admin'/'manager'/'clerk'/'cfo'. Tail format
+    ``<role:02d>e2e000<idx:04d>`` keeps the marker in plaintext."""
+    role_code = {"admin": 1, "manager": 2, "clerk": 3, "cfo": 4}[role]
+    return uuid.UUID(f"00000000-0000-0000-0000-{role_code:02d}e2e000{idx:04d}")
+
+
+E2E_PASSWORD = "demo"
+
+
+async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uuid.UUID, str]]:
+    """Provision e2e tenant orgs + role-segmented users in the control plane.
+
+    Returns the list of ``(db_name, org_id, label)`` tuples to seed
+    tenant-DB rows for. Idempotent: re-running just skips orgs that
+    already exist (matched by slug).
+    """
+    if E2E_TENANT_COUNT <= 0:
+        print("  AP_E2E_TENANT_COUNT=0 — skipping e2e tenant seed.")
+        return []
+
+    created: list[tuple[str, uuid.UUID, str]] = []
+    async with control_session_factory() as session:
+        existing = await session.execute(
+            text("SELECT slug FROM organizations WHERE slug LIKE 'e2e%'")
+        )
+        existing_slugs = {r[0] for r in existing.all()}
+
+        hashed = pwd_context.hash(E2E_PASSWORD)
+
+        for i in range(1, E2E_TENANT_COUNT + 1):
+            slug = f"e2e{i}"
+            db_name = f"ap_{slug}"
+            label = f"E2E Worker {i}"
+            org_id = _e2e_org_id(i)
+            created.append((db_name, org_id, label))
+
+            if slug in existing_slugs:
+                print(f"  e2e tenant already seeded: {slug} (skipping)")
+                continue
+
+            session.add(
+                Organization(
+                    id=org_id,
+                    name=label,
+                    slug=slug,
+                    plan="pro",
+                    db_name=db_name,
+                    settings={
+                        "cards": {"enabled": True, "program_type": "platform", "region": "US"},
+                        "payments": {"provider": "mock"},
+                    },
+                )
+            )
+
+            # One user per role — Playwright fixtures route signIn to these
+            # by deriving the email from the worker's tenant slug.
+            users = [
+                ("admin", "admin", roles["admin"]),
+                ("manager", "Marcus Manager", roles["ap_manager"]),
+                ("clerk", "Clara Clerk", roles["ap_clerk"]),
+                ("cfo", "Frank CFO", roles["cfo"]),
+            ]
+            for role_key, full_name, role_row in users:
+                u = User(
+                    id=_e2e_user_id(i, role_key),
+                    email=f"demo+{role_key}@{slug}.localhost",
+                    full_name=full_name,
+                    hashed_password=hashed,
+                    organization_id=org_id,
+                )
+                session.add(u)
+                await session.flush()
+                session.add(UserRole(user_id=u.id, role_id=role_row.id))
+
+        await session.commit()
+
+    if created:
+        print(f"  Seeded {E2E_TENANT_COUNT} e2e tenant(s) for Playwright workers")
+    return created
+
+
+async def _load_seeded_roles() -> dict[str, "Role"]:
+    """Fetch the four role rows seeded by ``seed_control_plane``."""
+    async with control_session_factory() as session:
+        rows = await session.execute(text("SELECT id, name FROM roles"))
+        out: dict[str, Role] = {}
+        for rid, name in rows.all():
+            out[name] = Role(id=rid, name=name)
+        return out
+
+
 async def seed():
     print("=== Seeding control plane ===")
     await create_control_tables()
     await seed_control_plane()
 
-    for db_name, org_id, label in [
+    roles = await _load_seeded_roles()
+    e2e_tenants = await seed_e2e_control_plane(roles)
+
+    base_tenants = [
         ("ap_acme", ACME_ORG_ID, "Acme Corp"),
         ("ap_techflow", TECH_ORG_ID, "TechFlow Inc"),
-    ]:
+    ]
+    for db_name, org_id, label in base_tenants + e2e_tenants:
         print(f"\n=== Seeding tenant: {label} ({db_name}) ===")
         await create_database(db_name)
         await create_tenant_tables(db_name)
@@ -1229,9 +1344,12 @@ async def seed():
 
     await control_engine.dispose()
 
-    print("\nDone! Two tenants ready:")
+    print(f"\nDone! {2 + len(e2e_tenants)} tenants ready:")
     print("  acme.localhost:7777    — demo@acme.com / demo")
     print("  techflow.localhost:7777 — admin@techflow.com / demo")
+    for db_name, _org_id, label in e2e_tenants:
+        slug = db_name.removeprefix("ap_")
+        print(f"  {slug}.localhost:7777    — demo+admin@{slug}.localhost / {E2E_PASSWORD}")
 
 
 if __name__ == "__main__":

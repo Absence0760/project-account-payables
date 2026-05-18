@@ -1,6 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, ACME_BASE } from '../fixtures/helpers';
 
 import { ACME_ADMIN, signInAndWait } from '../fixtures/helpers';
+
+// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
+// asserts cross-tenant isolation that requires fixed tenant slugs. The
+// per-worker baseURL from fixtures/helpers.ts would otherwise route to
+// the wrong tenant. Multiple workers may share acme here — keep this
+// file's tests read-only or idempotent.
+test.use({ baseURL: ACME_BASE });
 
 /**
  * Token tampering — any client-side modification of the stored JWT must
@@ -27,7 +34,7 @@ async function getStoredToken(page: import('@playwright/test').Page): Promise<st
 
 test.describe('token tampering (acme admin)', () => {
 	test('byte-flipped signature → next protected request gets 401', async ({ page, request }) => {
-		await signInAndWait(page, ACME_ADMIN);
+		await signInAndWait(page);
 		const valid = await getStoredToken(page);
 
 		// JWT = header.payload.signature. Flip a character in the
@@ -49,7 +56,7 @@ test.describe('token tampering (acme admin)', () => {
 	});
 
 	test('byte-flipped signature in localStorage → SPA bounces to /login', async ({ page }) => {
-		await signInAndWait(page, ACME_ADMIN);
+		await signInAndWait(page);
 		const valid = await getStoredToken(page);
 		const parts = valid.split('.');
 		const tampered = [
@@ -71,7 +78,7 @@ test.describe('token tampering (acme admin)', () => {
 	});
 
 	test('non-JWT garbage in localStorage → /login', async ({ page }) => {
-		await signInAndWait(page, ACME_ADMIN);
+		await signInAndWait(page);
 		await page.evaluate(() => localStorage.setItem('auth_token', 'not-a-jwt-at-all'));
 
 		await page.goto('/invoices');
@@ -79,7 +86,7 @@ test.describe('token tampering (acme admin)', () => {
 	});
 
 	test('empty token string in localStorage → /login', async ({ page }) => {
-		await signInAndWait(page, ACME_ADMIN);
+		await signInAndWait(page);
 		await page.evaluate(() => localStorage.setItem('auth_token', ''));
 
 		await page.goto('/invoices');
@@ -87,7 +94,7 @@ test.describe('token tampering (acme admin)', () => {
 	});
 
 	test('valid token survives reload (positive control)', async ({ page }) => {
-		await signInAndWait(page, ACME_ADMIN);
+		await signInAndWait(page);
 
 		// Sanity check that a reload doesn't accidentally trash the
 		// session. Without this, the negative tests above could pass

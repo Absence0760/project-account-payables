@@ -1,6 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, ACME_BASE } from '../fixtures/helpers';
 
 import { ACME_ADMIN, signInAndWait, signOut } from '../fixtures/helpers';
+
+// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
+// asserts cross-tenant isolation that requires fixed tenant slugs. The
+// per-worker baseURL from fixtures/helpers.ts would otherwise route to
+// the wrong tenant. Multiple workers may share acme here — keep this
+// file's tests read-only or idempotent.
+test.use({ baseURL: ACME_BASE });
 
 /**
  * Logout security — the backend keeps a Redis blocklist keyed on the
@@ -22,7 +29,7 @@ const API_URL = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 
 test.describe('logout security', () => {
 	test('logged-out JWT is rejected on subsequent direct API calls', async ({ page, request }) => {
-		await signInAndWait(page, ACME_ADMIN);
+		await signInAndWait(page);
 		const tokenBeforeLogout = await page.evaluate(() => localStorage.getItem('auth_token'));
 		expect(tokenBeforeLogout).toBeTruthy();
 
@@ -109,7 +116,7 @@ test.describe('logout security', () => {
 		// Redundant with signout.spec.ts but documents this as a
 		// security property too: even if the blocklist were lost on a
 		// Redis flush, the local copy of the token is gone.
-		await signInAndWait(page, ACME_ADMIN);
+		await signInAndWait(page);
 		await signOut(page);
 
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));
