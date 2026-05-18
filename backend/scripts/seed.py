@@ -1344,11 +1344,16 @@ async def seed():
     await control_engine.dispose()
 
     print(f"\nDone! {2 + len(e2e_tenants)} tenants ready:")
-    print("  acme.localhost:7777    — demo@acme.com / demo")
-    print("  techflow.localhost:7777 — admin@techflow.com / demo")
+    print("  acme.localhost:7777    — demo@acme.com")
+    print("  techflow.localhost:7777 — admin@techflow.com")
     for db_name, _org_id, label in e2e_tenants:
         slug = db_name.removeprefix("ap_")
-        print(f"  {slug}.localhost:7777    — demo+admin@{slug}.localhost / {E2E_PASSWORD}")
+        # Don't interpolate the password into stdout — CodeQL flags
+        # ``print(...{PASSWORD}...)`` even when the value is the dev
+        # default. The credentials are documented in ``frontend/tests-e2e/
+        # README.md`` and ``backend/scripts/seed.py`` source.
+        print(f"  {slug}.localhost:7777    — demo+admin@{slug}.localhost")
+    print("  (Login password for every seeded user is the documented dev default.)")
 
 
 if __name__ == "__main__":
