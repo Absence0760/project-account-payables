@@ -4,7 +4,19 @@
 # leave a supply-chain pivot point. Bump the digest alongside the tag
 # when Renovate / Dependabot opens a PR (the trailing comment is what
 # the docker ecosystem reads as the human-version reference).
-FROM python:3.14-slim@sha256:33ef7446e8c14b21cb247e23afbcdc90e98853b70812ca46b2265e769a7dfb8b
+FROM python:3.14-slim@sha256:7a500125bc50693f2214e842a621440a1b1b9cbb2188f74ab045d29ed2ea5856
+
+# Pull Debian security backports on top of the pinned base layer. The
+# digest above only changes when the upstream python:3.14-slim manifest
+# rebuilds, which lags Debian's trixie-security stream by days-to-weeks.
+# Trivy + GitHub code scanning flag CVEs in libc6 / libcap2 / libsystemd0
+# / libudev1 / sed every time that gap opens; this step closes it without
+# waiting for an upstream rebuild. `--no-install-recommends` keeps the
+# image lean; the apt list cleanup keeps the layer small.
+RUN apt-get update \
+    && apt-get -y --no-install-recommends upgrade \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
