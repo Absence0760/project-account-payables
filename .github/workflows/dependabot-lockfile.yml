@@ -87,15 +87,22 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          # The pnpm-lock.yaml lives in the frontend workspace, not at the
+          # repo root. Without this hint, ``setup-node`` errors out with
+          # ``Dependencies lock file is not found`` and the regenerate
+          # job dies before it can do anything useful.
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Regenerate lockfile
         # --lockfile-only updates pnpm-lock.yaml without populating
         # node_modules. pnpm does not run any lifecycle scripts in this
         # mode; --ignore-scripts is redundant but explicit.
+        working-directory: frontend
         run: pnpm install --lockfile-only --ignore-scripts
 
       - name: Bail if lockfile unchanged
         id: diff
+        working-directory: frontend
         run: |
           if git diff --quiet pnpm-lock.yaml; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -108,7 +115,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pnpm-lock
-          path: pnpm-lock.yaml
+          path: frontend/pnpm-lock.yaml
           retention-days: 1
 
   push:
@@ -180,13 +187,15 @@ jobs:
           git fetch origin "$PR_HEAD_REF" --depth 1
           git checkout "$PR_HEAD_SHA"
 
-          # Replace the lockfile with the regenerated one.
-          cp ../pnpm-lock.yaml ./pnpm-lock.yaml
+          # Replace the lockfile with the regenerated one. The lockfile
+          # lives at ``frontend/pnpm-lock.yaml`` in this repo, not at the
+          # root.
+          cp ../pnpm-lock.yaml ./frontend/pnpm-lock.yaml
 
-          if git diff --quiet pnpm-lock.yaml; then
+          if git diff --quiet frontend/pnpm-lock.yaml; then
             echo "Lockfile already in sync after fetch — nothing to commit."
             exit 0
           fi
-          git add pnpm-lock.yaml
+          git add frontend/pnpm-lock.yaml
           git commit -m "chore: sync pnpm-lock.yaml"
           git push origin "HEAD:${PR_HEAD_REF}"
