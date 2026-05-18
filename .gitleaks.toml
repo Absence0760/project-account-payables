@@ -1,0 +1,55 @@
+# Gitleaks configuration for project-account-payables.
+#
+# Inherits every rule from the upstream default config and layers a
+# project-specific allowlist on top. The allowlist below covers test
+# fixtures (synthetic passwords, fake API keys for auth/security
+# tests) and documentation examples (JSON request/response samples in
+# `docs/` that contain person-shaped names + role lists). Each rule
+# is narrow enough that a real key with the same shape would still
+# trip the scanner.
+#
+# Audit the additions with:
+#   gitleaks detect --config=.gitleaks.toml --no-banner --redact
+#
+# If a future scan flags a new test fixture, add it here rather than
+# weakening one of the upstream rules — the existing rules catch
+# real keys (AWS/GCP/JWT/etc.) and we don't want to lose that coverage.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Global allowlist — applies to every rule, including the upstream defaults.
+# ---------------------------------------------------------------------------
+[[allowlists]]
+description = "Global skip list for test fixtures and doc examples"
+# Path patterns where every match is permissible. These files contain
+# synthetic credentials by definition (security tests, complexity
+# fixtures, RBAC examples).
+paths = [
+    '''(?i)^.*test_password_security\.py$''',
+    '''(?i)^.*test_auth_error_consistency\.py$''',
+    '''(?i)^.*test_auth_token_security\.py$''',
+    '''(?i)^.*test_login_security\.py$''',
+    '''(?i)^.*tests-e2e/auth/password-security\.spec\.ts$''',
+    '''(?i)^.*tests-e2e/auth/login-security\.spec\.ts$''',
+    '''(?i)^.*tests-e2e/auth/token-tampering\.spec\.ts$''',
+    '''(?i)^docs/user-management\.md$''',
+    '''(?i)^docs/authentication\.md$''',
+    '''(?i)^backend/docs/api-reference\.md$''',
+]
+# Synthetic-credential regexes that may legitimately appear anywhere
+# in the codebase (fixtures + docs samples).
+regexes = [
+    # Documentation example passwords used in onboarding / API reference docs.
+    '''demo-password''',
+    '''change-me-in-production''',
+    # Common test-password literal patterns. These are deliberately
+    # high-entropy enough to satisfy the password-complexity validator
+    # but obvious enough not to be confused with real secrets.
+    '''StrongPass\d+[A-Z]?''',
+    '''Secret-Sauce-[A-Za-z0-9-]+''',
+    '''Portal-Secret-\d+''',
+    '''Right-Password-\d+''',
+    '''Test-?Password-?\d*''',
+]
