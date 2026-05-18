@@ -134,6 +134,58 @@ def test_verify_signature_rejects_missing_header_with_secret():
         assert email_intake.verify_signature(b"body", None) is False
 
 
+async def test_inbound_webhook_returns_204_on_bad_signature():
+    """Rejection paths must return 204 silently so the response can't
+    enumerate which providers / signing secrets / payload shapes the
+    tenant accepts. Distinct 401/400 codes leaked that information."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+
+    request = SimpleNamespace(
+        headers={"X-Signature": "wrong"},
+        body=AsyncMock(return_value=b"{}"),
+    )
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch("app.api.email_intake.verify_signature", return_value=False),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+    assert response.status_code == 204
+
+
+async def test_inbound_webhook_returns_204_on_unknown_provider():
+    from app.api.email_intake import inbound_webhook
+
+    request = SimpleNamespace(headers={}, body=lambda: b"")
+
+    with patch("app.api.email_intake.get_parser", return_value=None):
+        response = await inbound_webhook(provider="bogus", request=request, ctrl_db=None)
+    assert response.status_code == 204
+
+
+async def test_inbound_webhook_returns_204_on_parse_error():
+    """A signature-valid payload that the provider parser can't read
+    must still rejected silently — distinct 400 would let an attacker
+    grind the parser's accepted shapes."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+
+    request = SimpleNamespace(
+        headers={"X-Signature": "sig"},
+        body=AsyncMock(return_value=b"{}"),
+    )
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: None),
+        patch("app.api.email_intake.verify_signature", return_value=True),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+    assert response.status_code == 204
+
+
 def test_verify_signature_accepts_valid_signature():
     from app.services import email_intake
 

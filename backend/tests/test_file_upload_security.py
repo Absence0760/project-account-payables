@@ -200,6 +200,67 @@ async def test_upload_uses_sanitised_filename_in_s3_key(monkeypatch):
     assert captured_key["Key"] == file_key
 
 
+@pytest.mark.asyncio
+async def test_w9_upload_uses_sanitised_filename_in_s3_key(monkeypatch):
+    """The 1099 W-9 upload path constructs its own S3 key (not via
+    ``upload_invoice_file``) so it needed its own ``_safe_filename``
+    call. Verify a path-traversal probe doesn't survive the round trip."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    from uuid import uuid4
+
+    from app.api import tax as tax_mod
+
+    captured: dict = {}
+
+    def fake_client_factory():
+        client = MagicMock()
+        client.put_object = MagicMock(
+            side_effect=lambda **kwargs: captured.update(Key=kwargs["Key"])
+        )
+        return client
+
+    monkeypatch.setattr(tax_mod, "_get_client", fake_client_factory)
+    monkeypatch.setattr(tax_mod, "_ensure_bucket", lambda c: None)
+
+    vendor = SimpleNamespace(
+        id=uuid4(),
+        w9_file_key=None,
+        w9_received_date=None,
+        is_1099_eligible=False,
+        tax_classification=None,
+        tax_id=None,
+    )
+    monkeypatch.setattr(tax_mod, "_get_vendor_or_404", AsyncMock(return_value=vendor))
+    monkeypatch.setattr(
+        tax_mod, "_vendor_tax_response", lambda v: {"id": str(v.id), "file_key": v.w9_file_key}
+    )
+
+    fake_file = MagicMock()
+    fake_file.read = AsyncMock(return_value=b"%PDF-1.4 W9")
+    fake_file.content_type = "application/pdf"
+    fake_file.filename = "../../other-org/secret.pdf"
+
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    org_id = uuid4()
+    await tax_mod.upload_vendor_w9(
+        vendor_id=vendor.id,
+        file=fake_file,
+        tax_classification=None,
+        is_1099_eligible=True,
+        db=db,
+        user=SimpleNamespace(id=uuid4()),
+        org_id=org_id,
+    )
+
+    assert "../" not in captured["Key"]
+    assert "other-org" not in captured["Key"].split("/")[0]
+    assert captured["Key"].startswith(f"{org_id}/w9/{vendor.id}/")
+
+
 # ---------------------------------------------------------------------------
 # Download endpoint — cross-tenant file access
 # ---------------------------------------------------------------------------

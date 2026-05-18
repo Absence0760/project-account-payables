@@ -174,22 +174,29 @@ def test_audit_shipper_does_not_delete_rows_on_ship():
 
 
 def test_invoice_status_transitions_funnel_through_transition_invoice():
-    """A regression that did `invoice.status = X` directly in a
-    handler would skip the audit dispatch. Pin that the public
-    `validate_transition` is imported from the engine in the
-    invoice / workflow routers — direct assignment is the only
-    way to bypass."""
-    from app.api import invoices, workflow
+    """Every router that touches `invoice.status` must call
+    transition_invoice — direct assignment skips the audit dispatch.
 
-    # The engine helpers must be reachable from at least one of these
-    # routers (the actual transition points). Both routers import
-    # workflow_engine; the function must be invokable.
+    Three routers move invoices through their state machine today:
+    invoices (bulk + per-row ops), workflow (review / approve / reject),
+    and payments (schedule / void). Any of them dropping its
+    transition_invoice call would silently start producing
+    money-touching transitions without an audit row.
+    """
+    from app.api import invoices, payments, workflow
+
     invoices_src = inspect.getsource(invoices)
     workflow_src = inspect.getsource(workflow)
-    assert "transition_invoice" in invoices_src or "transition_invoice" in workflow_src, (
-        "at least one router must call transition_invoice — the only path "
-        "that pairs the state change with an audit row"
-    )
+    payments_src = inspect.getsource(payments)
+    for name, src in (
+        ("invoices", invoices_src),
+        ("workflow", workflow_src),
+        ("payments", payments_src),
+    ):
+        assert "transition_invoice" in src, (
+            f"router `{name}` must call transition_invoice — the only path "
+            "that pairs the invoice state change with an audit row"
+        )
 
 
 # ---------------------------------------------------------------------------

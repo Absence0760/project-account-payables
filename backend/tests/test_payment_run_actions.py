@@ -125,6 +125,76 @@ async def test_void_payment_refuses_failed_payment():
     assert "failed" in exc.value.detail.lower()
 
 
+@pytest.mark.asyncio
+async def test_void_payment_returns_invoice_to_approved_via_transition_invoice():
+    """Happy path: a scheduled payment is voided, the invoice flips back
+    to `approved`, and an audit row is dispatched. Pins both halves of
+    the void-back-edge contract — the status change and the SOC 2 row.
+    """
+    from unittest.mock import patch
+
+    from app.api.payments import VoidPaymentRequest, void_payment
+    from app.models.invoice import InvoiceStatus
+
+    payment_id = uuid.uuid4()
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    payment = SimpleNamespace(
+        id=payment_id,
+        invoice_id=uuid.uuid4(),
+        payment_run_id=None,
+        status="completed",
+        provider_payment_id="px_1",
+        amount=Decimal("250"),
+        method="ach",
+        reference="ref-1",
+        correlation_id=uuid.uuid4(),
+        created_at=now,
+        updated_at=now,
+        completed_at=None,
+        failure_reason=None,
+    )
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        invoice_number="INV-1",
+        vendor_name="Acme",
+        status=InvoiceStatus.payment_scheduled,
+    )
+    db = _db_returning_row((payment, invoice))
+    db.refresh = AsyncMock()
+
+    # No upstream adapter for this test — assert it's the invoice path
+    # that's wired up correctly. `dispatch_audit` is imported inline
+    # inside the handler, so it has to be patched at its source module.
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=SimpleNamespace()),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+        patch("app.services.audit_dispatch.dispatch_audit", new_callable=AsyncMock) as da,
+    ):
+        ti.return_value = invoice
+        da.return_value = None
+        await void_payment(
+            payment_id=payment_id,
+            body=VoidPaymentRequest(reason="duplicate"),
+            db=db,
+            org=_org(),
+            user=_user(),
+        )
+
+    # The void back-edge must call transition_invoice for the invoice
+    # status change, not assign invoice.status directly.
+    ti.assert_awaited_once()
+    call_kwargs = ti.call_args.kwargs
+    assert call_kwargs.get("action_name") == "invoice.voided_return_to_approved"
+    assert ti.call_args.args[2] == InvoiceStatus.approved
+
+    # And the payment.voided audit row is dispatched alongside.
+    da.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # cancel_payment_run
 # ---------------------------------------------------------------------------
