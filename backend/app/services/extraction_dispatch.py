@@ -219,7 +219,6 @@ async def _fail_invoice_safely(
         from sqlalchemy import select
 
         from app.models.invoice import Invoice, InvoiceStatus
-
         from app.services.workflow_engine import transition_invoice
 
         result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))

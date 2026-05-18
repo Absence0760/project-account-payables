@@ -25,9 +25,7 @@ class _FakeSortedSet:
 
     def zremrangebyscore(self, key, low, high) -> None:
         if key in self.store:
-            self.store[key] = [
-                (m, s) for m, s in self.store[key] if not (low <= s <= high)
-            ]
+            self.store[key] = [(m, s) for m, s in self.store[key] if not (low <= s <= high)]
 
     def zcard(self, key) -> int:
         return len(self.store.get(key, []))

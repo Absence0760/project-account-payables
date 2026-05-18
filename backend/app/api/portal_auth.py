@@ -17,13 +17,13 @@ from app.api.portal_deps import get_current_vendor_user
 from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
 from app.redis import block_token
-from app.services.rate_limit import check_rate_limit
 from app.schemas.portal import (
     PortalChangePasswordRequest,
     PortalLoginRequest,
     PortalMeResponse,
     PortalTokenResponse,
 )
+from app.services.rate_limit import check_rate_limit
 from app.tenant import get_tenant_db
 from app.utils.passwords import (
     PasswordError,

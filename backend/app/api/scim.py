@@ -63,9 +63,7 @@ async def get_scim_tenant(
     # Indexed lookup via the dedicated column (migration 0021). The
     # settings.sso.scim_bearer_hash key is still mirrored for backward
     # compatibility but is no longer the source of truth for auth.
-    result = await db.execute(
-        select(Organization).where(Organization.scim_bearer_hash == digest)
-    )
+    result = await db.execute(select(Organization).where(Organization.scim_bearer_hash == digest))
     org = result.scalar_one_or_none()
     if org is None:
         raise _scim_http_error(401, "Bearer token not recognised.")

@@ -1,6 +1,7 @@
 """Seed the database with sample data for two demo tenants."""
 
 import asyncio
+import os
 import uuid
 from datetime import UTC, date
 from decimal import Decimal
@@ -24,8 +25,6 @@ from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog, WorkflowDefinition
 from app.utils.passwords import pwd_context
-
-import os
 
 # Fixed UUIDs for reproducibility
 ACME_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")

@@ -239,9 +239,7 @@ def _trust_alb_proxy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_uses_forwarded_for_when_proxy_is_trusted(
-    fake_redis, _trust_alb_proxy
-):
+async def test_rate_limit_uses_forwarded_for_when_proxy_is_trusted(fake_redis, _trust_alb_proxy):
     """Behind an ALB *that's in the trusted_proxy_cidrs list*, the
     original client IP arrives in X-Forwarded-For. The limiter buckets
     by that — not by the ALB's address — otherwise every customer

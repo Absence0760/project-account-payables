@@ -42,9 +42,7 @@ def _is_control_db() -> bool:
 def upgrade() -> None:
     if not _is_control_db():
         return
-    op.execute(
-        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS scim_bearer_hash VARCHAR(64)"
-    )
+    op.execute("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS scim_bearer_hash VARCHAR(64)")
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_organizations_scim_bearer_hash "
         "ON organizations (scim_bearer_hash) "
