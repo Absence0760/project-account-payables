@@ -77,7 +77,7 @@ The agents cite concrete file paths. As the codebase shifts, edit the agents to:
 
 - Cite the actual file paths for the auth middleware, tenant-scoping helper, migration directory, test directory.
 - Replace generic invariants with the concrete library / type / column type the project chose.
-- Add project-specific invariants from `docs/decisions.md` ADRs as they get written.
+- Add project-specific invariants as new ADRs get written (the project's ADRs live under `docs/` once they exist).
 - Append new "Known bug shapes" entries to `repo-security-auditor.md` whenever a real regression gets fixed — that section is the institutional memory.
 
 The pattern is "keep the framework, swap in the specifics." Don't rewrite from scratch each time the stack shifts.

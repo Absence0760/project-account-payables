@@ -6,7 +6,7 @@ Run a pre-tag readiness audit before publishing a GitHub release. Report a green
 
 ## Why this exists
 
-Releases here are **release-gated**: publishing a GitHub release fires three deploy workflows in parallel (`deploy-frontend.yml`, `deploy-backend.yml`, `deploy-studio.yml`), each with a skip-if-unchanged check that compares the new tag to the previous one. Cutting a tag with the working tree dirty, CI red, or unpushed commits means the deploy doesn't match what you think it does.
+Releases here are **release-gated**: publishing a GitHub release fires the deploy workflows in parallel (currently `deploy-frontend.yml` for GitHub Pages; backend deploy lands when the AWS pipeline is wired), each with a skip-if-unchanged check that compares the new tag to the previous one. Cutting a tag with the working tree dirty, CI red, or unpushed commits means the deploy doesn't match what you think it does.
 
 The gates are scattered (CI status, working tree, push state, last-tag delta per workspace) and the human-eyeball version is unreliable. This command runs them in one shot.
 
@@ -80,8 +80,9 @@ git diff --stat <last-tag>..HEAD -- frontend/
 git log --oneline <last-tag>..HEAD -- backend/
 git diff --stat <last-tag>..HEAD -- backend/
 
-# Studio
-git log --oneline <last-tag>..HEAD -- studio/
+# Mobile
+git log --oneline <last-tag>..HEAD -- mobile/
+git diff --stat <last-tag>..HEAD -- mobile/
 
 # Infra (not a workspace, but matters for any deploy)
 git log --oneline <last-tag>..HEAD -- infra/
@@ -141,7 +142,7 @@ Either present → amber ("plaintext SOPS sibling exists locally — confirm it'
 |---|---|---|---|
 | Frontend | <n> | Yes / No | <one-line> |
 | Backend | <n> | Yes / No | <one-line> |
-| Studio | <n> | Yes / No | <one-line> |
+| Mobile | <n> | Yes / No | <one-line> |
 | Infra | <n> | n/a | <one-line> |
 
 ## Open audit signals

@@ -1,32 +1,30 @@
 ---
-description: Run the full audit sweep — secrets + xss + deps + infra + cost-controls — in parallel
-argument-hint: [security|deps|infra|cost] (optional area filter)
+description: Dispatch the project's audit suite — every /audit-* security command + /audit/auth — in parallel
 ---
 
-Run the project's audit sweep. By default, runs every audit; with an argument, runs the named subset.
+Spawn every audit available in this repo in parallel and consolidate the findings into one report.
 
-## Areas
+## Audits in scope
 
-- **security** — `audit/secrets`, `audit/xss`
-- **deps** — `audit/deps`
-- **infra** — `audit/infra`
-- **cost** — `audit/cost-controls`
+- **Top-level security audits** (`repo-security-auditor` agent): `/audit-security`,
+  `/audit-webhooks`, `/audit-money-path`.
+- **Auth + tenant-context sweep** (`repo-security-auditor` agent): `/audit/auth`.
 
 ## Procedure
 
-1. Decide which audits to run based on `$ARGUMENTS`:
-   - No argument → all five audits
-   - `security` → secrets + xss
-   - `deps` → deps only
-   - `infra` → infra only
-   - `cost` → cost-controls only
-2. **Spawn the right agent per audit area, in parallel.** Send all dispatches in a single message with multiple Agent tool calls.
-   - `secrets` and `xss`: each is a separate `repo-security-auditor` invocation, with the audit area passed as the prompt's first sentence. The agent already has the trust boundaries baked in; the prompt just steers it.
-   - `deps`: a single `general-purpose` agent with the `deps.md` body as prompt — the work is mostly running `pnpm audit` per workspace + reviewing Dependabot config + GitHub Actions pin status.
-   - `infra`: a single `general-purpose` agent with the `infra.md` body as prompt — reads ~10 small `.tf` files plus matches against documented expectations.
-   - `cost-controls`: a single `general-purpose` agent with the `cost-controls.md` body as prompt — cross-cuts code + IaC + docs, doesn't fit one specialised auditor.
-3. **Consolidate findings** into a single report grouped by severity (Critical / High / Medium / Low), then by audit area. For each finding: file:line, what's wrong, the audit that found it.
-4. **Recommend a fix order**, but don't apply fixes without explicit confirmation. Critical/High findings should be flagged with "fix this before next deploy"; Medium/Low can be batched.
+1. **Spawn one agent per audit, in parallel.** Send all dispatches in a single
+   message with multiple Agent tool calls. Every audit in this suite invokes
+   the `repo-security-auditor` agent — pass the audit's `.md` body as the
+   prompt's first sentence (e.g. `"Audit tenant isolation across HTTP routes
+   and DB session resolution"` for `/audit-security`). The agent has the
+   project's trust boundaries (auth, tenant isolation, money path, secrets,
+   PII) baked in and routes against the area you name.
+2. **Consolidate findings** into one report grouped by severity
+   (Critical / High / Medium / Low), then by audit area. For each finding:
+   file:line, what's wrong, the audit that found it.
+3. **Recommend a fix order**, but don't apply fixes without explicit
+   confirmation. Critical/High findings should be flagged with "fix before
+   next deploy"; Medium/Low can be batched.
 
 ## Output shape
 
@@ -57,6 +55,10 @@ Run the project's audit sweep. By default, runs every audit; with an argument, r
 ## Notes
 
 - This is read-only. Each sub-audit is read-only by default.
-- The report is the deliverable; do not edit code based on findings without asking the user first.
-- If an audit finds no issues, list it under the `## Clean` section — easier to spot regression on the next run.
-- For changes to **just** dependencies or **just** the frontend / studio, the relevant subset is usually enough — full sweep is for release prep and periodic drift checks.
+- The report is the deliverable; do not edit code based on findings
+  without asking the user first.
+- If an audit finds no issues, list it under the `## Clean` section —
+  easier to spot regression on the next run.
+- For narrow changes (just a webhook handler, just one route), prefer
+  the targeted command directly (`/audit-webhooks`, `/audit/auth`)
+  rather than the full sweep.
