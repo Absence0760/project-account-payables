@@ -5,6 +5,12 @@ You cannot sell a localhost. The first paying customer needs a real
 URL, a real database, real uptime, and someone to wake up when it's
 on fire.
 
+> This runbook is the **founder-facing checklist** — what buttons to
+> push, in what order. For the engineering rationale behind the
+> architecture (why CloudFront → ALB → ECS, why Lambdas for the
+> async paths, service-by-service deployment targets), see
+> [`docs/production-deployment.md`](../production-deployment.md).
+
 ## Current state
 
 `infra/` contains Terraform skeleton: VPC, ECS stack, RDS, KMS, S3,

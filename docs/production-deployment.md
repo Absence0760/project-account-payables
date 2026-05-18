@@ -4,6 +4,8 @@
 
 This document describes the recommended AWS deployment architecture for production. The core principle is to run the FastAPI API as a long-lived container and offload async, bursty workloads to Lambda functions.
 
+> This is the **engineering reference** — architecture, deployment targets, and the rationale behind each choice. For the step-by-step founder checklist (AWS account, domain, SOPS, terraform apply, smoke test), see [`docs/founder-runbooks/production-deployment.md`](founder-runbooks/production-deployment.md).
+
 ```
                          CloudFront
                             │

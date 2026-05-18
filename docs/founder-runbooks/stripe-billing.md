@@ -88,8 +88,10 @@ Plus a new `Organization.settings.billing` dict with:
 
 ### Adapter pattern
 
-Follow the existing adapter pattern (`services/payment_adapters/`,
-`services/extraction_adapters/`, etc):
+> **Status: not yet implemented.** `services/billing_adapters/` does
+> not exist in the code today — this section describes the shape the
+> engineering work should take. Follow the existing adapter pattern
+> used by `services/payment_adapters/` and `services/extraction_adapters/`:
 
 ```
 services/billing_adapters/
