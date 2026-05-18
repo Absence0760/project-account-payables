@@ -1,8 +1,15 @@
 import { execFileSync } from 'node:child_process';
 
-import { expect, test } from '../fixtures/helpers';
+import { expect, test, ACME_BASE } from '../fixtures/helpers';
 
 import { signInAndWait } from '../fixtures/helpers';
+
+// Pinned to the acme tenant: this spec talks to acme directly
+// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
+// The per-worker baseURL from fixtures/helpers.ts would route to
+// the wrong tenant. Multiple workers may share acme here — keep
+// this file's tests read-only or idempotent.
+test.use({ baseURL: ACME_BASE });
 
 const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 
