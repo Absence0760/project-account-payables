@@ -102,10 +102,27 @@ def test_extract_token(to, expected):
 # ---------------------------------------------------------------------------
 
 
-def test_verify_signature_skips_when_secret_unset():
+def test_verify_signature_fails_closed_when_secret_unset_in_non_debug():
+    """Production deploys that forget to set AP_EMAIL_INTAKE_SIGNING_SECRET
+    must reject every webhook, not accept everything."""
     from app.services import email_intake
 
-    with patch.object(email_intake.settings, "email_intake_signing_secret", ""):
+    with (
+        patch.object(email_intake.settings, "email_intake_signing_secret", ""),
+        patch.object(email_intake.settings, "debug", False),
+    ):
+        assert email_intake.verify_signature(b"anything", None) is False
+        assert email_intake.verify_signature(b"anything", "wrong") is False
+
+
+def test_verify_signature_skips_when_secret_unset_in_debug():
+    """Dev convenience: AP_DEBUG=true allows running locally with no secret."""
+    from app.services import email_intake
+
+    with (
+        patch.object(email_intake.settings, "email_intake_signing_secret", ""),
+        patch.object(email_intake.settings, "debug", True),
+    ):
         assert email_intake.verify_signature(b"anything", None) is True
         assert email_intake.verify_signature(b"anything", "wrong") is True
 

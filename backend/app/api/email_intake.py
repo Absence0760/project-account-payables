@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,9 +56,13 @@ async def inbound_webhook(
     Signature header names differ per provider; we check a few common ones
     so founders can point any provider at this URL without rewriting it.
     """
+    # Every rejection path returns 204 silently so the response can't be
+    # used to enumerate which providers / signing secrets / payload shapes
+    # the tenant accepts. Distinct 4xx codes leaked that information.
     parser = get_parser(provider)
     if parser is None:
-        raise HTTPException(status_code=404, detail=f"Unknown email provider: {provider}")
+        logger.warning("Email intake: unknown provider %s", provider)
+        return Response(status_code=204)
 
     body = await request.body()
     signature = (
@@ -68,11 +72,12 @@ async def inbound_webhook(
     )
     if not verify_signature(body, signature):
         logger.warning("Email intake signature rejected for provider=%s", provider)
-        raise HTTPException(status_code=401, detail="Invalid signature")
+        return Response(status_code=204)
 
     payload = parser(body, dict(request.headers))
     if payload is None:
-        raise HTTPException(status_code=400, detail="Could not parse provider payload")
+        logger.warning("Email intake: could not parse payload for provider=%s", provider)
+        return Response(status_code=204)
 
     result = await process_inbound_email(ctrl_db, payload)
     return result.to_dict()

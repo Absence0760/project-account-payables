@@ -172,7 +172,10 @@ class Settings(BaseSettings):
     hsts_preload: bool = True
 
     # App
-    debug: bool = True
+    # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
+    # ship FastAPI tracebacks (internal paths, env names) to clients. Local
+    # dev sets `AP_DEBUG=true` in `.env`.
+    debug: bool = False
 
 
 settings = Settings()

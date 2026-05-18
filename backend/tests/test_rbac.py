@@ -22,9 +22,11 @@ from fastapi.routing import APIRoute
 
 from app.api import (
     admin,
+    analytics,
     auth,
     auth_sso,
     cards,
+    credit_memos,
     dashboard,
     email_intake,
     erp_webhook,
@@ -100,9 +102,11 @@ NO_AUTH_REQUIRED = {
 # Routers wired into the app at /api — same set as app/main.py.
 ROUTERS = [
     admin.router,
+    analytics.router,
     auth.router,
     auth_sso.router,
     cards.router,
+    credit_memos.router,
     dashboard.router,
     email_intake.admin_router,
     email_intake.public_router,

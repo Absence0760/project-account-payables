@@ -35,6 +35,20 @@ from app.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast if the deploy left security-critical config at its insecure
+    # defaults. Local dev sets `AP_DEBUG=true` to keep these guards as
+    # warnings rather than crashes; every other environment must override.
+    if not settings.debug:
+        if settings.secret_key in ("", "change-me-in-production"):
+            raise RuntimeError(
+                "AP_SECRET_KEY must be set to a non-default value when AP_DEBUG=false"
+            )
+        if settings.email_intake_domain and not settings.email_intake_signing_secret:
+            raise RuntimeError(
+                "AP_EMAIL_INTAKE_SIGNING_SECRET must be set when "
+                "AP_EMAIL_INTAKE_DOMAIN is configured"
+            )
+
     # Background reaper for invoices stuck in `pending` extraction. Started
     # on app boot, cancelled cleanly on shutdown. Toggleable via
     # AP_EXTRACTION_REAPER_ENABLED so tests / one-shot CLI runs can disable it.
@@ -109,6 +123,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        # CSP locks every API response to its own origin. The SPA frontend is
+        # a separate static origin so it doesn't read these headers — but a
+        # successful XSS that opened the API origin in an iframe or via a
+        # popup would still be defanged because the API origin can't load
+        # third-party script. Tune in deployed envs if the API needs to
+        # serve any non-JSON content.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        )
         return response
 
 

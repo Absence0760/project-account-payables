@@ -291,6 +291,10 @@ async def test_lifespan_does_not_start_shipper_when_disabled(monkeypatch):
 
     import app.main as main_mod
 
+    # Lifespan now refuses to boot in non-debug mode when AP_SECRET_KEY is at
+    # its insecure default. The test inherits the dev defaults, so flip the
+    # debug bypass on for this lifespan exercise.
+    monkeypatch.setattr(main_mod.settings, "debug", True)
     monkeypatch.setattr(main_mod.settings, "extraction_reaper_enabled", False)
     monkeypatch.setattr(main_mod.settings, "audit_shipping_enabled", False)
 

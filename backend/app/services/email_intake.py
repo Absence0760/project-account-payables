@@ -180,12 +180,15 @@ async def resolve_tenant_from_recipient(
 def verify_signature(body: bytes, signature: str | None) -> bool:
     """Verify an HMAC-SHA256 signature of the webhook body.
 
-    Returns True when no secret is configured (local dev) OR when the
-    signature matches. False only on mismatch with a configured secret.
+    Fails closed: returns ``False`` whenever the secret is empty unless
+    ``AP_DEBUG`` is true (local dev convenience). The startup guard in
+    :func:`main.lifespan` already refuses to boot a deployed env that has
+    ``email_intake_domain`` set but ``email_intake_signing_secret`` empty,
+    so this branch only fires for an explicitly debug-mode developer.
     """
     secret = settings.email_intake_signing_secret
     if not secret:
-        return True
+        return bool(settings.debug)
     if not signature:
         return False
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -294,7 +297,9 @@ async def _create_invoice_from_attachment(
     tenant_db.add(invoice)
     await tenant_db.flush()
 
-    file_key = f"{org_id}/{invoice.id}/{attachment.filename}"
+    from app.services.storage import _safe_filename
+
+    file_key = f"{org_id}/{invoice.id}/{_safe_filename(attachment.filename)}"
     s3.put_object(
         Bucket=settings.s3_bucket,
         Key=file_key,

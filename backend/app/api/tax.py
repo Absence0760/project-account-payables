@@ -24,7 +24,12 @@ from app.api.deps import (
 from app.config import settings as app_settings
 from app.models.user import User
 from app.models.vendor import Vendor
-from app.services.storage import ALLOWED_CONTENT_TYPES, _ensure_bucket, _get_client
+from app.services.storage import (
+    ALLOWED_CONTENT_TYPES,
+    _ensure_bucket,
+    _get_client,
+    _safe_filename,
+)
 from app.services.tax_1099 import build_1099_report
 from app.tenant import get_tenant_db
 
@@ -104,7 +109,7 @@ async def upload_vendor_w9(
             detail=f"File type '{content_type}' not allowed for W-9",
         )
 
-    file_key = f"{org_id}/w9/{vendor.id}/{file.filename}"
+    file_key = f"{org_id}/w9/{vendor.id}/{_safe_filename(file.filename)}"
     s3 = _get_client()
     _ensure_bucket(s3)
     s3.put_object(
