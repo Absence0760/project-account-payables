@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.13.4,<3",
     "pydantic-settings>=2.14.1,<3",
     "python-multipart>=0.0.28,<1",
-    "boto3>=1.43.6,<2",
+    "boto3>=1.43.9,<2",
     "passlib[bcrypt]>=1.7.4,<2",
     # bcrypt held at 4.x: passlib 1.7.4 reads `bcrypt.__about__.__version__`
     # which was removed in bcrypt 5.0, and 5.0's strict >72-byte handling
