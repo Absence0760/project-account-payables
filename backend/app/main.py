@@ -138,10 +138,31 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-# CORS — allow any subdomain of localhost or the production domain
+
+def _build_cors_origin_regex() -> str:
+    """Compose the allow_origin_regex from settings.
+
+    Local dev always gets ``localhost`` (any subdomain + port). Production
+    domains come from ``AP_CORS_PRODUCTION_DOMAIN`` (comma-separated for
+    multi-domain deploys). Empty domain → only localhost matches, which
+    is the right default for local boot.
+    """
+    import re as _re
+
+    parts = [r"localhost(:\d+)?"]
+    raw = (settings.cors_production_domain or "").strip()
+    for domain in (d.strip() for d in raw.split(",") if d.strip()):
+        parts.append(_re.escape(domain))
+    return r"https?://([\w-]+\.)?(" + "|".join(parts) + ")"
+
+
+# CORS — `cors_origins` is the exact-match allowlist (the dev frontend);
+# the regex below covers tenant subdomains under localhost + any configured
+# production domain.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://([\w-]+\.)?(localhost(:\d+)?|app\.com)",
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=_build_cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

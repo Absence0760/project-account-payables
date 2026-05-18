@@ -124,9 +124,11 @@ class MockPaymentAdapter(PaymentAdapter):
         status = payload.get("status")
         if not provider_payment_id or status not in PaymentStatus.__members__:
             return None
+        event_id = payload.get("event_id") or f"{provider_payment_id}:{status}"
         return WebhookEvent(
             provider_payment_id=provider_payment_id,
             status=PaymentStatus(status),
+            event_id=str(event_id),
             reference=payload.get("reference"),
             failure_reason=payload.get("failure_reason"),
             occurred_at=datetime.now(UTC).isoformat(),

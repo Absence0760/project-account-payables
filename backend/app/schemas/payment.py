@@ -3,6 +3,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+
 
 class PaymentStatus(StrEnum):
     pending = "pending"
@@ -44,7 +46,7 @@ class PaymentResponse(BaseModel):
     correlation_id: str | None
     invoice_id: str
     payment_run_id: str | None
-    amount: float
+    amount: MoneyAmount
     method: str | None
     status: str
     reference: str | None
@@ -70,7 +72,7 @@ class PaymentResponse(BaseModel):
             correlation_id=str(p.correlation_id) if p.correlation_id else None,
             invoice_id=str(p.invoice_id),
             payment_run_id=str(p.payment_run_id) if p.payment_run_id else None,
-            amount=float(p.amount),
+            amount=p.amount,
             method=p.method,
             status=p.status,
             reference=p.reference,
@@ -94,7 +96,7 @@ class PaymentListResponse(BaseModel):
 class PaymentRunResponse(BaseModel):
     id: str
     status: str
-    total_amount: float | None
+    total_amount: OptionalMoneyAmount = None
     initiated_by: str | None
     executed_at: str | None
     created_at: str
@@ -107,7 +109,7 @@ class PaymentRunResponse(BaseModel):
         return cls(
             id=str(pr.id),
             status=pr.status,
-            total_amount=float(pr.total_amount) if pr.total_amount else None,
+            total_amount=pr.total_amount,
             initiated_by=str(pr.initiated_by) if pr.initiated_by else None,
             executed_at=pr.executed_at.isoformat() if pr.executed_at else None,
             created_at=pr.created_at.isoformat() if pr.created_at else "",

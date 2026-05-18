@@ -1,16 +1,18 @@
 """CORS origin enforcement.
 
-The CORS middleware in `app/main.py` uses an origin regex so that
-only `*.localhost` (dev) and `app.com` (prod) subdomains can call the
-API from a browser. The regex is the wall against a hostile page on
-`https://evil.example.com` making authenticated requests with the
-user's bearer token.
+The CORS middleware in `app/main.py` builds its origin regex at boot
+from two settings: ``cors_origins`` (exact-match list, default
+includes localhost dev origins) and ``cors_production_domain`` (the
+real deploy domain, empty by default). The regex is the wall against
+a hostile page on `https://evil.example.com` making authenticated
+requests with the user's bearer token.
 
 These tests fire preflight (OPTIONS) and credentialed-GET requests
-against the running app via the ASGI transport and confirm the
-`Access-Control-Allow-Origin` header is only echoed for origins that
-match the regex. A regression that broadens the regex (or drops it)
-is caught here.
+against the running app via the ASGI transport — they reflect the
+*default* config (no production domain set). The production-domain
+case is covered by the `_build_cors_origin_regex` unit tests below
+because the middleware is bound at import time and can't be reset
+without rebuilding the FastAPI app.
 """
 
 from __future__ import annotations
@@ -41,43 +43,72 @@ async def test_cors_allows_tenant_subdomain_of_localhost():
     assert r.headers.get("access-control-allow-credentials") == "true"
 
 
-@pytest.mark.asyncio
-async def test_cors_allows_production_domain():
-    """`https://app.com` (the prod root) must be allowed."""
-    from app.main import app
+def test_build_cors_origin_regex_with_no_production_domain():
+    """Default config: only `localhost` (any subdomain + port) matches.
+    Nothing else — including the prior placeholder `app.com` — is in
+    the allowlist."""
+    import re
 
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.options(
-            "/api/invoices",
-            headers={
-                "Origin": "https://app.com",
-                "Access-Control-Request-Method": "GET",
-                "Access-Control-Request-Headers": "authorization",
-            },
-        )
+    from app.main import _build_cors_origin_regex
 
-    assert r.headers.get("access-control-allow-origin") == "https://app.com"
+    with patched_setting("cors_production_domain", ""):
+        pattern = re.compile(_build_cors_origin_regex())
+    assert pattern.fullmatch("http://localhost:7777")
+    assert pattern.fullmatch("https://acme.localhost")
+    assert not pattern.fullmatch("https://app.com")
+    assert not pattern.fullmatch("https://acme.app.com")
 
 
-@pytest.mark.asyncio
-async def test_cors_allows_production_subdomain():
-    """Tenant subdomains of `app.com` (e.g., `acme.app.com`) must be
-    allowed. Without this, real customers can't reach the API."""
-    from app.main import app
+def test_build_cors_origin_regex_with_configured_production_domain():
+    """When ``AP_CORS_PRODUCTION_DOMAIN`` is set, the regex picks up
+    both the root domain and any subdomain. Multi-domain deploys can
+    pass a comma-separated list."""
+    import re
 
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.options(
-            "/api/invoices",
-            headers={
-                "Origin": "https://acme.app.com",
-                "Access-Control-Request-Method": "GET",
-                "Access-Control-Request-Headers": "authorization",
-            },
-        )
+    from app.main import _build_cors_origin_regex
 
-    assert r.headers.get("access-control-allow-origin") == "https://acme.app.com"
+    with patched_setting("cors_production_domain", "example.com"):
+        pattern = re.compile(_build_cors_origin_regex())
+    assert pattern.fullmatch("https://example.com")
+    assert pattern.fullmatch("https://acme.example.com")
+    assert pattern.fullmatch("http://acme.example.com")
+    assert not pattern.fullmatch("https://evil.com")
+    assert not pattern.fullmatch("https://evilexample.com")
+
+    with patched_setting("cors_production_domain", "ap.example.com, ap-staging.example.com"):
+        pattern = re.compile(_build_cors_origin_regex())
+    assert pattern.fullmatch("https://acme.ap.example.com")
+    assert pattern.fullmatch("https://acme.ap-staging.example.com")
+    assert not pattern.fullmatch("https://other.example.com")
+
+
+def test_build_cors_origin_regex_dots_are_escaped():
+    """A naive ``f-string`` injection would let ``a.com`` match
+    ``axcom`` because ``.`` is the regex wildcard. The builder must
+    escape the domain so only the literal dot counts."""
+    import re
+
+    from app.main import _build_cors_origin_regex
+
+    with patched_setting("cors_production_domain", "ap.example.com"):
+        pattern = re.compile(_build_cors_origin_regex())
+    assert not pattern.fullmatch("https://apxexamplexcom")
+
+
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def patched_setting(name: str, value: str):
+    """Temporarily override a settings attribute around a block."""
+    from app.config import settings
+
+    original = getattr(settings, name)
+    setattr(settings, name, value)
+    try:
+        yield
+    finally:
+        setattr(settings, name, original)
 
 
 @pytest.mark.asyncio
@@ -103,19 +134,17 @@ async def test_cors_rejects_arbitrary_external_origin():
 
 
 @pytest.mark.asyncio
-async def test_cors_rejects_app_com_lookalike_domain():
-    """`evil-app.com` or `appXcom` substring-style probes must NOT
-    pass. The regex anchors on `app.com` as a tail — a hostname
-    ending in (or containing) that string but with extra characters
-    must NOT match.
-    """
+async def test_cors_rejects_unconfigured_production_origin():
+    """``app.com`` was the prior hardcoded placeholder. With the
+    production domain now empty by default, the running app must NOT
+    allow it (or any other arbitrary hostname)."""
     from app.main import app
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        # `evil-app.com` — substring of `app.com` is present but
-        # surrounded by extra characters.
         for origin in (
+            "https://app.com",
+            "https://acme.app.com",
             "https://evil-app.com",
             "https://app.com.evil.test",
             "https://app-com.evil.test",

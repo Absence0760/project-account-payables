@@ -250,9 +250,12 @@ class StripeTreasuryAdapter(PaymentAdapter):
         if not provider_payment_id:
             return None
 
+        # Stripe puts the event id at the top level of the envelope.
+        event_id = event.get("id") or f"{provider_payment_id}:{status_str}"
         return WebhookEvent(
             provider_payment_id=provider_payment_id,
             status=_STATUS_MAP.get(status_str, PaymentStatus.submitted),
+            event_id=str(event_id),
             reference=obj.get("transaction"),
             failure_reason=(obj.get("returned_details") or {}).get("code"),
             occurred_at=event.get("created") and str(event["created"]),

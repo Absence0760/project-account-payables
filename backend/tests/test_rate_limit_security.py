@@ -230,16 +230,26 @@ async def test_rate_limit_recovers_when_entries_age_out(fake_redis):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _trust_alb_proxy(monkeypatch):
+    """Tell the limiter to trust XFF from the ALB-shaped 10.0.0.0/8 net."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "trusted_proxy_cidrs", "10.0.0.0/8")
+
+
 @pytest.mark.asyncio
-async def test_rate_limit_uses_forwarded_for_when_present(fake_redis):
-    """Behind an ALB, the original client IP arrives in the
-    X-Forwarded-For header. The limiter must bucket by that — not
-    by the ALB's address — otherwise every customer collapses into
-    a single global counter and 429s the whole tenant at once."""
+async def test_rate_limit_uses_forwarded_for_when_proxy_is_trusted(
+    fake_redis, _trust_alb_proxy
+):
+    """Behind an ALB *that's in the trusted_proxy_cidrs list*, the
+    original client IP arrives in X-Forwarded-For. The limiter buckets
+    by that — not by the ALB's address — otherwise every customer
+    collapses into a single global counter and 429s the whole tenant
+    at once."""
     from app.services.rate_limit import check_rate_limit
 
     # ALB at 10.0.0.5, real client A at 198.51.100.10, client B at 198.51.100.20.
-    # Hit cap as client A:
     for _ in range(5):
         await check_rate_limit(
             "signup",
@@ -247,7 +257,7 @@ async def test_rate_limit_uses_forwarded_for_when_present(fake_redis):
             limit=5,
             window_seconds=3600,
         )
-    # Client B (same ALB) must still pass.
+    # Client B (same ALB) must still pass — separate per-client bucket.
     await check_rate_limit(
         "signup",
         _fake_request(ip="10.0.0.5", forwarded="198.51.100.20"),
@@ -257,11 +267,11 @@ async def test_rate_limit_uses_forwarded_for_when_present(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_picks_first_forwarded_for_hop(fake_redis):
-    """`X-Forwarded-For: client, proxy1, proxy2` — the limiter must
+async def test_rate_limit_picks_first_forwarded_for_hop(fake_redis, _trust_alb_proxy):
+    """``X-Forwarded-For: client, proxy1, proxy2`` — the limiter must
     bucket on the leftmost (real client) value, not the rightmost
-    (most-trusted-proxy). A regression that flipped this would
-    let an attacker rotate proxies freely."""
+    (most-trusted-proxy). A regression that flipped this would let an
+    attacker rotate proxies freely."""
     from app.services.rate_limit import check_rate_limit
 
     for _ in range(5):
@@ -272,14 +282,35 @@ async def test_rate_limit_picks_first_forwarded_for_hop(fake_redis):
             window_seconds=3600,
         )
 
-    # A second-hop spoof — different IP claim in the X-F-F middle —
-    # should NOT escape the cap because the limiter reads the first hop.
+
+@pytest.mark.asyncio
+async def test_rate_limit_ignores_xff_from_untrusted_peer(fake_redis):
+    """When the connecting peer is NOT in ``trusted_proxy_cidrs``, the
+    limiter must ignore ``X-Forwarded-For`` and bucket on the real peer
+    IP. Otherwise a direct attacker rotates through arbitrary spoofed
+    XFF values to dodge per-IP limits.
+    """
+    from app.services.rate_limit import check_rate_limit
+
+    # Default settings → no trusted proxies. The attacker connects from
+    # 203.0.113.1 and claims XFF=198.51.100.10. We must bucket on
+    # 203.0.113.1, so a rotating XFF doesn't help them.
+    for _ in range(5):
+        await check_rate_limit(
+            "auth_login",
+            _fake_request(ip="203.0.113.1", forwarded="198.51.100.10"),
+            limit=5,
+            window_seconds=3600,
+        )
+    # Same peer, different forged XFF — must still 429 on the 6th hit
+    # because the bucket is keyed on the real peer (203.0.113.1), not
+    # the spoofed XFF value.
     from app.services.rate_limit import RateLimitExceeded
 
     with pytest.raises(RateLimitExceeded):
         await check_rate_limit(
-            "signup",
-            _fake_request(ip="10.0.0.5", forwarded="198.51.100.10, evil-spoof"),
+            "auth_login",
+            _fake_request(ip="203.0.113.1", forwarded="1.2.3.4"),
             limit=5,
             window_seconds=3600,
         )

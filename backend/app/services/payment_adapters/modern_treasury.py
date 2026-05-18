@@ -159,11 +159,15 @@ class ModernTreasuryAdapter(PaymentAdapter):
                 "/payment_orders", body=body, idempotency_key=payload.correlation_id
             )
         except httpx.RequestError as exc:
-            logger.warning("Modern Treasury request error: %s", exc)
+            # Don't log the exc message — RequestError can carry the URL,
+            # which on retried requests sometimes carries query-string
+            # credentials the SDK appends. Class name is enough for triage;
+            # audit dispatch captures the structured failure reason.
+            logger.warning("Modern Treasury request error: %s", exc.__class__.__name__)
             return PaymentResult(
                 success=False,
                 status=PaymentStatus.failed,
-                failure_reason=f"Network error contacting Modern Treasury: {exc}",
+                failure_reason="Network error contacting Modern Treasury",
             )
 
         if resp.status_code >= 400:
@@ -240,9 +244,14 @@ class ModernTreasuryAdapter(PaymentAdapter):
         if not provider_id or mt_status not in _STATUS_MAP:
             return None
 
+        # Modern Treasury includes the event id at the top level as `id`.
+        # Fall back to a composite when the field is absent so dedup keeps
+        # working on partial / older payloads.
+        event_id = payload.get("id") or f"{provider_id}:{mt_status}"
         return WebhookEvent(
             provider_payment_id=provider_id,
             status=_STATUS_MAP[mt_status],
+            event_id=str(event_id),
             reference=data.get("reference_number"),
             failure_reason=_failure_reason_from(data),
             occurred_at=payload.get("created_at") or datetime.now(UTC).isoformat(),

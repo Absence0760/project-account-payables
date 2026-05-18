@@ -163,6 +163,7 @@ async def payment_queue(
     today = date.today()
     items: list[dict] = []
     total_savings = Decimal("0")
+    total_amount = Decimal("0")
     for inv, sched in rows:
         # Discount eligibility: schedule has a discount_date in the future
         # AND the percent is set. Backfilled-without-schedule rows just don't
@@ -181,6 +182,7 @@ async def payment_queue(
             )
             total_savings += discount_amount
 
+        total_amount += inv.amount or Decimal("0")
         items.append(
             {
                 "id": str(inv.id),
@@ -206,10 +208,12 @@ async def payment_queue(
             }
         )
 
+    # Both totals are Decimal-accumulated; only the wire-encoding hop is float
+    # so the dict response matches the existing frontend contract (number).
     return {
         "items": items,
         "total": len(items),
-        "total_amount": float(sum(Decimal(str(it["amount"])) for it in items)),
+        "total_amount": float(total_amount),
         "total_savings": float(total_savings),
     }
 
@@ -1133,6 +1137,14 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     event = adapter.parse_webhook(headers, body)
     if event is None:
         return  # bad signature, unrecognised event, or no-op
+
+    # Dedup by the processor's event id. Webhook providers retry on any
+    # non-2xx delivery; without this guard the same event could flip a
+    # payment to `completed` twice and re-fire the ERP-sync dispatch.
+    from app.services.webhook_security import is_event_already_processed
+
+    if event.event_id and await is_event_already_processed(provider, event.event_id):
+        return
 
     # Open a tenant-DB session to look up + update the Payment row.
     engine = get_tenant_engine(org.db_name)

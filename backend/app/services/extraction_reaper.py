@@ -101,14 +101,26 @@ async def _reap_tenant(db_name: str, cutoff: datetime) -> int:
                 .all()
             )
 
+            from app.services.workflow_engine import transition_invoice
+
             for inv in stuck:
-                # Don't go through transition_invoice() — that wants an
-                # actor_id and writes the audit log. The reaper is a system
-                # action; we set status directly and surface the cause via
-                # the invoice's warnings array so the reviewer sees what
-                # happened when they open the row.
-                inv.status = InvoiceStatus.failed
                 age = int((datetime.now(UTC) - inv.created_at).total_seconds())
+                # Route the system transition through transition_invoice so
+                # the SOC 2 audit-shipping pipeline captures the row, same
+                # as every other status change. `actor_id=None` marks it as
+                # a system action; the audit row's `action` distinguishes
+                # reaper sweeps from user-driven failures.
+                await transition_invoice(
+                    db,
+                    inv,
+                    InvoiceStatus.failed,
+                    actor_id=None,
+                    action_name="invoice.extraction_reaped",
+                    details={"age_seconds": age, "threshold_seconds": int(cutoff.timestamp())},
+                )
+                # The warnings array stays — it's the reviewer-facing surface
+                # (visible in the row drawer); the audit row is the
+                # auditor-facing one. Both serve different SOC 2 readers.
                 warnings = list(inv.warnings or [])
                 warnings.append(
                     {

@@ -32,6 +32,7 @@ from app.schemas.auth import (
 from app.services import mfa
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.rate_limit import check_rate_limit
 from app.services.session_management import end_session, register_session
 from app.utils.passwords import (
     PasswordError,
@@ -103,6 +104,10 @@ async def login(
 ):
     """Password login. Returns either a final access token or — if MFA is in
     play — a short-lived challenge token the browser trades for one."""
+    # Per-IP credential-stuffing brake. 10 attempts / minute is high enough
+    # for a fat-fingering human (refreshing the page, retrying after a typo)
+    # and low enough to make online brute-forcing untenable.
+    await check_rate_limit("auth_login", request, limit=10, window_seconds=60)
     ip = _client_ip(request)
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
@@ -182,10 +187,14 @@ async def login(
 @router.post("/mfa/challenge/email", status_code=status.HTTP_204_NO_CONTENT)
 async def request_email_otp(
     body: MFAEmailChallengeRequest,
+    request: Request,
     db: AsyncSession = Depends(get_control_db),
 ):
     """Generate + email a one-time code. The challenge_token from /login proves
     the password was already accepted, so we don't email codes to random people."""
+    # Cap how fast a single IP can churn email-OTPs — protects the user's
+    # inbox from being weaponised as a notification spammer.
+    await check_rate_limit("auth_mfa_email", request, limit=5, window_seconds=60)
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
     try:
@@ -209,6 +218,11 @@ async def verify_mfa(
     db: AsyncSession = Depends(get_control_db),
 ):
     """Trade a challenge token + valid code for a real access token."""
+    # TOTP is a 6-digit code (10^6 keyspace). 10 attempts / minute caps an
+    # online brute-force at roughly 600/hour, which a 5-minute challenge TTL
+    # comfortably outruns. Email-OTP is single-use so the limit there only
+    # mitigates timing-attack probing.
+    await check_rate_limit("auth_mfa_verify", request, limit=10, window_seconds=60)
     ip = _client_ip(request)
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")

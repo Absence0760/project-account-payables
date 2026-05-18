@@ -233,9 +233,11 @@ class DwollaAdapter(PaymentAdapter):
             "transfer_returned": PaymentStatus.failed,
             "transfer_cancelled": PaymentStatus.cancelled,
         }.get(topic, PaymentStatus.submitted)
+        event_id = event.get("id") or f"{provider_payment_id}:{topic}"
         return WebhookEvent(
             provider_payment_id=provider_payment_id,
             status=status,
+            event_id=str(event_id),
             reference=provider_payment_id,
             failure_reason=event.get("failureCode"),
             occurred_at=event.get("created"),

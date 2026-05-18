@@ -241,9 +241,11 @@ class IncreaseAdapter(PaymentAdapter):
         if not provider_payment_id:
             return None
         status = _STATUS_MAP.get(obj.get("status", ""), PaymentStatus.submitted)
+        event_id = event.get("id") or f"{provider_payment_id}:{status.value}"
         return WebhookEvent(
             provider_payment_id=provider_payment_id,
             status=status,
+            event_id=str(event_id),
             reference=obj.get("transaction_id"),
             failure_reason=(obj.get("decline") or {}).get("reason"),
             occurred_at=event.get("created_at"),

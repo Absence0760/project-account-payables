@@ -200,9 +200,11 @@ class ColumnAdapter(PaymentAdapter):
         provider_payment_id = obj.get("id")
         if not provider_payment_id:
             return None
+        event_id = event.get("id") or f"{provider_payment_id}:{obj.get('status', '')}"
         return WebhookEvent(
             provider_payment_id=provider_payment_id,
             status=_STATUS_MAP.get(obj.get("status", ""), PaymentStatus.submitted),
+            event_id=str(event_id),
             reference=obj.get("trace_number"),
             failure_reason=obj.get("return_reason"),
             occurred_at=event.get("created_at"),

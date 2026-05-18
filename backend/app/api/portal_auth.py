@@ -8,7 +8,7 @@ as every other tenant-scoped route.
 import time
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from app.api.portal_deps import get_current_vendor_user
 from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
 from app.redis import block_token
+from app.services.rate_limit import check_rate_limit
 from app.schemas.portal import (
     PortalChangePasswordRequest,
     PortalLoginRequest,
@@ -36,11 +37,13 @@ router = APIRouter(prefix="/portal/auth", tags=["portal-auth"])
 @router.post("/login", response_model=PortalTokenResponse)
 async def portal_login(
     body: PortalLoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_tenant_db),
 ):
     """Exchange email+password for a portal access token. The `X-Tenant-Slug`
     header scopes the lookup — a vendor user in one tenant cannot authenticate
     against another tenant's portal."""
+    await check_rate_limit("portal_auth_login", request, limit=10, window_seconds=60)
     result = await db.execute(select(VendorUser).where(VendorUser.email == body.email))
     vu = result.scalar_one_or_none()
 

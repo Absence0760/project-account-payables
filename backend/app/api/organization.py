@@ -146,6 +146,10 @@ async def mint_scim_token(
     org.settings = settings_dict
     # Mutating a nested dict in-place doesn't mark JSONB dirty on its own.
     flag_modified(org, "settings")
+    # Mirror onto the indexed column — this is what SCIM auth resolves on
+    # since migration 0021. settings.sso.scim_bearer_hash stays populated
+    # for backward compat (logs, audit history) but is no longer authoritative.
+    org.scim_bearer_hash = digest
 
     await db.commit()
     return SCIMTokenResponse(token=raw, bearer_hash_prefix=digest[:8])

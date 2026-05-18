@@ -232,6 +232,7 @@ async def test_webhook_does_not_downgrade_terminal_payment():
     adapter.parse_webhook = MagicMock(
         return_value=SimpleNamespace(
             provider_payment_id="px_1",
+            event_id="evt_1",
             status=PaymentStatus.submitted,  # downgrade attempt
             reference="REF-NEW",
             failure_reason=None,
@@ -281,6 +282,7 @@ async def test_webhook_does_not_downgrade_failed_payment():
     adapter.parse_webhook = MagicMock(
         return_value=SimpleNamespace(
             provider_payment_id="px_2",
+            event_id="evt_2",
             status=PaymentStatus.completed,  # late "settled" arriving after failure
             reference="REF-NEW",
             failure_reason=None,
@@ -323,6 +325,7 @@ async def test_webhook_silently_ignores_unknown_provider_payment_id():
     adapter.parse_webhook = MagicMock(
         return_value=SimpleNamespace(
             provider_payment_id="px_unknown",
+            event_id="evt_unknown",
             status=PaymentStatus.completed,
             reference=None,
             failure_reason=None,
@@ -373,6 +376,7 @@ async def test_webhook_only_touches_the_url_path_tenant_db():
     adapter.parse_webhook = MagicMock(
         return_value=SimpleNamespace(
             provider_payment_id="px_3",
+            event_id="evt_3",
             status=PaymentStatus.completed,
             reference="REF-1",
             failure_reason=None,

@@ -107,7 +107,24 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
 
     # CORS
+    # `cors_origins` is a list of exact origins (used for the static-frontend
+    # dev server). `cors_production_domain` is a single registrable-domain
+    # suffix that — when set — adds `https://*.<domain>` to the allowlist
+    # via the subdomain regex. Empty in local dev so we never silently
+    # match a third-party host; deploys must set it to the real domain
+    # (e.g. ``app.example.com``). Comma-separated list of multiple domains
+    # is supported.
     cors_origins: list[str] = ["http://localhost:7777", "http://localhost:5173"]
+    cors_production_domain: str = ""
+
+    # `X-Forwarded-For` is only honoured when the request's connecting IP
+    # belongs to one of these CIDRs (the ALB / CloudFront edges in deployed
+    # envs). Anything outside the allowlist is treated as a direct client
+    # and uses ``request.client.host`` for rate-limit / audit purposes, so
+    # a hostile direct caller can't rotate IPs by spoofing the header.
+    # Default empty → never trust XFF (matches local-dev with no proxy).
+    # Comma-separated list of CIDRs.
+    trusted_proxy_cidrs: str = ""
 
     # Self-service signup
     email_provider: str = "console"  # "console" (dev default) | "ses"

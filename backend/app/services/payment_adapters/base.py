@@ -139,10 +139,18 @@ class WebhookEvent:
     Adapters parse provider-specific webhook bodies into this shape so the
     common handler in `app.api.payments` can route by `provider_payment_id`
     without knowing the processor's wire format.
+
+    ``event_id`` is the processor's own event identifier (NOT the payment
+    id) — webhooks retry on any non-2xx, so the handler dedupes by
+    ``event_id`` against the Redis ``is_event_already_processed`` ledger
+    before mutating state. Adapters that don't expose a stable event id
+    should fall back to a composite key (e.g. ``f"{payment_id}:{status}"``)
+    that's unique per state transition.
     """
 
     provider_payment_id: str
     status: PaymentStatus
+    event_id: str = ""
     reference: str | None = None
     failure_reason: str | None = None
     occurred_at: str | None = None  # ISO8601, processor's timestamp

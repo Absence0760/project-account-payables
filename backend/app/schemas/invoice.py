@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+
 
 class InvoiceStatus(StrEnum):
     new = "new"
@@ -89,7 +91,7 @@ class InvoiceResponse(BaseModel):
     correlation_id: str
     vendor: str
     invoice_number: str
-    amount: float
+    amount: MoneyAmount
     currency: str
     invoice_date: str | None
     received_date: str | None
@@ -97,10 +99,10 @@ class InvoiceResponse(BaseModel):
     payment_terms: str | None
     status: InvoiceStatus
     po_number: str
-    subtotal: float | None
-    tax_amount: float | None
-    discount_amount: float | None
-    shipping_amount: float | None
+    subtotal: OptionalMoneyAmount = None
+    tax_amount: OptionalMoneyAmount = None
+    discount_amount: OptionalMoneyAmount = None
+    shipping_amount: OptionalMoneyAmount = None
     remit_to_address: str | None
     bill_to_address: str | None
     vendor_address: str | None
@@ -139,7 +141,7 @@ class InvoiceResponse(BaseModel):
             correlation_id=str(inv.correlation_id),
             vendor=inv.vendor_name,
             invoice_number=inv.invoice_number,
-            amount=float(inv.amount),
+            amount=inv.amount,
             currency=inv.currency,
             invoice_date=inv.invoice_date.isoformat() if inv.invoice_date else None,
             received_date=inv.received_date.isoformat() if inv.received_date else None,
@@ -147,10 +149,10 @@ class InvoiceResponse(BaseModel):
             payment_terms=inv.payment_terms,
             status=inv.status,
             po_number=inv.po_number or "",
-            subtotal=float(inv.subtotal) if inv.subtotal is not None else None,
-            tax_amount=float(inv.tax_amount) if inv.tax_amount is not None else None,
-            discount_amount=float(inv.discount_amount) if inv.discount_amount is not None else None,
-            shipping_amount=float(inv.shipping_amount) if inv.shipping_amount is not None else None,
+            subtotal=inv.subtotal,
+            tax_amount=inv.tax_amount,
+            discount_amount=inv.discount_amount,
+            shipping_amount=inv.shipping_amount,
             remit_to_address=inv.remit_to_address,
             bill_to_address=inv.bill_to_address,
             vendor_address=inv.vendor_address,

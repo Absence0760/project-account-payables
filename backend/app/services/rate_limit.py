@@ -11,11 +11,13 @@ is coarse but acceptable for the low-volume abuse surface of tenant signup.
 
 from __future__ import annotations
 
+import ipaddress
 import time
 import uuid
 
 from fastapi import HTTPException, Request, status
 
+from app.config import settings
 from app.redis import get_redis
 
 KEY_PREFIX = "ratelimit:"
@@ -32,14 +34,50 @@ class RateLimitExceeded(HTTPException):
         )
 
 
+def _trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    raw = (settings.trusted_proxy_cidrs or "").strip()
+    if not raw:
+        return ()
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            # Skip junk silently — a typo in config shouldn't crash the
+            # rate limiter, and any unknown CIDR means "don't trust XFF
+            # from anything", which is the safe default anyway.
+            continue
+    return tuple(nets)
+
+
+def _ip_in_trusted_proxy(ip: str) -> bool:
+    nets = _trusted_proxy_networks()
+    if not nets:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in n for n in nets)
+
+
 def _client_ip(request: Request) -> str:
-    # Prefer the first forwarded-for hop if an ALB/CF is in front.
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    """Resolve the originating client IP.
+
+    Only honours ``X-Forwarded-For`` when the connecting peer is in the
+    configured ``trusted_proxy_cidrs`` allowlist — otherwise a direct
+    attacker could rotate through arbitrary IPs by spoofing the header
+    and dodge per-IP rate limits.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if _ip_in_trusted_proxy(peer):
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return peer
 
 
 async def check_rate_limit(

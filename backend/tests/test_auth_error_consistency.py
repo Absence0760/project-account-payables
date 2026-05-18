@@ -222,6 +222,7 @@ async def test_portal_login_unknown_email_and_wrong_password_raise_same_status()
     with pytest.raises(HTTPException) as exc_unknown:
         await portal_login(
             body=PortalLoginRequest(email="noone@nowhere.test", password="x"),
+            request=_fake_request(),
             db=_db_returning_user(None),
         )
 
@@ -237,6 +238,7 @@ async def test_portal_login_unknown_email_and_wrong_password_raise_same_status()
     with pytest.raises(HTTPException) as exc_wrong:
         await portal_login(
             body=PortalLoginRequest(email="real@vendor.test", password="wrong-12"),
+            request=_fake_request(),
             db=_db_returning_user(vu),
         )
 
@@ -254,6 +256,7 @@ async def test_portal_login_does_not_echo_password_in_detail():
     with pytest.raises(HTTPException) as exc:
         await portal_login(
             body=PortalLoginRequest(email="real@vendor.test", password=secret),
+            request=_fake_request(),
             db=_db_returning_user(None),
         )
     assert secret not in (exc.value.detail or "")
