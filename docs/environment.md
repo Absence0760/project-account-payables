@@ -34,7 +34,7 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_S3_ACCESS_KEY`    | `minioadmin`                                                             | MinIO/S3 access key              |
 | `AP_S3_SECRET_KEY`    | `minioadmin`                                                             | MinIO/S3 secret key              |
 | `AP_S3_BUCKET`        | `invoices`                                                               | S3 bucket for invoice files      |
-| `AP_DEBUG`            | `true`                                                                   | Enable debug logging             |
+| `AP_DEBUG`            | `false`                                                                  | Enable debug logging + SQLAlchemy echo. Default `false` so a forgotten deploy doesn't ship Python tracebacks to clients; `backend/.env.example` sets it to `true` for local dev. The boot guard also relaxes the AP_SECRET_KEY / AP_EMAIL_INTAKE_SIGNING_SECRET defaults when this is `true`. |
 | `AP_SSO_REDIRECT_PATH` | `/login/sso-callback`                                                   | Path the IdP redirects back to after OIDC auth (per tenant subdomain) |
 | `AP_SSO_STATE_TTL_SECONDS` | `600`                                                               | TTL on the OIDC state/nonce stored in Redis  |
 | `AP_SCIM_URL_PATH`    | `/api/scim/v2`                                                           | Mount path for SCIM 2.0 endpoints |
@@ -50,6 +50,15 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_EXTRACTION_TIMEOUT_SECONDS` | `600`                                                          | How long an invoice may sit in `pending` before the reaper transitions it to `failed`. |
 | `AP_EXTRACTION_REAPER_INTERVAL_SECONDS` | `60`                                                   | How often the in-process reaper sweeps for stuck `pending` invoices. |
 | `AP_EXTRACTION_REAPER_ENABLED` | `true`                                                          | Disable to skip the background reaper (useful for one-shot CLI runs / tests). |
+| `AP_EXTRACTION_AUTO_ROTATE`   | `true`                                                          | Run Tesseract OSD on rendered PDF pages before sending to vision adapters, auto-rotating 90/180/270-off-upright scans. No-op when `pytesseract` / `tesseract` are not installed. |
+| `AP_APPROVAL_ESCALATION_ENABLED` | `false`                                                      | Master switch for the approval-escalation sweeper. Disabled in local dev; flip on in deployed envs. |
+| `AP_APPROVAL_ESCALATION_INTERVAL_SECONDS` | `600`                                                 | How often the escalation sweeper scans every tenant's active workflow instances. |
+| `AP_PAYMENT_RECONCILE_ENABLED` | `false`                                                        | Master switch for the payment-status reconciler (backstop polling for processors whose webhooks went missing). Pair with Modern Treasury / Stripe Treasury in prod. |
+| `AP_PAYMENT_RECONCILE_INTERVAL_SECONDS` | `300`                                                 | How often the reconciler sweeps for `submitted`/`processing` payments. |
+| `AP_PAYMENT_RECONCILE_AFTER_MINUTES` | `10`                                                     | Minimum age before a payment is re-checked against the processor. |
+| `AP_PAYMENT_RECONCILE_MAX_AGE_HOURS` | `72`                                                     | Maximum age the reconciler tracks; anything older is left to ops. |
+| `AP_EMAIL_INTAKE_DOMAIN` | (empty)                                                              | Hostname for inbound intake addresses (`invoices+<token>@<domain>`). Empty disables email intake. |
+| `AP_EMAIL_INTAKE_SIGNING_SECRET` | (empty)                                                      | HMAC-SHA256 signing secret for the email-intake webhook body. Boot refuses if `AP_EMAIL_INTAKE_DOMAIN` is set and this is empty (unless `AP_DEBUG=true`). |
 | `AP_ERP_MODE`         | `local`                                                                  | `local` or `lambda` for ERP push dispatch |
 | `AP_AUDIT_MODE`       | `local`                                                                  | `local` or `lambda` for audit log writes |
 | `AP_SQS_EXTRACTION_QUEUE_URL` | (empty)                                                          | Required when `AP_EXTRACTION_MODE=lambda` |

@@ -73,11 +73,10 @@ backend/
 │   ├── database.py          # Control engine + per-tenant engine pool
 │   ├── redis.py             # Redis connection + token blocklist
 │   ├── tenant.py            # X-Tenant-Slug → tenant DB session
-│   ├── api/
-│   │   └── deps.py          # JWT auth, get_current_user, get_org_id
+│   ├── api/                 # FastAPI routers (one per domain) + deps.py
+│   │                        #   (deps.py: JWT auth, get_current_user, get_org_id)
 │   ├── models/              # SQLAlchemy ORM models
 │   ├── schemas/             # Pydantic request/response models
-│   ├── routers/             # FastAPI routers (one per domain)
 │   └── services/            # Business logic
 │       ├── extraction_adapters/   # AI/OCR providers (pluggable)
 │       ├── erp_adapters/          # ERP connectors (pluggable)
@@ -119,6 +118,14 @@ backend/
    - `WorkflowStep` — instance_id, step_number, step_type, assigned_to, action, completed_at
    - `AuditLog` — actor_id, action, entity_type, entity_id, details (JSONB)
    - `Exception` — invoice_id, exception_type, severity, status (open/resolved/escalated/dismissed)
+   - `CreditMemo` — vendor_id, original_invoice_id, amount, status (open/applied/voided)
+   - `BankStatement` / `BankTransaction` — uploaded statement + parsed transactions for reconciliation
+   - `SanctionsCheck` — append-only KYC / sanctions screening trail per vendor
+   - `ScheduledReport` — recurring CFO report definition (cron, recipients, format)
+   - `InvoiceEmbedding` — vector embedding per invoice for RAG / duplicate detection
+   - `VendorExtractionPrior` — accumulated vendor field priors that bias the next extraction
+   - `VendorUser` — supplier-portal credentials scoped to a single Vendor
+   - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
 
 **Connection management** (`database.py`):
 - `get_control_db()` → AsyncSession for control plane
@@ -161,8 +168,10 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 |---------|-------------|
 | `services/extraction_reaper.py` | Sweeps every tenant DB on a timer; transitions invoices stuck in `pending` extraction to `failed`. |
 | `services/audit_log_shipper.py` | Centralized audit-log shipper (SOC 2). Sweeps every tenant DB, reads unshipped `audit_log` rows in batches, fans them out to every configured `audit_shipping` adapter (CloudWatch Logs + S3 Object Lock), then marks `shipped_at=now()`. All adapters must ACK before rows are marked; failures leave rows unshipped so the next tick retries. Disabled by default — flip `AP_AUDIT_SHIPPING_ENABLED` on in deployed envs. See `docs/audit-log-shipping.md`. |
+| `services/approval_escalation.py` | Sweeps every tenant's active workflow instances and appends `escalation_to_user_ids` onto any approval chain level waiting longer than its configured `escalation_hours`. Disabled by default (`AP_APPROVAL_ESCALATION_ENABLED`); flip on in deployed envs. |
+| `services/payment_reconciler.py` | Backstop polling for payments whose processor webhook went missing. Re-fetches status from the payment adapter when a `submitted`/`processing` payment sits longer than `AP_PAYMENT_RECONCILE_AFTER_MINUTES`. Disabled by default (`AP_PAYMENT_RECONCILE_ENABLED`); flip on in deployed envs alongside Modern Treasury. |
 
-Both are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
+All four are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
 
 ## Adapter patterns
 

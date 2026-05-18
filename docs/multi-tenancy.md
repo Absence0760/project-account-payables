@@ -80,6 +80,15 @@ The cross-check in `get_tenant` is the load-bearing security control. Without it
 | `payment_schedules`          | Payment timing             |
 | `payments`                   | Individual payments        |
 | `exceptions`                 | Flagged issues             |
+| `credit_memos`               | Vendor credit memos        |
+| `bank_statements`            | Uploaded statement files (for reconciliation) |
+| `bank_transactions`          | Parsed transactions matched against payments |
+| `sanctions_checks`           | Append-only KYC / sanctions screening trail |
+| `scheduled_reports`          | Recurring CFO-report definitions |
+| `invoice_embeddings`         | Vector embeddings for RAG + duplicate detection |
+| `vendor_extraction_priors`   | Cached vendor field priors fed to next extraction |
+| `vendor_users`               | Supplier-portal credentials (scoped to a Vendor) |
+| `card_reveal_tokens`         | Single-use PAN-reveal tokens for vendors |
 
 Tenant tables still have an `organization_id` column (as a plain UUID, not a foreign key) for backward compatibility.
 

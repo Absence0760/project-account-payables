@@ -257,6 +257,56 @@ All require `admin`.
 |--------|-----------------------------------|-------------|
 | `POST` | `/api/erp/webhook/{erp_type}`     | (provider-signed) — inbound ERP status updates |
 
+## Goods Receipts
+
+Used by 3-way matching. `admin` / `ap_manager` / `ap_clerk`.
+
+| Method | Path                                    | Description |
+|--------|-----------------------------------------|-------------|
+| `GET`  | `/api/goods-receipts`                   | List goods receipts (paginated, filters by `vendor_id`, `po_id`, `status`) |
+| `GET`  | `/api/goods-receipts/{id}`              | Single GR with line items |
+
+## Credit Memos
+
+| Method | Path                              | Roles | Description |
+|--------|-----------------------------------|-------|-------------|
+| `GET`  | `/api/credit-memos`                | *     | List credit memos (paginated) |
+| `POST` | `/api/credit-memos`                | admin, ap_manager, ap_clerk | Create a credit memo against a vendor / original invoice |
+| `PATCH`| `/api/credit-memos/{id}`           | admin, ap_manager, ap_clerk | Update memo (amount, status) |
+| `POST` | `/api/credit-memos/{id}/apply`     | admin, ap_manager, ap_clerk | Apply an open credit memo against a payable |
+
+## Tax / 1099
+
+| Method | Path                                    | Roles | Description |
+|--------|-----------------------------------------|-------|-------------|
+| `GET`  | `/api/tax/vendors/{vendor_id}`           | admin, ap_manager, cfo | Vendor's 1099 status (W-9 received, classification, YTD totals) |
+| `POST` | `/api/tax/vendors/{vendor_id}/w9`        | admin, ap_manager | Upload signed W-9 PDF + mark vendor 1099-eligible |
+| `GET`  | `/api/tax/1099/{year}`                   | admin, ap_manager, cfo | YTD 1099 summary across all eligible vendors |
+
+## Analytics
+
+CFO-grade aggregates beyond the basic dashboard, plus CSV/PDF export and recurring report scheduling.
+
+| Method | Path                                       | Roles | Description |
+|--------|--------------------------------------------|-------|-------------|
+| `GET`  | `/api/analytics/spend`                      | cfo, admin, ap_manager | Aggregated spend by GL / vendor / cost center / time bucket |
+| `GET`  | `/api/analytics/dpo`                        | cfo, admin | Days-payable-outstanding rolling history |
+| `GET`  | `/api/analytics/export.csv`                 | cfo, admin, ap_manager | Streaming CSV of the current filtered analytics view |
+| `GET`  | `/api/analytics/scheduled-reports`          | cfo, admin | List scheduled-report definitions |
+| `POST` | `/api/analytics/scheduled-reports`          | cfo, admin | Create a recurring report (cron + recipients + format) |
+| `PATCH`| `/api/analytics/scheduled-reports/{id}`     | cfo, admin | Update a scheduled report |
+| `DELETE`|`/api/analytics/scheduled-reports/{id}`     | cfo, admin | Delete a scheduled report |
+
+## Email Intake
+
+Inbound email turns provider attachments into invoices. The public webhook is provider-signed (HMAC over the body); the admin endpoints manage the per-tenant intake address.
+
+| Method | Path                                         | Roles | Description |
+|--------|----------------------------------------------|-------|-------------|
+| `POST` | `/api/email-intake/inbound/{provider}`       | (provider-signed) | Webhook entrypoint. Returns 204 silently on every rejection (bad signature / unknown provider / unparsable payload) to avoid enumeration. |
+| `GET`  | `/api/organization/email-intake`             | admin | Show the current intake address + enabled flag |
+| `POST` | `/api/organization/email-intake/rotate-token`| admin | Generate a new token; the old address stops accepting email immediately |
+
 ## Health
 
 | Method | Path           | Description |

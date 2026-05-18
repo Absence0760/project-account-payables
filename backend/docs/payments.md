@@ -195,6 +195,11 @@ Registered providers:
 |---|---|---|
 | `mock` | ach, wire, check, rtp, virtual_card | Local dev — settles instantly with deterministic fake references. Default when `Organization.settings.payments` is empty. |
 | `modern_treasury` | ach, wire, rtp, check | Production. Real bank rails via Modern Treasury's REST API. Idempotent on `correlation_id`. |
+| `stripe_treasury` | ach, wire | Production. Stripe Treasury for orgs already on Stripe; settles via Treasury FinancialAccount. |
+| `increase` | ach, wire, check, rtp | Production. Increase API; same correlation-id idempotency story. |
+| `column` | ach, wire | Production. Column.com bank-as-a-service. |
+| `dwolla` | ach | Production. ACH-only. Use when the org doesn't want a full Treasury account. |
+| `checkeeper` | check | Production. Outsourced check printing + mailing. Pairs with one of the ACH/wire adapters. |
 
 Per-org config lives at `Organization.settings.payments`:
 

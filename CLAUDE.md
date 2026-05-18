@@ -83,11 +83,17 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
 | `/purchase-orders` | PO listing, ERP sync |
+| `/goods-receipts` | Goods-receipt list / detail (3-way match feeder) |
 | `/gl-accounts` | GL account CRUD, ERP sync |
+| `/credit-memos` | Credit-memo CRUD, vendor application |
+| `/tax` | 1099 tracking (W-9 upload, YTD totals, Tax1099 export) |
+| `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
 | `/workflows` | Workflow definition CRUD, active steps |
 | `/exceptions` | Exception queue, resolution |
 | `/dashboard` | KPI aggregates (pipeline, aging, spend, trends) |
 | `/erp` | Inbound ERP webhooks (status updates) |
+| `/email-intake` | Inbound email webhook (provider-signed) — turns attachments into invoices |
+| `/organization/email-intake` | Admin — show / rotate the per-tenant intake address |
 | `/signup` | Self-service tenant signup (start / slug-check / complete) |
 | `/health` | Health check |
 
@@ -111,8 +117,13 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 - **Extraction** (`services/extraction_adapters/`): claude_vision, openai_vision, aws_textract, ollama, mock. Registry via `@register_extraction_adapter` decorator.
 - **ERP** (`services/erp_adapters/`): merge_dev (unified), dynamics_365_bc, netsuite, mock. Registry via `@register_adapter` decorator. Config `integration_method: "merge_dev"|"direct"` selects path.
 - **Cards** (`services/card_adapters/`): lithic, nium, mock. Both have sandbox modes.
-- **Payments** (`services/payment_adapters/`): modern_treasury, mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
+- **Payments** (`services/payment_adapters/`): modern_treasury, stripe_treasury, increase, column, dwolla (ACH only), checkeeper (check printing), mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
 - **Audit shipping** (`services/audit_shipping/`): mock, cloudwatch, s3_objectlock. Registry via `@register_audit_shipping_adapter` decorator. Sinks for the centralized SOC 2 audit trail; list configured via `AP_AUDIT_SHIPPING_PROVIDERS`.
+- **FX rates** (`services/fx_adapters/`): mock, openexchangerates. Locked once per international payment at submission and persisted on the row. See `backend/docs/international-payments.md`.
+- **Sanctions / KYC** (`services/sanctions_adapters/`): mock, complyadvantage. Called by `services/compliance.check_payment_compliance` before every payment-adapter call.
+- **Email (outbound)** (`services/email_adapters/`): console (dev default), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
+- **Email intake (inbound)** (`services/email_intake_adapters/`): ses, mailgun, generic. Parses provider-specific inbound webhook payloads into a normalised `InboundEmail`.
+- **Embeddings** (`services/embedding_adapters/`): mock (dev default), openai. Powers RAG + duplicate-similarity search.
 
 To add a new adapter: copy `mock_adapter.py`, implement the interface, register with the decorator.
 
@@ -167,6 +178,9 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_AUDIT_SHIPPING_PROVIDERS` | `mock` | Comma-separated adapter names (e.g. `cloudwatch,s3_objectlock`). All must succeed before rows are marked shipped. |
 | `AP_AUDIT_SHIPPING_S3_BUCKET` | (empty) | Object-Lock-enabled S3 bucket for the WORM copy; required when the `s3_objectlock` provider is enabled |
 | `AP_AUDIT_SHIPPING_CLOUDWATCH_GROUP` | `/ap/audit` | CloudWatch Logs group for shipped audit events |
+| `AP_AUDIT_MODE` | `local` | `local` or `lambda` — same shape as `AP_EXTRACTION_MODE` |
+| `AP_EMAIL_INTAKE_DOMAIN` | (empty) | Hostname for inbound intake addresses (`invoices+<token>@<domain>`). Empty disables email intake. |
+| `AP_EMAIL_INTAKE_SIGNING_SECRET` | (empty) | HMAC-SHA256 signing secret for the email-intake webhook body. Required whenever `AP_EMAIL_INTAKE_DOMAIN` is set — boot refuses otherwise. |
 | `AP_MAX_CONCURRENT_SESSIONS` | `5` | Max concurrent sessions per user. Oldest JTI is evicted onto the blocklist when exceeded. `0` disables the cap. |
 
 Full list in `backend/app/config.py`.

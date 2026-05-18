@@ -30,31 +30,42 @@ Each invoice carries a **correlation ID** (UUID) that is propagated to every wor
 | `done`              | Workflow complete — terminal state, invoice is now immutable       | Final              |
 | `failed`            | Any stage failed                                                   | Error state        |
 
-The state machine in `services/workflow_engine.py` enforces the transitions documented below. The `posted_in_erp`, `payment_scheduled`, and `paid` statuses are set by **external events** (inbound ERP webhook, payment-run execution) rather than the standard transition path; they live in the enum so the status badge is accurate but they're not part of the linear workflow flow.
+The state machine in `services/workflow_engine.py` enforces every transition below — payment-path states (`posted_in_erp`, `payment_scheduled`, `paid`) are driven by inbound ERP webhooks + payment-run execution, but they go through `transition_invoice()` like any other transition, so they all produce audit-log rows.
 
 ## Status Transitions
 
 ```
 new ──────────────> pending                  (file uploaded, extraction triggered)
+new ──────────────> ready_for_review         (extraction skipped or pre-filled)
+new ──────────────> approved                 (auto-approve confidence path)
+new ──────────────> done                     (no workflow steps enabled → terminal)
 pending ──────────> ready_for_review         (extraction succeeded)
-pending ──────────> failed                   (extraction failed)
+pending ──────────> approved                 (auto-approve over threshold)
+pending ──────────> failed                   (extraction failed / reaper)
 ready_for_review ─> approved                 (reviewer approves)
 ready_for_review ─> rejected                 (reviewer rejects)
 rejected ─────────> ready_for_review         (re-submitted after edits)
 rejected ─────────> new                      (requires full re-upload)
 approved ─────────> sending_to_erp           (ERP submission initiated)
-approved ─────────> done                     (no ERP step in workflow → terminal)
+approved ─────────> payment_scheduled        (direct schedule — no ERP step)
+approved ─────────> done                     (no further steps → terminal)
 sending_to_erp ───> sent_to_erp              (ERP confirmed)
 sending_to_erp ───> failed                   (ERP rejected or timed out)
+sent_to_erp ──────> posted_in_erp            (ERP webhook confirms post)
 sent_to_erp ──────> done                     (terminal — workflow complete)
-new ──────────────> done                     (no workflow steps enabled → terminal)
+posted_in_erp ────> payment_scheduled        (payment run picks up the invoice)
+posted_in_erp ────> done                     (no payment step in workflow)
+payment_scheduled > paid                     (processor settles the payment)
+payment_scheduled > approved                 (void payment → back to queue)
+paid ─────────────> done                     (terminal)
+paid ─────────────> approved                 (void payment → back to queue)
 failed ───────────> pending                  (retry extraction)
 failed ───────────> sending_to_erp           (retry ERP push, if previously approved)
 ```
 
-`done` is the terminal state for the standard workflow path. `posted_in_erp` / `payment_scheduled` / `paid` are set by external triggers (ERP webhook, payment runs) and are not driven by `transition_invoice()`.
+`done` is terminal. The `payment_scheduled → approved` and `paid → approved` back-edges are the **void-payment** path (`POST /api/payments/{id}/void`): the invoice returns to the queue so it can be re-scheduled. Every transition above writes an audit-log row through `transition_invoice()`; nothing in the payment path mutates `invoice.status` directly.
 
-All transitions are enforced by a state machine in `services/workflow_engine.py`. Invalid transitions return `409 Conflict`.
+All transitions are enforced by a state machine in `services/workflow_engine.py`. Invalid transitions return `409 Conflict`. Authoritative graph: `VALID_TRANSITIONS` in that file.
 
 ## Stage 1: Upload & Extraction
 
