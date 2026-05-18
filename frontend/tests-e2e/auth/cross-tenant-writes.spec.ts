@@ -1,13 +1,6 @@
 import { expect, test } from '../fixtures/helpers';
 
 import {
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
 	ACME_ADMIN,
 	ACME_BASE,
 	escapeRegExp,
@@ -15,6 +8,13 @@ test.use({ baseURL: ACME_BASE });
 	TECHFLOW_ADMIN,
 	TECHFLOW_BASE
 } from '../fixtures/helpers';
+
+// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
+// asserts cross-tenant isolation that requires fixed tenant slugs. The
+// per-worker baseURL from fixtures/helpers.ts would otherwise route to
+// the wrong tenant. Multiple workers may share acme here — keep this
+// file's tests read-only or idempotent.
+test.use({ baseURL: ACME_BASE });
 
 /**
  * Cross-tenant WRITE attacks. `tenant-isolation.spec.ts` covers GET
