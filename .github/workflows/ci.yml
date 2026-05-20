@@ -176,9 +176,24 @@ jobs:
         run: shellcheck bin/*.sh
 
   e2e:
-    name: Frontend e2e (Playwright)
+    # Shard the Playwright suite across 4 parallel GitHub runners. Each
+    # shard boots its own Postgres + Redis + seeded backend, so there's
+    # zero cross-shard DB state risk. Within a shard, Playwright runs
+    # `workers=4` (matching the four `e2e<N>` tenants the seed provisions
+    # in *that* shard's DB) — total parallelism is therefore 4 shards ×
+    # 4 workers = 16 concurrent test processes spread across 4 machines.
+    # Cuts a previously-single-job e2e run down by roughly a factor of
+    # the slowest shard's wall clock.
+    name: Frontend e2e (Playwright) — shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      # One shard failing shouldn't cancel the others — we want to see
+      # whether the failure is shard-specific (i.e. a single flaky spec)
+      # or systemic (every shard fails the same way).
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -238,8 +253,11 @@ jobs:
         working-directory: backend
         run: pip install -e ".[dev]"
 
-      - name: Seed database (creates `acme` tenant + demo users)
+      - name: Seed database (acme + techflow + e2e1..e2e4 tenants)
         working-directory: backend
+        # Each matrix shard runs against its own Postgres service, so
+        # the seeded tenants only have to be unique within the shard —
+        # no need to namespace by `matrix.shard` here.
         run: python scripts/seed.py
 
       - name: Start backend in background
@@ -288,17 +306,24 @@ jobs:
         working-directory: frontend
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run Playwright suite
+      - name: Run Playwright suite (shard ${{ matrix.shard }}/4)
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
-        run: pnpm test:e2e
+        # Inline the Playwright invocation rather than calling
+        # `pnpm test:e2e` so the `--shard=N/4` flag flows through.
+        # Workers stay at the playwright.config.ts default (4), so
+        # each shard exercises every `e2e<N>` tenant it seeded.
+        run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts --shard=${{ matrix.shard }}/4
 
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
-          name: playwright-report
+          # Suffix with shard so the 4 parallel jobs don't collide on
+          # the upload-artifact name — `upload-artifact` rejects
+          # duplicate names across a workflow.
+          name: playwright-report-shard-${{ matrix.shard }}
           path: |
             frontend/playwright-report
             frontend/test-results
@@ -308,6 +333,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
-          name: backend-log
+          name: backend-log-shard-${{ matrix.shard }}
           path: /tmp/backend.log
           retention-days: 7

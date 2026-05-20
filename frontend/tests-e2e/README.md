@@ -86,18 +86,25 @@ the root dispatch scripts; see the repo's root README for the rest.
 ## CI
 
 `.github/workflows/ci.yml`'s `e2e` job runs the same flow on every
-push/PR to main:
+push/PR to main, **sharded across 4 parallel GitHub runners** via
+Playwright's `--shard=N/4` flag. Each shard:
 
-- pgvector/pgvector:pg16 + Redis 7 as services
-- Python 3.12 → install backend deps →
-  `python scripts/seed.py` → `python main.py &`
+- pgvector/pgvector:pg16 + Redis 7 as services (per-shard, isolated)
+- Python 3.14 → install backend deps →
+  `python scripts/seed.py` (creates acme + techflow + e2e1..e2e4
+  in *this shard's* Postgres) → `python main.py &`
 - Wait for `/api/health` to answer 200
 - pnpm 9 + Node 20 →
   `pnpm install --frozen-lockfile` →
   `pnpm exec playwright install --with-deps chromium`
-- `pnpm test:e2e` (which auto-starts the frontend dev server via
-  the webServer block)
-- Playwright report uploaded as an artifact on failure
+- `pnpm exec playwright test --config=… --shard=${{ matrix.shard }}/4`
+- Playwright report + backend log uploaded as
+  `playwright-report-shard-${N}` / `backend-log-shard-${N}` on failure
+
+Effective parallelism is `4 shards × 4 workers = 16` concurrent test
+processes spread across 4 separate runner VMs. `fail-fast: false`
+keeps the other shards going when one fails, so a flake in shard 2
+doesn't hide a real regression in shard 4.
 
 ## Seeded credentials
 

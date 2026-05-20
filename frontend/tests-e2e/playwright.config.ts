@@ -15,6 +15,13 @@ import { defineConfig, devices } from '@playwright/test';
  * (default 4) such tenants. A spec that creates / deletes / mutates
  * data in worker N's DB cannot collide with worker M's.
  *
+ * CI takes the parallelism one level further: `.github/workflows/ci.yml`
+ * shards the suite across 4 GitHub runners via Playwright's `--shard=N/4`
+ * flag. Each shard is its own job with its own Postgres + Redis +
+ * seeded backend, so the four `e2e<N>` tenants in shard A are
+ * disjoint DBs from the four in shard B — total parallelism is
+ * `4 shards × 4 workers = 16` concurrent test processes.
+ *
  * The seeded `acme` + `techflow` tenants stay around for the
  * cross-tenant-isolation specs that need fixed slugs
  * (`tenant-isolation.spec.ts`, `cross-tenant-writes.spec.ts`).
