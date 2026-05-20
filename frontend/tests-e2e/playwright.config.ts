@@ -77,8 +77,16 @@ export default defineConfig({
 	// passed through because vite reads it from process.env at build /
 	// dev time. Default to localhost:8000 so a developer's locally-run
 	// backend works without extra config.
+	//
+	// CI sets `AP_E2E_USE_PREVIEW=true` and runs `pnpm build` before
+	// Playwright starts. Preview serves the static bundle straight
+	// from `frontend/build/` — sub-second boot, no on-demand HMR
+	// transforms during page navigation. Locally we keep `pnpm dev`
+	// so an interactive run picks up source edits.
 	webServer: {
-		command: 'pnpm dev',
+		command: process.env.AP_E2E_USE_PREVIEW === 'true'
+			? 'pnpm exec vite preview --port 7777'
+			: 'pnpm dev',
 		url: 'http://localhost:7777',
 		reuseExistingServer: !process.env.CI,
 		timeout: 60_000,
