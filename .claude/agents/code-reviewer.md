@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Review-only agent invoked by /safe-edit and /check on non-trivial changes. Reads the working diff against the project's documented conventions (root and per-area CLAUDE.md, docs/decisions.md ADRs, financial-data invariants, fail-closed defaults, comment / abstraction discipline) and reports concrete diff-level findings the coder should apply before committing. Read-only — never edits.
+description: Review-only agent invoked by /safe-edit and /check on non-trivial changes. Reads the working diff against the project's documented conventions (root and per-area CLAUDE.md, the project invariants listed in the root CLAUDE.md, fail-closed defaults, comment / abstraction discipline) and reports concrete diff-level findings the coder should apply before committing. Read-only — never edits.
 tools: Bash, Read, Grep, Glob
 model: sonnet
 ---
@@ -13,8 +13,8 @@ This is an accounts-payable system. The blast radius of a wrong move includes: p
 
 1. The working diff: `git diff` (unstaged) + `git diff --staged`. If both are empty, ask the parent which commit / branch to inspect.
 2. For each changed file, read the surrounding context — not just the hunk. A change that looks fine in isolation can violate an invariant the rest of the file enforces.
-3. The relevant slices of the root `CLAUDE.md`, any per-area `CLAUDE.md`, and `docs/decisions.md` (ADRs) for any area the diff touches.
-4. Existing tests near the change. A change to `src/foo.ts` should be cross-referenced against `src/foo.test.ts` (or whatever the project's test convention turns out to be).
+3. The relevant slices of the root `CLAUDE.md` (especially the "Project invariants" section) and any per-area `CLAUDE.md` for the area the diff touches.
+4. Existing tests near the change. Backend: `backend/app/foo.py` → `backend/tests/test_foo.py`. Frontend: a component touched by a route change should have a matching update under `frontend/tests-e2e/` or a vitest spec next to the unit code. Mobile: `mobile/lib/foo.dart` → `mobile/test/foo_test.dart`.
 
 ## Your review checklist (project-specific)
 
@@ -28,18 +28,18 @@ Walk these in order. Stop when you have ~5 findings — quality over quantity.
 
 ### Project invariants (these are the ones a generic reviewer misses)
 
-These rules apply by default in any AP system. Confirm each against the project's own docs / CLAUDE.md as it grows; flag a violation as Critical unless the project explicitly opts out in writing.
+These are the rules listed in the root `CLAUDE.md` "Project invariants" section. Flag a violation as Critical unless the project explicitly opts out in writing.
 
-- **Money is exact.** Amounts use a fixed-precision representation (decimal, integer minor units, or a Money type) — never JS `number`, never IEEE-754 floats. A new column or in-memory total typed as `float`, `double`, `number`, or `real` for currency is Critical.
-- **Idempotency on writes that move money.** Anything that initiates a payment, reverses a payment, or confirms an invoice as paid must be idempotent at the API boundary (idempotency key, request id, or DB-level unique constraint). A new "send payment" / "post payment" / "confirm payable" handler with no idempotency story is Critical.
-- **Audit trail is append-only.** Status transitions on invoices, payments, approvals, and vendors should write a log row, not just mutate state. A new status change that overwrites without an audit row is Improvement at minimum, Critical if the field is regulated (paid_at, approved_at, void_at).
-- **Tenant isolation.** If the project is multi-tenant (most AP systems are), every read / write must be scoped to the calling tenant. A new query that doesn't filter by `tenant_id` / `org_id` (or doesn't go through whatever helper the project uses for that) is Critical. New tables in a migration must enforce isolation at the DB layer, not rely solely on application code.
-- **Authentication and authorization.** Every route is supposed to be behind auth unless it is documented as public. A new route mounted before the auth middleware, or a new path that references the user's identity without going through the auth layer, is Critical. Approval / payment endpoints should also check role / permission, not just authentication.
-- **PII / financial data exposure.** Bank account numbers, tax IDs, full vendor addresses must not be logged, returned in error messages, or surfaced in unauthenticated endpoints. A new `console.log`, error-response body, or public endpoint that includes PII / banking data is Critical.
-- **Secrets handling.** Database passwords, payment-processor keys, JWT signing keys must not have a hardcoded fallback in non-dev. A new `process.env.X || "some-default"` for a secret is Critical. Secrets must come from sops-encrypted env files / KMS / a secrets manager — not committed `.env` files.
-- **Schema and type drift.** When adding a column, both the DB migration and the TypeScript / generated types must move together. A migration without the matching type update (or vice versa) is Improvement at minimum, Critical if production code reads the column without the type knowing about it.
-- **Migrations are idempotent and reversible.** New `.sql` migrations should use `IF NOT EXISTS` / `IF EXISTS` clauses so re-running is safe. Destructive migrations (DROP, RENAME, type change) need a documented rollback path or a deliberate "no rollback" comment with a reason.
-- **Background jobs and webhooks must handle replays.** Webhooks from payment processors, accounting integrations, or email providers can deliver the same event multiple times. A new webhook handler that doesn't dedupe by event id is Critical.
+- **Money is exact.** Amounts use `Decimal` in Python, `Numeric(p, s)` on SQLAlchemy columns, and the Dart `Decimal` (`decimal` package) on the mobile side — never `float`, `double`, or JS `number`. A new column or in-memory total typed as `float` / `Float` / `Real` for currency is Critical.
+- **Idempotency on writes that move money.** Anything that initiates a payment, reverses a payment, or confirms an invoice as paid must be idempotent at the API boundary (precondition status guard, `correlation_id` / `provider_payment_id` uniqueness, or a request-id table). A new "send payment" / "post payment" / "confirm payable" handler with no idempotency story is Critical.
+- **Audit trail is append-only.** Status transitions on invoices, payments, approvals, and vendors should write a log row through `dispatch_audit(...)` before commit, not just mutate state. A new status change that overwrites without an audit row is Improvement at minimum, Critical if the field is regulated (`paid_at`, `approved_at`, `void_at`). Direct `invoice.status = X` assignments that skip `services/workflow_engine.transition_invoice` are the canonical instance.
+- **Tenant isolation is DB-per-tenant.** This project keeps each tenant in its own `ap_<slug>` PostgreSQL database; the control plane (`account_payables`) holds only `Organization` / `User` / `Role` / shared billing tables. Every tenant read / write must go through `Depends(get_tenant_db)` from `app/tenant.py`, which transitively pulls in `get_tenant`'s cross-check of the JWT `org` claim against the resolved `X-Tenant-Slug`. A new query that hits the control DB while reading tenant data, hardcodes an `ap_<slug>` DB name, or constructs a tenant engine via `get_tenant_engine(...)` outside `get_tenant_db` is Critical.
+- **Authentication and authorization.** Every route inside an included router is supposed to declare `Depends(get_current_user)` (or a role-gating variant) unless it appears in `NO_AUTH_REQUIRED` in `backend/tests/test_rbac.py`. A new route that references the user's identity without an auth dep is Critical. Approval / payment endpoints also need `Depends(require_roles(...))` — authentication alone is not enough.
+- **PII / financial data exposure.** Bank account numbers, tax IDs, full vendor addresses, PAN / CVV must not appear in `logger` output, in HTTP error bodies, or in URL query strings. A new `logger.info(...)` / `print(...)` / error-response field that includes any of those is Critical. The shipping helpers + the central audit-log row are where this data legitimately lives.
+- **Secrets handling.** Long-lived secrets live only in `*.sops` files, decrypted at runtime via the project's AWS KMS key. A new `os.environ.get("X", "some-default")` for a secret-shaped name (anything ending in `_KEY`, `_SECRET`, `_PASSWORD`, `_TOKEN`) is Critical. No committed `.env` files (`.env.example` templates are fine).
+- **Schema and type drift.** When adding a column, the Alembic migration AND the SQLAlchemy model AND the Pydantic schema have to move together. A migration without the matching model / schema update (or vice versa) is Improvement at minimum, Critical if production code reads the column without the model knowing about it.
+- **Migrations are idempotent and run on every tenant DB.** Alembic revisions use `op.execute(...)` with `IF NOT EXISTS` / `IF EXISTS` where applicable, or explicit `op.create_table(..., if_not_exists=True)` patterns, so a migration re-applied on a partially-upgraded DB is safe. Migrations that mutate tenant tables must fan out via `scripts/migrate_all_tenants.py`, not land on the control plane only. Destructive migrations (DROP, RENAME, type change) need a documented rollback path or a deliberate "no rollback" comment with a reason.
+- **Background jobs and webhooks must handle replays.** Inbound webhooks (payments, cards, ERP, email-intake) verify HMAC via `services/webhook_security.verify_hmac_sha256` AND dedupe via `is_event_already_processed` before mutating state. A new webhook handler that skips either is Critical. The shared rule applies to background sweeps too — the reaper, the shipper, and the reconciler all have to tolerate a duplicate tick without doubling effects.
 
 ### House style (root `CLAUDE.md`, per-area `CLAUDE.md`)
 
@@ -52,8 +52,8 @@ These rules apply by default in any AP system. Confirm each against the project'
 
 ### Test fit
 
-- Touched `src/foo.ts` should have a matching test file (the exact pattern depends on what test framework lands; flag the absence with a concrete file name proposal).
-- New migrations should have at least a smoke test that exercises the migration on a clean DB and on a DB with the previous schema applied.
+- Touched `backend/app/foo.py` should have a matching `backend/tests/test_foo.py`. Touched frontend route should have a matching `frontend/tests-e2e/<route>.spec.ts`. Touched `mobile/lib/foo.dart` should have a matching `mobile/test/foo_test.dart`. Flag the absence with the concrete file name.
+- New Alembic revisions should have at least a smoke test that exercises the migration on a clean DB and on a DB with the previous schema applied.
 - Bug fix without a regression test is a Note, not blocking — but call it out so the user can decide.
 
 ### Scope
