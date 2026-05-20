@@ -136,6 +136,14 @@ class Settings(BaseSettings):
     hcaptcha_sitekey: str = ""  # exposed to frontend via a public endpoint
     signup_rate_limit_per_hour: int = 5
 
+    # Master switch for the Redis-backed rate limiter at
+    # ``app/services/rate_limit.py``. Defaults to True so deployed envs
+    # are protected; CI's e2e suite flips this off because all 4 shards
+    # × 4 workers hit `/api/auth/login` from the same loopback IP and
+    # would otherwise saturate the 10/min cap during the
+    # signInAndWait calls in opt-out specs.
+    rate_limit_enabled: bool = True
+
     # RAG / embeddings
     rag_enabled: bool = True
     rag_top_k: int = 3

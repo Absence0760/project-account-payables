@@ -294,6 +294,12 @@ jobs:
       AP_DEBUG: "true"
       AP_PUBLIC_URL: http://localhost:7777
       AP_TENANT_URL_TEMPLATE: "http://{slug}.localhost:7777"
+      # All 4 shards × 4 workers hit the backend from the same loopback
+      # IP. The Redis-backed `auth_login` limit (10/min/IP) would 429 the
+      # storage-state preload before half the workers finished signing
+      # in. The same goes for the `auth_mfa_*` and `portal_auth_login`
+      # buckets. Disable rate limiting for the duration of the e2e run.
+      AP_RATE_LIMIT_ENABLED: "false"
       # Tell Playwright's webServer block to swap `pnpm dev` for
       # `vite preview --port 7777` — pre-built static bundle, no
       # HMR compile-on-demand, sub-second cold start. Read in

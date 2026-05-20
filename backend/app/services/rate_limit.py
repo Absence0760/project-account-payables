@@ -87,7 +87,17 @@ async def check_rate_limit(
     limit: int,
     window_seconds: int,
 ) -> None:
-    """Record this request and raise 429 if the caller is over the limit."""
+    """Record this request and raise 429 if the caller is over the limit.
+
+    No-ops when ``settings.rate_limit_enabled`` is False. The switch
+    exists so CI's e2e job (where every shard's 4 workers hit
+    ``/api/auth/login`` from the same loopback IP) doesn't saturate
+    the 10/min cap before the storage-state preload finishes.
+    Deployed envs keep the limiter on by default.
+    """
+    if not settings.rate_limit_enabled:
+        return
+
     client = _client_ip(request)
     key = f"{KEY_PREFIX}{endpoint}:{client}"
     now = time.time()
