@@ -23,7 +23,6 @@ async function deleteUser(page: import('@playwright/test').Page, id: string) {
 test.describe('/admin user lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/admin');
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 

@@ -2,7 +2,6 @@ import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	await page.goto('/workflows');
-	await page.waitForLoadState('networkidle');
 	await page.getByRole('button', { name: '+ New Workflow' }).click();
 	await page.locator('#wf-name').fill(`Add Remove E2E ${Date.now()}`);
 	await page.getByRole('button', { name: /^Create$/ }).click();

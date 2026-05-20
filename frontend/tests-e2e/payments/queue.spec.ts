@@ -47,7 +47,6 @@ function hardDeleteInvoice(id: string): void {
 test.describe('/payments queue selection', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/payments');
-		await page.waitForLoadState('networkidle');
 		// Queue is the default tab, but be defensive in case a prior
 		// test left a different tab active in shared state.
 		await page.locator('.tab', { hasText: 'Queue' }).click();

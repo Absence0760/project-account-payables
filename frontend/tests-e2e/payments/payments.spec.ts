@@ -29,7 +29,6 @@ test.describe('/payments (acme admin)', () => {
 
 	test('History tab shows seeded payments', async ({ page }) => {
 		await page.locator('.tab', { hasText: 'History' }).click();
-		await page.waitForLoadState('networkidle');
 
 		// 3 payments in the seed → table renders rows. The History tab
 		// is the only one with the search "Search payments..." input.
@@ -41,7 +40,6 @@ test.describe('/payments (acme admin)', () => {
 
 	test('Runs tab shows the seeded payment run', async ({ page }) => {
 		await page.locator('.tab', { hasText: 'Runs' }).click();
-		await page.waitForLoadState('networkidle');
 
 		// Seed creates 1 run per tenant, status "completed". Click into
 		// the row → the RunDetailModal opens.

@@ -32,7 +32,6 @@ async function createUser(
 test.describe('/admin bulk delete', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/admin');
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 

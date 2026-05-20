@@ -10,7 +10,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/invoices (acme admin)', () => {
 	test('lists at least one seeded invoice', async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 
 		// Toolbar's search input is the layout anchor — confirms the
 		// page mounted.
@@ -34,7 +33,6 @@ test.describe('/invoices (acme admin)', () => {
 
 	test('search input is interactive', async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 
 		const search = page.getByPlaceholder('Search invoices...');
 		await search.fill('vendor');

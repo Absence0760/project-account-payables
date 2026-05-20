@@ -16,7 +16,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/invoices invoice detail modal', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 		// Wait for the table to actually populate before clicking Edit.
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});

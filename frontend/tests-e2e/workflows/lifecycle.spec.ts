@@ -96,7 +96,6 @@ test.describe('workflow lifecycle', () => {
 	test('non-default workflow can be deleted via the list', async ({ page }) => {
 		// Create a throwaway workflow, then delete via the list-row button.
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
 		const name = `Delete Me ${Date.now()}`;
 		await page.getByRole('button', { name: '+ New Workflow' }).click();
 		await page.locator('#wf-name').fill(name);
@@ -106,7 +105,6 @@ test.describe('workflow lifecycle', () => {
 
 		// Bounce back to the list.
 		await page.goto('/workflows');
-		await page.waitForLoadState('networkidle');
 		const row = page.locator('table tbody tr', { hasText: name });
 		await expect(row).toBeVisible();
 

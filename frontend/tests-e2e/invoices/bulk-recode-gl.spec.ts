@@ -122,7 +122,6 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 test.describe('/invoices — Bulk Re-code GL modal (admin)', () => {
 	test('admin sees the toolbar button and can open the modal', async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 
 		const button = page.getByRole('button', { name: 'Bulk Re-code GL' });
 		await expect(button).toBeVisible();

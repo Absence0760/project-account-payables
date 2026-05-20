@@ -13,7 +13,6 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/invoices bulk bar (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		await page.waitForLoadState('networkidle');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 

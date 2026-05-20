@@ -5,7 +5,6 @@ async function createWorkflow(page: import('@playwright/test').Page): Promise<st
 	// pipeline editor primed. The create POST kicks off a window.location
 	// redirect; we read the new id from the URL once it lands.
 	await page.goto('/workflows');
-	await page.waitForLoadState('networkidle');
 	await page.getByRole('button', { name: '+ New Workflow' }).click();
 	await page.locator('#wf-name').fill(`Step Config E2E ${Date.now()}`);
 	await page.getByRole('button', { name: /^Create$/ }).click();
