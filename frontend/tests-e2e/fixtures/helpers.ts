@@ -1,8 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { expect, test as base, type Browser, type Page } from '@playwright/test';
+
+// `frontend/package.json` is `"type": "module"`, so the CommonJS
+// `__dirname` global isn't defined here. Recover it from
+// `import.meta.url` so the AUTH_DIR resolves relative to this file's
+// location regardless of the test runner's cwd.
+const _thisFile = fileURLToPath(import.meta.url);
+const _thisDir = path.dirname(_thisFile);
 
 /**
  * Per-worker tenant isolation for parallel Playwright execution.
@@ -25,7 +33,7 @@ import { expect, test as base, type Browser, type Page } from '@playwright/test'
  * top of the file or describe block.
  */
 
-const AUTH_DIR = path.resolve(__dirname, '../.auth');
+const AUTH_DIR = path.resolve(_thisDir, '../.auth');
 
 const E2E_TENANT_COUNT = parseInt(
 	process.env.E2E_TENANT_COUNT ?? process.env.AP_E2E_TENANT_COUNT ?? '4',
