@@ -1,21 +1,12 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	tenantBase,
+	test
+} from '../fixtures/helpers';
 
 interface FraudRules {
 	round_amount_enabled: boolean;
@@ -40,28 +31,25 @@ interface OrgResponse {
 }
 
 async function getOrg(page: import('@playwright/test').Page): Promise<OrgResponse> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/organization`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	return (await resp.json()) as OrgResponse;
 }
 
 async function getFraudDefaults(page: import('@playwright/test').Page): Promise<FraudRules> {
-	const token = await authToken(page);
 	const resp = await page.request.get(
 		`${API_BASE}/api/organization/fraud-rules/defaults`,
-		{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+		{ headers: await authedTenantHeaders(page) }
 	);
 	return (await resp.json()) as FraudRules;
 }
 
 async function clearFraudOverrides(page: import('@playwright/test').Page): Promise<void> {
-	const token = await authToken(page);
 	// Setting fraud_rules to {} drops every override and the engine falls
 	// back to defaults.
 	await page.request.patch(`${API_BASE}/api/organization`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { settings: { fraud_rules: {} } }
 	});
 }
@@ -74,7 +62,7 @@ async function clearFraudOverrides(page: import('@playwright/test').Page): Promi
  * `DEFAULT_FRAUD_RULES`.
  */
 
-test.describe('/organization — fraud rules (acme admin)', () => {
+test.describe('/organization — fraud rules', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await clearFraudOverrides(page);
@@ -83,8 +71,10 @@ test.describe('/organization — fraud rules (acme admin)', () => {
 	});
 
 	test.afterAll(async ({ browser }) => {
-		// Leave the tenant in a clean state for the next run.
-		const ctx = await browser.newContext();
+		// Leave the tenant in a clean state for the next run. The new
+		// context needs the worker's tenant baseURL since it's outside
+		// the per-test fixture.
+		const ctx = await browser.newContext({ baseURL: tenantBase(currentTenantSlug()) });
 		const page = await ctx.newPage();
 		try {
 			await signInAndWait(page);
@@ -208,12 +198,11 @@ test.describe('/organization — fraud rules (acme admin)', () => {
 		await expect(rushDaysInput).toHaveValue('3');
 	});
 
-	test('clerk role gets 403 from the defaults endpoint', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
-		const token = await authToken(page);
+	test('clerk role gets 403 from the defaults endpoint', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		const resp = await page.request.get(
 			`${API_BASE}/api/organization/fraud-rules/defaults`,
-			{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+			{ headers: await authedTenantHeaders(page) }
 		);
 		expect(resp.status()).toBe(403);
 	});

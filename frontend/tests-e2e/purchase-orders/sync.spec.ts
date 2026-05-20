@@ -1,25 +1,15 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	tenantBase,
+	test
+} from '../fixtures/helpers';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
-	const token = await authToken(page);
-	return { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' };
+	return await authedTenantHeaders(page);
 }
 
 /**
@@ -41,14 +31,14 @@ async function apiHeaders(page: import('@playwright/test').Page) {
 
 const MOCK_PO_NUMBERS = ['PO-2024-200', 'PO-2024-201', 'PO-2024-202'];
 
-test.describe('/api/purchase-orders/sync-erp (acme admin)', () => {
-	// Other suites (e.g. payments/execute) assume the seeded acme org
-	// has NO ERP configured — `dispatch_payment_sync` only runs the
-	// invoice → paid auto-bump when erp_config is present. Leaving the
-	// mock ERP wired up after this suite finishes makes the payments
-	// execute test see `paid` instead of `payment_scheduled`.
+test.describe('/api/purchase-orders/sync-erp', () => {
+	// Other suites (e.g. payments/execute) assume the seeded org has NO
+	// ERP configured — `dispatch_payment_sync` only runs the invoice →
+	// paid auto-bump when erp_config is present. Leaving the mock ERP
+	// wired up after this suite finishes makes the payments execute test
+	// see `paid` instead of `payment_scheduled`.
 	test.afterAll(async ({ browser }) => {
-		const context = await browser.newContext();
+		const context = await browser.newContext({ baseURL: tenantBase(currentTenantSlug()) });
 		const page = await context.newPage();
 		await signInAndWait(page);
 		const headers = await apiHeaders(page);
@@ -138,10 +128,10 @@ test.describe('/api/purchase-orders/sync-erp (acme admin)', () => {
 		expect(target.line_items.length).toBe(3);
 	});
 
-	test('clerk role cannot trigger the sync', async ({ page }) => {
+	test('clerk role cannot trigger the sync', async ({ page, tenantClerk }) => {
 		// Sign in as the clerk (read-only on POs). Sync requires admin or
 		// ap_manager — this is the RBAC contract.
-		await signInAndWait(page, ACME_CLERK);
+		await signInAndWait(page, tenantClerk);
 		const headers = await apiHeaders(page);
 
 		const resp = await page.request.post(`${API_BASE}/api/purchase-orders/sync-erp`, {

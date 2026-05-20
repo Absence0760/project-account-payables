@@ -1,25 +1,15 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	tenantBase,
+	test
+} from '../fixtures/helpers';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
-	const token = await authToken(page);
-	return { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' };
+	return await authedTenantHeaders(page);
 }
 
 /**
@@ -27,7 +17,7 @@ async function apiHeaders(page: import('@playwright/test').Page) {
  *
  * The endpoint used to ship a hardcoded 20-row mock list inline; it
  * now dispatches via `get_erp_adapter().list_gl_accounts()`. This
- * spec exercises the contract end-to-end against the seeded acme
+ * spec exercises the contract end-to-end against the worker's seeded
  * tenant configured against the mock ERP.
  *
  *   1. Unconfigured ERP → 400 (the precondition)
@@ -36,13 +26,13 @@ async function apiHeaders(page: import('@playwright/test').Page) {
  *   4. RBAC: clerk → 403
  */
 
-test.describe('/api/gl-accounts/sync-erp (acme)', () => {
+test.describe('/api/gl-accounts/sync-erp', () => {
 	// See the matching afterAll in tests-e2e/purchase-orders/sync.spec.ts
 	// — leaving an `erp` config behind makes downstream specs (notably
 	// payments/execute) see auto-paid invoices instead of the expected
 	// payment_scheduled status.
 	test.afterAll(async ({ browser }) => {
-		const context = await browser.newContext();
+		const context = await browser.newContext({ baseURL: tenantBase(currentTenantSlug()) });
 		const page = await context.newPage();
 		await signInAndWait(page);
 		const headers = await apiHeaders(page);
@@ -117,8 +107,8 @@ test.describe('/api/gl-accounts/sync-erp (acme)', () => {
 		}
 	});
 
-	test('clerk role cannot trigger the sync', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
+	test('clerk role cannot trigger the sync', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		const headers = await apiHeaders(page);
 		const resp = await page.request.post(`${API_BASE}/api/gl-accounts/sync-erp`, {
 			headers

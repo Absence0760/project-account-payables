@@ -1,21 +1,4 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 /**
  * /purchase-orders — list page + detail modal.
@@ -25,7 +8,7 @@ async function authToken(page: import('@playwright/test').Page) {
  * renders all of them on the first page.
  */
 
-test.describe('/purchase-orders (acme admin)', () => {
+test.describe('/purchase-orders', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/purchase-orders');
@@ -79,16 +62,14 @@ test.describe('/purchase-orders (acme admin)', () => {
 	test('GET /api/purchase-orders/{id} returns the matching PO with linked invoices', async ({
 		page
 	}) => {
-		const token = await authToken(page);
-		const list = await page.request.get(`${API_BASE}/api/purchase-orders`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-		});
+		const headers = await authedTenantHeaders(page);
+		const list = await page.request.get(`${API_BASE}/api/purchase-orders`, { headers });
 		const listBody = (await list.json()) as { items: Array<{ id: string; po_number: string }> };
 		expect(listBody.items.length).toBeGreaterThan(0);
 
 		const target = listBody.items[0];
 		const detail = await page.request.get(`${API_BASE}/api/purchase-orders/${target.id}`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+			headers
 		});
 		expect(detail.status()).toBe(200);
 		const body = (await detail.json()) as {
@@ -104,18 +85,16 @@ test.describe('/purchase-orders (acme admin)', () => {
 	});
 
 	test('GET /api/purchase-orders/{id} returns 404 for an unknown id', async ({ page }) => {
-		const token = await authToken(page);
 		const resp = await page.request.get(
 			`${API_BASE}/api/purchase-orders/00000000-0000-0000-0000-000000000000`,
-			{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+			{ headers: await authedTenantHeaders(page) }
 		);
 		expect(resp.status()).toBe(404);
 	});
 
 	test('list endpoint returns paginated {items, total} shape', async ({ page }) => {
-		const token = await authToken(page);
 		const resp = await page.request.get(`${API_BASE}/api/purchase-orders?page_size=2`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+			headers: await authedTenantHeaders(page)
 		});
 		expect(resp.status()).toBe(200);
 		const body = (await resp.json()) as { items: unknown[]; total: number };

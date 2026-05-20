@@ -1,21 +1,4 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 interface OrgResponse {
 	id: string;
@@ -41,9 +24,8 @@ interface OrgResponse {
 }
 
 async function getOrg(page: import('@playwright/test').Page): Promise<OrgResponse> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/organization`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	return (await resp.json()) as OrgResponse;
 }
@@ -52,9 +34,8 @@ async function patchOrg(
 	page: import('@playwright/test').Page,
 	body: Record<string, unknown>
 ): Promise<void> {
-	const token = await authToken(page);
 	await page.request.patch(`${API_BASE}/api/organization`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: body
 	});
 }
@@ -70,7 +51,7 @@ async function patchOrg(
  * a PATCH in finally.
  */
 
-test.describe('/organization settings (acme admin)', () => {
+test.describe('/organization settings', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/organization');
