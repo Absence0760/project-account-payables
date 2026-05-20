@@ -1,27 +1,8 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
-	const token = await authToken(page);
 	return {
-		Authorization: `Bearer ${token}`,
-		'X-Tenant-Slug': 'acme',
+		...(await authedTenantHeaders(page)),
 		'Content-Type': 'application/json'
 	};
 }
@@ -47,7 +28,7 @@ async function listRoles(page: import('@playwright/test').Page): Promise<RoleRes
  * probe can't infer that the id exists.
  */
 
-test.describe('/api/admin/roles — per-org custom roles (acme admin)', () => {
+test.describe('/api/admin/roles — per-org custom roles', () => {
 	const cleanup: string[] = [];
 
 	test.afterEach(async ({ page }) => {
@@ -150,7 +131,7 @@ test.describe('/api/admin/roles — per-org custom roles (acme admin)', () => {
 		expect(sysPatch.status()).toBe(403);
 	});
 
-	test('DELETE refuses when role is assigned to a user', async ({ page }) => {
+	test('DELETE refuses when role is assigned to a user', async ({ page, tenantClerk }) => {
 		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
@@ -170,7 +151,7 @@ test.describe('/api/admin/roles — per-org custom roles (acme admin)', () => {
 		const usersBody = (await usersResp.json()) as {
 			items: Array<{ id: string; email: string; roles: Array<{ name: string }> }>;
 		};
-		const target = usersBody.items.find((u) => u.email === 'demo+apclerk@acme.com')!;
+		const target = usersBody.items.find((u) => u.email === tenantClerk.email)!;
 		const baseRoles = target.roles.map((r) => r.name);
 
 		const grant = await page.request.patch(`${API_BASE}/api/admin/users/${target.id}`, {
@@ -198,8 +179,8 @@ test.describe('/api/admin/roles — per-org custom roles (acme admin)', () => {
 		cleanup.pop(); // already deleted
 	});
 
-	test('non-admin (clerk) gets 403 on every role endpoint', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
+	test('non-admin (clerk) gets 403 on every role endpoint', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		const headers = await apiHeaders(page);
 
 		const create = await page.request.post(`${API_BASE}/api/admin/roles`, {

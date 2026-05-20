@@ -1,40 +1,31 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
+import { expect, signInAndWait, test } from '../fixtures/helpers';
 
 /**
- * /admin — admin-only user management. Seed creates 4 acme users
+ * /admin — admin-only user management. Seed creates 4 users per tenant
  * (admin, manager, clerk, cfo) so the table renders 4 rows.
  */
 
-test.describe('/admin (acme admin)', () => {
+test.describe('/admin', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/admin');
 		await page.waitForLoadState('networkidle');
 	});
 
-	test('lists the seeded users', async ({ page }) => {
+	test('lists the seeded users', async ({ page, tenantAdmin }) => {
 		await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
-		// 4 acme users in seed.
+		// 4 users in seed per tenant.
 		expect(await page.locator('table tbody tr').count()).toBeGreaterThanOrEqual(4);
 
 		// Each row's email cell should match what the seed uses.
 		const emails = await page.locator('table tbody td.email-cell').allTextContents();
-		expect(emails).toContain('demo@acme.com');
+		expect(emails).toContain(tenantAdmin.email);
 	});
 
-	test('the current user is marked with "You"', async ({ page }) => {
-		// `signInAndWait` defaults to ACME_ADMIN (demo@acme.com).
-		const youRow = page.locator('table tbody tr', { hasText: 'demo@acme.com' });
+	test('the current user is marked with "You"', async ({ page, tenantAdmin }) => {
+		// `signInAndWait` defaults to the current worker's admin.
+		const youRow = page.locator('table tbody tr', { hasText: tenantAdmin.email });
 		await expect(youRow.locator('.you-badge')).toBeVisible();
 	});
 

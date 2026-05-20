@@ -1,65 +1,27 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 async function createUser(
 	page: import('@playwright/test').Page,
 	email: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/admin/users`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { full_name: 'Delete Safety Test', email, role_names: ['ap_clerk'] }
 	});
 	return ((await resp.json()) as { id: string }).id;
 }
 
 async function deleteUser(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	return page.request.delete(`${API_BASE}/api/admin/users/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
-}
-
-/**
- * Run a SQL statement directly against ap_acme. Tests use this to
- * stage an "in-flight reference" against a freshly-created user
- * (e.g. an open invoice assignment) and to clean up afterwards.
- */
-function sql(query: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			query
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
 }
 
 /**
@@ -76,45 +38,32 @@ function sql(query: string): void {
  * the user (audit data is append-only by design).
  */
 
-test.describe('/admin user-delete safety (acme admin)', () => {
+test.describe('/admin user-delete safety', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
 
 	test('user with no references can be deleted', async ({ page }) => {
-		const id = await createUser(page, `e2e-safe-${Date.now()}@acme.test`);
+		const id = await createUser(page, `e2e-safe-${Date.now()}@test.local`);
 		const resp = await deleteUser(page, id);
 		expect(resp.status()).toBe(204);
 	});
 
 	test('refuses delete when user is assigned to an open invoice', async ({ page }) => {
-		const id = await createUser(page, `e2e-inv-${Date.now()}@acme.test`);
+		const id = await createUser(page, `e2e-inv-${Date.now()}@test.local`);
 
 		// Pick a non-terminal invoice and stash its current assigned_to_id
 		// so we can revert. Using a `new`/`ready_for_review` row keeps the
 		// safety check tripped (status is in the "open" set).
 		const before = JSON.parse(
-			execFileSync(
-				'psql',
-				[
-					'-h',
-					'localhost',
-					'-U',
-					'postgres',
-					'-p',
-					'5432',
-					'-d',
-					'ap_acme',
-					'-tAc',
-					"SELECT json_build_object('id', id::text, 'orig', assigned_to_id::text) "
-						+ "FROM invoices WHERE status='new' LIMIT 1"
-				],
-				{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-			).toString()
+			tenantPsql(
+				"SELECT json_build_object('id', id::text, 'orig', assigned_to_id::text) "
+					+ "FROM invoices WHERE status='new' LIMIT 1"
+			)
 		) as { id: string; orig: string | null };
 
 		try {
-			sql(`UPDATE invoices SET assigned_to_id='${id}' WHERE id='${before.id}'`);
+			tenantPsql(`UPDATE invoices SET assigned_to_id='${id}' WHERE id='${before.id}'`);
 			const resp = await deleteUser(page, id);
 			expect(resp.status()).toBe(409);
 			const body = (await resp.json()) as {
@@ -133,20 +82,20 @@ test.describe('/admin user-delete safety (acme admin)', () => {
 			const restore = before.orig
 				? `UPDATE invoices SET assigned_to_id='${before.orig}' WHERE id='${before.id}'`
 				: `UPDATE invoices SET assigned_to_id=NULL WHERE id='${before.id}'`;
-			sql(restore);
+			tenantPsql(restore);
 			await deleteUser(page, id);
 		}
 	});
 
 	test('refuses delete when user has a pending workflow step assigned', async ({ page }) => {
-		const id = await createUser(page, `e2e-step-${Date.now()}@acme.test`);
-		const token = await authToken(page);
+		const id = await createUser(page, `e2e-step-${Date.now()}@test.local`);
+		const headers = await authedTenantHeaders(page);
 
 		// POST /api/invoices creates a workflow_instance per
 		// services/workflow_engine.create_workflow_instance, which is the
 		// FK target we need to insert a synthetic step against.
 		const invResp = await page.request.post(`${API_BASE}/api/invoices`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: {
 				vendor: 'Delete Safety Step Vendor',
 				invoice_number: `DSS-${Date.now()}`,
@@ -156,29 +105,14 @@ test.describe('/admin user-delete safety (acme admin)', () => {
 		});
 		const invoice = (await invResp.json()) as { id: string };
 
-		const instanceId = execFileSync(
-			'psql',
-			[
-				'-h',
-				'localhost',
-				'-U',
-				'postgres',
-				'-p',
-				'5432',
-				'-d',
-				'ap_acme',
-				'-tAc',
-				`SELECT id FROM workflow_instances WHERE invoice_id='${invoice.id}'`
-			],
-			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-		)
-			.toString()
-			.trim();
+		const instanceId = tenantPsql(
+			`SELECT id FROM workflow_instances WHERE invoice_id='${invoice.id}'`
+		).trim();
 
 		// Insert a synthetic pending step pointing at our user. Generate the
 		// id client-side so we don't have to parse psql's "INSERT 0 1" tail.
 		const stepRow = crypto.randomUUID();
-		sql(
+		tenantPsql(
 			`INSERT INTO workflow_steps (id, correlation_id, instance_id, step_number, step_type, assigned_to) `
 				+ `VALUES ('${stepRow}', gen_random_uuid(), '${instanceId}', 99, 'approval', '${id}')`
 		);
@@ -191,10 +125,10 @@ test.describe('/admin user-delete safety (acme admin)', () => {
 			};
 			expect(body.detail.references.pending_approval_steps).toBeGreaterThanOrEqual(1);
 		} finally {
-			sql(`DELETE FROM workflow_steps WHERE id='${stepRow}'`);
-			sql(`DELETE FROM workflow_instances WHERE id='${instanceId}'`);
-			sql(`DELETE FROM audit_log WHERE entity_id='${invoice.id}'`);
-			sql(`DELETE FROM invoices WHERE id='${invoice.id}'`);
+			tenantPsql(`DELETE FROM workflow_steps WHERE id='${stepRow}'`);
+			tenantPsql(`DELETE FROM workflow_instances WHERE id='${instanceId}'`);
+			tenantPsql(`DELETE FROM audit_log WHERE entity_id='${invoice.id}'`);
+			tenantPsql(`DELETE FROM invoices WHERE id='${invoice.id}'`);
 			await deleteUser(page, id);
 		}
 	});
@@ -202,13 +136,11 @@ test.describe('/admin user-delete safety (acme admin)', () => {
 	test('refuses delete when user is in an active workflow def approver_ids', async ({
 		page
 	}) => {
-		const id = await createUser(page, `e2e-defn-${Date.now()}@acme.test`);
-		const token = await authToken(page);
+		const id = await createUser(page, `e2e-defn-${Date.now()}@test.local`);
+		const headers = await authedTenantHeaders(page);
 
 		// Get the active workflow + put the user into approval.approver_ids.
-		const wfsResp = await page.request.get(`${API_BASE}/api/workflows`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-		});
+		const wfsResp = await page.request.get(`${API_BASE}/api/workflows`, { headers });
 		const wfs = (await wfsResp.json()) as Array<{
 			id: string;
 			is_active: boolean;
@@ -226,7 +158,7 @@ test.describe('/admin user-delete safety (acme admin)', () => {
 
 		try {
 			await page.request.patch(`${API_BASE}/api/workflows/${active!.id}`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+				headers,
 				data: { steps: withApprover }
 			});
 
@@ -238,7 +170,7 @@ test.describe('/admin user-delete safety (acme admin)', () => {
 			expect(body.detail.references.active_workflow_approver_in).toBeGreaterThanOrEqual(1);
 		} finally {
 			await page.request.patch(`${API_BASE}/api/workflows/${active!.id}`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+				headers,
 				data: { steps: before.steps }
 			});
 			await deleteUser(page, id);

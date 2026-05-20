@@ -1,50 +1,41 @@
 import { execFileSync } from 'node:child_process';
 
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 async function createUser(
 	page: import('@playwright/test').Page,
 	email: string,
 	fullName: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/admin/users`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { full_name: fullName, email, role_names: [] }
 	});
 	return ((await resp.json()) as { id: string }).id;
 }
 
 async function deleteUser(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	await page.request.delete(`${API_BASE}/api/admin/users/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 }
 
 /**
- * Bulk-clean any e2e-created users via direct SQL. Used in afterEach
- * so leftover rows from a single failing test don't push the seed
- * users off the first page in subsequent runs.
+ * Bulk-clean any e2e-created users via direct SQL against the control
+ * plane. Users live in the control-plane DB (not per-tenant), so we
+ * scope the purge by email suffix to the current worker's tenant slug
+ * to avoid stomping on other workers' rows.
  */
 function purgeE2EUsers(): void {
+	const slug = currentTenantSlug();
+	const pattern = `e2e-search-%@${slug}.test.local`;
 	execFileSync(
 		'psql',
 		[
@@ -57,9 +48,9 @@ function purgeE2EUsers(): void {
 			'-d',
 			'account_payables',
 			'-c',
-			"DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'e2e-search-%@acme.test')",
+			`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email LIKE '${pattern}')`,
 			'-c',
-			"DELETE FROM users WHERE email LIKE 'e2e-search-%@acme.test'"
+			`DELETE FROM users WHERE email LIKE '${pattern}'`
 		],
 		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
 	);
@@ -72,7 +63,7 @@ function purgeE2EUsers(): void {
  * input and a "Load more" button.
  */
 
-test.describe('/admin user search + pagination (acme admin)', () => {
+test.describe('/admin user search + pagination', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/admin');
@@ -83,13 +74,24 @@ test.describe('/admin user search + pagination (acme admin)', () => {
 		purgeE2EUsers();
 	});
 
-	test('search input is rendered and filters by name (case-insensitive)', async ({ page }) => {
+	test('search input is rendered and filters by name (case-insensitive)', async ({
+		page,
+		tenantSlug
+	}) => {
 		const created: string[] = [];
 		try {
 			const ts = Date.now();
 			created.push(
-				await createUser(page, `e2e-search-alpha-${ts}@acme.test`, 'Alpha Centauri'),
-				await createUser(page, `e2e-search-beta-${ts}@acme.test`, 'Beta Pictoris')
+				await createUser(
+					page,
+					`e2e-search-alpha-${ts}@${tenantSlug}.test.local`,
+					'Alpha Centauri'
+				),
+				await createUser(
+					page,
+					`e2e-search-beta-${ts}@${tenantSlug}.test.local`,
+					'Beta Pictoris'
+				)
 			);
 
 			await page.reload();
@@ -119,12 +121,16 @@ test.describe('/admin user search + pagination (acme admin)', () => {
 		}
 	});
 
-	test('search by email substring also matches', async ({ page }) => {
+	test('search by email substring also matches', async ({ page, tenantSlug }) => {
 		const created: string[] = [];
 		try {
 			const ts = Date.now();
 			created.push(
-				await createUser(page, `e2e-search-needle-${ts}@acme.test`, 'Findable User')
+				await createUser(
+					page,
+					`e2e-search-needle-${ts}@${tenantSlug}.test.local`,
+					'Findable User'
+				)
 			);
 
 			await page.reload();
@@ -145,11 +151,17 @@ test.describe('/admin user search + pagination (acme admin)', () => {
 		}
 	});
 
-	test('clearing search restores the unfiltered list', async ({ page }) => {
+	test('clearing search restores the unfiltered list', async ({ page, tenantSlug }) => {
 		const created: string[] = [];
 		try {
 			const ts = Date.now();
-			created.push(await createUser(page, `e2e-search-clear-${ts}@acme.test`, 'Clear Test'));
+			created.push(
+				await createUser(
+					page,
+					`e2e-search-clear-${ts}@${tenantSlug}.test.local`,
+					'Clear Test'
+				)
+			);
 			await page.reload();
 			await page.waitForLoadState('networkidle');
 
@@ -176,7 +188,8 @@ test.describe('/admin user search + pagination (acme admin)', () => {
 	});
 
 	test('pagination: large user count surfaces a Load more button that appends', async ({
-		page
+		page,
+		tenantSlug
 	}) => {
 		// Create 22 throwaway users to push the list past page_size=20.
 		// All start with "e2e-search-page-" so afterEach can sweep them.
@@ -187,7 +200,7 @@ test.describe('/admin user search + pagination (acme admin)', () => {
 				created.push(
 					await createUser(
 						page,
-						`e2e-search-page-${ts}-${i}@acme.test`,
+						`e2e-search-page-${ts}-${i}@${tenantSlug}.test.local`,
 						`Pageable User ${i}`
 					)
 				);

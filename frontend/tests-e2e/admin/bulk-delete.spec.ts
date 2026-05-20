@@ -1,57 +1,25 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 async function createUser(
 	page: import('@playwright/test').Page,
 	emailSuffix: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/admin/users`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			full_name: 'Bulk Delete Test',
-			email: `e2e-bulk-${emailSuffix}@acme.test`,
+			email: `e2e-bulk-${emailSuffix}@test.local`,
 			role_names: ['ap_clerk']
 		}
 	});
 	return ((await resp.json()) as { id: string }).id;
-}
-
-function sql(query: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			query
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
 }
 
 /**
@@ -62,7 +30,7 @@ function sql(query: string): void {
  * and a floating bulk-bar with Clear + Delete N.
  */
 
-test.describe('/admin bulk delete (acme admin)', () => {
+test.describe('/admin bulk delete', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/admin');
@@ -70,8 +38,8 @@ test.describe('/admin bulk delete (acme admin)', () => {
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 
-	test('current user has no selection checkbox', async ({ page }) => {
-		const youRow = page.locator('table tbody tr', { hasText: 'demo@acme.com' });
+	test('current user has no selection checkbox', async ({ page, tenantAdmin }) => {
+		const youRow = page.locator('table tbody tr', { hasText: tenantAdmin.email });
 		await expect(youRow.locator('.you-badge')).toBeVisible();
 		await expect(youRow.locator('td.checkbox-col input[type="checkbox"]')).toHaveCount(0);
 	});
@@ -104,10 +72,7 @@ test.describe('/admin bulk delete (acme admin)', () => {
 		} finally {
 			for (const id of created) {
 				await page.request.delete(`${API_BASE}/api/admin/users/${id}`, {
-					headers: {
-						Authorization: `Bearer ${await authToken(page)}`,
-						'X-Tenant-Slug': 'acme'
-					}
+					headers: await authedTenantHeaders(page)
 				});
 			}
 		}
@@ -165,30 +130,17 @@ test.describe('/admin bulk delete (acme admin)', () => {
 		// Stash + clobber an open invoice's assigned_to_id so `blocked`
 		// is referenced.
 		const invRow = JSON.parse(
-			execFileSync(
-				'psql',
-				[
-					'-h',
-					'localhost',
-					'-U',
-					'postgres',
-					'-p',
-					'5432',
-					'-d',
-					'ap_acme',
-					'-tAc',
-					"SELECT json_build_object('id', id::text, 'orig', assigned_to_id::text) "
-						+ "FROM invoices WHERE status='new' LIMIT 1"
-				],
-				{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-			).toString()
+			tenantPsql(
+				"SELECT json_build_object('id', id::text, 'orig', assigned_to_id::text) "
+					+ "FROM invoices WHERE status='new' LIMIT 1"
+			)
 		) as { id: string; orig: string | null };
-		sql(`UPDATE invoices SET assigned_to_id='${blocked}' WHERE id='${invRow.id}'`);
+		tenantPsql(`UPDATE invoices SET assigned_to_id='${blocked}' WHERE id='${invRow.id}'`);
 
 		try {
-			const token = await authToken(page);
+			const headers = await authedTenantHeaders(page);
 			const resp = await page.request.post(`${API_BASE}/api/admin/users/bulk-delete`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+				headers,
 				data: { user_ids: [blocked, deletable] }
 			});
 			expect(resp.status()).toBe(200);
@@ -213,27 +165,26 @@ test.describe('/admin bulk delete (acme admin)', () => {
 			const restore = invRow.orig
 				? `UPDATE invoices SET assigned_to_id='${invRow.orig}' WHERE id='${invRow.id}'`
 				: `UPDATE invoices SET assigned_to_id=NULL WHERE id='${invRow.id}'`;
-			sql(restore);
+			tenantPsql(restore);
 			// Clean up the blocked user (now deletable since the reference is gone).
-			const token = await authToken(page);
 			await page.request.delete(`${API_BASE}/api/admin/users/${blocked}`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+				headers: await authedTenantHeaders(page)
 			});
 		}
 	});
 
 	test('refusing to delete self: passing own id returns "self" failure', async ({ page }) => {
-		const token = await authToken(page);
+		const headers = await authedTenantHeaders(page);
 		const me = (
 			(await (
 				await page.request.get(`${API_BASE}/api/auth/me`, {
-					headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+					headers
 				})
 			).json()) as { id: string }
 		).id;
 
 		const resp = await page.request.post(`${API_BASE}/api/admin/users/bulk-delete`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: { user_ids: [me] }
 		});
 		expect(resp.status()).toBe(200);
