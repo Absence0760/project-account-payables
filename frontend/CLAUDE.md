@@ -357,5 +357,5 @@ See `mobile/CLAUDE.md` for the full mobile feature list and `docs/roadmap.md` Pr
 
 ## Deployment
 
-- **GitHub Pages**: push to `main` triggers `.github/workflows/deploy.yml`
+- **GitHub Pages**: publishing a GitHub release triggers `.github/workflows/deploy.yml`, whose `frontend` job builds and publishes to Pages. The workflow no-ops on push to `main` by design — the release tag is the gate so the deployed artifact matches a named version.
 - `build/.nojekyll` created at build time to bypass Jekyll processing
