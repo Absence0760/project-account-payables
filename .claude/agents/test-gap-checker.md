@@ -33,20 +33,21 @@ Trivial diffs don't get audited. Bail with `trivial — skipping` if the diff is
 
 ### 3. Classify each modified source file
 
-Walk the changed-files list. The exact filenames will depend on what stack the project lands on, but the buckets are stable:
+Walk the changed-files list. The buckets map onto this repo's three workspaces:
 
 | Source location | Unit-test expectation | Integration / e2e expectation |
 |---|---|---|
-| Pure helper / domain logic (`src/lib/**`, `src/domain/**`, etc. — anything without I/O) | Unit test next to it (`*.test.ts` or project's equivalent) | none |
-| Money / amount / currency math (anywhere amounts are summed, rounded, allocated, or split) | Unit test with golden cases including rounding boundaries, negative amounts, zero, max-precision | none |
-| HTTP route / API handler | Optional unit test for pure helpers extracted | Integration test that exercises the route under auth + the project's tenant-scoping helper |
-| Webhook handler (payment processor, accounting integration, email provider) | Unit test for HMAC / signature verification + replay-window logic | Integration test that asserts replay dedup and bad-signature rejection |
-| DB migration | none | Smoke test that runs the migration on a clean DB AND on the previous schema; for any new table, an isolation test that proves cross-tenant reads are blocked |
-| UI route / page (when frontend lands) | none | Playwright spec under `tests-e2e/` covering the user-visible behaviour |
-| UI component | none (component-level — covered by the route's spec) | Playwright spec exercises the route the component mounts on |
-| Background job / scheduled task | Unit test for the pure logic | Integration test for "runs once → marks done" + "runs twice → idempotent" |
-| Auth / authorization helper | Unit test for the helper | Integration test that confirms unauthenticated / wrong-role / cross-tenant access is rejected |
-| Infrastructure (`infra/**` Terraform) | none | none — `terraform validate` / `terraform plan` are the test surface |
+| Pure helper / domain logic (`backend/app/utils/**`, `backend/app/services/**` without I/O, `frontend/src/lib/**` without `fetch`, `mobile/lib/utils/**`) | Unit test next to it: `backend/tests/test_<name>.py` (pytest), a vitest spec or stand-alone test (frontend), `mobile/test/<name>_test.dart` | none |
+| Money / amount / currency math (anywhere amounts are summed, rounded, allocated, or split) | Unit test with golden cases including rounding boundaries, negative amounts, zero, max-precision. `backend/tests/test_money_invariants.py` already pins every money column — extend it when a new model is added. | none |
+| HTTP route / API handler (`backend/app/api/*.py`) | Optional unit test for pure helpers extracted | Integration test that exercises the route under auth + the tenant-scoping helper. `backend/tests/test_rbac.py` is the gate that catches new routes mounted without an auth dep. |
+| Webhook handler (`backend/app/api/payments.py:payment_webhook`, `cards.py:card_webhook`, `erp_webhook.py`, `email_intake.py`) | Unit test for HMAC / signature verification + replay-window logic | Integration test that asserts replay dedup and bad-signature rejection. The canonical examples are `tests/test_webhook_security.py` and `tests/test_payment_webhook_security.py`. |
+| Alembic migration (`backend/alembic/versions/*.py`) | none | Smoke test that runs the migration on a clean DB AND on the previous schema; for any new tenant table, an isolation test that proves cross-tenant reads are blocked. |
+| UI route / page (`frontend/src/routes/**/+page.svelte`) | none | Playwright spec under `frontend/tests-e2e/` covering the user-visible behaviour |
+| UI component (`frontend/src/lib/components/*.svelte`) | none (component-level — covered by the route's spec) | Playwright spec exercises the route the component mounts on |
+| Mobile screen / store (`mobile/lib/screens/*.dart`, `mobile/lib/stores/*.dart`) | Widget test or store unit test under `mobile/test/` | `flutter test` (no separate e2e harness today) |
+| Background job / scheduled task (`backend/app/services/*_reaper.py`, `*_shipper.py`, `*_reconciler.py`, `approval_escalation.py`) | Unit test for the pure logic | Integration test for "runs once → marks done" + "runs twice → idempotent" |
+| Auth / authorization helper (`backend/app/api/deps.py`, `backend/app/tenant.py`) | Unit test for the helper | Integration test that confirms unauthenticated / wrong-role / cross-tenant access is rejected |
+| Infrastructure (`infra/**` Terraform) | none | none — `terraform validate` / `terraform plan` are the test surface; Trivy IaC is the secondary gate |
 
 If the diff modifies seed / fixture data, that's a fixture change — flag only if it could affect existing tests' assumptions (row counts, pinned IDs).
 
@@ -75,10 +76,12 @@ A short markdown report in three parts:
 
 1. **What you understood the change to be** — one sentence summarising what the diff does. Include "[bug fix]" if it looks like one. Include "[money path]" if the diff touches amounts, payments, or postings.
 2. **Test verdicts** — bullet list, one per modified source file in the in-scope buckets:
-   - `src/foo.ts — UNIT MISSING: add src/foo.test.ts (covering ...)`
-   - `src/routes/invoices.ts — INTEGRATION MISSING: extend tests/routes/invoices.test.ts (covering listing under tenant scoping)`
-   - `migrations/0042_add_payments.sql — SMOKE MISSING: add tests/migrations/0042.test.sql (covering up/down + cross-tenant isolation on the new table)`
-   - `src/payment.ts — OK: payment.test.ts updated`
+   - `backend/app/services/foo.py — UNIT MISSING: add backend/tests/test_foo.py (covering ...)`
+   - `backend/app/api/invoices.py — INTEGRATION MISSING: extend backend/tests/test_invoices_api.py (covering listing under tenant scoping)`
+   - `backend/alembic/versions/abc123_add_payments.py — SMOKE MISSING: add backend/tests/test_migration_abc123.py (covering up/down + tenant-fanout via scripts/migrate_all_tenants.py)`
+   - `frontend/src/routes/invoices/+page.svelte — E2E MISSING: extend frontend/tests-e2e/invoices.spec.ts (covering the new column)`
+   - `mobile/lib/screens/invoices_screen.dart — WIDGET MISSING: add mobile/test/invoices_screen_test.dart (covering the new filter)`
+   - `backend/app/services/payment_runs.py — OK: tests/test_payment_runs.py updated`
    Skip OK lines unless the parent specifically asked for the full audit.
 3. **Bug-fix regression check** (only if section 5 fired) — list the fixes that don't have a regression test.
 
