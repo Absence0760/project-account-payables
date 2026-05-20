@@ -1,31 +1,18 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 async function createWorkflow(
 	page: import('@playwright/test').Page,
 	name: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/workflows`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			name,
 			steps: [
@@ -43,29 +30,9 @@ async function createWorkflow(
 }
 
 async function deleteWorkflow(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	return page.request.delete(`${API_BASE}/api/workflows/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
-}
-
-function sql(query: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			query
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
 }
 
 /**
@@ -81,7 +48,7 @@ function sql(query: string): void {
  * floating bulk-bar with Clear + Delete N.
  */
 
-test.describe('/workflows bulk delete (acme admin)', () => {
+test.describe('/workflows bulk delete', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/workflows');
@@ -160,42 +127,23 @@ test.describe('/workflows bulk delete (acme admin)', () => {
 	test('partial: blocked workflows surface their reason; deletable ones go through', async ({
 		page
 	}) => {
-		const token = await authToken(page);
-
 		// One workflow we'll wedge with a fake instance, and one that's
 		// freely deletable.
 		const wedged = await createWorkflow(page, `Wedged ${Date.now()}`);
 		const free = await createWorkflow(page, `Free ${Date.now()}`);
 
 		// Need a real invoice to satisfy the FK on workflow_instances.invoice_id.
-		const invoiceId = execFileSync(
-			'psql',
-			[
-				'-h',
-				'localhost',
-				'-U',
-				'postgres',
-				'-p',
-				'5432',
-				'-d',
-				'ap_acme',
-				'-tAc',
-				'SELECT id FROM invoices LIMIT 1'
-			],
-			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-		)
-			.toString()
-			.trim();
+		const invoiceId = tenantPsql('SELECT id FROM invoices LIMIT 1').trim();
 
 		const instanceId = crypto.randomUUID();
-		sql(
+		tenantPsql(
 			`INSERT INTO workflow_instances (id, correlation_id, definition_id, invoice_id, current_step, state, steps_config_snapshot) `
 				+ `VALUES ('${instanceId}', gen_random_uuid(), '${wedged}', '${invoiceId}', 0, 'active', '{}'::jsonb)`
 		);
 
 		try {
 			const resp = await page.request.post(`${API_BASE}/api/workflows/bulk-delete`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+				headers: await authedTenantHeaders(page),
 				data: { workflow_ids: [wedged, free] }
 			});
 			expect(resp.status()).toBe(200);
@@ -209,7 +157,7 @@ test.describe('/workflows bulk delete (acme admin)', () => {
 			expect(body.failed[0].reason).toBe('instances');
 			expect(body.failed[0].instance_count).toBeGreaterThanOrEqual(1);
 		} finally {
-			sql(`DELETE FROM workflow_instances WHERE id='${instanceId}'`);
+			tenantPsql(`DELETE FROM workflow_instances WHERE id='${instanceId}'`);
 			await deleteWorkflow(page, wedged);
 		}
 	});
@@ -217,15 +165,13 @@ test.describe('/workflows bulk delete (acme admin)', () => {
 	test('attempting to bulk-delete the default workflow returns "default" failure', async ({
 		page
 	}) => {
-		const token = await authToken(page);
-		const wfsResp = await page.request.get(`${API_BASE}/api/workflows`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-		});
+		const headers = await authedTenantHeaders(page);
+		const wfsResp = await page.request.get(`${API_BASE}/api/workflows`, { headers });
 		const wfs = (await wfsResp.json()) as Array<{ id: string; is_default: boolean }>;
 		const defaultId = wfs.find((w) => w.is_default)!.id;
 
 		const resp = await page.request.post(`${API_BASE}/api/workflows/bulk-delete`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: { workflow_ids: [defaultId] }
 		});
 		expect(resp.status()).toBe(200);

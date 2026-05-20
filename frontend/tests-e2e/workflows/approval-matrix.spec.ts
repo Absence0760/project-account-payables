@@ -1,25 +1,10 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
-	const token = await authToken(page);
-	return { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme', 'Content-Type': 'application/json' };
+	return {
+		...(await authedTenantHeaders(page)),
+		'Content-Type': 'application/json'
+	};
 }
 
 interface ApprovalLevelConfig {
@@ -105,7 +90,7 @@ async function patchWorkflow(
  * persistence + UI surface.
  */
 
-test.describe('/workflows/[id] — approval matrix editor (acme admin)', () => {
+test.describe('/workflows/[id] — approval matrix editor', () => {
 	let workflowId: string;
 
 	test.beforeEach(async ({ page }) => {

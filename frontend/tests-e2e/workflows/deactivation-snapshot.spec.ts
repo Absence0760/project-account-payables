@@ -1,23 +1,11 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 interface WorkflowResponse {
 	id: string;
@@ -26,9 +14,8 @@ interface WorkflowResponse {
 }
 
 async function listWorkflows(page: import('@playwright/test').Page) {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/workflows`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	return (await resp.json()) as WorkflowResponse[];
 }
@@ -38,9 +25,8 @@ async function patchWorkflow(
 	id: string,
 	body: Record<string, unknown>
 ) {
-	const token = await authToken(page);
 	return page.request.patch(`${API_BASE}/api/workflows/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: body
 	});
 }
@@ -50,9 +36,8 @@ async function createWorkflow(
 	name: string,
 	steps: Array<{ type: string; enabled: boolean; config: Record<string, unknown> }>
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/workflows`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			name,
 			steps: steps.map((s, i) => ({
@@ -66,9 +51,8 @@ async function createWorkflow(
 }
 
 async function createInvoice(page: import('@playwright/test').Page, suffix: string) {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			vendor: 'Snapshot Test Vendor',
 			invoice_number: `SNAP-${suffix}`,
@@ -81,36 +65,19 @@ async function createInvoice(page: import('@playwright/test').Page, suffix: stri
 }
 
 async function completeInvoice(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/invoices/${id}/complete`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	return ((await resp.json()) as { status: string }).status;
 }
 
 function hardDeleteInvoice(id: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`,
-			'-c',
-			`DELETE FROM workflow_instances WHERE invoice_id='${id}'`,
-			'-c',
-			`DELETE FROM audit_log WHERE entity_id='${id}'`,
-			'-c',
-			`DELETE FROM invoices WHERE id='${id}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	tenantPsql(`DELETE FROM audit_log WHERE entity_id='${id}'`);
+	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
 }
 
 /**
@@ -134,7 +101,7 @@ function hardDeleteInvoice(id: string): void {
  *  - Invoice Y.complete() → approved (per B's snapshot).
  */
 
-test.describe('workflow deactivation snapshot semantics (acme admin)', () => {
+test.describe('workflow deactivation snapshot semantics', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
@@ -223,10 +190,7 @@ test.describe('workflow deactivation snapshot semantics (acme admin)', () => {
 					steps: seedSteps
 				});
 				await page.request.delete(`${API_BASE}/api/workflows/${bId}`, {
-					headers: {
-						Authorization: `Bearer ${await authToken(page)}`,
-						'X-Tenant-Slug': 'acme'
-					}
+					headers: await authedTenantHeaders(page)
 				});
 			} else {
 				// B never created → just restore steps on the seeded workflow.

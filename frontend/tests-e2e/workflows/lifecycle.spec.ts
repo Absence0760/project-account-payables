@@ -1,13 +1,4 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 /**
  * Workflow lifecycle — create, delete, activate. These tests *mutate*
@@ -18,32 +9,12 @@ test.use({ baseURL: ACME_BASE });
  * which the test reverses at the end.
  */
 
-// page.request is its own context — it hits whatever URL we point it at,
-// not the page's origin. The frontend dev server (acme.localhost:7777)
-// doesn't proxy /api, so direct API requests go to the backend.
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function getAuthToken(page: import('@playwright/test').Page): Promise<string> {
-	// signInAndWait drops the JWT into localStorage as auth_token.
-	const token = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!token) throw new Error('not signed in');
-	return token;
-}
-
-function apiHeaders(token: string) {
-	return {
-		Authorization: `Bearer ${token}`,
-		'X-Tenant-Slug': 'acme'
-	};
-}
-
 async function deleteWorkflowById(
 	page: import('@playwright/test').Page,
 	id: string
 ) {
-	const token = await getAuthToken(page);
 	await page.request.delete(`${API_BASE}/api/workflows/${id}`, {
-		headers: apiHeaders(token)
+		headers: await authedTenantHeaders(page)
 	});
 }
 
@@ -52,17 +23,15 @@ async function patchWorkflow(
 	id: string,
 	body: Record<string, unknown>
 ) {
-	const token = await getAuthToken(page);
 	return page.request.patch(`${API_BASE}/api/workflows/${id}`, {
-		headers: apiHeaders(token),
+		headers: await authedTenantHeaders(page),
 		data: body
 	});
 }
 
 async function listWorkflows(page: import('@playwright/test').Page) {
-	const token = await getAuthToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/workflows`, {
-		headers: apiHeaders(token)
+		headers: await authedTenantHeaders(page)
 	});
 	return (await resp.json()) as Array<{
 		id: string;
@@ -71,7 +40,7 @@ async function listWorkflows(page: import('@playwright/test').Page) {
 	}>;
 }
 
-test.describe('workflow lifecycle (acme admin)', () => {
+test.describe('workflow lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
@@ -121,10 +90,9 @@ test.describe('workflow lifecycle (acme admin)', () => {
 		const defaultWf = list.find((w) => w.is_default);
 		expect(defaultWf).toBeTruthy();
 
-		const token = await getAuthToken(page);
 		const resp = await page.request.delete(
 			`${API_BASE}/api/workflows/${defaultWf!.id}`,
-			{ headers: apiHeaders(token) }
+			{ headers: await authedTenantHeaders(page) }
 		);
 		expect(resp.status()).toBe(409);
 	});

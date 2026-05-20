@@ -1,31 +1,18 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 async function createWorkflow(
 	page: import('@playwright/test').Page,
 	name: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/workflows`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			name,
 			steps: [
@@ -43,9 +30,8 @@ async function createWorkflow(
 }
 
 async function deleteWorkflow(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	return page.request.delete(`${API_BASE}/api/workflows/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 }
 
@@ -54,30 +40,10 @@ async function patchWorkflow(
 	id: string,
 	body: Record<string, unknown>
 ) {
-	const token = await authToken(page);
 	return page.request.patch(`${API_BASE}/api/workflows/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: body
 	});
-}
-
-function sql(query: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			query
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
 }
 
 /**
@@ -92,7 +58,7 @@ function sql(query: string): void {
  *    instance_count.
  */
 
-test.describe('/workflows delete cascade safety (acme admin)', () => {
+test.describe('/workflows delete cascade safety', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
@@ -101,10 +67,7 @@ test.describe('/workflows delete cascade safety (acme admin)', () => {
 		// Create a new workflow + activate it. Activation deactivates the
 		// seeded default, so we revert at the end.
 		const wfsBefore = await page.request.get(`${API_BASE}/api/workflows`, {
-			headers: {
-				Authorization: `Bearer ${await authToken(page)}`,
-				'X-Tenant-Slug': 'acme'
-			}
+			headers: await authedTenantHeaders(page)
 		});
 		const before = (await wfsBefore.json()) as Array<{ id: string; is_default: boolean }>;
 		const defaultWf = before.find((w) => w.is_default)!;
@@ -128,41 +91,23 @@ test.describe('/workflows delete cascade safety (acme admin)', () => {
 		page
 	}) => {
 		const id = await createWorkflow(page, `Instance Safety ${Date.now()}`);
-		const token = await authToken(page);
 
 		// Insert a synthetic instance pointing at this definition. The
 		// invoice_id FK requires a real invoice — pick the first existing
 		// one in the tenant DB.
-		const invoiceId = execFileSync(
-			'psql',
-			[
-				'-h',
-				'localhost',
-				'-U',
-				'postgres',
-				'-p',
-				'5432',
-				'-d',
-				'ap_acme',
-				'-tAc',
-				'SELECT id FROM invoices LIMIT 1'
-			],
-			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-		)
-			.toString()
-			.trim();
+		const invoiceId = tenantPsql('SELECT id FROM invoices LIMIT 1').trim();
 		expect(invoiceId).toBeTruthy();
 
 		const instanceRow = crypto.randomUUID();
 		// Use a fresh correlation_id to avoid colliding with the invoice's own.
-		sql(
+		tenantPsql(
 			`INSERT INTO workflow_instances (id, correlation_id, definition_id, invoice_id, current_step, state, steps_config_snapshot) `
 				+ `VALUES ('${instanceRow}', gen_random_uuid(), '${id}', '${invoiceId}', 0, 'active', '{}'::jsonb)`
 		);
 
 		try {
 			const resp = await page.request.delete(`${API_BASE}/api/workflows/${id}`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+				headers: await authedTenantHeaders(page)
 			});
 			expect(resp.status()).toBe(409);
 			const body = (await resp.json()) as {
@@ -171,7 +116,7 @@ test.describe('/workflows delete cascade safety (acme admin)', () => {
 			expect(body.detail.instance_count).toBeGreaterThanOrEqual(1);
 			expect(body.detail.message).toMatch(/in-flight invoice/);
 		} finally {
-			sql(`DELETE FROM workflow_instances WHERE id='${instanceRow}'`);
+			tenantPsql(`DELETE FROM workflow_instances WHERE id='${instanceRow}'`);
 			await deleteWorkflow(page, id);
 		}
 	});

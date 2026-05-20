@@ -1,21 +1,4 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	// Use the UI's create flow so we land on the detail page with the
@@ -34,16 +17,14 @@ async function createWorkflow(page: import('@playwright/test').Page): Promise<st
 }
 
 async function deleteWorkflow(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	await page.request.delete(`${API_BASE}/api/workflows/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 }
 
 async function getWorkflow(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/workflows/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	return (await resp.json()) as {
 		id: string;
@@ -58,7 +39,7 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  * erp_export) so we can edit any step without an add/remove first.
  */
 
-test.describe('/workflows/[id] step config (acme admin)', () => {
+test.describe('/workflows/[id] step config', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
