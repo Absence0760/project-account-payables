@@ -6,7 +6,7 @@ Run a pre-tag readiness audit before publishing a GitHub release. Report a green
 
 ## Why this exists
 
-Releases here are **release-gated**: publishing a GitHub release fires the deploy workflows in parallel (currently `deploy-frontend.yml` for GitHub Pages; backend deploy lands when the AWS pipeline is wired), each with a skip-if-unchanged check that compares the new tag to the previous one. Cutting a tag with the working tree dirty, CI red, or unpushed commits means the deploy doesn't match what you think it does.
+Releases here are **release-gated**: publishing a GitHub release fires `deploy.yml`, which fans out per-workspace jobs (frontend → GitHub Pages, mobile → APK / unsigned IPA artifacts; backend deploy lands when the AWS pipeline is wired), each with a skip-if-unchanged check that compares the new tag to the previous one. Cutting a tag with the working tree dirty, CI red, or unpushed commits means the deploy doesn't match what you think it does.
 
 The gates are scattered (CI status, working tree, push state, last-tag delta per workspace) and the human-eyeball version is unreliable. This command runs them in one shot.
 
@@ -183,4 +183,4 @@ End with:
 
 - The whole thing should take under a minute. If a gate hangs (e.g. `gh run list` on a slow connection), skip it with a `⚠ skipped — <reason>` row rather than blocking the report.
 - `gh` is required for the CI-status check and the open-alert sweep. If unavailable, fall back to a one-line note: "install `gh` to auto-check CI; manual: open the Actions tab and confirm green on the head commit."
-- This command does NOT replace `docs/deployment.md`. It's a pre-flight, not the release procedure itself.
+- This command does NOT replace `docs/production-deployment.md` (or the founder runbook at `docs/founder-runbooks/production-deployment.md`). It's a pre-flight, not the release procedure itself.
