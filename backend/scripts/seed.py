@@ -1420,14 +1420,35 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
                     name="Default e2e workflow",
                     is_active=True,
                     is_default=True,
-                    steps_config=[
-                        {"step_type": "extraction", "config": {}},
-                        {
-                            "step_type": "approval",
-                            "config": {"required_role": "ap_manager"},
-                        },
-                        {"step_type": "erp_export", "config": {}},
-                    ],
+                    # Schema requires a dict at the root with a "steps"
+                    # array (`schemas/workflow.py::WorkflowDefinitionResponse`
+                    # types `steps_config: dict`). Mirror the canonical
+                    # shape `seed_tenant` uses for acme/techflow.
+                    steps_config={
+                        "steps": [
+                            {
+                                "number": 1,
+                                "type": "extraction",
+                                "name": "Data Extraction",
+                                "enabled": True,
+                                "config": {},
+                            },
+                            {
+                                "number": 2,
+                                "type": "approval",
+                                "name": "Manager Approval",
+                                "enabled": True,
+                                "config": {"required_role": "ap_manager"},
+                            },
+                            {
+                                "number": 3,
+                                "type": "erp_export",
+                                "name": "ERP Export",
+                                "enabled": True,
+                                "config": {},
+                            },
+                        ],
+                    },
                 )
             )
 
