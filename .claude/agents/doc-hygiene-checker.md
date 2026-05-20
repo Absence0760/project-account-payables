@@ -41,8 +41,8 @@ Pick zero or more from this list — a single change can hit several:
 - **Integration change** — a new payment processor, accounting integration, vendor-master sync, or email provider, or a change to how an existing one is wired.
 - **Convention / house rule change** — a new pattern that should apply to future code.
 - **Process / tooling change** — npm script, GitHub Actions step, build flag, deploy procedure, infra rollback plan.
-- **Roadmap progress** — something on `docs/roadmap.md` (when it exists) is now done or in progress.
-- **Decision / trade-off** — a deliberate non-obvious choice with a reason worth recording. Goes in `docs/decisions.md` as a numbered ADR.
+- **Roadmap progress** — something on `docs/roadmap.md` is now done or in progress.
+- **Decision / trade-off** — a deliberate non-obvious choice with a reason worth recording. Would go in `docs/decisions.md` as a numbered ADR once that file is started; until then, surface it to the parent so the user can decide whether to bootstrap the ADR doc.
 
 ### 4. Map to docs
 
@@ -50,17 +50,17 @@ For each classification, list the docs that should be considered:
 
 | Classification | Doc(s) to consider |
 |---|---|
-| Endpoint | `docs/architecture.md` (when it exists), `README.md` if it's in the public sketch, the relevant per-area `CLAUDE.md` |
-| Schema | `docs/architecture.md`, the migration's own header comment, any per-area `CLAUDE.md` describing the table |
-| Env-var | `README.md` (env section), the relevant per-area `CLAUDE.md`, `infra/` Terraform variables / docs, `.env.example` |
-| Auth / permissions | `docs/architecture.md`, the per-area `CLAUDE.md` |
-| Money / posting | `docs/architecture.md`, any "ledger" / "postings" / "money handling" doc, ADR if the rule is novel |
-| Audit-trail | the ADR explaining why the trail exists, the per-area `CLAUDE.md` |
-| Integration | `docs/integrations.md` (when it exists), the per-area `CLAUDE.md`, runbook for the integration |
+| Endpoint | `docs/architecture.md`, `backend/docs/api-reference.md` (the endpoint table), `README.md` if it's in the public sketch, the relevant per-area `CLAUDE.md` |
+| Schema | `docs/architecture.md`, `backend/docs/database.md`, the Alembic migration's own header comment, any per-area `CLAUDE.md` describing the table |
+| Env-var | `docs/environment.md` (the canonical env-var reference), `README.md` (env section), the relevant per-area `CLAUDE.md`, `infra/` Terraform variables / docs, `backend/.env.example` |
+| Auth / permissions | `docs/authentication.md`, `docs/user-management.md`, the per-area `CLAUDE.md` |
+| Money / posting | `docs/architecture.md`, `backend/docs/payments.md`, `backend/docs/po-matching.md`, ADR if the rule is novel |
+| Audit-trail | `backend/docs/audit-log-shipping.md`, the per-area `CLAUDE.md`, ADR if the policy changed |
+| Integration | the matching `backend/docs/*` file (`erp-integration.md`, `ai-extraction.md`, `email-intake.md`, `bank-reconciliation.md`, `international-payments.md`, `tax-1099.md`, etc.), the per-area `CLAUDE.md`, runbook under `docs/founder-runbooks/` |
 | Convention | the file the convention belongs to: root `CLAUDE.md` for cross-cutting, per-area for area-scoped |
-| Process / tooling | `README.md`, root `CLAUDE.md`, per-area `CLAUDE.md` |
+| Process / tooling | `README.md`, root `CLAUDE.md`, per-area `CLAUDE.md`, `CONTRIBUTING.md` |
 | Roadmap | `docs/roadmap.md` (tick the box) |
-| Decision | `docs/decisions.md` (append a numbered ADR — never rewrite history) |
+| Decision | `docs/decisions.md` — append a numbered ADR (the file may not exist yet; bootstrap it if this is the first decision worth recording) |
 
 Don't dump the whole table back to the parent — only list the rows that match the diff's classifications.
 

@@ -67,7 +67,7 @@ Always end with a **clean** section listing the audit areas where you found noth
 - Don't fix without being told to. Reporting is the deliverable.
 - Don't paste a found secret into the report — identify by env-var name and location.
 - Don't speculate about CVEs you didn't verify. If you can't confirm a finding, mark it as "needs verification" and say what you'd need.
-- Cross-reference `docs/decisions.md §<n>` whenever a finding violates a documented ADR — that's how the user traces "what rule did this break."
+- Cross-reference the rule the finding violates — typically the root `CLAUDE.md` "Project invariants" section (cite the bullet by name, e.g. "violates root CLAUDE.md § Tenant isolation"). If a numbered ADR ever lands under `docs/decisions.md`, cite that instead.
 
 ## What to skip
 
