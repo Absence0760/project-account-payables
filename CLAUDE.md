@@ -244,6 +244,24 @@ Prefer reading docs over guessing. Update them when behavior changes.
 1. **Update tests** — add or adjust coverage for behavior you touched. No tests exist yet — create them when adding new features.
 2. **Update docs** — if the change affects architecture, commands, env vars, deployment, or features, update the relevant doc (and this CLAUDE.md if setup or workflows changed).
 
+## Fix bugs at the source — never adjust the test to hide them
+
+When a test fails, the only acceptable resolution paths are:
+
+1. **The test itself is broken** (wrong fixture, missing required field, typo, race in test setup, unique-constraint collision with seed data). Fix the test.
+2. **The app has a real bug or missing primitive.** Fix the app code. If the app needs a new affordance for the test to wait deterministically (a `data-ready` attribute backed by a real readiness signal, an exposed status, a broadcast handshake), add it in the app code — it's a real API, not test scaffolding.
+
+There is no third option. These are forbidden because they ship the bug behind a green check:
+
+- Inflating a Playwright `expect` / `toBeVisible` timeout to absorb a flake (`5_000` → `15_000` → `30_000`). Fix whatever makes the page slow.
+- `await page.waitForTimeout(N)` between two actions. Wait on a real signal (DOM node, state attribute, network response).
+- Bumping `--retries` (or relying on Playwright's `retries: 1`) to mask a real race.
+- `test.skip(…)` / `test.fixme(…)` / `test.fail(…)` (or pytest's `@pytest.mark.skip` / `xfail`) against a real bug without an open follow-up that names what's broken + when it'll be fixed.
+- Loosening strict assertions (`assert x == 'foo'` → `assert 'foo' in x.lower() or 'bar' in x.lower()`) to "absorb variance" — the variance IS the bug.
+- Replacing a real wait with a sleep "because the real signal is unreliable" — the real signal needs fixing.
+
+If you spot a candidate fix that fits one of those patterns: stop, surface the underlying app issue, and either fix it in the same session or flag it explicitly. Don't half-mask it via the test.
+
 ## Conventions and gotchas
 
 - **Static frontend** — no SSR. All dynamic data goes through the backend API.
