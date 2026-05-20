@@ -8,19 +8,26 @@ import { defineConfig, devices } from '@playwright/test';
  * 127.0.0.1 by default per RFC 6761, so no /etc/hosts changes are
  * needed.
  *
- * Parallelism + isolation: each worker is pinned to its own
- * `e2e<workerIndex+1>` tenant via the worker-scoped `tenantSlug`
- * fixture in `fixtures/helpers.ts`. The seed
- * (`backend/scripts/seed.py`) provisions `AP_E2E_TENANT_COUNT`
- * (default 4) such tenants. A spec that creates / deletes / mutates
- * data in worker N's DB cannot collide with worker M's.
+ * Parallelism + isolation model:
  *
- * CI takes the parallelism one level further: `.github/workflows/ci.yml`
- * shards the suite across 4 GitHub runners via Playwright's `--shard=N/4`
- * flag. Each shard is its own job with its own Postgres + Redis +
- * seeded backend, so the four `e2e<N>` tenants in shard A are
- * disjoint DBs from the four in shard B — total parallelism is
- * `4 shards × 4 workers = 16` concurrent test processes.
+ *   - CI (`.github/workflows/ci.yml`): 8 shards × workers=1. Each
+ *     shard is its own GitHub runner with its own Postgres + Redis +
+ *     seeded backend (one tenant, e2e1), runs `--shard=N/8` of the
+ *     test list serially. Total parallelism = 8 across machines.
+ *     Tests inside a shard share the shard's single tenant, but
+ *     they run *sequentially* — no within-shard worker contention,
+ *     which was the source of the spec-to-spec interference we hit
+ *     under the previous 4×4=16 model.
+ *   - Local (no `--shard` flag): workers default to 4 for a fast
+ *     iteration loop. Each worker is pinned to its own `e2e<N>`
+ *     tenant via the worker-scoped `tenantSlug` fixture in
+ *     `fixtures/helpers.ts`. Specs within a worker share that
+ *     worker's tenant. Override with `PLAYWRIGHT_WORKERS=1` if a
+ *     flake suggests within-worker spec interference.
+ *
+ * Seed (`backend/scripts/seed.py`) honors `AP_E2E_TENANT_COUNT`
+ * (default 4) — CI sets it to 1 so each shard only provisions
+ * one e2e tenant.
  *
  * The seeded `acme` + `techflow` tenants stay around for the
  * cross-tenant-isolation specs that need fixed slugs
@@ -52,19 +59,20 @@ export default defineConfig({
 	// Fail fast in CI; locally, run the whole suite even if the seed is
 	// stale so the developer can see the full damage.
 	forbidOnly: !!process.env.CI,
-	// Workers run in parallel, each pinned to its own `e2e<N>` tenant
-	// via the worker-scoped `tenantSlug` fixture in
-	// `fixtures/helpers.ts`. The seed (`backend/scripts/seed.py`)
-	// provisions `AP_E2E_TENANT_COUNT` (default 4) such tenants —
-	// bump both at once if you raise this. Setting either var to a
-	// value higher than `AP_E2E_TENANT_COUNT` makes workers wrap
-	// modulo the tenant count, so the architecture stays correct but
-	// you lose isolation between the wrapping workers.
+	// CI sets `PLAYWRIGHT_WORKERS=1` so each shard runs serially
+	// (shards do the parallelism, workers don't). Locally we default
+	// to 4 workers for a fast inner loop — each worker is pinned to
+	// its own `e2e<N>` tenant via the worker-scoped `tenantSlug`
+	// fixture in `fixtures/helpers.ts`. The seed
+	// (`backend/scripts/seed.py`) provisions `AP_E2E_TENANT_COUNT`
+	// (default 4) such tenants. Setting workers higher than the
+	// tenant count makes the modulo in `fixtures/helpers.ts` wrap,
+	// losing isolation between the wrapping workers.
 	//
-	// `fullyParallel: false` keeps tests *within* a file serial — each
-	// file's tests share the worker's tenant, so a file that mutates
-	// state (creates a user, voids a payment) needs them ordered.
-	// Files across workers still run in parallel.
+	// `fullyParallel: false` keeps tests *within* a file serial —
+	// each file's tests share the worker's tenant, so a file that
+	// mutates state (creates a user, voids a payment) needs them
+	// ordered. Files across workers still run in parallel.
 	workers: parseInt(
 		process.env.PLAYWRIGHT_WORKERS ?? process.env.AP_E2E_TENANT_COUNT ?? '4',
 		10

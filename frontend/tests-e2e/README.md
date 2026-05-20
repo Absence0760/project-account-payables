@@ -2,33 +2,38 @@
 
 Playwright end-to-end tests for the frontend.
 
-## Worker isolation (the important bit)
+## Parallelism + isolation
 
-The suite runs with **N parallel workers**, each pinned to its own
-seeded `e2e<workerIndex+1>` tenant. The seed
-(`backend/scripts/seed.py`) provisions `AP_E2E_TENANT_COUNT` such
-tenants — default `4`, matching the default
-`workers` setting in `playwright.config.ts`.
+Two modes:
 
-Two workers running the same spec can't collide on shared state
-because they're operating against different Postgres databases
-(`ap_e2e1` vs `ap_e2e2` vs …). Specs that mutate users, invoices,
-payments, workflows etc. all use the worker-scoped fixtures in
-`fixtures/helpers.ts`; the only specs intentionally pinned to a
-fixed slug are the cross-tenant-isolation tests below.
+**CI: 8 shards × 1 worker.** `.github/workflows/ci.yml` fans the
+suite out across 8 GitHub runners via Playwright's `--shard=N/8`.
+Each shard is its own job with its own Postgres + Redis + seeded
+backend (1 tenant: `e2e1`). Inside a shard, `workers=1` means the
+shard's slice of the suite runs sequentially — no within-shard
+parallel-worker contention. Specs in a shard share the shard's
+tenant, but the serial execution order makes state mutations
+predictable (the same model the suite was originally written
+under).
 
-| Worker index | Tenant slug | Base URL                      |
-| ------------ | ----------- | ----------------------------- |
-| 0            | `e2e1`      | `http://e2e1.localhost:7777`  |
-| 1            | `e2e2`      | `http://e2e2.localhost:7777`  |
-| 2            | `e2e3`      | `http://e2e3.localhost:7777`  |
-| 3            | `e2e4`      | `http://e2e4.localhost:7777`  |
+**Local: workers=4 by default.** Run from anywhere with
+`pnpm test:e2e` and four Playwright workers fan out against four
+seeded tenants (`e2e1`..`e2e4`) for a faster inner loop. Each
+worker is pinned to its own tenant via the worker-scoped
+`tenantSlug` fixture in `fixtures/helpers.ts`; two workers running
+the same spec can't collide because they're operating against
+different Postgres databases.
 
-If you raise `AP_E2E_TENANT_COUNT` to 8 and `PLAYWRIGHT_WORKERS` to
-8, the seed will provision 8 tenants and 8 workers will each get a
-unique one. If only one of the two is bumped, workers wrap modulo
-the tenant count — the architecture still works but the wrapping
-workers share state.
+| Worker index | Tenant slug | Base URL                     |
+| ------------ | ----------- | ---------------------------- |
+| 0            | `e2e1`      | `http://e2e1.localhost:7777` |
+| 1            | `e2e2`      | `http://e2e2.localhost:7777` |
+| 2            | `e2e3`      | `http://e2e3.localhost:7777` |
+| 3            | `e2e4`      | `http://e2e4.localhost:7777` |
+
+If a local flake suggests within-worker spec interference, run
+serially: `PLAYWRIGHT_WORKERS=1 pnpm test:e2e`. That matches
+the CI-shard behaviour.
 
 ### Specs that don't follow the worker-tenant pattern
 
@@ -86,25 +91,34 @@ the root dispatch scripts; see the repo's root README for the rest.
 ## CI
 
 `.github/workflows/ci.yml`'s `e2e` job runs the same flow on every
-push/PR to main, **sharded across 4 parallel GitHub runners** via
-Playwright's `--shard=N/4` flag. Each shard:
+push/PR to main, **sharded across 8 parallel GitHub runners** via
+Playwright's `--shard=N/8` flag. Each shard:
 
 - pgvector/pgvector:pg16 + Redis 7 as services (per-shard, isolated)
+- `AP_E2E_TENANT_COUNT=1` — each shard only needs one tenant
+  (`e2e1`) since it runs `workers=1`. Skips provisioning the other
+  three e2e tenants and shaves ~5 s off seed time per shard.
 - Python 3.14 → install backend deps →
-  `python scripts/seed.py` (creates acme + techflow + e2e1..e2e4
+  `python scripts/seed.py --lean` (creates acme + techflow + e2e1
   in *this shard's* Postgres) → `python main.py &`
 - Wait for `/api/health` to answer 200
 - pnpm 9 + Node 20 →
   `pnpm install --frozen-lockfile` →
+  `pnpm build` →
   `pnpm exec playwright install --with-deps chromium`
-- `pnpm exec playwright test --config=… --shard=${{ matrix.shard }}/4`
+- `PLAYWRIGHT_WORKERS=1 pnpm exec playwright test --config=… --shard=${{ matrix.shard }}/8`
 - Playwright report + backend log uploaded as
   `playwright-report-shard-${N}` / `backend-log-shard-${N}` on failure
 
-Effective parallelism is `4 shards × 4 workers = 16` concurrent test
-processes spread across 4 separate runner VMs. `fail-fast: false`
+Effective parallelism is **8 shards × 1 worker = 8** parallel test
+processes spread across 8 separate runner VMs. `fail-fast: false`
 keeps the other shards going when one fails, so a flake in shard 2
 doesn't hide a real regression in shard 4.
+
+Each shard runs ~34 specs serially (274 / 8). Wall-clock per shard
+is dominated by the per-shard setup (~30 s) + the ~34 specs at
+~2 s each = ~100 s total. Local `workers=4` runs the whole 274
+specs concurrently in ~2 min.
 
 ## Seeded credentials
 

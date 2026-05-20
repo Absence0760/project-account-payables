@@ -217,18 +217,24 @@ jobs:
         run: shellcheck bin/*.sh
 
   e2e:
-    # Shard the Playwright suite across 4 parallel GitHub runners. Each
-    # shard boots its own Postgres + Redis + seeded backend, so there's
-    # zero cross-shard DB state risk. Within a shard, Playwright runs
-    # `workers=4` (matching the four `e2e<N>` tenants the seed provisions
-    # in *that* shard's DB) — total parallelism is therefore 4 shards ×
-    # 4 workers = 16 concurrent test processes spread across 4 machines.
-    # Cuts a previously-single-job e2e run down by roughly a factor of
-    # the slowest shard's wall clock.
-    name: Frontend e2e (Playwright) — shard ${{ matrix.shard }}/4
+    # Shard the Playwright suite across 8 parallel GitHub runners with
+    # `workers=1` inside each shard. Each shard boots its own Postgres +
+    # Redis + seeded backend (1 tenant), so:
+    #
+    #   * No cross-shard DB state risk — each shard is its own
+    #     short-lived backend stack.
+    #   * No within-shard parallel-worker contention either — `workers=1`
+    #     means the shard's ~34 specs run sequentially against its
+    #     single tenant. That serial-within-shard model matches how
+    #     the suite was originally written and removes the flaky
+    #     "two specs in the same worker stomp on a shared default
+    #     workflow" failure mode we hit under 4×4=16 concurrency.
+    #   * Total parallelism stays high at 8 (eight runners), so
+    #     wall-clock isn't worse.
+    name: Frontend e2e (Playwright) — shard ${{ matrix.shard }}/8
     runs-on: ubuntu-latest
     needs: changes
-    # Skip the entire 4-shard fan-out on docs-only PRs. The detector
+    # Skip the entire 8-shard fan-out on docs-only PRs. The detector
     # runs in ~5 s so the gate is essentially free.
     if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 20
@@ -238,7 +244,7 @@ jobs:
       # or systemic (every shard fails the same way).
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
 
     services:
       postgres:
@@ -300,6 +306,10 @@ jobs:
       # in. The same goes for the `auth_mfa_*` and `portal_auth_login`
       # buckets. Disable rate limiting for the duration of the e2e run.
       AP_RATE_LIMIT_ENABLED: "false"
+      # Each shard runs `workers=1`, so it only needs one e2e tenant
+      # (e2e1). Cuts seed time per shard from ~6 lean-tenant seeds
+      # down to 3 (acme + techflow + e2e1).
+      AP_E2E_TENANT_COUNT: "1"
       # Tell Playwright's webServer block to swap `pnpm dev` for
       # `vite preview --port 7777` — pre-built static bundle, no
       # HMR compile-on-demand, sub-second cold start. Read in
@@ -407,15 +417,20 @@ jobs:
         working-directory: frontend
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run Playwright suite (shard ${{ matrix.shard }}/4)
+      - name: Run Playwright suite (shard ${{ matrix.shard }}/8)
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
+          # Override the playwright.config default (4) — each CI shard
+          # is its own isolated runner already, so within-shard
+          # parallelism just causes the spec-to-spec interference
+          # we hit under workers=4. The PR description explains the
+          # math; the short version: shards do the parallelism,
+          # workers do not.
+          PLAYWRIGHT_WORKERS: "1"
         # Inline the Playwright invocation rather than calling
-        # `pnpm test:e2e` so the `--shard=N/4` flag flows through.
-        # Workers stay at the playwright.config.ts default (4), so
-        # each shard exercises every `e2e<N>` tenant it seeded.
-        run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts --shard=${{ matrix.shard }}/4
+        # `pnpm test:e2e` so the `--shard=N/8` flag flows through.
+        run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts --shard=${{ matrix.shard }}/8
 
       - name: Upload Playwright report on failure
         if: failure()
