@@ -1,23 +1,11 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 interface QueueItem {
 	id: string;
@@ -26,9 +14,8 @@ interface QueueItem {
 }
 
 async function getQueue(page: import('@playwright/test').Page): Promise<QueueItem[]> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/payments/queue`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	return ((await resp.json()) as { items: QueueItem[] }).items;
 }
@@ -37,9 +24,8 @@ async function getInvoiceStatus(
 	page: import('@playwright/test').Page,
 	id: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/invoices/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	return ((await resp.json()) as { status: string }).status;
 }
@@ -48,9 +34,8 @@ async function createApprovedInvoice(
 	page: import('@playwright/test').Page,
 	suffix: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			vendor: 'E2E Void/Cancel Vendor',
 			invoice_number: `E2E-VC-${suffix}`,
@@ -67,9 +52,8 @@ async function createRun(
 	page: import('@playwright/test').Page,
 	invoiceId: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/payments/runs`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { items: [{ invoice_id: invoiceId, method: 'ach' }] }
 	});
 	return ((await resp.json()) as { id: string }).id;
@@ -79,9 +63,8 @@ async function executeRun(
 	page: import('@playwright/test').Page,
 	runId: string
 ): Promise<void> {
-	const token = await authToken(page);
 	await page.request.post(`${API_BASE}/api/payments/runs/${runId}/execute`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 }
 
@@ -89,46 +72,29 @@ async function getRunPayment(
 	page: import('@playwright/test').Page,
 	runId: string
 ): Promise<{ id: string; status: string }> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/payments/runs/${runId}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	const body = (await resp.json()) as { payments: Array<{ id: string; status: string }> };
 	return body.payments[0];
 }
 
 function hardDeleteInvoice(id: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h', 'localhost',
-			'-U', 'postgres',
-			'-p', '5432',
-			'-d', 'ap_acme',
-			'-c', `DELETE FROM payments WHERE invoice_id='${id}'`,
-			'-c', `DELETE FROM payment_runs WHERE id IN (SELECT DISTINCT payment_run_id FROM payments WHERE invoice_id='${id}')`,
-			'-c', `DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`,
-			'-c', `DELETE FROM workflow_instances WHERE invoice_id='${id}'`,
-			'-c', `DELETE FROM audit_log WHERE entity_id='${id}'`,
-			'-c', `DELETE FROM invoices WHERE id='${id}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+	tenantPsql(`DELETE FROM payments WHERE invoice_id='${id}'`);
+	tenantPsql(
+		`DELETE FROM payment_runs WHERE id IN (SELECT DISTINCT payment_run_id FROM payments WHERE invoice_id='${id}')`
 	);
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	tenantPsql(`DELETE FROM audit_log WHERE entity_id='${id}'`);
+	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
 }
 
 function deletePaymentRun(runId: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h', 'localhost',
-			'-U', 'postgres',
-			'-p', '5432',
-			'-d', 'ap_acme',
-			'-c', `DELETE FROM payments WHERE payment_run_id='${runId}'`,
-			'-c', `DELETE FROM payment_runs WHERE id='${runId}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
+	tenantPsql(`DELETE FROM payments WHERE payment_run_id='${runId}'`);
+	tenantPsql(`DELETE FROM payment_runs WHERE id='${runId}'`);
 }
 
 /**
@@ -137,7 +103,7 @@ function deletePaymentRun(runId: string): void {
  * the adapter outcome (`voided_upstream` for the mock).
  */
 
-test.describe('/payments — void completed payment (acme admin / cfo)', () => {
+test.describe('/payments — void completed payment', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
@@ -154,11 +120,10 @@ test.describe('/payments — void completed payment (acme admin / cfo)', () => {
 			const before = await getRunPayment(page, runId);
 			expect(before.status).toBe('completed');
 
-			const token = await authToken(page);
 			const voidResp = await page.request.post(
 				`${API_BASE}/api/payments/${before.id}/void`,
 				{
-					headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+					headers: await authedTenantHeaders(page),
 					data: { reason: 'e2e: testing void path' }
 				}
 			);
@@ -184,26 +149,15 @@ test.describe('/payments — void completed payment (acme admin / cfo)', () => {
 			runId = await createRun(page, invoiceId);
 			await executeRun(page, runId);
 			const before = await getRunPayment(page, runId);
-			const token = await authToken(page);
 
 			// Force the payment into `failed` via SQL — the mock adapter
 			// always reports `completed`, so we need to short-circuit it.
-			execFileSync(
-				'psql',
-				[
-					'-h', 'localhost',
-					'-U', 'postgres',
-					'-p', '5432',
-					'-d', 'ap_acme',
-					'-c', `UPDATE payments SET status='failed' WHERE id='${before.id}'`
-				],
-				{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-			);
+			tenantPsql(`UPDATE payments SET status='failed' WHERE id='${before.id}'`);
 
 			const voidResp = await page.request.post(
 				`${API_BASE}/api/payments/${before.id}/void`,
 				{
-					headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+					headers: await authedTenantHeaders(page),
 					data: { reason: 'should reject' }
 				}
 			);
@@ -214,19 +168,18 @@ test.describe('/payments — void completed payment (acme admin / cfo)', () => {
 		}
 	});
 
-	test('clerk role gets 403 on void', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
-		const token = await authToken(page);
+	test('clerk role gets 403 on void', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		const fakeId = '00000000-0000-0000-0000-000000000000';
 		const resp = await page.request.post(`${API_BASE}/api/payments/${fakeId}/void`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers: await authedTenantHeaders(page),
 			data: { reason: 'should-403' }
 		});
 		expect(resp.status()).toBe(403);
 	});
 });
 
-test.describe('/payments — cancel draft run (acme admin)', () => {
+test.describe('/payments — cancel draft run', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
@@ -243,10 +196,10 @@ test.describe('/payments — cancel draft run (acme admin)', () => {
 			// But the queue temporarily hides it because there's a non-completed
 			// payment row pointing at it. Cancel should re-surface it.
 
-			const token = await authToken(page);
+			const headers = await authedTenantHeaders(page);
 			const cancelResp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/cancel`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers }
 			);
 			expect(cancelResp.status()).toBe(200);
 			const body = (await cancelResp.json()) as {
@@ -259,7 +212,7 @@ test.describe('/payments — cancel draft run (acme admin)', () => {
 			// Run still readable; status reflects the cancel.
 			const detailResp = await page.request.get(
 				`${API_BASE}/api/payments/runs/${runId}`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers }
 			);
 			const detail = (await detailResp.json()) as {
 				status: string;
@@ -285,10 +238,9 @@ test.describe('/payments — cancel draft run (acme admin)', () => {
 			runId = await createRun(page, invoiceId);
 			await executeRun(page, runId);
 
-			const token = await authToken(page);
 			const resp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/cancel`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers: await authedTenantHeaders(page) }
 			);
 			expect(resp.status()).toBe(409);
 		} finally {

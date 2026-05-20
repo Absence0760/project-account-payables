@@ -1,28 +1,15 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CFO, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 async function patchOrg(page: import('@playwright/test').Page, partial: object) {
-	const token = await authToken(page);
 	await page.request.patch(`${API_BASE}/api/organization`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { settings: partial }
 	});
 }
@@ -32,9 +19,8 @@ async function createApprovedInvoice(
 	suffix: string,
 	amount: number
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			vendor: 'E2E CFO Vendor',
 			invoice_number: `E2E-CFO-${suffix}`,
@@ -51,9 +37,8 @@ async function createRun(
 	page: import('@playwright/test').Page,
 	invoiceId: string
 ): Promise<{ id: string; requires_cfo_approval: boolean }> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/payments/runs`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { items: [{ invoice_id: invoiceId, method: 'ach' }] }
 	});
 	const body = (await resp.json()) as { id: string; requires_cfo_approval: boolean };
@@ -61,37 +46,21 @@ async function createRun(
 }
 
 function hardDeleteInvoice(id: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h', 'localhost',
-			'-U', 'postgres',
-			'-p', '5432',
-			'-d', 'ap_acme',
-			'-c', `DELETE FROM payments WHERE invoice_id='${id}'`,
-			'-c', `DELETE FROM payment_runs WHERE id IN (SELECT DISTINCT payment_run_id FROM payments WHERE invoice_id='${id}')`,
-			'-c', `DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`,
-			'-c', `DELETE FROM workflow_instances WHERE invoice_id='${id}'`,
-			'-c', `DELETE FROM audit_log WHERE entity_id='${id}'`,
-			'-c', `DELETE FROM invoices WHERE id='${id}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+	tenantPsql(`DELETE FROM payments WHERE invoice_id='${id}'`);
+	tenantPsql(
+		`DELETE FROM payment_runs WHERE id IN (SELECT DISTINCT payment_run_id FROM payments WHERE invoice_id='${id}')`
 	);
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	tenantPsql(`DELETE FROM audit_log WHERE entity_id='${id}'`);
+	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
 }
 
 function deletePaymentRun(runId: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h', 'localhost',
-			'-U', 'postgres',
-			'-p', '5432',
-			'-d', 'ap_acme',
-			'-c', `DELETE FROM payments WHERE payment_run_id='${runId}'`,
-			'-c', `DELETE FROM payment_runs WHERE id='${runId}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
+	tenantPsql(`DELETE FROM payments WHERE payment_run_id='${runId}'`);
+	tenantPsql(`DELETE FROM payment_runs WHERE id='${runId}'`);
 }
 
 /**
@@ -99,7 +68,7 @@ function deletePaymentRun(runId: string): void {
  * org settings (`payments.cfo_approval_above`). Each test sets a known
  * threshold and resets it in `finally` so the suite is hermetic.
  */
-test.describe('/payments — CFO approval gate (acme)', () => {
+test.describe('/payments — CFO approval gate', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await patchOrg(page, { payments: { cfo_approval_above: 1000 } });
@@ -140,10 +109,9 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 			runId = run.id;
 			expect(run.requires_cfo_approval).toBe(true);
 
-			const token = await authToken(page);
 			const resp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/execute`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers: await authedTenantHeaders(page) }
 			);
 			expect(resp.status()).toBe(403);
 			const body = (await resp.json()) as { detail: string };
@@ -161,12 +129,11 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 			const run = await createRun(page, invoiceId);
 			runId = run.id;
 
-			const token = await authToken(page);
 			const resp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/approve`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers: await authedTenantHeaders(page) }
 			);
-			// Acme admin doesn't hold the CFO role — gate is `require_roles(ROLE_CFO)`.
+			// Tenant admin doesn't hold the CFO role — gate is `require_roles(ROLE_CFO)`.
 			expect(resp.status()).toBe(403);
 		} finally {
 			if (runId) deletePaymentRun(runId);
@@ -174,7 +141,7 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 		}
 	});
 
-	test('CFO approves → execute then runs end-to-end', async ({ page }) => {
+	test('CFO approves → execute then runs end-to-end', async ({ page, tenantCfo }) => {
 		const invoiceId = await createApprovedInvoice(page, `flow-${Date.now()}`, 5000);
 		let runId: string | null = null;
 		try {
@@ -182,11 +149,11 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 			runId = run.id;
 
 			// Sign in as the CFO and approve.
-			await signInAndWait(page, ACME_CFO);
-			const token = await authToken(page);
+			await signInAndWait(page, tenantCfo);
+			const headers = await authedTenantHeaders(page);
 			const approveResp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/approve`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers }
 			);
 			expect(approveResp.status()).toBe(200);
 			const approveBody = (await approveResp.json()) as { cfo_approved_by: string };
@@ -196,7 +163,7 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 			// includes CFO). Run flips to completed via the mock adapter.
 			const execResp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/execute`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers }
 			);
 			expect(execResp.status()).toBe(200);
 			expect(((await execResp.json()) as { status: string }).status).toBe('completed');
@@ -207,7 +174,8 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 	});
 
 	test('approving a run that does not require approval is rejected with 409', async ({
-		page
+		page,
+		tenantCfo
 	}) => {
 		const invoiceId = await createApprovedInvoice(page, `noreq-${Date.now()}`, 100);
 		let runId: string | null = null;
@@ -216,11 +184,10 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 			runId = run.id;
 			expect(run.requires_cfo_approval).toBe(false);
 
-			await signInAndWait(page, ACME_CFO);
-			const token = await authToken(page);
+			await signInAndWait(page, tenantCfo);
 			const resp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/approve`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers: await authedTenantHeaders(page) }
 			);
 			expect(resp.status()).toBe(409);
 		} finally {
@@ -230,7 +197,7 @@ test.describe('/payments — CFO approval gate (acme)', () => {
 	});
 });
 
-test.describe('/payments — remittance PDF (acme admin)', () => {
+test.describe('/payments — remittance PDF', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
@@ -243,14 +210,14 @@ test.describe('/payments — remittance PDF (acme admin)', () => {
 		try {
 			const run = await createRun(page, invoiceId);
 			runId = run.id;
-			const token = await authToken(page);
+			const headers = await authedTenantHeaders(page);
 			await page.request.post(`${API_BASE}/api/payments/runs/${runId}/execute`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+				headers
 			});
 
 			const detailResp = await page.request.get(
 				`${API_BASE}/api/payments/runs/${runId}`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers }
 			);
 			const detail = (await detailResp.json()) as {
 				payments: Array<{ id: string; status: string }>;
@@ -260,7 +227,7 @@ test.describe('/payments — remittance PDF (acme admin)', () => {
 
 			const pdfResp = await page.request.get(
 				`${API_BASE}/api/payments/${payment.id}/remittance`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers }
 			);
 			expect(pdfResp.status()).toBe(200);
 			expect(pdfResp.headers()['content-type']).toContain('application/pdf');

@@ -1,31 +1,18 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 async function createApprovedInvoice(
 	page: import('@playwright/test').Page,
 	invoiceNumber: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: {
 			vendor: 'E2E Pluralization Vendor',
 			invoice_number: invoiceNumber,
@@ -41,23 +28,14 @@ async function createApprovedInvoice(
 
 /** Wipe an approved test invoice + its workflow rows + audit trail.
  *  The PATCH/DELETE invoice endpoint won't touch approved rows, so
- *  raw SQL is the only revertible path. Same psql shape used by
- *  workflows/invoice-routing.spec.ts. */
+ *  raw SQL is the only revertible path. */
 function hardDeleteInvoice(id: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h', 'localhost',
-			'-U', 'postgres',
-			'-p', '5432',
-			'-d', 'ap_acme',
-			'-c', `DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`,
-			'-c', `DELETE FROM workflow_instances WHERE invoice_id='${id}'`,
-			'-c', `DELETE FROM audit_log WHERE entity_id='${id}'`,
-			'-c', `DELETE FROM invoices WHERE id='${id}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	tenantPsql(`DELETE FROM audit_log WHERE entity_id='${id}'`);
+	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
 }
 
 /**
@@ -67,7 +45,7 @@ function hardDeleteInvoice(id: string): void {
  * by the runs detail tests via the API.
  */
 
-test.describe('/payments queue selection (acme admin)', () => {
+test.describe('/payments queue selection', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/payments');
