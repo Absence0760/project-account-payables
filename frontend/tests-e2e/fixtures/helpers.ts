@@ -107,6 +107,33 @@ export const test = base.extend<object, WorkerFixtures>({
 	// only the *default*, not a hard contract.
 	storageState: async ({ browser, tenantSlug, tenantAdmin }, use) => {
 		await use(await _ensureAdminStorageState(browser, tenantSlug, tenantAdmin));
+	},
+	// Pre-navigate the page to the worker's tenant root before yielding
+	// to the test. Why this exists:
+	//
+	// `storageState` populates the browser context's localStorage for
+	// the tenant origin, but a freshly-created `page` starts at
+	// `about:blank`. Reading localStorage on `about:blank` throws
+	// `SecurityError: Failed to read the 'localStorage' property` —
+	// browsers refuse storage access on the empty-document scheme.
+	//
+	// Specs that already start with a `page.goto(...)` in `beforeEach`
+	// pay one redundant navigation, which is cheap. Specs that go
+	// straight from arg destructuring to an API call (like
+	// `admin/delete-safety.spec.ts`'s `await createUser(page, …)`)
+	// would otherwise fail at the first `authToken(page)` because the
+	// page is still on `about:blank`. The pre-nav lifts the SecurityError
+	// while keeping the storage-state speed-up.
+	//
+	// Opt-out specs (`storageState: { cookies: [], origins: [] }`)
+	// still get the pre-nav; for them the worker's tenant root
+	// redirects to `/login` (no auth) which is the same place those
+	// specs were going to navigate next anyway.
+	page: async ({ page, baseURL }, use) => {
+		if (baseURL) {
+			await page.goto(baseURL);
+		}
+		await use(page);
 	}
 });
 
