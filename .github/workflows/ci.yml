@@ -262,10 +262,20 @@ jobs:
         ports:
           - 5432:5432
         options: >-
+          --shm-size=2g
           --health-cmd="pg_isready -U postgres"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
+        # Default Docker `--shm-size` is 64 MB, which is enough for
+        # a typical Postgres' shared-memory needs but NOT enough
+        # when we're also storing the entire `PGDATA` (data files
+        # + WAL) inside `/dev/shm`. The seed creates 6 tenant
+        # databases; with a 64 MB ceiling the second `CREATE
+        # DATABASE` panicked with "No space left on device" during
+        # WAL preallocation. 2 GB gives ample headroom for the
+        # lean-seed dataset + WAL with no risk of the same crash
+        # recurring as we add more tenants.
 
       redis:
         image: redis:7
