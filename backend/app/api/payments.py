@@ -142,9 +142,16 @@ async def payment_queue(
     """List approved invoices ready for payment (no completed payment yet)."""
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
 
+    # Match the workflow state machine: only statuses that can directly
+    # transition to ``payment_scheduled`` belong here. ``sent_to_erp``
+    # is excluded — that row is mid-flight in the ERP push and must
+    # advance to ``posted_in_erp`` (via the ERP-confirmation webhook)
+    # before a payment can be scheduled against it. Including it would
+    # let the UI offer "Pay" on a row whose execute call fails the
+    # transition with 409, surfacing as a stuck queue row to the
+    # operator.
     payable_statuses = [
         InvoiceStatus.approved.value,
-        InvoiceStatus.sent_to_erp.value,
         InvoiceStatus.posted_in_erp.value,
         InvoiceStatus.payment_scheduled.value,
     ]
@@ -245,9 +252,16 @@ async def payment_summary(
         total_rebates = 0.0
 
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
+    # Match the workflow state machine: only statuses that can directly
+    # transition to ``payment_scheduled`` belong here. ``sent_to_erp``
+    # is excluded — that row is mid-flight in the ERP push and must
+    # advance to ``posted_in_erp`` (via the ERP-confirmation webhook)
+    # before a payment can be scheduled against it. Including it would
+    # let the UI offer "Pay" on a row whose execute call fails the
+    # transition with 409, surfacing as a stuck queue row to the
+    # operator.
     payable_statuses = [
         InvoiceStatus.approved.value,
-        InvoiceStatus.sent_to_erp.value,
         InvoiceStatus.posted_in_erp.value,
         InvoiceStatus.payment_scheduled.value,
     ]
