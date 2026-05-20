@@ -306,6 +306,15 @@ jobs:
       # in. The same goes for the `auth_mfa_*` and `portal_auth_login`
       # buckets. Disable rate limiting for the duration of the e2e run.
       AP_RATE_LIMIT_ENABLED: "false"
+      # The e2e suite signs in fresh JWTs many times per worker
+      # (CFO + clerk role-switching tests, the storage-state preload,
+      # `signInAndWait` calls). The product default of 5 concurrent
+      # sessions per user evicts the OLDEST JWT once exceeded — which
+      # in tests means the cached storage-state JWT gets blocklisted
+      # mid-run and every subsequent API call returns 401. Bump
+      # generously for CI; the prod cap stays at 5 because no env
+      # sets this var there.
+      AP_MAX_CONCURRENT_SESSIONS: "100"
       # Each shard runs `workers=1`, so it only needs one e2e tenant
       # (e2e1). Cuts seed time per shard from ~6 lean-tenant seeds
       # down to 3 (acme + techflow + e2e1).
