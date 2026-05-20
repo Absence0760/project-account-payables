@@ -1,6 +1,6 @@
 import { expect, test, ACME_BASE } from '../fixtures/helpers';
 
-import { ACME_ADMIN, signInAndWait } from '../fixtures/helpers';
+import { signInAndWait } from '../fixtures/helpers';
 
 // Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
 // asserts cross-tenant isolation that requires fixed tenant slugs. The

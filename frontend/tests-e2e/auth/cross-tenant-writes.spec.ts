@@ -4,7 +4,6 @@ import {
 	ACME_ADMIN,
 	ACME_BASE,
 	escapeRegExp,
-	signInAndWait,
 	TECHFLOW_ADMIN,
 	TECHFLOW_BASE
 } from '../fixtures/helpers';
