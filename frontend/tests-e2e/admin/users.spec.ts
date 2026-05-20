@@ -1,26 +1,15 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authToken,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 async function deleteUser(page: import('@playwright/test').Page, id: string) {
-	const token = await authToken(page);
 	await page.request.delete(`${API_BASE}/api/admin/users/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 }
 
@@ -28,11 +17,11 @@ async function deleteUser(page: import('@playwright/test').Page, id: string) {
  * /admin user lifecycle — create, edit, deactivate, delete.
  *
  * Each test that mutates state cleans up via DELETE in finally so the
- * suite is re-runnable. We never delete the seeded acme users; freshly
- * created ones are scoped to a per-test email like `e2e-<ts>@acme.test`.
+ * suite is re-runnable. We never delete the seeded admin user; freshly
+ * created ones are scoped to a per-test email like `e2e-<ts>@test.local`.
  */
 
-test.describe('/admin user lifecycle (acme admin)', () => {
+test.describe('/admin user lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/admin');
@@ -43,7 +32,7 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 	test('Create User submit is disabled while empty + creates a user on submit', async ({
 		page
 	}) => {
-		const email = `e2e-create-${Date.now()}@acme.test`;
+		const email = `e2e-create-${Date.now()}@test.local`;
 		const fullName = 'E2E Created User';
 		let createdId: string | null = null;
 
@@ -93,10 +82,10 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 
 	test('Edit modal pre-fills the row and persists name change', async ({ page }) => {
 		// Create a fresh user via API so we don't mutate seeded users.
-		const token = await authToken(page);
-		const email = `e2e-edit-${Date.now()}@acme.test`;
+		const headers = await authedTenantHeaders(page);
+		const email = `e2e-edit-${Date.now()}@test.local`;
 		const createResp = await page.request.post(`${API_BASE}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: { full_name: 'Edit Me Original', email, role_names: ['ap_clerk'] }
 		});
 		const created = (await createResp.json()) as { id: string };
@@ -138,9 +127,10 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 
 	test('Edit modal can toggle a role on, persisting the change', async ({ page }) => {
 		const token = await authToken(page);
-		const email = `e2e-roles-${Date.now()}@acme.test`;
+		const headers = await authedTenantHeaders(page);
+		const email = `e2e-roles-${Date.now()}@test.local`;
 		const createResp = await page.request.post(`${API_BASE}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: { full_name: 'Role Test', email, role_names: ['ap_clerk'] }
 		});
 		const created = (await createResp.json()) as { id: string };
@@ -168,10 +158,10 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 			await patched;
 
 			// Verify via API — role-change forces a session revoke, so reading
-			// the role badges from the now-stale DOM is racy.
-			const get = await page.request.get(`${API_BASE}/api/admin/users`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-			});
+			// the role badges from the now-stale DOM is racy. Token from before
+			// the revoke still works for read-only API calls.
+			void token;
+			const get = await page.request.get(`${API_BASE}/api/admin/users`, { headers });
 			const list = (await get.json()) as {
 				items: Array<{ id: string; roles: Array<{ name: string }> }>;
 			};
@@ -186,10 +176,10 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 	});
 
 	test('Deactivate flips status to Inactive; Activate restores it', async ({ page }) => {
-		const token = await authToken(page);
-		const email = `e2e-deactivate-${Date.now()}@acme.test`;
+		const headers = await authedTenantHeaders(page);
+		const email = `e2e-deactivate-${Date.now()}@test.local`;
 		const createResp = await page.request.post(`${API_BASE}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: { full_name: 'Deactivate Me', email, role_names: ['ap_clerk'] }
 		});
 		const created = (await createResp.json()) as { id: string };
@@ -226,10 +216,10 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 	});
 
 	test('Delete requires a confirm click (two-step armed pattern)', async ({ page }) => {
-		const token = await authToken(page);
-		const email = `e2e-delete-${Date.now()}@acme.test`;
+		const headers = await authedTenantHeaders(page);
+		const email = `e2e-delete-${Date.now()}@test.local`;
 		const createResp = await page.request.post(`${API_BASE}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: { full_name: 'Delete Me', email, role_names: [] }
 		});
 		const created = (await createResp.json()) as { id: string };
@@ -263,8 +253,11 @@ test.describe('/admin user lifecycle (acme admin)', () => {
 		}
 	});
 
-	test('Cannot delete yourself — current user has no delete button', async ({ page }) => {
-		const youRow = page.locator('table tbody tr', { hasText: 'demo@acme.com' });
+	test('Cannot delete yourself — current user has no delete button', async ({
+		page,
+		tenantAdmin
+	}) => {
+		const youRow = page.locator('table tbody tr', { hasText: tenantAdmin.email });
 		await expect(youRow.locator('.you-badge')).toBeVisible();
 		await expect(youRow.locator('button.row-action.variant-danger')).toHaveCount(0);
 	});
