@@ -1,6 +1,10 @@
-import { expect, test } from '../fixtures/helpers';
+import { expect, signInAndWait, signOut, test } from '../fixtures/helpers';
 
-import { signOut } from '../fixtures/helpers';
+// Start unauthenticated — this spec tests the logout flow, which
+// blocklists the JWT server-side. Reusing the worker's storage-state
+// admin would poison subsequent tests in the file because the cached
+// JWT is now invalidated in Redis. Each test signs in fresh instead.
+test.use({ storageState: { cookies: [], origins: [] } });
 
 /**
  * Sign-out flow + post-logout protection. The two assertions together
@@ -8,10 +12,12 @@ import { signOut } from '../fixtures/helpers';
  * session means a re-visit to a protected route bounces to /login."
  */
 
-test.describe('sign out (acme admin)', () => {
+test.describe('sign out', () => {
+	test.beforeEach(async ({ page }) => {
+		await signInAndWait(page);
+	});
+
 	test('Log Out clears the session and lands on /login', async ({ page }) => {
-		// Land on the dashboard so the sidebar (with the profile button) renders.
-		await page.goto('/');
 		await signOut(page);
 
 		// auth_token is the localStorage key cleared by auth.logout().
@@ -22,7 +28,6 @@ test.describe('sign out (acme admin)', () => {
 	});
 
 	test('after logout, /invoices bounces back to /login', async ({ page }) => {
-		await page.goto('/');
 		await signOut(page);
 
 		await page.goto('/invoices');
