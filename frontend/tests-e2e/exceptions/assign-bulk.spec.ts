@@ -1,25 +1,7 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
-	const token = await authToken(page);
-	return { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' };
+	return await authedTenantHeaders(page);
 }
 
 interface ExceptionItem {
@@ -43,15 +25,17 @@ async function fetchExceptions(
 	return body.items;
 }
 
-async function fetchAdminUserId(page: import('@playwright/test').Page): Promise<{
-	id: string;
-	full_name: string;
-}> {
+async function fetchAdminUserId(
+	page: import('@playwright/test').Page,
+	adminEmail: string
+): Promise<{ id: string; full_name: string }> {
 	const headers = await apiHeaders(page);
 	const resp = await page.request.get(`${API_BASE}/api/admin/users`, { headers });
-	const body = (await resp.json()) as { items: Array<{ id: string; email: string; full_name: string }> };
-	const admin = body.items.find((u) => u.email === 'demo@acme.com');
-	if (!admin) throw new Error('demo@acme.com not found');
+	const body = (await resp.json()) as {
+		items: Array<{ id: string; email: string; full_name: string }>;
+	};
+	const admin = body.items.find((u) => u.email === adminEmail);
+	if (!admin) throw new Error(`${adminEmail} not found`);
 	return { id: admin.id, full_name: admin.full_name };
 }
 
@@ -62,7 +46,7 @@ async function fetchAdminUserId(page: import('@playwright/test').Page): Promise<
  * existing /exceptions page in a follow-up.
  */
 
-test.describe('/api/exceptions — assignment + bulk resolve (acme admin)', () => {
+test.describe('/api/exceptions — assignment + bulk resolve', () => {
 	test('list response carries the new SLA + assignee fields', async ({ page }) => {
 		await signInAndWait(page);
 		const items = await fetchExceptions(page);
@@ -77,7 +61,10 @@ test.describe('/api/exceptions — assignment + bulk resolve (acme admin)', () =
 		}
 	});
 
-	test('assign: PATCH-style endpoint sets the user, unassign clears it', async ({ page }) => {
+	test('assign: PATCH-style endpoint sets the user, unassign clears it', async ({
+		page,
+		tenantAdmin
+	}) => {
 		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
@@ -85,7 +72,7 @@ test.describe('/api/exceptions — assignment + bulk resolve (acme admin)', () =
 		const target = items[0];
 		if (!target) test.skip();
 
-		const { id: userId, full_name: adminName } = await fetchAdminUserId(page);
+		const { id: userId, full_name: adminName } = await fetchAdminUserId(page, tenantAdmin.email);
 
 		// Assign.
 		const r1 = await page.request.post(
@@ -149,8 +136,8 @@ test.describe('/api/exceptions — assignment + bulk resolve (acme admin)', () =
 		expect(resp.status()).toBe(400);
 	});
 
-	test('assign: clerk role gets 403', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
+	test('assign: clerk role gets 403', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		const headers = await apiHeaders(page);
 		const fakeId = '00000000-0000-0000-0000-000000000000';
 		const resp = await page.request.post(
@@ -215,12 +202,15 @@ test.describe('/api/exceptions — assignment + bulk resolve (acme admin)', () =
 		expect(resp.status()).toBe(400);
 	});
 
-	test('list filter ?assigned_to_user_id narrows to that assignee', async ({ page }) => {
+	test('list filter ?assigned_to_user_id narrows to that assignee', async ({
+		page,
+		tenantAdmin
+	}) => {
 		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const items = await fetchExceptions(page, '?status=open');
 		if (items.length === 0) test.skip();
-		const { id: userId } = await fetchAdminUserId(page);
+		const { id: userId } = await fetchAdminUserId(page, tenantAdmin.email);
 
 		// Assign one to the admin so the filter has a hit.
 		await page.request.post(

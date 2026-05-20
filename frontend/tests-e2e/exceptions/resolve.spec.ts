@@ -1,23 +1,11 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 interface ExceptionRow {
 	id: string;
@@ -30,37 +18,23 @@ async function listExceptions(
 	page: import('@playwright/test').Page,
 	status: string
 ): Promise<ExceptionRow[]> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/exceptions?status=${status}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	const body = (await resp.json()) as { items: ExceptionRow[] };
 	return body.items;
 }
 
 /**
- * Reset an exception back to `open` state in the ap_acme tenant DB.
+ * Reset an exception back to `open` state in the worker's tenant DB.
  * The product API has no "reopen" endpoint by design (resolved
  * exceptions are immutable for audit purposes), so direct SQL is the
  * only revertible path. psql is available on dev workstations and in
  * the CI backend container.
  */
 function resetExceptionToOpen(id: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			`UPDATE exceptions SET status='open', resolution=NULL, resolved_by=NULL, resolved_at=NULL WHERE id='${id}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+	tenantPsql(
+		`UPDATE exceptions SET status='open', resolution=NULL, resolved_by=NULL, resolved_at=NULL WHERE id='${id}'`
 	);
 }
 
@@ -70,7 +44,7 @@ function resetExceptionToOpen(id: string): void {
  * re-runnable. Open exceptions come from the seed (3 per tenant).
  */
 
-test.describe('/exceptions resolve actions (acme admin)', () => {
+test.describe('/exceptions resolve actions', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/exceptions');
