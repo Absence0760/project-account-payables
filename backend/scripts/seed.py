@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.config import settings
 from app.database import _make_tenant_url, control_engine, control_session_factory
 from app.models import Base
+from app.models.credit_memo import CreditMemo
 from app.models.exception import Exception as APException
 from app.models.gl_account import GLAccount
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
@@ -38,7 +39,6 @@ from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, Purchas
 from app.models.usage import ExtractionUsage
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
-from app.models.credit_memo import CreditMemo
 from app.models.workflow import AuditLog, WorkflowDefinition
 from app.utils.passwords import pwd_context
 
