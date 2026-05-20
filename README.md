@@ -6,22 +6,40 @@ Full-stack accounts payable management application built with SvelteKit, FastAPI
 
 ```bash
 # 1. Start infrastructure (Postgres, Redis, MinIO)
-cd backend && docker compose up -d
+pnpm db:up
 
-# 2. Start backend
-cd backend
-python3 -m venv .venv && source .venv/bin/activate
+# 2. Bootstrap the backend (in one terminal)
+cd backend && python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python scripts/seed.py
-python main.py
+pnpm seed
+pnpm dev:backend       # uvicorn on :8000
 
-# 3. Start frontend
-cd frontend
-pnpm i && cp .env.example .env
-pnpm dev
+# 3. Start the frontend (in another terminal)
+pnpm install:frontend  # first time only
+pnpm dev:frontend      # vite on :7777
 ```
 
 Open http://acme.localhost:7777 — login with `demo@acme.com` / `demo`
+
+The `pnpm` commands above are thin wrappers that `cd` into the right workspace and call its native toolchain (pip / pnpm / flutter). See [Root scripts](#root-scripts) for the full list, or run `pnpm run` to print them.
+
+## Root scripts
+
+Common cross-workspace tasks are exposed via `pnpm run` at the repo root. Each script is a one-line dispatch to the per-workspace native tool — there are no JS dependencies at root.
+
+| Script | Dispatches to |
+|---|---|
+| `pnpm install:{backend,frontend,mobile,all}` | `pip install -e '.[dev]'` / `pnpm install` / `flutter pub get` |
+| `pnpm dev:{backend,frontend,mobile}` | `python main.py` / `vite dev` / `flutter run` |
+| `pnpm build:frontend` | `vite build` |
+| `pnpm lint:{backend,frontend,mobile}` + `pnpm lint` | `ruff check .` / `pnpm check` / `flutter analyze` |
+| `pnpm format[:backend][:check]` | `ruff format [--check] .` |
+| `pnpm test:{backend,frontend,mobile}` + `pnpm test` | `pytest` / `pnpm test:e2e` / `flutter test` |
+| `pnpm db:{up,down,logs,reset}` | `docker compose ...` in `backend/` |
+| `pnpm seed` | `python scripts/seed.py` |
+| `pnpm migrate[:tenants|:all]` | `alembic upgrade head` / `scripts/migrate_all_tenants.py` |
+
+The backend scripts assume your backend venv is activated (`source backend/.venv/bin/activate`). Per-workspace docs in `backend/CLAUDE.md`, `frontend/CLAUDE.md`, `mobile/CLAUDE.md` cover everything the dispatch scripts don't.
 
 ## Documentation
 

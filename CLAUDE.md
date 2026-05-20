@@ -17,7 +17,20 @@ Full-stack accounts payable management app. SvelteKit frontend + FastAPI backend
 
 ## Commands
 
+The repo root has a `package.json` with `pnpm` dispatch scripts that wrap each workspace's native toolchain — `pnpm run` lists them. The native commands still work, and CI calls them directly.
+
 ```bash
+# Common tasks via root pnpm scripts (any working directory)
+pnpm install:all              # bootstrap all three workspaces
+pnpm db:up                    # docker compose up -d (Postgres/Redis/MinIO)
+pnpm seed                     # python scripts/seed.py
+pnpm dev:backend              # python main.py
+pnpm dev:frontend             # vite dev on :7777
+pnpm dev:mobile               # flutter run
+pnpm lint                     # ruff + svelte-check + flutter analyze
+pnpm test                     # pytest + Playwright + flutter test
+pnpm migrate:all              # alembic upgrade head + migrate_all_tenants.py
+
 # Frontend (from frontend/)
 pnpm i                       # install
 pnpm dev                     # dev server on :7777
@@ -48,6 +61,8 @@ alembic upgrade head                                # apply to control plane
 AP_MIGRATE_TENANT=ap_acme alembic upgrade head      # apply to one tenant
 python scripts/migrate_all_tenants.py               # apply to all tenants
 ```
+
+The backend dispatch scripts (`lint:backend`, `test:backend`, `format:backend`, `dev:backend`, `seed`, `migrate*`) assume the backend venv is activated — `source backend/.venv/bin/activate` before invoking them, or call the native commands from inside an already-activated shell.
 
 ## First-time setup
 

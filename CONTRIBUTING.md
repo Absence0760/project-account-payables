@@ -40,26 +40,35 @@ Per the rule in `CLAUDE.md`: every PR that touches code also touches tests and d
 
 ## Running the checks locally
 
-Each workspace has its own toolchain — run the ones that apply to your change:
+Each workspace has its own toolchain. The fastest way to invoke any of them is via the root `pnpm` dispatch scripts (see `pnpm run` for the full list); the native commands below still work for anyone who prefers them.
 
 ```
-# Backend (from backend/)
-ruff check .                  # lint
-ruff format --check .         # format
-pytest                        # unit / integration tests
+# Via root pnpm scripts (any directory in the repo)
+pnpm lint:backend             # ruff check .
+pnpm format:backend:check     # ruff format --check .
+pnpm test:backend             # pytest
+pnpm lint:frontend            # pnpm check (svelte-check + tsc)
+pnpm test:frontend            # Playwright (backend must be up on :8000)
+pnpm lint:mobile              # flutter analyze
+pnpm test:mobile              # flutter test
+pnpm lint                     # all three sequentially
+```
 
-# Frontend (from frontend/)
-pnpm i
-pnpm check                    # svelte-check + tsc
-pnpm test:e2e                 # Playwright (backend must be up on :8000)
-
-# Mobile (from mobile/)
-flutter analyze
-flutter test
+```
+# Native per-workspace commands (the dispatch scripts above wrap these)
+cd backend && ruff check .
+cd backend && ruff format --check .
+cd backend && pytest
+cd frontend && pnpm check
+cd frontend && pnpm test:e2e
+cd mobile && flutter analyze
+cd mobile && flutter test
 
 # Repo-wide
 pre-commit run --all-files    # gitleaks + the other hygiene hooks
 ```
+
+The backend scripts (lint, test, format) assume your backend venv is activated — `source backend/.venv/bin/activate` first, or run the native command from inside an already-activated shell.
 
 Or, if Claude Code is available: `/check` runs the relevant gates against the working diff and reports.
 
