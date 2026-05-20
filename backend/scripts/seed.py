@@ -1,5 +1,20 @@
-"""Seed the database with sample data for two demo tenants."""
+"""Seed the database with sample data for two demo tenants.
 
+Two seed shapes:
+
+- **Full** (default) — every tenant (acme + techflow + e2e1..e2eN) gets
+  the rich demo dataset: 9 vendors, ~50 invoices across every status,
+  payment runs, exceptions, PO matching scenarios, virtual cards, etc.
+  Best for local development where you actually want to click around.
+- **Lean** (``--lean`` / ``AP_SEED_MODE=lean``) — every tenant gets
+  just enough for the e2e suite (4 vendors, 10 invoices across status
+  buckets, 1 default workflow, 1 GL account, no exceptions/payments/
+  cards). Specs that need richer state build it via API at the start
+  of the test. Roughly an order of magnitude faster — that's what
+  ``.github/workflows/ci.yml`` runs.
+"""
+
+import argparse
 import asyncio
 import os
 import uuid
@@ -1313,6 +1328,145 @@ async def seed_e2e_control_plane(roles: dict[str, "Role"]) -> list[tuple[str, uu
     return created
 
 
+async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
+    """Minimal per-tenant seed for CI / e2e runs.
+
+    Creates just enough fixture data for the Playwright suite:
+
+    - 4 vendors covering the status buckets specs assert against
+      (active, unverified, inactive, rejected).
+    - 1 GL account (the suite's invoice-edit + bulk-recode specs
+      need one to exist in the dropdown).
+    - 1 default workflow definition with the canonical
+      extraction → approval → erp_export step shape.
+    - 10 invoices spread across the status enum so the
+      `/invoices` filter chips have at least one row each.
+
+    Skips: payment runs, exceptions, audit-log fixtures, virtual
+    cards, embeddings, PO + GR matching scenarios, credit memos,
+    bank reconciliation, the rich audit narrative — anything a
+    spec needs beyond the above it creates on its own via API or
+    `tenantPsql`. Idempotent: bails if vendors already exist.
+
+    Wall-clock target: ~1–2 s per tenant vs ~10–15 s for the full
+    seed. The four ``e2e<N>`` tenants times four shards is the
+    fattest contributor to CI's e2e setup time, so this is where
+    the biggest speed-up lives.
+    """
+    tenant_url = _make_tenant_url(db_name)
+    engine = create_async_engine(tenant_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with factory() as session:
+            result = await session.execute(text("SELECT count(*) FROM vendors"))
+            if result.scalar() > 0:
+                print(f"  {tenant_label} tenant already seeded. Skipping.")
+                return
+
+            session.add_all(
+                [
+                    Vendor(
+                        organization_id=org_id,
+                        name="Lean Vendor Alpha",
+                        code="LVA",
+                        email="alpha@vendor.test",
+                        address="1 Test Lane, Test City, TC 00001",
+                        tax_id="11-1111111",
+                        payment_terms="Net 30",
+                        status="active",
+                        source="erp_sync",
+                        erp_vendor_id="ERP-LVA",
+                        accepts_virtual_cards=True,
+                    ),
+                    Vendor(
+                        organization_id=org_id,
+                        name="Lean Vendor Beta",
+                        code="LVB",
+                        email="beta@vendor.test",
+                        payment_terms="Net 60",
+                        status="unverified",
+                        source="ai_extracted",
+                    ),
+                    Vendor(
+                        organization_id=org_id,
+                        name="Lean Vendor Gamma",
+                        code="LVG",
+                        status="inactive",
+                        source="manual",
+                    ),
+                    Vendor(
+                        organization_id=org_id,
+                        name="Lean Vendor Delta",
+                        code="LVD",
+                        status="rejected",
+                        source="ai_extracted",
+                    ),
+                ]
+            )
+
+            session.add(
+                GLAccount(
+                    organization_id=org_id,
+                    code="6000",
+                    name="Operating Expenses",
+                    account_type="expense",
+                )
+            )
+
+            session.add(
+                WorkflowDefinition(
+                    organization_id=org_id,
+                    name="Default e2e workflow",
+                    is_active=True,
+                    is_default=True,
+                    steps_config=[
+                        {"step_type": "extraction", "config": {}},
+                        {
+                            "step_type": "approval",
+                            "config": {"required_role": "ap_manager"},
+                        },
+                        {"step_type": "erp_export", "config": {}},
+                    ],
+                )
+            )
+
+            await session.flush()
+
+            # Spread 10 invoices across the status buckets so the
+            # `/invoices` page's filter chips each have at least one
+            # row. Amounts stay tiny (test data, not realistic).
+            statuses = [
+                "new",
+                "pending",
+                "ready_for_review",
+                "approved",
+                "sending_to_erp",
+                "sent_to_erp",
+                "posted_in_erp",
+                "payment_scheduled",
+                "paid",
+                "rejected",
+            ]
+            for i, status in enumerate(statuses, start=1):
+                session.add(
+                    Invoice(
+                        organization_id=org_id,
+                        vendor_name="Lean Vendor Alpha",
+                        invoice_number=f"LEAN-{i:03d}",
+                        amount=Decimal(f"{100 + i}.00"),
+                        currency="USD",
+                        status=status,
+                        invoice_date=date(2026, 1, i % 28 + 1),
+                    )
+                )
+
+            await session.commit()
+            print(f"  Seeded lean fixtures for {tenant_label}")
+    finally:
+        await engine.dispose()
+
+
 async def _load_seeded_roles() -> dict[str, "Role"]:
     """Fetch the four role rows seeded by ``seed_control_plane``."""
     async with control_session_factory() as session:
@@ -1323,8 +1477,18 @@ async def _load_seeded_roles() -> dict[str, "Role"]:
         return out
 
 
-async def seed():
-    print("=== Seeding control plane ===")
+async def seed(lean: bool = False):
+    """Provision every tenant DB.
+
+    Parameters
+    ----------
+    lean : bool
+        When ``True``, every tenant gets the minimal fixture set via
+        :func:`seed_tenant_lean` instead of the full demo dataset. CI
+        flips this on for the e2e job; local dev leaves it off.
+    """
+    mode_label = "lean" if lean else "full"
+    print(f"=== Seeding control plane (mode={mode_label}) ===")
     await create_control_tables()
     await seed_control_plane()
 
@@ -1335,11 +1499,12 @@ async def seed():
         ("ap_acme", ACME_ORG_ID, "Acme Corp"),
         ("ap_techflow", TECH_ORG_ID, "TechFlow Inc"),
     ]
+    tenant_seeder = seed_tenant_lean if lean else seed_tenant
     for db_name, org_id, label in base_tenants + e2e_tenants:
         print(f"\n=== Seeding tenant: {label} ({db_name}) ===")
         await create_database(db_name)
         await create_tenant_tables(db_name)
-        await seed_tenant(db_name, org_id, label)
+        await tenant_seeder(db_name, org_id, label)
 
     await control_engine.dispose()
 
@@ -1356,5 +1521,21 @@ async def seed():
     print("  (Login password for every seeded user is the documented dev default.)")
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Seed local + e2e tenants.")
+    parser.add_argument(
+        "--lean",
+        action="store_true",
+        default=os.environ.get("AP_SEED_MODE", "").lower() == "lean",
+        help=(
+            "Use the minimal per-tenant fixture set. Faster (~10× less work "
+            "per tenant); intended for CI's e2e job. Local dev defaults to "
+            "the full demo dataset. Also enabled via AP_SEED_MODE=lean."
+        ),
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    asyncio.run(seed())
+    args = _parse_args()
+    asyncio.run(seed(lean=args.lean))

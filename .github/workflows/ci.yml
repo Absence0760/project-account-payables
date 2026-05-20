@@ -253,12 +253,20 @@ jobs:
         working-directory: backend
         run: pip install -e ".[dev]"
 
-      - name: Seed database (acme + techflow + e2e1..e2e4 tenants)
+      - name: Seed database (lean: acme + techflow + e2e1..e2e4)
         working-directory: backend
         # Each matrix shard runs against its own Postgres service, so
         # the seeded tenants only have to be unique within the shard —
         # no need to namespace by `matrix.shard` here.
-        run: python scripts/seed.py
+        #
+        # `--lean` swaps every tenant onto the minimal fixture path
+        # in `seed.py::seed_tenant_lean` — 4 vendors + 10 invoices +
+        # 1 workflow + 1 GL per tenant, vs the full demo dataset's
+        # ~9 vendors / ~50 invoices / payment runs / exceptions /
+        # PO matching / virtual cards. The full set is for local
+        # dev (you actually want to click around); the e2e suite
+        # builds whatever extra state it needs on the fly.
+        run: python scripts/seed.py --lean
 
       - name: Start backend in background
         working-directory: backend

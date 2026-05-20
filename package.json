@@ -29,6 +29,7 @@
 		"db:logs": "cd backend && docker compose logs -f",
 		"db:reset": "cd backend && docker compose down -v && docker compose up -d",
 		"seed": "cd backend && python scripts/seed.py",
+		"seed:lean": "cd backend && python scripts/seed.py --lean",
 		"migrate": "cd backend && alembic upgrade head",
 		"migrate:tenants": "cd backend && python scripts/migrate_all_tenants.py",
 		"migrate:all": "pnpm run migrate && pnpm run migrate:tenants",
