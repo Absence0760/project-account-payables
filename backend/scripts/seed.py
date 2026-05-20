@@ -18,7 +18,7 @@ import argparse
 import asyncio
 import os
 import uuid
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import asyncpg
@@ -38,6 +38,7 @@ from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, Purchas
 from app.models.usage import ExtractionUsage
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
+from app.models.credit_memo import CreditMemo
 from app.models.workflow import AuditLog, WorkflowDefinition
 from app.utils.passwords import pwd_context
 
@@ -1337,18 +1338,24 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
       (active, unverified, inactive, rejected).
     - 1 GL account (the suite's invoice-edit + bulk-recode specs
       need one to exist in the dropdown).
-    - 1 default workflow definition with the canonical
-      extraction → approval → erp_export step shape.
+    - 1 default workflow definition named "Default Workflow" with
+      the extraction → approval → erp_export step shape spec
+      assertions match against.
     - 10 invoices spread across the status enum so the
       `/invoices` filter chips have at least one row each.
+    - 1 PO + 1 GR with line items (for /purchase-orders and
+      /goods-receipts list specs).
+    - 4 exceptions covering open / resolved / escalated / dismissed
+      (for /exceptions filter + resolve specs).
+    - 2 credit memos: open + applied (for /credit-memos specs).
 
-    Skips: payment runs, exceptions, audit-log fixtures, virtual
-    cards, embeddings, PO + GR matching scenarios, credit memos,
-    bank reconciliation, the rich audit narrative — anything a
-    spec needs beyond the above it creates on its own via API or
-    `tenantPsql`. Idempotent: bails if vendors already exist.
+    Skips: payment runs, virtual cards, embeddings, audit-log
+    fixtures, bank reconciliation, sanctions screening, the rich
+    multi-invoice demo narrative — anything a spec needs beyond
+    the above it creates on its own via API or ``tenantPsql``.
+    Idempotent: bails if vendors already exist.
 
-    Wall-clock target: ~1–2 s per tenant vs ~10–15 s for the full
+    Wall-clock target: ~2–3 s per tenant vs ~10–15 s for the full
     seed. The four ``e2e<N>`` tenants times four shards is the
     fattest contributor to CI's e2e setup time, so this is where
     the biggest speed-up lives.
@@ -1364,46 +1371,43 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 print(f"  {tenant_label} tenant already seeded. Skipping.")
                 return
 
-            session.add_all(
-                [
-                    Vendor(
-                        organization_id=org_id,
-                        name="Lean Vendor Alpha",
-                        code="LVA",
-                        email="alpha@vendor.test",
-                        address="1 Test Lane, Test City, TC 00001",
-                        tax_id="11-1111111",
-                        payment_terms="Net 30",
-                        status="active",
-                        source="erp_sync",
-                        erp_vendor_id="ERP-LVA",
-                        accepts_virtual_cards=True,
-                    ),
-                    Vendor(
-                        organization_id=org_id,
-                        name="Lean Vendor Beta",
-                        code="LVB",
-                        email="beta@vendor.test",
-                        payment_terms="Net 60",
-                        status="unverified",
-                        source="ai_extracted",
-                    ),
-                    Vendor(
-                        organization_id=org_id,
-                        name="Lean Vendor Gamma",
-                        code="LVG",
-                        status="inactive",
-                        source="manual",
-                    ),
-                    Vendor(
-                        organization_id=org_id,
-                        name="Lean Vendor Delta",
-                        code="LVD",
-                        status="rejected",
-                        source="ai_extracted",
-                    ),
-                ]
+            v_alpha = Vendor(
+                organization_id=org_id,
+                name="Lean Vendor Alpha",
+                code="LVA",
+                email="alpha@vendor.test",
+                address="1 Test Lane, Test City, TC 00001",
+                tax_id="11-1111111",
+                payment_terms="Net 30",
+                status="active",
+                source="erp_sync",
+                erp_vendor_id="ERP-LVA",
+                accepts_virtual_cards=True,
             )
+            v_beta = Vendor(
+                organization_id=org_id,
+                name="Lean Vendor Beta",
+                code="LVB",
+                email="beta@vendor.test",
+                payment_terms="Net 60",
+                status="unverified",
+                source="ai_extracted",
+            )
+            v_gamma = Vendor(
+                organization_id=org_id,
+                name="Lean Vendor Gamma",
+                code="LVG",
+                status="inactive",
+                source="manual",
+            )
+            v_delta = Vendor(
+                organization_id=org_id,
+                name="Lean Vendor Delta",
+                code="LVD",
+                status="rejected",
+                source="ai_extracted",
+            )
+            session.add_all([v_alpha, v_beta, v_gamma, v_delta])
 
             session.add(
                 GLAccount(
@@ -1417,7 +1421,10 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
             session.add(
                 WorkflowDefinition(
                     organization_id=org_id,
-                    name="Default e2e workflow",
+                    # `workflows/list.spec.ts` matches on the literal
+                    # name "Default Workflow". The acme/techflow full
+                    # seed uses the same string — keep parity.
+                    name="Default Workflow",
                     is_active=True,
                     is_default=True,
                     # Schema requires a dict at the root with a "steps"
@@ -1438,14 +1445,26 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
                                 "type": "approval",
                                 "name": "Manager Approval",
                                 "enabled": True,
-                                "config": {"required_role": "ap_manager"},
+                                # Mirror the canonical config shape
+                                # `seed_tenant` uses — the workflow
+                                # engine reads `approver_strategy`,
+                                # `required`, `require_segregation`.
+                                # `workflows/invoice-routing.spec.ts`
+                                # patches `auto_approve_below` and
+                                # asserts the engine picks it up.
+                                "config": {
+                                    "required": True,
+                                    "approver_id": None,
+                                    "approver_strategy": "manual",
+                                    "require_segregation": True,
+                                },
                             },
                             {
                                 "number": 3,
                                 "type": "erp_export",
                                 "name": "ERP Export",
                                 "enabled": True,
-                                "config": {},
+                                "config": {"erp_system": "default"},
                             },
                         ],
                     },
@@ -1454,33 +1473,206 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
 
             await session.flush()
 
-            # Spread 10 invoices across the status buckets so the
+            # Spread invoices across the status buckets so the
             # `/invoices` page's filter chips each have at least one
-            # row. Amounts stay tiny (test data, not realistic).
-            statuses = [
-                "new",
-                "pending",
-                "ready_for_review",
-                "approved",
-                "sending_to_erp",
-                "sent_to_erp",
-                "posted_in_erp",
-                "payment_scheduled",
-                "paid",
-                "rejected",
-            ]
+            # row. Bias toward `approved` (×5) because the
+            # `/payments` queue tests consume queue rows during their
+            # execute flow — having a handful in flight keeps the
+            # queue populated for the rest of the worker's suite.
+            statuses = (
+                ["new"]
+                + ["pending"]
+                + ["ready_for_review"]
+                + ["approved"] * 5
+                + ["sending_to_erp"]
+                + ["sent_to_erp"]
+                + ["posted_in_erp"]
+                + ["payment_scheduled"]
+                + ["paid"]
+                + ["rejected"]
+            )
+            invoices: list[Invoice] = []
             for i, status in enumerate(statuses, start=1):
-                session.add(
-                    Invoice(
-                        organization_id=org_id,
-                        vendor_name="Lean Vendor Alpha",
-                        invoice_number=f"LEAN-{i:03d}",
-                        amount=Decimal(f"{100 + i}.00"),
-                        currency="USD",
-                        status=status,
-                        invoice_date=date(2026, 1, i % 28 + 1),
-                    )
+                # correlation_id is what `GET /api/invoices/{id}/audit-log`
+                # joins on. Generate it here so the matching audit_log
+                # row stamped below can be retrieved.
+                corr_id = uuid.uuid4()
+                inv = Invoice(
+                    organization_id=org_id,
+                    vendor_name="Lean Vendor Alpha",
+                    invoice_number=f"LEAN-{i:03d}",
+                    amount=Decimal(f"{100 + i}.00"),
+                    currency="USD",
+                    status=status,
+                    invoice_date=date(2026, 1, i % 28 + 1),
+                    correlation_id=corr_id,
                 )
+                invoices.append(inv)
+                session.add(inv)
+
+            # One PO + one GR linked to the PO. `purchase-orders/list.spec.ts`
+            # and `goods-receipts/list.spec.ts` each just need the
+            # table to render at least one row plus a line-item modal.
+            po = PurchaseOrder(
+                organization_id=org_id,
+                po_number="LEAN-PO-001",
+                vendor_id=v_alpha.id,
+                total=Decimal("500.00"),
+                status="open",
+            )
+            session.add(po)
+            await session.flush()
+            session.add_all(
+                [
+                    POLineItem(
+                        po_id=po.id,
+                        description="Office paper, 10 reams",
+                        quantity=Decimal("10"),
+                        unit_price=Decimal("25.00"),
+                        total=Decimal("250.00"),
+                    ),
+                    POLineItem(
+                        po_id=po.id,
+                        description="Ballpoint pens, 50 ct",
+                        quantity=Decimal("50"),
+                        unit_price=Decimal("5.00"),
+                        total=Decimal("250.00"),
+                    ),
+                ]
+            )
+
+            gr = GoodsReceipt(
+                organization_id=org_id,
+                gr_number="LEAN-GR-001",
+                po_id=po.id,
+                received_date=date(2026, 1, 15),
+                status="received",
+            )
+            session.add(gr)
+            await session.flush()
+            session.add_all(
+                [
+                    GRLineItem(
+                        gr_id=gr.id,
+                        description="Office paper, 10 reams",
+                        quantity_received=Decimal("10"),
+                    ),
+                    GRLineItem(
+                        gr_id=gr.id,
+                        description="Ballpoint pens, 50 ct",
+                        quantity_received=Decimal("50"),
+                    ),
+                ]
+            )
+
+            # Four exceptions covering each status the spec set asserts
+            # against. Attach each to a distinct seeded invoice so the
+            # exception's "open invoices" reference can resolve.
+            session.add_all(
+                [
+                    APException(
+                        organization_id=org_id,
+                        invoice_id=invoices[0].id,
+                        exception_type="duplicate",
+                        severity="warning",
+                        description="Possible duplicate of LEAN-001",
+                        status="open",
+                    ),
+                    APException(
+                        organization_id=org_id,
+                        invoice_id=invoices[1].id,
+                        exception_type="po_mismatch",
+                        severity="warning",
+                        description="Invoice total differs from PO",
+                        status="resolved",
+                        resolution="PO updated to match invoice",
+                    ),
+                    APException(
+                        organization_id=org_id,
+                        invoice_id=invoices[2].id,
+                        exception_type="fraud_flag",
+                        severity="error",
+                        description="Vendor flagged for manual review",
+                        status="escalated",
+                    ),
+                    APException(
+                        organization_id=org_id,
+                        invoice_id=invoices[3].id,
+                        exception_type="amount_exceeded",
+                        severity="info",
+                        description="Amount exceeds approval threshold",
+                        status="dismissed",
+                    ),
+                ]
+            )
+
+            # Two credit memos — open + applied. The /credit-memos page
+            # asserts both buckets exist for the filter-chip narrowing
+            # test.
+            session.add_all(
+                [
+                    CreditMemo(
+                        organization_id=org_id,
+                        memo_number="CM-LEAN-001",
+                        vendor_id=v_alpha.id,
+                        amount=Decimal("75.00"),
+                        currency="USD",
+                        issued_date=date(2026, 1, 5),
+                        reason="Damaged goods returned",
+                        status="open",
+                    ),
+                    CreditMemo(
+                        organization_id=org_id,
+                        memo_number="CM-LEAN-002",
+                        vendor_id=v_alpha.id,
+                        amount=Decimal("40.00"),
+                        currency="USD",
+                        issued_date=date(2026, 1, 10),
+                        reason="Volume discount",
+                        status="applied",
+                    ),
+                ]
+            )
+
+            # One completed payment run with one settled payment. The
+            # `/payments` Runs tab + RunDetailModal spec assumes a
+            # seeded run row exists.
+            run = PaymentRun(
+                organization_id=org_id,
+                status="completed",
+                total_amount=Decimal("109.00"),
+                executed_at=datetime(2026, 1, 20, tzinfo=UTC),
+            )
+            session.add(run)
+            await session.flush()
+            session.add(
+                Payment(
+                    payment_run_id=run.id,
+                    invoice_id=invoices[8].id,  # the `paid` invoice
+                    amount=Decimal("109.00"),
+                    method="ach",
+                    status="completed",
+                )
+            )
+
+            # One audit-log row per invoice. `GET /api/invoices/{id}/audit-log`
+            # joins on `correlation_id`, not `entity_id` — set the same
+            # correlation_id on the audit row as the invoice has so the
+            # endpoint actually returns this row. The `/invoices` modal
+            # Activity-section test relies on it.
+            session.add_all(
+                [
+                    AuditLog(
+                        organization_id=org_id,
+                        correlation_id=inv.correlation_id,
+                        action="invoice_created",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details={"status": inv.status, "amount": str(inv.amount)},
+                    )
+                    for inv in invoices
+                ]
+            )
 
             await session.commit()
             print(f"  Seeded lean fixtures for {tenant_label}")
