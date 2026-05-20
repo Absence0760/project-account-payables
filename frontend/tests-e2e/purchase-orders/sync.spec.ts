@@ -50,7 +50,6 @@ test.describe('/api/purchase-orders/sync-erp', () => {
 	});
 
 	test('returns 400 when no ERP is configured', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		// Wipe any prior ERP config from a previous run.
 		await page.request.patch(`${API_BASE}/api/organization`, {
@@ -67,7 +66,6 @@ test.describe('/api/purchase-orders/sync-erp', () => {
 	});
 
 	test('syncs the mock-adapter PO catalogue, idempotent on re-run', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		// 1. Wire the mock ERP into the org settings.

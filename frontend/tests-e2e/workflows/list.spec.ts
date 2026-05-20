@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * /workflows — list view (admin-only). Seed creates one default
  * workflow per tenant (extraction → approval → ERP export).
@@ -9,7 +7,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/workflows list (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/workflows');
 		await page.waitForLoadState('networkidle');
 	});

@@ -7,6 +7,9 @@ import {
 	test
 } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec needs a fresh login per test to capture / revoke a JWT.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Logout security — the backend keeps a Redis blocklist keyed on the
  * token's `jti`. `POST /api/auth/logout` adds the JTI for the

@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -47,7 +46,6 @@ function hardDeleteInvoice(id: string): void {
 
 test.describe('/payments queue selection', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/payments');
 		await page.waitForLoadState('networkidle');
 		// Queue is the default tab, but be defensive in case a prior

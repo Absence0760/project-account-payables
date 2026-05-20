@@ -8,6 +8,9 @@ import {
 	test
 } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec drives its own sign-in / sign-out for the change-password UX.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 interface CreatedUser {
 	id: string;
 	email: string;

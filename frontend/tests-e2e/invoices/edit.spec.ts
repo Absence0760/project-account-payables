@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	test
 } from '../fixtures/helpers';
 
@@ -19,7 +18,6 @@ import {
 
 test.describe('/invoices modal edit + save', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();

@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -39,10 +38,6 @@ async function deleteUser(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/admin user-delete safety', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('user with no references can be deleted', async ({ page }) => {
 		const id = await createUser(page, `e2e-safe-${Date.now()}@test.local`);
 		const resp = await deleteUser(page, id);

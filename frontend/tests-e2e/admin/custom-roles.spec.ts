@@ -40,14 +40,12 @@ test.describe('/api/admin/roles — per-org custom roles', () => {
 	});
 
 	test('list returns the four system roles flagged is_system=true', async ({ page }) => {
-		await signInAndWait(page);
 		const roles = await listRoles(page);
 		const systemNames = roles.filter((r) => r.is_system).map((r) => r.name).sort();
 		expect(systemNames).toEqual(['admin', 'ap_clerk', 'ap_manager', 'cfo']);
 	});
 
 	test('create + delete round-trip', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		const createResp = await page.request.post(`${API_BASE}/api/admin/roles`, {
@@ -71,7 +69,6 @@ test.describe('/api/admin/roles — per-org custom roles', () => {
 	});
 
 	test('cannot create a role colliding with a system role name', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		const resp = await page.request.post(`${API_BASE}/api/admin/roles`, {
@@ -82,7 +79,6 @@ test.describe('/api/admin/roles — per-org custom roles', () => {
 	});
 
 	test('duplicate names within an org return 409', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		const name = `dup-${Date.now()}`;
@@ -101,7 +97,6 @@ test.describe('/api/admin/roles — per-org custom roles', () => {
 	});
 
 	test('PATCH updates description but rejects system roles', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		// Create a custom role we can edit.
@@ -132,7 +127,6 @@ test.describe('/api/admin/roles — per-org custom roles', () => {
 	});
 
 	test('DELETE refuses when role is assigned to a user', async ({ page, tenantClerk }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		// Mint a role and grant it to a NON-admin user. Granting it to
@@ -194,7 +188,6 @@ test.describe('/api/admin/roles — per-org custom roles', () => {
 	});
 
 	test('roles page renders with system + custom split and create modal', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		// Seed one custom role so the Custom section is non-empty.

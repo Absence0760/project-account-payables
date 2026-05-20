@@ -70,14 +70,13 @@ function deletePaymentRun(runId: string): void {
  */
 test.describe('/payments — CFO approval gate', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await patchOrg(page, { payments: { cfo_approval_above: 1000 } });
 	});
 
-	test.afterEach(async ({ page }) => {
-		// Sign back in as admin in case the test signed in as CFO; clearing
-		// the threshold leaves the tenant clean for the rest of the suite.
-		await signInAndWait(page);
+	test.afterEach(async ({ page, tenantAdmin }) => {
+		// A test may have signed this page in as CFO; restore the admin
+		// session so the patch below goes through with admin scope.
+		await signInAndWait(page, tenantAdmin);
 		await patchOrg(page, { payments: { cfo_approval_above: null } });
 	});
 
@@ -198,10 +197,6 @@ test.describe('/payments — CFO approval gate', () => {
 });
 
 test.describe('/payments — remittance PDF', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('GET /payments/{id}/remittance returns a PDF for completed payments', async ({
 		page
 	}) => {

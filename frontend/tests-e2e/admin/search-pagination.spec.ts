@@ -5,7 +5,6 @@ import {
 	authedTenantHeaders,
 	currentTenantSlug,
 	expect,
-	signInAndWait,
 	test
 } from '../fixtures/helpers';
 
@@ -65,7 +64,6 @@ function purgeE2EUsers(): void {
 
 test.describe('/admin user search + pagination', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/admin');
 		await page.waitForLoadState('networkidle');
 	});

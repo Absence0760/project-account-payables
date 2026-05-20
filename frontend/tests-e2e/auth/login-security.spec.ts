@@ -1,5 +1,8 @@
 import { API_BASE, currentTenantSlug, expect, signIn, test } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec tests the login surface.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Login security — the contract is "the only way past this gate is a
  * correct (email, password) pair against an active user in the

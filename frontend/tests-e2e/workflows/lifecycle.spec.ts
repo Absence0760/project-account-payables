@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 /**
  * Workflow lifecycle — create, delete, activate. These tests *mutate*
@@ -41,10 +41,6 @@ async function listWorkflows(page: import('@playwright/test').Page) {
 }
 
 test.describe('workflow lifecycle', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('create-from-modal redirects to the detail page and adds a list row', async ({
 		page
 	}) => {

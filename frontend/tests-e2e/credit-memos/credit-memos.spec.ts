@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -48,7 +47,6 @@ function deleteMemo(id: string): void {
 
 test.describe('/credit-memos', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/credit-memos');
 		await page.waitForLoadState('networkidle');
 	});

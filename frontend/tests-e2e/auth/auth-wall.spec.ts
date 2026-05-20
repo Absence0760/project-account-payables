@@ -1,5 +1,8 @@
 import { expect, test } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec tests the auth-wall redirect for anon visitors.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Auth wall — every tenant-scoped route under the app shell must
  * redirect an anonymous visitor to /login. Implemented in

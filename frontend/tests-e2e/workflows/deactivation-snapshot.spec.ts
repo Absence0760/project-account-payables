@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -102,10 +101,6 @@ function hardDeleteInvoice(id: string): void {
  */
 
 test.describe('workflow deactivation snapshot semantics', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('deactivated workflow keeps routing its in-flight invoices; new invoices use the now-active one', async ({
 		page
 	}) => {

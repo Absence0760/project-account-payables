@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * /invoices — the core surface of the app. The seed creates 10 acme
  * invoices, so a successful render must show at least one row in the
@@ -10,10 +8,6 @@ import { signInAndWait } from '../fixtures/helpers';
  */
 
 test.describe('/invoices (acme admin)', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('lists at least one seeded invoice', async ({ page }) => {
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');

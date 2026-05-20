@@ -1,5 +1,8 @@
 import { expect, signIn, test } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec tests the login UI itself.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Login surface — anonymous-visitor + happy-path smoke.
  *

@@ -2,6 +2,9 @@ import { expect, test } from '../fixtures/helpers';
 
 import { NO_TENANT_BASE } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec tests the public signup flow on the no-tenant origin.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Self-service signup — anonymous-tenant route at /signup. Renders only
  * on the root domain (no tenant subdomain), so we override baseURL to

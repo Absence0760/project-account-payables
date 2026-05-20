@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	// Use the UI's create flow so we land on the detail page with the
@@ -40,10 +40,6 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/workflows/[id] step config', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('renaming a step persists through PATCH and reload', async ({ page }) => {
 		const id = await createWorkflow(page);
 

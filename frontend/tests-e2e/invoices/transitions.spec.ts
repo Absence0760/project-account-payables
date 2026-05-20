@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 async function fetchInvoiceByStatus(
 	page: import('@playwright/test').Page,
@@ -90,7 +90,6 @@ async function ensureReadyForReviewQueueHasOne(page: import('@playwright/test').
 
 test.describe('/invoices status transitions', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await ensureReadyForReviewQueueHasOne(page);
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');

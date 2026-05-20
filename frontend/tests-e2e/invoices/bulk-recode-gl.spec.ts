@@ -31,7 +31,6 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 	});
 
 	test('dry run returns the canonical report shape', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const resp = await page.request.post(`${API_BASE}/api/invoices/bulk-recode-gl`, {
 			headers: { ...headers, 'Content-Type': 'application/json' },
@@ -78,7 +77,6 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 	});
 
 	test('rejects from_date > to_date with 400', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const resp = await page.request.post(`${API_BASE}/api/invoices/bulk-recode-gl`, {
 			headers: { ...headers, 'Content-Type': 'application/json' },
@@ -88,7 +86,6 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 	});
 
 	test('rejects malformed vendor_id with 400', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const resp = await page.request.post(`${API_BASE}/api/invoices/bulk-recode-gl`, {
 			headers: { ...headers, 'Content-Type': 'application/json' },
@@ -100,7 +97,6 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 	test('paid + posted invoices are counted as immutable_status, never as candidates', async ({
 		page
 	}) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		// Lower bound: the seeded tenant has at least some paid / posted
@@ -125,7 +121,6 @@ test.describe('/api/invoices/bulk-recode-gl', () => {
 
 test.describe('/invoices — Bulk Re-code GL modal (admin)', () => {
 	test('admin sees the toolbar button and can open the modal', async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');
 

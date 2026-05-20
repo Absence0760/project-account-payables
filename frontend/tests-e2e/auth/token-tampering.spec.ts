@@ -6,6 +6,9 @@ import {
 	test
 } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec drives its own sign-in then mutates the stored JWT.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Token tampering — any client-side modification of the stored JWT must
  * cause the next protected request to fail closed and bounce the user

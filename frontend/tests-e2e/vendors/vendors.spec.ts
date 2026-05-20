@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * /vendors — list view + status filtering. Seed creates 10 acme
  * vendors with mixed statuses (active, unverified, rejected). The
@@ -11,7 +9,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/vendors (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/vendors');
 		await page.waitForLoadState('networkidle');
 	});

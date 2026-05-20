@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -39,10 +38,6 @@ function purgeE2EMemos(): void {
  */
 
 test.describe('/credit-memos pagination', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test.afterEach(() => {
 		purgeE2EMemos();
 	});

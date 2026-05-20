@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -66,7 +65,6 @@ function deletePaymentRun(runId: string): void {
 
 test.describe('/payments execute', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/payments');
 		await page.waitForLoadState('networkidle');
 	});

@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -32,7 +31,6 @@ async function createUser(
 
 test.describe('/admin bulk delete', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/admin');
 		await page.waitForLoadState('networkidle');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();

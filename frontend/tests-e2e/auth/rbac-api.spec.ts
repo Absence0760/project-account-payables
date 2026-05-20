@@ -7,6 +7,9 @@ import {
 	test
 } from '../fixtures/helpers';
 
+// Start unauthenticated — each test logs in as a specific role to probe endpoint gates.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Endpoint-level RBAC. `rbac.spec.ts` covers sidebar visibility
  * (what the user sees); this spec covers what the backend actually

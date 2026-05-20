@@ -44,7 +44,6 @@ test.describe('/api/gl-accounts/sync-erp', () => {
 	});
 
 	test('returns 400 when no ERP is configured', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		await page.request.patch(`${API_BASE}/api/organization`, {
@@ -61,7 +60,6 @@ test.describe('/api/gl-accounts/sync-erp', () => {
 	});
 
 	test('mock adapter syncs the canonical chart, idempotent on re-run', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		await page.request.patch(`${API_BASE}/api/organization`, {

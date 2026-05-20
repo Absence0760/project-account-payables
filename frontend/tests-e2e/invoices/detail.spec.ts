@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * Invoice detail modal — opens when the Edit button on a row is
  * clicked. The modal renders three things we care about end-to-end:
@@ -17,7 +15,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/invoices invoice detail modal', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');
 		// Wait for the table to actually populate before clicking Edit.

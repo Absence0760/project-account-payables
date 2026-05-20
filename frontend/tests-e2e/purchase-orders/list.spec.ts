@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 /**
  * /purchase-orders — list page + detail modal.
@@ -10,7 +10,6 @@ import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../f
 
 test.describe('/purchase-orders', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/purchase-orders');
 		await page.waitForLoadState('networkidle');
 	});

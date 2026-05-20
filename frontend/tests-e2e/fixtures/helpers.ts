@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
-import { expect, test as base, type Page } from '@playwright/test';
+import { expect, test as base, type Browser, type Page } from '@playwright/test';
 
 /**
  * Per-worker tenant isolation for parallel Playwright execution.
@@ -12,7 +14,18 @@ import { expect, test as base, type Page } from '@playwright/test';
  * files import `test` from this module (not `@playwright/test`); the
  * fixture below overrides `baseURL` and injects role-specific creds
  * so most specs need no further changes.
+ *
+ * Auth storage state: a worker-scoped `storageState` fixture lazy-
+ * creates `.auth/<tenantSlug>-admin.json` on first use by signing the
+ * worker's admin into a temporary context. Every subsequent test in
+ * that worker boots the page with the JWT already in localStorage —
+ * no `signInAndWait` needed in `beforeEach`. Specs that need a fresh
+ * unauthenticated browser (login UI, auth-wall, signup) opt out via
+ * `test.use({ storageState: { cookies: [], origins: [] } })` at the
+ * top of the file or describe block.
  */
+
+const AUTH_DIR = path.resolve(__dirname, '../.auth');
 
 const E2E_TENANT_COUNT = parseInt(
 	process.env.E2E_TENANT_COUNT ?? process.env.AP_E2E_TENANT_COUNT ?? '4',
@@ -70,8 +83,58 @@ export const test = base.extend<object, WorkerFixtures>({
 	],
 	baseURL: async ({ tenantSlug }, use) => {
 		await use(`http://${tenantSlug}.localhost:7777`);
+	},
+	// Default storage state for every test: the worker's tenant admin
+	// is already signed in. First test per worker pays the ~1–2 s login
+	// cost once and persists the resulting localStorage to disk; every
+	// subsequent test in the worker loads the file in <100 ms.
+	//
+	// Specs that need to test the login UI itself, the auth wall, or
+	// signup must opt out:
+	//
+	//   test.use({ storageState: { cookies: [], origins: [] } });
+	//
+	// Specs that need a different role keep their explicit
+	// `signInAndWait(page, tenantClerk)` — the storage-state preload is
+	// only the *default*, not a hard contract.
+	storageState: async ({ browser, tenantSlug, tenantAdmin }, use) => {
+		await use(await _ensureAdminStorageState(browser, tenantSlug, tenantAdmin));
 	}
 });
+
+/** Worker-scoped lazy creator for the per-tenant admin storage-state
+ *  file. The first test in a worker signs the admin into a throwaway
+ *  context, persists the localStorage to disk, and closes the
+ *  context. Subsequent tests just read the file path. */
+async function _ensureAdminStorageState(
+	browser: Browser,
+	tenantSlug: string,
+	creds: TenantCreds
+): Promise<string> {
+	const file = path.join(AUTH_DIR, `${tenantSlug}-admin.json`);
+	if (fs.existsSync(file)) return file;
+
+	fs.mkdirSync(AUTH_DIR, { recursive: true });
+	const context = await browser.newContext({
+		baseURL: `http://${tenantSlug}.localhost:7777`
+	});
+	try {
+		const page = await context.newPage();
+		await page.goto('/login');
+		await page.waitForLoadState('networkidle');
+		await page.locator('input[type="email"]').fill(creds.email);
+		await page.locator('input[type="password"]').fill(creds.password);
+		await page.locator('form button[type="submit"]').click();
+		// Mirror signInAndWait's success contract — land on the tenant
+		// dashboard URL before snapshotting storage. If the redirect
+		// hasn't happened, the localStorage hasn't been written yet.
+		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		await context.storageState({ path: file });
+	} finally {
+		await context.close();
+	}
+	return file;
+}
 
 export { expect };
 

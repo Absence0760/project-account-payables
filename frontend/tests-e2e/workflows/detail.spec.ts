@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * /workflows/[id] — pipeline editor.
  *
@@ -17,7 +15,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/workflows/[id] editor (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/workflows');
 		await page.waitForLoadState('networkidle');
 		await page.locator('table tbody tr').first().getByRole('link', { name: 'Edit' }).click();

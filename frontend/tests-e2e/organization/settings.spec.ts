@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 interface OrgResponse {
 	id: string;
@@ -53,7 +53,6 @@ async function patchOrg(
 
 test.describe('/organization settings', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/organization');
 		await page.waitForLoadState('networkidle');
 	});

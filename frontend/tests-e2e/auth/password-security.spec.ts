@@ -6,6 +6,9 @@ import {
 	test
 } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec drives its own multi-role sign-ins / sign-outs.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * Password-security e2e — end-to-end coverage that complements the
  * backend's `test_password_security.py` (unit) and the existing

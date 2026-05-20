@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 /**
  * /exceptions status-chip filtering. Seed has 3 open + 1 resolved
@@ -7,7 +7,6 @@ import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../f
 
 test.describe('/exceptions status filter', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/exceptions');
 		await page.waitForLoadState('networkidle');
 	});

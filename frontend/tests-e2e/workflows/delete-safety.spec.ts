@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -59,10 +58,6 @@ async function patchWorkflow(
  */
 
 test.describe('/workflows delete cascade safety', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('refuses delete of an active (non-default) workflow', async ({ page }) => {
 		// Create a new workflow + activate it. Activation deactivates the
 		// seeded default, so we revert at the end.

@@ -1,5 +1,8 @@
 import { expect, signInAndWait, test } from '../fixtures/helpers';
 
+// Start unauthenticated — every test signs in as a specific role to assert sidebar gating.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 /**
  * RBAC — sidebar nav visibility per role.
  *

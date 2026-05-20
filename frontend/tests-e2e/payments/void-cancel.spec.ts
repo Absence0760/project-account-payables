@@ -104,10 +104,6 @@ function deletePaymentRun(runId: string): void {
  */
 
 test.describe('/payments — void completed payment', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('void flips payment to voided, invoice back to approved, audit row written', async ({
 		page
 	}) => {
@@ -180,10 +176,6 @@ test.describe('/payments — void completed payment', () => {
 });
 
 test.describe('/payments — cancel draft run', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('cancel flips draft run to cancelled and releases its invoices', async ({ page }) => {
 		const stamp = Date.now();
 		const invoiceId = await createApprovedInvoice(page, `cancel-${stamp}`);

@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * /invoices — bulk operations bar.
  *
@@ -14,7 +12,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/invoices bulk bar (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');
 		await expect(page.locator('table tbody tr').first()).toBeVisible();

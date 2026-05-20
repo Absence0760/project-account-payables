@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
 	return {
@@ -94,7 +94,6 @@ test.describe('/workflows/[id] — approval matrix editor', () => {
 	let workflowId: string;
 
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		workflowId = await createWorkflow(page, `e2e-matrix-${Date.now()}`);
 	});
 

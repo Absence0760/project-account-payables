@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * /vendors status-chip filtering. Seed has at least one vendor in
  * each of (active, unverified, rejected). Clicking a chip narrows the
@@ -10,7 +8,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/vendors status filter (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/vendors');
 		await page.waitForLoadState('networkidle');
 	});

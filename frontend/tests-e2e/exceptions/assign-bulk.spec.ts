@@ -48,7 +48,6 @@ async function fetchAdminUserId(
 
 test.describe('/api/exceptions — assignment + bulk resolve', () => {
 	test('list response carries the new SLA + assignee fields', async ({ page }) => {
-		await signInAndWait(page);
 		const items = await fetchExceptions(page);
 		// We don't assert that ANY exception is overdue (depends on SLA
 		// config) — only that the field exists on every row.
@@ -65,7 +64,6 @@ test.describe('/api/exceptions — assignment + bulk resolve', () => {
 		page,
 		tenantAdmin
 	}) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		const items = await fetchExceptions(page, '?status=open');
@@ -102,7 +100,6 @@ test.describe('/api/exceptions — assignment + bulk resolve', () => {
 	});
 
 	test('assign: cross-org user is rejected as 404', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const items = await fetchExceptions(page, '?status=open');
 		const target = items[0];
@@ -120,7 +117,6 @@ test.describe('/api/exceptions — assignment + bulk resolve', () => {
 	});
 
 	test('assign: 400 on malformed user_id', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const items = await fetchExceptions(page, '?status=open');
 		const target = items[0];
@@ -151,7 +147,6 @@ test.describe('/api/exceptions — assignment + bulk resolve', () => {
 	});
 
 	test('bulk resolve: handles partial success with reasons', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 
 		const open = await fetchExceptions(page, '?status=open');
@@ -186,7 +181,6 @@ test.describe('/api/exceptions — assignment + bulk resolve', () => {
 	});
 
 	test('bulk resolve: rejects unknown action with 400', async ({ page }) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const open = await fetchExceptions(page, '?status=dismissed');
 		const ids = open.slice(0, 1).map((e) => e.id);
@@ -206,7 +200,6 @@ test.describe('/api/exceptions — assignment + bulk resolve', () => {
 		page,
 		tenantAdmin
 	}) => {
-		await signInAndWait(page);
 		const headers = await apiHeaders(page);
 		const items = await fetchExceptions(page, '?status=open');
 		if (items.length === 0) test.skip();

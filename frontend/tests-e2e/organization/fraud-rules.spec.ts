@@ -64,7 +64,6 @@ async function clearFraudOverrides(page: import('@playwright/test').Page): Promi
 
 test.describe('/organization — fraud rules', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await clearFraudOverrides(page);
 		await page.goto('/organization');
 		await page.waitForLoadState('networkidle');

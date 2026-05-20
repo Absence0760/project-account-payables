@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * /payments — three-tab surface (Queue / History / Runs) plus a
  * summary panel. Seed creates 1 payment run with 3 payments and 4
@@ -10,7 +8,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/payments (acme admin)', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/payments');
 		await page.waitForLoadState('networkidle');
 	});

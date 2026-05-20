@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -84,10 +83,6 @@ function hardDeleteInvoice(id: string): void {
  */
 
 test.describe('workflow definition drives invoice routing', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('approval step + no auto_below: new invoice goes to ready_for_review', async ({
 		page
 	}) => {

@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * Navigation smoke — a signed-in admin can reach every page the
  * sidebar offers, and each route renders without an unhandled error
@@ -24,10 +22,6 @@ const ROUTES = [
 ] as const;
 
 test.describe('signed-in nav (acme admin)', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	for (const { path, anchor } of ROUTES) {
 		test(`reaches ${path}`, async ({ page }) => {
 			await page.goto(path);

@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 async function createWorkflow(page: import('@playwright/test').Page): Promise<string> {
 	await page.goto('/workflows');
@@ -34,10 +34,6 @@ async function getWorkflow(page: import('@playwright/test').Page, id: string) {
  */
 
 test.describe('/workflows/[id] add/remove steps', () => {
-	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
-	});
-
 	test('Add Approval step appends to pipeline and selects the new step', async ({
 		page
 	}) => {

@@ -8,6 +8,11 @@ import {
 	TECHFLOW_BASE
 } from '../fixtures/helpers';
 
+// Start unauthenticated — this spec drives its own ACME/TECHFLOW logins to assert
+// cross-tenant write isolation. The per-worker admin storage state would point at
+// the wrong tenant.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 // Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
 // asserts cross-tenant isolation that requires fixed tenant slugs. The
 // per-worker baseURL from fixtures/helpers.ts would otherwise route to

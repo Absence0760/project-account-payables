@@ -1,7 +1,5 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait } from '../fixtures/helpers';
-
 /**
  * Invoice status filtering — clicking a status chip filters the table.
  *
@@ -13,7 +11,6 @@ import { signInAndWait } from '../fixtures/helpers';
 
 test.describe('/invoices status filter', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/invoices');
 		await page.waitForLoadState('networkidle');
 	});

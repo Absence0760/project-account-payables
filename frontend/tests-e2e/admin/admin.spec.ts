@@ -1,4 +1,4 @@
-import { expect, signInAndWait, test } from '../fixtures/helpers';
+import { expect, test } from '../fixtures/helpers';
 
 /**
  * /admin — admin-only user management. Seed creates 4 users per tenant
@@ -7,7 +7,6 @@ import { expect, signInAndWait, test } from '../fixtures/helpers';
 
 test.describe('/admin', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/admin');
 		await page.waitForLoadState('networkidle');
 	});
@@ -24,7 +23,7 @@ test.describe('/admin', () => {
 	});
 
 	test('the current user is marked with "You"', async ({ page, tenantAdmin }) => {
-		// `signInAndWait` defaults to the current worker's admin.
+		// Storage state authed us as the current worker's admin.
 		const youRow = page.locator('table tbody tr', { hasText: tenantAdmin.email });
 		await expect(youRow.locator('.you-badge')).toBeVisible();
 	});

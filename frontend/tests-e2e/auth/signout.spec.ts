@@ -1,6 +1,6 @@
 import { expect, test } from '../fixtures/helpers';
 
-import { signInAndWait, signOut } from '../fixtures/helpers';
+import { signOut } from '../fixtures/helpers';
 
 /**
  * Sign-out flow + post-logout protection. The two assertions together
@@ -10,7 +10,8 @@ import { signInAndWait, signOut } from '../fixtures/helpers';
 
 test.describe('sign out (acme admin)', () => {
 	test('Log Out clears the session and lands on /login', async ({ page }) => {
-		await signInAndWait(page);
+		// Land on the dashboard so the sidebar (with the profile button) renders.
+		await page.goto('/');
 		await signOut(page);
 
 		// auth_token is the localStorage key cleared by auth.logout().
@@ -21,7 +22,7 @@ test.describe('sign out (acme admin)', () => {
 	});
 
 	test('after logout, /invoices bounces back to /login', async ({ page }) => {
-		await signInAndWait(page);
+		await page.goto('/');
 		await signOut(page);
 
 		await page.goto('/invoices');

@@ -2,7 +2,6 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
-	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -50,7 +49,6 @@ async function deleteWorkflow(page: import('@playwright/test').Page, id: string)
 
 test.describe('/workflows bulk delete', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/workflows');
 		await page.waitForLoadState('networkidle');
 	});

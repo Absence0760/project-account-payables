@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 async function findVendorByStatus(
 	page: import('@playwright/test').Page,
@@ -34,7 +34,6 @@ async function setVendorStatus(
 
 test.describe('/vendors verify/reject', () => {
 	test.beforeEach(async ({ page }) => {
-		await signInAndWait(page);
 		await page.goto('/vendors');
 		await page.waitForLoadState('networkidle');
 	});
