@@ -1,25 +1,7 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CLERK, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 async function apiHeaders(page: import('@playwright/test').Page) {
-	const token = await authToken(page);
-	return { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' };
+	return await authedTenantHeaders(page);
 }
 
 /**
@@ -31,15 +13,15 @@ async function apiHeaders(page: import('@playwright/test').Page) {
  * suggestion across a date range / vendor set" in the AI Auto GL
  * Coding section.
  *
- * Specs cover the API contract end-to-end against the seeded acme
- * tenant. Frontend modal coverage is the simple "open / close"
- * smoke test below — the heavy logic lives in the API and is
- * exercised through `page.request`.
+ * Specs cover the API contract end-to-end against the worker's seeded
+ * tenant. Frontend modal coverage is the simple "open / close" smoke
+ * test below — the heavy logic lives in the API and is exercised
+ * through `page.request`.
  */
 
 test.describe('/api/invoices/bulk-recode-gl', () => {
-	test('clerk role cannot trigger the recode (admin-only)', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
+	test('clerk role cannot trigger the recode (admin-only)', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		const headers = await apiHeaders(page);
 		const resp = await page.request.post(
 			`${API_BASE}/api/invoices/bulk-recode-gl`,
@@ -166,8 +148,8 @@ test.describe('/invoices — Bulk Re-code GL modal (admin)', () => {
 		await expect(modal.getByRole('button', { name: 'Edit filters' })).toBeVisible();
 	});
 
-	test('clerk does not see the toolbar button', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
+	test('clerk does not see the toolbar button', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		// Clerk doesn't have access to /invoices nav, but they CAN navigate
 		// directly. Confirm the button is gated by isAdmin, not just
 		// sidebar visibility.

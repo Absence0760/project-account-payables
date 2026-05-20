@@ -1,28 +1,15 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 async function getFirstVendorId(page: import('@playwright/test').Page): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/vendors`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	const body = (await resp.json()) as { items: Array<{ id: string }> };
 	return body.items[0].id;
@@ -33,31 +20,15 @@ async function createMemo(
 	vendorId: string,
 	memoNumber: string
 ): Promise<string> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/credit-memos`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { memo_number: memoNumber, vendor_id: vendorId, amount: 10 }
 	});
 	return ((await resp.json()) as { id: string }).id;
 }
 
 function purgeE2EMemos(): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			"DELETE FROM credit_memos WHERE memo_number LIKE 'CM-PAGE-%'"
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
+	tenantPsql("DELETE FROM credit_memos WHERE memo_number LIKE 'CM-PAGE-%'");
 }
 
 /**
@@ -67,7 +38,7 @@ function purgeE2EMemos(): void {
  * button is replaced by "Showing all N credit memos".
  */
 
-test.describe('/credit-memos pagination (acme admin)', () => {
+test.describe('/credit-memos pagination', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 	});
@@ -120,9 +91,8 @@ test.describe('/credit-memos pagination (acme admin)', () => {
 		}
 		expect(ids).toHaveLength(25);
 
-		const token = await authToken(page);
 		const resp = await page.request.get(`${API_BASE}/api/credit-memos`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+			headers: await authedTenantHeaders(page)
 		});
 		const body = (await resp.json()) as { items: unknown[]; total: number };
 		expect(body.items.length).toBeLessThanOrEqual(20);

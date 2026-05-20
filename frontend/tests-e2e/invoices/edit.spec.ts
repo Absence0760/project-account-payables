@@ -1,21 +1,10 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /invoices — modal edit + save round-trip.
@@ -36,13 +25,12 @@ test.describe('/invoices modal edit + save', () => {
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 
-	test('modal pre-fills with the API\'s values for the row', async ({ page }) => {
+	test("modal pre-fills with the API's values for the row", async ({ page }) => {
 		// The row's vendor cell renders the vendor name + a priors-summary
 		// badge (e.g. "cache·2"), so reading td textContent merges both.
 		// Read the invoice from the API for the canonical pre-fill values.
-		const token = await authToken(page);
 		const listResp = await page.request.get(`${API_BASE}/api/invoices`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+			headers: await authedTenantHeaders(page)
 		});
 		const listed = (await listResp.json()) as {
 			items: Array<{ id: string; invoice_number: string; vendor: string }>;
@@ -70,10 +58,8 @@ test.describe('/invoices modal edit + save', () => {
 		// in this suite (HTML5 validation interplay with the multi-step
 		// modal), but the underlying API surface is what guards the
 		// money path — round-trip via page.request directly.
-		const token = await authToken(page);
-		const listResp = await page.request.get(`${API_BASE}/api/invoices`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-		});
+		const headers = await authedTenantHeaders(page);
+		const listResp = await page.request.get(`${API_BASE}/api/invoices`, { headers });
 		const listed = (await listResp.json()) as {
 			items: Array<{ id: string; description: string | null; status: string }>;
 		};
@@ -105,8 +91,7 @@ test.describe('/invoices modal edit + save', () => {
 				{
 					method: 'PATCH',
 					headers: {
-						Authorization: `Bearer ${token}`,
-						'X-Tenant-Slug': 'acme',
+						...headers,
 						'Content-Type': 'application/json'
 					},
 					data: JSON.stringify({ description: next })
@@ -117,15 +102,14 @@ test.describe('/invoices modal edit + save', () => {
 
 			// Round-trip: GET reflects the change.
 			const get = await page.request.get(`${API_BASE}/api/invoices/${target!.id}`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+				headers
 			});
 			expect(((await get.json()) as { description: string }).description).toBe(next);
 		} finally {
 			await page.request.fetch(`${API_BASE}/api/invoices/${target!.id}`, {
 				method: 'PATCH',
 				headers: {
-					Authorization: `Bearer ${token}`,
-					'X-Tenant-Slug': 'acme',
+					...headers,
 					'Content-Type': 'application/json'
 				},
 				data: JSON.stringify({ description: original })

@@ -1,30 +1,12 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
 
 async function fetchInvoiceByStatus(
 	page: import('@playwright/test').Page,
 	wanted: string
 ) {
-	const token = await authToken(page);
 	const resp = await page.request.get(
 		`${API_BASE}/api/invoices?status=${wanted}`,
-		{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+		{ headers: await authedTenantHeaders(page) }
 	);
 	const body = (await resp.json()) as {
 		items: Array<{ id: string; invoice_number: string; status: string }>;
@@ -37,15 +19,14 @@ async function patchInvoiceStatus(
 	id: string,
 	status: string
 ) {
-	const token = await authToken(page);
 	return page.request.patch(`${API_BASE}/api/invoices/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { status }
 	});
 }
 
 /**
- * Ensure the seeded acme tenant has at least one ready_for_review
+ * Ensure the worker's seeded tenant has at least one ready_for_review
  * invoice before running tests in this file.
  *
  * Without this guard, a previous run's Reject/Approve flows have
@@ -60,13 +41,12 @@ async function ensureReadyForReviewQueueHasOne(page: import('@playwright/test').
 	const existing = await fetchInvoiceByStatus(page, 'ready_for_review');
 	if (existing) return;
 
-	const token = await authToken(page);
 	// Walk one page at the endpoint's max page_size (100) — that's
 	// plenty for the seed; if a real fixture ever needed more we'd add
 	// pagination here. The 'approved' bucket alone has multiple seed
 	// rows, so the first page virtually always contains a candidate.
 	const list = await page.request.get(`${API_BASE}/api/invoices?page_size=100`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	if (list.status() !== 200) {
 		throw new Error(`List invoices failed (${list.status()}); cannot prep ready_for_review`);
@@ -186,10 +166,9 @@ test.describe('/invoices status transitions', () => {
 			// Re-fetch the specific invoice and confirm status flipped.
 			// Asserting "first rejected matches our id" was racy: prior runs
 			// can leave other rejected invoices in the DB.
-			const token = await authToken(page);
 			const fresh = await page.request.get(
 				`${API_BASE}/api/invoices/${target!.id}`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers: await authedTenantHeaders(page) }
 			);
 			expect(((await fresh.json()) as { status: string }).status).toBe('rejected');
 		} finally {

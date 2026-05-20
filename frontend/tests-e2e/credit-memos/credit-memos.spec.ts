@@ -1,23 +1,11 @@
-import { execFileSync } from 'node:child_process';
-
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 interface Vendor {
 	id: string;
@@ -25,9 +13,8 @@ interface Vendor {
 }
 
 async function getFirstVendor(page: import('@playwright/test').Page): Promise<Vendor> {
-	const token = await authToken(page);
 	const resp = await page.request.get(`${API_BASE}/api/vendors`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 	const body = (await resp.json()) as { items: Vendor[] };
 	return body.items[0];
@@ -37,9 +24,8 @@ async function createMemo(
 	page: import('@playwright/test').Page,
 	data: Record<string, unknown>
 ): Promise<{ id: string; status: string }> {
-	const token = await authToken(page);
 	const resp = await page.request.post(`${API_BASE}/api/credit-memos`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data
 	});
 	expect(resp.status()).toBe(201);
@@ -52,22 +38,7 @@ async function createMemo(
  * voiding), so direct SQL is the only revertible path for tests.
  */
 function deleteMemo(id: string): void {
-	execFileSync(
-		'psql',
-		[
-			'-h',
-			'localhost',
-			'-U',
-			'postgres',
-			'-p',
-			'5432',
-			'-d',
-			'ap_acme',
-			'-c',
-			`DELETE FROM credit_memos WHERE id='${id}'`
-		],
-		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-	);
+	tenantPsql(`DELETE FROM credit_memos WHERE id='${id}'`);
 }
 
 /**
@@ -75,7 +46,7 @@ function deleteMemo(id: string): void {
  * test memos and removes them via psql in finally.
  */
 
-test.describe('/credit-memos (acme admin)', () => {
+test.describe('/credit-memos', () => {
 	test.beforeEach(async ({ page }) => {
 		await signInAndWait(page);
 		await page.goto('/credit-memos');
@@ -171,13 +142,12 @@ test.describe('/credit-memos (acme admin)', () => {
 	});
 
 	test('Apply flips an open memo to applied via the UI', async ({ page }) => {
-		const token = await authToken(page);
 		const vendor = await getFirstVendor(page);
 
 		// Find an invoice belonging to this vendor.
 		const invoicesResp = await page.request.get(
 			`${API_BASE}/api/invoices?vendor=${encodeURIComponent(vendor.name)}`,
-			{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+			{ headers: await authedTenantHeaders(page) }
 		);
 		const invoices = (await invoicesResp.json()) as {
 			items: Array<{ id: string; vendor: string; vendor_id: string | null }>;
@@ -223,10 +193,8 @@ test.describe('/credit-memos (acme admin)', () => {
 	test('API: cannot apply a credit memo to an invoice from a different vendor', async ({
 		page
 	}) => {
-		const token = await authToken(page);
-		const vendorsResp = await page.request.get(`${API_BASE}/api/vendors`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-		});
+		const headers = await authedTenantHeaders(page);
+		const vendorsResp = await page.request.get(`${API_BASE}/api/vendors`, { headers });
 		const vendors = (await vendorsResp.json()) as { items: Vendor[] };
 		expect(vendors.items.length).toBeGreaterThanOrEqual(2);
 		const [vendorA, vendorB] = vendors.items;
@@ -243,7 +211,7 @@ test.describe('/credit-memos (acme admin)', () => {
 		});
 
 		const invoiceResp = await page.request.post(`${API_BASE}/api/invoices`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+			headers,
 			data: {
 				vendor: vendorB.name,
 				invoice_number: `MISMATCH-${Date.now()}`,
@@ -254,66 +222,33 @@ test.describe('/credit-memos (acme admin)', () => {
 		const invoiceB = (await invoiceResp.json()) as { id: string };
 		// Force vendor_id=vendorB regardless of whatever vendor matching
 		// the create endpoint did — we want a deterministic mismatch.
-		execFileSync(
-			'psql',
-			[
-				'-h',
-				'localhost',
-				'-U',
-				'postgres',
-				'-p',
-				'5432',
-				'-d',
-				'ap_acme',
-				'-c',
-				`UPDATE invoices SET vendor_id='${vendorB.id}' WHERE id='${invoiceB.id}'`
-			],
-			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
-		);
+		tenantPsql(`UPDATE invoices SET vendor_id='${vendorB.id}' WHERE id='${invoiceB.id}'`);
 
 		try {
 			const resp = await page.request.post(
 				`${API_BASE}/api/credit-memos/${memo.id}/apply`,
 				{
-					headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+					headers,
 					data: { invoice_id: invoiceB.id }
 				}
 			);
 			expect(resp.status()).toBe(409);
 		} finally {
 			deleteMemo(memo.id);
-			execFileSync(
-				'psql',
-				[
-					'-h',
-					'localhost',
-					'-U',
-					'postgres',
-					'-p',
-					'5432',
-					'-d',
-					'ap_acme',
-					'-c',
-					`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${invoiceB.id}')`,
-					'-c',
-					`DELETE FROM workflow_instances WHERE invoice_id='${invoiceB.id}'`,
-					'-c',
-					`DELETE FROM audit_log WHERE entity_id='${invoiceB.id}'`,
-					'-c',
-					`DELETE FROM invoices WHERE id='${invoiceB.id}'`
-				],
-				{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: 'pipe' }
+			tenantPsql(
+				`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${invoiceB.id}')`
 			);
+			tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceB.id}'`);
+			tenantPsql(`DELETE FROM audit_log WHERE entity_id='${invoiceB.id}'`);
+			tenantPsql(`DELETE FROM invoices WHERE id='${invoiceB.id}'`);
 		}
 	});
 
 	test('API: cannot void an already-applied memo (audit immutability)', async ({ page }) => {
-		const token = await authToken(page);
+		const headers = await authedTenantHeaders(page);
 		const vendor = await getFirstVendor(page);
 
-		const invoicesResp = await page.request.get(`${API_BASE}/api/invoices`, {
-			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
-		});
+		const invoicesResp = await page.request.get(`${API_BASE}/api/invoices`, { headers });
 		const invoices = (await invoicesResp.json()) as {
 			items: Array<{ id: string; vendor: string }>;
 		};
@@ -331,7 +266,7 @@ test.describe('/credit-memos (acme admin)', () => {
 		try {
 			const voidResp = await page.request.post(
 				`${API_BASE}/api/credit-memos/${memo.id}/void`,
-				{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' } }
+				{ headers }
 			);
 			expect(voidResp.status()).toBe(409);
 		} finally {
