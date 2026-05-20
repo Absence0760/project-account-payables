@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+
 import { expect, test as base, type Page } from '@playwright/test';
 
 /**
@@ -192,3 +194,61 @@ export async function signOut(page: Page) {
 	await page.locator('.profile-logout').click();
 	await expect(page).toHaveURL(/\/login/);
 }
+
+/** Read the current worker's tenant slug. Falls back to `acme` outside a
+ *  Playwright context (e.g. unit-test imports). Use in API-request blocks
+ *  that need `X-Tenant-Slug` so a spec running in worker N targets e2eN
+ *  rather than always acme. */
+export function currentTenantSlug(): string {
+	try {
+		return _tenantSlugFor(base.info().workerIndex);
+	} catch {
+		return 'acme';
+	}
+}
+
+/** Read the JWT the frontend stored after login. Throws when called
+ *  before a successful sign-in. */
+export async function authToken(page: Page): Promise<string> {
+	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
+	if (!t) throw new Error('not signed in');
+	return t;
+}
+
+/** Build the `Authorization` + `X-Tenant-Slug` headers for an
+ *  authenticated, tenant-scoped API request. Defaults to the current
+ *  worker's tenant; pass `slug` to target a specific one (cross-tenant
+ *  isolation tests). */
+export function tenantHeaders(token: string, slug?: string): Record<string, string> {
+	return {
+		Authorization: `Bearer ${token}`,
+		'X-Tenant-Slug': slug ?? currentTenantSlug()
+	};
+}
+
+/** Resolve an authenticated API request's headers in one shot. Reads
+ *  the token from `localStorage`, then composes the tenant headers. */
+export async function authedTenantHeaders(
+	page: Page,
+	slug?: string
+): Promise<Record<string, string>> {
+	return tenantHeaders(await authToken(page), slug);
+}
+
+/** Run a synchronous `psql -c <query>` against a tenant DB. Defaults to
+ *  the current worker's tenant. Used by specs that need to set up /
+ *  inspect state the API doesn't expose (e.g. clobbering
+ *  `assigned_to_id` to provoke a blocked-delete branch). */
+export function tenantPsql(query: string, slug?: string): string {
+	const db = `ap_${slug ?? currentTenantSlug()}`;
+	const out = execFileSync(
+		'psql',
+		['-h', 'localhost', '-U', 'postgres', '-p', '5432', '-d', db, '-tAc', query],
+		{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
+	);
+	return out.toString();
+}
+
+/** Per-worker API origin. Specs that hit `${API_BASE}/api/...` directly
+ *  can import this instead of redeclaring `process.env.PUBLIC_API_URL ?? …`. */
+export const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
