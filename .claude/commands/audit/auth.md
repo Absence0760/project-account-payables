@@ -2,70 +2,159 @@
 description: Sweep every backend route for auth-middleware gating + tenant-context wrapper discipline
 ---
 
-Audit auth gating and tenant-context enforcement across the backend API.
+Audit auth gating and tenant-context enforcement across the FastAPI
+backend.
 
 ## Goal
 
-A single route registered without the auth middleware exposes whatever it does to anonymous callers. A single route that bypasses the tenant-aware query wrapper reads across tenant boundaries — RLS policies (or whatever isolation mechanism this stack uses) don't apply because the per-connection tenant marker (`SET app.current_org_id = …`, or the equivalent) was never set. Find both classes of bug in one pass.
+A single route registered without `Depends(get_current_user)` exposes
+whatever it does to anonymous callers. A single route that reads
+tenant-scoped data without going through `get_tenant_db` reads against
+the wrong database (or no database at all), bypassing the DB-per-tenant
+isolation this project relies on. Find both classes of bug in one pass.
 
 ## What to check
 
-1. **Global route registration.** Read the entrypoint that mounts every router/handler (e.g. `backend/src/index.ts`, `app.py`, `main.go`). The default should be "auth middleware applied at the mount". Public-by-design mounts are an explicit allowlist:
-   - `/health` and similar liveness/readiness probes
-   - Pre-auth endpoints (`/auth/login`, `/auth/register`, `/auth/forgot-password`, `/auth/reset-password`, `/auth/verify-email`)
-   - Public read endpoints intended for unauthenticated consumption (status badges, public webhooks, OAuth callbacks)
+1. **Router registration.** `backend/app/main.py` is the single mount
+   point — every domain router is included with
+   `app.include_router(<router>, prefix="/api")`. There is no global
+   "auth middleware applied at the mount" — auth is per-route via
+   FastAPI dependency injection. The gate is therefore:
 
-   Anything else mounted without the auth middleware is a finding. Anything mounted *with* the auth middleware but with sub-routers that re-expose a handler via a different public mount needs re-checking — the middleware applies at the mount point, not per-handler.
+   - Every route inside an included router declares
+     `user: User = Depends(get_current_user)` (or `Depends(require_roles(...))`,
+     which transitively depends on `get_current_user`).
+   - Public-by-design routes live in `NO_AUTH_REQUIRED` inside
+     `backend/tests/test_rbac.py`. That set is the explicit allowlist;
+     any new route mounted without an auth dep that is *not* in
+     `NO_AUTH_REQUIRED` fails the test gate.
 
-2. **Non-null `user` assertions in handlers.** Inside any route handler, code like `req.user!.id` (TS) / `request.user.id` (Python) / `ctx.User.OrgID` (Go) is only safe when the auth middleware actually ran upstream. Grep route handlers for these accesses and confirm each lives in a router gated by the auth middleware.
+   The legitimate public routes today: `/api/health`, `/api/public-config`,
+   `/api/auth/login`, `/api/auth/sso/*`, `/api/auth/mfa/challenge/*`,
+   `/api/auth/mfa/verify`, `/api/signup/*`, every `/api/*/webhook/*`,
+   every `/api/portal/auth/*`, every SCIM bearer-token endpoint
+   (`/api/scim/v2/*`).
 
-3. **Tenant-aware query wrapper discipline.** Routes that read or write tenant-scoped data must use the tenant-aware wrapper (e.g. `tenantQuery(orgId, sql, params)` / `tenant_db(org_id).query(...)` / `WithTenant(ctx, orgId, ...)`). The wrapper's job is to set the per-connection tenant marker before queries fire so RLS sees an org context. The DB connects as a **non-superuser role** so RLS is actually enforced — confirm this in the project's DB-connection docs.
+   Anything else mounted without a user dep is a finding.
 
-   **Pre-tenant queries are legitimate** (don't flag) when they're explicitly cross-tenant by design:
-   - Auth middleware itself — looking up the API key / JWT subject before tenant context can be set
-   - Login / registration / invite acceptance — pre-tenant by definition
-   - Background jobs / cron sweeps that iterate every org
-   - Public-read endpoints (badges, OAuth handshake)
-   - Admin-only DB introspection
+2. **`request.state.user` / `current_user.id` access.** Inside any
+   handler, code like `current_user.id`, `current_user.organization_id`,
+   or `user.roles` is only safe when `get_current_user` actually ran
+   upstream. If the access exists in a route whose signature does NOT
+   declare a `Depends(get_current_user)` (or `Depends(require_roles(...))`,
+   or vendor-portal equivalent `Depends(get_current_vendor_user)`), the
+   handler will 500 on the first anonymous call. Grep route handlers
+   for these accesses and confirm each lives in a gated signature.
 
-   Any **new** raw query in a tenant-scoped route is a finding unless the file has a comment explaining why it's cross-tenant by design.
+3. **Tenant-DB session discipline.** Routes that read or write
+   tenant-scoped data must take `db: AsyncSession = Depends(get_tenant_db)`
+   (from `app.tenant`), never `Depends(get_control_db)`. The
+   chokepoint `get_tenant` (transitively pulled in by `get_tenant_db`)
+   cross-checks the JWT's `org` claim against the resolved
+   `X-Tenant-Slug` so a leaked header alone can't widen access.
 
-4. **Resource-level authorization on path-param handlers.** Endpoints that take a resource id in the URL (`/orders/:id`, `/runs/:id`, `/reports/:id`) must verify the resource belongs to the caller's org/user **before** doing the work:
+   **Control-plane queries are legitimate** (don't flag) when they are
+   explicitly cross-tenant by design:
 
-   ```
-   tenantQuery(orgId, "SELECT 1 FROM <table> WHERE id = $1", [resourceId])
-   ```
+   - The auth / signup / SSO routers — they read `Organization` and
+     `User` rows from the control plane before any tenant context
+     exists.
+   - SCIM provisioning endpoints — they target the control-plane User
+     table by definition.
+   - Admin endpoints that manage users in the control plane.
+   - Background sweeps that iterate every tenant (the shipper, the
+     reaper, the reconciler — they use the engine pool directly, not
+     a FastAPI dep).
 
-   then fail closed if no row returns. The canonical gotcha is the *streaming* endpoint (SSE / WebSocket) — without the gate, an authenticated user from a different org can subscribe to another org's live events.
+   Any **new** tenant-data route that opens a control-plane session
+   (`Depends(get_control_db)`) is a finding unless the file has a
+   comment explaining why it's cross-tenant by design.
 
-5. **Token in query string.** For endpoints that can't accept `Authorization: Bearer` (browser `EventSource` for SSE, `<img>` with credentials), tokens are sometimes accepted as `?token=…`. Verify the token-from-query path runs through the same JWT verification + org binding as the header path. Token-in-URL is an accepted footgun for SSE; the mitigation is short TTL + HTTPS + scoping to that single path.
+   Anywhere code constructs a tenant engine **without** going through
+   `get_tenant_db` — e.g. calling `get_tenant_engine(...)` directly
+   from a request handler, or hardcoding an `ap_<slug>` DB name — is
+   a finding. That path bypasses the JWT/header cross-check.
 
-6. **API key paths.** If the project supports machine-to-machine API keys, confirm:
-   - Keys are hashed at rest (with a non-secret prefix retained for fast lookup, not the full hash).
-   - Key lookup runs *before* tenant context is set (a legitimate pre-tenant query).
-   - The resulting user/org context is established from the *stored* `api_keys.org_id`, never from a request header or body.
+4. **Resource-level authorization on path-param handlers.** Endpoints
+   that take a resource id in the URL (`/invoices/{id}`,
+   `/payments/{id}`, `/workflows/{id}`) must verify the resource
+   belongs to the caller's tenant **before** doing the work. With
+   DB-per-tenant this is almost always automatic — the row lookup
+   runs against the tenant DB the JWT cross-check already locked
+   down. The remaining footguns:
+
+   - **File-key handlers** (e.g. `GET /api/workflow/file/{file_key:path}`)
+     where the key is interpreted across tenants. The fix lives in
+     `app/api/workflow.py`: the handler verifies the key's first
+     segment equals the requesting user's `organization_id` and
+     returns the same 404 for wrong-org vs missing-file so the
+     response doesn't enumerate prefixes.
+   - **Webhook handlers** where the tenant comes from the URL path
+     (`/api/payments/webhook/{tenant_slug}/{provider}`). The HMAC has
+     to cover the body AND be scoped to that tenant's secret — see
+     `/audit-webhooks`.
+
+5. **JWT decode discipline.** `app/api/deps.decode_token` is the
+   single chokepoint that enforces `algorithms=["HS256"]` and turns
+   `JWTError` into 401. Any other call site that does `jwt.decode(...)`
+   inline (especially with a permissive `algorithms=` argument) is a
+   finding. `get_tenant` is allowed to call `decode_token` for the
+   cross-tenant guard; nothing else should reimplement it.
+
+6. **Role gating on privileged actions.** Authentication alone is not
+   enough on money-moving / config-changing endpoints. Approve, reject,
+   create payment run, execute payment run, void payment, mint card,
+   change RBAC, change org settings — all require
+   `Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO))` (or
+   the appropriate subset). A new privileged endpoint with only
+   `Depends(get_current_user)` and no `require_roles` is a finding.
+
+7. **Vendor-portal vs employee tokens.** Two JWT shapes coexist:
+   `typ` defaults to employee, `typ=vendor` is the supplier-portal
+   token. The two `get_current_*` helpers must not be interchangeable.
+   A new portal route gated by the employee `get_current_user` (or
+   vice versa) lets one auth flow into the other's surface. The
+   cross-tenant guard in `get_tenant` is keyed on `typ != "vendor"`
+   precisely so vendor tokens can resolve against the per-tenant
+   `VendorUser` table without colliding with the employee `org` claim.
 
 ## Report
 
 Group findings by severity:
 
-- **Critical** — a route exposes tenant data to anonymous callers; a route lets one tenant read/write another tenant's rows because the tenant marker wasn't set.
-- **High** — non-null user assertions reachable in a path that isn't gated; a `:resourceId` handler doesn't verify ownership.
-- **Medium** — new raw query in a tenant-scoped route without a comment explaining why; a per-route auth check that duplicates (and could drift from) the global one.
-- **Low** — public mount missing a comment explaining why it's public.
+- **Critical** — a route exposes tenant data to anonymous callers; a
+  route lets one tenant read/write another tenant's rows because the
+  JWT/header cross-check was bypassed; JWT decoded with a permissive
+  algorithm whitelist; vendor JWT accepted on an employee endpoint
+  (or vice versa).
+- **High** — `current_user.*` access reachable in a path that isn't
+  gated by `get_current_user`; a privileged action behind plain
+  `get_current_user` instead of `require_roles(...)`; a file-key /
+  opaque-id handler that doesn't verify owner-scope.
+- **Medium** — new control-plane query inside a tenant-data route
+  without a comment explaining why; a per-route auth check that
+  duplicates (and could drift from) the central deps.
+- **Low** — public route in `NO_AUTH_REQUIRED` missing a comment
+  explaining why it's public.
 
 For each: file:line, the concrete fix, the worst-case blast radius.
 
 ## Useful starting points
 
-- The entrypoint that mounts all routers — the full picture of who's gated.
-- The auth middleware — JWT and/or API key resolution.
-- The tenant-aware DB wrapper — the `set_config('app.current_org_id', …)` (or equivalent) is what closes the loop.
-- Any streaming endpoint (SSE / WebSocket) — the canonical "verify the resource belongs to the caller's org" gate.
-- The project's CLAUDE.md or `docs/security.md` for the documented constraint about which DB role runtime traffic uses.
+- `backend/app/main.py` — every `app.include_router(...)` line plus
+  the two inline public routes (`/api/health`, `/api/public-config`).
+- `backend/app/api/deps.py` — `decode_token`, `get_current_user`,
+  `get_org_id`, `require_roles`, `ROLE_*` constants.
+- `backend/app/tenant.py` — `get_tenant`, `get_tenant_db`, the
+  cross-tenant guard the latter relies on.
+- `backend/tests/test_rbac.py` — the `NO_AUTH_REQUIRED` allowlist and
+  the gate that fails on any unlisted unauthenticated route.
+- The four webhook handlers — see `/audit-webhooks` for the deeper
+  signature / dedup audit.
 
 ## Delegate to
 
-Use the `repo-security-auditor` agent: `"Audit auth gating and tenant-context enforcement across the backend API."`
+Use the `repo-security-auditor` agent: `"Audit auth gating and
+tenant-context enforcement across the FastAPI backend."`
 
 Read-only. Findings only.
