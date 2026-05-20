@@ -1,21 +1,12 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signIn, signInAndWait, signOut } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec talks to acme directly
-// (X-Tenant-Slug: 'acme' headers, ap_acme psql calls, hardcoded URLs).
-// The per-worker baseURL from fixtures/helpers.ts would route to
-// the wrong tenant. Multiple workers may share acme here — keep
-// this file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
-async function authToken(page: import('@playwright/test').Page) {
-	const t = await page.evaluate(() => localStorage.getItem('auth_token'));
-	if (!t) throw new Error('not signed in');
-	return t;
-}
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signIn,
+	signInAndWait,
+	signOut,
+	test
+} from '../fixtures/helpers';
 
 interface CreatedUser {
 	id: string;
@@ -28,18 +19,14 @@ interface CreatedUser {
  * round-trip via a freshly-created admin-side user. Each test creates
  * the user, drives the change-password form, and deletes the user in
  * finally. The seed never gets touched.
- *
- * The acme-admin seed account is also used as the "creator" for fresh
- * test users via /api/admin/users.
  */
 
 async function createTestUser(
 	page: import('@playwright/test').Page
 ): Promise<CreatedUser> {
-	const token = await authToken(page);
-	const email = `e2e-pw-${Date.now()}@acme.test`;
+	const email = `e2e-pw-${Date.now()}@test.local`;
 	const resp = await page.request.post(`${API_BASE}/api/admin/users`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: await authedTenantHeaders(page),
 		data: { full_name: 'Password Test', email, role_names: ['ap_clerk'] }
 	});
 	const body = (await resp.json()) as {
@@ -55,17 +42,16 @@ async function deleteTestUser(
 	id: string
 ) {
 	// We may have logged out as the admin during the test; sign back in
-	// with the seeded admin so our DELETE goes through with admin scope.
+	// with the worker's admin so our DELETE goes through with admin scope.
 	if (!(await page.evaluate(() => localStorage.getItem('auth_token')))) {
 		await signInAndWait(page);
 	}
-	const token = await authToken(page);
 	await page.request.delete(`${API_BASE}/api/admin/users/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: await authedTenantHeaders(page)
 	});
 }
 
-test.describe('/change-password (acme tenant)', () => {
+test.describe('/change-password', () => {
 	test('strength hints update as the user types', async ({ page }) => {
 		await signInAndWait(page);
 		const created = await createTestUser(page);

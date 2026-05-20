@@ -1,13 +1,10 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
+import {
+	API_BASE,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Token tampering — any client-side modification of the stored JWT must
@@ -24,15 +21,13 @@ test.use({ baseURL: ACME_BASE });
  * because the SPA forgot to re-hydrate auth state on boot.
  */
 
-const API_URL = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
 async function getStoredToken(page: import('@playwright/test').Page): Promise<string> {
 	const token = await page.evaluate(() => localStorage.getItem('auth_token'));
 	if (!token) throw new Error('expected auth_token to be set');
 	return token;
 }
 
-test.describe('token tampering (acme admin)', () => {
+test.describe('token tampering', () => {
 	test('byte-flipped signature → next protected request gets 401', async ({ page, request }) => {
 		await signInAndWait(page);
 		const valid = await getStoredToken(page);
@@ -46,10 +41,10 @@ test.describe('token tampering (acme admin)', () => {
 		const tamperedSig = parts[2].slice(0, -1) + (parts[2].slice(-1) === 'A' ? 'B' : 'A');
 		const tampered = [parts[0], parts[1], tamperedSig].join('.');
 
-		const res = await request.get(`${API_URL}/api/invoices`, {
+		const res = await request.get(`${API_BASE}/api/invoices`, {
 			headers: {
 				Authorization: `Bearer ${tampered}`,
-				'X-Tenant-Slug': 'acme'
+				'X-Tenant-Slug': currentTenantSlug()
 			}
 		});
 		expect(res.status()).toBe(401);
@@ -109,8 +104,8 @@ test.describe('token tampering (acme admin)', () => {
 	});
 
 	test('direct API call with no Authorization header → 401', async ({ request }) => {
-		const res = await request.get(`${API_URL}/api/invoices`, {
-			headers: { 'X-Tenant-Slug': 'acme' }
+		const res = await request.get(`${API_BASE}/api/invoices`, {
+			headers: { 'X-Tenant-Slug': currentTenantSlug() }
 		});
 		expect(res.status()).toBe(401);
 	});
@@ -119,8 +114,8 @@ test.describe('token tampering (acme admin)', () => {
 		// Common shape of attacker probing: "Bearer" with no token,
 		// "Basic" instead of "Bearer", or just garbage.
 		for (const auth of ['Bearer', 'Bearer ', 'Basic xyz', 'totally-not-a-header']) {
-			const res = await request.get(`${API_URL}/api/invoices`, {
-				headers: { Authorization: auth, 'X-Tenant-Slug': 'acme' }
+			const res = await request.get(`${API_BASE}/api/invoices`, {
+				headers: { Authorization: auth, 'X-Tenant-Slug': currentTenantSlug() }
 			});
 			expect(res.status(), `expected 401 for "${auth}"`).toBe(401);
 		}

@@ -1,23 +1,15 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { signIn } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
+import { expect, signIn, test } from '../fixtures/helpers';
 
 /**
  * Login surface — anonymous-visitor + happy-path smoke.
  *
- * baseURL is `http://acme.localhost:7777` (the seeded tenant).
- * `localhost:7777` (no subdomain) is exercised separately because it
- * routes to the no-tenant Landing component, not the login form.
+ * baseURL is the current worker's per-tenant origin (the seeded
+ * `e2e<N>` tenant). `localhost:7777` (no subdomain) is exercised
+ * separately because it routes to the no-tenant Landing component,
+ * not the login form.
  */
 
-test.describe('/login (acme tenant)', () => {
+test.describe('/login', () => {
 	test('renders the sign-in form for an anon visitor', async ({ page }) => {
 		await page.goto('/login');
 		await page.waitForLoadState('networkidle');
@@ -45,7 +37,7 @@ test.describe('/login (acme tenant)', () => {
 		// Successful login calls `goto('/')`. The exact landing chrome
 		// is the dashboard for an authenticated tenant user — assert on
 		// the URL transition, not on dashboard internals (those evolve).
-		await page.waitForURL(/^http:\/\/acme\.localhost:7777\/?$/, { timeout: 15_000 });
+		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
 	});
 });
 

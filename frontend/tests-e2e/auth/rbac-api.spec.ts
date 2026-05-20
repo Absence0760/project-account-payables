@@ -1,20 +1,11 @@
-import { expect, test } from '../fixtures/helpers';
-
 import {
-	ACME_ADMIN,
-	ACME_BASE,
-	ACME_CFO,
-	ACME_CLERK,
-	ACME_MANAGER,
-	escapeRegExp
+	API_BASE,
+	currentTenantSlug,
+	escapeRegExp,
+	expect,
+	tenantBase,
+	test
 } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
 
 /**
  * Endpoint-level RBAC. `rbac.spec.ts` covers sidebar visibility
@@ -36,18 +27,17 @@ test.use({ baseURL: ACME_BASE });
  * "role wasn't the blocker").
  */
 
-const API_URL = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
 async function tokenAfterLogin(
 	page: import('@playwright/test').Page,
 	creds: { email: string; password: string }
 ): Promise<string> {
-	await page.goto(`${ACME_BASE}/login`);
+	const origin = tenantBase(currentTenantSlug());
+	await page.goto(`${origin}/login`);
 	await page.waitForLoadState('networkidle');
 	await page.locator('input[type="email"]').fill(creds.email);
 	await page.locator('input[type="password"]').fill(creds.password);
 	await page.locator('form button[type="submit"]').click();
-	await page.waitForURL(new RegExp(`^${escapeRegExp(ACME_BASE)}/?$`), {
+	await page.waitForURL(new RegExp(`^${escapeRegExp(origin)}/?$`), {
 		timeout: 15_000
 	});
 	const token = await page.evaluate(() => localStorage.getItem('auth_token'));
@@ -59,42 +49,46 @@ function expectRoleDeny(status: number, what: string) {
 	expect(status, `${what}: role must be the blocker`).toBe(403);
 }
 
-test.describe('RBAC at the API layer (acme)', () => {
+test.describe('RBAC at the API layer', () => {
 	// ---- admin-only ------------------------------------------------------
 
-	test('clerk cannot POST /api/admin/users', async ({ page, request }) => {
-		const clerkToken = await tokenAfterLogin(page, ACME_CLERK);
-		const r = await request.post(`${API_URL}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${clerkToken}`, 'X-Tenant-Slug': 'acme' },
-			data: { email: 'newperson@acme.com', full_name: 'New', role: 'ap_clerk' }
+	test('clerk cannot POST /api/admin/users', async ({ page, request, tenantClerk }) => {
+		const clerkToken = await tokenAfterLogin(page, tenantClerk);
+		const r = await request.post(`${API_BASE}/api/admin/users`, {
+			headers: { Authorization: `Bearer ${clerkToken}`, 'X-Tenant-Slug': currentTenantSlug() },
+			data: { email: 'newperson@test.local', full_name: 'New', role: 'ap_clerk' }
 		});
 		expectRoleDeny(r.status(), 'clerk POST admin/users');
 	});
 
-	test('manager cannot POST /api/admin/users', async ({ page, request }) => {
-		const managerToken = await tokenAfterLogin(page, ACME_MANAGER);
-		const r = await request.post(`${API_URL}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${managerToken}`, 'X-Tenant-Slug': 'acme' },
-			data: { email: 'newperson@acme.com', full_name: 'New', role: 'ap_clerk' }
+	test('manager cannot POST /api/admin/users', async ({ page, request, tenantManager }) => {
+		const managerToken = await tokenAfterLogin(page, tenantManager);
+		const r = await request.post(`${API_BASE}/api/admin/users`, {
+			headers: { Authorization: `Bearer ${managerToken}`, 'X-Tenant-Slug': currentTenantSlug() },
+			data: { email: 'newperson@test.local', full_name: 'New', role: 'ap_clerk' }
 		});
 		expectRoleDeny(r.status(), 'manager POST admin/users');
 	});
 
-	test('cfo cannot POST /api/admin/users', async ({ page, request }) => {
-		const cfoToken = await tokenAfterLogin(page, ACME_CFO);
-		const r = await request.post(`${API_URL}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${cfoToken}`, 'X-Tenant-Slug': 'acme' },
-			data: { email: 'newperson@acme.com', full_name: 'New', role: 'ap_clerk' }
+	test('cfo cannot POST /api/admin/users', async ({ page, request, tenantCfo }) => {
+		const cfoToken = await tokenAfterLogin(page, tenantCfo);
+		const r = await request.post(`${API_BASE}/api/admin/users`, {
+			headers: { Authorization: `Bearer ${cfoToken}`, 'X-Tenant-Slug': currentTenantSlug() },
+			data: { email: 'newperson@test.local', full_name: 'New', role: 'ap_clerk' }
 		});
 		expectRoleDeny(r.status(), 'cfo POST admin/users');
 	});
 
-	test('admin CAN POST /api/admin/users (positive control)', async ({ page, request }) => {
-		const adminToken = await tokenAfterLogin(page, ACME_ADMIN);
-		const r = await request.post(`${API_URL}/api/admin/users`, {
-			headers: { Authorization: `Bearer ${adminToken}`, 'X-Tenant-Slug': 'acme' },
+	test('admin CAN POST /api/admin/users (positive control)', async ({
+		page,
+		request,
+		tenantAdmin
+	}) => {
+		const adminToken = await tokenAfterLogin(page, tenantAdmin);
+		const r = await request.post(`${API_BASE}/api/admin/users`, {
+			headers: { Authorization: `Bearer ${adminToken}`, 'X-Tenant-Slug': currentTenantSlug() },
 			data: {
-				email: `playwright-rbac-${Date.now()}@acme.com`,
+				email: `playwright-rbac-${Date.now()}@test.local`,
 				full_name: 'Playwright RBAC',
 				role: 'ap_clerk'
 			}
@@ -107,29 +101,33 @@ test.describe('RBAC at the API layer (acme)', () => {
 
 	// ---- admin/manager only ---------------------------------------------
 
-	test('clerk cannot POST /api/vendors', async ({ page, request }) => {
-		const clerkToken = await tokenAfterLogin(page, ACME_CLERK);
-		const r = await request.post(`${API_URL}/api/vendors`, {
-			headers: { Authorization: `Bearer ${clerkToken}`, 'X-Tenant-Slug': 'acme' },
+	test('clerk cannot POST /api/vendors', async ({ page, request, tenantClerk }) => {
+		const clerkToken = await tokenAfterLogin(page, tenantClerk);
+		const r = await request.post(`${API_BASE}/api/vendors`, {
+			headers: { Authorization: `Bearer ${clerkToken}`, 'X-Tenant-Slug': currentTenantSlug() },
 			data: { name: 'Sneak Vendor' }
 		});
 		expectRoleDeny(r.status(), 'clerk POST vendor');
 	});
 
-	test('cfo cannot POST /api/vendors', async ({ page, request }) => {
+	test('cfo cannot POST /api/vendors', async ({ page, request, tenantCfo }) => {
 		// CFO is read-many but cannot mutate vendor records.
-		const cfoToken = await tokenAfterLogin(page, ACME_CFO);
-		const r = await request.post(`${API_URL}/api/vendors`, {
-			headers: { Authorization: `Bearer ${cfoToken}`, 'X-Tenant-Slug': 'acme' },
+		const cfoToken = await tokenAfterLogin(page, tenantCfo);
+		const r = await request.post(`${API_BASE}/api/vendors`, {
+			headers: { Authorization: `Bearer ${cfoToken}`, 'X-Tenant-Slug': currentTenantSlug() },
 			data: { name: 'CFO Sneak Vendor' }
 		});
 		expectRoleDeny(r.status(), 'cfo POST vendor');
 	});
 
-	test('manager CAN POST /api/vendors (positive control)', async ({ page, request }) => {
-		const managerToken = await tokenAfterLogin(page, ACME_MANAGER);
-		const r = await request.post(`${API_URL}/api/vendors`, {
-			headers: { Authorization: `Bearer ${managerToken}`, 'X-Tenant-Slug': 'acme' },
+	test('manager CAN POST /api/vendors (positive control)', async ({
+		page,
+		request,
+		tenantManager
+	}) => {
+		const managerToken = await tokenAfterLogin(page, tenantManager);
+		const r = await request.post(`${API_BASE}/api/vendors`, {
+			headers: { Authorization: `Bearer ${managerToken}`, 'X-Tenant-Slug': currentTenantSlug() },
 			data: { name: `Playwright Vendor ${Date.now()}` }
 		});
 		expect(r.status(), 'manager should not be RBAC-denied').not.toBe(403);
@@ -137,45 +135,58 @@ test.describe('RBAC at the API layer (acme)', () => {
 
 	// ---- CFO-only --------------------------------------------------------
 
-	test('clerk cannot POST /api/payments/runs/{id}/approve', async ({ page, request }) => {
+	test('clerk cannot POST /api/payments/runs/{id}/approve', async ({
+		page,
+		request,
+		tenantClerk
+	}) => {
 		// CFO sign-off endpoint — clerks must never reach it.
-		const clerkToken = await tokenAfterLogin(page, ACME_CLERK);
+		const clerkToken = await tokenAfterLogin(page, tenantClerk);
 		const fakeRunId = '00000000-0000-0000-0000-000000000001';
-		const r = await request.post(`${API_URL}/api/payments/runs/${fakeRunId}/approve`, {
-			headers: { Authorization: `Bearer ${clerkToken}`, 'X-Tenant-Slug': 'acme' }
+		const r = await request.post(`${API_BASE}/api/payments/runs/${fakeRunId}/approve`, {
+			headers: { Authorization: `Bearer ${clerkToken}`, 'X-Tenant-Slug': currentTenantSlug() }
 		});
 		expectRoleDeny(r.status(), 'clerk approve run');
 	});
 
-	test('manager cannot POST /api/payments/runs/{id}/approve', async ({ page, request }) => {
-		const managerToken = await tokenAfterLogin(page, ACME_MANAGER);
+	test('manager cannot POST /api/payments/runs/{id}/approve', async ({
+		page,
+		request,
+		tenantManager
+	}) => {
+		const managerToken = await tokenAfterLogin(page, tenantManager);
 		const fakeRunId = '00000000-0000-0000-0000-000000000001';
-		const r = await request.post(`${API_URL}/api/payments/runs/${fakeRunId}/approve`, {
-			headers: { Authorization: `Bearer ${managerToken}`, 'X-Tenant-Slug': 'acme' }
+		const r = await request.post(`${API_BASE}/api/payments/runs/${fakeRunId}/approve`, {
+			headers: { Authorization: `Bearer ${managerToken}`, 'X-Tenant-Slug': currentTenantSlug() }
 		});
 		expectRoleDeny(r.status(), 'manager approve run');
 	});
 
-	test('admin cannot POST /api/payments/runs/{id}/approve', async ({ page, request }) => {
+	test('admin cannot POST /api/payments/runs/{id}/approve', async ({
+		page,
+		request,
+		tenantAdmin
+	}) => {
 		// Yes — CFO sign-off is CFO-only by design. Admin is high-
 		// privilege but not the segregation-of-duties role for
 		// large-dollar payment approval.
-		const adminToken = await tokenAfterLogin(page, ACME_ADMIN);
+		const adminToken = await tokenAfterLogin(page, tenantAdmin);
 		const fakeRunId = '00000000-0000-0000-0000-000000000001';
-		const r = await request.post(`${API_URL}/api/payments/runs/${fakeRunId}/approve`, {
-			headers: { Authorization: `Bearer ${adminToken}`, 'X-Tenant-Slug': 'acme' }
+		const r = await request.post(`${API_BASE}/api/payments/runs/${fakeRunId}/approve`, {
+			headers: { Authorization: `Bearer ${adminToken}`, 'X-Tenant-Slug': currentTenantSlug() }
 		});
 		expectRoleDeny(r.status(), 'admin approve run');
 	});
 
 	test('CFO is NOT RBAC-denied on POST /api/payments/runs/{id}/approve', async ({
 		page,
-		request
+		request,
+		tenantCfo
 	}) => {
-		const cfoToken = await tokenAfterLogin(page, ACME_CFO);
+		const cfoToken = await tokenAfterLogin(page, tenantCfo);
 		const fakeRunId = '00000000-0000-0000-0000-000000000001';
-		const r = await request.post(`${API_URL}/api/payments/runs/${fakeRunId}/approve`, {
-			headers: { Authorization: `Bearer ${cfoToken}`, 'X-Tenant-Slug': 'acme' }
+		const r = await request.post(`${API_BASE}/api/payments/runs/${fakeRunId}/approve`, {
+			headers: { Authorization: `Bearer ${cfoToken}`, 'X-Tenant-Slug': currentTenantSlug() }
 		});
 		// CFO will hit 404 (run doesn't exist) — the security property
 		// is that the RBAC layer accepted them.
@@ -184,18 +195,25 @@ test.describe('RBAC at the API layer (acme)', () => {
 
 	// ---- Read endpoints all roles can hit -------------------------------
 
-	test('every role can GET /api/dashboard (positive control)', async ({ page, request }) => {
+	test('every role can GET /api/dashboard (positive control)', async ({
+		page,
+		request,
+		tenantAdmin,
+		tenantManager,
+		tenantClerk,
+		tenantCfo
+	}) => {
 		// If this fails for a role it's not an RBAC bug — it's a
 		// regression somewhere else (auth, tenant resolution, etc).
 		for (const [label, creds] of [
-			['admin', ACME_ADMIN] as const,
-			['manager', ACME_MANAGER] as const,
-			['cfo', ACME_CFO] as const,
-			['clerk', ACME_CLERK] as const
+			['admin', tenantAdmin] as const,
+			['manager', tenantManager] as const,
+			['cfo', tenantCfo] as const,
+			['clerk', tenantClerk] as const
 		]) {
 			const token = await tokenAfterLogin(page, creds);
-			const r = await request.get(`${API_URL}/api/dashboard`, {
-				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+			const r = await request.get(`${API_BASE}/api/dashboard`, {
+				headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() }
 			});
 			expect(r.status(), `${label} GET /dashboard`).toBe(200);
 		}

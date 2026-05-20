@@ -1,13 +1,10 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_ADMIN, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
+import {
+	API_BASE,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Password-security e2e — end-to-end coverage that complements the
@@ -24,8 +21,6 @@ test.use({ baseURL: ACME_BASE });
  * The tests provision a throwaway user via /api/admin/users so the
  * seeded demo credentials are never touched.
  */
-
-const API_BASE = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 
 async function adminToken(page: import('@playwright/test').Page): Promise<string> {
 	await signInAndWait(page);
@@ -44,9 +39,9 @@ async function createUser(
 	page: import('@playwright/test').Page,
 	token: string
 ): Promise<CreatedUser> {
-	const email = `e2e-pwsec-${Date.now()}@acme.test`;
+	const email = `e2e-pwsec-${Date.now()}@test.local`;
 	const resp = await page.request.post(`${API_BASE}/api/admin/users`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' },
+		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() },
 		data: { full_name: 'PW Sec Test', email, role_names: ['ap_clerk'] }
 	});
 	const body = (await resp.json()) as {
@@ -63,7 +58,7 @@ async function deleteUser(
 	token: string
 ) {
 	await page.request.delete(`${API_BASE}/api/admin/users/${id}`, {
-		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': 'acme' }
+		headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() }
 	});
 }
 
@@ -73,7 +68,7 @@ async function loginAndGetToken(
 	password: string
 ): Promise<{ status: number; token: string | null }> {
 	const resp = await page.request.post(`${API_BASE}/api/auth/login`, {
-		headers: { 'X-Tenant-Slug': 'acme' },
+		headers: { 'X-Tenant-Slug': currentTenantSlug() },
 		data: { email, password }
 	});
 	const body = resp.status() === 200 ? ((await resp.json()) as { access_token?: string }) : null;
@@ -91,7 +86,7 @@ test.describe('password security — change-password API', () => {
 			const r = await page.request.post(`${API_BASE}/api/auth/change-password`, {
 				headers: {
 					Authorization: `Bearer ${login.token}`,
-					'X-Tenant-Slug': 'acme'
+					'X-Tenant-Slug': currentTenantSlug()
 				},
 				data: { current_password: user.tempPassword, new_password: 'Short1A' }
 			});
@@ -110,7 +105,7 @@ test.describe('password security — change-password API', () => {
 			const r = await page.request.post(`${API_BASE}/api/auth/change-password`, {
 				headers: {
 					Authorization: `Bearer ${login.token}`,
-					'X-Tenant-Slug': 'acme'
+					'X-Tenant-Slug': currentTenantSlug()
 				},
 				data: {
 					current_password: user.tempPassword,
@@ -134,7 +129,7 @@ test.describe('password security — change-password API', () => {
 			const r = await page.request.post(`${API_BASE}/api/auth/change-password`, {
 				headers: {
 					Authorization: `Bearer ${login.token}`,
-					'X-Tenant-Slug': 'acme'
+					'X-Tenant-Slug': currentTenantSlug()
 				},
 				data: {
 					current_password: user.tempPassword,
@@ -156,7 +151,7 @@ test.describe('password security — change-password API', () => {
 			const r = await page.request.post(`${API_BASE}/api/auth/change-password`, {
 				headers: {
 					Authorization: `Bearer ${login.token}`,
-					'X-Tenant-Slug': 'acme'
+					'X-Tenant-Slug': currentTenantSlug()
 				},
 				data: {
 					current_password: 'this-is-not-the-real-pw',
@@ -187,7 +182,7 @@ test.describe('password security — change-password API', () => {
 			const r = await page.request.post(`${API_BASE}/api/auth/change-password`, {
 				headers: {
 					Authorization: `Bearer ${login.token}`,
-					'X-Tenant-Slug': 'acme'
+					'X-Tenant-Slug': currentTenantSlug()
 				},
 				data: {
 					current_password: user.tempPassword,
@@ -210,18 +205,22 @@ test.describe('password security — change-password API', () => {
 });
 
 test.describe('password security — login error wording', () => {
-	test('unknown email and wrong password return identical body', async ({ request }) => {
+	test('unknown email and wrong password return identical body', async ({
+		request,
+		tenantAdmin
+	}) => {
 		// Pin CWE-204 at the live HTTP layer. The handler-level test
 		// covers the same contract for unit-grade speed; this one runs
 		// against the real running server so a future deviation in
 		// middleware or error rendering is caught too.
+		const slug = currentTenantSlug();
 		const r1 = await request.post(`${API_BASE}/api/auth/login`, {
-			headers: { 'X-Tenant-Slug': 'acme' },
+			headers: { 'X-Tenant-Slug': slug },
 			data: { email: 'definitely-not-real@nowhere.test', password: 'x' }
 		});
 		const r2 = await request.post(`${API_BASE}/api/auth/login`, {
-			headers: { 'X-Tenant-Slug': 'acme' },
-			data: { email: ACME_ADMIN.email, password: 'definitely-wrong-pw' }
+			headers: { 'X-Tenant-Slug': slug },
+			data: { email: tenantAdmin.email, password: 'definitely-wrong-pw' }
 		});
 		expect(r1.status()).toBe(r2.status());
 		expect(r1.status()).toBe(401);
@@ -230,10 +229,10 @@ test.describe('password security — login error wording', () => {
 		);
 	});
 
-	test('login error wording does not name the failing field', async ({ request }) => {
+	test('login error wording does not name the failing field', async ({ request, tenantAdmin }) => {
 		const r = await request.post(`${API_BASE}/api/auth/login`, {
-			headers: { 'X-Tenant-Slug': 'acme' },
-			data: { email: ACME_ADMIN.email, password: 'wrong' }
+			headers: { 'X-Tenant-Slug': currentTenantSlug() },
+			data: { email: tenantAdmin.email, password: 'wrong' }
 		});
 		const detail = (await r.text()).toLowerCase();
 		// Generic wording only — the contract is "Invalid credentials".
@@ -246,11 +245,14 @@ test.describe('password security — login error wording', () => {
 		expect(detail).not.toContain('email not found');
 	});
 
-	test('failed login response does not echo the attempted password', async ({ request }) => {
+	test('failed login response does not echo the attempted password', async ({
+		request,
+		tenantAdmin
+	}) => {
 		const secret = 'Captain-Crunch-Pizza-42!';
 		const r = await request.post(`${API_BASE}/api/auth/login`, {
-			headers: { 'X-Tenant-Slug': 'acme' },
-			data: { email: ACME_ADMIN.email, password: secret }
+			headers: { 'X-Tenant-Slug': currentTenantSlug() },
+			data: { email: tenantAdmin.email, password: secret }
 		});
 		const body = await r.text();
 		expect(body).not.toContain(secret);

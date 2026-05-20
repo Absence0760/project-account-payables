@@ -1,13 +1,11 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_ADMIN, signInAndWait, signOut } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
+import {
+	API_BASE,
+	currentTenantSlug,
+	expect,
+	signInAndWait,
+	signOut,
+	test
+} from '../fixtures/helpers';
 
 /**
  * Logout security — the backend keeps a Redis blocklist keyed on the
@@ -25,19 +23,19 @@ test.use({ baseURL: ACME_BASE });
  *      state.
  */
 
-const API_URL = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
-
 test.describe('logout security', () => {
 	test('logged-out JWT is rejected on subsequent direct API calls', async ({ page, request }) => {
 		await signInAndWait(page);
 		const tokenBeforeLogout = await page.evaluate(() => localStorage.getItem('auth_token'));
 		expect(tokenBeforeLogout).toBeTruthy();
 
+		const slug = currentTenantSlug();
+
 		// Sanity: token works before logout.
-		const before = await request.get(`${API_URL}/api/invoices`, {
+		const before = await request.get(`${API_BASE}/api/invoices`, {
 			headers: {
 				Authorization: `Bearer ${tokenBeforeLogout}`,
-				'X-Tenant-Slug': 'acme'
+				'X-Tenant-Slug': slug
 			}
 		});
 		expect(before.status(), 'token must work before logout').toBe(200);
@@ -47,26 +45,28 @@ test.describe('logout security', () => {
 		// Replay the same token directly. If the blocklist works, we
 		// get 401. If it doesn't, we'd get 200 and the user's session
 		// is effectively unrevokable.
-		const after = await request.get(`${API_URL}/api/invoices`, {
+		const after = await request.get(`${API_BASE}/api/invoices`, {
 			headers: {
 				Authorization: `Bearer ${tokenBeforeLogout}`,
-				'X-Tenant-Slug': 'acme'
+				'X-Tenant-Slug': slug
 			}
 		});
 		expect(after.status(), 'token must be revoked after logout').toBe(401);
 	});
 
 	test('logout in one browser context invalidates the same JWT in another', async ({
-		browser
+		browser,
+		tenantAdmin
 	}) => {
 		// Two contexts share a JWT by manual injection (the natural
 		// shape of a stolen-and-replayed token). Logging out in one
 		// must lock out the other on its next request.
-		const ctxA = await browser.newContext();
-		const ctxB = await browser.newContext();
+		const slug = currentTenantSlug();
+		const ctxA = await browser.newContext({ baseURL: `http://${slug}.localhost:7777` });
+		const ctxB = await browser.newContext({ baseURL: `http://${slug}.localhost:7777` });
 		try {
 			const pageA = await ctxA.newPage();
-			await signInAndWait(pageA, ACME_ADMIN);
+			await signInAndWait(pageA, tenantAdmin);
 			const token = await pageA.evaluate(() => localStorage.getItem('auth_token'));
 			expect(token).toBeTruthy();
 
@@ -74,10 +74,10 @@ test.describe('logout security', () => {
 			const pageB = await ctxB.newPage();
 			await pageB.goto('/login');
 			await pageB.evaluate((t) => localStorage.setItem('auth_token', t!), token);
-			const respBefore = await ctxB.request.get(`${API_URL}/api/invoices`, {
+			const respBefore = await ctxB.request.get(`${API_BASE}/api/invoices`, {
 				headers: {
 					Authorization: `Bearer ${token}`,
-					'X-Tenant-Slug': 'acme'
+					'X-Tenant-Slug': slug
 				}
 			});
 			expect(respBefore.status()).toBe(200);
@@ -87,10 +87,10 @@ test.describe('logout security', () => {
 
 			// Context B's next API call must now be rejected — the
 			// blocklist is global, not per-context.
-			const respAfter = await ctxB.request.get(`${API_URL}/api/invoices`, {
+			const respAfter = await ctxB.request.get(`${API_BASE}/api/invoices`, {
 				headers: {
 					Authorization: `Bearer ${token}`,
-					'X-Tenant-Slug': 'acme'
+					'X-Tenant-Slug': slug
 				}
 			});
 			expect(respAfter.status()).toBe(401);
@@ -105,8 +105,8 @@ test.describe('logout security', () => {
 		// accepted any JTI from a query param — confirm the endpoint
 		// itself is auth-gated. (We don't care about the exact 401 vs
 		// 422 shape, only that it's not a 2xx.)
-		const res = await request.post(`${API_URL}/api/auth/logout`, {
-			headers: { 'X-Tenant-Slug': 'acme' }
+		const res = await request.post(`${API_BASE}/api/auth/logout`, {
+			headers: { 'X-Tenant-Slug': currentTenantSlug() }
 		});
 		expect(res.status()).toBeGreaterThanOrEqual(400);
 		expect(res.status()).toBeLessThan(500);

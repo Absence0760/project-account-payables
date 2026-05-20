@@ -1,13 +1,4 @@
-import { expect, test, ACME_BASE } from '../fixtures/helpers';
-
-import { ACME_CFO, ACME_CLERK, ACME_MANAGER, signInAndWait } from '../fixtures/helpers';
-
-// Pinned to the acme tenant: this spec uses ACME_*/TECHFLOW_* creds or
-// asserts cross-tenant isolation that requires fixed tenant slugs. The
-// per-worker baseURL from fixtures/helpers.ts would otherwise route to
-// the wrong tenant. Multiple workers may share acme here — keep this
-// file's tests read-only or idempotent.
-test.use({ baseURL: ACME_BASE });
+import { expect, signInAndWait, test } from '../fixtures/helpers';
 
 /**
  * RBAC — sidebar nav visibility per role.
@@ -48,15 +39,16 @@ async function assertSidebarLinks(page: import('@playwright/test').Page, expecte
 }
 
 test.describe('RBAC — sidebar visibility', () => {
-	test('clerk: only Dashboard + Invoices', async ({ page }) => {
-		await signInAndWait(page, ACME_CLERK);
+	test('clerk: only Dashboard + Invoices', async ({ page, tenantClerk }) => {
+		await signInAndWait(page, tenantClerk);
 		await assertSidebarLinks(page, ['/', '/invoices']);
 	});
 
 	test('manager: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Exceptions', async ({
-		page
+		page,
+		tenantManager
 	}) => {
-		await signInAndWait(page, ACME_MANAGER);
+		await signInAndWait(page, tenantManager);
 		await assertSidebarLinks(page, [
 			'/',
 			'/invoices',
@@ -70,9 +62,10 @@ test.describe('RBAC — sidebar visibility', () => {
 	});
 
 	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs (no Exceptions, no Users)', async ({
-		page
+		page,
+		tenantCfo
 	}) => {
-		await signInAndWait(page, ACME_CFO);
+		await signInAndWait(page, tenantCfo);
 		await assertSidebarLinks(page, [
 			'/',
 			'/invoices',
