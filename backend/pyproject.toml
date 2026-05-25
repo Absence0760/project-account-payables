@@ -5,7 +5,7 @@ description = "Accounts Payables API — FastAPI backend"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.136.1,<1",
+    "fastapi>=0.136.3,<1",
     "uvicorn[standard]>=0.47.0,<1",
     "sqlalchemy[asyncio]>=2.0.49,<3",
     "asyncpg>=0.31.0,<1",
