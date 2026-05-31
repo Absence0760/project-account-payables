@@ -1634,13 +1634,17 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 ]
             )
 
-            # One completed payment run with one settled payment. The
-            # `/payments` Runs tab + RunDetailModal spec assumes a
-            # seeded run row exists.
+            # One completed payment run with one settled payment, attached
+            # to the seeded `paid` invoice. The `/payments` Runs tab +
+            # RunDetailModal spec assumes a seeded run row exists. Look the
+            # invoice up by status rather than by index — the status list
+            # above is reordered/re-weighted as specs need rows, and a
+            # hardcoded index silently drifts onto the wrong invoice.
+            paid_invoice = next(inv for inv in invoices if inv.status == "paid")
             run = PaymentRun(
                 organization_id=org_id,
                 status="completed",
-                total_amount=Decimal("109.00"),
+                total_amount=paid_invoice.amount,
                 executed_at=datetime(2026, 1, 20, tzinfo=UTC),
             )
             session.add(run)
@@ -1648,8 +1652,8 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
             session.add(
                 Payment(
                     payment_run_id=run.id,
-                    invoice_id=invoices[8].id,  # the `paid` invoice
-                    amount=Decimal("109.00"),
+                    invoice_id=paid_invoice.id,
+                    amount=paid_invoice.amount,
                     method="ach",
                     status="completed",
                 )
