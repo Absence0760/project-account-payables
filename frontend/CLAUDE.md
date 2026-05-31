@@ -25,7 +25,7 @@ pnpm check            # typecheck
 | Route | File | API calls |
 |-------|------|-----------|
 | `/` (tenant) | `routes/+page.svelte` | `GET /api/dashboard` |
-| `/` (no-tenant) | `lib/components/Landing.svelte` (inline in `+layout.svelte`) | Marketing landing page with features, pricing, signup CTA |
+| `/` (no-tenant) | `lib/components/marketing/Landing.svelte` (inline in `+layout.svelte`) | Marketing landing page with features, pricing, signup CTA |
 | `/signup` | `routes/signup/+page.svelte` | `GET /api/public-config`, `GET /api/signup/slug-check`, `POST /api/signup/start` |
 | `/verify` | `routes/verify/+page.svelte` | `POST /api/signup/complete` |
 | `/login` | `routes/login/+page.svelte` | `POST /api/auth/login`, `GET /api/auth/sso/config` (renders SSO button when enabled) |
@@ -82,13 +82,28 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 
 ### Components (`src/lib/components/`)
 
-- `Sidebar.svelte` — nav sidebar (collapsed/expanded), profile popover with link to `/profile`
-- `StatusBadge.svelte` — invoice status display
+Grouped into subfolders by role. Import with the full path, e.g.
+`import Modal from '$lib/components/ui/Modal.svelte'`. No barrel/index file.
+
+**`ui/` — reusable primitives** (use these; don't hand-roll the markup):
+- `PageHeader.svelte` — `.workspace` + `.toolbar` shell. `<PageHeader title="X">` with an optional `{#snippet actions()}` (right-aligned toolbar buttons); page body is `children`. Renders the `<h1>` title.
+- `DataTable.svelte` — `.grid-container > table`. Pass `columns={[{label,class?}]}` (or a `{#snippet header()}<tr>…</tr>{/snippet}` for select-all/sortable headers) + a `{#snippet body()}` that renders the `<tr>`/`<td>` rows. `isEmpty` + `empty` render the centred empty row (`colspan` auto from columns). Opt-in `fixed` (table-layout:fixed) and `stickyHeader` props.
+- `FilterChips.svelte` — `nav.filters` of `.filter-chip`. `<FilterChips chips={[{key,label,count?,alert?}]} bind:active={var} />`. Single-select; for multi-select status filters keep an inline chip nav (it still uses the global `.filter-chip` CSS).
+- `Modal.svelte` — `.backdrop` + `div.modal[role="dialog"]`. `<Modal open ariaLabel="EXACT" title? width="sm|md|lg" onclose>`; keep the page's own `<form>` + `.modal-footer` inside `children` (preserves submit). Custom heading → `{#snippet header()}`. Handles backdrop-click + Esc.
+- `KpiCard.svelte` — `.kpi` card. `<KpiCard value label highlight={'green'|'red'|null} />`; wrap a row in `<div class="kpi-row">`.
+- `SearchBox`, `StatusBadge`, `RowAction`, `BulkBar`, `BulkDeleteButton`, `Toast` — see the pattern sections below.
+
+The visual styling for all of the above lives **globally in `src/app.css`** (class-scoped: `.workspace`, `.grid-container td`, `.filter-chip`, `.modal`, `.kpi`, …) so route pages carry no duplicated `<style>`. Feature components below keep their own scoped CSS (Svelte's `.svelte-<hash>` outranks the bare-class globals).
+
+**`modals/` — feature dialogs:**
 - `InvoiceModal.svelte` — invoice detail/edit modal
 - `AdvancedSearchModal.svelte` — invoice search filters
-- `RunDetailModal.svelte` — payment run detail; shows status, total, payments table; Execute button when run is `draft`
-- `Toast.svelte` — toast notifications
-- `Landing.svelte` + `Pricing.svelte` — public marketing landing page (no-tenant route)
+- `BulkRecodeGLModal.svelte` — admin bulk GL re-code preview/apply
+- `ApprovalMatrixEditor.svelte` — approval-chain matrix builder
+- `RunDetailModal.svelte` — payment run detail; status, total, payments table; Execute button when run is `draft`
+
+**`marketing/`** — `Landing.svelte` + `Pricing.svelte` (public no-tenant route).
+**`layout/`** — `Sidebar.svelte` (collapsed/expanded nav, profile popover).
 
 ### Types (`src/lib/types/`)
 
@@ -112,7 +127,13 @@ existing component first; only deviate with a written justification.
 
 ### Page layout
 
-Every authenticated route is wrapped in `<div class="workspace">`:
+Wrap every authenticated route in **`<PageHeader title="…">`**
+(`$lib/components/ui/PageHeader.svelte`) — it renders the `.workspace`
+shell, the `.toolbar` header with the `<h1>` title, and an optional
+`{#snippet actions()}` for right-aligned primary actions (e.g.
+`+ Invite User`, `+ Upload Invoices`). The page body goes in `children`.
+Don't hand-roll `<div class="workspace"><header class="toolbar">` any
+more. The shell still produces this layout:
 
 ```css
 .workspace {
@@ -133,9 +154,33 @@ is wide enough for grid pages on 1920–2560px monitors without leaving
 half the viewport empty; on a 13″ laptop the natural body width
 constrains it before the cap kicks in.
 
-The page title goes in `<header class="toolbar">`, with primary
-actions (e.g. `+ Invite User`, `+ Upload Invoices`) right-aligned in
-a `<div class="toolbar-actions">`.
+### Data tables (`DataTable`)
+
+Use **`<DataTable>`** (`$lib/components/ui/DataTable.svelte`) for every
+grid page instead of hand-rolling `<div class="grid-container"><table>`:
+
+```svelte
+<DataTable columns={COLUMNS} isEmpty={items.length === 0} empty="No items.">
+    {#snippet body()}
+        {#each items as item (item.id)}
+            <tr class:row-selected={selected.has(item.id)}>
+                <td>…</td>
+                <td class="actions"><RowAction …>Edit</RowAction></td>
+            </tr>
+        {/each}
+    {/snippet}
+</DataTable>
+```
+
+- `columns = [{label?, class?}]` builds the `<thead>`. For a select-all
+  checkbox or sortable headers, pass `{#snippet header()}<tr>…</tr>{/snippet}`
+  + `colspan={N}` instead of `columns`.
+- The `body` snippet renders the rows; the page keeps full control of
+  `<tr>`/`<td>` markup + classes (so bespoke cell styling stays page-scoped).
+- `isEmpty` + `empty` render the centred `td.empty` row.
+- Opt-in `fixed` (`table-layout: fixed`, pair with `<th>` widths) and
+  `stickyHeader`. These two MUST be props (they target DataTable-owned
+  `<table>`/`<thead>`, which a page-scoped selector can't reach).
 
 ### Search (`SearchBox`)
 
@@ -143,7 +188,7 @@ Pill-shaped search input with a magnifier-glass SVG. Single component:
 
 ```svelte
 <script lang="ts">
-    import SearchBox from '$lib/components/SearchBox.svelte';
+    import SearchBox from '$lib/components/ui/SearchBox.svelte';
     let search = $state('');
 </script>
 
@@ -172,8 +217,8 @@ appears when one or more rows are selected:
 
 ```svelte
 <script lang="ts">
-    import BulkBar from '$lib/components/BulkBar.svelte';
-    import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
+    import BulkBar from '$lib/components/ui/BulkBar.svelte';
+    import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
 
     let selected = $state<Set<string>>(new Set());
 </script>
@@ -238,52 +283,59 @@ items, then a centred Load More button below the table:
 
 ### Status filter chips
 
-Inline, pill-shaped buttons above the table:
+Use **`<FilterChips>`** (`$lib/components/ui/FilterChips.svelte`) for the
+pill-shaped status filter above the table:
 
 ```svelte
-<nav class="filters">
-    <button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>
-        All <span class="count">{total}</span>
-    </button>
-    {#each STATUSES as s}
-        <button class="filter-chip" class:active={statusFilter === s} onclick={() => (statusFilter = s)}>
-            {STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
-        </button>
-    {/each}
-</nav>
+<FilterChips
+    chips={[
+        { key: 'all', label: 'All', count: total },
+        ...STATUSES.map((s) => ({ key: s, label: STATUS_LABELS[s], count: statusCount(s) }))
+    ]}
+    bind:active={statusFilter}
+/>
 ```
 
-Active chip uses `var(--accent)` background + white text. The "All"
-chip always comes first.
+- `chips = [{key, label, count?, alert?}]`. Omit `count` for label-only
+  chips; `alert: true` renders the red attention badge (`.count.alert`).
+- The "All" chip comes first; active chip uses `var(--accent)` + white.
+- **Single-select only.** For a multi-select status filter (e.g. `/invoices`,
+  whose filter is an array) keep an inline `<nav class="filters">` chip
+  nav — it still uses the global `.filter-chip` / `.count` CSS, so the
+  visible text/counts (and the `/^All\s+\d+/` e2e selectors) stay identical.
 
 ### Modals
 
-Backdrop + centred dialog:
+Use **`<Modal>`** (`$lib/components/ui/Modal.svelte`) — backdrop +
+centred dialog with backdrop-click + Esc to close:
 
 ```svelte
-<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) onclose(); }}>
-    <div class="modal" role="dialog" aria-label="<Action>">
-        <h2><Heading></h2>
-        <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-            <!-- labelled fields -->
-            <div class="modal-footer">
-                <button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
-                <button type="submit" class="btn-primary" disabled={saving}>
-                    {saving ? 'Saving…' : 'Save'}
-                </button>
-            </div>
-        </form>
-    </div>
-</div>
+<Modal open={showCreate} ariaLabel="<Action>" title="<Heading>" width="sm" onclose={() => (showCreate = false)}>
+    <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+        <!-- labelled fields -->
+        <div class="modal-footer">
+            <button type="button" class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
+            <button type="submit" class="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        </div>
+    </form>
+</Modal>
 ```
 
-- Backdrop click on its own element (not propagated from children) closes.
-- Cancel sits left of the primary action in the footer.
-- Required-field markers use `<em class="required">*</em>`.
+- `ariaLabel` becomes the dialog's `aria-label` — **e2e specs select
+  modals by this exact string**; never change a label on an existing modal.
+- Keep the page's own `<form>` **including the `.modal-footer`** inside
+  the children so submit still works (Modal does not own the footer).
+- `width="sm|md|lg"` = 440/480/820px. Custom heading markup →
+  `{#snippet header()}…{/snippet}` instead of `title`. If the body
+  dereferences a nullable var, gate `open={x !== null}` and wrap the
+  children in `{#if x}…{/if}`.
+- Cancel sits left of the primary action. Required-field markers use
+  `<em class="required">*</em>`. Feature dialogs in
+  `$lib/components/modals/` keep their own bespoke internals.
 
 ### Per-row actions
 
-Use the shared `<RowAction>` component (`$lib/components/RowAction.svelte`)
+Use the shared `<RowAction>` component (`$lib/components/ui/RowAction.svelte`)
 for every per-row button across every grid page. Variants:
 - `default` — neutral border, accent on hover (Edit, Apply, link buttons)
 - `success` — green border + text (Verify)
@@ -316,23 +368,31 @@ the click target is not within `.row-action`. See
 
 ### Class-name conventions
 
+The class names below are the shared contract (e2e specs select on
+them). Their CSS lives globally in `src/app.css`; the markup comes from
+the `ui/` primitive in the Source column.
+
 | Pattern | Class | Source |
 |---|---|---|
-| Page wrapper | `.workspace` | every route's `+page.svelte` |
-| Page header | `.toolbar` | each route |
-| Search input | `.search-box` | `$lib/components/SearchBox.svelte` |
-| Bulk bar | `.bulk-bar` | `$lib/components/BulkBar.svelte` |
-| Bulk delete | `.bulk-delete-btn` (+ `.armed`) | `$lib/components/BulkDeleteButton.svelte` |
+| Page wrapper + header | `.workspace` / `.toolbar` / `<h1>` | `ui/PageHeader.svelte` |
+| Data table | `.grid-container` + `table`/`th`/`td`/`.empty` | `ui/DataTable.svelte` |
+| Search input | `.search-box` | `ui/SearchBox.svelte` |
+| Bulk bar | `.bulk-bar` | `ui/BulkBar.svelte` |
+| Bulk delete | `.bulk-delete-btn` (+ `.armed`) | `ui/BulkDeleteButton.svelte` |
 | Bulk action | `.bulk-action-btn` | per-route, but always inside a BulkBar |
-| Per-row action | `<RowAction>` (variant + armed) | `$lib/components/RowAction.svelte` |
-| Filter pill | `.filter-chip` (+ `.active`) | per-route, copy /invoices |
+| Per-row action | `<RowAction>` (variant + armed) | `ui/RowAction.svelte` |
+| Filter pill | `.filter-chip` (+ `.active`, `.count`) | `ui/FilterChips.svelte` |
 | Load more | `.btn-load-more` / `.load-more-row` / `.load-more-end` | per-route, copy /admin |
-| Modal dialog | `.modal[role="dialog"]` + `.backdrop` | per-route |
-| Status badge | `<StatusBadge>` | `$lib/components/StatusBadge.svelte` |
+| Modal dialog | `.modal[role="dialog"]` + `.backdrop` | `ui/Modal.svelte` |
+| KPI card | `.kpi` / `.kpi-value` / `.kpi-label` | `ui/KpiCard.svelte` |
+| Status badge | `<StatusBadge>` | `ui/StatusBadge.svelte` |
 
-If you need a new pattern, add the component to `$lib/components/`
-and document it here. **Do not** invent a new class name for an
-existing pattern.
+(All Source paths are under `$lib/components/`.) If a shared style is
+missing, add it to `src/app.css` (class-scoped) — not a per-route
+`<style>`. If you need a brand-new pattern, add a component under
+`$lib/components/ui/` and document it here. **Do not** invent a new
+class name for an existing pattern, and **do not** re-introduce a
+per-route copy of the table/modal/chip/shell CSS.
 
 ## Conventions
 
