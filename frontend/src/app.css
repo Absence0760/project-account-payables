@@ -152,6 +152,11 @@ html, body {
 	border: 1px solid var(--border);
 	border-radius: 8px;
 	overflow-x: auto;
+	/* .workspace is flex-column; without these a wide table grows the card
+	   past the viewport and the page scrolls horizontally instead of the
+	   card scrolling internally. */
+	min-width: 0;
+	max-width: 100%;
 }
 .grid-container table {
 	width: 100%;
@@ -303,7 +308,6 @@ html, body {
 	justify-content: flex-end;
 	gap: 8px;
 	padding-top: 8px;
-	margin-top: 14px;
 	border-top: 1px solid var(--border);
 }
 .required {

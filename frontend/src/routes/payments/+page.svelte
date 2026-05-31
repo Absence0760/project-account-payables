@@ -14,17 +14,6 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 
-	const QUEUE_COLUMNS = [
-		{ class: 'checkbox-col' },
-		{ label: 'Invoice #' },
-		{ label: 'Vendor' },
-		{ label: 'Amount', class: 'right' },
-		{ label: 'Due Date' },
-		{ label: 'Discount' },
-		{ label: 'Terms' },
-		{ label: 'Status' }
-	];
-
 	const HISTORY_COLUMNS = [
 		{ label: 'Invoice #' },
 		{ label: 'Vendor' },
@@ -531,7 +520,6 @@
 		{/if}
 
 		<DataTable
-			columns={QUEUE_COLUMNS}
 			isEmpty={queue.length === 0}
 			empty="No invoices ready for payment."
 			colspan={8}
