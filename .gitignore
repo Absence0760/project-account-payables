@@ -189,6 +189,18 @@ frontend/blob-report/
 frontend/playwright/.cache/
 
 # ---------------------------------------------------------------------------
+# Persona audit reports
+# ---------------------------------------------------------------------------
+# `.claude/agents/persona-*.md` auditors write their findings here. The
+# reports are working notes (per-clone, often half-reconciled), never a
+# committed artifact — but the folder's README documents the convention,
+# so keep that one file tracked via the negation below. Glob the contents
+# (`/reviews/*`), not the directory (`/reviews/`) — git won't descend into an
+# ignored directory, so a directory-level ignore would defeat the negation.
+/reviews/*
+!/reviews/README.md
+
+# ---------------------------------------------------------------------------
 # IDE / editor / OS scratch files
 # ---------------------------------------------------------------------------
 .vscode/
