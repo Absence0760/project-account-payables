@@ -244,6 +244,12 @@ Prefer reading docs over guessing. Update them when behavior changes.
 1. **Update tests** — add or adjust coverage for behavior you touched. No tests exist yet — create them when adding new features.
 2. **Update docs** — if the change affects architecture, commands, env vars, deployment, or features, update the relevant doc (and this CLAUDE.md if setup or workflows changed).
 
+## Git workflow
+
+- **Commit each piece of work; never push.** Land every logical unit of work as its own path-scoped commit (`git commit -m "…" -- path/to/file …`) as you finish it — don't leave the tree dirty across tasks or batch unrelated changes into one commit. **Never `git push`** in this repo; publishing is the operator's call.
+- Path-scoped commits are also required by the `.claude/hooks/git-scope-guard.py` PreToolUse hook (concurrent sessions share one checkout) — bare `git commit`, `git add -A/.`, `git commit -a`, and whole-tree ops are blocked. If a git command is denied, follow the scoped alternative in its message.
+- No `Co-Authored-By` / "Generated with" trailer in commits or PRs — write them as a human would.
+
 ## Fix bugs at the source — never adjust the test to hide them
 
 When a test fails, the only acceptable resolution paths are:
