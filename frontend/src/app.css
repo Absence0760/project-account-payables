@@ -98,6 +98,12 @@ html, body {
 }
 
 /* --- Filter chips (FilterChips) --- */
+.filter-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+}
 .filters {
 	display: flex;
 	align-items: center;
@@ -131,6 +137,13 @@ html, body {
 .filter-chip .count {
 	font-size: 0.72rem;
 	opacity: 0.7;
+}
+.filter-chip .count.alert {
+	background: #e04040;
+	color: #fff;
+	padding: 0 5px;
+	border-radius: 8px;
+	opacity: 1;
 }
 
 /* --- Data table (DataTable) --- */

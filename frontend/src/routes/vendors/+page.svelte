@@ -2,7 +2,22 @@
 	import { api } from '$lib/api';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import FilterChips from '$lib/components/ui/FilterChips.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+
+	const COLUMNS = [
+		{ label: 'Vendor' },
+		{ label: 'Code' },
+		{ label: 'Email' },
+		{ label: 'Status' },
+		{ label: 'Source' },
+		{ label: 'Invoices' },
+		{ label: 'ERP' },
+		{ class: 'actions-col' }
+	];
 
 	interface BankDetails {
 		counterparty_id: string | null;
@@ -164,88 +179,68 @@
 	}
 
 	let unverifiedCount = $derived(vendors.filter(v => v.status === 'unverified').length);
+
+	let statusChips = $derived([
+		{ key: 'all', label: 'All', count: vendors.length },
+		{
+			key: 'unverified',
+			label: 'Unverified',
+			count: unverifiedCount > 0 ? unverifiedCount : undefined,
+			alert: true
+		},
+		{ key: 'active', label: 'Active' },
+		{ key: 'rejected', label: 'Rejected' }
+	]);
 </script>
 
-<div class="workspace">
-	<header class="toolbar">
-		<h1>Vendors</h1>
-		<div class="toolbar-actions">
-			<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
-				{syncing ? 'Syncing...' : 'Sync from ERP'}
-			</button>
-		</div>
-	</header>
+<PageHeader title="Vendors">
+	{#snippet actions()}
+		<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
+			{syncing ? 'Syncing...' : 'Sync from ERP'}
+		</button>
+	{/snippet}
 
 	<div class="filter-row">
 		<SearchBox bind:value={search} placeholder="Search vendors..." ariaLabel="Search vendors" />
-		<nav class="filters">
-			<button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>
-				All <span class="count">{vendors.length}</span>
-			</button>
-			<button class="filter-chip" class:active={statusFilter === 'unverified'} onclick={() => (statusFilter = 'unverified')}>
-				Unverified {#if unverifiedCount > 0}<span class="count alert">{unverifiedCount}</span>{/if}
-			</button>
-			<button class="filter-chip" class:active={statusFilter === 'active'} onclick={() => (statusFilter = 'active')}>
-				Active
-			</button>
-			<button class="filter-chip" class:active={statusFilter === 'rejected'} onclick={() => (statusFilter = 'rejected')}>
-				Rejected
-			</button>
-		</nav>
+		<FilterChips chips={statusChips} bind:active={statusFilter} />
 	</div>
 
-	<div class="grid-container">
-		<table>
-			<thead>
-				<tr>
-					<th>Vendor</th>
-					<th>Code</th>
-					<th>Email</th>
-					<th>Status</th>
-					<th>Source</th>
-					<th>Invoices</th>
-					<th>ERP</th>
-					<th></th>
+	<DataTable columns={COLUMNS} isEmpty={vendors.length === 0} empty="No vendors found.">
+		{#snippet body()}
+			{#each vendors as v (v.id)}
+				<tr class:unverified={v.status === 'unverified'} class:rejected={v.status === 'rejected'}>
+					<td class="vendor-name">{v.name}</td>
+					<td class="mono muted">{v.code ?? '—'}</td>
+					<td class="muted">{v.email ?? '—'}</td>
+					<td>
+						<span class="status-badge {v.status}">{STATUS_LABELS[v.status] ?? v.status}</span>
+					</td>
+					<td>
+						<span class="source-badge">{SOURCE_LABELS[v.source] ?? v.source}</span>
+					</td>
+					<td class="mono">{v.invoice_count}</td>
+					<td>
+						{#if v.erp_vendor_id}
+							<span class="erp-linked" title="Linked to ERP: {v.erp_vendor_id}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+							</span>
+						{:else}
+							<span class="muted">—</span>
+						{/if}
+					</td>
+					<td class="actions">
+						{#if v.status === 'unverified'}
+							<RowAction variant="success" onclick={() => verifyVendor(v.id)}>Verify</RowAction>
+							<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>Reject</RowAction>
+						{/if}
+						<RowAction onclick={() => openBankEditor(v)}>
+							{v.bank_details?.counterparty_id ? 'Bank ✓' : 'Bank'}
+						</RowAction>
+					</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each vendors as v (v.id)}
-					<tr class:unverified={v.status === 'unverified'} class:rejected={v.status === 'rejected'}>
-						<td class="vendor-name">{v.name}</td>
-						<td class="mono muted">{v.code ?? '—'}</td>
-						<td class="muted">{v.email ?? '—'}</td>
-						<td>
-							<span class="status-badge {v.status}">{STATUS_LABELS[v.status] ?? v.status}</span>
-						</td>
-						<td>
-							<span class="source-badge">{SOURCE_LABELS[v.source] ?? v.source}</span>
-						</td>
-						<td class="mono">{v.invoice_count}</td>
-						<td>
-							{#if v.erp_vendor_id}
-								<span class="erp-linked" title="Linked to ERP: {v.erp_vendor_id}">
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-								</span>
-							{:else}
-								<span class="muted">—</span>
-							{/if}
-						</td>
-						<td class="actions">
-							{#if v.status === 'unverified'}
-								<RowAction variant="success" onclick={() => verifyVendor(v.id)}>Verify</RowAction>
-								<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>Reject</RowAction>
-							{/if}
-							<RowAction onclick={() => openBankEditor(v)}>
-								{v.bank_details?.counterparty_id ? 'Bank ✓' : 'Bank'}
-							</RowAction>
-						</td>
-					</tr>
-				{:else}
-					<tr><td colspan="8" class="empty">No vendors found.</td></tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
+			{/each}
+		{/snippet}
+	</DataTable>
 
 	{#if hasMore}
 		<div class="load-more-row">
@@ -258,80 +253,53 @@
 			<span class="load-more-end">Showing all {total} vendor{total === 1 ? '' : 's'}</span>
 		</div>
 	{/if}
-</div>
+</PageHeader>
 
-{#if bankEditing}
-	<div
-		class="backdrop"
-		onclick={(e) => { if (e.target === e.currentTarget) (bankEditing = null); }}
-	>
-		<div class="modal" role="dialog" aria-label="Vendor bank counterparty">
-			<h2>{bankEditing.name} — bank details</h2>
-			<p class="modal-hint">
-				These values bridge to your payment processor (e.g. Modern Treasury). The
-				<code>counterparty_id</code> is the processor's identifier; the last4s are stored
-				here for display only — full account / routing numbers belong with the processor.
-			</p>
-			<form onsubmit={(e) => { e.preventDefault(); saveBankDetails(); }}>
+<Modal
+	open={bankEditing !== null}
+	ariaLabel="Vendor bank counterparty"
+	onclose={() => (bankEditing = null)}
+>
+	{#if bankEditing}
+		<h2>{bankEditing.name} — bank details</h2>
+		<p class="modal-hint">
+			These values bridge to your payment processor (e.g. Modern Treasury). The
+			<code>counterparty_id</code> is the processor's identifier; the last4s are stored
+			here for display only — full account / routing numbers belong with the processor.
+		</p>
+		<form onsubmit={(e) => { e.preventDefault(); saveBankDetails(); }}>
+			<label>
+				<span>Processor counterparty ID</span>
+				<input type="text" maxlength="255" bind:value={bankForm.counterparty_id} />
+			</label>
+			<label>
+				<span>Bank name</span>
+				<input type="text" maxlength="255" bind:value={bankForm.bank_name} />
+			</label>
+			<div class="form-row">
 				<label>
-					<span>Processor counterparty ID</span>
-					<input type="text" maxlength="255" bind:value={bankForm.counterparty_id} />
+					<span>Account last 4</span>
+					<input type="text" maxlength="4" bind:value={bankForm.account_last4} />
 				</label>
 				<label>
-					<span>Bank name</span>
-					<input type="text" maxlength="255" bind:value={bankForm.bank_name} />
+					<span>Routing last 4</span>
+					<input type="text" maxlength="4" bind:value={bankForm.routing_last4} />
 				</label>
-				<div class="form-row">
-					<label>
-						<span>Account last 4</span>
-						<input type="text" maxlength="4" bind:value={bankForm.account_last4} />
-					</label>
-					<label>
-						<span>Routing last 4</span>
-						<input type="text" maxlength="4" bind:value={bankForm.routing_last4} />
-					</label>
-				</div>
-				<div class="modal-footer">
-					<button type="button" class="btn-cancel" onclick={() => (bankEditing = null)}>
-						Cancel
-					</button>
-					<button type="submit" class="btn-primary" disabled={savingBank}>
-						{savingBank ? 'Saving…' : 'Save'}
-					</button>
-				</div>
-			</form>
-		</div>
-	</div>
-{/if}
+			</div>
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={() => (bankEditing = null)}>
+					Cancel
+				</button>
+				<button type="submit" class="btn-primary" disabled={savingBank}>
+					{savingBank ? 'Saving…' : 'Save'}
+				</button>
+			</div>
+		</form>
+	{/if}
+</Modal>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	h1 {
-		font-size: 1.3rem;
-		font-weight: 700;
-		margin: 0;
-	}
-
-	.toolbar-actions {
-		display: flex;
-		gap: 8px;
-	}
-
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	.btn-outline {
 		padding: 8px 18px;
 		border-radius: 6px;
@@ -344,147 +312,28 @@
 		font-family: inherit;
 		white-space: nowrap;
 	}
-
 	.btn-outline:hover:not(:disabled) {
 		border-color: var(--accent);
 		color: var(--accent);
 	}
-
 	.btn-outline:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
 
-	/* --- Filters --- */
-
-	.filter-row {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
-	}
-
-	.filters {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-
-	.filter-chip {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 14px;
-		border-radius: 20px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.15s;
-		font-family: inherit;
-	}
-
-	.filter-chip:hover {
-		border-color: var(--accent);
-		color: var(--text);
-	}
-
-	.filter-chip.active {
-		background: var(--accent);
-		color: #fff;
-		border-color: var(--accent);
-	}
-
-	.count {
-		font-size: 0.72rem;
-		opacity: 0.7;
-	}
-
-	.count.alert {
-		background: #e04040;
-		color: #fff;
-		padding: 0 5px;
-		border-radius: 8px;
-		opacity: 1;
-	}
-
-	/* --- Table --- */
-
-	.grid-container {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow-x: auto;
-		min-width: 0;
-		max-width: 100%;
-	}
-
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
-	}
-
-	th {
-		background: var(--bg);
-		text-align: left;
-		padding: 10px 14px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		border-bottom: 1px solid var(--border);
-		white-space: nowrap;
-	}
-
-	td {
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-		color: var(--text);
-		white-space: nowrap;
-	}
-
+	/* Row emphasis + bespoke cell badges */
 	tr:last-child td {
 		border-bottom: none;
 	}
-
-	tbody tr:hover {
-		background: rgba(99, 140, 255, 0.04);
-	}
-
 	.unverified {
 		background: rgba(212, 148, 10, 0.04);
 	}
-
 	.rejected td {
 		opacity: 0.5;
 	}
-
 	.vendor-name {
 		font-weight: 500;
 	}
-
-	.mono {
-		font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-		font-size: 0.82rem;
-	}
-
-	.muted {
-		color: var(--text-muted);
-	}
-
-	.empty {
-		text-align: center;
-		padding: 40px 14px;
-		color: var(--text-muted);
-	}
-
-	/* --- Badges --- */
-
 	.status-badge {
 		display: inline-block;
 		padding: 2px 8px;
@@ -492,27 +341,22 @@
 		font-size: 0.75rem;
 		font-weight: 500;
 	}
-
 	.status-badge.active {
 		background: rgba(31, 168, 106, 0.12);
 		color: #1fa86a;
 	}
-
 	.status-badge.unverified {
 		background: rgba(212, 148, 10, 0.12);
 		color: #d4940a;
 	}
-
 	.status-badge.inactive {
 		background: var(--bg);
 		color: var(--text-muted);
 	}
-
 	.status-badge.rejected {
 		background: rgba(224, 64, 64, 0.12);
 		color: #e04040;
 	}
-
 	.source-badge {
 		display: inline-block;
 		padding: 2px 8px;
@@ -522,170 +366,25 @@
 		background: var(--bg);
 		color: var(--text-muted);
 	}
-
 	.erp-linked {
 		color: #1fa86a;
 		display: inline-flex;
 	}
 
-	/* --- Actions --- */
-
-	.actions {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		white-space: nowrap;
-	}
-	.load-more-row {
-		display: flex;
-		justify-content: center;
-		padding: 8px 0 4px;
-	}
-	.btn-load-more {
-		padding: 8px 18px;
-		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.btn-load-more:hover:not(:disabled) {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-	.btn-load-more:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.load-more-end {
-		font-size: 0.78rem;
-		color: var(--text-muted);
-	}
-
-	/* --- Bank-counterparty modal --- */
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: grid;
-		place-items: center;
-		z-index: 100;
-		backdrop-filter: blur(2px);
-	}
-
-	.modal {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		width: min(480px, 92vw);
-		padding: 24px;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-	}
-
-	.modal h2 {
-		margin: 0 0 4px;
-		font-size: 1.05rem;
-		font-weight: 600;
-		color: var(--text);
-	}
-
-	.modal-hint {
-		font-size: 0.82rem;
-		color: var(--text-muted);
-		margin: 0 0 16px;
-	}
-
+	/* Bank-counterparty modal extras */
 	.modal-hint code {
 		font-family: 'SF Mono', 'Cascadia Code', monospace;
 		font-size: 0.78rem;
 		color: var(--text);
 	}
-
-	.modal form {
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-	}
-
-	.modal label {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.modal label span {
-		font-size: 0.72rem;
-		font-weight: 500;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-
-	.modal input {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 8px 10px;
-		font-size: 0.88rem;
-		color: var(--text);
-		font-family: inherit;
-	}
-
 	.modal input:focus {
 		outline: none;
 		border-color: var(--accent);
 		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
 	}
-
 	.form-row {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 12px;
-	}
-
-	.modal-footer {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-		padding-top: 8px;
-		border-top: 1px solid var(--border);
-	}
-
-	.btn-cancel,
-	.btn-primary {
-		padding: 8px 18px;
-		border-radius: 4px;
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-cancel {
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-	}
-
-	.btn-cancel:hover {
-		background: var(--bg);
-		color: var(--text);
-	}
-
-	.btn-primary {
-		border: 1px solid var(--accent);
-		background: var(--accent);
-		color: #fff;
-		font-weight: 500;
-	}
-
-	.btn-primary:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-
-	.btn-primary:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
 	}
 </style>

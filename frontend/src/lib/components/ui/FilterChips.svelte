@@ -4,6 +4,8 @@
 		label: string;
 		/** Optional count badge rendered in `.count`. Omit for label-only chips. */
 		count?: number | string;
+		/** Renders the count as a red attention badge (`.count.alert`). */
+		alert?: boolean;
 	};
 
 	type Props = {
@@ -30,7 +32,7 @@
 			type="button"
 			onclick={() => select(chip.key)}
 		>
-			{chip.label}{#if chip.count !== undefined}{' '}<span class="count">{chip.count}</span>{/if}
+			{chip.label}{#if chip.count !== undefined}{' '}<span class="count" class:alert={chip.alert}>{chip.count}</span>{/if}
 		</button>
 	{/each}
 </nav>
