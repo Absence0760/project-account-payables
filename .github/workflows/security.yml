@@ -70,6 +70,23 @@ jobs:
         with:
           category: '/language:javascript-typescript'
 
+  codeql-actions:
+    name: CodeQL (GitHub Actions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: github/codeql-action/init@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4
+        with:
+          # Scans every workflow under .github/workflows/ for
+          # untrusted-input → shell-injection sinks, unpinned action
+          # references, and other GHA-specific issues. Default suite, no
+          # `queries:` override — consistent with the CodeQL jobs above.
+          languages: actions
+      - uses: github/codeql-action/analyze@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4
+        with:
+          category: '/language:actions'
+
   trivy-backend-image:
     name: Trivy (backend container)
     runs-on: ubuntu-latest
