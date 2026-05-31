@@ -24,9 +24,11 @@ The repo root has a `package.json` with `pnpm` dispatch scripts that wrap each w
 pnpm install:all              # bootstrap all three workspaces
 pnpm db:up                    # docker compose up -d (Postgres/Redis/MinIO)
 pnpm seed                     # python scripts/seed.py
-pnpm dev:backend              # python main.py
+pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
+pnpm dev:all                  # db:up, then pnpm dev (whole web stack from cold)
+pnpm dev:backend              # python main.py (loads backend/.env first)
 pnpm dev:frontend             # vite dev on :7777
-pnpm dev:mobile               # flutter run
+pnpm dev:mobile               # flutter run (needs a device/emulator — not part of `pnpm dev`)
 pnpm lint                     # ruff + svelte-check + flutter analyze
 pnpm test                     # pytest + Playwright + flutter test
 pnpm migrate:all              # alembic upgrade head + migrate_all_tenants.py
