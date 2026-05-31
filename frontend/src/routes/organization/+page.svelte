@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 
 	interface CompanyProfile {
 		address: string;
@@ -596,11 +597,7 @@
 	};
 </script>
 
-<div class="workspace">
-	<header class="toolbar">
-		<h1>Organization</h1>
-	</header>
-
+<PageHeader title="Organization">
 	{#if org}
 		<div class="sections">
 			<section class="card">
@@ -1340,32 +1337,10 @@
 	{:else}
 		<div class="loading">Loading...</div>
 	{/if}
-</div>
+</PageHeader>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	h1 {
-		font-size: 1.3rem;
-		font-weight: 700;
-		margin: 0;
-	}
-
-
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	.sections {
 		display: flex;
 		flex-direction: column;
