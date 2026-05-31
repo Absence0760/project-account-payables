@@ -2,6 +2,8 @@
 	import { api } from '$lib/api';
 	import { STATUS_LABELS } from '$lib/types/invoice';
 	import type { InvoiceStatus } from '$lib/types/invoice';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 
 	interface DashboardData {
 		total_invoices: number;
@@ -88,34 +90,21 @@
 	);
 </script>
 
-<div class="dashboard">
-	<h1>Dashboard</h1>
-
+<PageHeader title="Dashboard">
 	{#if loading}
 		<p class="loading">Loading...</p>
 	{:else if data}
 		<!-- KPI Cards -->
 		<div class="kpi-row">
-			<div class="kpi">
-				<span class="kpi-value">{data.total_invoices}</span>
-				<span class="kpi-label">Invoices</span>
-			</div>
-			<div class="kpi">
-				<span class="kpi-value">{fmt(data.total_amount)}</span>
-				<span class="kpi-label">Total Amount</span>
-			</div>
-			<div class="kpi">
-				<span class="kpi-value">{fmt(data.total_paid)}</span>
-				<span class="kpi-label">Paid</span>
-			</div>
-			<div class="kpi">
-				<span class="kpi-value">{fmt(data.total_pending)}</span>
-				<span class="kpi-label">Pending</span>
-			</div>
-			<div class="kpi" class:highlight-green={data.touchless_rate >= 80}>
-				<span class="kpi-value">{data.touchless_rate}%</span>
-				<span class="kpi-label">Touchless Rate</span>
-			</div>
+			<KpiCard value={data.total_invoices} label="Invoices" />
+			<KpiCard value={fmt(data.total_amount)} label="Total Amount" />
+			<KpiCard value={fmt(data.total_paid)} label="Paid" />
+			<KpiCard value={fmt(data.total_pending)} label="Pending" />
+			<KpiCard
+				value={`${data.touchless_rate}%`}
+				label="Touchless Rate"
+				highlight={data.touchless_rate >= 80 ? 'green' : null}
+			/>
 			{#if data.open_exceptions > 0}
 				<a href="/exceptions" class="kpi highlight-red kpi-link">
 					<span class="kpi-value">{data.open_exceptions}</span>
@@ -123,16 +112,10 @@
 				</a>
 			{/if}
 			{#if data.stale_approvals > 0}
-				<div class="kpi highlight-red">
-					<span class="kpi-value">{data.stale_approvals}</span>
-					<span class="kpi-label">Stale Approvals</span>
-				</div>
+				<KpiCard value={data.stale_approvals} label="Stale Approvals" highlight="red" />
 			{/if}
 			{#if data.total_rebates > 0}
-				<div class="kpi highlight-green">
-					<span class="kpi-value">{fmt(data.total_rebates)}</span>
-					<span class="kpi-label">Rebates Earned</span>
-				</div>
+				<KpiCard value={fmt(data.total_rebates)} label="Rebates Earned" highlight="green" />
 			{/if}
 		</div>
 
@@ -263,21 +246,10 @@
 			{/if}
 		</div>
 	{/if}
-</div>
+</PageHeader>
 
 <style>
-	.dashboard {
-		padding: 24px 20px;
-		max-width: 1800px;
-		margin: 0 auto;
-	}
-
-	h1 {
-		margin: 0 0 20px;
-		font-size: 1.3rem;
-		font-weight: 700;
-	}
-
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	h2 {
 		margin: 0 0 14px;
 		font-size: 0.88rem;
@@ -296,44 +268,8 @@
 		padding: 20px;
 	}
 
-	/* KPI Row */
-	.kpi-row {
-		display: flex;
-		gap: 12px;
-		flex-wrap: wrap;
-		margin-bottom: 20px;
-	}
-
-	.kpi {
-		flex: 1;
-		min-width: 130px;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		padding: 16px 18px;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.kpi.highlight-green {
-		border-color: rgba(31, 168, 106, 0.3);
-		background: rgba(31, 168, 106, 0.04);
-	}
-
-	.kpi.highlight-green .kpi-value {
-		color: #1fa86a;
-	}
-
-	.kpi.highlight-red {
-		border-color: rgba(224, 64, 64, 0.3);
-		background: rgba(224, 64, 64, 0.04);
-	}
-
-	.kpi.highlight-red .kpi-value {
-		color: #e04040;
-	}
-
+	/* Exceptions KPI renders as a link, so it stays inline markup using the
+	   global .kpi classes plus this bespoke hover affordance. */
 	.kpi-link {
 		text-decoration: none;
 		cursor: pointer;
@@ -343,20 +279,6 @@
 	.kpi-link:hover {
 		transform: translateY(-2px);
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-	}
-
-	.kpi-value {
-		font-size: 1.4rem;
-		font-weight: 700;
-		color: var(--text);
-	}
-
-	.kpi-label {
-		font-size: 0.72rem;
-		font-weight: 500;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
 	}
 
 	/* Charts Grid */
@@ -646,10 +568,6 @@
 
 		.kpi-row {
 			flex-direction: column;
-		}
-
-		.kpi {
-			min-width: unset;
 		}
 	}
 </style>
