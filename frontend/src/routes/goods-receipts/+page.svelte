@@ -1,6 +1,18 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+
+	const COLUMNS = [
+		{ label: 'GR #' },
+		{ label: 'PO' },
+		{ label: 'Received' },
+		{ label: 'Status' },
+		{ label: 'Lines' },
+		{ label: 'Created' }
+	];
 
 	interface GRLine {
 		id: string;
@@ -101,39 +113,26 @@
 	let hasMore = $derived(grs.length < total);
 </script>
 
-<div class="workspace">
-	<header class="toolbar">
-		<h1>Goods Receipts</h1>
-	</header>
-
-	<div class="grid-container">
-		<table>
-			<thead>
-				<tr>
-					<th>GR #</th>
-					<th>PO</th>
-					<th>Received</th>
-					<th>Status</th>
-					<th>Lines</th>
-					<th>Created</th>
+<PageHeader title="Goods Receipts">
+	<DataTable
+		columns={COLUMNS}
+		isEmpty={grs.length === 0}
+		empty={loading ? 'Loading…' : 'No goods receipts.'}
+		colspan={6}
+	>
+		{#snippet body()}
+			{#each grs as gr (gr.id)}
+				<tr class="clickable" onclick={() => (detailId = gr.id)}>
+					<td class="mono">{gr.gr_number}</td>
+					<td class="mono">{gr.po_number ?? '—'}</td>
+					<td>{formatDate(gr.received_date)}</td>
+					<td><span class="badge {gr.status}">{gr.status}</span></td>
+					<td class="muted">{gr.line_count}</td>
+					<td class="muted">{formatDate(gr.created_at)}</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each grs as gr (gr.id)}
-					<tr class="clickable" onclick={() => (detailId = gr.id)}>
-						<td class="mono">{gr.gr_number}</td>
-						<td class="mono">{gr.po_number ?? '—'}</td>
-						<td>{formatDate(gr.received_date)}</td>
-						<td><span class="badge {gr.status}">{gr.status}</span></td>
-						<td class="muted">{gr.line_count}</td>
-						<td class="muted">{formatDate(gr.created_at)}</td>
-					</tr>
-				{:else}
-					<tr><td colspan="6" class="empty">{loading ? 'Loading…' : 'No goods receipts.'}</td></tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
+			{/each}
+		{/snippet}
+	</DataTable>
 
 	{#if hasMore}
 		<div class="load-more-row">
@@ -146,122 +145,58 @@
 			<span class="load-more-end">Showing all {total} goods receipt{total === 1 ? '' : 's'}</span>
 		</div>
 	{/if}
-</div>
+</PageHeader>
 
-{#if detailId}
-	<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) detailId = null; }}>
-		<div class="modal" role="dialog" aria-label="Goods receipt">
-			<header class="modal-header">
-				<div class="title-block">
-					<h2>Goods Receipt</h2>
-					{#if detail}
-						<span class="num-badge">{detail.gr_number}</span>
-						<span class="badge {detail.status}">{detail.status}</span>
-					{/if}
-				</div>
-				<button class="close-btn" onclick={() => (detailId = null)} aria-label="Close">&times;</button>
-			</header>
-
-			<div class="modal-body">
-				{#if detailLoading}
-					<div class="loading">Loading…</div>
-				{:else if detail}
-					<dl class="meta">
-						<dt>PO</dt><dd class="mono">{detail.po_number ?? '—'}</dd>
-						<dt>Received</dt><dd>{formatDate(detail.received_date)}</dd>
-					</dl>
-
-					<h3>Line Items Received</h3>
-					<table class="line-table">
-						<thead>
-							<tr>
-								<th>Description</th>
-								<th class="right">Quantity Received</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each detail.line_items as li (li.id)}
-								<tr>
-									<td>{li.description ?? '—'}</td>
-									<td class="right mono">{li.quantity_received ?? '—'}</td>
-								</tr>
-							{:else}
-								<tr><td colspan="2" class="empty">No line items.</td></tr>
-							{/each}
-						</tbody>
-					</table>
+<Modal open={detailId !== null} ariaLabel="Goods receipt" onclose={() => (detailId = null)}>
+	{#snippet header()}
+		<header class="modal-header">
+			<div class="title-block">
+				<h2>Goods Receipt</h2>
+				{#if detail}
+					<span class="num-badge">{detail.gr_number}</span>
+					<span class="badge {detail.status}">{detail.status}</span>
 				{/if}
 			</div>
-		</div>
+			<button class="close-btn" onclick={() => (detailId = null)} aria-label="Close">&times;</button>
+		</header>
+	{/snippet}
+
+	<div class="modal-body">
+		{#if detailLoading}
+			<div class="loading">Loading…</div>
+		{:else if detail}
+			<dl class="meta">
+				<dt>PO</dt><dd class="mono">{detail.po_number ?? '—'}</dd>
+				<dt>Received</dt><dd>{formatDate(detail.received_date)}</dd>
+			</dl>
+
+			<h3>Line Items Received</h3>
+			<table class="line-table">
+				<thead>
+					<tr>
+						<th>Description</th>
+						<th class="right">Quantity Received</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each detail.line_items as li (li.id)}
+						<tr>
+							<td>{li.description ?? '—'}</td>
+							<td class="right mono">{li.quantity_received ?? '—'}</td>
+						</tr>
+					{:else}
+						<tr><td colspan="2" class="empty">No line items.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
 	</div>
-{/if}
+</Modal>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-	h1 {
-		font-size: 1.3rem;
-		font-weight: 700;
-		margin: 0;
-	}
-	.grid-container {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow-x: auto;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
-	}
-	th {
-		background: var(--bg);
-		text-align: left;
-		padding: 10px 14px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		color: var(--text-muted);
-		border-bottom: 1px solid var(--border);
-	}
-	td {
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-	}
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	tr.clickable {
 		cursor: pointer;
-	}
-	tr.clickable:hover {
-		background: rgba(99, 140, 255, 0.04);
-	}
-	.mono {
-		font-family: 'SF Mono', 'Cascadia Code', monospace;
-		font-size: 0.82rem;
-	}
-	.right {
-		text-align: right;
-	}
-	.muted {
-		color: var(--text-muted);
-	}
-	.empty {
-		text-align: center;
-		padding: 40px;
-		color: var(--text-muted);
 	}
 	.badge {
 		display: inline-block;
@@ -273,65 +208,22 @@
 		background: rgba(31, 168, 106, 0.15);
 		color: #1fa86a;
 	}
-	.load-more-row {
-		display: flex;
-		justify-content: center;
-		padding: 8px 0 4px;
-	}
-	.btn-load-more {
-		padding: 8px 18px;
-		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.btn-load-more:hover:not(:disabled) {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-	.btn-load-more:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.load-more-end {
-		font-size: 0.78rem;
-		color: var(--text-muted);
-	}
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: grid;
-		place-items: center;
-		z-index: 100;
-		backdrop-filter: blur(2px);
-	}
-	.modal {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		width: min(640px, 95vw);
-		max-height: 90vh;
-		display: flex;
-		flex-direction: column;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-	}
+
+	/* Detail modal — bespoke header / body layout not covered by the shared modal CSS. */
 	.modal-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		padding: 16px 20px;
 		border-bottom: 1px solid var(--border);
+		margin: -24px -24px 0;
 	}
 	.title-block {
 		display: flex;
 		align-items: center;
 		gap: 12px;
 	}
-	.modal h2 {
+	.modal-header h2 {
 		margin: 0;
 		font-size: 1.1rem;
 		font-weight: 600;
@@ -354,11 +246,10 @@
 		color: var(--text);
 	}
 	.modal-body {
-		padding: 20px;
+		padding: 20px 0 0;
 		overflow-y: auto;
-		flex: 1;
 	}
-	.modal h3 {
+	.modal-body h3 {
 		margin: 18px 0 8px;
 		font-size: 0.85rem;
 		font-weight: 600;
@@ -386,14 +277,34 @@
 		font-size: 0.9rem;
 	}
 	.line-table {
+		width: 100%;
+		border-collapse: collapse;
 		font-size: 0.85rem;
 	}
 	.line-table th {
+		text-align: left;
 		padding: 6px 10px;
 		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		border-bottom: 1px solid var(--border);
 	}
 	.line-table td {
 		padding: 6px 10px;
+		border-bottom: 1px solid var(--border);
+	}
+	.line-table .mono {
+		font-family: 'SF Mono', 'Cascadia Code', monospace;
+		font-size: 0.82rem;
+	}
+	.line-table .right {
+		text-align: right;
+	}
+	.line-table .empty {
+		text-align: center;
+		padding: 40px;
+		color: var(--text-muted);
 	}
 	.loading {
 		padding: 40px;
