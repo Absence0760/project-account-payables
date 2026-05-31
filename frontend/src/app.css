@@ -183,14 +183,12 @@ html, body {
 	gap: 6px;
 	white-space: nowrap;
 }
-.grid-container td.mono,
 .grid-container td.muted {
 	color: var(--text-muted);
 }
 .grid-container td.mono {
 	font-family: 'SF Mono', 'Cascadia Code', monospace;
 	font-size: 0.82rem;
-	color: var(--text);
 }
 
 /* --- Load-more pagination --- */

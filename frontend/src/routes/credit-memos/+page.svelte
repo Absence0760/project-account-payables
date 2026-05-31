@@ -1,7 +1,28 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import FilterChips from '$lib/components/ui/FilterChips.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+
+	const STATUS_CHIPS = [
+		{ key: 'all', label: 'All' },
+		{ key: 'open', label: 'Open' },
+		{ key: 'applied', label: 'Applied' },
+		{ key: 'void', label: 'Void' }
+	];
+
+	const COLUMNS = [
+		{ label: 'Memo #' },
+		{ label: 'Vendor' },
+		{ label: 'Amount', class: 'right' },
+		{ label: 'Issued' },
+		{ label: 'Applied To' },
+		{ label: 'Status' },
+		{ class: 'actions-col' }
+	];
 
 	interface CreditMemo {
 		id: string;
@@ -184,56 +205,37 @@
 	});
 </script>
 
-<div class="workspace">
-	<header class="toolbar">
-		<h1>Credit Memos</h1>
+<PageHeader title="Credit Memos">
+	{#snippet actions()}
 		<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Credit Memo</button>
-	</header>
+	{/snippet}
 
-	<div class="filter-row">
-		<nav class="filters">
-			<button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>All</button>
-			<button class="filter-chip" class:active={statusFilter === 'open'} onclick={() => (statusFilter = 'open')}>Open</button>
-			<button class="filter-chip" class:active={statusFilter === 'applied'} onclick={() => (statusFilter = 'applied')}>Applied</button>
-			<button class="filter-chip" class:active={statusFilter === 'void'} onclick={() => (statusFilter = 'void')}>Void</button>
-		</nav>
-	</div>
+	<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 
-	<div class="grid-container">
-		<table>
-			<thead>
-				<tr>
-					<th>Memo #</th>
-					<th>Vendor</th>
-					<th class="right">Amount</th>
-					<th>Issued</th>
-					<th>Applied To</th>
-					<th>Status</th>
-					<th></th>
+	<DataTable
+		columns={COLUMNS}
+		isEmpty={memos.length === 0}
+		empty={loading ? 'Loading…' : 'No credit memos.'}
+	>
+		{#snippet body()}
+			{#each memos as memo (memo.id)}
+				<tr class:applied={memo.status === 'applied'} class:void={memo.status === 'void'}>
+					<td class="mono">{memo.memo_number}</td>
+					<td>{memo.vendor_name ?? '—'}</td>
+					<td class="right mono">{formatCurrency(memo.amount, memo.currency)}</td>
+					<td class="muted">{formatDate(memo.issued_date)}</td>
+					<td class="mono muted">{memo.invoice_number ?? '—'}</td>
+					<td><span class="badge {memo.status}">{memo.status}</span></td>
+					<td class="actions">
+						{#if memo.status === 'open'}
+							<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>Apply</RowAction>
+							<RowAction variant="danger" onclick={() => handleVoid(memo.id)}>Void</RowAction>
+						{/if}
+					</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each memos as memo (memo.id)}
-					<tr class:applied={memo.status === 'applied'} class:void={memo.status === 'void'}>
-						<td class="mono">{memo.memo_number}</td>
-						<td>{memo.vendor_name ?? '—'}</td>
-						<td class="right mono">{formatCurrency(memo.amount, memo.currency)}</td>
-						<td class="muted">{formatDate(memo.issued_date)}</td>
-						<td class="mono muted">{memo.invoice_number ?? '—'}</td>
-						<td><span class="badge {memo.status}">{memo.status}</span></td>
-						<td class="actions">
-							{#if memo.status === 'open'}
-								<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>Apply</RowAction>
-								<RowAction variant="danger" onclick={() => handleVoid(memo.id)}>Void</RowAction>
-							{/if}
-						</td>
-					</tr>
-				{:else}
-					<tr><td colspan="7" class="empty">{loading ? 'Loading…' : 'No credit memos.'}</td></tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
+			{/each}
+		{/snippet}
+	</DataTable>
 
 	{#if hasMore}
 		<div class="load-more-row">
@@ -246,183 +248,74 @@
 			<span class="load-more-end">Showing all {total} credit memo{total === 1 ? '' : 's'}</span>
 		</div>
 	{/if}
-</div>
+</PageHeader>
 
-{#if showCreate}
-	<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) showCreate = false; }}>
-		<div class="modal" role="dialog" aria-label="New credit memo">
-			<h2>New Credit Memo</h2>
-			<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
-				<label>
-					<span>Memo Number <em class="required">*</em></span>
-					<input type="text" bind:value={newMemoNumber} required />
-				</label>
-				<label>
-					<span>Vendor <em class="required">*</em></span>
-					<select bind:value={newVendorId} required>
-						<option value="">Select vendor…</option>
-						{#each vendors as v}
-							<option value={v.id}>{v.name}</option>
-						{/each}
-					</select>
-				</label>
-				<label>
-					<span>Amount <em class="required">*</em></span>
-					<input type="number" min="0.01" step="0.01" bind:value={newAmount} required />
-				</label>
-				<label>
-					<span>Reason</span>
-					<textarea bind:value={newReason} rows="2" placeholder="e.g. Returned defective goods"></textarea>
-				</label>
-				<div class="modal-footer">
-					<button type="button" class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
-					<button type="submit" class="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
-				</div>
-			</form>
+<Modal
+	open={showCreate}
+	ariaLabel="New credit memo"
+	title="New Credit Memo"
+	width="sm"
+	onclose={() => (showCreate = false)}
+>
+	<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
+		<label>
+			<span>Memo Number <em class="required">*</em></span>
+			<input type="text" bind:value={newMemoNumber} required />
+		</label>
+		<label>
+			<span>Vendor <em class="required">*</em></span>
+			<select bind:value={newVendorId} required>
+				<option value="">Select vendor…</option>
+				{#each vendors as v}
+					<option value={v.id}>{v.name}</option>
+				{/each}
+			</select>
+		</label>
+		<label>
+			<span>Amount <em class="required">*</em></span>
+			<input type="number" min="0.01" step="0.01" bind:value={newAmount} required />
+		</label>
+		<label>
+			<span>Reason</span>
+			<textarea bind:value={newReason} rows="2" placeholder="e.g. Returned defective goods"></textarea>
+		</label>
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
+			<button type="submit" class="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
 		</div>
-	</div>
-{/if}
+	</form>
+</Modal>
 
-{#if applyTargetId}
-	<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) applyTargetId = null; }}>
-		<div class="modal" role="dialog" aria-label="Apply credit memo">
-			<h2>Apply Credit Memo</h2>
-			<p class="modal-hint">Pick an invoice to apply this credit to.</p>
-			<form onsubmit={(e) => { e.preventDefault(); handleApply(); }}>
-				<label>
-					<span>Invoice <em class="required">*</em></span>
-					<select bind:value={applyInvoiceId} required>
-						<option value="">Select invoice…</option>
-						{#each invoicesForVendor as inv}
-							<option value={inv.id}>{inv.invoice_number} — {inv.vendor}</option>
-						{/each}
-					</select>
-				</label>
-				<div class="modal-footer">
-					<button type="button" class="btn-cancel" onclick={() => (applyTargetId = null)}>Cancel</button>
-					<button type="submit" class="btn-primary" disabled={applying}>{applying ? 'Applying…' : 'Apply'}</button>
-				</div>
-			</form>
+<Modal
+	open={applyTargetId !== null}
+	ariaLabel="Apply credit memo"
+	title="Apply Credit Memo"
+	width="sm"
+	onclose={() => (applyTargetId = null)}
+>
+	<p class="modal-hint">Pick an invoice to apply this credit to.</p>
+	<form onsubmit={(e) => { e.preventDefault(); handleApply(); }}>
+		<label>
+			<span>Invoice <em class="required">*</em></span>
+			<select bind:value={applyInvoiceId} required>
+				<option value="">Select invoice…</option>
+				{#each invoicesForVendor as inv}
+					<option value={inv.id}>{inv.invoice_number} — {inv.vendor}</option>
+				{/each}
+			</select>
+		</label>
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={() => (applyTargetId = null)}>Cancel</button>
+			<button type="submit" class="btn-primary" disabled={applying}>{applying ? 'Applying…' : 'Apply'}</button>
 		</div>
-	</div>
-{/if}
+	</form>
+</Modal>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-	h1 {
-		font-size: 1.3rem;
-		font-weight: 700;
-		margin: 0;
-	}
-	.btn-primary {
-		padding: 8px 18px;
-		border-radius: 6px;
-		border: none;
-		background: var(--accent);
-		color: #fff;
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.btn-primary:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.filter-row {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
-	}
-	.filters {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-	.filter-chip {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 14px;
-		border-radius: 20px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.15s;
-		font-family: inherit;
-	}
-	.filter-chip:hover {
-		border-color: var(--accent);
-		color: var(--text);
-	}
-	.filter-chip.active {
-		background: var(--accent);
-		color: #fff;
-		border-color: var(--accent);
-	}
-	.grid-container {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow-x: auto;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
-	}
-	th {
-		background: var(--bg);
-		text-align: left;
-		padding: 10px 14px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		color: var(--text-muted);
-		border-bottom: 1px solid var(--border);
-	}
-	td {
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-	}
+	/* Page-specific bits not covered by the global design-system CSS in app.css. */
 	tr.applied td,
 	tr.void td {
 		opacity: 0.6;
-	}
-	.mono {
-		font-family: 'SF Mono', 'Cascadia Code', monospace;
-		font-size: 0.82rem;
-	}
-	.right {
-		text-align: right;
-	}
-	.muted {
-		color: var(--text-muted);
-	}
-	.empty {
-		text-align: center;
-		padding: 40px;
-		color: var(--text-muted);
 	}
 	.badge {
 		display: inline-block;
@@ -442,114 +335,6 @@
 	}
 	.badge.void {
 		background: var(--bg);
-		color: var(--text-muted);
-	}
-	.actions {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		white-space: nowrap;
-	}
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: grid;
-		place-items: center;
-		z-index: 100;
-		backdrop-filter: blur(2px);
-	}
-	.modal {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		width: min(440px, 92vw);
-		padding: 24px;
-	}
-	.modal h2 {
-		margin: 0 0 4px;
-		font-size: 1.1rem;
-		font-weight: 600;
-	}
-	.modal-hint {
-		font-size: 0.82rem;
-		color: var(--text-muted);
-		margin: 0 0 16px;
-	}
-	.modal form {
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-	}
-	.modal label {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-	.modal label span {
-		font-size: 0.78rem;
-		font-weight: 500;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.modal input,
-	.modal select,
-	.modal textarea {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 8px 10px;
-		font-size: 0.88rem;
-		color: var(--text);
-		font-family: inherit;
-	}
-	.modal-footer {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-		padding-top: 8px;
-		border-top: 1px solid var(--border);
-	}
-	.btn-cancel {
-		padding: 8px 18px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.required {
-		color: #e04040;
-		font-style: normal;
-	}
-	.load-more-row {
-		display: flex;
-		justify-content: center;
-		padding: 8px 0 4px;
-	}
-	.btn-load-more {
-		padding: 8px 18px;
-		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.btn-load-more:hover:not(:disabled) {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-	.btn-load-more:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.load-more-end {
-		font-size: 0.78rem;
 		color: var(--text-muted);
 	}
 </style>
