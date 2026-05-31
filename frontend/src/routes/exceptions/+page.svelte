@@ -3,6 +3,10 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import FilterChips from '$lib/components/ui/FilterChips.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 
 	interface ExceptionItem {
 		id: string;
@@ -225,51 +229,47 @@
 		if (hours < 24) return `in ${hours}h`;
 		return `in ${Math.round(hours / 24)}d`;
 	}
+
+	const COLUMNS = [
+		{ class: 'checkbox-col' },
+		{ label: 'Type' },
+		{ label: 'Sev' },
+		{ label: 'Invoice' },
+		{ label: 'Vendor' },
+		{ label: 'Amount', class: 'right' },
+		{ label: 'Assignee' },
+		{ label: 'Age' },
+		{ label: 'Due' },
+		{ label: 'Status' },
+		{ class: 'actions-col' }
+	];
+
+	let statusChips = $derived(
+		summary
+			? [
+					{
+						key: 'all',
+						label: 'All',
+						count: summary.open + summary.escalated + summary.resolved + summary.dismissed
+					},
+					{ key: 'open', label: 'Open', count: summary.open },
+					{ key: 'escalated', label: 'Escalated', count: summary.escalated },
+					{ key: 'resolved', label: 'Resolved', count: summary.resolved },
+					{ key: 'dismissed', label: 'Dismissed', count: summary.dismissed }
+				]
+			: []
+	);
+
+	let emptyMessage = $derived(
+		statusFilter === 'open'
+			? 'No open exceptions. Everything looks good!'
+			: 'No exceptions found.'
+	);
 </script>
 
-<div class="workspace">
-	<header class="toolbar">
-		<h1>Exceptions</h1>
-	</header>
-
+<PageHeader title="Exceptions">
 	{#if summary}
-		<nav class="filters">
-			<button
-				class="filter-chip"
-				class:active={statusFilter === 'all'}
-				onclick={() => (statusFilter = 'all')}
-			>
-				All <span class="count">{summary.open + summary.escalated + summary.resolved + summary.dismissed}</span>
-			</button>
-			<button
-				class="filter-chip"
-				class:active={statusFilter === 'open'}
-				onclick={() => (statusFilter = 'open')}
-			>
-				Open <span class="count">{summary.open}</span>
-			</button>
-			<button
-				class="filter-chip"
-				class:active={statusFilter === 'escalated'}
-				onclick={() => (statusFilter = 'escalated')}
-			>
-				Escalated <span class="count">{summary.escalated}</span>
-			</button>
-			<button
-				class="filter-chip"
-				class:active={statusFilter === 'resolved'}
-				onclick={() => (statusFilter = 'resolved')}
-			>
-				Resolved <span class="count">{summary.resolved}</span>
-			</button>
-			<button
-				class="filter-chip"
-				class:active={statusFilter === 'dismissed'}
-				onclick={() => (statusFilter = 'dismissed')}
-			>
-				Dismissed <span class="count">{summary.dismissed}</span>
-			</button>
-		</nav>
+		<FilterChips chips={statusChips} bind:active={statusFilter} />
 
 		{#if Object.keys(summary.by_type).length > 0}
 			<nav class="type-filters">
@@ -303,270 +303,195 @@
 		{/snippet}
 	</BulkBar>
 
-	<div class="grid-container">
-		<table>
-			<thead>
-				<tr>
-					<th class="checkbox-col">
-						<input
-							type="checkbox"
-							checked={allSelected}
-							onchange={toggleSelectAll}
-							aria-label="Select all selectable exceptions"
-						/>
-					</th>
-					<th>Type</th>
-					<th>Sev</th>
-					<th>Invoice</th>
-					<th>Vendor</th>
-					<th class="right">Amount</th>
-					<th>Assignee</th>
-					<th>Age</th>
-					<th>Due</th>
-					<th>Status</th>
-					<th class="actions-col"></th>
+	<DataTable columns={COLUMNS} isEmpty={exceptions.length === 0} empty={emptyMessage} colspan={11}>
+		{#snippet header()}
+			<tr>
+				<th class="checkbox-col">
+					<input
+						type="checkbox"
+						checked={allSelected}
+						onchange={toggleSelectAll}
+						aria-label="Select all selectable exceptions"
+					/>
+				</th>
+				<th>Type</th>
+				<th>Sev</th>
+				<th>Invoice</th>
+				<th>Vendor</th>
+				<th class="right">Amount</th>
+				<th>Assignee</th>
+				<th>Age</th>
+				<th>Due</th>
+				<th>Status</th>
+				<th class="actions-col"></th>
+			</tr>
+		{/snippet}
+		{#snippet body()}
+			{#each exceptions as exc (exc.id)}
+				<tr
+					class:row-selected={selectedIds.has(exc.id)}
+					class:resolved={exc.status === 'resolved' || exc.status === 'dismissed'}
+				>
+					<td class="checkbox-col">
+						{#if selectableIds.has(exc.id)}
+							<input
+								type="checkbox"
+								checked={selectedIds.has(exc.id)}
+								onchange={() => toggleSelect(exc.id)}
+								aria-label="Select exception"
+							/>
+						{/if}
+					</td>
+					<td>
+						<span
+							class="type-badge"
+							style="background:{TYPE_COLORS[exc.exception_type] ?? '#888'}1f;color:{TYPE_COLORS[exc.exception_type] ?? '#888'}"
+							title={exc.description ?? ''}
+						>
+							{exc.type_label}
+						</span>
+					</td>
+					<td>
+						<span
+							class="severity"
+							style="color:{SEVERITY_COLORS[exc.severity] ?? '#888'}"
+						>
+							{exc.severity}
+						</span>
+					</td>
+					<td class="mono">{exc.invoice_number ?? '—'}</td>
+					<td class="muted-cell">{exc.vendor_name ?? '—'}</td>
+					<td class="mono right">{formatCurrency(exc.amount)}</td>
+					<td class="muted-cell">{exc.assigned_to ?? '—'}</td>
+					<td class="muted-cell" title={exc.created_at}>{timeAgo(exc.created_at)}</td>
+					<td class="muted-cell" class:overdue={exc.is_overdue}>
+						{dueLabel(exc)}
+					</td>
+					<td>
+						<span class="status-badge badge-{exc.status}">{exc.status}</span>
+					</td>
+					<td class="actions">
+						{#if exc.status === 'open' || exc.status === 'escalated'}
+							<RowAction onclick={() => openResolve(exc)}>Resolve</RowAction>
+							<RowAction href="/invoices?id={exc.invoice_id}">Invoice</RowAction>
+						{:else}
+							<RowAction href="/invoices?id={exc.invoice_id}">Invoice</RowAction>
+						{/if}
+					</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each exceptions as exc (exc.id)}
-					<tr
-						class:row-selected={selectedIds.has(exc.id)}
-						class:resolved={exc.status === 'resolved' || exc.status === 'dismissed'}
-					>
-						<td class="checkbox-col">
-							{#if selectableIds.has(exc.id)}
-								<input
-									type="checkbox"
-									checked={selectedIds.has(exc.id)}
-									onchange={() => toggleSelect(exc.id)}
-									aria-label="Select exception"
-								/>
-							{/if}
-						</td>
-						<td>
-							<span
-								class="type-badge"
-								style="background:{TYPE_COLORS[exc.exception_type] ?? '#888'}1f;color:{TYPE_COLORS[exc.exception_type] ?? '#888'}"
-								title={exc.description ?? ''}
-							>
-								{exc.type_label}
-							</span>
-						</td>
-						<td>
-							<span
-								class="severity"
-								style="color:{SEVERITY_COLORS[exc.severity] ?? '#888'}"
-							>
-								{exc.severity}
-							</span>
-						</td>
-						<td class="mono">{exc.invoice_number ?? '—'}</td>
-						<td class="muted-cell">{exc.vendor_name ?? '—'}</td>
-						<td class="mono right">{formatCurrency(exc.amount)}</td>
-						<td class="muted-cell">{exc.assigned_to ?? '—'}</td>
-						<td class="muted-cell" title={exc.created_at}>{timeAgo(exc.created_at)}</td>
-						<td class="muted-cell" class:overdue={exc.is_overdue}>
-							{dueLabel(exc)}
-						</td>
-						<td>
-							<span class="status-badge badge-{exc.status}">{exc.status}</span>
-						</td>
-						<td class="actions">
-							{#if exc.status === 'open' || exc.status === 'escalated'}
-								<RowAction onclick={() => openResolve(exc)}>Resolve</RowAction>
-								<RowAction href="/invoices?id={exc.invoice_id}">Invoice</RowAction>
-							{:else}
-								<RowAction href="/invoices?id={exc.invoice_id}">Invoice</RowAction>
-							{/if}
-						</td>
-					</tr>
-				{:else}
-					<tr>
-						<td colspan="11" class="empty">
-							{#if statusFilter === 'open'}
-								No open exceptions. Everything looks good!
-							{:else}
-								No exceptions found.
-							{/if}
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
-</div>
+			{/each}
+		{/snippet}
+	</DataTable>
+</PageHeader>
 
 <!-- Single-row resolve modal -->
-{#if resolveTarget}
-	<div
-		class="backdrop"
-		onclick={(e) => { if (e.target === e.currentTarget) (resolveTarget = null); }}
-	>
-		<div class="modal" role="dialog" aria-label="Resolve exception">
-			<h2>Resolve exception</h2>
-			<p class="modal-hint">
-				<strong>{resolveTarget.type_label}</strong>
-				{#if resolveTarget.invoice_number}— {resolveTarget.invoice_number}{/if}
-				{#if resolveTarget.vendor_name}· {resolveTarget.vendor_name}{/if}
-			</p>
-			{#if resolveTarget.description}
-				<p class="modal-description">{resolveTarget.description}</p>
-			{/if}
-			<form onsubmit={(e) => { e.preventDefault(); commitResolve('resolve'); }}>
-				<label>
-					<span>Resolution note</span>
-					<input
-						type="text"
-						bind:value={resolutionText}
-						placeholder="What did you do?"
-						maxlength="500"
-						autofocus
-					/>
-				</label>
-				<div class="modal-footer">
-					<button type="button" class="btn-cancel" onclick={() => (resolveTarget = null)}>
-						Cancel
-					</button>
-					<button
-						type="button"
-						class="btn-secondary"
-						disabled={saving}
-						onclick={() => commitResolve('dismiss')}
-					>
-						Dismiss
-					</button>
-					<button
-						type="button"
-						class="btn-warning"
-						disabled={saving || !resolutionText.trim()}
-						onclick={() => commitResolve('escalate')}
-					>
-						Escalate
-					</button>
-					<button type="submit" class="btn-primary" disabled={saving || !resolutionText.trim()}>
-						{saving ? 'Saving…' : 'Resolve'}
-					</button>
-				</div>
-			</form>
-		</div>
-	</div>
-{/if}
+<Modal
+	open={resolveTarget !== null}
+	ariaLabel="Resolve exception"
+	width="sm"
+	onclose={() => (resolveTarget = null)}
+>
+	{#if resolveTarget}
+		<h2>Resolve exception</h2>
+		<p class="modal-hint">
+			<strong>{resolveTarget.type_label}</strong>
+			{#if resolveTarget.invoice_number}— {resolveTarget.invoice_number}{/if}
+			{#if resolveTarget.vendor_name}· {resolveTarget.vendor_name}{/if}
+		</p>
+		{#if resolveTarget.description}
+			<p class="modal-description">{resolveTarget.description}</p>
+		{/if}
+		<form onsubmit={(e) => { e.preventDefault(); commitResolve('resolve'); }}>
+			<label>
+				<span>Resolution note</span>
+				<input
+					type="text"
+					bind:value={resolutionText}
+					placeholder="What did you do?"
+					maxlength="500"
+					autofocus
+				/>
+			</label>
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={() => (resolveTarget = null)}>
+					Cancel
+				</button>
+				<button
+					type="button"
+					class="btn-secondary"
+					disabled={saving}
+					onclick={() => commitResolve('dismiss')}
+				>
+					Dismiss
+				</button>
+				<button
+					type="button"
+					class="btn-warning"
+					disabled={saving || !resolutionText.trim()}
+					onclick={() => commitResolve('escalate')}
+				>
+					Escalate
+				</button>
+				<button type="submit" class="btn-primary" disabled={saving || !resolutionText.trim()}>
+					{saving ? 'Saving…' : 'Resolve'}
+				</button>
+			</div>
+		</form>
+	{/if}
+</Modal>
 
 <!-- Bulk-resolve modal -->
-{#if bulkResolveOpen}
-	<div
-		class="backdrop"
-		onclick={(e) => { if (e.target === e.currentTarget) (bulkResolveOpen = false); }}
-	>
-		<div class="modal" role="dialog" aria-label="Resolve selected exceptions">
-			<h2>Resolve {selectedIds.size} exception{selectedIds.size === 1 ? '' : 's'}</h2>
-			<p class="modal-hint">
-				All selected rows will receive the same resolution note. Rows already in a terminal
-				state are silently skipped server-side.
-			</p>
-			<form onsubmit={(e) => { e.preventDefault(); commitBulkResolve('resolve'); }}>
-				<label>
-					<span>Resolution note</span>
-					<input
-						type="text"
-						bind:value={resolutionText}
-						placeholder="Applied to every selected row"
-						maxlength="500"
-						autofocus
-					/>
-				</label>
-				<div class="modal-footer">
-					<button type="button" class="btn-cancel" onclick={() => (bulkResolveOpen = false)}>
-						Cancel
-					</button>
-					<button
-						type="button"
-						class="btn-secondary"
-						disabled={saving}
-						onclick={() => commitBulkResolve('dismiss')}
-					>
-						Dismiss
-					</button>
-					<button
-						type="button"
-						class="btn-warning"
-						disabled={saving || !resolutionText.trim()}
-						onclick={() => commitBulkResolve('escalate')}
-					>
-						Escalate
-					</button>
-					<button type="submit" class="btn-primary" disabled={saving || !resolutionText.trim()}>
-						{saving ? 'Saving…' : 'Resolve'}
-					</button>
-				</div>
-			</form>
+<Modal
+	open={bulkResolveOpen}
+	ariaLabel="Resolve selected exceptions"
+	width="sm"
+	onclose={() => (bulkResolveOpen = false)}
+>
+	<h2>Resolve {selectedIds.size} exception{selectedIds.size === 1 ? '' : 's'}</h2>
+	<p class="modal-hint">
+		All selected rows will receive the same resolution note. Rows already in a terminal
+		state are silently skipped server-side.
+	</p>
+	<form onsubmit={(e) => { e.preventDefault(); commitBulkResolve('resolve'); }}>
+		<label>
+			<span>Resolution note</span>
+			<input
+				type="text"
+				bind:value={resolutionText}
+				placeholder="Applied to every selected row"
+				maxlength="500"
+				autofocus
+			/>
+		</label>
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={() => (bulkResolveOpen = false)}>
+				Cancel
+			</button>
+			<button
+				type="button"
+				class="btn-secondary"
+				disabled={saving}
+				onclick={() => commitBulkResolve('dismiss')}
+			>
+				Dismiss
+			</button>
+			<button
+				type="button"
+				class="btn-warning"
+				disabled={saving || !resolutionText.trim()}
+				onclick={() => commitBulkResolve('escalate')}
+			>
+				Escalate
+			</button>
+			<button type="submit" class="btn-primary" disabled={saving || !resolutionText.trim()}>
+				{saving ? 'Saving…' : 'Resolve'}
+			</button>
 		</div>
-	</div>
-{/if}
+	</form>
+</Modal>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-	}
-
-	.toolbar h1 {
-		margin: 0;
-		font-size: 1.4rem;
-		font-weight: 600;
-		color: var(--text);
-	}
-
-	/* --- Status filter chips --- */
-
-	.filters {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-	}
-
-	.filter-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 14px;
-		border-radius: 20px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.filter-chip:hover {
-		border-color: var(--accent);
-		color: var(--text);
-	}
-
-	.filter-chip.active {
-		background: var(--accent);
-		color: #fff;
-		border-color: var(--accent);
-	}
-
-	.filter-chip .count {
-		font-size: 0.72rem;
-		opacity: 0.7;
-	}
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 
 	/* --- Type filter chips --- */
 
@@ -630,52 +555,7 @@
 		filter: brightness(1.1);
 	}
 
-	/* --- Grid --- */
-
-	.grid-container {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow-x: auto;
-	}
-
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
-	}
-
-	th {
-		background: var(--bg);
-		text-align: left;
-		padding: 10px 14px;
-		font-size: 0.72rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		border-bottom: 1px solid var(--border);
-		white-space: nowrap;
-	}
-
-	td {
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-		color: var(--text);
-		vertical-align: middle;
-	}
-
-	tr:last-child td {
-		border-bottom: none;
-	}
-
-	tbody tr:hover {
-		background: rgba(99, 140, 255, 0.04);
-	}
-
-	tbody tr.row-selected {
-		background: rgba(99, 140, 255, 0.08);
-	}
+	/* --- Bespoke cells / rows --- */
 
 	tbody tr.resolved td {
 		opacity: 0.55;
@@ -686,14 +566,6 @@
 		padding-right: 0;
 	}
 
-	.right {
-		text-align: right;
-	}
-
-	.mono {
-		font-family: 'SF Mono', 'Cascadia Code', monospace;
-	}
-
 	.muted-cell {
 		color: var(--text-muted);
 	}
@@ -701,13 +573,6 @@
 	.muted-cell.overdue {
 		color: #e04040;
 		font-weight: 600;
-	}
-
-	.empty {
-		text-align: center;
-		padding: 40px 14px;
-		color: var(--text-muted);
-		font-style: italic;
 	}
 
 	/* --- Type / severity / status badges --- */
@@ -760,46 +625,7 @@
 		width: 180px;
 	}
 
-	.actions {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		white-space: nowrap;
-	}
-
-	/* --- Modal --- */
-
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: grid;
-		place-items: center;
-		z-index: 100;
-		backdrop-filter: blur(2px);
-	}
-
-	.modal {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		width: min(520px, 92vw);
-		padding: 24px;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-	}
-
-	.modal h2 {
-		margin: 0 0 4px;
-		font-size: 1.1rem;
-		font-weight: 600;
-		color: var(--text);
-	}
-
-	.modal-hint {
-		font-size: 0.82rem;
-		color: var(--text-muted);
-		margin: 0 0 8px;
-	}
+	/* --- Modal extras --- */
 
 	.modal-description {
 		font-size: 0.82rem;
@@ -810,67 +636,10 @@
 		border-radius: 4px;
 	}
 
-	.modal form {
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-	}
-
-	.modal label {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.modal label span {
-		font-size: 0.78rem;
-		font-weight: 500;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
-	.modal input[type='text'] {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 8px 10px;
-		font-size: 0.88rem;
-		color: var(--text);
-		font-family: inherit;
-		width: 100%;
-		box-sizing: border-box;
-	}
-
 	.modal input:focus {
 		outline: none;
 		border-color: var(--accent);
 		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
-	}
-
-	.modal-footer {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-		padding-top: 8px;
-		border-top: 1px solid var(--border);
-	}
-
-	.btn-cancel {
-		padding: 8px 18px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-cancel:hover {
-		background: var(--bg);
-		color: var(--text);
 	}
 
 	.btn-secondary {
@@ -904,23 +673,6 @@
 		background: rgba(212, 148, 10, 0.1);
 	}
 
-	.btn-primary {
-		padding: 8px 18px;
-		border-radius: 4px;
-		border: 1px solid var(--accent);
-		background: var(--accent);
-		color: #fff;
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-
-	.btn-primary:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-
-	.btn-primary:disabled,
 	.btn-secondary:disabled,
 	.btn-warning:disabled {
 		opacity: 0.6;
