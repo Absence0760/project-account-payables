@@ -598,16 +598,7 @@
 </div>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-		min-height: 100vh;
-	}
-
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	.loading {
 		padding: 60px 20px;
 		text-align: center;
@@ -615,13 +606,6 @@
 	}
 
 	/* Toolbar */
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-	}
-
 	.toolbar-left {
 		display: flex;
 		align-items: center;
