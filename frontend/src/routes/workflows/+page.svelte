@@ -11,6 +11,9 @@
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 	import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	let showCreate = $state(false);
@@ -151,13 +154,10 @@
 	}
 </script>
 
-<div class="workspace">
-	<header class="toolbar">
-		<div class="toolbar-left">
-			<h2 class="page-title">Workflows</h2>
-		</div>
+<PageHeader title="Workflows">
+	{#snippet actions()}
 		<button class="btn-create" onclick={() => (showCreate = true)}>+ New Workflow</button>
-	</header>
+	{/snippet}
 
 	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
 		{#snippet actions()}
@@ -169,130 +169,98 @@
 		{/snippet}
 	</BulkBar>
 
-	<div class="grid-container">
-		<table>
-			<thead>
-				<tr>
-					<th class="checkbox-col">
-						<input
-							type="checkbox"
-							checked={allSelected}
-							onchange={toggleSelectAll}
-							aria-label="Select all workflows"
-						/>
-					</th>
-					<th>Name</th>
-					<th>Steps</th>
-					<th>Status</th>
-					<th>Created</th>
-					<th></th>
+	<DataTable
+		isEmpty={workflowStore.all.length === 0}
+		empty={workflowStore.loading ? 'Loading...' : 'No workflows configured.'}
+		colspan={6}
+	>
+		{#snippet header()}
+			<tr>
+				<th class="checkbox-col">
+					<input
+						type="checkbox"
+						checked={allSelected}
+						onchange={toggleSelectAll}
+						aria-label="Select all workflows"
+					/>
+				</th>
+				<th>Name</th>
+				<th>Steps</th>
+				<th>Status</th>
+				<th>Created</th>
+				<th></th>
+			</tr>
+		{/snippet}
+		{#snippet body()}
+			{#each workflowStore.all as wf (wf.id)}
+				<tr class:row-selected={selectedIds.has(wf.id)}>
+					<td class="checkbox-col">
+						{#if !wf.is_default}
+							<input
+								type="checkbox"
+								checked={selectedIds.has(wf.id)}
+								onchange={() => toggleSelect(wf.id)}
+								aria-label="Select {wf.name}"
+							/>
+						{/if}
+					</td>
+					<td>
+						<a href="/workflows/{wf.id}" class="wf-name">
+							{wf.name}
+							{#if wf.is_default}
+								<span class="default-badge">Default</span>
+							{/if}
+						</a>
+						{#if wf.description}
+							<div class="wf-desc">{wf.description}</div>
+						{/if}
+					</td>
+					<td class="steps-cell">{stepSummary(wf)}</td>
+					<td>
+						<span class="status-dot" class:active={wf.is_active} class:inactive={!wf.is_active}>
+							{wf.is_active ? 'Active' : 'Inactive'}
+						</span>
+					</td>
+					<td class="date-cell">{formatDate(wf.created_at)}</td>
+					<td class="actions">
+						<RowAction href="/workflows/{wf.id}">Edit</RowAction>
+						{#if !wf.is_default}
+							<RowAction variant="danger" onclick={() => handleDelete(wf)}>Delete</RowAction>
+						{/if}
+					</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each workflowStore.all as wf (wf.id)}
-					<tr class:row-selected={selectedIds.has(wf.id)}>
-						<td class="checkbox-col">
-							{#if !wf.is_default}
-								<input
-									type="checkbox"
-									checked={selectedIds.has(wf.id)}
-									onchange={() => toggleSelect(wf.id)}
-									aria-label="Select {wf.name}"
-								/>
-							{/if}
-						</td>
-						<td>
-							<a href="/workflows/{wf.id}" class="wf-name">
-								{wf.name}
-								{#if wf.is_default}
-									<span class="default-badge">Default</span>
-								{/if}
-							</a>
-							{#if wf.description}
-								<div class="wf-desc">{wf.description}</div>
-							{/if}
-						</td>
-						<td class="steps-cell">{stepSummary(wf)}</td>
-						<td>
-							<span class="status-dot" class:active={wf.is_active} class:inactive={!wf.is_active}>
-								{wf.is_active ? 'Active' : 'Inactive'}
-							</span>
-						</td>
-						<td class="date-cell">{formatDate(wf.created_at)}</td>
-						<td class="actions">
-							<RowAction href="/workflows/{wf.id}">Edit</RowAction>
-							{#if !wf.is_default}
-								<RowAction variant="danger" onclick={() => handleDelete(wf)}>Delete</RowAction>
-							{/if}
-						</td>
-					</tr>
-				{:else}
-					<tr>
-						<td colspan="6" class="empty">
-							{workflowStore.loading ? 'Loading...' : 'No workflows configured.'}
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
-</div>
+			{/each}
+		{/snippet}
+	</DataTable>
+</PageHeader>
 
-{#if showCreate}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" onkeydown={(e) => e.key === 'Escape' && (showCreate = false)} onclick={() => (showCreate = false)}>
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="modal" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-			<h3>Create Workflow</h3>
-			<div class="form-group">
-				<label for="wf-name">Name</label>
-				<input id="wf-name" type="text" bind:value={newName} placeholder="e.g. High-Value Invoice Review" />
-			</div>
-			<div class="form-group">
-				<label for="wf-desc">Description</label>
-				<textarea id="wf-desc" bind:value={newDescription} rows="3" placeholder="Optional description..." />
-			</div>
-			<div class="modal-footer">
-				<button class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
-				<button class="btn-save" disabled={creating || !newName.trim()} onclick={handleCreate}>
-					{creating ? 'Creating...' : 'Create'}
-				</button>
-			</div>
-		</div>
+<Modal
+	open={showCreate}
+	ariaLabel="Create workflow"
+	width="sm"
+	onclose={() => (showCreate = false)}
+>
+	{#snippet header()}
+		<h3>Create Workflow</h3>
+	{/snippet}
+	<div class="form-group">
+		<label for="wf-name">Name</label>
+		<input id="wf-name" type="text" bind:value={newName} placeholder="e.g. High-Value Invoice Review" />
 	</div>
-{/if}
+	<div class="form-group">
+		<label for="wf-desc">Description</label>
+		<textarea id="wf-desc" bind:value={newDescription} rows="3" placeholder="Optional description..."></textarea>
+	</div>
+	<div class="modal-footer">
+		<button class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
+		<button class="btn-save" disabled={creating || !newName.trim()} onclick={handleCreate}>
+			{creating ? 'Creating...' : 'Create'}
+		</button>
+	</div>
+</Modal>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-	}
-
-	.toolbar-left {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-	}
-
-	.page-title {
-		font-size: 1.2rem;
-		font-weight: 600;
-		color: var(--text);
-		margin: 0;
-	}
-
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	.btn-create {
 		padding: 8px 18px;
 		border-radius: 6px;
@@ -320,66 +288,6 @@
 	.checkbox-col input[type='checkbox'] {
 		cursor: pointer;
 		accent-color: var(--accent);
-	}
-
-	tbody tr.row-selected {
-		background: rgba(99, 140, 255, 0.08);
-	}
-
-	.error-bar {
-		padding: 10px 14px;
-		border-radius: 6px;
-		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
-		font-size: 0.85rem;
-	}
-
-	.grid-container {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow-x: auto;
-		min-width: 0;
-		max-width: 100%;
-	}
-
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
-	}
-
-	thead {
-		position: sticky;
-		top: 0;
-		z-index: 1;
-	}
-
-	th {
-		background: var(--bg);
-		text-align: left;
-		padding: 10px 14px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		border-bottom: 1px solid var(--border);
-		white-space: nowrap;
-	}
-
-	td {
-		padding: 12px 14px;
-		border-bottom: 1px solid var(--border);
-		color: var(--text);
-	}
-
-	tr:last-child td {
-		border-bottom: none;
-	}
-
-	tbody tr:hover {
-		background: rgba(99, 140, 255, 0.04);
 	}
 
 	.wf-name {
@@ -455,38 +363,7 @@
 		color: #999;
 	}
 
-	.actions {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		white-space: nowrap;
-	}
-
-	.empty {
-		text-align: center;
-		padding: 40px 14px;
-		color: var(--text-muted);
-	}
-
-	/* Modal */
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
-		display: grid;
-		place-items: center;
-		z-index: 100;
-	}
-
-	.modal {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 10px;
-		padding: 24px;
-		width: 90vw;
-		max-width: 460px;
-	}
-
+	/* Create-workflow modal: custom h3 heading + labelled form fields. */
 	.modal h3 {
 		margin: 0 0 18px;
 		font-size: 1.05rem;
@@ -529,24 +406,6 @@
 
 	.form-group textarea {
 		resize: vertical;
-	}
-
-	.modal-footer {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-		margin-top: 18px;
-	}
-
-	.btn-cancel {
-		padding: 8px 16px;
-		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
 	}
 
 	.btn-save {
