@@ -1,7 +1,20 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import FilterChips from '$lib/components/ui/FilterChips.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+
+	const COLUMNS = [
+		{ label: 'PO #' },
+		{ label: 'Vendor' },
+		{ label: 'Total', class: 'right' },
+		{ label: 'Status' },
+		{ label: 'Lines' },
+		{ label: 'Created' }
+	];
 
 	interface POLineItem {
 		id: string;
@@ -148,60 +161,44 @@
 	let hasMore = $derived(pos.length < total);
 </script>
 
-<div class="workspace">
-	<header class="toolbar">
-		<h1>Purchase Orders</h1>
+<PageHeader title="Purchase Orders">
+	{#snippet actions()}
 		<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
 			{syncing ? 'Syncing…' : 'Sync from ERP'}
 		</button>
-	</header>
+	{/snippet}
 
 	<div class="filter-row">
 		<SearchBox bind:value={search} placeholder="Search PO number..." ariaLabel="Search purchase orders" />
-		<nav class="filters">
-			<button class="filter-chip" class:active={statusFilter === 'all'} onclick={() => (statusFilter = 'all')}>
-				All <span class="count">{total}</span>
-			</button>
-			<button class="filter-chip" class:active={statusFilter === 'open'} onclick={() => (statusFilter = 'open')}>
-				Open
-			</button>
-			<button class="filter-chip" class:active={statusFilter === 'closed'} onclick={() => (statusFilter = 'closed')}>
-				Closed
-			</button>
-			<button class="filter-chip" class:active={statusFilter === 'cancelled'} onclick={() => (statusFilter = 'cancelled')}>
-				Cancelled
-			</button>
-		</nav>
+		<FilterChips
+			chips={[
+				{ key: 'all', label: 'All', count: total },
+				{ key: 'open', label: 'Open' },
+				{ key: 'closed', label: 'Closed' },
+				{ key: 'cancelled', label: 'Cancelled' }
+			]}
+			bind:active={statusFilter}
+		/>
 	</div>
 
-	<div class="grid-container">
-		<table>
-			<thead>
-				<tr>
-					<th>PO #</th>
-					<th>Vendor</th>
-					<th class="right">Total</th>
-					<th>Status</th>
-					<th>Lines</th>
-					<th>Created</th>
+	<DataTable
+		columns={COLUMNS}
+		isEmpty={pos.length === 0}
+		empty={loading ? 'Loading…' : 'No purchase orders.'}
+	>
+		{#snippet body()}
+			{#each pos as po (po.id)}
+				<tr class="clickable" onclick={() => (detailId = po.id)}>
+					<td class="mono">{po.po_number}</td>
+					<td>{po.vendor_name ?? '—'}</td>
+					<td class="right mono">{formatCurrency(po.total)}</td>
+					<td><span class="badge {po.status}">{po.status}</span></td>
+					<td class="muted">{po.line_items.length}</td>
+					<td class="muted">{formatDate(po.created_at)}</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each pos as po (po.id)}
-					<tr class="clickable" onclick={() => (detailId = po.id)}>
-						<td class="mono">{po.po_number}</td>
-						<td>{po.vendor_name ?? '—'}</td>
-						<td class="right mono">{formatCurrency(po.total)}</td>
-						<td><span class="badge {po.status}">{po.status}</span></td>
-						<td class="muted">{po.line_items.length}</td>
-						<td class="muted">{formatDate(po.created_at)}</td>
-					</tr>
-				{:else}
-					<tr><td colspan="6" class="empty">{loading ? 'Loading…' : 'No purchase orders.'}</td></tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
+			{/each}
+		{/snippet}
+	</DataTable>
 
 	{#if hasMore}
 		<div class="load-more-row">
@@ -214,106 +211,90 @@
 			<span class="load-more-end">Showing all {total} PO{total === 1 ? '' : 's'}</span>
 		</div>
 	{/if}
-</div>
+</PageHeader>
 
-{#if detailId}
-	<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-	<div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) detailId = null; }}>
-		<div class="modal" role="dialog" aria-label="Purchase order">
-			<header class="modal-header">
-				<div class="title-block">
-					<h2>Purchase Order</h2>
-					{#if detail}
-						<span class="po-number-badge">{detail.po_number}</span>
-						<span class="badge {detail.status}">{detail.status}</span>
-					{/if}
-				</div>
-				<button class="close-btn" onclick={() => (detailId = null)} aria-label="Close">&times;</button>
-			</header>
-
-			<div class="modal-body">
-				{#if detailLoading}
-					<div class="loading">Loading…</div>
-				{:else if detail}
-					<dl class="meta">
-						<dt>Vendor</dt><dd>{detail.vendor_name ?? '—'}</dd>
-						<dt>Total</dt><dd class="mono">{formatCurrency(detail.total)}</dd>
-						<dt>Created</dt><dd>{formatDate(detail.created_at)}</dd>
-					</dl>
-
-					<h3>Line Items</h3>
-					<table class="line-table">
-						<thead>
-							<tr>
-								<th>Description</th>
-								<th class="right">Qty</th>
-								<th class="right">Unit Price</th>
-								<th class="right">Total</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each detail.line_items as li (li.id)}
-								<tr>
-									<td>{li.description ?? '—'}</td>
-									<td class="right mono">{li.quantity ?? '—'}</td>
-									<td class="right mono">{formatCurrency(li.unit_price)}</td>
-									<td class="right mono">{formatCurrency(li.total)}</td>
-								</tr>
-							{:else}
-								<tr><td colspan="4" class="empty">No line items.</td></tr>
-							{/each}
-						</tbody>
-					</table>
-
-					<h3>Linked Invoices ({detail.linked_invoices.length})</h3>
-					<table class="line-table">
-						<thead>
-							<tr>
-								<th>Invoice #</th>
-								<th>Vendor</th>
-								<th class="right">Amount</th>
-								<th>Status</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each detail.linked_invoices as inv (inv.id)}
-								<tr>
-									<td class="mono">{inv.invoice_number}</td>
-									<td>{inv.vendor_name ?? '—'}</td>
-									<td class="right mono">{formatCurrency(inv.amount)}</td>
-									<td>{inv.status}</td>
-								</tr>
-							{:else}
-								<tr><td colspan="4" class="empty">No invoices reference this PO.</td></tr>
-							{/each}
-						</tbody>
-					</table>
+<Modal
+	open={detailId !== null}
+	ariaLabel="Purchase order"
+	width="lg"
+	onclose={() => (detailId = null)}
+>
+	{#snippet header()}
+		<header class="modal-header">
+			<div class="title-block">
+				<h2>Purchase Order</h2>
+				{#if detail}
+					<span class="po-number-badge">{detail.po_number}</span>
+					<span class="badge {detail.status}">{detail.status}</span>
 				{/if}
 			</div>
-		</div>
+			<button class="close-btn" onclick={() => (detailId = null)} aria-label="Close">&times;</button>
+		</header>
+	{/snippet}
+
+	<div class="modal-body">
+		{#if detailLoading}
+			<div class="loading">Loading…</div>
+		{:else if detail}
+			<dl class="meta">
+				<dt>Vendor</dt><dd>{detail.vendor_name ?? '—'}</dd>
+				<dt>Total</dt><dd class="mono">{formatCurrency(detail.total)}</dd>
+				<dt>Created</dt><dd>{formatDate(detail.created_at)}</dd>
+			</dl>
+
+			<h3>Line Items</h3>
+			<table class="line-table">
+				<thead>
+					<tr>
+						<th>Description</th>
+						<th class="right">Qty</th>
+						<th class="right">Unit Price</th>
+						<th class="right">Total</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each detail.line_items as li (li.id)}
+						<tr>
+							<td>{li.description ?? '—'}</td>
+							<td class="right mono">{li.quantity ?? '—'}</td>
+							<td class="right mono">{formatCurrency(li.unit_price)}</td>
+							<td class="right mono">{formatCurrency(li.total)}</td>
+						</tr>
+					{:else}
+						<tr><td colspan="4" class="empty">No line items.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+
+			<h3>Linked Invoices ({detail.linked_invoices.length})</h3>
+			<table class="line-table">
+				<thead>
+					<tr>
+						<th>Invoice #</th>
+						<th>Vendor</th>
+						<th class="right">Amount</th>
+						<th>Status</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each detail.linked_invoices as inv (inv.id)}
+						<tr>
+							<td class="mono">{inv.invoice_number}</td>
+							<td>{inv.vendor_name ?? '—'}</td>
+							<td class="right mono">{formatCurrency(inv.amount)}</td>
+							<td>{inv.status}</td>
+						</tr>
+					{:else}
+						<tr><td colspan="4" class="empty">No invoices reference this PO.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
 	</div>
-{/if}
+</Modal>
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-	.toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-	h1 {
-		font-size: 1.3rem;
-		font-weight: 700;
-		margin: 0;
-	}
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	.btn-outline {
 		padding: 8px 16px;
 		border-radius: 6px;
@@ -332,90 +313,11 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	.filter-row {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
-	}
-	.filters {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-	.filter-chip {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 14px;
-		border-radius: 20px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		font-weight: 500;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.filter-chip:hover {
-		border-color: var(--accent);
-		color: var(--text);
-	}
-	.filter-chip.active {
-		background: var(--accent);
-		color: #fff;
-		border-color: var(--accent);
-	}
-	.filter-chip .count {
-		font-size: 0.72rem;
-		opacity: 0.7;
-	}
-	.grid-container {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow-x: auto;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
-	}
-	th {
-		background: var(--bg);
-		text-align: left;
-		padding: 10px 14px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		color: var(--text-muted);
-		border-bottom: 1px solid var(--border);
-	}
-	td {
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-	}
 	tr.clickable {
 		cursor: pointer;
 	}
 	tr.clickable:hover {
 		background: rgba(99, 140, 255, 0.04);
-	}
-	.mono {
-		font-family: 'SF Mono', 'Cascadia Code', monospace;
-		font-size: 0.82rem;
-	}
-	.right {
-		text-align: right;
-	}
-	.muted {
-		color: var(--text-muted);
-	}
-	.empty {
-		text-align: center;
-		padding: 40px;
-		color: var(--text-muted);
 	}
 	.badge {
 		display: inline-block;
@@ -439,65 +341,22 @@
 		background: rgba(150, 150, 150, 0.15);
 		color: #999;
 	}
-	.load-more-row {
-		display: flex;
-		justify-content: center;
-		padding: 8px 0 4px;
-	}
-	.btn-load-more {
-		padding: 8px 18px;
-		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.btn-load-more:hover:not(:disabled) {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-	.btn-load-more:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.load-more-end {
-		font-size: 0.78rem;
-		color: var(--text-muted);
-	}
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: grid;
-		place-items: center;
-		z-index: 100;
-		backdrop-filter: blur(2px);
-	}
-	.modal {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		width: min(820px, 95vw);
-		max-height: 90vh;
-		display: flex;
-		flex-direction: column;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-	}
+
+	/* Detail modal — custom header + body + nested line tables. */
 	.modal-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		padding: 16px 20px;
 		border-bottom: 1px solid var(--border);
+		margin: -24px -24px 0;
 	}
 	.title-block {
 		display: flex;
 		align-items: center;
 		gap: 12px;
 	}
-	.modal h2 {
+	.modal-header h2 {
 		margin: 0;
 		font-size: 1.1rem;
 		font-weight: 600;
@@ -520,11 +379,11 @@
 		color: var(--text);
 	}
 	.modal-body {
-		padding: 20px;
+		padding: 20px 0 0;
 		overflow-y: auto;
 		flex: 1;
 	}
-	.modal h3 {
+	.modal-body h3 {
 		margin: 18px 0 8px;
 		font-size: 0.85rem;
 		font-weight: 600;
@@ -551,15 +410,40 @@
 		margin: 0;
 		font-size: 0.9rem;
 	}
+	dd.mono {
+		font-family: 'SF Mono', 'Cascadia Code', monospace;
+		font-size: 0.82rem;
+	}
 	.line-table {
+		width: 100%;
+		border-collapse: collapse;
 		font-size: 0.85rem;
 	}
 	.line-table th {
+		background: var(--bg);
+		text-align: left;
 		padding: 6px 10px;
 		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		border-bottom: 1px solid var(--border);
 	}
 	.line-table td {
 		padding: 6px 10px;
+		border-bottom: 1px solid var(--border);
+	}
+	.line-table .right {
+		text-align: right;
+	}
+	.line-table .mono {
+		font-family: 'SF Mono', 'Cascadia Code', monospace;
+		font-size: 0.82rem;
+	}
+	.line-table .empty {
+		text-align: center;
+		padding: 40px;
+		color: var(--text-muted);
 	}
 	.loading {
 		padding: 40px;
