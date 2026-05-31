@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import RowAction from '$lib/components/RowAction.svelte';
-	import SearchBox from '$lib/components/SearchBox.svelte';
-	import { toast } from '$lib/components/Toast.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	interface BankDetails {
 		counterparty_id: string | null;

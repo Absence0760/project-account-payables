@@ -1,8 +1,8 @@
 <script lang="ts">
 	import '../app.css';
-	import Landing from '$lib/components/Landing.svelte';
-	import Sidebar from '$lib/components/Sidebar.svelte';
-	import Toast from '$lib/components/Toast.svelte';
+	import Landing from '$lib/components/marketing/Landing.svelte';
+	import Sidebar from '$lib/components/layout/Sidebar.svelte';
+	import Toast from '$lib/components/ui/Toast.svelte';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';

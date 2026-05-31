@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import RowAction from '$lib/components/RowAction.svelte';
-	import { toast } from '$lib/components/Toast.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	interface CreditMemo {
 		id: string;

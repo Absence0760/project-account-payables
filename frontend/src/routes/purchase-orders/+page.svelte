@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import SearchBox from '$lib/components/SearchBox.svelte';
-	import { toast } from '$lib/components/Toast.svelte';
+	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	interface POLineItem {
 		id: string;

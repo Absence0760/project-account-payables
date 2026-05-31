@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	interface GRLine {
 		id: string;

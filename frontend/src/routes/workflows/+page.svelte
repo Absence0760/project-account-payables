@@ -8,10 +8,10 @@
 		DEFAULT_APPROVAL_CONFIG,
 		DEFAULT_ERP_CONFIG,
 	} from '$lib/types/workflow';
-	import BulkBar from '$lib/components/BulkBar.svelte';
-	import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
-	import RowAction from '$lib/components/RowAction.svelte';
-	import { toast } from '$lib/components/Toast.svelte';
+	import BulkBar from '$lib/components/ui/BulkBar.svelte';
+	import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	let showCreate = $state(false);
 	let newName = $state('');

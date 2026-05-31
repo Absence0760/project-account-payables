@@ -3,8 +3,8 @@
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
-	import ApprovalMatrixEditor from '$lib/components/ApprovalMatrixEditor.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
+	import ApprovalMatrixEditor from '$lib/components/modals/ApprovalMatrixEditor.svelte';
 	import type {
 		WorkflowDefinition,
 		WorkflowStep,

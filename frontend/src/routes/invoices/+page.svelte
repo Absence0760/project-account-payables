@@ -4,13 +4,13 @@
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
-	import StatusBadge from '$lib/components/StatusBadge.svelte';
-	import InvoiceModal from '$lib/components/InvoiceModal.svelte';
-	import AdvancedSearchModal from '$lib/components/AdvancedSearchModal.svelte';
-	import BulkRecodeGLModal from '$lib/components/BulkRecodeGLModal.svelte';
-	import RowAction from '$lib/components/RowAction.svelte';
-	import SearchBox from '$lib/components/SearchBox.svelte';
-	import { toast } from '$lib/components/Toast.svelte';
+	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
+	import InvoiceModal from '$lib/components/modals/InvoiceModal.svelte';
+	import AdvancedSearchModal from '$lib/components/modals/AdvancedSearchModal.svelte';
+	import BulkRecodeGLModal from '$lib/components/modals/BulkRecodeGLModal.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 
 	let search = $state('');

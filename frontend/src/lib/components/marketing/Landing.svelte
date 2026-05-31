@@ -9,7 +9,7 @@
 	import IconBolt from '~icons/material-symbols/bolt';
 	import IconCheck from '~icons/material-symbols/check-circle-outline';
 	import IconArrow from '~icons/material-symbols/arrow-forward';
-	import Pricing from '$lib/components/Pricing.svelte';
+	import Pricing from '$lib/components/marketing/Pricing.svelte';
 
 	const features = [
 		{

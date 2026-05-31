@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { adminStore } from '$lib/stores/admin.svelte';
-	import { toast } from '$lib/components/Toast.svelte';
-	import RowAction from '$lib/components/RowAction.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import type { Role } from '$lib/types/admin';
 
 	let creating = $state(false);

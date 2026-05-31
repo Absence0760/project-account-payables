@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { PAYMENT_METHOD_LABELS } from '$lib/types/payment';
 	import type { PaymentMethod } from '$lib/types/payment';
 	import { auth } from '$lib/stores/auth.svelte';

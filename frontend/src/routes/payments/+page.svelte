@@ -3,11 +3,11 @@
 	import { PAYMENT_STATUSES, PAYMENT_STATUS_LABELS, PAYMENT_METHOD_LABELS } from '$lib/types/payment';
 	import { paymentStore } from '$lib/stores/payments.svelte';
 	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
-	import RunDetailModal from '$lib/components/RunDetailModal.svelte';
-	import RowAction from '$lib/components/RowAction.svelte';
-	import SearchBox from '$lib/components/SearchBox.svelte';
-	import StatusBadge from '$lib/components/StatusBadge.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
+	import RunDetailModal from '$lib/components/modals/RunDetailModal.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 
 	type Tab = 'queue' | 'history' | 'runs' | 'cards';

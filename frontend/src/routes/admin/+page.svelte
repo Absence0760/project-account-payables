@@ -3,11 +3,11 @@
 	import { ROLE_LABELS } from '$lib/types/admin';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
-	import BulkBar from '$lib/components/BulkBar.svelte';
-	import BulkDeleteButton from '$lib/components/BulkDeleteButton.svelte';
-	import RowAction from '$lib/components/RowAction.svelte';
-	import SearchBox from '$lib/components/SearchBox.svelte';
-	import { toast } from '$lib/components/Toast.svelte';
+	import BulkBar from '$lib/components/ui/BulkBar.svelte';
+	import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	let showCreateModal = $state(false);
 	let editingUser = $state<AdminUser | null>(null);

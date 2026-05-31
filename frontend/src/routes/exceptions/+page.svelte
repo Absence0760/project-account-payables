@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
-	import RowAction from '$lib/components/RowAction.svelte';
-	import BulkBar from '$lib/components/BulkBar.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 
 	interface ExceptionItem {
 		id: string;

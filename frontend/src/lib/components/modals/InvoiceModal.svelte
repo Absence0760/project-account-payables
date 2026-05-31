@@ -5,7 +5,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
 	interface AuditEntry {

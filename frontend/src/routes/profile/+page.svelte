@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
-	import { toast } from '$lib/components/Toast.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	interface EnrollResponse {
 		secret: string;
