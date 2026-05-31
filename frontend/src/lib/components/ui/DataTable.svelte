@@ -20,15 +20,28 @@
 		isEmpty?: boolean;
 		/** colspan for the empty row; defaults to the column count. */
 		colspan?: number;
+		/** `table-layout: fixed` — pair with explicit `<th>` widths in the page. */
+		fixed?: boolean;
+		/** Sticky header row that pins to the top of the viewport on scroll. */
+		stickyHeader?: boolean;
 	};
 
-	let { columns, header, body, empty = 'No items.', isEmpty = false, colspan }: Props = $props();
+	let {
+		columns,
+		header,
+		body,
+		empty = 'No items.',
+		isEmpty = false,
+		colspan,
+		fixed = false,
+		stickyHeader = false
+	}: Props = $props();
 
 	const emptySpan = $derived(colspan ?? columns?.length ?? 1);
 </script>
 
 <div class="grid-container">
-	<table>
+	<table class:fixed class:sticky-header={stickyHeader}>
 		<thead>
 			{#if header}
 				{@render header()}
@@ -49,3 +62,15 @@
 		</tbody>
 	</table>
 </div>
+
+<style>
+	/* Opt-in layout refinements; the base table styling is global (app.css). */
+	table.fixed {
+		table-layout: fixed;
+	}
+	table.sticky-header thead {
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+</style>

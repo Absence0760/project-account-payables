@@ -10,6 +10,8 @@
 	import BulkRecodeGLModal from '$lib/components/modals/BulkRecodeGLModal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 
@@ -321,21 +323,18 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="workspace">
-	<header class="toolbar">
-		<h1>Invoices</h1>
+<PageHeader title="Invoices">
+	{#snippet actions()}
 		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple bind:this={fileInput} onchange={handleUpload} hidden />
-		<div class="toolbar-actions">
-			{#if auth.isAdmin}
-				<button class="btn-secondary" onclick={() => (showBulkRecode = true)}>
-					Bulk Re-code GL
-				</button>
-			{/if}
-			<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
-				{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
+		{#if auth.isAdmin}
+			<button class="btn-secondary" onclick={() => (showBulkRecode = true)}>
+				Bulk Re-code GL
 			</button>
-		</div>
-	</header>
+		{/if}
+		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
+			{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
+		</button>
+	{/snippet}
 
 	<div class="filter-row">
 		<div class="search-group">
@@ -438,95 +437,78 @@
 		</div>
 	{/if}
 
-	<div class="grid-container">
-		<table>
-			<colgroup>
-				<col style="width:40px" />
-				<col style="width:11%" />
-				<col style="width:16%" />
-				<col />
-				<col style="width:8%" />
-				<col style="width:9%" />
-				<col style="width:9%" />
-				<col style="width:15%" />
-				<col style="width:170px" />
-			</colgroup>
-			<thead>
-				<tr>
-					<th class="checkbox-col"><input type="checkbox" checked={allSelected} onchange={toggleSelectAll} /></th>
-					<th>Invoice #</th>
-					<th>Vendor</th>
-					<th>Description</th>
-					<th>PO #</th>
-					<th class="right">Amount</th>
-					<th>Due Date</th>
-					<th>Status</th>
-					<th class="actions-col"></th>
+	<DataTable isEmpty={invoiceStore.all.length === 0} empty="No invoices match your filters." colspan={9} fixed stickyHeader>
+		{#snippet header()}
+			<tr>
+				<th class="checkbox-col"><input type="checkbox" checked={allSelected} onchange={toggleSelectAll} /></th>
+				<th>Invoice #</th>
+				<th>Vendor</th>
+				<th>Description</th>
+				<th>PO #</th>
+				<th class="right">Amount</th>
+				<th>Due Date</th>
+				<th>Status</th>
+				<th class="actions-col"></th>
+			</tr>
+		{/snippet}
+		{#snippet body()}
+			{#each invoiceStore.all as invoice (invoice.id)}
+				<tr class:row-selected={selected.has(invoice.id)}>
+					<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
+					<td class="mono">
+						{invoice.invoice_number || '—'}
+						{#if invoice.warnings?.length}
+							<span class="warning-icon" title={invoice.warnings.map(w => w.message).join(', ')}>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+								</svg>
+							</span>
+						{/if}
+					</td>
+					<td>
+						{invoice.vendor || '—'}
+						{#if invoice.priors_summary && (invoice.priors_summary.cache > 0 || invoice.priors_summary.rag > 0)}
+							<span
+								class="priors-badge"
+								title="Extraction priors: {invoice.priors_summary.cache} vendor-cache field{invoice.priors_summary.cache === 1 ? '' : 's'}, {invoice.priors_summary.rag} RAG neighbor{invoice.priors_summary.rag === 1 ? '' : 's'}"
+							>
+								{#if invoice.priors_summary.rag > 0}RAG·{invoice.priors_summary.rag}{/if}{#if invoice.priors_summary.cache > 0 && invoice.priors_summary.rag > 0}·{/if}{#if invoice.priors_summary.cache > 0}cache·{invoice.priors_summary.cache}{/if}
+							</span>
+						{/if}
+					</td>
+					<td class="description" title={invoice.description}>{invoice.description}</td>
+					<td class="mono">{invoice.po_number}</td>
+					<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
+					<td>{invoice.due_date}</td>
+					<td><StatusBadge status={invoice.status} /></td>
+					<td class="actions">
+						<RowAction onclick={() => (editing = invoice)}>Edit</RowAction>
+						{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
+							<RowAction
+								variant="danger"
+								armed={confirmDeleteId === invoice.id}
+								disabled={deletingId === invoice.id}
+								onclick={(e) => {
+									e.stopPropagation();
+									if (confirmDeleteId === invoice.id) {
+										deleteInvoice(invoice.id);
+									} else {
+										confirmDeleteId = invoice.id;
+									}
+								}}
+							>
+								{deletingId === invoice.id
+									? '…'
+									: confirmDeleteId === invoice.id
+										? 'Confirm'
+										: 'Delete'}
+							</RowAction>
+						{/if}
+					</td>
 				</tr>
-			</thead>
-			<tbody>
-				{#each invoiceStore.all as invoice (invoice.id)}
-					<tr class:row-selected={selected.has(invoice.id)}>
-						<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
-						<td class="mono">
-							{invoice.invoice_number || '—'}
-							{#if invoice.warnings?.length}
-								<span class="warning-icon" title={invoice.warnings.map(w => w.message).join(', ')}>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-										<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-									</svg>
-								</span>
-							{/if}
-						</td>
-						<td>
-							{invoice.vendor || '—'}
-							{#if invoice.priors_summary && (invoice.priors_summary.cache > 0 || invoice.priors_summary.rag > 0)}
-								<span
-									class="priors-badge"
-									title="Extraction priors: {invoice.priors_summary.cache} vendor-cache field{invoice.priors_summary.cache === 1 ? '' : 's'}, {invoice.priors_summary.rag} RAG neighbor{invoice.priors_summary.rag === 1 ? '' : 's'}"
-								>
-									{#if invoice.priors_summary.rag > 0}RAG·{invoice.priors_summary.rag}{/if}{#if invoice.priors_summary.cache > 0 && invoice.priors_summary.rag > 0}·{/if}{#if invoice.priors_summary.cache > 0}cache·{invoice.priors_summary.cache}{/if}
-								</span>
-							{/if}
-						</td>
-						<td class="description" title={invoice.description}>{invoice.description}</td>
-						<td class="mono">{invoice.po_number}</td>
-						<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
-						<td>{invoice.due_date}</td>
-						<td><StatusBadge status={invoice.status} /></td>
-						<td class="actions">
-							<RowAction onclick={() => (editing = invoice)}>Edit</RowAction>
-							{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
-								<RowAction
-									variant="danger"
-									armed={confirmDeleteId === invoice.id}
-									disabled={deletingId === invoice.id}
-									onclick={(e) => {
-										e.stopPropagation();
-										if (confirmDeleteId === invoice.id) {
-											deleteInvoice(invoice.id);
-										} else {
-											confirmDeleteId = invoice.id;
-										}
-									}}
-								>
-									{deletingId === invoice.id
-										? '…'
-										: confirmDeleteId === invoice.id
-											? 'Confirm'
-											: 'Delete'}
-								</RowAction>
-							{/if}
-						</td>
-					</tr>
-				{:else}
-					<tr>
-						<td colspan="9" class="empty">No invoices match your filters.</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
+			{/each}
+		{/snippet}
+	</DataTable>
 
 	{#if invoiceStore.hasMore}
 		<div class="load-more-row">
@@ -539,7 +521,7 @@
 			<span class="load-more-end">Showing all {invoiceStore.total} invoice{invoiceStore.total === 1 ? '' : 's'}</span>
 		</div>
 	{/if}
-</div>
+</PageHeader>
 
 {#if editing}
 	<InvoiceModal invoice={editing} onclose={() => (editing = null)} activeSteps={workflowStore.activeSteps} />
@@ -564,21 +546,7 @@
 {/if}
 
 <style>
-	.workspace {
-		max-width: 1800px;
-		margin: 0 auto;
-		padding: 24px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-		min-height: 100vh;
-	}
-
-	.toolbar {
-		display: flex;
-		align-items: center;
-		gap: 16px;
-	}
+	/* Page-specific styling; shared design-system CSS lives in app.css. */
 
 	.filter-row {
 		display: flex;
@@ -628,88 +596,19 @@
 		background: var(--accent);
 	}
 
-	.filters {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-
-	.filter-chip {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 14px;
-		border-radius: 20px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.15s;
-		font-family: inherit;
-	}
-
-	.filter-chip:hover {
-		border-color: var(--accent);
-		color: var(--text);
-	}
-
-	.filter-chip.active {
-		background: var(--accent);
-		color: #fff;
-		border-color: var(--accent);
-	}
-
-	.filter-chip .count {
-		font-size: 0.72rem;
-		opacity: 0.7;
-	}
-
-	.grid-container {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow-x: auto;
-		/* Workspace is `display: flex; flex-direction: column`, so children
-		   inherit `min-width: auto` = intrinsic content width. Without
-		   min-width: 0, this card grows to fit the table and the page
-		   scrolls horizontally instead of the card scrolling internally. */
-		min-width: 0;
-		max-width: 100%;
-	}
-
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
-		table-layout: fixed;
-	}
-
-	thead {
-		position: sticky;
-		top: 0;
-		z-index: 1;
-	}
-
-	th {
-		background: var(--bg);
-		text-align: left;
-		padding: 10px 14px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		border-bottom: 1px solid var(--border);
-		white-space: nowrap;
-	}
+	/* Fixed column widths pair with DataTable's `fixed`/`stickyHeader` props.
+	   These <th> widths apply because the header row is rendered from this
+	   page's snippet (page CSS scope). */
+	th:nth-child(1) { width: 40px; }
+	th:nth-child(2) { width: 11%; }
+	th:nth-child(3) { width: 16%; }
+	th:nth-child(5) { width: 8%; }
+	th:nth-child(6) { width: 9%; }
+	th:nth-child(7) { width: 9%; }
+	th:nth-child(8) { width: 15%; }
+	th:nth-child(9) { width: 170px; }
 
 	td {
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-		color: var(--text);
 		white-space: nowrap;
 		vertical-align: middle;
 		overflow: hidden;
@@ -718,32 +617,6 @@
 
 	tr:last-child td {
 		border-bottom: none;
-	}
-
-	tbody tr:hover {
-		background: rgba(99, 140, 255, 0.04);
-	}
-
-	.mono {
-		font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-		font-size: 0.82rem;
-	}
-
-	.right {
-		text-align: right;
-	}
-
-	.actions {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		white-space: nowrap;
-	}
-
-	.empty {
-		text-align: center;
-		padding: 40px 14px;
-		color: var(--text-muted);
 	}
 
 	.warning-icon {
@@ -766,12 +639,6 @@
 		letter-spacing: 0.02em;
 		vertical-align: middle;
 		cursor: help;
-	}
-
-	.toolbar-actions {
-		display: flex;
-		gap: 8px;
-		align-items: center;
 	}
 
 	.btn-upload {
@@ -817,14 +684,6 @@
 		color: var(--accent);
 	}
 
-	.upload-error {
-		padding: 10px 14px;
-		border-radius: 6px;
-		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
-		font-size: 0.85rem;
-	}
-
 	/* --- Checkbox column --- */
 
 	.checkbox-col {
@@ -837,10 +696,6 @@
 	.checkbox-col input[type='checkbox'] {
 		cursor: pointer;
 		accent-color: var(--accent);
-	}
-
-	.row-selected {
-		background: rgba(99, 140, 255, 0.08);
 	}
 
 	/* --- Bulk action bar --- */
@@ -1007,32 +862,5 @@
 	.bulk-apply-btn:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
-	}
-	.load-more-row {
-		display: flex;
-		justify-content: center;
-		padding: 8px 0 4px;
-	}
-	.btn-load-more {
-		padding: 8px 18px;
-		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		font-size: 0.85rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.btn-load-more:hover:not(:disabled) {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-	.btn-load-more:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.load-more-end {
-		font-size: 0.78rem;
-		color: var(--text-muted);
 	}
 </style>
