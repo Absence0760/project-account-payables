@@ -1,0 +1,36 @@
+<script lang="ts">
+	type Chip = {
+		key: string;
+		label: string;
+		/** Optional count badge rendered in `.count`. Omit for label-only chips. */
+		count?: number | string;
+	};
+
+	type Props = {
+		chips: Chip[];
+		/** The active chip key. Two-way bindable. */
+		active: string;
+		/** Fired in addition to updating `active`. */
+		onchange?: (key: string) => void;
+	};
+
+	let { chips, active = $bindable(), onchange }: Props = $props();
+
+	function select(key: string) {
+		active = key;
+		onchange?.(key);
+	}
+</script>
+
+<nav class="filters">
+	{#each chips as chip (chip.key)}
+		<button
+			class="filter-chip"
+			class:active={active === chip.key}
+			type="button"
+			onclick={() => select(chip.key)}
+		>
+			{chip.label}{#if chip.count !== undefined}{' '}<span class="count">{chip.count}</span>{/if}
+		</button>
+	{/each}
+</nav>

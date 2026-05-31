@@ -21,3 +21,321 @@ html, body {
 	color: var(--text);
 	-webkit-font-smoothing: antialiased;
 }
+
+/* ===================================================================
+   Shared UI contract
+   -------------------------------------------------------------------
+   Single source of truth for the design-system class names documented
+   in frontend/CLAUDE.md. These rules are intentionally GLOBAL (not
+   per-route scoped) so that:
+     - the `ui/` primitive components (PageHeader, DataTable,
+       FilterChips, Modal, KpiCard) can render this markup once, and
+     - route pages can drop their duplicated <style> blocks.
+   Feature components that ship their own scoped `.modal` / table CSS
+   (InvoiceModal, RunDetailModal, …) are unaffected: Svelte adds a
+   `.svelte-<hash>` class to scoped selectors, which outranks these
+   bare-class rules. Table rules are keyed off `.grid-container` so
+   they never leak into those bespoke modal tables.
+   =================================================================== */
+
+/* --- Page shell (PageHeader) --- */
+.workspace {
+	max-width: 1800px;
+	margin: 0 auto;
+	padding: 24px 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	min-height: 100vh;
+}
+.toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+.toolbar h1 {
+	font-size: 1.3rem;
+	font-weight: 700;
+	margin: 0;
+}
+.toolbar-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+/* --- Primary / cancel buttons --- */
+.btn-primary {
+	padding: 8px 18px;
+	border-radius: 6px;
+	border: none;
+	background: var(--accent);
+	color: #fff;
+	font-size: 0.85rem;
+	font-weight: 500;
+	cursor: pointer;
+	font-family: inherit;
+}
+.btn-primary:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.btn-cancel {
+	padding: 8px 18px;
+	border-radius: 4px;
+	border: 1px solid var(--border);
+	background: var(--surface);
+	color: var(--text-muted);
+	font-size: 0.85rem;
+	cursor: pointer;
+	font-family: inherit;
+}
+.btn-cancel:hover {
+	color: var(--text);
+}
+
+/* --- Filter chips (FilterChips) --- */
+.filters {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.filter-chip {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 14px;
+	border-radius: 20px;
+	border: 1px solid var(--border);
+	background: var(--surface);
+	color: var(--text-muted);
+	font-size: 0.82rem;
+	font-weight: 500;
+	cursor: pointer;
+	transition: all 0.15s;
+	font-family: inherit;
+}
+.filter-chip:hover {
+	border-color: var(--accent);
+	color: var(--text);
+}
+.filter-chip.active {
+	background: var(--accent);
+	color: #fff;
+	border-color: var(--accent);
+}
+.filter-chip .count {
+	font-size: 0.72rem;
+	opacity: 0.7;
+}
+
+/* --- Data table (DataTable) --- */
+.grid-container {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	overflow-x: auto;
+}
+.grid-container table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.875rem;
+}
+.grid-container th {
+	background: var(--bg);
+	text-align: left;
+	padding: 10px 14px;
+	font-size: 0.75rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-muted);
+	border-bottom: 1px solid var(--border);
+	white-space: nowrap;
+}
+.grid-container td {
+	padding: 10px 14px;
+	border-bottom: 1px solid var(--border);
+	color: var(--text);
+}
+.grid-container tbody tr:hover {
+	background: rgba(99, 140, 255, 0.04);
+}
+.grid-container tr.row-selected {
+	background: rgba(99, 140, 255, 0.08);
+}
+.grid-container th.right,
+.grid-container td.right {
+	text-align: right;
+}
+.grid-container .empty {
+	text-align: center;
+	padding: 40px 14px;
+	color: var(--text-muted);
+}
+.grid-container td.actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	white-space: nowrap;
+}
+.grid-container td.mono,
+.grid-container td.muted {
+	color: var(--text-muted);
+}
+.grid-container td.mono {
+	font-family: 'SF Mono', 'Cascadia Code', monospace;
+	font-size: 0.82rem;
+	color: var(--text);
+}
+
+/* --- Load-more pagination --- */
+.load-more-row {
+	display: flex;
+	justify-content: center;
+	padding: 8px 0 4px;
+}
+.btn-load-more {
+	padding: 8px 18px;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: var(--surface);
+	color: var(--text);
+	font-size: 0.85rem;
+	cursor: pointer;
+	font-family: inherit;
+}
+.btn-load-more:hover:not(:disabled) {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+.btn-load-more:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.load-more-end {
+	font-size: 0.78rem;
+	color: var(--text-muted);
+}
+
+/* --- Modal (Modal) --- */
+.backdrop {
+	position: fixed;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.5);
+	display: grid;
+	place-items: center;
+	z-index: 100;
+	backdrop-filter: blur(2px);
+	padding: 20px;
+}
+.modal {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	width: min(480px, 92vw);
+	max-height: 90vh;
+	overflow-y: auto;
+	padding: 24px;
+	box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+}
+.modal.modal-sm {
+	width: min(440px, 92vw);
+}
+.modal.modal-lg {
+	width: min(820px, 95vw);
+}
+.modal h2 {
+	margin: 0 0 4px;
+	font-size: 1.1rem;
+	font-weight: 600;
+}
+.modal-hint {
+	font-size: 0.82rem;
+	color: var(--text-muted);
+	margin: 0 0 16px;
+}
+.modal form {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+.modal label {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.modal label > span {
+	font-size: 0.78rem;
+	font-weight: 500;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+.modal input,
+.modal select,
+.modal textarea {
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 8px 10px;
+	font-size: 0.88rem;
+	color: var(--text);
+	font-family: inherit;
+}
+.modal-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding-top: 8px;
+	margin-top: 14px;
+	border-top: 1px solid var(--border);
+}
+.required {
+	color: #e04040;
+	font-style: normal;
+}
+
+/* --- KPI cards (KpiCard) --- */
+.kpi-row {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+.kpi {
+	flex: 1;
+	min-width: 130px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 16px 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.kpi-value {
+	font-size: 1.4rem;
+	font-weight: 700;
+}
+.kpi-label {
+	font-size: 0.78rem;
+	color: var(--text-muted);
+}
+.kpi.highlight-green {
+	border-color: rgba(31, 168, 106, 0.3);
+	background: rgba(31, 168, 106, 0.04);
+}
+.kpi.highlight-green .kpi-value {
+	color: #1fa86a;
+}
+.kpi.highlight-red {
+	border-color: rgba(224, 64, 64, 0.3);
+	background: rgba(224, 64, 64, 0.04);
+}
+.kpi.highlight-red .kpi-value {
+	color: #e04040;
+}
