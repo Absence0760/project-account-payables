@@ -20,7 +20,7 @@ dependencies = [
     # collides with passlib's bcrypt-detection probe. Lift only when passlib
     # ships a fix or the codebase migrates off passlib for bcrypt_sha256.
     "bcrypt>=4.0,<4.1",
-    "redis>=7.4.0,<8",
+    "redis>=8.0.0,<9",
     "python-jose[cryptography]>=3.5.0,<4",
     "httpx>=0.28.1,<1",
     "PyMuPDF>=1.27.2.3,<2",
