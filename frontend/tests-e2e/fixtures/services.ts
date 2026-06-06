@@ -1,0 +1,58 @@
+/**
+ * Optional local-service gating for e2e specs.
+ *
+ * Several flows (SSO, email) need a Docker container that isn't part of the
+ * default `pnpm db:up` stack: Keycloak, Mailpit, LocalStack, stripe-mock. Those
+ * specs call `skipUnlessReachable(...)` in a `beforeEach`, so they:
+ *
+ *   - run the REAL end-to-end flow when the service is up (locally after
+ *     `pnpm <svc>:up`, or in CI where the workflow starts them), and
+ *   - skip with a clear, actionable message when it isn't — never a silent
+ *     pass and never a failure that's really just "you forgot to start it".
+ *
+ * This is environment gating on an optional dependency, NOT masking a bug: when
+ * the service IS present the assertions are strict.
+ */
+
+import { test } from './helpers';
+
+/** Probe URLs — any HTTP response (even 4xx) means the service is up. */
+export const SERVICES = {
+	keycloak: 'http://localhost:8088/realms/account-payables/.well-known/openid-configuration',
+	mailpit: 'http://localhost:8025/api/v1/info',
+	localstack: 'http://localhost:4566/_localstack/health',
+	stripeMock: 'http://localhost:12111/v1'
+} as const;
+
+/** Hint shown when a service is down, keyed by probe URL. */
+const HINTS: Record<string, string> = {
+	[SERVICES.keycloak]: 'Keycloak not running — `pnpm idp:up && pnpm idp:seed`',
+	[SERVICES.mailpit]: 'Mailpit not running — `pnpm mail:up` (+ backend AP_EMAIL_PROVIDER=smtp)',
+	[SERVICES.localstack]: 'LocalStack not running — `pnpm aws:up`',
+	[SERVICES.stripeMock]: 'stripe-mock not running — `pnpm stripe:up`'
+};
+
+const _cache = new Map<string, boolean>();
+
+/** True if a network request to `url` gets any response within the timeout. */
+export async function isReachable(url: string, timeoutMs = 2500): Promise<boolean> {
+	if (_cache.has(url)) return _cache.get(url)!;
+	let up = false;
+	try {
+		await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+		up = true;
+	} catch {
+		up = false;
+	}
+	_cache.set(url, up);
+	return up;
+}
+
+/**
+ * Skip the current test (call inside `beforeEach`) unless `url` is reachable.
+ * The message names the `pnpm` command that starts the missing service.
+ */
+export async function skipUnlessReachable(url: string): Promise<void> {
+	const up = await isReachable(url);
+	test.skip(!up, HINTS[url] ?? `Required local service not reachable: ${url}`);
+}
