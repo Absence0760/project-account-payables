@@ -29,7 +29,8 @@ pnpm scim:seed                # set acme's SCIM bearer token to match the Authen
 pnpm test:scim                # SCIM provisioning e2e (tests-e2e/scim/)
 pnpm aws:up                   # local AWS emulator (LocalStack :4566, opt-in `aws` profile): SQS/SES/CloudWatch/S3-ObjectLock
 pnpm ollama:up                # local AI model server (Ollama :11435, opt-in `ai` profile) for the ollama extraction adapter
-pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama (services:down / services:reset too)
+pnpm stripe:up                # Stripe API mock (stripe-mock :12111, opt-in `payments` profile) for the stripe_treasury adapter
+pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama + stripe-mock (services:down / services:reset too)
 pnpm seed                     # python scripts/seed.py
 pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
 pnpm dev:all                  # db:up, then pnpm dev (whole web stack from cold)

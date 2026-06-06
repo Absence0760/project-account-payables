@@ -96,6 +96,19 @@ install coexist. Select the container with `AP_OLLAMA_BASE_URL=http://localhost:
 CPU by default; a commented `deploy:` block enables NVIDIA GPU. Full walkthrough:
 [`local-ai-testing.md`](local-ai-testing.md).
 
+## Stripe API mock (stripe-mock)
+
+The `stripe_treasury` payment adapter can run offline against Stripe's official
+API mock. Opt-in under the `payments` profile:
+
+```bash
+docker compose --profile payments up -d stripe-mock   # pnpm stripe:up (port 12111)
+```
+
+Point the adapter at it with `AP_STRIPE_API_BASE=http://localhost:12111/v1`
+(empty = live Stripe). Returns canned fixtures (no persisted state). Details:
+[`payments.md` § Local testing with stripe-mock](payments.md#local-testing-with-stripe-mock).
+
 ## Services
 
 | Service    | Image                       | Port(s)         | Profile | Description                                       |
@@ -110,6 +123,7 @@ CPU by default; a commented `deploy:` block enables NVIDIA GPU. Full walkthrough
 | Authentik Redis | `redis:7-alpine`           | —      | `idp` | Authentik's own cache/broker (not the app's)     |
 | LocalStack | `localstack/localstack:3`     | `4566` | `aws` | Local AWS emulator — SQS, SES, CloudWatch Logs, S3 Object Lock (opt-in) |
 | Ollama     | `ollama/ollama:latest`        | `11435`| `ai`  | Local AI model server for the `ollama` extraction adapter (opt-in)      |
+| stripe-mock | `stripe/stripe-mock:latest`  | `12111`| `payments` | Stripe API mock for the `stripe_treasury` payment adapter (opt-in) |
 
 The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 
