@@ -67,6 +67,11 @@ function createAuthStore() {
 	async function fetchUser() {
 		try {
 			user = await api.get<User>('/api/auth/me');
+			// A successful /me means the token is good — keep `loggedIn` in sync.
+			// The SSO callback (and any flow that obtains a token without going
+			// through login()/completeMfa()) relies on this to flip the flag,
+			// otherwise the layout sees `!loggedIn` and bounces back to /login.
+			loggedIn = true;
 		} catch {
 			user = null;
 		}
