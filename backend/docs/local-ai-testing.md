@@ -10,6 +10,36 @@ Test invoice extraction locally using Ollama — no API keys, no costs, no data 
 
 ## Setup
 
+You have two options: a **Docker container** managed by the repo's Compose stack
+(reproducible, no host install), or a **native install** (often faster on this
+workstation, which has GPU-accelerated native Ollama). Both expose the same API.
+
+### Option A — Docker Compose (`pnpm ollama:up`)
+
+```bash
+pnpm ollama:up                 # starts the ollama container on host port 11435
+pnpm ollama:pull moondream     # pull a small vision model (~1.7GB); or llama3.2-vision:11b
+# point the app at the container (backend/.env):
+#   AP_OLLAMA_BASE_URL=http://localhost:11435
+pnpm dev:backend               # restart to pick up the env
+pnpm ollama:logs               # follow logs;  pnpm ollama:down to stop
+```
+
+Host port is **11435** (not the native default 11434) so the container coexists
+with a natively-installed Ollama. `AP_OLLAMA_BASE_URL` is the global fallback the
+`ollama` extraction adapter uses when an org's extraction config doesn't set its
+own `base_url` (the per-org `base_url` always wins). The container is CPU-only by
+default; uncomment the `deploy:` GPU block in `docker-compose.yml` (needs
+nvidia-container-toolkit) for NVIDIA acceleration.
+
+> **Embeddings note:** Ollama is wired for **extraction** only. The RAG /
+> duplicate-similarity store is a `vector(1536)` column, and Ollama embedding
+> models emit different dimensions (nomic 768, mxbai 1024), so they can't drop
+> into that column. Local embeddings stay on the `mock` adapter (default) or
+> `openai`. See `app/services/embedding_adapters/`.
+
+### Option B — Native install
+
 ### 1. Install Ollama
 
 ```bash

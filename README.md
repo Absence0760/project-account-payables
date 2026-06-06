@@ -40,7 +40,8 @@ Common cross-workspace tasks are exposed via `pnpm run` at the repo root. Each s
 | `pnpm idp:seed` | point the acme tenant's `settings.sso` at local Keycloak |
 | `pnpm scim:seed` | set the acme tenant's SCIM bearer token to match the Authentik blueprint |
 | `pnpm aws:{up,down,logs}` | local AWS emulator (LocalStack, opt-in `aws` profile): SQS, SES, CloudWatch, S3 Object Lock |
-| `pnpm services:{up,down,reset}` | bring up / tear down **all** local services (core + IdPs + LocalStack) at once |
+| `pnpm ollama:{up,down,logs}` + `pnpm ollama:pull <model>` | local AI model server (opt-in `ai` profile) for the `ollama` extraction adapter |
+| `pnpm services:{up,down,reset}` | bring up / tear down **all** local services (core + IdPs + LocalStack + Ollama) at once |
 | `pnpm seed` | `python scripts/seed.py` |
 | `pnpm test:scim` | run the SCIM provisioning e2e (`tests-e2e/scim/`) |
 | `pnpm migrate[:tenants|:all]` | `alembic upgrade head` / `scripts/migrate_all_tenants.py` |

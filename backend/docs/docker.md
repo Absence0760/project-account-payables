@@ -81,6 +81,21 @@ log group, and object-lock bucket on boot. Point the app at it with
 S3 *file* store; LocalStack only fronts the other AWS services. Full walkthrough:
 [`../../docs/local-aws-localstack.md`](../../docs/local-aws-localstack.md).
 
+## Local AI model server (Ollama)
+
+The `ollama` extraction adapter can run invoice extraction locally with no API
+key. Opt-in under the `ai` profile:
+
+```bash
+docker compose --profile ai up -d ollama        # pnpm ollama:up (host port 11435)
+docker compose exec ollama ollama pull moondream # pnpm ollama:pull moondream
+```
+
+Port 11435 avoids the native Ollama default (11434), so a container and a native
+install coexist. Select the container with `AP_OLLAMA_BASE_URL=http://localhost:11435`.
+CPU by default; a commented `deploy:` block enables NVIDIA GPU. Full walkthrough:
+[`local-ai-testing.md`](local-ai-testing.md).
+
 ## Services
 
 | Service    | Image                       | Port(s)         | Profile | Description                                       |
@@ -94,6 +109,7 @@ S3 *file* store; LocalStack only fronts the other AWS services. Full walkthrough
 | Authentik Postgres | `postgres:16-alpine`     | —      | `idp` | Authentik's own DB (not the app's)               |
 | Authentik Redis | `redis:7-alpine`           | —      | `idp` | Authentik's own cache/broker (not the app's)     |
 | LocalStack | `localstack/localstack:3`     | `4566` | `aws` | Local AWS emulator — SQS, SES, CloudWatch Logs, S3 Object Lock (opt-in) |
+| Ollama     | `ollama/ollama:latest`        | `11435`| `ai`  | Local AI model server for the `ollama` extraction adapter (opt-in)      |
 
 The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 
