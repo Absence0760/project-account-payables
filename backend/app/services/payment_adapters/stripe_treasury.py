@@ -80,6 +80,12 @@ class StripeTreasuryAdapter(PaymentAdapter):
         # Required: the FinancialAccount the payment debits from.
         self.financial_account_id: str = config.get("financial_account_id", "")
         self.webhook_secret: str = config.get("webhook_secret", "")
+        # Stripe API base. Defaults to live Stripe; AP_STRIPE_API_BASE (or a
+        # per-config api_base) repoints it at the local stripe-mock container for
+        # offline testing. See backend/docs/payments.md § Local testing.
+        from app.config import settings
+
+        self.api_base: str = config.get("api_base") or settings.stripe_api_base or API_BASE
 
     # ------------------------------------------------------------------
     # create_payment
@@ -141,7 +147,7 @@ class StripeTreasuryAdapter(PaymentAdapter):
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
                 response = await client.post(
-                    f"{API_BASE}/treasury/outbound_payments", data=body, headers=headers
+                    f"{self.api_base}/treasury/outbound_payments", data=body, headers=headers
                 )
         except httpx.RequestError as exc:
             return PaymentResult(
@@ -185,7 +191,7 @@ class StripeTreasuryAdapter(PaymentAdapter):
         headers = {"Authorization": f"Bearer {self.api_key}"}
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             response = await client.get(
-                f"{API_BASE}/treasury/outbound_payments/{provider_payment_id}",
+                f"{self.api_base}/treasury/outbound_payments/{provider_payment_id}",
                 headers=headers,
             )
         if response.status_code >= 400:
@@ -268,7 +274,7 @@ class StripeTreasuryAdapter(PaymentAdapter):
         headers = {"Authorization": f"Bearer {self.api_key}"}
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             response = await client.get(
-                f"{API_BASE}/treasury/financial_accounts",
+                f"{self.api_base}/treasury/financial_accounts",
                 headers=headers,
                 params={"limit": 1},
             )

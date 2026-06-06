@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     # a native Ollama on 11434; point at 11435 to use the Compose container
     # (`pnpm ollama:up`). See backend/docs/local-ai-testing.md.
     ollama_base_url: str = "http://localhost:11434"
+
+    # Stripe API base for the stripe_treasury payment adapter. Empty = live Stripe
+    # (api.stripe.com). Set to the local stripe-mock container
+    # (http://localhost:12111/v1) for offline payment testing (`pnpm stripe:up`).
+    stripe_api_base: str = ""
     # Cosine similarity above which a new invoice is flagged as a likely
     # duplicate of an already-stored one. Tighter than rag_top_k retrieval:
     # RAG wants semantically related invoices; dup detection wants near-

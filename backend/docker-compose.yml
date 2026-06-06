@@ -229,6 +229,18 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # Stripe's official API mock for the stripe_treasury payment adapter — lets the
+  # payment-run path run against a Stripe-shaped API offline (no sk_test_ key, no
+  # network). Opt-in under the `payments` profile (`pnpm stripe:up`). Returns
+  # canned fixtures generated from Stripe's OpenAPI spec (no persisted state), so
+  # it validates request shape + response parsing, not stateful flows. Point the
+  # adapter at it with AP_STRIPE_API_BASE=http://localhost:12111/v1.
+  stripe-mock:
+    image: stripe/stripe-mock:latest
+    profiles: ["payments"]
+    ports:
+      - "12111:12111"
+
 volumes:
   pgdata:
   miniodata:
