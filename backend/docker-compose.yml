@@ -42,6 +42,34 @@ services:
     volumes:
       - miniodata:/data
 
+  # Local OIDC identity provider — the dev-laptop equivalent of Okta / Entra,
+  # so the SSO flow (app/api/auth_sso.py) can be exercised end-to-end with no
+  # cloud account. Opt-in: it only starts under the `idp` profile, so the core
+  # `docker compose up -d` (pnpm db:up) stays lean. Bring it up with
+  # `pnpm idp:up`, then `pnpm idp:seed` to point the acme tenant at it.
+  #
+  # Runs in dev mode (start-dev) with an ephemeral in-memory database, and
+  # re-imports realm-export.json on every boot — so the IdP is always a clean,
+  # reproducible state. Realm `account-payables` ships a confidential client
+  # (account-payables-app) and two test users (demo@acme.com, newhire@acme.com),
+  # both password `demo`.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    profiles: ["idp"]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      # Host 8088 (not 8080) to dodge collisions with other local dev tooling
+      # that squats on 8080. Keycloak in dev mode derives its issuer + endpoint
+      # URLs from the request Host header, so localhost:8088 yields a consistent
+      # issuer with no extra hostname config.
+      - "8088:8080"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+
 volumes:
   pgdata:
   miniodata:

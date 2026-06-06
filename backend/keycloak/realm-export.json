@@ -1,0 +1,57 @@
+{
+  "realm": "account-payables",
+  "enabled": true,
+  "displayName": "Account Payables (local dev IdP)",
+  "loginWithEmailAllowed": true,
+  "registrationEmailAsUsername": true,
+  "sslRequired": "none",
+  "clients": [
+    {
+      "clientId": "account-payables-app",
+      "name": "Account Payables (local dev)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "local-dev-keycloak-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [
+        "http://*.localhost:7777/login/sso-callback",
+        "http://localhost:7777/login/sso-callback"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": ["openid", "email", "profile", "roles", "web-origins"],
+      "optionalClientScopes": ["address", "phone", "offline_access"]
+    }
+  ],
+  "users": [
+    {
+      "username": "demo@acme.com",
+      "email": "demo@acme.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Alice",
+      "lastName": "Admin",
+      "credentials": [
+        { "type": "password", "value": "demo", "temporary": false }
+      ]
+    },
+    {
+      "username": "newhire@acme.com",
+      "email": "newhire@acme.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Nat",
+      "lastName": "Newhire",
+      "credentials": [
+        { "type": "password", "value": "demo", "temporary": false }
+      ]
+    }
+  ]
+}
