@@ -27,7 +27,8 @@ pnpm idp:up                   # local IdPs (opt-in `idp` profile): Keycloak (OID
 pnpm idp:seed                 # point the acme tenant's settings.sso at local Keycloak (SSO)
 pnpm scim:seed                # set acme's SCIM bearer token to match the Authentik blueprint (SCIM)
 pnpm test:scim                # SCIM provisioning e2e (tests-e2e/scim/)
-pnpm services:up              # everything at once: core + IdPs (services:down / services:reset too)
+pnpm aws:up                   # local AWS emulator (LocalStack :4566, opt-in `aws` profile): SQS/SES/CloudWatch/S3-ObjectLock
+pnpm services:up              # everything at once: core + IdPs + LocalStack (services:down / services:reset too)
 pnpm seed                     # python scripts/seed.py
 pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
 pnpm dev:all                  # db:up, then pnpm dev (whole web stack from cold)
@@ -226,6 +227,7 @@ Full list in `backend/app/config.py`.
 | DB / Redis / MinIO | `backend/docs/{database,redis,minio,docker}.md` — backend infra |
 | Auth & RBAC | `docs/authentication.md`, `docs/user-management.md` |
 | Local SSO + SCIM testing | `docs/local-sso-keycloak.md` — Keycloak (OIDC SSO) + Authentik (SCIM) via Docker; `pnpm idp:up`, `idp:seed`, `scim:seed`, `test:scim` |
+| Local AWS testing | `docs/local-aws-localstack.md` — LocalStack via Docker for SQS/SES/CloudWatch/S3-ObjectLock; `pnpm aws:up`, `AP_AWS_ENDPOINT_URL` |
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
 | Architecture | `docs/architecture.md` — system overview |
 | Environment vars | `docs/environment.md` — frontend + backend config |

@@ -65,6 +65,22 @@ Authentik reaches the app backend (run on the host via `pnpm dev`, `:8000`)
 through Docker's `host.docker.internal` gateway. Full walkthrough:
 [`../../docs/local-sso-keycloak.md` § Authentik](../../docs/local-sso-keycloak.md#authentik--local-scim-provisioning).
 
+## Local AWS emulator (LocalStack)
+
+LocalStack gives the AWS-backed paths a local target with no cloud account: SQS
+(the `lambda` dispatch modes), SES (the `ses` email adapter), and CloudWatch Logs
++ S3 Object Lock (the audit-log shipper sinks). Opt-in under the `aws` profile:
+
+```bash
+docker compose --profile aws up -d localstack   # pnpm aws:up
+```
+
+An init script (`localstack/init/ready.d/`) creates the queues, SES identity,
+log group, and object-lock bucket on boot. Point the app at it with
+`AP_AWS_ENDPOINT_URL=http://localhost:4566` (empty = real AWS). MinIO stays the
+S3 *file* store; LocalStack only fronts the other AWS services. Full walkthrough:
+[`../../docs/local-aws-localstack.md`](../../docs/local-aws-localstack.md).
+
 ## Services
 
 | Service    | Image                       | Port(s)         | Profile | Description                                       |
@@ -77,6 +93,7 @@ through Docker's `host.docker.internal` gateway. Full walkthrough:
 | Authentik worker | `ghcr.io/goauthentik/server` | —      | `idp` | Runs the SCIM sync jobs (opt-in)                  |
 | Authentik Postgres | `postgres:16-alpine`     | —      | `idp` | Authentik's own DB (not the app's)               |
 | Authentik Redis | `redis:7-alpine`           | —      | `idp` | Authentik's own cache/broker (not the app's)     |
+| LocalStack | `localstack/localstack:3`     | `4566` | `aws` | Local AWS emulator — SQS, SES, CloudWatch Logs, S3 Object Lock (opt-in) |
 
 The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 
