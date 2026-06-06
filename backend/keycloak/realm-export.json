@@ -19,8 +19,17 @@
       "serviceAccountsEnabled": false,
       "fullScopeAllowed": true,
       "redirectUris": [
-        "http://*.localhost:7777/login/sso-callback",
-        "http://localhost:7777/login/sso-callback"
+        "http://localhost:7777/login/sso-callback",
+        "http://acme.localhost:7777/login/sso-callback",
+        "http://techflow.localhost:7777/login/sso-callback",
+        "http://e2e1.localhost:7777/login/sso-callback",
+        "http://e2e2.localhost:7777/login/sso-callback",
+        "http://e2e3.localhost:7777/login/sso-callback",
+        "http://e2e4.localhost:7777/login/sso-callback",
+        "http://e2e5.localhost:7777/login/sso-callback",
+        "http://e2e6.localhost:7777/login/sso-callback",
+        "http://e2e7.localhost:7777/login/sso-callback",
+        "http://e2e8.localhost:7777/login/sso-callback"
       ],
       "webOrigins": ["+"],
       "attributes": {
