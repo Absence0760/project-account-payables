@@ -407,8 +407,14 @@ Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it
 | `GET` | `/Users` | List + filter + paginate. Supports `userName eq`, `emails eq`, `externalId eq`, `active eq`. |
 | `GET` | `/Users/{id}` | Fetch one user. |
 | `POST` | `/Users` | Create. Returns 409 `uniqueness` on duplicate userName. |
+| `PUT` | `/Users/{id}` | **Full-resource replace.** Authentik (and RFC 7644 §3.5.1) update users via PUT, not PATCH. Returns 409 `uniqueness` if the new userName collides with another user. |
 | `PATCH` | `/Users/{id}` | Partial update. Supports the ops Okta + Entra send (active toggle, userName/externalId/name replace, root-object replace). |
 | `DELETE` | `/Users/{id}` | **Soft delete** — sets `is_active=false`. Preserves audit trail. |
+
+Both `PUT` and `PATCH` `db.refresh()` the row after the flush: the `UPDATE` fires
+`updated_at`'s server-side `onupdate`, which SQLAlchemy expires — reloading it in
+the async handler avoids a sync lazy-load (`MissingGreenlet` → 500) when the SCIM
+response reads `meta.lastModified`.
 
 ### Filter syntax
 
@@ -423,9 +429,29 @@ active eq true
 
 Anything else returns a `400 invalidFilter` with a clear message so the IdP surfaces a useful error.
 
+### Local testing with Authentik (no cloud account)
+
+You don't need an Okta/Entra tenant to exercise SCIM. A Keycloak container covers
+inbound SSO; an **Authentik** container (Docker Compose `idp` profile) covers
+outbound SCIM — it's the SCIM *client* that pushes users into `/api/scim/v2`:
+
+```bash
+pnpm idp:up        # Keycloak + Authentik (Docker)
+pnpm scim:seed     # set the matching SCIM bearer token on the acme tenant
+pnpm dev           # the app must be running — Authentik POSTs to :8000
+# Authentik admin http://localhost:9002 (akadmin / admin) → Providers → Run sync
+# Provisioned users appear at http://acme.localhost:7777/admin
+```
+
+Deterministic CI coverage of the same contract (create → filter → PUT → PATCH
+deactivate → DELETE, verified in `/admin`) lives in
+`frontend/tests-e2e/scim/provisioning.spec.ts` (`pnpm test:scim`) — it runs
+without the Authentik container, which CI can't host. Full walkthrough:
+[`local-sso-keycloak.md` § Authentik](local-sso-keycloak.md#authentik--local-scim-provisioning).
+
 ### Not in this pass
 
-- **`/Groups` endpoints** — group sync requires mapping IdP groups to our `Role` rows. Design work pending (how is "admin group members get admin role" expressed? Per-tenant config or convention?). Tracked in the roadmap.
+- **`/Groups` endpoints** — group sync requires mapping IdP groups to our `Role` rows. Design work pending (how is "admin group members get admin role" expressed? Per-tenant config or convention?). Tracked in the roadmap. The Authentik blueprint sets `property_mappings_group: []` so it provisions users only.
 
 ---
 

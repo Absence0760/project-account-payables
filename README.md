@@ -36,15 +36,23 @@ Common cross-workspace tasks are exposed via `pnpm run` at the repo root. Each s
 | `pnpm format[:backend][:check]` | `ruff format [--check] .` |
 | `pnpm test:{backend,frontend,mobile}` + `pnpm test` | `pytest` / `pnpm test:e2e` / `flutter test` |
 | `pnpm db:{up,down,logs,reset}` | core services (Postgres + Redis + MinIO) `docker compose ...` in `backend/` |
-| `pnpm idp:{up,down,logs}` | local Keycloak OIDC IdP (opt-in `idp` profile) for SSO testing |
+| `pnpm idp:{up,down,logs}` | local IdPs (opt-in `idp` profile): Keycloak (OIDC SSO, :8088) + Authentik (SCIM, :9002) |
 | `pnpm idp:seed` | point the acme tenant's `settings.sso` at local Keycloak |
-| `pnpm services:{up,down,reset}` | bring up / tear down **all** local services (core + Keycloak) at once |
+| `pnpm scim:seed` | set the acme tenant's SCIM bearer token to match the Authentik blueprint |
+| `pnpm services:{up,down,reset}` | bring up / tear down **all** local services (core + IdPs) at once |
 | `pnpm seed` | `python scripts/seed.py` |
+| `pnpm test:scim` | run the SCIM provisioning e2e (`tests-e2e/scim/`) |
 | `pnpm migrate[:tenants|:all]` | `alembic upgrade head` / `scripts/migrate_all_tenants.py` |
 
-To exercise SSO locally with no cloud account: `pnpm idp:up && pnpm idp:seed`,
-then open `http://acme.localhost:7777` and sign in via SSO as `demo@acme.com` /
-`demo`. See [`docs/local-sso-keycloak.md`](docs/local-sso-keycloak.md).
+Local identity testing, no cloud account:
+
+- **SSO** — `pnpm idp:up && pnpm idp:seed`, then sign in via SSO at
+  `http://acme.localhost:7777` as `demo@acme.com` / `demo`.
+- **SCIM** — `pnpm idp:up && pnpm scim:seed`, then in Authentik
+  (`http://localhost:9002`, `akadmin` / `admin`) run the "Account Payables SCIM"
+  provider sync; provisioned users appear in `/admin`.
+
+See [`docs/local-sso-keycloak.md`](docs/local-sso-keycloak.md).
 
 The backend scripts assume your backend venv is activated (`source backend/.venv/bin/activate`). Per-workspace docs in `backend/CLAUDE.md`, `frontend/CLAUDE.md`, `mobile/CLAUDE.md` cover everything the dispatch scripts don't.
 

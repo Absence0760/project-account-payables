@@ -45,6 +45,26 @@ It runs in dev mode with an ephemeral in-memory DB and re-imports
 After it's up, `pnpm idp:seed` points the acme tenant's `settings.sso` at it.
 Full walkthrough: [`../../docs/local-sso-keycloak.md`](../../docs/local-sso-keycloak.md).
 
+## Local SCIM provider (Authentik)
+
+Where Keycloak covers inbound OIDC SSO, **Authentik** covers outbound SCIM
+provisioning: it's the SCIM *client* that pushes users into the app's SCIM
+Service Provider (`app/api/scim.py`, `/api/scim/v2/Users`). It's the local-first
+equivalent of Okta / Entra SCIM. `pnpm idp:up` starts it alongside Keycloak; the
+stack is self-contained (its own Postgres + Redis under the `idp` profile, not
+the app's) and applies `authentik/blueprints/account-payables-scim.yaml` on boot
+to configure the SCIM provider automatically.
+
+```bash
+pnpm idp:up        # Keycloak + Authentik
+pnpm scim:seed     # set the matching SCIM bearer token on the acme tenant
+# Authentik admin http://localhost:9002 (akadmin / admin) → Providers → Run sync
+```
+
+Authentik reaches the app backend (run on the host via `pnpm dev`, `:8000`)
+through Docker's `host.docker.internal` gateway. Full walkthrough:
+[`../../docs/local-sso-keycloak.md` § Authentik](../../docs/local-sso-keycloak.md#authentik--local-scim-provisioning).
+
 ## Services
 
 | Service    | Image                       | Port(s)         | Profile | Description                                       |
@@ -53,6 +73,10 @@ Full walkthrough: [`../../docs/local-sso-keycloak.md`](../../docs/local-sso-keyc
 | Redis      | `redis:7-alpine`            | `6379`          | (core)  | JWT blocklist + rate-limit counters               |
 | MinIO      | `minio/minio:latest`        | `9000`, `9001`  | (core)  | S3-compatible storage                             |
 | Keycloak   | `quay.io/keycloak/keycloak` | `8088`          | `idp`   | Local OIDC IdP for SSO testing (opt-in)           |
+| Authentik server | `ghcr.io/goauthentik/server` | `9002` | `idp` | Local SCIM IdP — pushes users into `/api/scim/v2` (opt-in) |
+| Authentik worker | `ghcr.io/goauthentik/server` | —      | `idp` | Runs the SCIM sync jobs (opt-in)                  |
+| Authentik Postgres | `postgres:16-alpine`     | —      | `idp` | Authentik's own DB (not the app's)               |
+| Authentik Redis | `redis:7-alpine`           | —      | `idp` | Authentik's own cache/broker (not the app's)     |
 
 The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 
@@ -64,9 +88,12 @@ The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pg
 | MinIO      | `minioadmin`  | `minioadmin`  |
 | Redis      | (none)        | (none)        |
 | Keycloak   | `admin`       | `admin`       |
+| Authentik  | `akadmin`     | `admin`       |
 
 Keycloak realm test users (realm `account-payables`): `demo@acme.com` / `demo`
-and `newhire@acme.com` / `demo`.
+and `newhire@acme.com` / `demo`. Authentik API token for scripting:
+`local-dev-authentik-api-token`. SCIM bearer (set by `pnpm scim:seed`):
+`local-dev-scim-token-acme`.
 
 ## Databases
 

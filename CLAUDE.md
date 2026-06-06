@@ -23,9 +23,11 @@ The repo root has a `package.json` with `pnpm` dispatch scripts that wrap each w
 # Common tasks via root pnpm scripts (any working directory)
 pnpm install:all              # bootstrap all three workspaces
 pnpm db:up                    # core services: Postgres + Redis + MinIO (docker compose up -d)
-pnpm idp:up                   # local Keycloak OIDC IdP (:8088, opt-in `idp` profile) for SSO testing
-pnpm idp:seed                 # point the acme tenant's settings.sso at local Keycloak
-pnpm services:up              # everything at once: core + Keycloak (services:down / services:reset too)
+pnpm idp:up                   # local IdPs (opt-in `idp` profile): Keycloak (OIDC SSO, :8088) + Authentik (SCIM, :9002)
+pnpm idp:seed                 # point the acme tenant's settings.sso at local Keycloak (SSO)
+pnpm scim:seed                # set acme's SCIM bearer token to match the Authentik blueprint (SCIM)
+pnpm test:scim                # SCIM provisioning e2e (tests-e2e/scim/)
+pnpm services:up              # everything at once: core + IdPs (services:down / services:reset too)
 pnpm seed                     # python scripts/seed.py
 pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
 pnpm dev:all                  # db:up, then pnpm dev (whole web stack from cold)
@@ -93,7 +95,7 @@ The backend dispatch scripts (`lint:backend`, `test:backend`, `format:backend`, 
 |--------|---------|
 | `/auth` | Login, logout, profile (JWT + Redis blocklist), MFA enroll/verify/disable, MFA challenge |
 | `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
-| `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra (per-tenant bearer auth) |
+| `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra/Authentik — list/get/create/PUT/PATCH/delete (per-tenant bearer auth) |
 | `/portal/auth` | Supplier-portal auth (VendorUser, JWT `typ=vendor`) — login, logout, me, change-password |
 | `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, vendor-scoped |
 | `/admin` | User CRUD, role assignment |
@@ -223,7 +225,7 @@ Full list in `backend/app/config.py`.
 | API reference | `backend/docs/api-reference.md` — REST endpoints |
 | DB / Redis / MinIO | `backend/docs/{database,redis,minio,docker}.md` — backend infra |
 | Auth & RBAC | `docs/authentication.md`, `docs/user-management.md` |
-| Local SSO testing | `docs/local-sso-keycloak.md` — Keycloak IdP via Docker, `pnpm idp:up` + `idp:seed` |
+| Local SSO + SCIM testing | `docs/local-sso-keycloak.md` — Keycloak (OIDC SSO) + Authentik (SCIM) via Docker; `pnpm idp:up`, `idp:seed`, `scim:seed`, `test:scim` |
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
 | Architecture | `docs/architecture.md` — system overview |
 | Environment vars | `docs/environment.md` — frontend + backend config |
