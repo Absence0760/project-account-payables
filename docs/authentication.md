@@ -235,6 +235,23 @@ A single OIDC flow supports both Okta and Entra because they're both OIDC-compli
 
 Each customer registers their own Okta/Entra app with `redirect_uri = https://<theirtenant>.app.com/login/sso-callback`. That way the IdP redirects directly to the tenant origin and our localStorage JWT works without cross-origin hops. In dev, `AP_TENANT_URL_TEMPLATE=http://{slug}.localhost:7777` gives each tenant their own callback URL for free.
 
+### Local testing with Keycloak (no cloud account)
+
+You don't need an Okta/Entra tenant to exercise this flow locally. A Keycloak
+container under the compose `idp` profile is the dev-laptop equivalent of the
+IdP:
+
+```bash
+pnpm idp:up        # Keycloak on :8088 (Docker, opt-in)
+pnpm idp:seed      # write the acme tenant's settings.sso → local Keycloak
+pnpm dev           # then sign in via SSO at http://acme.localhost:7777
+```
+
+`demo@acme.com` / `demo` links to the seeded admin; `newhire@acme.com` / `demo`
+JIT-provisions a fresh `ap_clerk`. Because the same generic OIDC code path runs,
+a flow that works against Keycloak works against Okta/Entra. Full walkthrough:
+[`local-sso-keycloak.md`](local-sso-keycloak.md).
+
 ### JIT user provisioning
 
 First SSO login provisions the user. Three match paths:

@@ -35,9 +35,16 @@ Common cross-workspace tasks are exposed via `pnpm run` at the repo root. Each s
 | `pnpm lint:{backend,frontend,mobile}` + `pnpm lint` | `ruff check .` / `pnpm check` / `flutter analyze` |
 | `pnpm format[:backend][:check]` | `ruff format [--check] .` |
 | `pnpm test:{backend,frontend,mobile}` + `pnpm test` | `pytest` / `pnpm test:e2e` / `flutter test` |
-| `pnpm db:{up,down,logs,reset}` | `docker compose ...` in `backend/` |
+| `pnpm db:{up,down,logs,reset}` | core services (Postgres + Redis + MinIO) `docker compose ...` in `backend/` |
+| `pnpm idp:{up,down,logs}` | local Keycloak OIDC IdP (opt-in `idp` profile) for SSO testing |
+| `pnpm idp:seed` | point the acme tenant's `settings.sso` at local Keycloak |
+| `pnpm services:{up,down,reset}` | bring up / tear down **all** local services (core + Keycloak) at once |
 | `pnpm seed` | `python scripts/seed.py` |
 | `pnpm migrate[:tenants|:all]` | `alembic upgrade head` / `scripts/migrate_all_tenants.py` |
+
+To exercise SSO locally with no cloud account: `pnpm idp:up && pnpm idp:seed`,
+then open `http://acme.localhost:7777` and sign in via SSO as `demo@acme.com` /
+`demo`. See [`docs/local-sso-keycloak.md`](docs/local-sso-keycloak.md).
 
 The backend scripts assume your backend venv is activated (`source backend/.venv/bin/activate`). Per-workspace docs in `backend/CLAUDE.md`, `frontend/CLAUDE.md`, `mobile/CLAUDE.md` cover everything the dispatch scripts don't.
 

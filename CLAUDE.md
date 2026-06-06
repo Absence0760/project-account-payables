@@ -22,7 +22,10 @@ The repo root has a `package.json` with `pnpm` dispatch scripts that wrap each w
 ```bash
 # Common tasks via root pnpm scripts (any working directory)
 pnpm install:all              # bootstrap all three workspaces
-pnpm db:up                    # docker compose up -d (Postgres/Redis/MinIO)
+pnpm db:up                    # core services: Postgres + Redis + MinIO (docker compose up -d)
+pnpm idp:up                   # local Keycloak OIDC IdP (:8088, opt-in `idp` profile) for SSO testing
+pnpm idp:seed                 # point the acme tenant's settings.sso at local Keycloak
+pnpm services:up              # everything at once: core + Keycloak (services:down / services:reset too)
 pnpm seed                     # python scripts/seed.py
 pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
 pnpm dev:all                  # db:up, then pnpm dev (whole web stack from cold)
@@ -220,6 +223,7 @@ Full list in `backend/app/config.py`.
 | API reference | `backend/docs/api-reference.md` — REST endpoints |
 | DB / Redis / MinIO | `backend/docs/{database,redis,minio,docker}.md` — backend infra |
 | Auth & RBAC | `docs/authentication.md`, `docs/user-management.md` |
+| Local SSO testing | `docs/local-sso-keycloak.md` — Keycloak IdP via Docker, `pnpm idp:up` + `idp:seed` |
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
 | Architecture | `docs/architecture.md` — system overview |
 | Environment vars | `docs/environment.md` — frontend + backend config |
@@ -240,6 +244,48 @@ Full list in `backend/app/config.py`.
 | Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 
 Prefer reading docs over guessing. Update them when behavior changes.
+
+## Guard rails
+
+Standing rules for how to work in this repo. They are not optional; when in
+doubt, follow the rule and say so. (Several are detailed in their own sections
+below or in `## Project invariants` — this is the index.)
+
+1. **Commit each piece of work; never push.** One logical unit = one
+   path-scoped commit, as you finish it. See [Git workflow](#git-workflow).
+2. **Add test coverage with the change.** A behavior change ships with tests in
+   the same session (pytest / Playwright / flutter). If something is genuinely
+   untestable, say *why* rather than skipping silently. See [Every change must
+   update docs and tests](#every-change-must-update-docs-and-tests).
+3. **Never code around an issue — fix the root cause.** No masking: no inflated
+   timeouts, sleeps, retries, skipped/loosened assertions, or swallowed errors.
+   See [Fix bugs at the source](#fix-bugs-at-the-source--never-adjust-the-test-to-hide-them).
+4. **Always recommend the long-term solution.** When a quick patch and a durable
+   fix diverge, lead with the durable one and name the trade-off — don't let an
+   expedient workaround pass as the answer silently.
+5. **Local-first.** Every part of the app must run on a dev laptop with no cloud
+   account. Each external dependency ships with a local equivalent *and* a safe
+   local default that points at it: Postgres/Redis/MinIO via Compose; provider
+   integrations default to their `mock` adapter (extraction, ERP, cards,
+   payments, FX, sanctions, audit shipping); email defaults to `console`; SSO is
+   off by default with **Keycloak** (`pnpm idp:up`) as the local IdP. When you
+   add a dependency on an external service, add its local equivalent and a safe
+   local default in the *same* change — never make `pnpm dev` require a real
+   SaaS credential.
+6. **A pnpm script per service.** Every service or long-running process a
+   contributor starts in dev gets a root `package.json` script — don't make
+   anyone memorize raw `docker compose --profile …` invocations (`pnpm db:up`,
+   `pnpm idp:up`, `pnpm services:up`). Add the script in the same change you add
+   the service.
+7. **Honour the project invariants.** Money is `Decimal`/`Numeric`; writes that
+   move money are idempotent; status changes write audit rows; tenant isolation
+   is enforced at the data layer; auth before everything; secrets via sops+KMS;
+   PII/banking data stays out of logs; migrations fan out to every tenant;
+   webhooks verify signatures + dedupe. Full enumeration with severities in
+   [Project invariants](#project-invariants).
+8. **Docs-as-code.** A behaviour, command, env var, port, or convention change
+   updates its docs in the same turn — deferred docs are drift. See [Every
+   change must update docs and tests](#every-change-must-update-docs-and-tests).
 
 ## Every change must update docs and tests
 

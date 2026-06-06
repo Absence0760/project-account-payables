@@ -1,15 +1,25 @@
 # Docker
 
-Docker Compose manages the infrastructure services: PostgreSQL, Redis, and MinIO.
+Docker Compose manages the local infrastructure: PostgreSQL, Redis, and MinIO
+are always-on core services; Keycloak is an opt-in local identity provider for
+exercising SSO.
+
+Prefer the root `pnpm` scripts over raw `docker compose` (one script per
+service — no need to memorize profile flags): `pnpm db:{up,down,logs,reset}`
+for the core trio, `pnpm idp:{up,down,logs,seed}` for Keycloak, and
+`pnpm services:{up,down,reset}` to bring up / tear down *everything* at once.
 
 ## Starting Services
 
 ```bash
 cd backend
-docker compose up -d
+docker compose up -d        # core trio only — pnpm db:up
 ```
 
-This starts all three services in the background. On first run, PostgreSQL automatically creates three databases: `account_payables` (control plane), `ap_acme`, and `ap_techflow` (dev tenants) via the mounted `init-tenants.sql`.
+This starts PostgreSQL, Redis, and MinIO in the background (Keycloak is held
+behind the `idp` profile and does NOT start here). On first run, PostgreSQL
+automatically creates three databases: `account_payables` (control plane),
+`ap_acme`, and `ap_techflow` (dev tenants) via the mounted `init-tenants.sql`.
 
 To start individual services:
 
@@ -19,13 +29,30 @@ docker compose up -d redis
 docker compose up -d minio
 ```
 
+## Local identity provider (Keycloak)
+
+Keycloak is the dev-laptop equivalent of Okta / Entra, so the OIDC SSO flow can
+be driven end-to-end with no cloud account. It lives under the `idp` compose
+profile, so it only starts when you ask for it:
+
+```bash
+docker compose --profile idp up -d keycloak   # pnpm idp:up
+docker compose stop keycloak                  # pnpm idp:down
+```
+
+It runs in dev mode with an ephemeral in-memory DB and re-imports
+`keycloak/realm-export.json` on every boot — always a clean, reproducible IdP.
+After it's up, `pnpm idp:seed` points the acme tenant's `settings.sso` at it.
+Full walkthrough: [`../../docs/local-sso-keycloak.md`](../../docs/local-sso-keycloak.md).
+
 ## Services
 
-| Service    | Image                    | Port(s)         | Description                                       |
-|------------|--------------------------|-----------------|---------------------------------------------------|
-| PostgreSQL | `pgvector/pgvector:pg16` | `5432`          | Primary database (multi-DB) + pgvector extension  |
-| Redis      | `redis:7-alpine`         | `6379`          | JWT blocklist + rate-limit counters               |
-| MinIO      | `minio/minio:latest`     | `9000`, `9001`  | S3-compatible storage                             |
+| Service    | Image                       | Port(s)         | Profile | Description                                       |
+|------------|-----------------------------|-----------------|---------|---------------------------------------------------|
+| PostgreSQL | `pgvector/pgvector:pg16`    | `5432`          | (core)  | Primary database (multi-DB) + pgvector extension  |
+| Redis      | `redis:7-alpine`            | `6379`          | (core)  | JWT blocklist + rate-limit counters               |
+| MinIO      | `minio/minio:latest`        | `9000`, `9001`  | (core)  | S3-compatible storage                             |
+| Keycloak   | `quay.io/keycloak/keycloak` | `8088`          | `idp`   | Local OIDC IdP for SSO testing (opt-in)           |
 
 The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 
@@ -36,6 +63,10 @@ The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pg
 | PostgreSQL | `postgres`    | `postgres`    |
 | MinIO      | `minioadmin`  | `minioadmin`  |
 | Redis      | (none)        | (none)        |
+| Keycloak   | `admin`       | `admin`       |
+
+Keycloak realm test users (realm `account-payables`): `demo@acme.com` / `demo`
+and `newhire@acme.com` / `demo`.
 
 ## Databases
 

@@ -51,7 +51,8 @@ python main.py                                  # dev server on :8000
 ## Commands (from `backend/`)
 
 ```bash
-docker compose up -d          # Postgres, Redis, MinIO
+docker compose up -d          # Postgres, Redis, MinIO (core)
+docker compose --profile idp up -d keycloak   # opt-in local OIDC IdP (pnpm idp:up); see docs/docker.md
 python main.py                # dev server :8000 (auto-reload via uvicorn)
 pytest                        # run tests
 ruff check . && ruff format . # lint + format
