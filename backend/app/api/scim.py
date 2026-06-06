@@ -254,6 +254,52 @@ async def create_user(
     return _user_to_scim(user, request)
 
 
+@router.put("/Users/{user_id}", response_model=SCIMUser)
+async def replace_user(
+    user_id: uuid.UUID,
+    body: SCIMUserCreate,
+    request: Request,
+    org: Organization = Depends(get_scim_tenant),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """SCIM PUT — full-resource replace. Okta + Entra drive updates with PATCH,
+    but Authentik (and RFC 7644 §3.5.1) PUT the whole updated resource on every
+    change. Without this, those IdPs get a 405 on every user update. We map the
+    mutable fields of the SCIM resource onto the existing row."""
+    result = await db.execute(
+        select(User).where(User.id == user_id, User.organization_id == org.id)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise _scim_http_error(404, f"User {user_id} not found.")
+
+    email = _extract_primary_email(body.emails, body.userName).lower().strip()
+    # Uniqueness invariant: PUT must not rename this user onto another user's
+    # userName within the same org.
+    clash = (
+        await db.execute(
+            select(User).where(
+                User.email == email,
+                User.organization_id == org.id,
+                User.id != user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if clash is not None:
+        raise _scim_http_error(409, f"User with userName {email} already exists.", "uniqueness")
+
+    user.email = email
+    user.full_name = _extract_full_name(body.name, email)
+    if body.externalId is not None:
+        user.sso_provider_id = body.externalId
+    user.is_active = body.active
+    await db.flush()
+    # Same `updated_at` onupdate-expiry guard as patch_user — reload before
+    # serializing so we don't trip a sync lazy-load in the async handler.
+    await db.refresh(user)
+    return _user_to_scim(user, request)
+
+
 @router.patch("/Users/{user_id}", response_model=SCIMUser)
 async def patch_user(
     user_id: uuid.UUID,
@@ -306,6 +352,11 @@ async def patch_user(
             logger.debug("Ignoring unsupported SCIM PATCH op: %s %s", action, path)
 
     await db.flush()
+    # The UPDATE fires `updated_at`'s server-side `onupdate=func.now()`, which
+    # SQLAlchemy then marks expired. Reload it here, inside the async context,
+    # so building the SCIM response (which reads `updated_at` for meta.lastModified)
+    # doesn't trip a sync lazy-load → MissingGreenlet → 500 on the deprovision path.
+    await db.refresh(user)
     return _user_to_scim(user, request)
 
 

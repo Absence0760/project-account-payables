@@ -86,6 +86,7 @@ NO_AUTH_REQUIRED = {
     ("GET", "/scim/v2/Users"),
     ("GET", "/scim/v2/Users/{user_id}"),
     ("POST", "/scim/v2/Users"),
+    ("PUT", "/scim/v2/Users/{user_id}"),
     ("PATCH", "/scim/v2/Users/{user_id}"),
     ("DELETE", "/scim/v2/Users/{user_id}"),
     ("GET", "/scim/v2/ServiceProviderConfig"),
