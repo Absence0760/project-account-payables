@@ -176,7 +176,33 @@ services:
       retries: 12
       start_period: 60s
 
+  # Local AWS emulator. Gives the AWS-backed code paths a local target with no
+  # cloud account: SQS (the `lambda` dispatch modes for extraction/ERP/audit),
+  # SES (the `ses` email adapter), CloudWatch Logs + S3 Object Lock (the audit-log
+  # shipper sinks). Opt-in under the `aws` profile (`pnpm aws:up`). The init
+  # script under localstack/init/ready.d/ creates the queues, SES identity, log
+  # group, and object-lock bucket on boot. Point the app at it by setting
+  # AP_AWS_ENDPOINT_URL=http://localhost:4566 (see docs/local-aws-localstack.md).
+  localstack:
+    image: localstack/localstack:3
+    profiles: ["aws"]
+    environment:
+      SERVICES: s3,sqs,ses,logs
+      DEBUG: "0"
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./localstack/init/ready.d:/etc/localstack/init/ready.d:ro
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health | grep -q '\"sqs\": \"available\"\\|\"sqs\": \"running\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   pgdata:
   miniodata:
   authentik-pgdata:
+  localstack-data:

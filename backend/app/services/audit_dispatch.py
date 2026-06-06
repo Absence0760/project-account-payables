@@ -152,7 +152,7 @@ def _send_to_sqs(
     """Put audit event on SQS for Lambda to pick up."""
     client = boto3.client(
         "sqs",
-        endpoint_url=settings.s3_endpoint_url,
+        endpoint_url=settings.aws_endpoint_url or settings.s3_endpoint_url,
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
         region_name="us-east-1",

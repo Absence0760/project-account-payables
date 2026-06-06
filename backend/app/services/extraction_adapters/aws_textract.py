@@ -42,10 +42,13 @@ class AWSTextractAdapter(ExtractionAdapter):
 
         # Call Textract AnalyzeExpense
         try:
+            from app.config import settings
+
             textract = boto3.client(
                 "textract",
                 aws_access_key_id=self.config.get("aws_access_key_id"),
                 aws_secret_access_key=self.config.get("aws_secret_access_key"),
+                endpoint_url=settings.aws_endpoint_url or None,
                 region_name=self.config.get("aws_region", "us-east-1"),
             )
 
@@ -118,10 +121,13 @@ class AWSTextractAdapter(ExtractionAdapter):
         try:
             import boto3
 
+            from app.config import settings
+
             textract = boto3.client(
                 "textract",
                 aws_access_key_id=self.config.get("aws_access_key_id"),
                 aws_secret_access_key=self.config.get("aws_secret_access_key"),
+                endpoint_url=settings.aws_endpoint_url or None,
                 region_name=self.config.get("aws_region", "us-east-1"),
             )
             # Simple check — list adapters (lightweight call)

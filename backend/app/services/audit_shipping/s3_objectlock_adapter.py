@@ -55,7 +55,10 @@ class S3ObjectLockAdapter(AuditShippingAdapter):
             )
         region = config.get("region_name") or "us-east-1"
         self.key_prefix = config.get("key_prefix", "audit").strip("/")
-        self._client = boto3.client("s3", region_name=region)
+        # endpoint_url=None → real S3; set AP_AWS_ENDPOINT_URL for LocalStack.
+        self._client = boto3.client(
+            "s3", region_name=region, endpoint_url=settings.aws_endpoint_url or None
+        )
 
     # -- private helpers -----------------------------------------------------
 

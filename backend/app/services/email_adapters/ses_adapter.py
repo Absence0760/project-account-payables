@@ -13,6 +13,7 @@ import logging
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+from app.config import settings
 from app.services.email_adapters.base import EmailAdapter, EmailMessage
 from app.services.email_adapters.dispatcher import register_email_adapter
 
@@ -27,7 +28,10 @@ class SesAdapter(EmailAdapter):
         super().__init__(config)
         region = config.get("region") or "us-east-1"
         # boto3 is sync — run each call in a thread to stay off the event loop.
-        self._client = boto3.client("ses", region_name=region)
+        # endpoint_url=None → real AWS SES; set AP_AWS_ENDPOINT_URL for LocalStack.
+        self._client = boto3.client(
+            "ses", region_name=region, endpoint_url=settings.aws_endpoint_url or None
+        )
 
     async def send(self, message: EmailMessage) -> None:
         body: dict = {"Text": {"Data": message.body_text, "Charset": "UTF-8"}}

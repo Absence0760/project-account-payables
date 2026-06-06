@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_bucket: str = "invoices"
 
+    # AWS service emulator (LocalStack). Empty = talk to real AWS (prod default).
+    # When set (e.g. http://localhost:4566), the non-S3-storage AWS clients —
+    # SQS dispatch (lambda mode), SES email, CloudWatch Logs + S3 Object Lock
+    # audit shipping, Textract — target it instead. See docs/local-aws-localstack.md.
+    aws_endpoint_url: str = ""
+
     # Extraction
     extraction_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_extraction_queue_url: str = ""  # required when extraction_mode = "lambda"

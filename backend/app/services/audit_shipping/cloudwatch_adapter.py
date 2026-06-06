@@ -47,7 +47,10 @@ class CloudWatchAdapter(AuditShippingAdapter):
         super().__init__(config)
         self.log_group = config.get("log_group_name") or settings.audit_shipping_cloudwatch_group
         region = config.get("region_name") or "us-east-1"
-        self._client = boto3.client("logs", region_name=region)
+        # endpoint_url=None → real CloudWatch; set AP_AWS_ENDPOINT_URL for LocalStack.
+        self._client = boto3.client(
+            "logs", region_name=region, endpoint_url=settings.aws_endpoint_url or None
+        )
         # One-time ensure for the log group; safe to retry.
         self._ensured_group = False
         self._ensured_streams: set[str] = set()
