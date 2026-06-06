@@ -241,6 +241,17 @@ services:
     ports:
       - "12111:12111"
 
+  # Local SMTP sink + web inbox for outbound email. With AP_EMAIL_PROVIDER=smtp
+  # the app's transactional mail (signup, welcome, scheduled reports) lands here
+  # instead of the real internet — view rendered HTML at http://localhost:8025.
+  # Opt-in under the `mail` profile (`pnpm mail:up`). Captures only; never relays.
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ["mail"]
+    ports:
+      - "1025:1025"   # SMTP — AP_SMTP_PORT
+      - "8025:8025"   # web UI + API
+
 volumes:
   pgdata:
   miniodata:

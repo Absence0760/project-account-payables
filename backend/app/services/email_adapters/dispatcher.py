@@ -31,6 +31,11 @@ def get_email_adapter() -> EmailAdapter:
     config = {
         "from_address": settings.email_from or "no-reply@example.com",
         "region": settings.aws_ses_region,
+        "smtp_host": settings.smtp_host,
+        "smtp_port": settings.smtp_port,
+        "smtp_username": settings.smtp_username,
+        "smtp_password": settings.smtp_password,
+        "smtp_use_tls": settings.smtp_use_tls,
     }
     return adapter_cls(config)
 

@@ -133,9 +133,18 @@ class Settings(BaseSettings):
     trusted_proxy_cidrs: str = ""
 
     # Self-service signup
-    email_provider: str = "console"  # "console" (dev default) | "ses"
+    email_provider: str = "console"  # "console" (dev default) | "ses" | "smtp"
     email_from: str = "no-reply@localhost"
     aws_ses_region: str = "us-east-1"
+
+    # SMTP email (used when email_provider="smtp"). Defaults target a local
+    # Mailpit sink (`pnpm mail:up`) — no auth, no TLS — so outbound mail lands in
+    # a web inbox at http://localhost:8025. See docs/local-email-mailpit.md.
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: str = ""  # secret — empty for Mailpit; set via sops in deployed envs
+    smtp_use_tls: bool = False
     public_url: str = "http://localhost:7777"  # where the frontend is served
     tenant_url_template: str = "http://{slug}.localhost:7777"
     hcaptcha_secret: str = ""  # empty = skip captcha verification
