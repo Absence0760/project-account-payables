@@ -88,6 +88,30 @@ PLAYWRIGHT_WORKERS=1 pnpm test:frontend    # serial run, easier to debug a flake
 The `pnpm db:up` / `dev:backend` / `test:frontend` invocations are
 the root dispatch scripts; see the repo's root README for the rest.
 
+## Service-backed specs (gated)
+
+Some specs exercise a flow that needs an optional local container the
+default `pnpm db:up` stack doesn't include. They live in their own
+folders and **skip with an actionable message** when the service is
+down (via `skipUnlessReachable` in `fixtures/services.ts`) — so the
+normal suite stays green without them, and they run for real once the
+container is up.
+
+| Spec | Needs | Bring it up |
+|---|---|---|
+| `sso/login.spec.ts` | Keycloak + acme SSO seeded | `pnpm idp:up && pnpm idp:seed` |
+| `email/signup-email.spec.ts` | Mailpit + backend on `AP_EMAIL_PROVIDER=smtp` | `pnpm mail:up`, restart backend with smtp |
+| `scim/provisioning.spec.ts` | (none — CI-safe contract test) | always runs |
+
+Backend-only service flows are pytest integration tests, also gated:
+`backend/tests/test_localstack_integration.py` (LocalStack — `pnpm
+aws:up`) and `test_stripe_mock_integration.py` (stripe-mock — `pnpm
+stripe:up`). `test_ollama_integration.py` is local-only (model
+inference is too heavy for CI).
+
+These all run in CI's **`service-e2e`** job (see below), which starts
+the containers and seeds SSO before running them.
+
 ## CI
 
 `.github/workflows/ci.yml`'s `e2e` job runs the same flow on every
@@ -119,6 +143,14 @@ Each shard runs ~34 specs serially (274 / 8). Wall-clock per shard
 is dominated by the per-shard setup (~30 s) + the ~34 specs at
 ~2 s each = ~100 s total. Local `workers=4` runs the whole 274
 specs concurrently in ~2 min.
+
+The sharded `e2e` job has only Postgres + Redis, so the service-backed
+specs above just skip there. A separate **`service-e2e`** job (single
+runner) starts Keycloak + Mailpit + LocalStack + stripe-mock via
+`docker compose` after checkout, seeds acme SSO, points the backend at
+them, and runs `sso/ email/ scim/` plus the LocalStack + stripe-mock
+pytest integration tests — so those flows actually run in CI. Ollama is
+excluded (model inference too heavy for CI runners).
 
 ## Seeded credentials
 
