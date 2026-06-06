@@ -30,7 +30,8 @@ pnpm test:scim                # SCIM provisioning e2e (tests-e2e/scim/)
 pnpm aws:up                   # local AWS emulator (LocalStack :4566, opt-in `aws` profile): SQS/SES/CloudWatch/S3-ObjectLock
 pnpm ollama:up                # local AI model server (Ollama :11435, opt-in `ai` profile) for the ollama extraction adapter
 pnpm stripe:up                # Stripe API mock (stripe-mock :12111, opt-in `payments` profile) for the stripe_treasury adapter
-pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama + stripe-mock (services:down / services:reset too)
+pnpm mail:up                  # Mailpit SMTP sink + web inbox (:1025/:8025, opt-in `mail` profile) for the smtp email adapter
+pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama + stripe-mock + Mailpit (services:down / services:reset too)
 pnpm seed                     # python scripts/seed.py
 pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
 pnpm dev:all                  # db:up, then pnpm dev (whole web stack from cold)
@@ -146,7 +147,7 @@ The backend dispatch scripts (`lint:backend`, `test:backend`, `format:backend`, 
 - **Audit shipping** (`services/audit_shipping/`): mock, cloudwatch, s3_objectlock. Registry via `@register_audit_shipping_adapter` decorator. Sinks for the centralized SOC 2 audit trail; list configured via `AP_AUDIT_SHIPPING_PROVIDERS`.
 - **FX rates** (`services/fx_adapters/`): mock, openexchangerates. Locked once per international payment at submission and persisted on the row. See `backend/docs/international-payments.md`.
 - **Sanctions / KYC** (`services/sanctions_adapters/`): mock, complyadvantage. Called by `services/compliance.check_payment_compliance` before every payment-adapter call.
-- **Email (outbound)** (`services/email_adapters/`): console (dev default), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
+- **Email (outbound)** (`services/email_adapters/`): console (dev default), smtp (Mailpit / any relay), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
 - **Email intake (inbound)** (`services/email_intake_adapters/`): ses, mailgun, generic. Parses provider-specific inbound webhook payloads into a normalised `InboundEmail`.
 - **Embeddings** (`services/embedding_adapters/`): mock (dev default), openai. Powers RAG + duplicate-similarity search.
 
@@ -230,6 +231,7 @@ Full list in `backend/app/config.py`.
 | Auth & RBAC | `docs/authentication.md`, `docs/user-management.md` |
 | Local SSO + SCIM testing | `docs/local-sso-keycloak.md` — Keycloak (OIDC SSO) + Authentik (SCIM) via Docker; `pnpm idp:up`, `idp:seed`, `scim:seed`, `test:scim` |
 | Local AWS testing | `docs/local-aws-localstack.md` — LocalStack via Docker for SQS/SES/CloudWatch/S3-ObjectLock; `pnpm aws:up`, `AP_AWS_ENDPOINT_URL` |
+| Local email preview | `docs/local-email-mailpit.md` — Mailpit via Docker for the `smtp` email adapter; `pnpm mail:up`, `AP_EMAIL_PROVIDER=smtp` |
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
 | Architecture | `docs/architecture.md` — system overview |
 | Environment vars | `docs/environment.md` — frontend + backend config |

@@ -109,6 +109,20 @@ Point the adapter at it with `AP_STRIPE_API_BASE=http://localhost:12111/v1`
 (empty = live Stripe). Returns canned fixtures (no persisted state). Details:
 [`payments.md` § Local testing with stripe-mock](payments.md#local-testing-with-stripe-mock).
 
+## Local email inbox (Mailpit)
+
+With `AP_EMAIL_PROVIDER=smtp`, the app's outbound transactional email (signup,
+welcome, scheduled reports) is delivered to a local Mailpit sink and viewable as
+rendered HTML at http://localhost:8025 — instead of stdout (`console`) or the
+real internet. Opt-in under the `mail` profile:
+
+```bash
+docker compose --profile mail up -d mailpit   # pnpm mail:up (SMTP :1025, UI :8025)
+```
+
+Set `AP_EMAIL_PROVIDER=smtp` + `AP_SMTP_HOST=localhost` + `AP_SMTP_PORT=1025`.
+Full walkthrough: [`../../docs/local-email-mailpit.md`](../../docs/local-email-mailpit.md).
+
 ## Services
 
 | Service    | Image                       | Port(s)         | Profile | Description                                       |
@@ -124,6 +138,7 @@ Point the adapter at it with `AP_STRIPE_API_BASE=http://localhost:12111/v1`
 | LocalStack | `localstack/localstack:3`     | `4566` | `aws` | Local AWS emulator — SQS, SES, CloudWatch Logs, S3 Object Lock (opt-in) |
 | Ollama     | `ollama/ollama:latest`        | `11435`| `ai`  | Local AI model server for the `ollama` extraction adapter (opt-in)      |
 | stripe-mock | `stripe/stripe-mock:latest`  | `12111`| `payments` | Stripe API mock for the `stripe_treasury` payment adapter (opt-in) |
+| Mailpit    | `axllent/mailpit:latest`      | `1025`, `8025` | `mail` | Local SMTP sink + web inbox for the `smtp` email adapter (opt-in) |
 
 The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 
