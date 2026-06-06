@@ -153,7 +153,11 @@ class OllamaAdapter(ExtractionAdapter):
         return images
 
     def _base_url(self) -> str:
-        return self.config.get("base_url", "http://localhost:11434")
+        # Per-org config wins; otherwise fall back to the global AP_OLLAMA_BASE_URL
+        # (lets the Compose container on :11435 be selected without per-org config).
+        from app.config import settings
+
+        return self.config.get("base_url") or settings.ollama_base_url
 
     def _model(self) -> str:
         return self.config.get("model", "llama3.2-vision:11b")

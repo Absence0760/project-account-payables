@@ -157,6 +157,12 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
+
+    # Local AI (Ollama). Fallback base URL for the `ollama` extraction adapter
+    # when an org's extraction config doesn't set its own `base_url`. Defaults to
+    # a native Ollama on 11434; point at 11435 to use the Compose container
+    # (`pnpm ollama:up`). See backend/docs/local-ai-testing.md.
+    ollama_base_url: str = "http://localhost:11434"
     # Cosine similarity above which a new invoice is flagged as a likely
     # duplicate of an already-stored one. Tighter than rag_top_k retrieval:
     # RAG wants semantically related invoices; dup detection wants near-

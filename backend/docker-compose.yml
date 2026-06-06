@@ -201,8 +201,37 @@ services:
       timeout: 5s
       retries: 20
 
+  # Local AI model server for the `ollama` extraction adapter — runs invoice
+  # extraction with no API key and no cloud. Opt-in under the `ai` profile
+  # (`pnpm ollama:up`). Host port 11435 (not the native default 11434) so it
+  # coexists with a natively-installed Ollama; select it with
+  # AP_OLLAMA_BASE_URL=http://localhost:11435. Pull a model first, e.g.
+  # `pnpm ollama:pull moondream` (small vision model). CPU by default; uncomment
+  # the deploy block for NVIDIA GPU (needs nvidia-container-toolkit).
+  # See backend/docs/local-ai-testing.md.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
 volumes:
   pgdata:
   miniodata:
   authentik-pgdata:
   localstack-data:
+  ollama-data:
