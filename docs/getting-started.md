@@ -41,9 +41,13 @@ python main.py
 ```bash
 cd frontend
 pnpm i                    # first time only
-cp .env.example .env      # first time only
 pnpm dev
 ```
+
+> No manual `.env` copying: `pnpm dev` (and `pnpm install:all`) auto-runs
+> `pnpm setup` / `bin/bootstrap-env.sh`, which stamps `backend/.env` and
+> `frontend/.env` from their `.env.example` templates — all safe local
+> defaults. Idempotent and non-destructive, so existing files are left alone.
 
 ### 4. Open the app
 

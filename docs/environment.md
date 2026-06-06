@@ -7,12 +7,12 @@
 | `PUBLIC_API_URL` | `http://localhost:8000` | Backend API URL (embedded at build time) |
 | `BASE_PATH`      | (empty)                 | URL prefix for GitHub Pages deploys |
 
-Copy the example file:
-
-```bash
-cd frontend
-cp .env.example .env
-```
+`frontend/.env` is created automatically — `pnpm setup` (auto-run by
+`pnpm install:all` and every `dev*` script) stamps it from
+`frontend/.env.example` with the safe local default above. You only edit it by
+hand to override the build-time API URL. Because `api.ts` imports
+`PUBLIC_API_URL` from `$env/static/public`, the var must exist for the dev
+server / build to start — the auto-stamp guarantees it does.
 
 Override at build time for different environments:
 
@@ -94,12 +94,10 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_HSTS_INCLUDE_SUBDOMAINS` | `true`                                                            | Emit the `includeSubDomains` directive (recommended; subdomains inherit the pin). |
 | `AP_HSTS_PRELOAD`     | `true`                                                                   | Emit the `preload` directive. Only meaningful if you actually submit to the preload list. |
 
-Copy the example file (optional — defaults work with Docker Compose):
-
-```bash
-cd backend
-cp .env.example .env
-```
+`backend/.env` is created automatically by `pnpm setup` (auto-run by
+`pnpm install:all` and every `dev*` script) from `backend/.env.example`. It's
+optional anyway — the defaults in `app/config.py` work with Docker Compose even
+with no `.env` present — but the auto-stamp gives your local overrides a home.
 
 All backend variables are prefixed with `AP_` and loaded via `pydantic-settings` in `app/config.py`.
 

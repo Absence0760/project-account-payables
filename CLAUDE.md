@@ -21,7 +21,8 @@ The repo root has a `package.json` with `pnpm` dispatch scripts that wrap each w
 
 ```bash
 # Common tasks via root pnpm scripts (any working directory)
-pnpm install:all              # bootstrap all three workspaces
+pnpm setup                    # stamp backend/.env + frontend/.env from .env.example (idempotent; auto-run by install:all + dev*)
+pnpm install:all              # bootstrap all three workspaces (runs setup first)
 pnpm db:up                    # core services: Postgres + Redis + MinIO (docker compose up -d)
 pnpm idp:up                   # local IdPs (opt-in `idp` profile): Keycloak (OIDC SSO, :8088) + Authentik (SCIM, :9002)
 pnpm idp:seed                 # point the acme tenant's settings.sso at local Keycloak (SSO)
@@ -81,8 +82,14 @@ The backend dispatch scripts (`lint:backend`, `test:backend`, `format:backend`, 
 2. `python3 -m venv .venv && source .venv/bin/activate`
 3. `pip install -e ".[dev]"`
 4. `python scripts/seed.py` — creates 2 demo tenants with sample data
-5. `cd ../frontend && pnpm i && cp .env.example .env`
+5. `cd ../frontend && pnpm i`
 6. Open http://acme.localhost:7777 — login: `demo@acme.com` / `demo`
+
+No manual `.env` copying: `pnpm setup` (auto-run by `install:all` and every
+`dev*` script via `bin/bootstrap-env.sh`) stamps `backend/.env` +
+`frontend/.env` from their committed `.env.example` templates — all safe,
+no-risk local defaults. Idempotent and non-destructive (an existing `.env` is
+never overwritten). Deployed secrets stay in the `*.sops` files, never `.env`.
 
 ## Multi-tenancy
 
