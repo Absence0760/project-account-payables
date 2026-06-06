@@ -1,0 +1,62 @@
+# Authentik blueprint — auto-configures an outbound SCIM provider that pushes
+# users into the Account Payables app's SCIM Service Provider endpoint.
+#
+# Authentik discovers and applies blueprints mounted under /blueprints/custom
+# on startup (see docker-compose.yml `authentik-server`/`authentik-worker`).
+# This makes the local Authentik reproducible — no clicking through the UI to
+# wire up SCIM.
+#
+# The token below MUST match what `scripts/enable_authentik_scim.py` (pnpm
+# scim:seed) stores on the acme tenant — Authentik sends it as the bearer; the
+# app resolves the tenant by its sha256. The URL targets the app backend on the
+# host (run via `pnpm dev`, :8000) through Docker's host-gateway alias.
+#
+# After this applies: open http://localhost:9002 (akadmin / admin), go to
+# Applications → Providers → "Account Payables SCIM" → Run sync. Assigned,
+# non-service-account users get POSTed to /api/scim/v2/Users. See
+# docs/local-sso-keycloak.md § Authentik for the end-to-end steps.
+version: 1
+metadata:
+  name: Account Payables — SCIM provisioning
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+entries:
+  - model: authentik_providers_scim.scimprovider
+    id: ap-scim-provider
+    identifiers:
+      name: Account Payables SCIM
+    attrs:
+      name: Account Payables SCIM
+      url: http://host.docker.internal:8000/api/scim/v2
+      token: local-dev-scim-token-acme
+      # Don't try to provision authentik's internal service accounts.
+      exclude_users_service_account: true
+      property_mappings:
+        - !Find [authentik_providers_scim.scimmapping, [managed, "goauthentik.io/providers/scim/user"]]
+      # No group mappings: the app implements SCIM /Users only, not /Groups
+      # (see app/api/scim.py). Leaving this empty stops Authentik from POSTing
+      # to a /Groups endpoint that 404s.
+      property_mappings_group: []
+
+  - model: authentik_core.application
+    id: ap-app
+    identifiers:
+      slug: account-payables
+    attrs:
+      name: Account Payables
+      slug: account-payables
+      provider: !KeyOf ap-scim-provider
+      meta_description: Local SCIM provisioning target for Account Payables.
+
+  # A demo user to provision. Assign more users to the application (or remove
+  # exclude filters) to push them on the next sync.
+  - model: authentik_core.user
+    id: ap-scim-demo-user
+    identifiers:
+      username: scim.demo
+    attrs:
+      username: scim.demo
+      name: Scim Demo
+      email: scim.demo@acme.com
+      path: users
+      is_active: true

@@ -70,6 +70,113 @@ services:
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
 
+  # Local SCIM identity provider. Where Keycloak above covers inbound OIDC SSO
+  # (we pull from it), Authentik covers outbound SCIM provisioning: Authentik is
+  # the SCIM *client* that pushes users into our SCIM Service Provider endpoint
+  # (app/api/scim.py, /api/scim/v2/Users) using a per-tenant bearer token. This
+  # is the local-first equivalent of Okta/Entra SCIM, so the provisioning path
+  # can be exercised with no cloud account.
+  #
+  # Self-contained: its own Postgres + Redis (NOT the app's), so the whole IdP
+  # stack lives under the `idp` profile and `pnpm idp:up` works without the core
+  # services. Authentik reaches the app's backend (run on the host, :8000) via
+  # host.docker.internal — see the SCIM provider URL in the blueprint. Bring it
+  # up with `pnpm idp:up`, then `pnpm scim:seed` sets the matching token on the
+  # acme tenant. Full walkthrough: ../../docs/local-sso-keycloak.md § Authentik.
+  authentik-postgres:
+    image: postgres:16-alpine
+    profiles: ["idp"]
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: authentik
+      POSTGRES_DB: authentik
+    volumes:
+      - authentik-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  authentik-redis:
+    image: redis:7-alpine
+    profiles: ["idp"]
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.5.2
+    profiles: ["idp"]
+    command: server
+    environment:
+      AUTHENTIK_SECRET_KEY: local-dev-authentik-secret-key-not-for-production
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      # Bootstrap admin (akadmin) + a fixed API token so the docs / scripts can
+      # drive the API (trigger a SCIM sync) without clicking through onboarding.
+      AUTHENTIK_BOOTSTRAP_PASSWORD: admin
+      AUTHENTIK_BOOTSTRAP_TOKEN: local-dev-authentik-api-token
+      AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@localhost
+    ports:
+      # Authentik's HTTP port is 9000 inside the container — MinIO already owns
+      # host 9000, so map the admin UI / API to host 9002.
+      - "9002:9000"
+    volumes:
+      - ./authentik/blueprints:/blueprints/custom:ro
+    extra_hosts:
+      # Lets the SCIM provider reach the app backend running on the host (:8000).
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.5.2
+    profiles: ["idp"]
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: local-dev-authentik-secret-key-not-for-production
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_BOOTSTRAP_PASSWORD: admin
+      AUTHENTIK_BOOTSTRAP_TOKEN: local-dev-authentik-api-token
+      AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@localhost
+    volumes:
+      - ./authentik/blueprints:/blueprints/custom:ro
+    extra_hosts:
+      # The worker runs the actual SCIM sync, so it also needs to reach :8000.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
 volumes:
   pgdata:
   miniodata:
+  authentik-pgdata:
