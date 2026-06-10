@@ -36,9 +36,12 @@ Specialised agents invoked by the slash commands or by name from any conversatio
 
 | Hook | When it runs | What it does |
 |---|---|---|
+| [`hooks/git-scope-guard.py`](hooks/git-scope-guard.py) | PreToolUse on `Bash` | **Multi-session safety.** Concurrent Claude sessions share one checkout, so any whole-tree git op sweeps up another session's in-flight edits. This guard denies the unscoped commands (`git add -A`/`.`/`-u`, bare `git commit`, `git commit -a`/`--amend` with staged changes, `git stash` without `-- <path>`, `git stash clear`, `git reset --hard`, `git checkout`/`restore .`, `git rm .`, `git clean -f`) and points each denial at the path-scoped alternative. Path-scoped ops (`git add <path>`, `git commit -m "…" -- <path>`) pass through untouched. Covered by [`hooks/git-scope-guard.test.py`](hooks/git-scope-guard.test.py). |
 | [`hooks/security-patterns.sh`](hooks/security-patterns.sh) | PostToolUse on `Edit` / `Write` / `MultiEdit` | Grep-based pattern checks for security regressions. Catches the textually-stable bug classes (bcrypt scheme, naive datetime, raw filename interpolation, exception-in-log, jwt.decode outside the central helper, direct status assignment, Float on money column, secret-shaped response fields, raw fetch in Svelte components, console.log in committed source, TODO without owner). Each rule names the bug class it prevents and the safer alternative. Bypass with `# noqa: <rule-name>` on the line with a rationale. |
 
-Wired in [`settings.json`](settings.json). The hook exits 2 on a finding so stderr surfaces as a system-reminder for the next turn.
+Wired in [`settings.json`](settings.json). `security-patterns.sh` exits 2 on a finding so stderr surfaces as a system-reminder for the next turn; `git-scope-guard.py` emits a `deny` decision so the racy command never runs.
+
+`settings.json` also carries a `permissions` block: an **allow** list that pre-approves the safe, high-frequency dev commands (read-only git/gh, `pnpm`/`pytest`/`ruff`/`flutter` test+lint) so routine work doesn't stall on prompts, and a **deny** list that hard-blocks the shared-checkout footguns the scope guard's path-matching can't always see — `git commit --no-verify` (skips the project's git hooks), `git push --force`/`-f`, `git reset --hard` — plus the usual `sudo` / `rm -rf /` / `curl | sh` blanket denies.
 
 ## Where to reach in which order
 
