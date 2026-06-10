@@ -4,7 +4,7 @@ Project-scoped sub-agents, slash commands, and hooks. Checked into git so every 
 
 ## Sub-agents
 
-Specialised review-only agents invoked by the slash commands or by name from any conversation. All four are read-only — they report findings, they don't edit.
+Specialised agents invoked by the slash commands or by name from any conversation. Most are review-only (they report findings, they don't edit); `flake-doctor` is the exception — it edits app + test files to land a source fix.
 
 | Agent | What it does |
 |---|---|
@@ -12,6 +12,7 @@ Specialised review-only agents invoked by the slash commands or by name from any
 | [`agents/test-gap-checker.md`](agents/test-gap-checker.md) | Cross-references modified source files against the test files in the diff. Reports which unit / integration / e2e tests the change should ship with. |
 | [`agents/doc-hygiene-checker.md`](agents/doc-hygiene-checker.md) | Walks the doc set (README, `docs/*`, `CLAUDE.md` files) and reports which docs the diff invalidated. |
 | [`agents/repo-security-auditor.md`](agents/repo-security-auditor.md) | Security sweep across the five trust boundaries — tenant isolation, auth, money path, secrets, PII. The "Known bug shapes" section encodes every regression that's shipped to a branch so the agent learns from history. Pass the audit area as the prompt's first sentence. |
+| [`agents/flake-doctor.md`](agents/flake-doctor.md) | Reproduces, root-causes, and **source-fixes** a flaky/failing Playwright e2e spec (knows the 8-shard CI + per-worker `e2e<N>` tenant model and AP's async surfaces that race). Edits app or test; never masks with sleeps/retries/timeouts. Invoked by `/flake-doctor`. |
 
 ## Slash commands
 
@@ -22,6 +23,14 @@ Specialised review-only agents invoked by the slash commands or by name from any
 | [`commands/audit-security.md`](commands/audit-security.md) | On-demand security audit. Invokes `repo-security-auditor` against a focus area (tenant isolation, money path, webhooks, secrets, PII, migrations, infra). Heavier than `/check`. |
 | [`commands/audit-webhooks.md`](commands/audit-webhooks.md) | Focused audit of every inbound webhook handler against invariant #9 (HMAC verification + event dedup + silent rejection). |
 | [`commands/audit-money-path.md`](commands/audit-money-path.md) | Focused audit of every money-moving path against invariants #1 (Decimal/Numeric), #2 (idempotency), #3 (append-only audit trail). |
+| [`commands/bug-hunt.md`](commands/bug-hunt.md) | Go wide for real correctness bugs across an area (or self-selected high-yield targets), reproduce each with a probe, fix at the root, lock with a regression test, sweep siblings. Lands fixes; multi-round; commits scoped. |
+| [`commands/audit-and-fix.md`](commands/audit-and-fix.md) | Deep-audit **one** named area, fix the real issues at the root, and ship tests with the fix. The fix-and-land counterpart to the read-only `/audit-*` sweeps. |
+| [`commands/perf-hunt.md`](commands/perf-hunt.md) | Hunt real performance problems (N+1, missing indexes, recompute storms, oversized payloads, render thrash). Measure before/after, fix the root cause, guard the structural win. New indexes go through `/safe-migration` fan-out. |
+| [`commands/ux-hunt.md`](commands/ux-hunt.md) | Drive the SvelteKit app like a user; fix objective interaction defects (dead-ends, URL-state round-trip, empty/loading/error states, keyboard traps, invalid-transition controls) with a failing-then-passing e2e. Reports the subjective calls. |
+| [`commands/coverage-hunt.md`](commands/coverage-hunt.md) | Proactively backfill tests for behaviour that works but isn't tested — area-scoped, no bug required. The build-side counterpart to the diff-scoped `test-gap-checker`. |
+| [`commands/fix-ci.md`](commands/fix-ci.md) | Fix a failing GitHub Actions CI job (backend / frontend / mobile / e2e). Root-causes, reproduces locally with the same command CI used, fixes at source, lands coverage. No retry/timeout/skip band-aids. |
+| [`commands/flake-doctor.md`](commands/flake-doctor.md) | Triage and source-fix a flaky/failing Playwright e2e spec via the `flake-doctor` agent. Never masks a flake with sleeps, retries, or inflated timeouts. |
+| [`commands/endpoint-inventory.md`](commands/endpoint-inventory.md) | Generator (read-only): writes `reviews/endpoint-inventory.md` — a canonical table of every FastAPI route (method / path / auth / tenant-scope / params / response) read from `backend/app/main.py` + `app/api/`. Feeds integrators and `/audit/auth`. |
 
 ## Hooks
 
