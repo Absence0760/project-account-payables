@@ -272,13 +272,28 @@ below or in `## Project invariants` — this is the index.)
    the same session (pytest / Playwright / flutter). If something is genuinely
    untestable, say *why* rather than skipping silently. See [Every change must
    update docs and tests](#every-change-must-update-docs-and-tests).
-3. **Never code around an issue — fix the root cause.** No masking: no inflated
+3. **Code-review important code.** For non-trivial or load-bearing changes
+   (auth, tenant isolation, migrations, the money/payment path, webhook
+   handlers, PII), run a review pass before committing — `/check`, `/safe-edit`,
+   or the `code-reviewer` agent. Don't gate trivial edits (typos, comments, dep
+   bumps) on it.
+4. **Never code around an issue — fix the root cause.** No masking: no inflated
    timeouts, sleeps, retries, skipped/loosened assertions, or swallowed errors.
    See [Fix bugs at the source](#fix-bugs-at-the-source--never-adjust-the-test-to-hide-them).
-4. **Always recommend the long-term solution.** When a quick patch and a durable
+5. **Always recommend the long-term solution.** When a quick patch and a durable
    fix diverge, lead with the durable one and name the trade-off — don't let an
    expedient workaround pass as the answer silently.
-5. **Local-first.** Every part of the app must run on a dev laptop with no cloud
+6. **No dangling "deferred" / "out-of-scope" findings.** A real issue you
+   surface — in a review, an audit, a `/bug-hunt` or `/audit-and-fix` report, a
+   code comment, or your own analysis — must be driven to a concrete resolution,
+   not left as a passing mention. Default: fix it the same session when it's
+   bounded and you've already diagnosed it. Defer only when a fix is genuinely
+   too large or risky to land now — and a deferral needs a tracked follow-up
+   (issue / ticket — confirm before creating) naming what's broken, the durable
+   fix, and the trigger to do it. "Deferred / recommended" in a report is a
+   staging area, not a destination. Extends rails 4–5: surfacing an issue is the
+   start of the obligation, not the end of it.
+7. **Local-first.** Every part of the app must run on a dev laptop with no cloud
    account. Each external dependency ships with a local equivalent *and* a safe
    local default that points at it: Postgres/Redis/MinIO via Compose; provider
    integrations default to their `mock` adapter (extraction, ERP, cards,
@@ -287,20 +302,32 @@ below or in `## Project invariants` — this is the index.)
    add a dependency on an external service, add its local equivalent and a safe
    local default in the *same* change — never make `pnpm dev` require a real
    SaaS credential.
-6. **A pnpm script per service.** Every service or long-running process a
+8. **A pnpm script per service.** Every service or long-running process a
    contributor starts in dev gets a root `package.json` script — don't make
    anyone memorize raw `docker compose --profile …` invocations (`pnpm db:up`,
    `pnpm idp:up`, `pnpm services:up`). Add the script in the same change you add
    the service.
-7. **Honour the project invariants.** Money is `Decimal`/`Numeric`; writes that
-   move money are idempotent; status changes write audit rows; tenant isolation
-   is enforced at the data layer; auth before everything; secrets via sops+KMS;
-   PII/banking data stays out of logs; migrations fan out to every tenant;
-   webhooks verify signatures + dedupe. Full enumeration with severities in
-   [Project invariants](#project-invariants).
-8. **Docs-as-code.** A behaviour, command, env var, port, or convention change
-   updates its docs in the same turn — deferred docs are drift. See [Every
-   change must update docs and tests](#every-change-must-update-docs-and-tests).
+9. **Reusable components.** Build UI from the shared component libraries —
+   `frontend/src/lib/components/` (Svelte 5 runes only: `$state` / `$derived` /
+   `$effect` / `$props`) and the mobile widget library — instead of copy-pasting
+   markup across routes/screens; extract a component the second time you'd
+   duplicate it. See [frontend/CLAUDE.md](frontend/CLAUDE.md) and
+   [mobile/CLAUDE.md](mobile/CLAUDE.md).
+10. **Organize files by responsibility.** Put code in the file / dir its
+    siblings already establish (backend: `app/api/`, `app/services/` + the
+    adapter subdirs, `app/models/`, `app/schemas/`; frontend:
+    `src/lib/{stores,utils,components}` + `api.ts`). Don't dump unrelated logic
+    into a file just because it's open — extend the file that owns that
+    responsibility. Read the per-area `CLAUDE.md` before editing.
+11. **Honour the project invariants.** Money is `Decimal`/`Numeric`; writes that
+    move money are idempotent; status changes write audit rows; tenant isolation
+    is enforced at the data layer; auth before everything; secrets via sops+KMS;
+    PII/banking data stays out of logs; migrations fan out to every tenant;
+    webhooks verify signatures + dedupe. Full enumeration with severities in
+    [Project invariants](#project-invariants).
+12. **Docs-as-code.** A behaviour, command, env var, port, or convention change
+    updates its docs in the same turn — deferred docs are drift. See [Every
+    change must update docs and tests](#every-change-must-update-docs-and-tests).
 
 ## Every change must update docs and tests
 
