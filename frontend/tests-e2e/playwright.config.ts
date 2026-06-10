@@ -10,10 +10,10 @@ import { defineConfig, devices } from '@playwright/test';
  *
  * Parallelism + isolation model:
  *
- *   - CI (`.github/workflows/ci.yml`): 8 shards × workers=1. Each
+ *   - CI (`.github/workflows/ci.yml`): 14 shards × workers=1. Each
  *     shard is its own GitHub runner with its own Postgres + Redis +
- *     seeded backend (one tenant, e2e1), runs `--shard=N/8` of the
- *     test list serially. Total parallelism = 8 across machines.
+ *     seeded backend (one tenant, e2e1), runs `--shard=N/14` of the
+ *     test list serially. Total parallelism = 14 across machines.
  *     Tests inside a shard share the shard's single tenant, but
  *     they run *sequentially* — no within-shard worker contention,
  *     which was the source of the spec-to-spec interference we hit

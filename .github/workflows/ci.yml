@@ -117,19 +117,20 @@ jobs:
           # that only manifest on 3.14 (e.g. removed deprecated APIs).
           python-version: '3.14'
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
-
-      - name: Pin pip
-        # Scorecard PinnedDependenciesID treats every `pip install`
-        # invocation as a supply-chain pivot point. Pinning pip itself
-        # to a specific version makes the install reproducible across
-        # runner image refreshes — the rest of the dep tree is locked
-        # via pyproject.toml's upper bounds + the cached pip-resolver
-        # state.
-        run: python -m pip install --upgrade 'pip==26.1.1'
+          cache-dependency-path: backend/requirements-dev.lock
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        # Scorecard PinnedDependenciesID treats every `pip install` as a
+        # supply-chain pivot point. Every third-party dep — and pip itself —
+        # installs from a fully hash-pinned lock via `--require-hashes`, so a
+        # compromised or republished PyPI artifact can't slip in. The lock is
+        # generated from pyproject.toml's [dev] extra with `uv pip compile`;
+        # regen instructions live in requirements-dev.lock's header. The
+        # first-party package is then installed editable with `--no-deps`
+        # (its dependency tree is already locked above).
+        run: |
+          python -m pip install --require-hashes -r requirements-dev.lock
+          pip install -e . --no-deps
 
       - name: Lint
         run: ruff check .
@@ -217,24 +218,24 @@ jobs:
         run: shellcheck bin/*.sh
 
   e2e:
-    # Shard the Playwright suite across 8 parallel GitHub runners with
+    # Shard the Playwright suite across 14 parallel GitHub runners with
     # `workers=1` inside each shard. Each shard boots its own Postgres +
     # Redis + seeded backend (1 tenant), so:
     #
     #   * No cross-shard DB state risk — each shard is its own
     #     short-lived backend stack.
     #   * No within-shard parallel-worker contention either — `workers=1`
-    #     means the shard's ~34 specs run sequentially against its
+    #     means the shard's specs run sequentially against its
     #     single tenant. That serial-within-shard model matches how
     #     the suite was originally written and removes the flaky
     #     "two specs in the same worker stomp on a shared default
     #     workflow" failure mode we hit under 4×4=16 concurrency.
-    #   * Total parallelism stays high at 8 (eight runners), so
+    #   * Total parallelism stays high at 14 (fourteen runners), so
     #     wall-clock isn't worse.
-    name: Frontend e2e (Playwright) — shard ${{ matrix.shard }}/8
+    name: Frontend e2e (Playwright) — shard ${{ matrix.shard }}/14
     runs-on: ubuntu-latest
     needs: changes
-    # Skip the entire 8-shard fan-out on docs-only PRs. The detector
+    # Skip the entire 14-shard fan-out on docs-only PRs. The detector
     # runs in ~5 s so the gate is essentially free.
     if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 20
@@ -244,7 +245,7 @@ jobs:
       # or systemic (every shard fails the same way).
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
     services:
       postgres:
@@ -334,7 +335,7 @@ jobs:
           # Match backend/Dockerfile (3.14-slim).
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/requirements-dev.lock
 
       # Frontend toolchain set up alongside Python so the next two
       # install steps can run in parallel.
@@ -348,19 +349,16 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Pin pip
-        # See Scorecard PinnedDependenciesID note on the Backend job
-        # for why pip itself is pinned before any install runs.
-        run: python -m pip install --upgrade 'pip==26.1.1'
-
       - name: Install backend + frontend deps (parallel)
         # Backgrounding both installs cuts ~20–30 s off the e2e job's
         # setup phase. `wait $PID` propagates each child's exit
         # status, and the `||` block prints which side failed so the
         # error is visible without scrolling.
+        # Backend deps install from the hash-pinned lock (`--require-hashes`,
+        # pip included) — see the Backend job's Install step for the rationale.
         run: |
           set -euo pipefail
-          (cd backend && pip install -e ".[dev]") &
+          (cd backend && python -m pip install --require-hashes -r requirements-dev.lock && pip install -e . --no-deps) &
           PIP_PID=$!
           (cd frontend && pnpm install --frozen-lockfile) &
           PNPM_PID=$!
@@ -426,7 +424,7 @@ jobs:
         working-directory: frontend
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run Playwright suite (shard ${{ matrix.shard }}/8)
+      - name: Run Playwright suite (shard ${{ matrix.shard }}/14)
         working-directory: frontend
         env:
           PUBLIC_API_URL: http://localhost:8000
@@ -438,8 +436,8 @@ jobs:
           # workers do not.
           PLAYWRIGHT_WORKERS: "1"
         # Inline the Playwright invocation rather than calling
-        # `pnpm test:e2e` so the `--shard=N/8` flag flows through.
-        run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts --shard=${{ matrix.shard }}/8
+        # `pnpm test:e2e` so the `--shard=N/14` flag flows through.
+        run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts --shard=${{ matrix.shard }}/14
 
       - name: Upload Playwright report on failure
         if: failure()
@@ -463,7 +461,7 @@ jobs:
           retention-days: 7
 
   # Service-backed e2e: the flows that need an optional local container the main
-  # 8-shard e2e job doesn't run — Keycloak (SSO), Mailpit (email), LocalStack
+  # 14-shard e2e job doesn't run — Keycloak (SSO), Mailpit (email), LocalStack
   # (audit shipping + SES), stripe-mock (payments). Single runner (not sharded):
   # these specs each run once. The containers are started via docker compose
   # AFTER checkout (GitHub `services:` can't mount the realm / init / blueprint
@@ -534,7 +532,7 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/requirements-dev.lock
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.2
         with:
@@ -546,13 +544,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Pin pip
-        run: python -m pip install --upgrade 'pip==26.1.1'
-
       - name: Install backend + frontend deps (parallel)
+        # Backend deps install from the hash-pinned lock (`--require-hashes`,
+        # pip included) — see the Backend job's Install step for the rationale.
         run: |
           set -euo pipefail
-          (cd backend && pip install -e ".[dev]") &
+          (cd backend && python -m pip install --require-hashes -r requirements-dev.lock && pip install -e . --no-deps) &
           PIP_PID=$!
           (cd frontend && pnpm install --frozen-lockfile) &
           PNPM_PID=$!

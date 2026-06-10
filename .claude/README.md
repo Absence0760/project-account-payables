@@ -12,7 +12,7 @@ Specialised agents invoked by the slash commands or by name from any conversatio
 | [`agents/test-gap-checker.md`](agents/test-gap-checker.md) | Cross-references modified source files against the test files in the diff. Reports which unit / integration / e2e tests the change should ship with. |
 | [`agents/doc-hygiene-checker.md`](agents/doc-hygiene-checker.md) | Walks the doc set (README, `docs/*`, `CLAUDE.md` files) and reports which docs the diff invalidated. |
 | [`agents/repo-security-auditor.md`](agents/repo-security-auditor.md) | Security sweep across the five trust boundaries — tenant isolation, auth, money path, secrets, PII. The "Known bug shapes" section encodes every regression that's shipped to a branch so the agent learns from history. Pass the audit area as the prompt's first sentence. |
-| [`agents/flake-doctor.md`](agents/flake-doctor.md) | Reproduces, root-causes, and **source-fixes** a flaky/failing Playwright e2e spec (knows the 8-shard CI + per-worker `e2e<N>` tenant model and AP's async surfaces that race). Edits app or test; never masks with sleeps/retries/timeouts. Invoked by `/flake-doctor`. |
+| [`agents/flake-doctor.md`](agents/flake-doctor.md) | Reproduces, root-causes, and **source-fixes** a flaky/failing Playwright e2e spec (knows the 14-shard CI + per-worker `e2e<N>` tenant model and AP's async surfaces that race). Edits app or test; never masks with sleeps/retries/timeouts. Invoked by `/flake-doctor`. |
 
 ## Slash commands
 

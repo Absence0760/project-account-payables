@@ -6,8 +6,8 @@ Playwright end-to-end tests for the frontend.
 
 Two modes:
 
-**CI: 8 shards × 1 worker.** `.github/workflows/ci.yml` fans the
-suite out across 8 GitHub runners via Playwright's `--shard=N/8`.
+**CI: 14 shards × 1 worker.** `.github/workflows/ci.yml` fans the
+suite out across 14 GitHub runners via Playwright's `--shard=N/14`.
 Each shard is its own job with its own Postgres + Redis + seeded
 backend (1 tenant: `e2e1`). Inside a shard, `workers=1` means the
 shard's slice of the suite runs sequentially — no within-shard
@@ -115,8 +115,8 @@ the containers and seeds SSO before running them.
 ## CI
 
 `.github/workflows/ci.yml`'s `e2e` job runs the same flow on every
-push/PR to main, **sharded across 8 parallel GitHub runners** via
-Playwright's `--shard=N/8` flag. Each shard:
+push/PR to main, **sharded across 14 parallel GitHub runners** via
+Playwright's `--shard=N/14` flag. Each shard:
 
 - pgvector/pgvector:pg16 + Redis 7 as services (per-shard, isolated)
 - `AP_E2E_TENANT_COUNT=1` — each shard only needs one tenant
@@ -130,18 +130,18 @@ Playwright's `--shard=N/8` flag. Each shard:
   `pnpm install --frozen-lockfile` →
   `pnpm build` →
   `pnpm exec playwright install --with-deps chromium`
-- `PLAYWRIGHT_WORKERS=1 pnpm exec playwright test --config=… --shard=${{ matrix.shard }}/8`
+- `PLAYWRIGHT_WORKERS=1 pnpm exec playwright test --config=… --shard=${{ matrix.shard }}/14`
 - Playwright report + backend log uploaded as
   `playwright-report-shard-${N}` / `backend-log-shard-${N}` on failure
 
-Effective parallelism is **8 shards × 1 worker = 8** parallel test
-processes spread across 8 separate runner VMs. `fail-fast: false`
+Effective parallelism is **14 shards × 1 worker = 14** parallel test
+processes spread across 14 separate runner VMs. `fail-fast: false`
 keeps the other shards going when one fails, so a flake in shard 2
 doesn't hide a real regression in shard 4.
 
-Each shard runs ~34 specs serially (274 / 8). Wall-clock per shard
-is dominated by the per-shard setup (~30 s) + the ~34 specs at
-~2 s each = ~100 s total. Local `workers=4` runs the whole 274
+Each shard runs ~20 specs serially (274 / 14). Wall-clock per shard
+is dominated by the per-shard setup (~30 s) + the ~20 specs at
+~2 s each = ~70 s total. Local `workers=4` runs the whole 274
 specs concurrently in ~2 min.
 
 The sharded `e2e` job has only Postgres + Redis, so the service-backed

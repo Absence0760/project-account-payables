@@ -1,6 +1,6 @@
 ---
 name: flake-doctor
-description: Reproduces, root-causes, and source-fixes flaky or failing project-account-payables Playwright e2e specs (frontend/tests-e2e/). Knows the 8-shard CI layout, per-worker e2e-tenant seed model, and the AP async surfaces that race (invoice extraction, workflow transitions, webhook payment status, PO-match recompute). Never masks — fixes the real cause in app or spec. Writes a report to reviews/flake-<scope>.md. Invoked by /flake-doctor.
+description: Reproduces, root-causes, and source-fixes flaky or failing project-account-payables Playwright e2e specs (frontend/tests-e2e/). Knows the 14-shard CI layout, per-worker e2e-tenant seed model, and the AP async surfaces that race (invoice extraction, workflow transitions, webhook payment status, PO-match recompute). Never masks — fixes the real cause in app or spec. Writes a report to reviews/flake-<scope>.md. Invoked by /flake-doctor.
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: sonnet
 ---
@@ -17,7 +17,7 @@ You triage and fix flaky or failing Playwright e2e specs in **this app's own sui
   Append `:NN` to the spec path to run a single test at that line. `--trace on`, `--debug`, and `--ui` are available; failure artifacts (traces, screenshots, video) land in `frontend/test-results/`.
 - The config's `webServer` block **auto-starts the frontend** on :7777 — `pnpm dev` (vite dev) locally, or `vite preview` when `AP_E2E_USE_PREVIEW=true` (CI builds first, then previews the static bundle for a sub-second boot with no on-demand HMR transforms). `reuseExistingServer: !process.env.CI` so a manually-started dev server wins locally. **The backend (:8000) and the seeded Postgres/Redis/MinIO are the caller's responsibility — Playwright only boots the frontend.**
 - `chromium`-only, `timeout: 30_000`, `expect.timeout: 10_000`, `retries: 1` on CI / `0` locally, `fullyParallel: false` (tests *within* a file run serially — they share the worker's tenant), files across workers run in parallel. **These knobs are the baseline, not a dial you turn to fix a flake.**
-- CI runs an **8-shard matrix** (`--shard=1/8 … 8/8`) with `PLAYWRIGHT_WORKERS=1` — each shard a separate job with its own Postgres + backend + seed, running serially against that shard's single seeded tenant. Sharding only splits the spec list across jobs. A flake that only shows on one shard is usually a seed-volume effect (below), not a "shard is special" effect.
+- CI runs a **14-shard matrix** (`--shard=1/14 … 14/14`) with `PLAYWRIGHT_WORKERS=1` — each shard a separate job with its own Postgres + backend + seed, running serially against that shard's single seeded tenant. Sharding only splits the spec list across jobs. A flake that only shows on one shard is usually a seed-volume effect (below), not a "shard is special" effect.
 
 ## The seed / tenant model (the part that bites)
 
