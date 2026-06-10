@@ -64,6 +64,28 @@ AP_MIGRATE_TENANT=ap_acme alembic upgrade head      # single tenant
 python scripts/migrate_all_tenants.py               # all tenants
 ```
 
+## Dependency lock (CI hash-pinning)
+
+Local dev installs editable extras (`pip install -e ".[dev]"`) — unchanged.
+**CI** installs from `requirements-dev.lock`, a fully hash-pinned lock
+(every third-party dep *and* pip itself), to satisfy Scorecard's
+Pinned-Dependencies supply-chain check. CI runs
+`pip install --require-hashes -r requirements-dev.lock` then
+`pip install -e . --no-deps`.
+
+Regenerate the lock whenever you change `pyproject.toml` dependencies (or
+the pinned pip version in `requirements-dev.in`):
+
+```bash
+# from backend/ — uv resolves universally for the CI Python (3.14)
+uv pip compile pyproject.toml requirements-dev.in --extra dev \
+  --universal --python-version 3.14 --generate-hashes -o requirements-dev.lock
+```
+
+`uv` not installed? `pipx run uv pip compile …` works ephemerally. Commit
+the regenerated `requirements-dev.lock` in the same change as the
+`pyproject.toml` edit, or CI's `--require-hashes` install fails.
+
 ## Project structure
 
 ```
