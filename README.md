@@ -45,6 +45,7 @@ Common cross-workspace tasks are exposed via `pnpm run` at the repo root. Each s
 | `pnpm setup` | `bin/bootstrap-env.sh` — stamp `backend/.env` + `frontend/.env` from their `.env.example` templates (idempotent; auto-run by `install:all` and every `dev*`) |
 | `pnpm install:{backend,frontend,mobile,all}` | `pip install -e '.[dev]'` / `pnpm install` / `flutter pub get` |
 | `pnpm dev:{backend,frontend,mobile}` | `python main.py` / `vite dev` / `flutter run` |
+| `pnpm dev` / `pnpm dev:all` / `pnpm dev:full` | backend + frontend together (one Ctrl-C stops both) / `db:up` (core) then `dev` / `services:up` (core + **every** opt-in profile) then `dev` — the whole stack from cold |
 | `pnpm build:frontend` | `vite build` |
 | `pnpm lint:{backend,frontend,mobile}` + `pnpm lint` | `ruff check .` / `pnpm check` / `flutter analyze` |
 | `pnpm format[:backend][:check]` | `ruff format [--check] .` |
@@ -57,7 +58,7 @@ Common cross-workspace tasks are exposed via `pnpm run` at the repo root. Each s
 | `pnpm ollama:{up,down,logs}` + `pnpm ollama:pull <model>` | local AI model server (opt-in `ai` profile) for the `ollama` extraction adapter |
 | `pnpm stripe:{up,down,logs}` | Stripe API mock (opt-in `payments` profile) for the `stripe_treasury` adapter |
 | `pnpm mail:{up,down,logs}` | Mailpit SMTP sink + web inbox (opt-in `mail` profile) for the `smtp` email adapter (inbox at :8025) |
-| `pnpm services:{up,down,reset}` | bring up / tear down **all** local services (core + IdPs + LocalStack + Ollama + stripe-mock + Mailpit) at once |
+| `pnpm services:{up,down,logs,reset}` | bring up / tear down / tail **all** local services (core + IdPs + LocalStack + Ollama + stripe-mock + Mailpit) at once |
 | `pnpm seed` | `python scripts/seed.py` |
 | `pnpm test:scim` | run the SCIM provisioning e2e (`tests-e2e/scim/`) |
 | `pnpm migrate[:tenants|:all]` | `alembic upgrade head` / `scripts/migrate_all_tenants.py` |

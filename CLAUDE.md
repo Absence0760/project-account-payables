@@ -32,10 +32,11 @@ pnpm aws:up                   # local AWS emulator (LocalStack :4566, opt-in `aw
 pnpm ollama:up                # local AI model server (Ollama :11435, opt-in `ai` profile) for the ollama extraction adapter
 pnpm stripe:up                # Stripe API mock (stripe-mock :12111, opt-in `payments` profile) for the stripe_treasury adapter
 pnpm mail:up                  # Mailpit SMTP sink + web inbox (:1025/:8025, opt-in `mail` profile) for the smtp email adapter
-pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama + stripe-mock + Mailpit (services:down / services:reset too)
+pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama + stripe-mock + Mailpit (services:down / services:logs / services:reset too)
 pnpm seed                     # python scripts/seed.py
 pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
-pnpm dev:all                  # db:up, then pnpm dev (whole web stack from cold)
+pnpm dev:all                  # db:up (core only), then pnpm dev (whole web stack from cold)
+pnpm dev:full                 # services:up (core + every opt-in profile), then pnpm dev — the entire stack from cold
 pnpm dev:backend              # python main.py (loads backend/.env first)
 pnpm dev:frontend             # vite dev on :7777
 pnpm dev:mobile               # flutter run (needs a device/emulator — not part of `pnpm dev`)
