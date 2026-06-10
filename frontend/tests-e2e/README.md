@@ -152,6 +152,15 @@ them, and runs `sso/ email/ scim/` plus the LocalStack + stripe-mock
 pytest integration tests — so those flows actually run in CI. Ollama is
 excluded (model inference too heavy for CI runners).
 
+A dedicated **`.github/workflows/sso-e2e.yml`** workflow gives SSO its
+own focused green/red signal: it boots **only Keycloak** (not the full
+four-service bundle), seeds acme SSO, and runs just `sso/`. It triggers
+on push/PR that touch the SSO surface (the backend SSO route + service,
+the Keycloak realm + seed script, the login routes, the `sso/` specs,
+its `fixtures/`) and on manual `workflow_dispatch` — no schedule. Use it
+for fast SSO feedback without waiting on the 25-minute `service-e2e`
+bundle; `service-e2e` remains the comprehensive multi-service gate.
+
 ## Seeded credentials
 
 Defined in `backend/scripts/seed.py`. Spec files almost always want
