@@ -67,24 +67,30 @@ python scripts/migrate_all_tenants.py               # all tenants
 ## Dependency lock (CI hash-pinning)
 
 Local dev installs editable extras (`pip install -e ".[dev]"`) — unchanged.
-**CI** installs from `requirements-dev.lock`, a fully hash-pinned lock
-(every third-party dep *and* pip itself), to satisfy Scorecard's
-Pinned-Dependencies supply-chain check. CI runs
-`pip install --require-hashes -r requirements-dev.lock` then
-`pip install -e . --no-deps`.
+**CI and the production image** install from hash-pinned locks (every
+third-party artifact pinned by hash) to satisfy Scorecard's
+Pinned-Dependencies supply-chain check. Two locks, both regenerated from
+`pyproject.toml`:
 
-Regenerate the lock whenever you change `pyproject.toml` dependencies (or
+| Lock | Scope | Consumed by |
+|------|-------|-------------|
+| `requirements-dev.lock` | base + `[dev]` extra + pip | `ci.yml` — `pip install --require-hashes …` then `pip install -e . --no-deps` |
+| `requirements.lock` | base runtime only (no extras) | `backend/Dockerfile` — `uv pip install --system --require-hashes …` (app runs from source, no editable install) |
+
+Regenerate **both** whenever you change `pyproject.toml` dependencies (or
 the pinned pip version in `requirements-dev.in`):
 
 ```bash
-# from backend/ — uv resolves universally for the CI Python (3.14)
+# from backend/ — uv resolves universally for the runtime Python (3.14)
 uv pip compile pyproject.toml requirements-dev.in --extra dev \
   --universal --python-version 3.14 --generate-hashes -o requirements-dev.lock
+uv pip compile pyproject.toml \
+  --universal --python-version 3.14 --generate-hashes -o requirements.lock
 ```
 
 `uv` not installed? `pipx run uv pip compile …` works ephemerally. Commit
-the regenerated `requirements-dev.lock` in the same change as the
-`pyproject.toml` edit, or CI's `--require-hashes` install fails.
+the regenerated locks in the same change as the `pyproject.toml` edit, or
+the `--require-hashes` installs (CI + image build) fail.
 
 ## Project structure
 
