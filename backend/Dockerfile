@@ -25,8 +25,15 @@ WORKDIR /app
 # Scorecard flags and which can quietly swap the uv binary under us.
 COPY --from=ghcr.io/astral-sh/uv:0.5@sha256:7bff3c3776ec467fc1437960f2c469d8beb30f536a6465a3350c647ccd260ec2 /uv /usr/local/bin/uv
 
-COPY pyproject.toml .
-RUN uv pip install --system -r pyproject.toml
+# Runtime deps install from a fully hash-pinned lock so a compromised or
+# republished PyPI artifact can't slip into the image — same Scorecard
+# PinnedDependencies posture as CI. `requirements.lock` is the runtime-only
+# (no [dev]/[ocr] extras) sibling of requirements-dev.lock; regenerate both
+# from pyproject.toml with `uv pip compile … --generate-hashes` — see
+# backend/CLAUDE.md → Dependency lock. The app itself runs from the copied
+# source (no editable install), so only its dependencies are locked here.
+COPY pyproject.toml requirements.lock .
+RUN uv pip install --system --require-hashes -r requirements.lock
 
 COPY . .
 
