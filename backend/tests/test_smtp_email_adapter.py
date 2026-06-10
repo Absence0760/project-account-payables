@@ -8,7 +8,6 @@ the configured host/port and sends a MIME message with text + HTML parts.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
 
 import pytest
 

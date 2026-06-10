@@ -56,7 +56,7 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 
-def _row() -> "object":
+def _row() -> object:
     from app.services.audit_shipping.base import AuditLogRow
 
     return AuditLogRow(
@@ -108,7 +108,12 @@ async def test_ses_adapter_sends_captured_mail():
     before = httpx.get(f"{ENDPOINT}/_aws/ses", timeout=5.0).json().get("messages", [])
     adapter = SesAdapter({"from_address": "no-reply@localhost"})
     await adapter.send(
-        EmailMessage(to="dev@acme.test", subject="LocalStack SES test", body_text="hi", body_html=None)
+        EmailMessage(
+            to="dev@acme.test",
+            subject="LocalStack SES test",
+            body_text="hi",
+            body_html=None,
+        )
     )
     after = httpx.get(f"{ENDPOINT}/_aws/ses", timeout=5.0).json().get("messages", [])
     assert len(after) == len(before) + 1
