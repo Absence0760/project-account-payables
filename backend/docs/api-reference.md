@@ -38,6 +38,30 @@ Every protected endpoint declares the roles that can call it via `Depends(requir
 
 Notation: `*` = any authenticated role, `admin/manager` = admin or ap_manager, `admin/manager/cfo` = the three non-clerk roles.
 
+## Pagination
+
+List endpoints share one contract, defined once in `app/api/pagination.py`
+(the `pagination_params` dependency + `PageMeta` mixin / `paginated()` helper):
+
+- Query params: **`page`** (1-based, default `1`) and **`page_size`** (default
+  **20**, max **100** — values above 100 return `422`).
+- Response envelope always carries **`items`**, **`total`** (full unpaged
+  count), **`page`**, and **`page_size`**:
+
+  ```json
+  { "items": [ ... ], "total": 137, "page": 1, "page_size": 20 }
+  ```
+
+The frontend renders the first page then a "Load more" control that requests
+`page=N+1` and appends. Paginated lists: `/invoices`, `/vendors`, `/payments`,
+`/payments/runs/`, `/purchase-orders`, `/goods-receipts`, `/credit-memos`,
+`/exceptions`, `/cards`, `/workflows`, `/admin/users`, and the supplier-portal
+`/portal/invoices` + `/portal/payments`.
+
+**Intentionally not paginated** (bounded reference collections returned in
+full): `/gl-accounts` (feeds the invoice GL dropdown, which needs every row)
+and `/cards/rebates` (whose `total` is a money sum, not a row count).
+
 ## Auth
 
 | Method  | Path                         | Roles | Description                                                        |
