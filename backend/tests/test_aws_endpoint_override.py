@@ -84,3 +84,22 @@ def test_sqs_dispatch_falls_back_to_s3_endpoint(captured_client, monkeypatch):
     monkeypatch.setattr(settings, "aws_endpoint_url", "")
     extraction_dispatch._send_to_sqs(uuid.uuid4(), uuid.uuid4(), uuid.uuid4())
     assert captured_client[-1]["endpoint_url"] == settings.s3_endpoint_url
+
+
+def test_erp_sqs_dispatch_prefers_aws_endpoint(captured_client, monkeypatch):
+    """erp_dispatch._send_to_sqs shares the same fallback as extraction —
+    pin it so a LocalStack-vs-prod regression is caught for both."""
+    from app.services import erp_dispatch
+
+    monkeypatch.setattr(settings, "aws_endpoint_url", LOCAL)
+    erp_dispatch._send_to_sqs(uuid.uuid4(), uuid.uuid4(), uuid.uuid4())
+    assert captured_client[-1]["service"] == "sqs"
+    assert captured_client[-1]["endpoint_url"] == LOCAL
+
+
+def test_erp_sqs_dispatch_falls_back_to_s3_endpoint(captured_client, monkeypatch):
+    from app.services import erp_dispatch
+
+    monkeypatch.setattr(settings, "aws_endpoint_url", "")
+    erp_dispatch._send_to_sqs(uuid.uuid4(), uuid.uuid4(), uuid.uuid4())
+    assert captured_client[-1]["endpoint_url"] == settings.s3_endpoint_url
