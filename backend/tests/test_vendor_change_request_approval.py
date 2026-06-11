@@ -19,18 +19,12 @@ TENANT = "a"
 
 
 @pytest.fixture
-async def mk(realdb):
-    """One tenant sessionmaker per test on a single engine, disposed at end."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import NullPool
-
-    from app.database import _make_tenant_url
-
-    engine = create_async_engine(_make_tenant_url(realdb.info(TENANT).db_name), poolclass=NullPool)
-    try:
-        yield async_sessionmaker(engine, expire_on_commit=False)
-    finally:
-        await engine.dispose()
+def mk(realdb):
+    """Tenant sessionmaker on the realdb-managed engine — the shared pattern
+    (see test_portal_self_service.py / test_credit_memos.py). Avoids a second
+    engine against the same DB, which thrashes the pool and leaks past the
+    harness's per-test cleanup."""
+    return realdb.sessionmaker(TENANT)
 
 
 async def _seed_vendor(mk, org_id, **kw) -> uuid.UUID:

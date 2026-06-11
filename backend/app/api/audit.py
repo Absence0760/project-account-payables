@@ -16,7 +16,7 @@ the audit trail GET-only.
 import csv
 import io
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -135,9 +135,10 @@ async def export_audit_trail(
                 AuditLog.created_at >= datetime.combine(start, datetime.min.time(), tzinfo=UTC)
             )
         if end is not None:
-            query = query.where(
-                AuditLog.created_at < datetime.combine(end, datetime.max.time(), tzinfo=UTC)
-            )
+            # Inclusive of the whole `end` day: strictly-less-than the start of
+            # the next day, so a row at end-of-day's last microsecond is included.
+            next_day_start = datetime.combine(end + timedelta(days=1), time.min, tzinfo=UTC)
+            query = query.where(AuditLog.created_at < next_day_start)
         scope = "range"
 
     if entity_type:
