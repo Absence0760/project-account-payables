@@ -142,9 +142,7 @@ async def invoice_counts(
     has — the previous client-side tally over the first page of results
     undercounted past that window.
     """
-    result = await db.execute(
-        select(Invoice.status, func.count()).group_by(Invoice.status)
-    )
+    result = await db.execute(select(Invoice.status, func.count()).group_by(Invoice.status))
     counts: dict[str, int] = {}
     for db_status, count in result.all():
         key = db_status.value if hasattr(db_status, "value") else str(db_status)
