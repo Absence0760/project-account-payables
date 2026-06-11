@@ -27,7 +27,7 @@ void main() {
       expect(InvoiceStatus.readyForReview.isActionable, isTrue);
       for (final status in InvoiceStatus.values) {
         if (status != InvoiceStatus.readyForReview) {
-          expect(status.isActionable, isFalse, reason: '${status.value}');
+          expect(status.isActionable, isFalse, reason: status.value);
         }
       }
     });
