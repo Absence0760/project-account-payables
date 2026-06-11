@@ -136,3 +136,254 @@ def _autouse_fake_redis(monkeypatch):
     monkeypatch.setattr("app.services.rate_limit.get_redis", _get_redis)
     monkeypatch.setattr("app.services.webhook_security.get_redis", _get_redis)
     return fake
+
+
+# ---------------------------------------------------------------------------
+# Real-Postgres harness (opt-in: request the ``realdb`` fixture)
+#
+# Most of the suite is mock-based. A handful of invariants can only be proven
+# against a live Postgres + the real ASGI app: cross-tenant isolation (needs
+# two real tenant DBs), the SQL WHERE filters, commit/rollback durability, and
+# the role-gated HTTP endpoints. This harness provisions two persistent test
+# tenants (``ap_pytesta`` / ``ap_pytestb``), idempotently, and truncates their
+# business tables before each test. It is function-scoped with fresh engines
+# per call so there are no cross-event-loop engine-reuse pitfalls.
+#
+# Requires the dev Postgres to be up (``pnpm db:up``). When it isn't reachable
+# the fixture skips rather than erroring, so the mock-only suite still runs.
+# ---------------------------------------------------------------------------
+
+import uuid  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
+
+import pytest_asyncio  # noqa: E402
+
+_TEST_TENANTS = {"a": "pytesta", "b": "pytestb"}
+
+
+@dataclass
+class TenantInfo:
+    slug: str
+    db_name: str
+    org_id: uuid.UUID
+    users: dict = field(default_factory=dict)  # role name -> user id
+
+
+async def _ensure_test_tenants() -> dict:
+    """Idempotently create the two test tenants + their role users.
+
+    Safe to call every test: databases/tables are created once (checkfirst),
+    control rows are created only if absent. Returns {key: TenantInfo}.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.api.deps import ALL_ROLES
+    from app.config import settings as cfg
+    from app.models import Base
+    from app.models.organization import Organization
+    from app.models.user import Role, User, UserRole
+    from app.services.tenant_provisioning import (
+        CONTROL_TABLES,
+        _create_postgres_database,
+        _create_tenant_tables,
+    )
+    from app.utils.passwords import pwd_context
+
+    # Importing the app wires every router, which transitively imports every
+    # model — so Base.metadata is COMPLETE before any create_all. Without this,
+    # only the models imported so far get tables, and later TRUNCATE/queries
+    # reference tables that were never created.
+    import app.main  # noqa: F401
+
+    ctrl_engine = create_async_engine(cfg.database_url)
+    ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
+    try:
+        async with ctrl_engine.begin() as conn:
+            ctrl_tables = [t for n, t in Base.metadata.tables.items() if n in CONTROL_TABLES]
+            await conn.run_sync(
+                lambda c: Base.metadata.create_all(c, tables=ctrl_tables, checkfirst=True)
+            )
+
+        async with ctrl_mk() as s:
+            existing = {r.name: r.id for r in (await s.execute(select(Role))).scalars().all()}
+            for name in ALL_ROLES:
+                if name not in existing:
+                    rid = uuid.uuid4()
+                    s.add(Role(id=rid, name=name))
+                    existing[name] = rid
+            await s.commit()
+            role_ids = {r.name: r.id for r in (await s.execute(select(Role))).scalars().all()}
+
+        tenants: dict = {}
+        for key, slug in _TEST_TENANTS.items():
+            db_name = f"{cfg.tenant_db_prefix}{slug}"
+            async with ctrl_mk() as s:
+                org = (
+                    await s.execute(select(Organization).where(Organization.slug == slug))
+                ).scalar_one_or_none()
+            if org is None:
+                await _create_postgres_database(db_name)
+                org_id = uuid.uuid4()
+                async with ctrl_mk() as s:
+                    s.add(
+                        Organization(
+                            id=org_id,
+                            name=f"PyTest {slug}",
+                            slug=slug,
+                            plan="free",
+                            db_name=db_name,
+                        )
+                    )
+                    await s.commit()
+            else:
+                org_id = org.id
+            # Always (re)create tenant tables — idempotent (checkfirst) and
+            # backfills any table missing from a DB provisioned earlier with an
+            # incomplete model metadata.
+            await _create_tenant_tables(db_name)
+
+            users: dict = {}
+            async with ctrl_mk() as s:
+                for role_name in ALL_ROLES:
+                    email = f"{role_name}@{slug}.test"
+                    u = (
+                        await s.execute(select(User).where(User.email == email))
+                    ).scalar_one_or_none()
+                    if u is None:
+                        uid = uuid.uuid4()
+                        s.add(
+                            User(
+                                id=uid,
+                                email=email,
+                                full_name=role_name,
+                                hashed_password=pwd_context.hash("Passw0rd!xyz"),
+                                is_active=True,
+                                organization_id=org_id,
+                                must_change_password=False,
+                            )
+                        )
+                        await s.flush()
+                        s.add(UserRole(user_id=uid, role_id=role_ids[role_name]))
+                        users[role_name] = uid
+                    else:
+                        users[role_name] = u.id
+                await s.commit()
+            tenants[key] = TenantInfo(slug=slug, db_name=db_name, org_id=org_id, users=users)
+        return tenants
+    finally:
+        await ctrl_engine.dispose()
+
+
+class RealDB:
+    """Handle yielded by the ``realdb`` fixture.
+
+    Gives tests fresh per-call tenant session makers, JWTs for the seeded role
+    users, and an ASGI client whose DB dependencies are overridden to point at
+    the test tenant (so endpoint logic runs without the module-global engines).
+    """
+
+    def __init__(self, tenants: dict) -> None:
+        self.tenants = tenants
+        self._engines: list = []
+
+    def info(self, key: str) -> TenantInfo:
+        return self.tenants[key]
+
+    def token(self, key: str, role: str = "admin") -> str:
+        from app.api.deps import create_access_token
+
+        info = self.tenants[key]
+        return create_access_token(info.users[role], info.org_id)
+
+    def sessionmaker(self, key: str):
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.database import _make_tenant_url
+
+        engine = create_async_engine(_make_tenant_url(self.tenants[key].db_name))
+        self._engines.append(engine)
+        return async_sessionmaker(engine, expire_on_commit=False)
+
+    def client(self, *, key: str, role: str | None = "admin"):
+        import httpx
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.config import settings as cfg
+        from app.database import _make_tenant_url, get_control_db
+        from app.main import app
+        from app.tenant import get_tenant_db
+
+        info = self.tenants[key]
+        ctrl_engine = create_async_engine(cfg.database_url)
+        tenant_engine = create_async_engine(_make_tenant_url(info.db_name))
+        self._engines += [ctrl_engine, tenant_engine]
+        ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
+        tenant_mk = async_sessionmaker(tenant_engine, expire_on_commit=False)
+
+        async def _control_db():
+            async with ctrl_mk() as s:
+                try:
+                    yield s
+                    await s.commit()
+                except Exception:
+                    await s.rollback()
+                    raise
+
+        async def _tenant_db():
+            async with tenant_mk() as s:
+                try:
+                    yield s
+                    await s.commit()
+                except Exception:
+                    await s.rollback()
+                    raise
+
+        app.dependency_overrides[get_control_db] = _control_db
+        app.dependency_overrides[get_tenant_db] = _tenant_db
+
+        headers = {"X-Tenant-Slug": info.slug}
+        if role is not None:
+            headers["Authorization"] = f"Bearer {self.token(key, role)}"
+        transport = httpx.ASGITransport(app=app)
+        return httpx.AsyncClient(transport=transport, base_url="http://test", headers=headers)
+
+    async def cleanup(self) -> None:
+        from app.main import app
+
+        app.dependency_overrides.clear()
+        for engine in self._engines:
+            await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def realdb():
+    """Function-scoped real-Postgres handle; truncates tenant data per test."""
+    import asyncpg
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.database import _make_tenant_url
+    from app.models import Base
+    from app.services.tenant_provisioning import CONTROL_TABLES
+
+    try:
+        tenants = await _ensure_test_tenants()
+    except (OSError, asyncpg.PostgresError, OperationalError) as exc:
+        pytest.skip(f"realdb fixture requires a live Postgres (pnpm db:up): {exc}")
+
+    tenant_tables = [f'"{n}"' for n in Base.metadata.tables if n not in CONTROL_TABLES]
+    truncate = f"TRUNCATE {', '.join(tenant_tables)} RESTART IDENTITY CASCADE"
+    for info in tenants.values():
+        engine = create_async_engine(_make_tenant_url(info.db_name))
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql(truncate)
+        finally:
+            await engine.dispose()
+
+    db = RealDB(tenants)
+    try:
+        yield db
+    finally:
+        await db.cleanup()

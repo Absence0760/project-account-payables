@@ -333,3 +333,73 @@ async def test_log_action_accepts_null_actor_and_details_for_system_events():
     )
     assert entry.actor_id is None
     assert entry.details is None
+
+
+# ---------------------------------------------------------------------------
+# Real-Postgres: the SOC 2 who/what/when/where actually persists, and stays
+# atomic with the caller's business transaction.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_log_action_persists_and_reads_back_all_fields(realdb):
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+    from app.services.audit import log_action
+
+    info = realdb.info("a")
+    corr, actor, ent = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        await log_action(
+            s,
+            correlation_id=corr,
+            organization_id=info.org_id,
+            actor_id=actor,
+            action="invoice.approved",
+            entity_type="invoice",
+            entity_id=ent,
+            details={"old_status": "ready_for_review", "new_status": "approved"},
+        )
+        await s.commit()
+
+    async with mk() as s:
+        row = (
+            await s.execute(select(AuditLog).where(AuditLog.correlation_id == corr))
+        ).scalar_one()
+    assert row.organization_id == info.org_id
+    assert row.actor_id == actor
+    assert row.action == "invoice.approved"
+    assert row.entity_type == "invoice"
+    assert row.entity_id == ent
+    assert row.details == {"old_status": "ready_for_review", "new_status": "approved"}
+    assert row.created_at is not None  # server-default fired
+
+
+@pytest.mark.asyncio
+async def test_log_action_is_discarded_on_caller_rollback(realdb):
+    """log_action only add()s — if the caller's transaction rolls back, the
+    audit row must vanish with it (atomic with the business change)."""
+    from sqlalchemy import func, select
+
+    from app.models.workflow import AuditLog
+    from app.services.audit import log_action
+
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+
+    async with mk() as s:
+        await log_action(
+            s,
+            correlation_id=uuid.uuid4(),
+            organization_id=info.org_id,
+            action="invoice.approved",
+            entity_type="invoice",
+            entity_id=uuid.uuid4(),
+        )
+        await s.rollback()
+
+    async with mk() as s:
+        count = (await s.execute(select(func.count()).select_from(AuditLog))).scalar_one()
+    assert count == 0  # rolled back with the caller — nothing committed
