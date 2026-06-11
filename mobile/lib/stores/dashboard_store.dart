@@ -42,7 +42,11 @@ class DashboardStore extends ChangeNotifier {
           'total_amount': d.totalAmount,
           'pipeline': d.pipeline,
           'vendor_spend': d.topVendors
-              .map((v) => {'vendor': v.vendorName, 'amount': v.totalAmount})
+              .map((v) => {
+                    'vendor': v.vendorName,
+                    'amount': v.totalAmount,
+                    'invoice_count': v.invoiceCount,
+                  })
               .toList(),
           'aging': {
             'current': d.aging.current,

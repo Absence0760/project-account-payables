@@ -84,4 +84,24 @@ void main() {
     expect(store.error, isNotNull);
     expect(store.fromCache, isFalse);
   });
+
+  test('preserves top-vendor invoice counts through the cache round-trip',
+      () async {
+    // _dashboard() returns one vendor with invoice_count: 3.
+    ApiClient().debugConfigure(
+      client: MockClient((req) async => _dashboard()),
+    );
+    await store.fetch();
+    expect(store.data!.topVendors.first.invoiceCount, 3);
+
+    // Serve the cached copy; the count must survive serialization, not reset
+    // to 0 (regression: toCache used to omit invoice_count).
+    ApiClient().debugConfigure(
+      client: MockClient((req) async => throw Exception('offline')),
+    );
+    await store.fetch();
+
+    expect(store.fromCache, isTrue);
+    expect(store.data!.topVendors.first.invoiceCount, 3);
+  });
 }
