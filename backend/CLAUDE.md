@@ -26,6 +26,7 @@ Deep-dive docs live in `backend/docs/`:
 | Redis | `docs/redis.md` |
 | MinIO / S3 | `docs/minio.md` |
 | Audit-log shipping (SOC 2) | `docs/audit-log-shipping.md` |
+| Audit-log summarization (invoice modal) | `docs/audit-summary.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -129,7 +130,7 @@ backend/
    - `CardRebate` — virtual_card_id, amount, rate, status, period
 
 2. **Tenant DBs** (`ap_<slug>`) — isolated per customer
-   - `Invoice` — invoice_number, vendor_name, amount, status (12 states), file_key, warnings (JSONB)
+   - `Invoice` — invoice_number, vendor_name, amount, status (12 states), file_key, warnings (JSONB), po_match (JSONB), meta (JSONB — holds `audit_summary`)
    - `InvoiceLineItem` — invoice_id, item_code, description, quantity, unit_price, total, gl_account
    - `InvoiceExtractionResult` — invoice_id, method, confidence, raw_result (JSONB)
    - `Vendor` — name, code, tax_id, status (active/unverified/inactive/rejected), source (manual/erp_sync/ai_extracted)

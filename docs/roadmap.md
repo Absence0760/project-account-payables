@@ -536,15 +536,17 @@ Highest-leverage "sticky feature" work once the product has real usage. Cold-sta
 ---
 
 ### Audit Log Summarization
-**Status:** Planned
+**Status:** Done
 
 One-paragraph natural-language summary at the top of the invoice modal, generated from the audit log + extraction metadata. Dramatically improves the "catching up on an invoice" UX — reviewers don't have to parse a 15-row timeline.
 
-- [ ] Cached summary field on `invoices.meta` (regenerate on audit log mutation)
-- [ ] LLM call invoked lazily on first open after audit log changes
-- [ ] Handles all status transitions, corrections, exception resolutions, ERP sync events
-- [ ] Shows confidence context: *"auto-extracted at 95% confidence with RAG priors applied"*
-- [ ] Small feature but high-visibility — pairs well with the invoice-list priors chips
+- [x] Cached summary field on `invoices.meta` (regenerate when the audit-log fingerprint changes — derived from `audit_log`, so it works in both `local` and `lambda` audit modes with no audit-write-path changes)
+- [x] LLM call invoked lazily on first open after audit log changes (`services/audit_summary.py`, `GET /api/invoices/{id}/summary`)
+- [x] Handles all status transitions, corrections, exception resolutions, ERP sync events
+- [x] Shows confidence context: *"auto-extracted at 95% confidence with RAG priors applied"*
+- [x] Small feature but high-visibility — pairs well with the invoice-list priors chips
+
+Local-first: with no Anthropic key (committed `.env.development` default) the service returns a deterministic template summary — no network call. See `backend/docs/audit-summary.md`. Mobile is excluded (the audit timeline it builds on is not yet on mobile — Priority 8 parity item).
 
 ---
 

@@ -83,6 +83,15 @@ class Invoice(Base, TimestampMixin):
     # has_gr, gr_id, issues}. Populated by `services.invoice_warnings.refresh_warnings`
     # whenever the invoice changes. NULL when the invoice has no `po_number`.
     po_match: Mapped[dict | None] = mapped_column(JSONB)
+    # Free-form per-invoice metadata bag. Currently holds the cached
+    # audit-log summary under `meta["audit_summary"]`:
+    #   {"text": str, "confidence_context": str|None,
+    #    "source_fingerprint": {"count": int, "last_at": str|None},
+    #    "generated_at": str, "model": str}
+    # The summary is regenerated lazily (services.audit_summary) whenever the
+    # audit-log fingerprint for this invoice's correlation_id changes — see
+    # backend/docs/audit-summary.md. No PII / banking data is stored here.
+    meta: Mapped[dict | None] = mapped_column(JSONB)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True

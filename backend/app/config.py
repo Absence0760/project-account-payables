@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""  # your Anthropic API key for Claude Vision
     extraction_model: str = "claude-sonnet-4-20250514"
 
+    # Audit-log summarization (invoice detail modal). Reuses the extraction
+    # API key + model, so no new secret. Master switch — when False the
+    # `/api/invoices/{id}/summary` endpoint returns the deterministic template
+    # summary without any LLM call. `audit_summary_model` defaults to the
+    # extraction model when empty.
+    audit_summary_enabled: bool = True
+    audit_summary_model: str = ""  # falls back to extraction_model when empty
+
     # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
     lithic_api_key: str = ""  # your Lithic API key
     lithic_sandbox: bool = True

@@ -114,7 +114,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, vendor-scoped |
 | `/admin` | User CRUD, role assignment |
 | `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
-| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send |
+| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`) |
 | `/vendors` | Vendor CRUD, ERP sync |
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
@@ -146,6 +146,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `invoice_warnings.py` | Generates warnings and exceptions (duplicates, fraud, etc.) |
 | `payment_erp_sync.py` | Syncs payment status back to ERP |
 | `storage.py` | S3/MinIO file upload/download |
+| `audit_summary.py` | One-paragraph LLM/template summary of an invoice's audit timeline; cached on `invoices.meta`, keyed to an audit-log fingerprint. Fail-soft to a deterministic template (local-dev default). See `backend/docs/audit-summary.md`. |
 | `audit_log_shipper.py` | Background loop that ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock (SOC 2 centralized WORM store) |
 
 ### Adapter patterns (pluggable providers)
@@ -205,6 +206,8 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_ANTHROPIC_API_KEY` | (empty) | Claude Vision for platform extraction |
 | `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514` | AI model for extraction |
 | `AP_EXTRACTION_AUTO_ROTATE` | `true` | Run Tesseract OSD on rendered PDF pages before sending to vision adapters. No-ops if `pytesseract` / `tesseract` missing. |
+| `AP_AUDIT_SUMMARY_ENABLED` | `true` | Master switch for the invoice audit-log summary. When `false`, `GET /api/invoices/{id}/summary` returns the deterministic template summary with no LLM call. Reuses the extraction key/model — no new secret. |
+| `AP_AUDIT_SUMMARY_MODEL` | (empty) | Model for the audit summary; falls back to `AP_EXTRACTION_MODEL` when empty. |
 | `AP_REDIS_URL` | `redis://localhost:6379` | Token blocklist |
 | `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
 | `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |

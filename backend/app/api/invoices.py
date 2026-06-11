@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import (
+    ALL_ROLES,
     ROLE_ADMIN,
     ROLE_AP_MANAGER,
     ROLE_CFO,
@@ -33,6 +34,7 @@ from app.models.payment import Payment, PaymentSchedule
 from app.models.user import User
 from app.models.workflow import WorkflowInstance, WorkflowStep
 from app.schemas.invoice import (
+    AuditSummaryResponse,
     BulkDeleteRequest,
     BulkDeleteResponse,
     BulkExportRequest,
@@ -45,6 +47,7 @@ from app.schemas.invoice import (
     InvoiceResponse,
     InvoiceUpdate,
 )
+from app.services import audit_summary
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
@@ -202,6 +205,60 @@ async def get_invoice_priors(
         "vendor_cache_applied": metadata.get("vendor_cache_applied", []),
         "rag_neighbors": metadata.get("rag_neighbors", []),
     }
+
+
+async def _load_invoice_for_summary(db: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
+    """Load an invoice with extraction_results eager-loaded (so the summary
+    service can read the relationship without an async-illegal lazy load).
+    404s when missing — same shape for wrong-tenant (the tenant DB simply
+    won't contain the row) so the response never enumerates."""
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return invoice
+
+
+@router.get("/{invoice_id}/summary", response_model=AuditSummaryResponse)
+async def get_invoice_summary(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*ALL_ROLES)),
+):
+    """One-paragraph natural-language summary of the invoice's audit timeline.
+
+    Lazily generated on first open after the audit log changes; cached on
+    `invoices.meta["audit_summary"]` and keyed to an audit-log fingerprint so
+    it regenerates only when the timeline actually moves. Read-shaped: it may
+    write the cache, but the write is fingerprint-idempotent and moves no money,
+    so no idempotency key is required.
+    """
+    invoice = await _load_invoice_for_summary(db, invoice_id)
+    return await audit_summary.get_or_build_summary(
+        db, control_db, invoice, org_settings=org.settings
+    )
+
+
+@router.post("/{invoice_id}/summary/regenerate", response_model=AuditSummaryResponse)
+async def regenerate_invoice_summary(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    """Force-regenerate the audit summary, ignoring the cached fingerprint.
+    Manager/admin only — backs the optional "Regenerate" button in the modal."""
+    invoice = await _load_invoice_for_summary(db, invoice_id)
+    return await audit_summary.get_or_build_summary(
+        db, control_db, invoice, org_settings=org.settings, force=True
+    )
 
 
 @router.get("/{invoice_id}/line-items")

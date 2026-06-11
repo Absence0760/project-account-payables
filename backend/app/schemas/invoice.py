@@ -262,3 +262,15 @@ class InvoiceLineItemResponse(BaseModel):
     gl_account: str | None
 
     model_config = {"from_attributes": True}
+
+
+class AuditSummaryResponse(BaseModel):
+    """Cached, LLM- or template-generated one-paragraph audit-log summary for
+    the invoice detail modal. `stale` is always False today (the endpoint
+    regenerates when the fingerprint moves before returning) but is part of the
+    contract so a future async-regeneration path can surface staleness."""
+
+    text: str
+    confidence_context: str | None = None
+    generated_at: str | None = None
+    stale: bool = False
