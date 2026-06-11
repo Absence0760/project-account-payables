@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.pagination import PageMeta
 
@@ -90,3 +90,96 @@ class PortalPaymentListItem(BaseModel):
 class PortalPaymentListResponse(PageMeta):
     items: list[PortalPaymentListItem]
     total: int
+
+
+# ---------- Purchase orders + PO flip ----------
+
+
+class PortalPOListItem(BaseModel):
+    id: str
+    po_number: str
+    status: str
+    total: Decimal
+    currency: str = "USD"
+    line_item_count: int = 0
+    created_at: datetime
+
+
+class PortalPOListResponse(PageMeta):
+    items: list[PortalPOListItem]
+    total: int
+
+
+class PortalPOLineItem(BaseModel):
+    description: str | None = None
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    total: Decimal | None = None
+
+
+class PortalPODetail(BaseModel):
+    id: str
+    po_number: str
+    status: str
+    total: Decimal
+    currency: str = "USD"
+    created_at: datetime
+    line_items: list[PortalPOLineItem] = []
+
+
+class PortalFlipResponse(BaseModel):
+    id: str
+    correlation_id: str
+    status: str
+    message: str
+
+
+# ---------- Company self-service ----------
+
+
+class PortalPendingChange(BaseModel):
+    id: str
+    change_type: str
+    status: str
+    created_at: datetime
+
+
+class PortalCompanyInfoResponse(BaseModel):
+    """Current company info as seen by the supplier.
+
+    Never returns full bank account numbers or an unmasked tax ID — only
+    a masked `tax_id_last4` and a `has_bank_details` boolean. The pending
+    change (if any) lets the UI show a "pending AP approval" banner.
+    """
+
+    name: str
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    tax_id_last4: str | None = None
+    has_bank_details: bool = False
+    pending_change: PortalPendingChange | None = None
+
+
+class PortalCompanyInfoUpdateRequest(BaseModel):
+    """The live-apply contact fields only. Bank details and tax ID are
+    intentionally absent here — they route through the staging endpoints."""
+
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=50)
+    address: str | None = Field(default=None, max_length=500)
+
+
+class PortalBankChangeRequest(BaseModel):
+    bank_details: dict
+
+
+class PortalTaxIdChangeRequest(BaseModel):
+    tax_id: str = Field(..., min_length=1, max_length=50)
+
+
+class PortalChangeRequestResponse(BaseModel):
+    id: str
+    change_type: str
+    status: str
+    created_at: datetime

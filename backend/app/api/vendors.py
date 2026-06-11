@@ -20,13 +20,21 @@ from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_user import VendorUser
 from app.schemas.portal import (
     PortalInviteRequest,
     PortalInviteResponse,
     PortalUserResponse,
 )
-from app.schemas.vendor import VendorCreate, VendorResponse, VendorUpdate
+from app.schemas.vendor import (
+    VendorChangeRequestResponse,
+    VendorChangeReviewRequest,
+    VendorCreate,
+    VendorResponse,
+    VendorUpdate,
+)
+from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.vendor_sync import sync_vendors_from_erp
@@ -92,6 +100,47 @@ async def list_vendors(
         inv_count = count_result.scalar() or 0
         items.append(VendorResponse.from_db(v, inv_count))
 
+    return paginated(items, total, pagination)
+
+
+async def _vendor_name(db: AsyncSession, vendor_id: uuid.UUID) -> str | None:
+    return (
+        await db.execute(select(Vendor.name).where(Vendor.id == vendor_id))
+    ).scalar_one_or_none()
+
+
+# Registered BEFORE the parametric `/{vendor_id}` route so the literal
+# `/change-requests` path isn't swallowed by `vendor_id` (which would 422 on
+# the non-UUID segment). FastAPI matches routes in declaration order.
+@router.get("/change-requests")
+async def list_change_requests(
+    pagination: PaginationParams = Depends(pagination_params),
+    status_filter: str | None = Query("pending", alias="status"),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    """Change-request queue across all vendors. Defaults to the pending
+    queue; pass `?status=approved|rejected|all` to widen. List view masks
+    the proposed value (last-4 only) — the full value is on the detail."""
+    query = select(VendorChangeRequest)
+    if status_filter and status_filter != "all":
+        query = query.where(VendorChangeRequest.status == status_filter)
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = (
+        query.order_by(VendorChangeRequest.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
+    rows = (await db.execute(query)).scalars().all()
+
+    items = []
+    for r in rows:
+        items.append(
+            VendorChangeRequestResponse.from_db(
+                r, vendor_name=await _vendor_name(db, r.vendor_id), reveal=False
+            )
+        )
     return paginated(items, total, pagination)
 
 
@@ -422,3 +471,150 @@ async def delete_vendor_portal_user(
         raise HTTPException(status_code=404, detail="Portal user not found")
     await db.delete(vu)
     await db.commit()
+
+
+# ---------- Vendor change-request approval (fraud-prevention gate) ----------
+#
+# Bank-detail and tax-ID changes initiated by a supplier-portal user stage a
+# pending `vendor_change_requests` row instead of mutating the vendor. AP
+# approval is what applies the change — until then a redirected bank account
+# has no effect on where money goes. Every approve/reject is a status change,
+# so it writes an append-only audit row (invariant #3).
+
+
+@router.get("/{vendor_id}/change-requests", response_model=list[VendorChangeRequestResponse])
+async def list_vendor_change_requests(
+    vendor_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Change requests for one vendor. Reveals the full proposed value so
+    AP can verify the new bank / tax details before approving."""
+    rows = (
+        (
+            await db.execute(
+                select(VendorChangeRequest)
+                .where(VendorChangeRequest.vendor_id == vendor_id)
+                .order_by(VendorChangeRequest.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    vname = await _vendor_name(db, vendor_id)
+    return [VendorChangeRequestResponse.from_db(r, vendor_name=vname, reveal=True) for r in rows]
+
+
+@router.post("/change-requests/{request_id}/approve", response_model=VendorChangeRequestResponse)
+async def approve_change_request(
+    request_id: uuid.UUID,
+    body: VendorChangeReviewRequest | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    """Apply the staged change to the vendor and mark the request approved.
+
+    The request row is locked `FOR UPDATE` so two concurrent approvals can't
+    both apply the change. Re-approving an already-resolved request is a
+    409 — the lock + status check makes the apply exactly-once.
+    """
+    req = (
+        await db.execute(
+            select(VendorChangeRequest)
+            .where(VendorChangeRequest.id == request_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=404, detail="Change request not found")
+    if req.status != "pending":
+        raise HTTPException(status_code=409, detail="Change request already resolved")
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == req.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    last4: str | None = None
+    if req.change_type == "bank_details":
+        incoming = (req.proposed_value or {}).get("bank_details") or {}
+        account = str(incoming.get("account_number") or "")
+        last4 = account[-4:] if len(account) >= 4 else None
+        vendor.bank_details = _merge_bank_details(vendor.bank_details, incoming)
+    elif req.change_type == "tax_id":
+        new_tax = str((req.proposed_value or {}).get("tax_id") or "")
+        last4 = new_tax[-4:] if len(new_tax) >= 4 else None
+        vendor.tax_id = new_tax
+        # A re-keyed tax ID invalidates any prior TIN verification.
+        vendor.tin_verified_at = None
+    else:
+        raise HTTPException(status_code=400, detail="Unknown change type")
+
+    req.status = "approved"
+    req.reviewed_by_user_id = user.id
+    req.reviewed_at = datetime.now(UTC)
+    if body and body.review_note:
+        req.review_note = body.review_note
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action=f"vendor.{req.change_type}_change_approved",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        # PII guard: never log the value — only a last-4 + the request id.
+        details={"request_id": str(req.id), "change_type": req.change_type, "last4": last4},
+    )
+    await db.commit()
+    await db.refresh(req)
+    return VendorChangeRequestResponse.from_db(req, vendor_name=vendor.name, reveal=True)
+
+
+@router.post("/change-requests/{request_id}/reject", response_model=VendorChangeRequestResponse)
+async def reject_change_request(
+    request_id: uuid.UUID,
+    body: VendorChangeReviewRequest | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    """Mark the request rejected without ever touching the vendor row."""
+    req = (
+        await db.execute(
+            select(VendorChangeRequest)
+            .where(VendorChangeRequest.id == request_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=404, detail="Change request not found")
+    if req.status != "pending":
+        raise HTTPException(status_code=409, detail="Change request already resolved")
+
+    req.status = "rejected"
+    req.reviewed_by_user_id = user.id
+    req.reviewed_at = datetime.now(UTC)
+    if body and body.review_note:
+        req.review_note = body.review_note
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action=f"vendor.{req.change_type}_change_rejected",
+        entity_type="vendor",
+        entity_id=req.vendor_id,
+        details={"request_id": str(req.id), "change_type": req.change_type},
+    )
+    await db.commit()
+    await db.refresh(req)
+    return VendorChangeRequestResponse.from_db(
+        req, vendor_name=await _vendor_name(db, req.vendor_id), reveal=True
+    )

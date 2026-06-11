@@ -8,21 +8,34 @@ A vendor user cannot reference another vendor's invoices even by guessing IDs.
 import uuid
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
-from app.models.invoice import Invoice, InvoiceStatus
+from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.payment import Payment
+from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.vendor import Vendor
+from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_user import VendorUser
 from app.schemas.portal import (
+    PortalBankChangeRequest,
+    PortalChangeRequestResponse,
+    PortalCompanyInfoResponse,
+    PortalCompanyInfoUpdateRequest,
+    PortalFlipResponse,
     PortalInvoiceListItem,
     PortalInvoiceListResponse,
     PortalPaymentListItem,
     PortalPaymentListResponse,
+    PortalPendingChange,
+    PortalPODetail,
+    PortalPOLineItem,
+    PortalPOListItem,
+    PortalPOListResponse,
+    PortalTaxIdChangeRequest,
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.extraction_dispatch import dispatch_extraction
@@ -37,6 +50,11 @@ from app.services.workflow_engine import (
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/portal", tags=["portal"])
+
+
+def _last4(value: str | None) -> str | None:
+    s = (value or "").strip()
+    return s[-4:] if len(s) >= 4 else None
 
 
 # ---------- Invoices ----------
@@ -254,6 +272,586 @@ async def list_my_payments(
         page=pagination.page,
         page_size=pagination.page_size,
     )
+
+
+# ---------- Purchase orders + PO flip ----------
+
+
+@router.get("/purchase-orders", response_model=PortalPOListResponse)
+async def list_my_purchase_orders(
+    pagination: PaginationParams = Depends(pagination_params),
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """POs owned by the caller's vendor. The only filter is
+    `PurchaseOrder.vendor_id == vu.vendor_id` — same vendor-scoping
+    discipline as the invoice list."""
+    line_count = (
+        select(POLineItem.po_id, func.count().label("n")).group_by(POLineItem.po_id).subquery()
+    )
+    query = (
+        select(PurchaseOrder, func.coalesce(line_count.c.n, 0))
+        .outerjoin(line_count, line_count.c.po_id == PurchaseOrder.id)
+        .where(PurchaseOrder.vendor_id == vu.vendor_id)
+    )
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(PurchaseOrder)
+            .where(PurchaseOrder.vendor_id == vu.vendor_id)
+        )
+    ).scalar() or 0
+
+    query = (
+        query.order_by(PurchaseOrder.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
+    rows = (await db.execute(query)).all()
+
+    return PortalPOListResponse(
+        items=[
+            PortalPOListItem(
+                id=str(po.id),
+                po_number=po.po_number,
+                status=po.status,
+                total=po.total,
+                line_item_count=n,
+                created_at=po.created_at,
+            )
+            for po, n in rows
+        ],
+        total=total,
+        page=pagination.page,
+        page_size=pagination.page_size,
+    )
+
+
+@router.get("/purchase-orders/{po_id}", response_model=PortalPODetail)
+async def get_my_purchase_order(
+    po_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    po = (
+        await db.execute(
+            select(PurchaseOrder).where(
+                PurchaseOrder.id == po_id, PurchaseOrder.vendor_id == vu.vendor_id
+            )
+        )
+    ).scalar_one_or_none()
+    if not po:
+        # 404 (not 403) for cross-vendor IDs so the portal can't probe PO ids.
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+
+    lines = (await db.execute(select(POLineItem).where(POLineItem.po_id == po.id))).scalars().all()
+
+    return PortalPODetail(
+        id=str(po.id),
+        po_number=po.po_number,
+        status=po.status,
+        total=po.total,
+        created_at=po.created_at,
+        line_items=[
+            PortalPOLineItem(
+                description=li.description,
+                quantity=li.quantity,
+                unit_price=li.unit_price,
+                total=li.total,
+            )
+            for li in lines
+        ],
+    )
+
+
+@router.post("/purchase-orders/{po_id}/flip", status_code=status.HTTP_202_ACCEPTED)
+async def flip_purchase_order(
+    po_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> PortalFlipResponse:
+    """PO flip — create an invoice pre-populated from a PO the caller's
+    vendor owns, then route it into the existing extraction/workflow path
+    exactly like a normal supplier submission.
+
+    Idempotency (project invariant #2 — this seeds the AP→payment pipeline):
+    a flip is short-circuited if an invoice already exists for this PO from
+    this vendor whose source is the PO flip. The optional ``Idempotency-Key``
+    header is recorded on the audit breadcrumb for client-side replay
+    correlation, but the durable guard is the existing-invoice check so a
+    double-click can never mint two invoices off one PO.
+    """
+    po = (
+        await db.execute(
+            select(PurchaseOrder).where(
+                PurchaseOrder.id == po_id, PurchaseOrder.vendor_id == vu.vendor_id
+            )
+        )
+    ).scalar_one_or_none()
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    # Idempotency guard: an invoice already flipped from this PO by this
+    # vendor short-circuits to that invoice rather than creating a duplicate.
+    existing = (
+        await db.execute(
+            select(Invoice).where(
+                Invoice.vendor_id == vu.vendor_id,
+                Invoice.po_number == po.po_number,
+                Invoice.reference_number == f"po-flip:{po.id}",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return PortalFlipResponse(
+            id=str(existing.id),
+            correlation_id=str(existing.correlation_id),
+            status=existing.status.value,
+            message="Invoice already created from this PO.",
+        )
+
+    po_lines = (
+        (await db.execute(select(POLineItem).where(POLineItem.po_id == po.id))).scalars().all()
+    )
+
+    invoice = Invoice(
+        invoice_number="",
+        vendor_name=vendor.name,
+        vendor_id=vendor.id,
+        description=f"Created from {po.po_number}",
+        amount=po.total,
+        currency="USD",
+        status=InvoiceStatus.new,
+        po_number=po.po_number,
+        # Stable per-PO marker — drives the idempotency guard above.
+        reference_number=f"po-flip:{po.id}",
+        organization_id=vendor.organization_id,
+    )
+    db.add(invoice)
+    await db.flush()
+
+    for idx, li in enumerate(po_lines, start=1):
+        db.add(
+            InvoiceLineItem(
+                invoice_id=invoice.id,
+                line_number=idx,
+                description=li.description,
+                quantity=li.quantity,
+                unit_price=li.unit_price,
+                total=li.total,
+            )
+        )
+
+    instance = await create_workflow_instance(db, invoice)
+    extraction_enabled = await is_step_enabled(db, vendor.organization_id, "extraction")
+    source_details = {
+        "actor_type": "vendor_user",
+        "vendor_user_id": str(vu.id),
+        "vendor_id": str(vendor.id),
+        "source": "supplier_portal_po_flip",
+        "po_id": str(po.id),
+        "po_number": po.po_number,
+        "idempotency_key": idempotency_key,
+    }
+
+    if extraction_enabled:
+        await transition_invoice(
+            db,
+            invoice,
+            InvoiceStatus.pending,
+            actor_id=None,
+            action_name="invoice.created_from_po",
+            details=source_details,
+        )
+        await create_workflow_step(db, instance, "upload")
+        await db.commit()
+        await db.refresh(invoice)
+        await dispatch_extraction(invoice.id, vendor.organization_id, None)
+        await dispatch_audit(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=vendor.organization_id,
+            actor_id=None,
+            action="invoice.extraction_dispatched",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            details={"trigger": "supplier_portal_po_flip", **source_details},
+        )
+        message = "Invoice created from PO. Processing in progress."
+    else:
+        await create_workflow_step(db, instance, "upload")
+        await dispatch_audit(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=vendor.organization_id,
+            actor_id=None,
+            action="invoice.created_from_po",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            details=source_details,
+        )
+        await refresh_warnings(db, invoice)
+        await db.commit()
+        await db.refresh(invoice)
+        message = "Invoice created from PO. Awaiting AP review."
+
+    return PortalFlipResponse(
+        id=str(invoice.id),
+        correlation_id=str(invoice.correlation_id),
+        status=invoice.status.value,
+        message=message,
+    )
+
+
+# ---------- Remittance ----------
+
+
+@router.get("/payments/{payment_id}/remittance")
+async def get_my_payment_remittance(
+    payment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Vendor-scoped remittance-advice PDF. Ownership is enforced by the
+    `Invoice.vendor_id == vu.vendor_id` join — a payment on another vendor's
+    invoice returns 404, never a foreign PDF."""
+    from app.services.remittance_pdf import (
+        RemittanceContext,
+        RemittanceLine,
+        render_remittance_pdf,
+    )
+
+    row = (
+        await db.execute(
+            select(Payment, Invoice)
+            .join(Invoice, Payment.invoice_id == Invoice.id)
+            .where(Payment.id == payment_id, Invoice.vendor_id == vu.vendor_id)
+        )
+    ).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    payment, invoice = row
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+
+    # The payer (the AP customer) is an Organization in the control plane —
+    # portal sessions don't carry one, so resolve it by the invoice's org_id.
+    from app.database import control_session_factory
+    from app.models.organization import Organization
+
+    async with control_session_factory() as ctrl:
+        org = (
+            await ctrl.execute(
+                select(Organization).where(Organization.id == invoice.organization_id)
+            )
+        ).scalar_one_or_none()
+    company = (org.settings or {}).get("company") if org else None
+
+    ctx = RemittanceContext(
+        payer_name=org.name if org else "Your customer",
+        payer_address=(company or {}).get("address"),
+        vendor_name=invoice.vendor_name,
+        vendor_address=(vendor.address if vendor else None) or invoice.remit_to_address,
+        payment_date=payment.completed_at or payment.submitted_at or payment.created_at,
+        payment_method=payment.method or "ach",
+        payment_reference=payment.reference,
+        payment_amount=payment.amount,
+        currency=invoice.currency,
+        lines=[
+            RemittanceLine(
+                invoice_number=invoice.invoice_number or str(payment.invoice_id),
+                description=invoice.description,
+                amount=payment.amount,
+            )
+        ],
+    )
+    pdf_bytes = render_remittance_pdf(ctx)
+    filename = f"remittance-{payment.reference or str(payment.id)[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------- Company self-service ----------
+
+
+async def _pending_change(db: AsyncSession, vendor_id: uuid.UUID) -> VendorChangeRequest | None:
+    return (
+        (
+            await db.execute(
+                select(VendorChangeRequest)
+                .where(
+                    VendorChangeRequest.vendor_id == vendor_id,
+                    VendorChangeRequest.status == "pending",
+                )
+                .order_by(VendorChangeRequest.created_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+@router.get("/company", response_model=PortalCompanyInfoResponse)
+async def get_my_company(
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    pending = await _pending_change(db, vendor.id)
+    return PortalCompanyInfoResponse(
+        name=vendor.name,
+        email=vendor.email,
+        phone=vendor.phone,
+        address=vendor.address,
+        tax_id_last4=_last4(vendor.tax_id),
+        has_bank_details=bool(vendor.bank_details),
+        pending_change=(
+            PortalPendingChange(
+                id=str(pending.id),
+                change_type=pending.change_type,
+                status=pending.status,
+                created_at=pending.created_at,
+            )
+            if pending
+            else None
+        ),
+    )
+
+
+@router.patch("/company", response_model=PortalCompanyInfoResponse)
+async def update_my_company(
+    body: PortalCompanyInfoUpdateRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Live-apply the non-sensitive contact fields (phone, address, email).
+    Bank details and tax ID are NOT accepted here — they stage via the
+    dedicated change-request endpoints and apply only after AP approval."""
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    payload = body.model_dump(exclude_unset=True)
+    changed = sorted(payload.keys())
+    for field, value in payload.items():
+        setattr(vendor, field, value)
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=vendor.organization_id,
+        actor_id=None,
+        action="vendor.contact_updated_by_vendor",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        # Log only which fields changed, never the values (address is PII).
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "fields": changed,
+        },
+    )
+    await db.commit()
+    await db.refresh(vendor)
+
+    pending = await _pending_change(db, vendor.id)
+    return PortalCompanyInfoResponse(
+        name=vendor.name,
+        email=vendor.email,
+        phone=vendor.phone,
+        address=vendor.address,
+        tax_id_last4=_last4(vendor.tax_id),
+        has_bank_details=bool(vendor.bank_details),
+        pending_change=(
+            PortalPendingChange(
+                id=str(pending.id),
+                change_type=pending.change_type,
+                status=pending.status,
+                created_at=pending.created_at,
+            )
+            if pending
+            else None
+        ),
+    )
+
+
+async def _stage_change(
+    db: AsyncSession,
+    *,
+    vu: VendorUser,
+    vendor: Vendor,
+    change_type: str,
+    proposed_value: dict,
+    last4: str | None,
+) -> VendorChangeRequest:
+    """Insert a pending change request. Deduped on
+    `(vendor_id, change_type, status=pending)` so a vendor can't stack
+    duplicate pending requests of the same type."""
+    dup = (
+        await db.execute(
+            select(VendorChangeRequest).where(
+                VendorChangeRequest.vendor_id == vendor.id,
+                VendorChangeRequest.change_type == change_type,
+                VendorChangeRequest.status == "pending",
+            )
+        )
+    ).scalar_one_or_none()
+    if dup:
+        raise HTTPException(
+            status_code=409,
+            detail="A change of this type is already pending AP review.",
+        )
+
+    req = VendorChangeRequest(
+        vendor_id=vendor.id,
+        organization_id=vendor.organization_id,
+        requested_by_vendor_user_id=vu.id,
+        change_type=change_type,
+        status="pending",
+        proposed_value=proposed_value,
+    )
+    db.add(req)
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=vendor.organization_id,
+        actor_id=None,
+        action=f"vendor.{change_type}_change_requested",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        # PII guard: never log the proposed value — only a last-4 + the id.
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "change_type": change_type,
+            "request_id": str(req.id),
+            "last4": last4,
+        },
+    )
+    await db.commit()
+    await db.refresh(req)
+    return req
+
+
+@router.post(
+    "/company/bank-change",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=PortalChangeRequestResponse,
+)
+async def request_bank_change(
+    body: PortalBankChangeRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Stage a `bank_details` change. The vendor row is NOT mutated — the
+    change has zero effect on where money goes until AP approves it."""
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    if not body.bank_details:
+        raise HTTPException(status_code=400, detail="bank_details is required")
+
+    account = str(body.bank_details.get("account_number") or "")
+    last4 = account[-4:] if len(account) >= 4 else None
+    req = await _stage_change(
+        db,
+        vu=vu,
+        vendor=vendor,
+        change_type="bank_details",
+        proposed_value={"bank_details": body.bank_details},
+        last4=last4,
+    )
+    return PortalChangeRequestResponse(
+        id=str(req.id),
+        change_type=req.change_type,
+        status=req.status,
+        created_at=req.created_at,
+    )
+
+
+@router.post(
+    "/company/tax-id-change",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=PortalChangeRequestResponse,
+)
+async def request_tax_id_change(
+    body: PortalTaxIdChangeRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Stage a `tax_id` change. Re-keys 1099 reporting on approval, so it
+    routes through AP review the same as a bank change — never applied live."""
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    req = await _stage_change(
+        db,
+        vu=vu,
+        vendor=vendor,
+        change_type="tax_id",
+        proposed_value={"tax_id": body.tax_id},
+        last4=_last4(body.tax_id),
+    )
+    return PortalChangeRequestResponse(
+        id=str(req.id),
+        change_type=req.change_type,
+        status=req.status,
+        created_at=req.created_at,
+    )
+
+
+@router.get("/company/change-requests", response_model=list[PortalChangeRequestResponse])
+async def list_my_change_requests(
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    rows = (
+        (
+            await db.execute(
+                select(VendorChangeRequest)
+                .where(VendorChangeRequest.vendor_id == vu.vendor_id)
+                .order_by(VendorChangeRequest.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        PortalChangeRequestResponse(
+            id=str(r.id),
+            change_type=r.change_type,
+            status=r.status,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
 
 
 # ---------- Card reveal (no auth — token is the credential) ----------
