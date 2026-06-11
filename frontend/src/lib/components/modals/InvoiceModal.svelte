@@ -8,13 +8,25 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
-	interface AuditEntry {
-		id: string;
-		actor_name: string | null;
-		action: string;
-		details: Record<string, unknown> | null;
-		created_at: string;
+	import type { AuditEntry, AuditFieldChange } from '$lib/types/audit';
+	import { getInvoiceAuditLog } from '$lib/api/audit';
+
+	// Render-side helper: extract the per-field before/after diff (SOX change
+	// history) the backend writes onto details.changes for edit/approve events.
+	function fieldChanges(entry: AuditEntry): [string, AuditFieldChange][] {
+		const changes = entry.details?.changes;
+		if (!changes || typeof changes !== 'object') return [];
+		return Object.entries(changes as Record<string, AuditFieldChange>);
 	}
+
+	const FIELD_LABELS: Record<string, string> = {
+		vendor_name: 'Vendor',
+		amount: 'Amount',
+		invoice_number: 'Invoice #',
+		invoice_date: 'Invoice date',
+		due_date: 'Due date',
+		gl_account: 'GL account'
+	};
 
 	const ACTION_LABELS: Record<string, string> = {
 		'invoice.uploaded': 'Uploaded invoice',
@@ -30,6 +42,9 @@
 		'invoice.extraction_completed': 'Extraction completed',
 		'invoice.extraction_failed': 'Extraction failed',
 		'invoice.completed': 'Marked complete',
+		'invoice.edited': 'Edited fields',
+		'audit.viewed': 'Audit trail viewed',
+		'audit.exported': 'Audit trail exported',
 	};
 
 	let {
@@ -595,7 +610,7 @@
 	async function loadAuditLog() {
 		auditLoading = true;
 		try {
-			auditLog = await api.get<AuditEntry[]>(`/api/invoices/${invoice.id}/audit-log`);
+			auditLog = await getInvoiceAuditLog(invoice.id);
 		} catch {
 			// non-critical
 		} finally {
@@ -1109,6 +1124,18 @@
 											{/if}
 											{#if entry.action === 'invoice.extraction_failed' && entry.details?.error}
 												<span class="activity-detail error">— {entry.details.error}</span>
+											{/if}
+											{#if fieldChanges(entry).length > 0}
+												<ul class="activity-changes">
+													{#each fieldChanges(entry) as [field, change] (field)}
+														<li>
+															<span class="change-field">{FIELD_LABELS[field] ?? field}:</span>
+															<span class="change-old">{change.old ?? '—'}</span>
+															<span class="change-arrow">→</span>
+															<span class="change-new">{change.new ?? '—'}</span>
+														</li>
+													{/each}
+												</ul>
 											{/if}
 										</div>
 										<span class="activity-time">{formatAuditDate(entry.created_at)}</span>
@@ -2196,6 +2223,42 @@
 	.activity-detail.error {
 		color: #e04040;
 		font-style: italic;
+	}
+
+	.activity-changes {
+		list-style: none;
+		margin: 4px 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-size: 0.85em;
+	}
+
+	.activity-changes li {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.change-field {
+		color: var(--text-muted);
+		font-weight: 600;
+	}
+
+	.change-old {
+		color: var(--text-muted);
+		text-decoration: line-through;
+	}
+
+	.change-arrow {
+		color: var(--text-muted);
+	}
+
+	.change-new {
+		color: var(--text);
+		font-weight: 500;
 	}
 
 	.activity-time {
