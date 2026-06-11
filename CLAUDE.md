@@ -369,9 +369,22 @@ Worktree notes:
 - `backend/.venv` and `node_modules` do **not** carry over (venv paths are
   absolute; node_modules is heavy) — run `pnpm install` / recreate the venv in
   the worktree before building or testing there.
-- Merge back by committing on the worktree branch, then bringing those commits
-  into `main` from the primary checkout; Claude prompts to keep or remove the
-  worktree on exit (auto-removes it if you left no changes).
+- **All work must end up on `main`.** A worktree commits on its own branch, and
+  git won't let a worktree check out `main`, so that work only reaches `main`
+  via an explicit merge from the **primary checkout**. Before retiring a
+  worktree, consolidate it:
+  ```bash
+  git branch --no-merged main          # audit: anything still off main?
+  git merge <worktree-branch>          # from the primary checkout (on main)
+  ```
+  Use `git merge --ff-only` when main hasn't moved (linear); otherwise rebase
+  the worktree branch onto `main` first to keep history linear. Claude prompts
+  to keep or remove the worktree on exit (auto-removes it if you left no
+  changes) — but removal does **not** merge; consolidate first.
+- This is backed by a safety net: the `SessionStart` hook
+  `.claude/hooks/unmerged-worktree-check.sh` warns at the start of every session
+  if any branch holds commits not on `main`, so stranded worktree work surfaces
+  and gets merged instead of forgotten.
 
 ## Fix bugs at the source — never adjust the test to hide them
 
