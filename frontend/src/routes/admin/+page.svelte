@@ -6,6 +6,8 @@
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 	import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -255,7 +257,14 @@
 		{/snippet}
 		{#snippet body()}
 			{#each adminStore.users as user (user.id)}
-				<tr class:inactive={!user.is_active} class:row-selected={selectedIds.has(user.id)}>
+				<tr
+					class="clickable"
+					class:inactive={!user.is_active}
+					class:row-selected={selectedIds.has(user.id)}
+					onclick={(e) => {
+						if (isRowOpenClick(e)) openEdit(user);
+					}}
+				>
 					<td class="checkbox-col">
 						{#if !isSelf(user.id)}
 							<input
@@ -267,7 +276,9 @@
 						{/if}
 					</td>
 					<td class="name-cell">
-						{user.full_name}
+						<RowLink onclick={() => openEdit(user)} ariaLabel={`Edit user ${user.full_name}`}>
+							{user.full_name}
+						</RowLink>
 						{#if isSelf(user.id)}
 							<span class="you-badge">You</span>
 						{/if}
@@ -289,7 +300,6 @@
 					</td>
 					<td class="date-cell">{formatDate(user.created_at)}</td>
 					<td class="actions">
-						<RowAction onclick={() => openEdit(user)}>Edit</RowAction>
 						<RowAction onclick={() => toggleActive(user)}>
 							{user.is_active ? 'Deactivate' : 'Activate'}
 						</RowAction>

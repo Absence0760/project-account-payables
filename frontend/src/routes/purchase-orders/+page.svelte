@@ -5,6 +5,8 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	const COLUMNS = [
@@ -188,8 +190,20 @@
 	>
 		{#snippet body()}
 			{#each pos as po (po.id)}
-				<tr class="clickable" onclick={() => (detailId = po.id)}>
-					<td class="mono">{po.po_number}</td>
+				<tr
+					class="clickable"
+					onclick={(e) => {
+						if (isRowOpenClick(e)) detailId = po.id;
+					}}
+				>
+					<td class="mono">
+						<RowLink
+							onclick={() => (detailId = po.id)}
+							ariaLabel={`View purchase order ${po.po_number}`}
+						>
+							{po.po_number}
+						</RowLink>
+					</td>
 					<td>{po.vendor_name ?? '—'}</td>
 					<td class="right mono">{formatCurrency(po.total)}</td>
 					<td><span class="badge {po.status}">{po.status}</span></td>
@@ -312,12 +326,6 @@
 	.btn-outline:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
-	}
-	tr.clickable {
-		cursor: pointer;
-	}
-	tr.clickable:hover {
-		background: rgba(99, 140, 255, 0.04);
 	}
 	.badge {
 		display: inline-block;

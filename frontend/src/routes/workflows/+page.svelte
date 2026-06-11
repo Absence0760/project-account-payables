@@ -11,10 +11,13 @@
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 	import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { goto } from '$app/navigation';
 
 	let showCreate = $state(false);
 	let newName = $state('');
@@ -193,7 +196,13 @@
 		{/snippet}
 		{#snippet body()}
 			{#each workflowStore.all as wf (wf.id)}
-				<tr class:row-selected={selectedIds.has(wf.id)}>
+				<tr
+					class="clickable"
+					class:row-selected={selectedIds.has(wf.id)}
+					onclick={(e) => {
+						if (isRowOpenClick(e)) goto(`/workflows/${wf.id}`);
+					}}
+				>
 					<td class="checkbox-col">
 						{#if !wf.is_default}
 							<input
@@ -205,12 +214,12 @@
 						{/if}
 					</td>
 					<td>
-						<a href="/workflows/{wf.id}" class="wf-name">
+						<RowLink href="/workflows/{wf.id}" ariaLabel={`Edit workflow ${wf.name}`}>
 							{wf.name}
 							{#if wf.is_default}
 								<span class="default-badge">Default</span>
 							{/if}
-						</a>
+						</RowLink>
 						{#if wf.description}
 							<div class="wf-desc">{wf.description}</div>
 						{/if}
@@ -223,7 +232,6 @@
 					</td>
 					<td class="date-cell">{formatDate(wf.created_at)}</td>
 					<td class="actions">
-						<RowAction href="/workflows/{wf.id}">Edit</RowAction>
 						{#if !wf.is_default}
 							<RowAction variant="danger" onclick={() => handleDelete(wf)}>Delete</RowAction>
 						{/if}
@@ -290,19 +298,6 @@
 		accent-color: var(--accent);
 	}
 
-	.wf-name {
-		font-weight: 500;
-		color: var(--accent);
-		text-decoration: none;
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.wf-name:hover {
-		text-decoration: underline;
-	}
-
 	.default-badge {
 		font-size: 0.68rem;
 		font-weight: 600;
@@ -312,6 +307,7 @@
 		border-radius: 4px;
 		background: rgba(99, 140, 255, 0.15);
 		color: var(--accent);
+		margin-left: 8px;
 	}
 
 	.wf-desc {

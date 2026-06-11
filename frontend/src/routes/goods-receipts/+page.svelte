@@ -3,6 +3,8 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	const COLUMNS = [
@@ -122,8 +124,20 @@
 	>
 		{#snippet body()}
 			{#each grs as gr (gr.id)}
-				<tr class="clickable" onclick={() => (detailId = gr.id)}>
-					<td class="mono">{gr.gr_number}</td>
+				<tr
+					class="clickable"
+					onclick={(e) => {
+						if (isRowOpenClick(e)) detailId = gr.id;
+					}}
+				>
+					<td class="mono">
+						<RowLink
+							onclick={() => (detailId = gr.id)}
+							ariaLabel={`View goods receipt ${gr.gr_number}`}
+						>
+							{gr.gr_number}
+						</RowLink>
+					</td>
 					<td class="mono">{gr.po_number ?? '—'}</td>
 					<td>{formatDate(gr.received_date)}</td>
 					<td><span class="badge {gr.status}">{gr.status}</span></td>
@@ -195,9 +209,6 @@
 
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
-	tr.clickable {
-		cursor: pointer;
-	}
 	.badge {
 		display: inline-block;
 		padding: 2px 10px;

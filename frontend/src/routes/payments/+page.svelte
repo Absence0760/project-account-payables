@@ -6,6 +6,8 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RunDetailModal from '$lib/components/modals/RunDetailModal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -619,8 +621,20 @@
 		>
 			{#snippet body()}
 				{#each runs as run (run.id)}
-					<tr class="clickable" onclick={() => (activeRunId = run.id)}>
-						<td class="mono">{run.id.slice(0, 8)}</td>
+					<tr
+						class="clickable"
+						onclick={(e) => {
+							if (isRowOpenClick(e)) activeRunId = run.id;
+						}}
+					>
+						<td class="mono">
+							<RowLink
+								onclick={() => (activeRunId = run.id)}
+								ariaLabel={`View payment run ${run.id.slice(0, 8)}`}
+							>
+								{run.id.slice(0, 8)}
+							</RowLink>
+						</td>
 						<td><span class="badge {run.status}">{run.status}</span></td>
 						<td class="right mono">{run.total_amount ? formatCurrency(run.total_amount) : '—'}</td>
 						<td>{run.payment_count}</td>
@@ -868,12 +882,6 @@
 		background: rgba(99, 140, 255, 0.12);
 		color: var(--accent);
 		font-weight: 600;
-	}
-
-	/* --- Runs table --- */
-
-	tbody tr.clickable {
-		cursor: pointer;
 	}
 
 	/* --- Queue --- */
