@@ -8,6 +8,7 @@ Handles:
 
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -221,7 +222,11 @@ def advance_approval_chain(
     Returns True if the chain is fully complete (all levels satisfied).
     Returns False if more approvals are needed.
     """
-    state = dict(instance.state_data or {})
+    # Deep-copy so the nested approval/level mutations below reassign a value
+    # that genuinely differs from SQLAlchemy's dirty-check baseline — see the
+    # note in apply_escalation. Recording an approval mutates nested JSONB, and
+    # this must persist even when nothing else on the instance changed.
+    state = copy.deepcopy(instance.state_data or {})
     chain_state = state.get("approval_levels", {})
     if not chain_state:
         return True  # no chain configured, treat as complete
@@ -273,7 +278,15 @@ def apply_escalation(instance: WorkflowInstance, *, now: datetime | None = None)
     Idempotent — once a level is escalated to a given user set, re-running
     is a no-op."""
     now = now or datetime.now(UTC)
-    state = dict(instance.state_data or {})
+    # Deep-copy, not shallow: the escalation mutates objects *nested* inside
+    # the JSONB (a level's approver_ids / escalations). A shallow copy shares
+    # those nested objects with the value SQLAlchemy loaded, so the in-place
+    # mutation also changes its dirty-check baseline — the reassignment then
+    # looks value-equal and the UPDATE is skipped. The sweeper changes nothing
+    # else on the instance to drag the column along, so the escalation would
+    # silently never persist. A deep copy keeps the baseline pristine so the
+    # commit actually writes the change.
+    state = copy.deepcopy(instance.state_data or {})
     chain_state = state.get("approval_levels")
     if not chain_state:
         return False

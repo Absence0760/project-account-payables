@@ -14,6 +14,7 @@ apply_escalation tests.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -181,3 +182,77 @@ async def test_run_escalation_loop_survives_a_failed_sweep():
             pass
 
     assert call_count >= 2  # didn't die on the first raise
+
+
+# ---------------------------------------------------------------------------
+# Real-Postgres: the state=='active' WHERE filter and the committed mutation —
+# the gap between the well-tested apply_escalation primitive and the sweeper.
+# ---------------------------------------------------------------------------
+
+
+async def test_escalate_tenant_escalates_only_active_overdue_instances(realdb):
+    from datetime import timedelta
+    from decimal import Decimal
+
+    from app.models.invoice import Invoice
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance
+    from app.services.approval_escalation import _escalate_tenant
+
+    info = realdb.info("a")
+    org_id = info.org_id
+    mk = realdb.sessionmaker("a")
+
+    target_uid = str(uuid.uuid4())
+    entered = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+
+    def _overdue_state():
+        return {
+            "approval_levels": {
+                "current_level": 0,
+                "levels": [
+                    {
+                        "escalation_hours": 24,
+                        "escalation_to_user_ids": [target_uid],
+                        "entered_at": entered,
+                        "approver_ids": [str(uuid.uuid4())],
+                    }
+                ],
+            }
+        }
+
+    async with mk() as s:
+        inv_a = Invoice(
+            organization_id=org_id, invoice_number="INV-A", vendor_name="Acme", amount=Decimal("10")
+        )
+        inv_b = Invoice(
+            organization_id=org_id, invoice_number="INV-B", vendor_name="Acme", amount=Decimal("10")
+        )
+        defn = WorkflowDefinition(organization_id=org_id, name="def", steps_config={"steps": []})
+        s.add_all([inv_a, inv_b, defn])
+        await s.flush()
+        active = WorkflowInstance(
+            definition_id=defn.id, invoice_id=inv_a.id, state="active", state_data=_overdue_state()
+        )
+        completed = WorkflowInstance(
+            definition_id=defn.id,
+            invoice_id=inv_b.id,
+            state="completed",
+            state_data=_overdue_state(),
+        )
+        s.add_all([active, completed])
+        await s.commit()
+        active_id, completed_id = active.id, completed.id
+
+    # The sweeper escalates exactly one instance (the active one).
+    escalated = await _escalate_tenant(info.db_name, datetime.now(UTC))
+    assert escalated == 1
+
+    async with mk() as s:
+        a = await s.get(WorkflowInstance, active_id)
+        c = await s.get(WorkflowInstance, completed_id)
+    a_approvers = a.state_data["approval_levels"]["levels"][0]["approver_ids"]
+    c_approvers = c.state_data["approval_levels"]["levels"][0]["approver_ids"]
+    # Active: escalation target appended + committed.
+    assert target_uid in a_approvers
+    # Completed: untouched — the state=='active' filter excluded it.
+    assert target_uid not in c_approvers
