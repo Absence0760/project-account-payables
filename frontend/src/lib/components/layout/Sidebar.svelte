@@ -38,6 +38,12 @@
 			],
 		},
 		{
+			title: 'Insights',
+			items: [
+				{ label: 'Cash Flow', href: '/cfo', icon: 'payments', requiredRoles: ['admin', 'cfo'] },
+			],
+		},
+		{
 			title: 'Processing',
 			items: [
 				{ label: 'Exceptions', href: '/exceptions', icon: 'exceptions', requiredRoles: ['admin', 'ap_manager'] },
