@@ -164,6 +164,7 @@ def _autouse_fake_redis(monkeypatch):
 # the fixture skips rather than erroring, so the mock-only suite still runs.
 # ---------------------------------------------------------------------------
 
+import os  # noqa: E402
 import uuid  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 
@@ -380,6 +381,16 @@ async def realdb():
     try:
         tenants = await _ensure_test_tenants()
     except (OSError, asyncpg.PostgresError, OperationalError) as exc:
+        # The CI backend job declares Postgres as a health-checked service and
+        # sets AP_REQUIRE_REALDB — there, an unreachable DB is a hard failure,
+        # not a silent skip that would hide breakage in the real-DB tenant
+        # isolation / token-rotation tests. Local runs without `pnpm db:up`
+        # still skip so the mock-only suite keeps running.
+        if os.environ.get("AP_REQUIRE_REALDB"):
+            raise RuntimeError(
+                "realdb fixture requires a live Postgres and AP_REQUIRE_REALDB is "
+                f"set (CI declares Postgres as a service); refusing to skip: {exc}"
+            ) from exc
         pytest.skip(f"realdb fixture requires a live Postgres (pnpm db:up): {exc}")
 
     tenant_tables = [f'"{n}"' for n in Base.metadata.tables if n not in CONTROL_TABLES]

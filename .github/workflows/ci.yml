@@ -143,6 +143,11 @@ jobs:
           AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
           AP_REDIS_URL: redis://localhost:6379
           AP_SECRET_KEY: ci-test-secret
+          # Postgres is a declared, health-checked service in this job — so the
+          # realdb fixture must run, not silently skip. With this set, an
+          # unreachable DB hard-fails instead of dropping the tenant-isolation /
+          # token-rotation coverage while the job stays green.
+          AP_REQUIRE_REALDB: "1"
         run: pytest
 
   frontend:
