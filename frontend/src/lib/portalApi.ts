@@ -40,9 +40,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
 	if (res.status === 401) {
-		clearPortalToken();
-		if (typeof window !== 'undefined') window.location.href = '/portal/login';
-		throw new Error('Unauthorized');
+		// Only treat a 401 as a session expiry — clear the token and bounce to
+		// the portal login — when we actually sent one. A 401 on an
+		// unauthenticated request (the login POST with bad credentials) must
+		// surface to the caller so the login page can render the error, not
+		// silently full-page-reload it away.
+		if (token) {
+			clearPortalToken();
+			if (typeof window !== 'undefined') window.location.href = '/portal/login';
+			throw new Error('Unauthorized');
+		}
+		const body = await res.json().catch(() => ({}));
+		throw new Error(body.detail || 'Invalid credentials');
 	}
 
 	if (!res.ok) {
