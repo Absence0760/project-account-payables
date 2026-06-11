@@ -14,6 +14,8 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { page } from '$app/stores';
+	import { replaceState } from '$app/navigation';
 
 	let search = $state('');
 	let activeStatuses = $state<InvoiceStatus[]>([]);
@@ -118,6 +120,32 @@
 		search;
 		debouncedFetch();
 	});
+
+	// Deep-link: `/invoices?id=<uuid>` (e.g. the "Invoice" action on the
+	// exceptions queue) opens that invoice's detail modal on load. The row
+	// may live on a later page than the default 20 we fetch, so resolve it
+	// straight from the API rather than the in-memory list.
+	let deepLinkLoaded = $state<string | null>(null);
+	$effect(() => {
+		const id = $page.url.searchParams.get('id');
+		if (!id || deepLinkLoaded === id) return;
+		deepLinkLoaded = id;
+		api
+			.get<Invoice>(`/api/invoices/${id}`)
+			.then((inv) => (editing = inv))
+			.catch(() => toast('Invoice not found', 'error'));
+	});
+
+	function closeInvoiceModal() {
+		editing = null;
+		const url = new URL($page.url);
+		if (url.searchParams.has('id')) {
+			url.searchParams.delete('id');
+			replaceState(`${url.pathname}${url.search}`, {});
+			// Allow re-opening the same invoice from a fresh deep-link click.
+			deepLinkLoaded = null;
+		}
+	}
 
 	let hasAdvancedFilters = $derived(
 		advancedFilters.vendor !== '' ||
@@ -524,7 +552,7 @@
 </PageHeader>
 
 {#if editing}
-	<InvoiceModal invoice={editing} onclose={() => (editing = null)} activeSteps={workflowStore.activeSteps} />
+	<InvoiceModal invoice={editing} onclose={closeInvoiceModal} activeSteps={workflowStore.activeSteps} />
 {/if}
 
 {#if showAdvancedSearch}
