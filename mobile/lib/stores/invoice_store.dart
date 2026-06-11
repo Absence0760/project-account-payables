@@ -70,6 +70,9 @@ class InvoiceStore extends ChangeNotifier {
           return;
         }
       } catch (_) {}
+      // No cache to fall back on — make sure we don't keep claiming the
+      // (now absent) data came from cache.
+      _fromCache = false;
       _loading = false;
       _error = e.toString();
       notifyListeners();

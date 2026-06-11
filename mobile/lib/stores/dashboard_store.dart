@@ -24,7 +24,7 @@ class DashboardStore extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _data = await OfflineStore.instance.cachedFetch<DashboardData>(
+      final result = await OfflineStore.instance.cachedFetch<DashboardData>(
         key: 'dashboard',
         fetch: DashboardApi.get,
         toCache: (d) => {
@@ -49,7 +49,8 @@ class DashboardStore extends ChangeNotifier {
         fromCache: (json) =>
             DashboardData.fromJson(json as Map<String, dynamic>),
       );
-      _fromCache = false;
+      _data = result.data;
+      _fromCache = result.fromCache;
       _loading = false;
       notifyListeners();
     } catch (e) {
@@ -64,6 +65,8 @@ class DashboardStore extends ChangeNotifier {
           return;
         }
       } catch (_) {}
+      // No cache to fall back on — don't keep claiming the data is cached.
+      _fromCache = false;
       _loading = false;
       _error = e.toString();
       notifyListeners();
