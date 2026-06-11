@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Invoice } from '$lib/types/invoice';
+	import type { Invoice, AuditSummary } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -534,6 +534,15 @@
 	let priors = $state<PriorsData>({ vendor_cache_applied: [], rag_neighbors: [] });
 	let priorsOpen = $state(false);
 
+	// Audit-log summary (top of the modal). Lazily fetched on first open;
+	// regenerated server-side only when the audit log changed.
+	let summary = $state<AuditSummary | null>(null);
+	let summaryLoading = $state(false);
+	let summaryRegenerating = $state(false);
+	// Managers/admins can force a regenerate (matches the backend RBAC on
+	// POST /summary/regenerate).
+	let canRegenerateSummary = $derived(auth.isAdmin || auth.isManager);
+
 	// File preview — `<img src>` and `<iframe src>` can't reach the file
 	// endpoint because they don't carry the Bearer token. Fetch the bytes
 	// through the auth'd API client and render via a blob URL. The effect
@@ -574,7 +583,37 @@
 		loadExtractionConfidence();
 		loadLineItems();
 		loadPriors();
+		loadSummary();
 	});
+
+	async function loadSummary() {
+		// Reference invoice.id so the effect re-runs when the modal is
+		// pointed at a different invoice.
+		const id = invoice.id;
+		summaryLoading = true;
+		try {
+			summary = await api.get<AuditSummary>(`/api/invoices/${id}/summary`);
+		} catch {
+			// non-critical — modal still works without the summary line
+			summary = null;
+		} finally {
+			summaryLoading = false;
+		}
+	}
+
+	async function regenerateSummary() {
+		summaryRegenerating = true;
+		try {
+			summary = await api.post<AuditSummary>(
+				`/api/invoices/${invoice.id}/summary/regenerate`,
+				{}
+			);
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Could not regenerate summary', 'error');
+		} finally {
+			summaryRegenerating = false;
+		}
+	}
 
 	async function loadPriors() {
 		try {
@@ -733,6 +772,38 @@
 			<div class="resize-handle" onmousedown={startResize}></div>
 			<div class="form-pane" style="width:{formPaneWidth}px">
 				<form onsubmit={(e) => { e.preventDefault(); save(); }}>
+					{#if summaryLoading && !summary}
+						<div class="audit-summary" data-testid="audit-summary">
+							<div class="audit-summary-skeleton"></div>
+							<div class="audit-summary-skeleton short"></div>
+						</div>
+					{:else if summary}
+						<section class="audit-summary" data-testid="audit-summary" aria-label="Invoice summary">
+							<div class="audit-summary-head">
+								<span class="audit-summary-label">Summary</span>
+								{#if canRegenerateSummary}
+									<button
+										type="button"
+										class="audit-summary-regen"
+										onclick={regenerateSummary}
+										disabled={summaryRegenerating}
+										data-testid="audit-summary-regenerate"
+									>
+										{summaryRegenerating ? 'Regenerating…' : 'Regenerate'}
+									</button>
+								{/if}
+							</div>
+							<!-- Plain-text binding only — never {@html} — so the model
+							     output can't inject markup (XSS invariant). -->
+							<p class="audit-summary-text" data-testid="audit-summary-text">{summary.text}</p>
+							{#if summary.confidence_context}
+								<p class="audit-summary-context" data-testid="audit-summary-context">
+									{summary.confidence_context}
+								</p>
+							{/if}
+						</section>
+					{/if}
+
 					<div class="form-grid">
 						<label class:field-error={canSubmitStatus && !vendor.trim()}>
 							<span>Vendor <em class="required">*</em> {#if dot('vendor_name', vendor)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_name)}" data-tip="{Math.round(fieldConfidence.vendor_name * 100)}% — {confidenceLabel(fieldConfidence.vendor_name)}"></span>{/if}</span>
@@ -2458,6 +2529,74 @@
 		.resize-handle {
 			display: none;
 		}
+	}
+
+	/* ------------------------- audit summary ---------------------------- */
+	.audit-summary {
+		margin: 0 0 16px;
+		padding: 12px 14px;
+		border: 1px solid var(--border);
+		border-left: 3px solid var(--accent);
+		border-radius: 8px;
+		background: var(--surface);
+	}
+	.audit-summary-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 6px;
+	}
+	.audit-summary-label {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted, #6b7280);
+	}
+	.audit-summary-regen {
+		font-size: 11px;
+		padding: 2px 8px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-muted, #6b7280);
+		cursor: pointer;
+	}
+	.audit-summary-regen:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.audit-summary-regen:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.audit-summary-text {
+		margin: 0;
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--text);
+	}
+	.audit-summary-context {
+		margin: 6px 0 0;
+		font-size: 11px;
+		font-style: italic;
+		color: var(--text-muted, #6b7280);
+	}
+	.audit-summary-skeleton {
+		height: 12px;
+		border-radius: 4px;
+		background: linear-gradient(90deg, var(--border) 25%, var(--surface) 50%, var(--border) 75%);
+		background-size: 200% 100%;
+		animation: audit-summary-shimmer 1.2s ease-in-out infinite;
+		margin-bottom: 8px;
+	}
+	.audit-summary-skeleton.short {
+		width: 60%;
+		margin-bottom: 0;
+	}
+	@keyframes audit-summary-shimmer {
+		0% { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
 	}
 
 	/* -------------------------- priors panel ---------------------------- */

@@ -163,3 +163,15 @@ export interface Invoice {
 	po_match: PoMatch | null;
 	priors_summary: { cache: number; rag: number } | null;
 }
+
+/**
+ * One-paragraph audit-log summary shown at the top of the invoice detail
+ * modal. Mirrors the backend `AuditSummaryResponse`. Fetched lazily from
+ * `GET /api/invoices/{id}/summary`.
+ */
+export interface AuditSummary {
+	text: string;
+	confidence_context: string | null;
+	generated_at: string | null;
+	stale: boolean;
+}
