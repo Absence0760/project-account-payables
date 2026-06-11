@@ -258,7 +258,10 @@ if [[ "$FILE" == *.ts || "$FILE" == *.svelte ]]; then
 # X-Tenant-Slug, plus catches 401 → /login. A direct fetch() in any
 # component skips all of that. Bug class: future fetches that don't
 # include tenant scoping or token rotation.
-if [[ "$FILE" == */src/* && "$FILE" != */api.ts ]]; then
+# `portalApi.ts` is the supplier-portal's parallel API client (separate token
+# key) — it owns the Bearer + X-Tenant-Slug + 401-bounce just like api.ts, so
+# it's excluded for the same reason api.ts is.
+if [[ "$FILE" == */src/* && "$FILE" != */api.ts && "$FILE" != */portalApi.ts ]]; then
   while IFS= read -r m; do
     ln="${m%%:*}"
     register "raw-fetch-in-component" "$ln" \

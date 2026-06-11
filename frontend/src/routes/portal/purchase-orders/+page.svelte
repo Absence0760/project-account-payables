@@ -1,34 +1,34 @@
 <script lang="ts">
 	import { portalApi } from '$lib/portalApi';
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 
-	interface PortalPayment {
+	interface PortalPO {
 		id: string;
-		invoice_id: string;
-		invoice_number: string;
-		amount: number | string;
-		method: string | null;
+		po_number: string;
 		status: string;
-		reference: string | null;
-		submitted_at: string | null;
-		completed_at: string | null;
+		total: number | string;
+		currency: string;
+		line_item_count: number;
+		created_at: string;
 	}
 
-	interface PaymentListResponse {
-		items: PortalPayment[];
+	interface POListResponse {
+		items: PortalPO[];
 		total: number;
 	}
 
-	let items = $state<PortalPayment[]>([]);
+	let items = $state<PortalPO[]>([]);
 	let loading = $state(false);
 	let error = $state('');
-	let downloading = $state<string | null>(null);
+	let message = $state('');
+	let flipping = $state<string | null>(null);
 
 	async function refresh() {
 		loading = true;
 		error = '';
 		try {
-			const res = await portalApi.get<PaymentListResponse>('/api/portal/payments');
+			const res = await portalApi.get<POListResponse>('/api/portal/purchase-orders');
 			items = res.items;
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Load failed';
@@ -37,23 +37,22 @@
 		}
 	}
 
-	async function downloadRemittance(p: PortalPayment) {
-		downloading = p.id;
+	async function flip(po: PortalPO) {
+		flipping = po.id;
 		error = '';
+		message = '';
 		try {
-			const blob = await portalApi.download(`/api/portal/payments/${p.id}/remittance`);
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `remittance-${p.reference || p.id.slice(0, 8)}.pdf`;
-			document.body.appendChild(a);
-			a.click();
-			a.remove();
-			URL.revokeObjectURL(url);
+			await portalApi.post<{ message: string }>(
+				`/api/portal/purchase-orders/${po.id}/flip`,
+				{}
+			);
+			message = `Invoice created from ${po.po_number}.`;
+			// Land the supplier on their invoices so they can see it in the queue.
+			await goto('/portal/invoices');
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Download failed';
+			error = err instanceof Error ? err.message : 'Could not create invoice';
 		} finally {
-			downloading = null;
+			flipping = null;
 		}
 	}
 
@@ -67,53 +66,48 @@
 
 <div class="page">
 	<header>
-		<h1>Payments</h1>
+		<h1>Purchase Orders</h1>
 	</header>
 
 	{#if error}<div class="error">{error}</div>{/if}
+	{#if message}<div class="message">{message}</div>{/if}
 
 	{#if loading && !items.length}
 		<div class="loading">Loading...</div>
 	{:else if !items.length}
 		<div class="empty">
-			<p>No payments yet.</p>
-			<p class="hint">Payments appear here once your customer has issued them.</p>
+			<p>No purchase orders yet.</p>
+			<p class="hint">When your customer raises a PO against your account, it appears here.</p>
 		</div>
 	{:else}
 		<table>
 			<thead>
 				<tr>
-					<th>Invoice #</th>
-					<th>Submitted</th>
-					<th>Completed</th>
-					<th>Method</th>
-					<th class="num">Amount</th>
+					<th>PO #</th>
+					<th>Created</th>
+					<th>Lines</th>
+					<th class="num">Total</th>
 					<th>Status</th>
-					<th>Reference</th>
 					<th class="actions-col"></th>
 				</tr>
 			</thead>
 			<tbody>
-				{#each items as p}
+				{#each items as po (po.id)}
 					<tr>
-						<td>{p.invoice_number}</td>
-						<td>{fmtDate(p.submitted_at)}</td>
-						<td>{fmtDate(p.completed_at)}</td>
-						<td>{p.method || '—'}</td>
-						<td class="num">{p.amount}</td>
-						<td><span class="status s-{p.status}">{p.status}</span></td>
-						<td>{p.reference || '—'}</td>
+						<td>{po.po_number}</td>
+						<td>{fmtDate(po.created_at)}</td>
+						<td>{po.line_item_count}</td>
+						<td class="num">{po.total}</td>
+						<td><span class="status s-{po.status}">{po.status}</span></td>
 						<td class="actions">
-							{#if p.status === 'completed'}
-								<button
-									type="button"
-									class="remit-btn"
-									disabled={downloading === p.id}
-									onclick={() => downloadRemittance(p)}
-								>
-									{downloading === p.id ? 'Preparing…' : 'Download remittance'}
-								</button>
-							{/if}
+							<button
+								type="button"
+								class="flip-btn"
+								disabled={flipping === po.id}
+								onclick={() => flip(po)}
+							>
+								{flipping === po.id ? 'Creating…' : 'Create invoice'}
+							</button>
 						</td>
 					</tr>
 				{/each}
@@ -170,20 +164,20 @@
 		gap: 6px;
 		white-space: nowrap;
 	}
-	.remit-btn {
+	.flip-btn {
 		padding: 4px 12px;
 		border: 1px solid var(--border);
 		border-radius: 4px;
 		background: transparent;
 		color: var(--text);
-		font-size: 0.8rem;
+		font-size: 0.82rem;
 		cursor: pointer;
 	}
-	.remit-btn:hover:not(:disabled) {
+	.flip-btn:hover:not(:disabled) {
 		border-color: var(--accent);
 		color: var(--accent);
 	}
-	.remit-btn:disabled {
+	.flip-btn:disabled {
 		opacity: 0.6;
 		cursor: default;
 	}
@@ -193,14 +187,6 @@
 		font-size: 0.75rem;
 		background: var(--bg);
 		border: 1px solid var(--border);
-	}
-	.s-completed {
-		background: rgba(40, 160, 80, 0.15);
-		border-color: rgba(40, 160, 80, 0.4);
-	}
-	.s-failed {
-		background: rgba(224, 64, 64, 0.12);
-		border-color: rgba(224, 64, 64, 0.35);
 	}
 	.empty,
 	.loading {
@@ -218,6 +204,14 @@
 		background: rgba(224, 64, 64, 0.1);
 		border: 1px solid rgba(224, 64, 64, 0.3);
 		color: #e04040;
+		padding: 10px 14px;
+		border-radius: 4px;
+		margin-bottom: 12px;
+	}
+	.message {
+		background: rgba(40, 160, 80, 0.12);
+		border: 1px solid rgba(40, 160, 80, 0.35);
+		color: #1f7a44;
 		padding: 10px 14px;
 		border-radius: 4px;
 		margin-bottom: 12px;
