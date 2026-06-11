@@ -21,6 +21,8 @@ Tests:
 from __future__ import annotations
 
 import inspect
+import uuid
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -247,3 +249,87 @@ async def test_audit_log_get_endpoint_filters_by_correlation_id():
 
     src = inspect.getsource(workflow.get_audit_log)
     assert "AuditLog.correlation_id" in src
+
+
+# ---------------------------------------------------------------------------
+# log_action — the write primitive itself (every other test mocks it out)
+#
+# Mock-based: asserts the row it builds and its add-without-commit contract.
+# The DB round-trip (read the row back; discarded on caller rollback) is a
+# real-Postgres property this mock-only suite can't assert.
+# ---------------------------------------------------------------------------
+
+
+def _audit_db():
+    db = MagicMock()
+    db.add = MagicMock()
+    db.commit = AsyncMock()
+    db.flush = AsyncMock()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_log_action_builds_row_with_all_fields_and_returns_it():
+    from app.services.audit import log_action
+
+    db = _audit_db()
+    corr, org, actor, ent = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    entry = await log_action(
+        db,
+        correlation_id=corr,
+        organization_id=org,
+        actor_id=actor,
+        action="invoice.approved",
+        entity_type="invoice",
+        entity_id=ent,
+        details={"old_status": "ready_for_review", "new_status": "approved"},
+    )
+
+    db.add.assert_called_once_with(entry)
+    assert entry.correlation_id == corr
+    assert entry.organization_id == org
+    assert entry.actor_id == actor
+    assert entry.action == "invoice.approved"
+    assert entry.entity_type == "invoice"
+    assert entry.entity_id == ent
+    assert entry.details == {"old_status": "ready_for_review", "new_status": "approved"}
+
+
+@pytest.mark.asyncio
+async def test_log_action_does_not_commit_or_flush():
+    """The audit row's durability is tied to the caller's business
+    transaction — log_action must only add(), never commit/flush, so the
+    row commits (or rolls back) atomically with the status change."""
+    from app.services.audit import log_action
+
+    db = _audit_db()
+    await log_action(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        action="invoice.approved",
+        entity_type="invoice",
+        entity_id=uuid.uuid4(),
+    )
+    db.add.assert_called_once()
+    db.commit.assert_not_awaited()
+    db.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_log_action_accepts_null_actor_and_details_for_system_events():
+    """System-initiated transitions have no human actor — actor_id and
+    details default to None and must land on the row as NULL."""
+    from app.services.audit import log_action
+
+    db = _audit_db()
+    entry = await log_action(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        action="invoice.extraction_started",
+        entity_type="invoice",
+        entity_id=uuid.uuid4(),
+    )
+    assert entry.actor_id is None
+    assert entry.details is None
