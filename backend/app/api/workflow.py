@@ -661,6 +661,21 @@ async def get_audit_log(
         for u in result.scalars().all():
             actor_names[str(u.id)] = u.full_name
 
+    # SOX access-control auditing: viewing the audit trail is itself an
+    # auditable event. Write the view-event on its own (a GET has no business
+    # transaction to ride) before returning.
+    from app.services.audit_access import log_access
+
+    await log_access(
+        db,
+        user=user,
+        organization_id=user.organization_id,
+        entity_type="audit",
+        entity_id=invoice_id,
+        correlation_id=correlation_id,
+    )
+    await db.commit()
+
     return [AuditLogEntryResponse.from_db(e, actor_names) for e in entries]
 
 

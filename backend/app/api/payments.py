@@ -32,6 +32,7 @@ from app.schemas.payment import (
     PaymentRunListResponse,
     PaymentRunResponse,
 )
+from app.services.audit_access import log_access
 from app.services.payment_adapters import (
     PaymentPayload,
     PaymentStatus,
@@ -364,6 +365,21 @@ async def get_payment(
     if not row:
         raise HTTPException(status_code=404, detail="Payment not found")
     p, inv = row
+
+    # SOX access-control auditing: a payment detail is a regulated money record.
+    # Record the view (no banking values enter the audit details). Payment rows
+    # carry no organization_id column — the org comes from the authed user (the
+    # tenant is already resolved by get_tenant_db, so this can't widen scope).
+    await log_access(
+        db,
+        user=user,
+        organization_id=user.organization_id,
+        entity_type="payment",
+        entity_id=p.id,
+        correlation_id=p.correlation_id,
+    )
+    await db.commit()
+
     return PaymentResponse.from_db(p, inv)
 
 

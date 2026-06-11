@@ -45,6 +45,8 @@ from app.schemas.invoice import (
     InvoiceResponse,
     InvoiceUpdate,
 )
+from app.services.audit_access import build_field_diff
+from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
@@ -369,8 +371,25 @@ async def update_invoice(
     if "status" in update_data and update_data["status"] is not None:
         update_data["status"] = update_data["status"].value
 
+    # Capture a per-field before/after diff for the audit trail (SOX change
+    # history). Money fields serialise as string-Decimal inside the diff.
+    before = {field: getattr(invoice, field, None) for field in update_data}
     for field, value in update_data.items():
         setattr(invoice, field, value)
+    after = {field: getattr(invoice, field, None) for field in update_data}
+
+    field_diff = build_field_diff(before, after, list(update_data.keys()))
+    if field_diff:
+        await dispatch_audit(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=invoice.organization_id,
+            actor_id=user.id,
+            action="invoice.edited",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            details={"changes": field_diff},
+        )
 
     await refresh_warnings(db, invoice, org_settings=org.settings)
     await db.flush()
