@@ -38,6 +38,7 @@ from app.schemas.invoice import (
     BulkRecodeGLRequest,
     BulkStatusRequest,
     BulkStatusResponse,
+    InvoiceCountsResponse,
     InvoiceCreate,
     InvoiceListResponse,
     InvoiceResponse,
@@ -127,6 +128,28 @@ async def list_invoices(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/counts", response_model=InvoiceCountsResponse)
+async def invoice_counts(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(get_current_user),
+):
+    """Per-status invoice tallies for the list-page filter chips.
+
+    A single GROUP BY over the whole tenant so the "All" chip and each
+    status chip stay correct regardless of how many invoices the tenant
+    has — the previous client-side tally over the first page of results
+    undercounted past that window.
+    """
+    result = await db.execute(
+        select(Invoice.status, func.count()).group_by(Invoice.status)
+    )
+    counts: dict[str, int] = {}
+    for db_status, count in result.all():
+        key = db_status.value if hasattr(db_status, "value") else str(db_status)
+        counts[key] = count
+    return InvoiceCountsResponse(counts=counts, total=sum(counts.values()))
 
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)

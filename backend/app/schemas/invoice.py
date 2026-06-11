@@ -199,6 +199,18 @@ class InvoiceListResponse(BaseModel):
     page_size: int
 
 
+class InvoiceCountsResponse(BaseModel):
+    """Per-status invoice tallies for the list-page filter chips.
+
+    `counts` maps each status that has at least one invoice to its count;
+    `total` is the sum across every status. Computed with a single
+    GROUP BY so the chips stay accurate past the page-1 result window.
+    """
+
+    counts: dict[str, int]
+    total: int
+
+
 class BulkDeleteRequest(BaseModel):
     ids: list[str] = Field(..., min_length=1)
 
