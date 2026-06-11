@@ -354,3 +354,78 @@ async def test_import_invoices_normalizes_currency_and_persists_dates():
     assert (invoice.invoice_date.month, invoice.invoice_date.day) == (3, 15)
     assert invoice.due_date is not None
     assert invoice.due_date.month == 4
+
+
+# ---------------------------------------------------------------------------
+# Real-Postgres: per-tenant isolation + dedup against committed rows, and the
+# role-gated multipart endpoint (decode + commit) the mock stub can't reach.
+# ---------------------------------------------------------------------------
+
+
+async def test_import_vendors_isolated_per_tenant_and_dedupes_against_db(realdb):
+    from sqlalchemy import func, select
+
+    from app.models.vendor import Vendor
+    from app.services.csv_import import import_vendors_csv
+
+    csv_text = "name,code\nAcme Corp,V001\n"
+    mk_a = realdb.sessionmaker("a")
+    mk_b = realdb.sessionmaker("b")
+
+    async with mk_a() as s:
+        await import_vendors_csv(s, realdb.info("a").org_id, csv_text)
+        await s.commit()
+
+    # Same code/name into tenant B's separate DB → a NEW vendor, never reused
+    # across the tenant boundary.
+    async with mk_b() as s:
+        res_b = await import_vendors_csv(s, realdb.info("b").org_id, csv_text)
+        await s.commit()
+    assert res_b.imported == 1
+    assert res_b.skipped == 0
+
+    # Re-import into A with a different-case name but same code → deduped
+    # against the committed row (skipped, no duplicate).
+    async with mk_a() as s:
+        res_a2 = await import_vendors_csv(s, realdb.info("a").org_id, "name,code\nACME CORP,V001\n")
+        await s.commit()
+    assert res_a2.skipped == 1
+    assert res_a2.imported == 0
+
+    async with mk_a() as s:
+        count_a = (await s.execute(select(func.count()).select_from(Vendor))).scalar_one()
+    assert count_a == 1  # still exactly one vendor in tenant A
+
+
+async def test_import_vendors_endpoint_role_gated_and_commits(realdb):
+    csv_bytes = b"name,code\nAcme Corp,V001\n"
+    file = {"file": ("vendors.csv", csv_bytes, "text/csv")}
+
+    # ap_clerk and cfo are not permitted (ADMIN / AP_MANAGER only).
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        assert (await c.post("/api/vendors/import-csv", files=file)).status_code == 403
+    async with realdb.client(key="a", role="cfo") as c:
+        assert (await c.post("/api/vendors/import-csv", files=file)).status_code == 403
+
+    # ap_manager succeeds and the row is committed.
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/vendors/import-csv", files=file)
+        assert resp.status_code == 200
+        assert resp.json()["imported"] == 1
+
+    from sqlalchemy import func, select
+
+    from app.models.vendor import Vendor
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        count = (await s.execute(select(func.count()).select_from(Vendor))).scalar_one()
+    assert count == 1
+
+
+async def test_import_vendors_endpoint_rejects_non_utf8(realdb):
+    bad = b"\xff\xfen\x00a\x00m\x00e\x00"  # UTF-16 bytes — invalid UTF-8
+    file = {"file": ("vendors.csv", bad, "text/csv")}
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/vendors/import-csv", files=file)
+    assert resp.status_code == 400

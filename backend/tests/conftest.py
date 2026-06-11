@@ -108,6 +108,11 @@ class _FakeRedis:
     async def get(self, key: str):
         return self._kv.get(key)
 
+    async def exists(self, key: str) -> int:
+        # Used by app.redis.is_token_blocked. Nothing is blocklisted in tests
+        # unless a test sets it, so a fresh JWT is always valid.
+        return 1 if key in self._kv else 0
+
     async def delete(self, *keys: str) -> int:
         count = 0
         for k in keys:
@@ -135,6 +140,12 @@ def _autouse_fake_redis(monkeypatch):
 
     monkeypatch.setattr("app.services.rate_limit.get_redis", _get_redis)
     monkeypatch.setattr("app.services.webhook_security.get_redis", _get_redis)
+    # Also stub the JWT-blocklist client so authenticated requests in tests
+    # don't bind a module-level real-Redis connection to one test's event loop
+    # (reused on the next test's loop → "Event loop is closed"). Tests that
+    # exercise the real blocklist install their own fake_redis, which overrides
+    # this (test-requested fixtures run after autouse ones).
+    monkeypatch.setattr("app.redis.get_redis", _get_redis)
     return fake
 
 
