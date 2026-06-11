@@ -3,7 +3,9 @@
 Two seed shapes:
 
 - **Full** (default) — every tenant (acme + techflow + e2e1..e2eN) gets
-  the rich demo dataset: 9 vendors, ~50 invoices across every status,
+  the rich demo dataset: 10 vendors, ~90 invoices across every status
+  (10 richly-related named rows + ~80 lightweight bulk filler so the
+  `/invoices` list spans several pages of its default 25-row pagination),
   payment runs, exceptions, PO matching scenarios, virtual cards, etc.
   Best for local development where you actually want to click around.
 - **Lean** (``--lean`` / ``AP_SEED_MODE=lean``) — every tenant gets
@@ -1268,6 +1270,101 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
             ]
         )
 
+        # Bulk filler invoices — the ten named INV-2024-0xx rows above carry
+        # the rich relationships (extractions, payments, exceptions, POs) the
+        # demo narrative needs, but ten rows fit on a single page. The
+        # `/invoices` list defaults to `page_size=25`, so add a block of plain
+        # invoices to push the demo tenants well past several pages and give
+        # pagination (and the status/vendor filters layered on top of it)
+        # something real to exercise. These are deliberately lightweight: a
+        # vendor binding, an amount, dates, a status, and a single audit
+        # "created" row each — no extractions/payments/exceptions, so they
+        # don't perturb the index-based fixtures the rest of the seed builds.
+        filler_vendors = [
+            v_office,
+            v_cloud,
+            v_facility,
+            v_marketing,
+            v_tech,
+            v_legal,
+            v_catering,
+            v_transport,
+        ]
+        # Cover every status the filter chips render, weighted toward the
+        # buckets a real AP queue carries the most of.
+        filler_statuses = (
+            ["new"] * 12
+            + ["pending"] * 8
+            + ["ready_for_review"] * 10
+            + ["approved"] * 12
+            + ["sending_to_erp"] * 3
+            + ["sent_to_erp"] * 4
+            + ["posted_in_erp"] * 6
+            + ["payment_scheduled"] * 6
+            + ["paid"] * 8
+            + ["done"] * 6
+            + ["rejected"] * 3
+            + ["failed"] * 2
+        )
+        gl_codes = ["6100", "6200", "6300", "6400", "6500", "6600", "6700", "6800"]
+        cost_centers = ["ADMIN", "ENG", "FACILITIES", "MARKETING", "LEGAL", "HR", "OPS"]
+        from datetime import timedelta
+
+        filler_invoices: list[Invoice] = []
+        for i, status in enumerate(filler_statuses):
+            seq = 11 + i  # continue the INV-2024-0xx sequence past the named ten
+            vendor = filler_vendors[i % len(filler_vendors)]
+            # Vary amount and dates so amount/date filters have spread to sort
+            # and narrow against, not a wall of identical rows.
+            subtotal = Decimal(str(500 + (i * 137) % 9000)) + Decimal("0.50")
+            tax = (subtotal * Decimal("0.08")).quantize(Decimal("0.01"))
+            inv_date = date(2024, (i % 6) + 1, (i % 27) + 1)
+            approved = status not in ("new", "pending", "ready_for_review", "rejected", "failed")
+            filler_invoices.append(
+                Invoice(
+                    organization_id=org_id,
+                    invoice_number=f"INV-2024-{seq:03d}",
+                    vendor_name=vendor.name,
+                    vendor_id=vendor.id,
+                    description=f"{vendor.name} services — line {seq}",
+                    amount=subtotal + tax,
+                    currency="USD",
+                    invoice_date=inv_date,
+                    received_date=inv_date + timedelta(days=2),
+                    due_date=inv_date + timedelta(days=30),
+                    payment_terms="Net 30",
+                    status=status,
+                    po_number=f"PO-2024-{200 + i}",
+                    subtotal=subtotal,
+                    tax_amount=tax,
+                    bill_to_address=bill_to,
+                    gl_account=gl_codes[i % len(gl_codes)],
+                    cost_center=cost_centers[i % len(cost_centers)],
+                    approval_date=inv_date + timedelta(days=5) if approved else None,
+                    approved_by="Marcus Manager" if approved else None,
+                )
+            )
+        session.add_all(filler_invoices)
+        await session.flush()
+
+        # One audit "created" row per filler invoice so the InvoiceModal's
+        # Activity timeline renders for them too (the endpoint joins on
+        # correlation_id — see the named-invoice audit block above).
+        session.add_all(
+            [
+                AuditLog(
+                    correlation_id=inv.correlation_id,
+                    organization_id=org_id,
+                    actor_id=seed_actor,
+                    action="invoice.created",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details={"source": "seed", "status": inv.status},
+                )
+                for inv in filler_invoices
+            ]
+        )
+
         # Supplier-portal user — bound to Tech Hardware Corp (v_tech), which
         # owns INV-2024-005 (invoices[4]) and its completed ACH payment. The
         # `tests-e2e/portal/` suite signs in as this user and asserts it sees
@@ -1276,8 +1373,10 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
         session.add(_make_portal_user(v_tech))
 
         await session.commit()
+        total_invoices = len(invoices) + len(filler_invoices)
         print(
-            f"  Seeded {tenant_label}: {len(all_vendors)} vendors, {len(invoices)} invoices, "
+            f"  Seeded {tenant_label}: {len(all_vendors)} vendors, {total_invoices} invoices "
+            f"({len(filler_invoices)} bulk filler for pagination), "
             f"5 POs, 2 GRs, {len(gl_accounts)} GL accounts, 1 payment run, 3 payments, "
             f"4 exceptions, 1 portal user"
         )
