@@ -51,8 +51,19 @@ export async function isReachable(url: string, timeoutMs = 2500): Promise<boolea
 /**
  * Skip the current test (call inside `beforeEach`) unless `url` is reachable.
  * The message names the `pnpm` command that starts the missing service.
+ *
+ * In CI's service-e2e job the container is started on purpose and
+ * `AP_REQUIRE_INTEGRATION` is set — there an unreachable service is a hard
+ * failure, never a silent skip that leaves the job green with this flow's
+ * coverage quietly dropped. Locally (var unset) it still skips with an
+ * actionable hint when the optional service isn't running.
  */
 export async function skipUnlessReachable(url: string): Promise<void> {
 	const up = await isReachable(url);
-	test.skip(!up, HINTS[url] ?? `Required local service not reachable: ${url}`);
+	if (up) return;
+	const hint = HINTS[url] ?? `Required local service not reachable: ${url}`;
+	if (process.env.AP_REQUIRE_INTEGRATION) {
+		throw new Error(`${hint} — AP_REQUIRE_INTEGRATION is set, refusing to skip`);
+	}
+	test.skip(true, hint);
 }

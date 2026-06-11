@@ -633,6 +633,10 @@ jobs:
         env:
           PUBLIC_API_URL: http://localhost:8000
           PLAYWRIGHT_WORKERS: "1"
+          # Keycloak + Mailpit are started and readiness-waited above, so the
+          # SSO/email specs must run — a skip here would mean the service came
+          # up unusable yet the job stays green. Force a hard failure instead.
+          AP_REQUIRE_INTEGRATION: "1"
         run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts sso/ email/ scim/
 
       - name: Run service integration tests (LocalStack + stripe-mock)
