@@ -64,7 +64,8 @@ test.describe('/workflows delete cascade safety', () => {
 		const wfsBefore = await page.request.get(`${API_BASE}/api/workflows`, {
 			headers: await authedTenantHeaders(page)
 		});
-		const before = (await wfsBefore.json()) as Array<{ id: string; is_default: boolean }>;
+		const before = ((await wfsBefore.json()) as { items: Array<{ id: string; is_default: boolean }> })
+			.items;
 		const defaultWf = before.find((w) => w.is_default)!;
 
 		const id = await createWorkflow(page, `Active Safety ${Date.now()}`);

@@ -16,7 +16,7 @@ async function listWorkflows(page: import('@playwright/test').Page) {
 	const resp = await page.request.get(`${API_BASE}/api/workflows`, {
 		headers: await authedTenantHeaders(page)
 	});
-	return (await resp.json()) as WorkflowResponse[];
+	return ((await resp.json()) as { items: WorkflowResponse[] }).items;
 }
 
 async function patchWorkflow(

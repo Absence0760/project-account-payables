@@ -136,11 +136,15 @@ test.describe('/admin user-delete safety', () => {
 
 		// Get the active workflow + put the user into approval.approver_ids.
 		const wfsResp = await page.request.get(`${API_BASE}/api/workflows`, { headers });
-		const wfs = (await wfsResp.json()) as Array<{
-			id: string;
-			is_active: boolean;
-			steps_config: { steps: Array<{ type: string; config: Record<string, unknown> }> };
-		}>;
+		const wfs = (
+			(await wfsResp.json()) as {
+				items: Array<{
+					id: string;
+					is_active: boolean;
+					steps_config: { steps: Array<{ type: string; config: Record<string, unknown> }> };
+				}>;
+			}
+		).items;
 		const active = wfs.find((w) => w.is_active);
 		expect(active).toBeTruthy();
 		const before = active!.steps_config;

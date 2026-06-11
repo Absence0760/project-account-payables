@@ -33,11 +33,15 @@ async function listWorkflows(page: import('@playwright/test').Page) {
 	const resp = await page.request.get(`${API_BASE}/api/workflows`, {
 		headers: await authedTenantHeaders(page)
 	});
-	return (await resp.json()) as Array<{
-		id: string;
-		is_default: boolean;
-		is_active: boolean;
-	}>;
+	return (
+		(await resp.json()) as {
+			items: Array<{
+				id: string;
+				is_default: boolean;
+				is_active: boolean;
+			}>;
+		}
+	).items;
 }
 
 test.describe('workflow lifecycle', () => {

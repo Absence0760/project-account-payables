@@ -165,7 +165,8 @@ test.describe('/workflows bulk delete', () => {
 	}) => {
 		const headers = await authedTenantHeaders(page);
 		const wfsResp = await page.request.get(`${API_BASE}/api/workflows`, { headers });
-		const wfs = (await wfsResp.json()) as Array<{ id: string; is_default: boolean }>;
+		const wfs = ((await wfsResp.json()) as { items: Array<{ id: string; is_default: boolean }> })
+			.items;
 		const defaultId = wfs.find((w) => w.is_default)!.id;
 
 		const resp = await page.request.post(`${API_BASE}/api/workflows/bulk-delete`, {
