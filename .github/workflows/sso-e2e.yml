@@ -37,6 +37,13 @@ concurrency:
   group: sso-e2e-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: this workflow only reads the repo to check out, build, and
+# run the SSO e2e suite — it never writes back. The failure-path
+# upload-artifact step works under `contents: read` plus its own ephemeral
+# artifact storage. Mirrors the top-level scope in ci.yml.
+permissions:
+  contents: read
+
 jobs:
   sso-e2e:
     name: SSO e2e (Keycloak)
@@ -88,7 +95,7 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/requirements-dev.lock
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.2
         with:
@@ -100,13 +107,15 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Pin pip
-        run: python -m pip install --upgrade 'pip==26.1.1'
-
       - name: Install backend + frontend deps (parallel)
+        # Backend deps install from the hash-pinned lock (`--require-hashes`,
+        # pip itself included) so every dependency is pinned by hash — see the
+        # Backend job's Install step in ci.yml for the rationale. This also
+        # satisfies Scorecard's PinnedDependenciesID, which flags any bare
+        # `pip install`.
         run: |
           set -euo pipefail
-          (cd backend && pip install -e ".[dev]") &
+          (cd backend && python -m pip install --require-hashes -r requirements-dev.lock && pip install -e . --no-deps) &
           PIP_PID=$!
           (cd frontend && pnpm install --frozen-lockfile) &
           PNPM_PID=$!
