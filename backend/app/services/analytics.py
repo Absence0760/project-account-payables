@@ -26,6 +26,15 @@ Metrics shipped:
     - early_pay_discount_roi: discount $ captured vs missed
     - rebate_yield: virtual-card rebates / total spend
     - forecast_variance: actual vs forecast outflow
+    - cashflow_forecast (`bucket_outflows`): projected AP outflows
+      bucketed by day / week / month from committed + pending
+      invoices
+    - cashflow_whatif (`apply_payment_timing_scenario`): early vs
+      on-time vs late payment-timing scenarios, with early-pay
+      discount capture
+    - cash_position (`compute_cash_position` +
+      `detect_threshold_breaches`): running balance from a
+      bring-your-own opening balance, with threshold-breach alerts
 
 Drill-through: every metric has a corresponding "give me the rows
 that produced this number" function; the API layer exposes those
@@ -534,3 +543,296 @@ def compute_forecast_variance(
             }
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Predictive cash-flow forecasting
+# ---------------------------------------------------------------------------
+#
+# These four functions power `/api/analytics/cashflow_forecast`,
+# `/cashflow_whatif`, and `/cash_position`. They are pure + sync like the
+# rest of this module: the API layer hands in already-fetched commitment
+# rows (one per open invoice) and floats the Decimal results at the JSON
+# boundary.
+#
+# A "commitment row" is a dict with:
+#   {"due_date": date, "amount": Decimal, "committed": bool,
+#    "discount_date": date | None, "discount_percent": Decimal | None}
+# `committed` distinguishes firm commitments (approved → payment_scheduled)
+# from the still-in-flight pipeline (new / pending / ready_for_review).
+
+_CENTS = Decimal("0.01")
+
+
+def _q(amount: Decimal) -> Decimal:
+    """Quantize to cents, half-up — the money rounding used throughout."""
+    return amount.quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+
+def _period_bounds(d, granularity: str):
+    """Return ``(period_key, period_start, period_end)`` for a date under
+    the requested bucket granularity.
+
+    - ``day``   → the date itself.
+    - ``week``  → the ISO week (Monday-anchored) the date falls in.
+    - ``month`` → the calendar month.
+
+    ``period_key`` is a sortable ``YYYY-MM-DD`` string for day/week (week
+    keyed on its Monday) and ``YYYY-MM`` for month so periods order
+    naturally and group deterministically."""
+    from datetime import timedelta
+
+    if granularity == "day":
+        return d.isoformat(), d, d
+    if granularity == "week":
+        monday = d - timedelta(days=d.weekday())
+        sunday = monday + timedelta(days=6)
+        return monday.isoformat(), monday, sunday
+    if granularity == "month":
+        start = d.replace(day=1)
+        if start.month == 12:
+            nxt = start.replace(year=start.year + 1, month=1)
+        else:
+            nxt = start.replace(month=start.month + 1)
+        end = nxt - timedelta(days=1)
+        return start.strftime("%Y-%m"), start, end
+    raise ValueError(f"unknown granularity {granularity!r}")
+
+
+def _row_amount(row) -> Decimal:
+    return Decimal(str(row.get("amount", "0") or "0"))
+
+
+def _discount_net(amount: Decimal, discount_percent) -> tuple[Decimal, Decimal]:
+    """Return ``(net_outflow, discount_captured)`` for paying ``amount``
+    on the discount date. ``discount_percent`` is a whole-number percent
+    (e.g. ``Decimal("2")`` = 2%). Missing / non-positive percent → no
+    discount (net == amount, captured == 0)."""
+    pct = Decimal(str(discount_percent or "0"))
+    if pct <= 0:
+        return amount, Decimal("0")
+    captured = amount * pct / Decimal("100")
+    return amount - captured, captured
+
+
+def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) -> list[dict]:
+    """Bucket projected AP outflows by ``day`` / ``week`` / ``month``.
+
+    Each row is a commitment dict (see module header). Outflow is timed
+    on the row's ``due_date``. Rows with no ``due_date`` are dropped (we
+    can't time them). Returns one dict per non-empty period, sorted by
+    ``period``:
+
+        {period, period_start, period_end, scheduled_amount,
+         committed_amount, pending_amount, discount_eligible_amount,
+         count}
+
+    ``today`` is accepted for symmetry / testability but does not filter —
+    the API layer is responsible for the horizon window."""
+    buckets: dict[str, dict] = {}
+    for r in rows:
+        due = r.get("due_date")
+        if due is None:
+            continue
+        key, start, end = _period_bounds(due, granularity)
+        amount = _row_amount(r)
+        b = buckets.setdefault(
+            key,
+            {
+                "period": key,
+                "period_start": start,
+                "period_end": end,
+                "scheduled_amount": Decimal("0"),
+                "committed_amount": Decimal("0"),
+                "pending_amount": Decimal("0"),
+                "discount_eligible_amount": Decimal("0"),
+                "count": 0,
+            },
+        )
+        b["scheduled_amount"] += amount
+        if r.get("committed"):
+            b["committed_amount"] += amount
+        else:
+            b["pending_amount"] += amount
+        if r.get("discount_date") is not None and Decimal(
+            str(r.get("discount_percent") or "0")
+        ) > 0:
+            b["discount_eligible_amount"] += amount
+        b["count"] += 1
+
+    out = []
+    for key in sorted(buckets):
+        b = buckets[key]
+        out.append(
+            {
+                **b,
+                "scheduled_amount": _q(b["scheduled_amount"]),
+                "committed_amount": _q(b["committed_amount"]),
+                "pending_amount": _q(b["pending_amount"]),
+                "discount_eligible_amount": _q(b["discount_eligible_amount"]),
+            }
+        )
+    return out
+
+
+def apply_payment_timing_scenario(
+    rows: list[dict],
+    *,
+    scenario: str,
+    granularity: str = "week",
+    grace_days: int = 15,
+    today=None,
+) -> dict:
+    """What-if engine for payment timing. ``scenario``:
+
+    - ``on_time`` → pay each row on its ``due_date``, full amount.
+    - ``early``   → pay on ``discount_date`` when present, taking the
+      ``discount_percent`` reduction; net outflow is reduced and the
+      captured discount reported separately. Rows without a discount fall
+      back to paying on ``due_date`` at full amount.
+    - ``late``    → pay ``due_date + grace_days``, full amount, no
+      discount (you forfeit any early-pay discount by paying late).
+
+    Returns::
+
+        {scenario, total_outflow, total_discount_captured,
+         weighted_avg_pay_date_days, periods: [bucketed like
+         bucket_outflows but on the scenario pay-date + net amount]}
+
+    ``weighted_avg_pay_date_days`` is the amount-weighted mean number of
+    days from ``today`` to each row's pay date — a single "how soon does
+    the cash leave" number for the scenario card."""
+    from datetime import date, timedelta
+
+    if scenario not in ("early", "on_time", "late"):
+        raise ValueError(f"unknown scenario {scenario!r}")
+    today = today or date.today()
+
+    total_outflow = Decimal("0")
+    total_discount = Decimal("0")
+    weighted_days = Decimal("0")
+    weight_total = Decimal("0")
+    # Re-shape each row into a pseudo-commitment timed on the scenario's
+    # pay-date with the scenario's net amount, then reuse bucket_outflows.
+    timed_rows: list[dict] = []
+    for r in rows:
+        due = r.get("due_date")
+        if due is None:
+            continue
+        amount = _row_amount(r)
+        discount_date = r.get("discount_date")
+        if scenario == "early" and discount_date is not None:
+            pay_date = discount_date
+            net, captured = _discount_net(amount, r.get("discount_percent"))
+        elif scenario == "late":
+            pay_date = due + timedelta(days=grace_days)
+            net, captured = amount, Decimal("0")
+        else:  # on_time, or early with no discount available
+            pay_date = due
+            net, captured = amount, Decimal("0")
+
+        total_outflow += net
+        total_discount += captured
+        days = Decimal((pay_date - today).days)
+        weighted_days += days * net
+        weight_total += net
+        timed_rows.append(
+            {
+                "due_date": pay_date,
+                "amount": net,
+                "committed": r.get("committed", False),
+                "discount_date": None,
+                "discount_percent": None,
+            }
+        )
+
+    avg_days = (
+        (weighted_days / weight_total).quantize(Decimal("0.1"))
+        if weight_total > 0
+        else Decimal("0")
+    )
+    periods = bucket_outflows(timed_rows, granularity=granularity, today=today)
+    return {
+        "scenario": scenario,
+        "total_outflow": _q(total_outflow),
+        "total_discount_captured": _q(total_discount),
+        "weighted_avg_pay_date_days": avg_days,
+        "periods": periods,
+    }
+
+
+def compute_cash_position(
+    opening_balance: Decimal,
+    outflow_periods: list[dict],
+    *,
+    inflow_periods: dict | None = None,
+    min_balance_threshold: Decimal | None = None,
+) -> list[dict]:
+    """Running cash balance per period.
+
+    ``outflow_periods`` is the list returned by ``bucket_outflows``.
+    ``inflow_periods`` is an optional ``{period_key: Decimal}`` map of
+    expected inflows — defaults to empty (AP-only product; receivables
+    aren't modelled, mirroring the ``None`` handling in
+    ``compute_cash_conversion_cycle``). The closing balance of each period
+    carries forward as the next period's opening::
+
+        closing = opening - outflow + inflow
+
+    Returns one row per period::
+
+        {period, period_start, period_end, opening, outflow, inflow,
+         closing, below_threshold}
+
+    ``below_threshold`` is True iff a threshold is supplied and the
+    period's closing balance falls below it."""
+    inflow_periods = inflow_periods or {}
+    rows: list[dict] = []
+    opening = Decimal(str(opening_balance or "0"))
+    for p in outflow_periods:
+        outflow = Decimal(str(p.get("scheduled_amount", "0") or "0"))
+        inflow = Decimal(str(inflow_periods.get(p["period"], "0") or "0"))
+        closing = opening - outflow + inflow
+        below = min_balance_threshold is not None and closing < min_balance_threshold
+        rows.append(
+            {
+                "period": p["period"],
+                "period_start": p.get("period_start"),
+                "period_end": p.get("period_end"),
+                "opening": _q(opening),
+                "outflow": _q(outflow),
+                "inflow": _q(inflow),
+                "closing": _q(closing),
+                "below_threshold": below,
+            }
+        )
+        opening = closing
+    return rows
+
+
+def detect_threshold_breaches(
+    position_rows: list[dict], *, min_balance_threshold: Decimal
+) -> list[dict]:
+    """Return the subset of ``compute_cash_position`` rows whose closing
+    balance dips below ``min_balance_threshold`` — the periods the CFO
+    should be alerted about. Each breach reports the shortfall::
+
+        {period, period_start, period_end, closing, shortfall}
+
+    ``shortfall`` is how far below the threshold the period closed
+    (always positive)."""
+    threshold = Decimal(str(min_balance_threshold))
+    breaches: list[dict] = []
+    for r in position_rows:
+        closing = Decimal(str(r.get("closing", "0") or "0"))
+        if closing < threshold:
+            breaches.append(
+                {
+                    "period": r["period"],
+                    "period_start": r.get("period_start"),
+                    "period_end": r.get("period_end"),
+                    "closing": _q(closing),
+                    "shortfall": _q(threshold - closing),
+                }
+            )
+    return breaches
