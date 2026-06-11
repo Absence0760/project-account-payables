@@ -1,8 +1,9 @@
 import { expect, test } from '../fixtures/helpers';
 
 /**
- * Invoice detail modal — opens when the Edit button on a row is
- * clicked. The modal renders three things we care about end-to-end:
+ * Invoice detail modal — opens when the row's invoice-number link
+ * ("Edit invoice …" RowLink) is clicked. The modal renders three
+ * things we care about end-to-end:
  *   1. A heading with the invoice number ("Edit Invoice — INV-2024-…")
  *   2. The Line Items section (or its empty placeholder)
  *   3. The Activity / audit-log section (visible because seed creates
@@ -16,7 +17,7 @@ import { expect, test } from '../fixtures/helpers';
 test.describe('/invoices invoice detail modal', () => {
 	test.beforeEach(async ({ page }) => {
 		await page.goto('/invoices');
-		// Wait for the table to actually populate before clicking Edit.
+		// Wait for the table to actually populate before opening a row.
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 

@@ -192,7 +192,9 @@ test.describe('/admin user lifecycle', () => {
 					r.url().includes(`/api/admin/users/${created.id}`) &&
 					r.request().method() === 'PATCH'
 			);
-			await row.getByRole('button', { name: 'Deactivate' }).click();
+			// `exact` so we hit the action button, not the row's
+			// "Edit user Deactivate Me" RowLink (substring-matches "Deactivate").
+			await row.getByRole('button', { name: 'Deactivate', exact: true }).click();
 			await deactivated;
 
 			await expect(row.locator('.status-dot')).toContainText('Inactive');
@@ -203,7 +205,7 @@ test.describe('/admin user lifecycle', () => {
 					r.url().includes(`/api/admin/users/${created.id}`) &&
 					r.request().method() === 'PATCH'
 			);
-			await row.getByRole('button', { name: 'Activate' }).click();
+			await row.getByRole('button', { name: 'Activate', exact: true }).click();
 			await activated;
 
 			await expect(row.locator('.status-dot')).toContainText('Active');
