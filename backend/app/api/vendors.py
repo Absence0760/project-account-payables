@@ -15,6 +15,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.pagination import PaginationParams, paginated, pagination_params
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.user import User
@@ -58,8 +59,7 @@ def _merge_bank_details(existing: dict | None, incoming: dict | None) -> dict | 
 
 @router.get("")
 async def list_vendors(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    pagination: PaginationParams = Depends(pagination_params),
     search: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
     source: str | None = None,
@@ -81,7 +81,7 @@ async def list_vendors(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(Vendor.name).offset((page - 1) * page_size).limit(page_size)
+    query = query.order_by(Vendor.name).offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     vendors = result.scalars().all()
 
@@ -92,12 +92,7 @@ async def list_vendors(
         inv_count = count_result.scalar() or 0
         items.append(VendorResponse.from_db(v, inv_count))
 
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    }
+    return paginated(items, total, pagination)
 
 
 @router.get("/{vendor_id}", response_model=VendorResponse)

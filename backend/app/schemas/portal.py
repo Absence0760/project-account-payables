@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
+from app.api.pagination import PageMeta
+
 
 class PortalLoginRequest(BaseModel):
     email: str
@@ -68,7 +70,7 @@ class PortalInvoiceListItem(BaseModel):
     file_url: str | None = None
 
 
-class PortalInvoiceListResponse(BaseModel):
+class PortalInvoiceListResponse(PageMeta):
     items: list[PortalInvoiceListItem]
     total: int
 
@@ -85,6 +87,6 @@ class PortalPaymentListItem(BaseModel):
     completed_at: datetime | None = None
 
 
-class PortalPaymentListResponse(BaseModel):
+class PortalPaymentListResponse(PageMeta):
     items: list[PortalPaymentListItem]
     total: int

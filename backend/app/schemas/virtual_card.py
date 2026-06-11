@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from app.api.pagination import PageMeta
+
 
 class GenerateCardsRequest(BaseModel):
     invoice_ids: list[str] = Field(..., min_length=1)
@@ -31,7 +33,7 @@ class CardResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class CardListResponse(BaseModel):
+class CardListResponse(PageMeta):
     items: list[CardResponse]
     total: int
 

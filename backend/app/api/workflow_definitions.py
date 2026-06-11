@@ -9,10 +9,12 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, get_current_user, get_org_id, require_roles
+from app.api.pagination import PaginationParams, pagination_params
 from app.models.user import User
 from app.models.workflow import WorkflowDefinition, WorkflowInstance
 from app.schemas.workflow import (
     WorkflowDefinitionCreate,
+    WorkflowDefinitionListResponse,
     WorkflowDefinitionResponse,
     WorkflowDefinitionUpdate,
 )
@@ -46,21 +48,20 @@ async def get_active_steps(
     return result
 
 
-@router.get("", response_model=list[WorkflowDefinitionResponse])
+@router.get("", response_model=WorkflowDefinitionListResponse)
 async def list_workflows(
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    result = await db.execute(
-        select(WorkflowDefinition)
-        .where(WorkflowDefinition.organization_id == org_id)
-        .order_by(WorkflowDefinition.is_default.desc(), WorkflowDefinition.created_at)
-    )
-    definitions = result.scalars().all()
+    base = select(WorkflowDefinition).where(WorkflowDefinition.organization_id == org_id)
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
 
-    # Auto-create default workflow if none exist
-    if not definitions:
+    # Auto-create the default workflow if the org has none at all — independent
+    # of which page was requested, so a stray `?page=2` can't trigger a second
+    # default. After creation the first page holds exactly that row.
+    if total == 0:
         default = WorkflowDefinition(
             name="Default Workflow",
             description="Standard invoice processing: extract, review, and send to ERP.",
@@ -72,9 +73,21 @@ async def list_workflows(
         db.add(default)
         await db.flush()
         await db.refresh(default)
-        definitions = [default]
+        total = 1
 
-    return [WorkflowDefinitionResponse.from_db(d) for d in definitions]
+    result = await db.execute(
+        base.order_by(WorkflowDefinition.is_default.desc(), WorkflowDefinition.created_at)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
+    definitions = result.scalars().all()
+
+    return WorkflowDefinitionListResponse(
+        items=[WorkflowDefinitionResponse.from_db(d) for d in definitions],
+        total=int(total),
+        page=pagination.page,
+        page_size=pagination.page_size,
+    )
 
 
 @router.post("", response_model=WorkflowDefinitionResponse, status_code=status.HTTP_201_CREATED)

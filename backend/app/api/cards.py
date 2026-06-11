@@ -15,6 +15,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.pagination import PaginationParams, pagination_params
 from app.config import settings
 from app.models.invoice import Invoice
 from app.models.organization import Organization
@@ -115,6 +116,7 @@ def _card_response(
 @router.get("", response_model=CardListResponse)
 async def list_cards(
     status_filter: str | None = Query(None, alias="status"),
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
@@ -123,13 +125,21 @@ async def list_cards(
         statuses = [s.strip() for s in status_filter.split(",")]
         query = query.where(VirtualCard.status.in_(statuses))
 
-    query = query.order_by(VirtualCard.created_at.desc())
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+
+    query = (
+        query.order_by(VirtualCard.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
     result = await db.execute(query)
     rows = result.all()
 
     return CardListResponse(
         items=[_card_response(card, inv) for card, inv in rows],
-        total=len(rows),
+        total=int(total),
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 

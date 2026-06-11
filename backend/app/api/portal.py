@@ -8,10 +8,11 @@ A vendor user cannot reference another vendor's invoices even by guessing IDs.
 import uuid
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment
@@ -43,8 +44,7 @@ router = APIRouter(prefix="/portal", tags=["portal"])
 
 @router.get("/invoices", response_model=PortalInvoiceListResponse)
 async def list_my_invoices(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
@@ -52,7 +52,7 @@ async def list_my_invoices(
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
     query = (
-        query.order_by(Invoice.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        query.order_by(Invoice.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
     )
     rows = (await db.execute(query)).scalars().all()
 
@@ -72,6 +72,8 @@ async def list_my_invoices(
             for inv in rows
         ],
         total=total,
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 
@@ -208,8 +210,7 @@ async def submit_invoice(
 
 @router.get("/payments", response_model=PortalPaymentListResponse)
 async def list_my_payments(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
@@ -230,7 +231,7 @@ async def list_my_payments(
     total = (await db.execute(total_query)).scalar() or 0
 
     query = (
-        query.order_by(Payment.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        query.order_by(Payment.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
     )
     rows = (await db.execute(query)).all()
 
@@ -250,6 +251,8 @@ async def list_my_payments(
             for p, inv_num in rows
         ],
         total=total,
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 

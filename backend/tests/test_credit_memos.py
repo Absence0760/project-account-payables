@@ -178,7 +178,8 @@ async def test_list_empty(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         resp = await c.get("/api/credit-memos")
     assert resp.status_code == 200
-    assert resp.json() == {"items": [], "total": 0}
+    body = resp.json()
+    assert body["items"] == [] and body["total"] == 0
 
 
 async def test_list_returns_memos_with_join_fields(realdb):
@@ -324,14 +325,10 @@ async def test_apply_already_applied_409(realdb):
 
     async with realdb.client(key="a", role="ap_manager") as c:
         memo_id = await _create_open_memo(c, vendor_id)
-        first = await c.post(
-            f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id}
-        )
+        first = await c.post(f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id})
         assert first.status_code == 200
         # Re-applying an already-applied memo is a conflict, not a re-write.
-        second = await c.post(
-            f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id}
-        )
+        second = await c.post(f"/api/credit-memos/{memo_id}/apply", json={"invoice_id": invoice_id})
     assert second.status_code == 409
     assert "applied" in second.json()["detail"]
 

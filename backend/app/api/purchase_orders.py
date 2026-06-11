@@ -15,6 +15,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.pagination import PaginationParams, paginated, pagination_params
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.procurement import POLineItem, PurchaseOrder
@@ -42,8 +43,7 @@ async def list_purchase_orders(
     search: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
     vendor_id: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
@@ -62,8 +62,8 @@ async def list_purchase_orders(
     paged = (
         base.options(selectinload(PurchaseOrder.line_items))
         .order_by(PurchaseOrder.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     result = await db.execute(paged)
     pos = result.scalars().all()
@@ -75,8 +75,8 @@ async def list_purchase_orders(
         for v in v_result.scalars().all():
             vendor_names[str(v.id)] = v.name
 
-    return {
-        "items": [
+    return paginated(
+        [
             {
                 "id": str(po.id),
                 "po_number": po.po_number,
@@ -89,8 +89,9 @@ async def list_purchase_orders(
             }
             for po in pos
         ],
-        "total": total,
-    }
+        total,
+        pagination,
+    )
 
 
 @router.get("/{po_id}")

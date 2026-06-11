@@ -3,6 +3,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from app.api.pagination import PageMeta
+
 
 class CreditMemoCreate(BaseModel):
     memo_number: str = Field(..., max_length=100)
@@ -35,6 +37,6 @@ class CreditMemoResponse(BaseModel):
     created_at: str
 
 
-class CreditMemoListResponse(BaseModel):
+class CreditMemoListResponse(PageMeta):
     items: list[CreditMemoResponse]
     total: int

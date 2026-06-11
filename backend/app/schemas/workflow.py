@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.api.pagination import PageMeta
+
 # ---------- workflow definition schemas ----------
 
 
@@ -119,6 +121,11 @@ class WorkflowDefinitionResponse(BaseModel):
             created_at=defn.created_at.isoformat() if defn.created_at else "",
             updated_at=defn.updated_at.isoformat() if defn.updated_at else None,
         )
+
+
+class WorkflowDefinitionListResponse(PageMeta):
+    items: list[WorkflowDefinitionResponse]
+    total: int
 
 
 # ---------- request schemas ----------

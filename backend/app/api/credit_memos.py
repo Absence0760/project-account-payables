@@ -15,6 +15,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.pagination import PaginationParams, pagination_params
 from app.models.credit_memo import CreditMemo
 from app.models.invoice import Invoice
 from app.models.user import User
@@ -59,8 +60,7 @@ async def list_credit_memos(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
     status_filter: str | None = Query(None, alias="status"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    pagination: PaginationParams = Depends(pagination_params),
 ):
     base = select(CreditMemo)
     if status_filter:
@@ -74,8 +74,8 @@ async def list_credit_memos(
         .outerjoin(Vendor, CreditMemo.vendor_id == Vendor.id)
         .outerjoin(Invoice, CreditMemo.invoice_id == Invoice.id)
         .order_by(CreditMemo.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     if status_filter:
         paged = paged.where(CreditMemo.status == status_filter)
@@ -84,7 +84,9 @@ async def list_credit_memos(
         _to_response(memo, vendor_name=vendor_name, invoice_number=invoice_number)
         for memo, vendor_name, invoice_number in result.all()
     ]
-    return CreditMemoListResponse(items=items, total=total)
+    return CreditMemoListResponse(
+        items=items, total=total, page=pagination.page, page_size=pagination.page_size
+    )
 
 
 @router.post("", response_model=CreditMemoResponse, status_code=status.HTTP_201_CREATED)

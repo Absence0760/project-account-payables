@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from app.api.pagination import PageMeta
+
 
 class RoleResponse(BaseModel):
     id: str
@@ -35,7 +37,7 @@ class AdminUserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AdminUserListResponse(BaseModel):
+class AdminUserListResponse(PageMeta):
     items: list[AdminUserResponse]
     total: int
 

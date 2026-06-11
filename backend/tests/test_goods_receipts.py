@@ -52,7 +52,8 @@ async def test_list_empty(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         resp = await c.get("/api/goods-receipts")
     assert resp.status_code == 200
-    assert resp.json() == {"items": [], "total": 0}
+    body = resp.json()
+    assert body["items"] == [] and body["total"] == 0
 
 
 async def test_list_returns_items_and_total(realdb):
@@ -230,7 +231,8 @@ async def test_tenant_isolation_list(realdb):
     async with realdb.client(key="b", role="ap_manager") as c:
         resp = await c.get("/api/goods-receipts")
     assert resp.status_code == 200
-    assert resp.json() == {"items": [], "total": 0}
+    body = resp.json()
+    assert body["items"] == [] and body["total"] == 0
 
 
 async def test_tenant_isolation_detail_404(realdb):

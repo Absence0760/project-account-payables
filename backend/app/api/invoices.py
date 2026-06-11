@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete
@@ -23,6 +23,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.pagination import PaginationParams, pagination_params
 from app.database import get_control_db
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
@@ -64,8 +65,7 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 @router.get("", response_model=InvoiceListResponse)
 async def list_invoices(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    pagination: PaginationParams = Depends(pagination_params),
     status: str | None = None,
     vendor: str | None = None,
     invoice_number: str | None = None,
@@ -117,7 +117,7 @@ async def list_invoices(
     # Paginate. Eager-load extraction_results so priors_summary can be
     # computed without N+1 queries per row.
     query = query.order_by(Invoice.created_at.desc())
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = query.offset(pagination.offset).limit(pagination.limit)
     query = query.options(selectinload(Invoice.extraction_results))
     result = await db.execute(query)
     invoices = result.scalars().all()
@@ -125,8 +125,8 @@ async def list_invoices(
     return InvoiceListResponse(
         items=[InvoiceResponse.from_db(inv) for inv in invoices],
         total=total,
-        page=page,
-        page_size=page_size,
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 

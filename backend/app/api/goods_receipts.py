@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
+from app.api.pagination import PaginationParams, paginated, pagination_params
 from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.user import User
 from app.tenant import get_tenant_db
@@ -27,8 +28,7 @@ def _line_dict(li) -> dict:
 async def list_goods_receipts(
     po_id: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
 ):
@@ -44,8 +44,8 @@ async def list_goods_receipts(
     paged = (
         base.options(selectinload(GoodsReceipt.line_items))
         .order_by(GoodsReceipt.received_date.desc().nullslast(), GoodsReceipt.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     result = await db.execute(paged)
     grs = result.scalars().all()
@@ -59,8 +59,8 @@ async def list_goods_receipts(
         for po in po_q.scalars().all():
             po_numbers[str(po.id)] = po.po_number
 
-    return {
-        "items": [
+    return paginated(
+        [
             {
                 "id": str(gr.id),
                 "gr_number": gr.gr_number,
@@ -73,8 +73,9 @@ async def list_goods_receipts(
             }
             for gr in grs
         ],
-        "total": total,
-    }
+        total,
+        pagination,
+    )
 
 
 @router.get("/{gr_id}")

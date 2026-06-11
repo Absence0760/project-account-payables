@@ -17,6 +17,7 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.api.pagination import PaginationParams, pagination_params
 from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
@@ -47,8 +48,7 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 
 @router.get("", response_model=PaymentListResponse)
 async def list_payments(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query(None, alias="status"),
     method: str | None = None,
     invoice_id: str | None = None,
@@ -117,15 +117,15 @@ async def list_payments(
 
     # Paginate
     query = query.order_by(Payment.created_at.desc())
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = query.offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     rows = result.all()
 
     return PaymentListResponse(
         items=[PaymentResponse.from_db(p, inv, card) for p, inv, card in rows],
         total=total,
-        page=page,
-        page_size=page_size,
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 
@@ -496,8 +496,7 @@ async def create_payment(
 
 @router.get("/runs/", response_model=PaymentRunListResponse)
 async def list_payment_runs(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    pagination: PaginationParams = Depends(pagination_params),
     status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
@@ -512,7 +511,7 @@ async def list_payment_runs(
     total = (await db.execute(count_query)).scalar() or 0
 
     query = query.order_by(PaymentRun.created_at.desc())
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = query.offset(pagination.offset).limit(pagination.limit)
     result = await db.execute(query)
     runs = result.scalars().all()
 
@@ -528,8 +527,8 @@ async def list_payment_runs(
     return PaymentRunListResponse(
         items=items,
         total=total,
-        page=page,
-        page_size=page_size,
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 

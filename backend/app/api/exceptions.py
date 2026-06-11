@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, require_roles
+from app.api.pagination import PaginationParams, paginated, pagination_params
 from app.database import get_control_db
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
@@ -69,6 +70,7 @@ async def list_exceptions(
     exception_type: str | None = Query(None, alias="type"),
     severity: str | None = None,
     assigned_to_user_id: str | None = None,
+    pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
@@ -88,14 +90,17 @@ async def list_exceptions(
             raise HTTPException(status_code=400, detail="Invalid assigned_to_user_id") from exc_
         query = query.where(APException.assigned_to_user_id == uid)
 
-    query = query.order_by(APException.created_at.desc())
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+
+    query = (
+        query.order_by(APException.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
     result = await db.execute(query)
     rows = result.all()
 
-    return {
-        "items": [_exception_dict(exc, inv) for exc, inv in rows],
-        "total": len(rows),
-    }
+    return paginated([_exception_dict(exc, inv) for exc, inv in rows], int(total), pagination)
 
 
 @router.get("/summary")

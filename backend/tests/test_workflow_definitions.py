@@ -60,17 +60,18 @@ async def test_list_workflows_auto_creates_default(realdb):
         resp = await c.get("/api/workflows")
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body) == 1
-    assert body[0]["name"] == "Default Workflow"
-    assert body[0]["is_default"] is True
-    assert body[0]["is_active"] is True
+    assert body["total"] == 1
+    assert body["page"] == 1
+    items = body["items"]
+    assert len(items) == 1
+    assert items[0]["name"] == "Default Workflow"
+    assert items[0]["is_default"] is True
+    assert items[0]["is_active"] is True
 
     # Persisted: a second list does not create a duplicate.
     mk = realdb.sessionmaker("a")
     async with mk() as s:
-        count = (
-            await s.execute(select(func.count()).select_from(WorkflowDefinition))
-        ).scalar_one()
+        count = (await s.execute(select(func.count()).select_from(WorkflowDefinition))).scalar_one()
     assert count == 1
 
 
@@ -190,13 +191,17 @@ async def test_activating_workflow_deactivates_peers(realdb):
     mk = realdb.sessionmaker("a")
     async with mk() as s:
         active = (
-            await s.execute(
-                select(WorkflowDefinition).where(
-                    WorkflowDefinition.organization_id == org_id,
-                    WorkflowDefinition.is_active.is_(True),
+            (
+                await s.execute(
+                    select(WorkflowDefinition).where(
+                        WorkflowDefinition.organization_id == org_id,
+                        WorkflowDefinition.is_active.is_(True),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     # Exactly one active definition org-wide.
     assert len(active) == 1
     assert str(active[0].id) == new_id
@@ -207,9 +212,7 @@ async def test_patch_steps_replaces_snapshotless_config(realdb):
     (instances keep their own frozen snapshot — see delete-guard test)."""
     async with realdb.client(key="a", role="admin") as c:
         wf_id = (await _create_workflow(c)).json()["id"]
-        new_steps = [
-            {"number": 1, "type": "approval", "name": "Only Approval", "enabled": True}
-        ]
+        new_steps = [{"number": 1, "type": "approval", "name": "Only Approval", "enabled": True}]
         resp = await c.patch(f"/api/workflows/{wf_id}", json={"steps": new_steps})
     assert resp.status_code == 200
     steps = resp.json()["steps_config"]["steps"]
@@ -241,7 +244,7 @@ async def test_get_active_steps_reflects_active_definition(realdb):
 
 async def test_delete_default_workflow_409(realdb):
     async with realdb.client(key="a", role="admin") as c:
-        wf_id = (await c.get("/api/workflows")).json()[0]["id"]  # the default
+        wf_id = (await c.get("/api/workflows")).json()["items"][0]["id"]  # the default
         resp = await c.delete(f"/api/workflows/{wf_id}")
     assert resp.status_code == 409
     assert "default" in resp.json()["detail"].lower()
@@ -328,7 +331,7 @@ async def test_delete_workflow_rbac(realdb):
 
 async def test_bulk_delete_reports_per_id(realdb):
     async with realdb.client(key="a", role="admin") as c:
-        default_id = (await c.get("/api/workflows")).json()[0]["id"]
+        default_id = (await c.get("/api/workflows")).json()["items"][0]["id"]
         ok_id = (await _create_workflow(c, name="Deletable")).json()["id"]
         active_id = (await _create_workflow(c, name="Active")).json()["id"]
         await c.patch(f"/api/workflows/{active_id}", json={"is_active": True})

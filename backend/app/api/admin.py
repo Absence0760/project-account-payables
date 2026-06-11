@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import ALL_ROLES, ROLE_ADMIN, get_org_id, require_roles
+from app.api.pagination import PaginationParams, pagination_params
 from app.database import get_control_db, get_tenant_engine
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
@@ -61,8 +62,7 @@ async def list_users(
     user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
     search: str | None = Query(None, description="Filter by full_name or email (case-insensitive)"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
+    pagination: PaginationParams = Depends(pagination_params),
 ):
     base = select(User).where(User.organization_id == org_id)
     if search and search.strip():
@@ -75,14 +75,16 @@ async def list_users(
     paged = (
         base.options(selectinload(User.roles))
         .order_by(User.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     result = await db.execute(paged)
     users = result.scalars().all()
     return AdminUserListResponse(
         items=[_user_to_response(u) for u in users],
         total=total,
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 
