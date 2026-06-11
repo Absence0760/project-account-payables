@@ -3,11 +3,13 @@
 Two seed shapes:
 
 - **Full** (default) — every tenant (acme + techflow + e2e1..e2eN) gets
-  the rich demo dataset: 10 vendors, ~90 invoices across every status
-  (10 richly-related named rows + ~80 lightweight bulk filler so the
-  `/invoices` list spans several pages of its default 25-row pagination),
-  payment runs, exceptions, PO matching scenarios, virtual cards, etc.
-  Best for local development where you actually want to click around.
+  the rich demo dataset: ~50 vendors, ~90 invoices across every status,
+  and ~30 payments, payment runs, exceptions, PO matching scenarios,
+  virtual cards, etc. Each of the `/invoices`, `/vendors` and `/payments`
+  lists carries a block of lightweight bulk filler rows on top of its
+  richly-related named rows, so every one spans several pages of its
+  default 25-row pagination. Best for local development where you
+  actually want to click around.
 - **Lean** (``--lean`` / ``AP_SEED_MODE=lean``) — every tenant gets
   just enough for the e2e suite (4 vendors, 10 invoices across status
   buckets, 1 default workflow, 1 GL account, no exceptions/payments/
@@ -484,6 +486,54 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
             v_rejected,
         ]
         session.add_all(all_vendors)
+        await session.flush()
+
+        # Bulk filler vendors — the ten named vendors above carry the demo
+        # relationships (invoices, POs, payments), but ten rows fit on a
+        # single page. The `/vendors` list defaults to `page_size=25`, so add
+        # a block of plain vendors spread across every status + source bucket
+        # to push the list past several pages and give the status/source
+        # filters real spread to narrow against. Codes/names are sequenced so
+        # they stay unique. They carry no invoices (count column reads 0),
+        # which is exactly how a freshly-imported vendor looks.
+        filler_vendor_names = [
+            "Apex Industrial",
+            "Bluewave Logistics",
+            "Cedar Point Supply",
+            "Delta Components",
+            "Evergreen Materials",
+            "Fairmont Distributors",
+            "Granite Peak Services",
+            "Harbor Freight Partners",
+            "Ironclad Manufacturing",
+            "Juniper Software",
+        ]
+        # (status, source) buckets, weighted toward the active/erp_sync norm.
+        filler_vendor_profiles = (
+            [("active", "erp_sync")] * 16
+            + [("active", "manual")] * 10
+            + [("unverified", "ai_extracted")] * 6
+            + [("inactive", "manual")] * 5
+            + [("rejected", "ai_extracted")] * 3
+        )
+        filler_vendors_list: list[Vendor] = []
+        for i, (status, source) in enumerate(filler_vendor_profiles):
+            seq = i + 1
+            base = filler_vendor_names[i % len(filler_vendor_names)]
+            filler_vendors_list.append(
+                Vendor(
+                    organization_id=org_id,
+                    name=f"{base} {seq:02d}",
+                    code=f"FV{seq:03d}",
+                    email=f"ap+{seq:03d}@{base.split()[0].lower()}.example.com",
+                    payment_terms="Net 30",
+                    status=status,
+                    source=source,
+                    erp_vendor_id=f"ERP-FV{seq:03d}" if source == "erp_sync" else None,
+                    accepts_virtual_cards=(i % 3 == 0),
+                )
+            )
+        session.add_all(filler_vendors_list)
         await session.flush()
 
         # Default workflow definition — enable extraction + approval +
@@ -1365,6 +1415,63 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
             ]
         )
 
+        # Bulk filler payments — the named seed creates only three payments,
+        # which fit on a single page of the `/payments` list (also default
+        # `page_size=25`). Attach one payment to every filler invoice that has
+        # reached a pay-eligible status, so the Payments tab spans multiple
+        # pages and its status/method filters have spread. Payment status is
+        # derived from the invoice's stage, then a few are nudged onto the
+        # failed/cancelled/processing buckets so every status chip is covered.
+        pay_eligible = {"posted_in_erp", "payment_scheduled", "paid", "done"}
+        pay_methods = ["ach", "wire", "check", "virtual_card"]
+        filler_payments: list[Payment] = []
+        pay_idx = 0
+        for inv in filler_invoices:
+            if inv.status not in pay_eligible:
+                continue
+            # Base status from the invoice stage.
+            if inv.status in ("paid", "done"):
+                pstatus = "completed"
+            elif inv.status == "payment_scheduled":
+                pstatus = "submitted"
+            else:  # posted_in_erp
+                pstatus = "pending"
+            # Nudge a slice onto the rarer buckets for full chip coverage.
+            if pay_idx % 9 == 4:
+                pstatus = "failed"
+            elif pay_idx % 11 == 7:
+                pstatus = "cancelled"
+            elif pay_idx % 7 == 3 and pstatus == "submitted":
+                pstatus = "processing"
+            method = pay_methods[pay_idx % len(pay_methods)]
+            completed_at = (
+                datetime(2024, 5, (pay_idx % 27) + 1, 12, 0, tzinfo=UTC)
+                if pstatus == "completed"
+                else None
+            )
+            submitted_at = (
+                datetime(2024, 5, (pay_idx % 27) + 1, 9, 0, tzinfo=UTC)
+                if pstatus in ("submitted", "processing", "completed")
+                else None
+            )
+            filler_payments.append(
+                Payment(
+                    correlation_id=inv.correlation_id,
+                    invoice_id=inv.id,
+                    amount=inv.amount,
+                    method=method,
+                    status=pstatus,
+                    reference=f"PAY-2024-{1000 + pay_idx}",
+                    submitted_at=submitted_at,
+                    completed_at=completed_at,
+                    failure_reason="Insufficient funds at originating bank"
+                    if pstatus == "failed"
+                    else None,
+                )
+            )
+            pay_idx += 1
+        session.add_all(filler_payments)
+
         # Supplier-portal user — bound to Tech Hardware Corp (v_tech), which
         # owns INV-2024-005 (invoices[4]) and its completed ACH payment. The
         # `tests-e2e/portal/` suite signs in as this user and asserts it sees
@@ -1374,11 +1481,15 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
 
         await session.commit()
         total_invoices = len(invoices) + len(filler_invoices)
+        total_vendors = len(all_vendors) + len(filler_vendors_list)
+        total_payments = 3 + len(filler_payments)
         print(
-            f"  Seeded {tenant_label}: {len(all_vendors)} vendors, {total_invoices} invoices "
-            f"({len(filler_invoices)} bulk filler for pagination), "
-            f"5 POs, 2 GRs, {len(gl_accounts)} GL accounts, 1 payment run, 3 payments, "
-            f"4 exceptions, 1 portal user"
+            f"  Seeded {tenant_label}: {total_vendors} vendors "
+            f"({len(filler_vendors_list)} bulk filler), {total_invoices} invoices "
+            f"({len(filler_invoices)} bulk filler), 5 POs, 2 GRs, "
+            f"{len(gl_accounts)} GL accounts, 1 payment run, {total_payments} payments "
+            f"({len(filler_payments)} bulk filler), 4 exceptions, 1 portal user "
+            f"— bulk fillers exist so /invoices, /vendors and /payments paginate"
         )
 
     await engine.dispose()
