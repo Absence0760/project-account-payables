@@ -40,6 +40,7 @@ from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, Purchas
 from app.models.usage import ExtractionUsage
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
+from app.models.vendor_user import VendorUser
 from app.models.workflow import AuditLog, WorkflowDefinition
 from app.utils.passwords import pwd_context
 
@@ -73,6 +74,35 @@ CONTROL_TABLES = {
     "user_roles",
     "email_verifications",
 }
+
+# Supplier-portal demo credential. One VendorUser is seeded per tenant
+# (full + lean) tied to a known seeded vendor, so the Playwright
+# `tests-e2e/portal/` suite has a real account to sign in with. The email
+# is namespaced per tenant DB because `VendorUser.email` is globally
+# UNIQUE within a tenant DB — but the same literal works across tenants
+# since each tenant has its own DB. The password matches the rest of the
+# seed ("demo") and skips `validate_password_complexity` because the seed
+# hashes directly. `must_change_password=False` so login lands straight on
+# `/portal/invoices`; the portal spec exercises the must-change redirect by
+# flipping the flag via `tenantPsql`.
+PORTAL_USER_EMAIL = "supplier@portal.test"
+PORTAL_USER_PASSWORD = "demo"
+
+
+def _make_portal_user(vendor: "Vendor") -> "VendorUser":
+    """Build a supplier-portal user bound to ``vendor``.
+
+    Caller must have flushed ``vendor`` so ``vendor.id`` is populated, then
+    add the returned row to the session and commit.
+    """
+    return VendorUser(
+        vendor_id=vendor.id,
+        email=PORTAL_USER_EMAIL,
+        full_name="Portal Demo User",
+        hashed_password=pwd_context.hash(PORTAL_USER_PASSWORD),
+        is_active=True,
+        must_change_password=False,
+    )
 
 
 async def create_database(db_name: str) -> None:
@@ -1238,10 +1268,18 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
             ]
         )
 
+        # Supplier-portal user — bound to Tech Hardware Corp (v_tech), which
+        # owns INV-2024-005 (invoices[4]) and its completed ACH payment. The
+        # `tests-e2e/portal/` suite signs in as this user and asserts it sees
+        # only v_tech's invoices/payments — every other seeded vendor's rows
+        # must stay invisible (tenant + vendor isolation).
+        session.add(_make_portal_user(v_tech))
+
         await session.commit()
         print(
             f"  Seeded {tenant_label}: {len(all_vendors)} vendors, {len(invoices)} invoices, "
-            f"5 POs, 2 GRs, {len(gl_accounts)} GL accounts, 1 payment run, 3 payments, 4 exceptions"
+            f"5 POs, 2 GRs, {len(gl_accounts)} GL accounts, 1 payment run, 3 payments, "
+            f"4 exceptions, 1 portal user"
         )
 
     await engine.dispose()
@@ -1502,15 +1540,22 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 + ["paid"]
                 + ["rejected"]
             )
+            # Bind invoices to a vendor_id so the supplier portal (which
+            # filters strictly on `Invoice.vendor_id == vendor_user.vendor_id`)
+            # has rows to show. Most go to v_alpha (the portal user's vendor);
+            # exactly one — the first, `new`-status row — goes to v_beta so the
+            # portal-isolation spec can assert the alpha user never sees it.
             invoices: list[Invoice] = []
             for i, status in enumerate(statuses, start=1):
+                owner = v_beta if i == 1 else v_alpha
                 # correlation_id is what `GET /api/invoices/{id}/audit-log`
                 # joins on. Generate it here so the matching audit_log
                 # row stamped below can be retrieved.
                 corr_id = uuid.uuid4()
                 inv = Invoice(
                     organization_id=org_id,
-                    vendor_name="Lean Vendor Alpha",
+                    vendor_name=owner.name,
+                    vendor_id=owner.id,
                     invoice_number=f"LEAN-{i:03d}",
                     amount=Decimal(f"{100 + i}.00"),
                     currency="USD",
@@ -1660,6 +1705,9 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
             )
             session.add(run)
             await session.flush()
+            # `paid_invoice` belongs to v_alpha (only invoices[0] is v_beta),
+            # so this payment is the portal user's own. The portal-payments
+            # isolation spec asserts the alpha user sees this row.
             session.add(
                 Payment(
                     payment_run_id=run.id,
@@ -1667,8 +1715,31 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
                     amount=paid_invoice.amount,
                     method="ach",
                     status="completed",
+                    reference="LEAN-PAY-ALPHA",
+                    completed_at=datetime(2026, 1, 20, tzinfo=UTC),
                 )
             )
+            # A second payment on v_beta's invoice (invoices[0]). This must
+            # NOT appear in the alpha portal user's payment list — the
+            # isolation assertion checks the reference string is absent.
+            session.add(
+                Payment(
+                    payment_run_id=run.id,
+                    invoice_id=invoices[0].id,
+                    amount=invoices[0].amount,
+                    method="wire",
+                    status="completed",
+                    reference="LEAN-PAY-BETA",
+                    completed_at=datetime(2026, 1, 20, tzinfo=UTC),
+                )
+            )
+
+            # Supplier-portal user bound to v_alpha — the vendor that owns
+            # every lean invoice except invoices[0]. The `tests-e2e/portal/`
+            # suite signs in as this user and asserts vendor-scoped isolation
+            # (sees LEAN-002..LEAN-016 + LEAN-PAY-ALPHA, never LEAN-001 /
+            # LEAN-PAY-BETA which belong to v_beta).
+            session.add(_make_portal_user(v_alpha))
 
             # One audit-log row per invoice. `GET /api/invoices/{id}/audit-log`
             # joins on `correlation_id`, not `entity_id` — set the same
@@ -1690,7 +1761,7 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
             )
 
             await session.commit()
-            print(f"  Seeded lean fixtures for {tenant_label}")
+            print(f"  Seeded lean fixtures for {tenant_label} (incl. 1 portal user)")
     finally:
         await engine.dispose()
 
