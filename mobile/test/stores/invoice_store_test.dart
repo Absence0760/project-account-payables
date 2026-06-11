@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/services/offline_store.dart';
@@ -35,13 +34,12 @@ void main() {
   final store = InvoiceStore.instance;
 
   setUpAll(() async {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     // Private in-memory cache so parallel test isolates don't share a file.
-    await OfflineStore.instance.debugUseInMemory();
+    OfflineStore.instance.debugUseMemory();
   });
 
   setUp(() async {
+    InvoiceStore.instance.debugReset();
     await OfflineStore.instance.clear();
     ApiClient().debugConfigure();
   });

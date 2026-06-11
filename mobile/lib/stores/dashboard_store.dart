@@ -18,6 +18,16 @@ class DashboardStore extends ChangeNotifier {
   String? get error => _error;
   bool get fromCache => _fromCache;
 
+  /// Test seam: clear all in-memory state so tests aren't coupled to the order
+  /// they run in (this is a process-lifetime singleton). Not used in production.
+  @visibleForTesting
+  void debugReset() {
+    _data = null;
+    _loading = false;
+    _error = null;
+    _fromCache = false;
+  }
+
   Future<void> fetch() async {
     _loading = true;
     _error = null;

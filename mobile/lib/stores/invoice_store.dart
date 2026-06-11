@@ -24,6 +24,18 @@ class InvoiceStore extends ChangeNotifier {
   List<Invoice> get pendingApproval =>
       _invoices.where((i) => i.status == InvoiceStatus.readyForReview).toList();
 
+  /// Test seam: clear all in-memory state so tests aren't coupled to the order
+  /// they run in (this is a process-lifetime singleton). Not used in production.
+  @visibleForTesting
+  void debugReset() {
+    _invoices = [];
+    _loading = false;
+    _error = null;
+    _statusFilter = null;
+    _searchQuery = null;
+    _fromCache = false;
+  }
+
   void setStatusFilter(String? status) {
     _statusFilter = status;
     fetch();

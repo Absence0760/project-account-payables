@@ -11,6 +11,12 @@ class OfflineStore {
 
   Database? _db;
 
+  /// When non-null, the store is backed by a pure in-memory map instead of
+  /// SQLite (see [debugUseMemory]). Values are stored JSON-encoded exactly as
+  /// the SQLite path stores them, so behaviour (incl. serialization fidelity)
+  /// matches production.
+  Map<String, String>? _memory;
+
   Future<Database> get db async {
     _db ??= await _initDb();
     return _db!;
@@ -35,24 +41,30 @@ class OfflineStore {
     ''');
   }
 
-  /// Test seam: back this store with a fresh private in-memory database so
-  /// parallel test isolates don't contend on the shared on-disk cache file.
-  /// Not used by production code.
+  /// Test seam: back this store with a pure in-memory map instead of SQLite.
+  /// Not used by production code. Necessary because sqflite's internal
+  /// synchronization Timer never resolves inside `testWidgets`' fake-async
+  /// zone (it leaks as a pending timer and stalls any fetch that writes the
+  /// cache); a plain map resolves on the microtask queue, so it works under
+  /// both `test()` and `testWidgets()` and needs no native plugin.
   @visibleForTesting
-  Future<void> debugUseInMemory() async {
-    _db = await databaseFactory.openDatabase(
-      inMemoryDatabasePath,
-      options: OpenDatabaseOptions(version: 1, onCreate: _createSchema),
-    );
+  void debugUseMemory() {
+    _memory = {};
+    _db = null;
   }
 
   Future<void> put(String key, dynamic value) async {
+    final encoded = jsonEncode(value);
+    if (_memory != null) {
+      _memory![key] = encoded;
+      return;
+    }
     final database = await db;
     await database.insert(
       'cache',
       {
         'key': key,
-        'value': jsonEncode(value),
+        'value': encoded,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
@@ -60,6 +72,10 @@ class OfflineStore {
   }
 
   Future<dynamic> get(String key) async {
+    if (_memory != null) {
+      final raw = _memory![key];
+      return raw == null ? null : jsonDecode(raw);
+    }
     final database = await db;
     final rows = await database.query(
       'cache',
@@ -71,6 +87,10 @@ class OfflineStore {
   }
 
   Future<void> clear() async {
+    if (_memory != null) {
+      _memory!.clear();
+      return;
+    }
     final database = await db;
     await database.delete('cache');
   }
