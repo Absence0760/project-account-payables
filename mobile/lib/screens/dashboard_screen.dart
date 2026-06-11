@@ -60,6 +60,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                // Offline indicator — data is being served from the local
+                // cache because the last refresh couldn't reach the server.
+                if (store.fromCache) ...[
+                  _cacheBanner(),
+                  const SizedBox(height: 12),
+                ],
+
                 // KPI row
                 Row(
                   children: [
@@ -173,6 +180,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _cacheBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.amber.shade200),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.cloud_off, size: 18, color: Colors.amber.shade800),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              "Showing cached data — couldn't reach the server",
+              style: TextStyle(color: Colors.amber.shade900, fontSize: 13),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -255,11 +255,28 @@ void main() {
     );
 
     await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
-    await _pumpUntil(tester, find.byType(KpiCard));
+    // Wait for the in-screen refetch to fail over to cache (which flips
+    // fromCache and surfaces the banner) — not just for the KPI cards, which
+    // the primed live data already rendered.
+    await _pumpUntil(tester, find.textContaining('Showing cached data'));
 
     expect(find.byType(KpiCard), findsNWidgets(4));
     expect(find.text('Acme Corp'), findsOneWidget);
     // No error surface — cached data satisfies the screen.
     expect(find.textContaining('Error:'), findsNothing);
+    // ...but the user is told the data is stale.
+    expect(find.textContaining('Showing cached data'), findsOneWidget);
+  });
+
+  testWidgets('does not show the cached-data banner on a live fetch',
+      (tester) async {
+    ApiClient().debugConfigure(
+      client: MockClient((req) async => _json(_dashboardJson())),
+    );
+
+    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await _pumpUntil(tester, find.byType(KpiCard));
+
+    expect(find.textContaining('Showing cached data'), findsNothing);
   });
 }
