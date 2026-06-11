@@ -51,12 +51,12 @@ function createInvoiceStore() {
 
 	async function fetchCounts() {
 		try {
-			const res = await api.get<InvoiceListResponse>('/api/invoices?page_size=100');
-			const counts: Record<string, number> = {};
-			for (const inv of res.items) {
-				counts[inv.status] = (counts[inv.status] || 0) + 1;
-			}
-			statusCounts = counts;
+			// Server-side GROUP BY so the chips stay accurate past the first
+			// page of results (a client-side tally over page 1 undercounted).
+			const res = await api.get<{ counts: Record<string, number>; total: number }>(
+				'/api/invoices/counts'
+			);
+			statusCounts = res.counts;
 		} catch {
 			// ignore — counts are non-critical
 		}
