@@ -12,6 +12,8 @@ Reports shipped today:
   - payment_register: every payment with its invoice + status +
     fees
   - aging_snapshot: current/30/60/90+ buckets with totals
+  - cashflow_forecast: projected AP outflows per period (day / week /
+    month buckets) with committed vs pending split + discount-eligible
 
 PDF is a separate concern (reportlab + pre-built templates); not
 shipped here.
@@ -173,6 +175,40 @@ def export_aging_snapshot(aging_buckets: dict, *, snapshot_date: date | None = N
     return buf.getvalue()
 
 
+def export_cashflow_forecast(period_rows: Iterable) -> str:
+    """One row per forecast period. Each row is a dict as produced by
+    `analytics.bucket_outflows` — period key, start/end bounds, the
+    scheduled total, the committed-vs-pending split, the
+    discount-eligible amount, and the invoice count. The CFO drops this
+    straight into their FP&A model."""
+    buf, w = _writer(
+        [
+            "period",
+            "period_start",
+            "period_end",
+            "scheduled_amount",
+            "committed_amount",
+            "pending_amount",
+            "discount_eligible_amount",
+            "count",
+        ]
+    )
+    for p in period_rows:
+        w.writerow(
+            [
+                p.get("period", "") or "",
+                _fmt_date(p.get("period_start")),
+                _fmt_date(p.get("period_end")),
+                _fmt_money(p.get("scheduled_amount")),
+                _fmt_money(p.get("committed_amount")),
+                _fmt_money(p.get("pending_amount")),
+                _fmt_money(p.get("discount_eligible_amount")),
+                int(p.get("count", 0) or 0),
+            ]
+        )
+    return buf.getvalue()
+
+
 # Registry — keep one in-process so the API layer can do
 # `EXPORTERS["invoice_register"]` and not hand-route per name.
 EXPORTERS: dict[str, Callable] = {
@@ -180,4 +216,5 @@ EXPORTERS: dict[str, Callable] = {
     "vendor_spend": export_vendor_spend,
     "payment_register": export_payment_register,
     "aging_snapshot": export_aging_snapshot,
+    "cashflow_forecast": export_cashflow_forecast,
 }

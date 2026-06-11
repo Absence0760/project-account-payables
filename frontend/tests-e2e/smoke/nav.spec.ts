@@ -16,6 +16,7 @@ const ROUTES = [
 	{ path: '/payments', anchor: 'aside.sidebar' },
 	{ path: '/vendors', anchor: 'aside.sidebar' },
 	{ path: '/exceptions', anchor: 'aside.sidebar' },
+	{ path: '/cfo', anchor: 'aside.sidebar' },
 	{ path: '/workflows', anchor: 'aside.sidebar' },
 	{ path: '/organization', anchor: 'aside.sidebar' },
 	{ path: '/admin', anchor: 'aside.sidebar' }
