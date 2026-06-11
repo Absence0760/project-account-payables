@@ -186,3 +186,71 @@ async def test_find_semantic_duplicates_honours_per_call_threshold_override():
         got = await find_semantic_duplicates(_db_returning(rows), "t", threshold=0.80)
     assert len(got) == 1
     assert got[0].similarity == 0.90
+
+
+# ---------------------------------------------------------------------------
+# Real-Postgres + pgvector: prove the cosine ranking and the exclude_invoice_id
+# WHERE the mock-based tests can't (those are enforced in SQL). The mock
+# embedding adapter is deterministic: identical text → cosine 1.0.
+# ---------------------------------------------------------------------------
+
+
+async def test_find_semantic_duplicates_pgvector_discriminates_and_excludes_self(realdb):
+    from decimal import Decimal
+
+    from app.models.invoice import Invoice
+    from app.models.invoice_embedding import InvoiceEmbedding
+    from app.services.duplicate_detection import find_semantic_duplicates
+    from app.services.embedding_adapters import get_embedding_adapter
+
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    adapter = get_embedding_adapter()
+    dup_text = "Acme Corp invoice INV-700 amount 12480 March 2026"
+    distinct_text = "Globex unrelated consulting services 42 dollars January 2026"
+
+    async with mk() as s:
+        dup_inv = Invoice(
+            organization_id=org_id,
+            invoice_number="INV-700",
+            vendor_name="Acme",
+            amount=Decimal("12480.00"),
+        )
+        other_inv = Invoice(
+            organization_id=org_id,
+            invoice_number="INV-900",
+            vendor_name="Globex",
+            amount=Decimal("42.00"),
+        )
+        s.add_all([dup_inv, other_inv])
+        await s.flush()
+        s.add(
+            InvoiceEmbedding(
+                invoice_id=dup_inv.id,
+                embedding=(await adapter.embed(dup_text)).vector,
+                corrected_fields={"invoice_number": "INV-700", "vendor_name": "Acme"},
+            )
+        )
+        s.add(
+            InvoiceEmbedding(
+                invoice_id=other_inv.id,
+                embedding=(await adapter.embed(distinct_text)).vector,
+                corrected_fields={"invoice_number": "INV-900", "vendor_name": "Globex"},
+            )
+        )
+        await s.commit()
+        dup_id, other_id = dup_inv.id, other_inv.id
+
+    # Query with the duplicate's exact text: the near-identical row is flagged,
+    # the semantically-distinct row is not (below the 0.95 threshold).
+    async with mk() as s:
+        matches = await find_semantic_duplicates(s, dup_text)
+    ids = {m.invoice_id for m in matches}
+    assert dup_id in ids
+    assert other_id not in ids
+    assert next(m for m in matches if m.invoice_id == dup_id).similarity > 0.99
+
+    # exclude_invoice_id drops the only match → empty (the WHERE runs in SQL).
+    async with mk() as s:
+        excluded = await find_semantic_duplicates(s, dup_text, exclude_invoice_id=dup_id)
+    assert all(m.invoice_id != dup_id for m in excluded)
