@@ -22,6 +22,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
  * | Goods Receipts |     |   ✓    |  ✓  |  ✓    |
  * | Exceptions   |       |   ✓    |     |  ✓    |
  * | Workflows    |       |        |     |  ✓    |
+ * | Audit Trail  |       |        |  ✓  |  ✓    |
  * | Organization |       |        |     |  ✓    |
  * | Users        |       |        |     |  ✓    |
  *
@@ -64,7 +65,7 @@ test.describe('RBAC — sidebar visibility', () => {
 		]);
 	});
 
-	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs (no Exceptions, no Users)', async ({
+	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Audit Trail (no Exceptions, no Users)', async ({
 		page,
 		tenantCfo
 	}) => {
@@ -76,7 +77,8 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/payments',
 			'/vendors',
 			'/purchase-orders',
-			'/goods-receipts'
+			'/goods-receipts',
+			'/audit'
 		]);
 	});
 });
