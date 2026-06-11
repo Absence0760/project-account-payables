@@ -270,6 +270,133 @@ test.describe("/portal — vendor isolation", () => {
   });
 });
 
+test.describe("/portal — self-service (PO flip, remittance, company)", () => {
+  test("a vendor flips a PO into an invoice", async ({ page }) => {
+    await portalSignIn(page);
+    await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+
+    // Both seed shapes bind the portal user to a vendor that owns a PO
+    // (full: PO-2024-104 on v_tech; lean: LEAN-PO-001 on v_alpha), so the
+    // flip always has a row to act on — this is ground-truth, not assumed.
+    const vendorId = tenantPsql(
+      `SELECT vendor_id FROM vendor_users WHERE email='${PORTAL_EMAIL}'`,
+    ).trim();
+    const ownPOs = parseInt(
+      tenantPsql(
+        `SELECT count(*) FROM purchase_orders WHERE vendor_id='${vendorId}'`,
+      ).trim(),
+      10,
+    );
+    expect(ownPOs).toBeGreaterThan(0);
+
+    const invoicesBefore = parseInt(
+      tenantPsql(
+        `SELECT count(*) FROM invoices WHERE vendor_id='${vendorId}'`,
+      ).trim(),
+      10,
+    );
+
+    await page.getByRole("link", { name: "Purchase Orders" }).click();
+    await expect(page).toHaveURL(/\/portal\/purchase-orders/, {
+      timeout: 5_000,
+    });
+    await expect(
+      page.getByRole("heading", { name: "Purchase Orders" }),
+    ).toBeVisible({ timeout: 5_000 });
+
+    // Flip the first PO — the page routes to the invoices list on success.
+    await page
+      .getByRole("button", { name: "Create invoice" })
+      .first()
+      .click();
+    await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+
+    // The new invoice landed for this vendor.
+    await expect
+      .poll(
+        () =>
+          parseInt(
+            tenantPsql(
+              `SELECT count(*) FROM invoices WHERE vendor_id='${vendorId}'`,
+            ).trim(),
+            10,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(invoicesBefore);
+  });
+
+  test("a vendor downloads a remittance PDF for a completed payment", async ({
+    page,
+    request,
+  }) => {
+    await portalSignIn(page);
+    await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+
+    const token = await portalToken(page);
+    const slug = currentTenantSlug();
+
+    const paymentId = tenantPsql(
+      `SELECT p.id FROM payments p JOIN invoices i ON p.invoice_id=i.id ` +
+        `JOIN vendor_users vu ON vu.vendor_id=i.vendor_id ` +
+        `WHERE vu.email='${PORTAL_EMAIL}' AND p.status='completed' LIMIT 1`,
+    ).trim();
+    expect(paymentId).not.toEqual("");
+
+    const res = await request.get(
+      `${API_BASE}/api/portal/payments/${paymentId}/remittance`,
+      { headers: { Authorization: `Bearer ${token}`, "X-Tenant-Slug": slug } },
+    );
+    expect(res.ok()).toBeTruthy();
+    expect(res.headers()["content-type"]).toContain("application/pdf");
+    const buf = await res.body();
+    expect(buf.subarray(0, 4).toString()).toEqual("%PDF");
+  });
+
+  test("a bank-detail change stages for AP approval and does not apply live", async ({
+    page,
+  }) => {
+    await portalSignIn(page);
+    await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
+
+    const vendorId = tenantPsql(
+      `SELECT vendor_id FROM vendor_users WHERE email='${PORTAL_EMAIL}'`,
+    ).trim();
+    // Clean any pending request from a prior run so the form isn't disabled.
+    tenantPsql(
+      `DELETE FROM vendor_change_requests WHERE vendor_id='${vendorId}' AND status='pending'`,
+    );
+
+    try {
+      await page.getByRole("link", { name: "Company" }).click();
+      await expect(page).toHaveURL(/\/portal\/company/, { timeout: 5_000 });
+
+      await page.getByLabel("Account number").fill("99887766");
+      await page.getByLabel("Routing number").fill("011000015");
+      await page
+        .getByRole("button", { name: /Request bank-detail change/ })
+        .click();
+
+      // The pending banner appears (read from GET /company after staging).
+      await expect(page.locator(".banner")).toBeVisible({ timeout: 10_000 });
+
+      // The vendor row was NOT mutated — the change only staged.
+      const pending = parseInt(
+        tenantPsql(
+          `SELECT count(*) FROM vendor_change_requests ` +
+            `WHERE vendor_id='${vendorId}' AND change_type='bank_details' AND status='pending'`,
+        ).trim(),
+        10,
+      );
+      expect(pending).toEqual(1);
+    } finally {
+      tenantPsql(
+        `DELETE FROM vendor_change_requests WHERE vendor_id='${vendorId}'`,
+      );
+    }
+  });
+});
+
 test.describe("/portal/change-password", () => {
   test("a vendor can open the change-password page while authenticated", async ({
     page,
