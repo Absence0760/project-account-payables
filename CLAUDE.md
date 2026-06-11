@@ -125,6 +125,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/tax` | 1099 tracking (W-9 upload, YTD totals, Tax1099 export) |
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
 | `/workflows` | Workflow definition CRUD, active steps |
+| `/audit` | SOX auditor export — per-invoice / date-range trail (JSON+CSV, admin/CFO, GET-only); itself audited |
 | `/exceptions` | Exception queue, resolution |
 | `/dashboard` | KPI aggregates (pipeline, aging, spend, trends) |
 | `/erp` | Inbound ERP webhooks (status updates) |

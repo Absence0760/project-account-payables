@@ -178,6 +178,19 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `GET`  | `/api/invoices/{id}/export`       | * | Export single invoice |
 | `GET`  | `/api/invoices/file/{file_key}`   | * | Proxy invoice file from S3 |
 
+## Audit Trail (auditor export — SOX)
+
+GET-only. The auditor-export surface, separate from the per-invoice operational
+`/api/invoices/{id}/audit-log` above. Every call is itself audited. The
+response carries only sanitised `details` (field-name lists + before/after
+diffs written at audit time) — no banking/tax-id value can reach the HTTP
+surface.
+
+| Method | Path                              | Roles | Description |
+|--------|-----------------------------------|-------|-------------|
+| `GET`  | `/api/audit/export`               | admin/cfo | Auditor export. Query: `invoice_id` **or** (`start`,`end`) — mutually exclusive; optional `entity_type`; `format=json\|csv` (default `json`). Ordered by `created_at`. Writes an `audit.exported` row. Invalid range / missing args → generic `400`; unknown invoice → `404`. |
+| `GET`  | `/api/audit/invoice/{id}`         | admin/manager/cfo | Per-invoice trail (auditor-facing alias of the operational endpoint), ordered by `created_at`. |
+
 ## Workflow Definitions
 
 | Method   | Path                              | Roles | Description |

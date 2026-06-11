@@ -39,6 +39,7 @@ pnpm check            # typecheck
 | `/exceptions` | `routes/exceptions/+page.svelte` | `GET /api/exceptions`, `PATCH /api/exceptions/{id}` |
 | `/workflows` | `routes/workflows/+page.svelte` | `GET /api/workflows`, `POST /api/workflows` |
 | `/workflows/[id]` | `routes/workflows/[id]/+page.svelte` | `GET/PATCH /api/workflows/{id}`, `GET /api/organization` |
+| `/audit` | `routes/audit/+page.svelte` | `GET /api/audit/export` (JSON + CSV) — SOX auditor console, admin/CFO only (content-gated on `auth.isCfo`; backend 403s otherwise). Date-range or by-invoice query + CSV download. |
 | `/organization` | `routes/organization/+page.svelte` | `GET/PATCH /api/organization` |
 | `/admin` | `routes/admin/+page.svelte` | `GET/POST/PATCH/DELETE /api/admin/users`, `GET /api/admin/roles` |
 
@@ -64,6 +65,7 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 - 401 responses clear token and redirect to `/login`
 - Methods: `api.get<T>()`, `api.post<T>()`, `api.patch<T>()`, `api.put<T>()`, `api.delete()`, `api.upload<T>()`
 - Token helpers: `setToken()`, `clearToken()`, `hasToken()`
+- Typed feature helpers wrap `api` per domain — e.g. `src/lib/api/audit.ts` (`getInvoiceAuditLog`, `getAuditExport`, `downloadAuditExportCsv`) over the SOX audit endpoints, with `AuditEntry` / `AuditFieldChange` types in `src/lib/types/audit.ts`. The invoice-modal Activity timeline renders `details.changes` (per-field before/after) from these.
 
 ### Tenant — `src/lib/tenant.ts`
 

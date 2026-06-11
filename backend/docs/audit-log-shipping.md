@@ -159,6 +159,34 @@ Migration `0010_audit_log_shipping`:
   query stays cheap as the audit log grows.
 - Guarded by `_has_table("audit_log")` — no-op on the control plane.
 
+## DB-level immutability (SOX) and the `shipped_at` carve-out
+
+Migration `0022_sox_audit_immutable` (DDL in `app/services/audit_immutability.py`)
+installs a pair of `BEFORE` triggers on `audit_log`:
+
+- `audit_log_no_delete` — rejects **every** DELETE.
+- `audit_log_no_update` — rejects every UPDATE that changes any column **other
+  than `shipped_at`**.
+
+This is the durable SOX control: the app already exposes no PATCH/DELETE route
+(`tests/test_audit_append_only.py`), but a rogue ORM call or a direct `psql`
+session would bypass that — the trigger does not.
+
+**The `shipped_at` carve-out is load-bearing for this shipper.** The trigger
+function compares all non-`shipped_at` columns between OLD and NEW; a pure
+`shipped_at = now()` stamp (the only write the shipper performs, step 3 above)
+passes, while re-stamping `shipped_at` *alongside* any other edit is rejected.
+If you ever change how the shipper marks rows shipped, it must remain a
+`shipped_at`-only UPDATE or the trigger will refuse it.
+
+The triggers are installed on **every** tenant DB: migration `0022` fans out
+across existing tenants (`scripts/migrate_all_tenants.py`), and
+`tenant_provisioning._create_tenant_tables` installs the same DDL on freshly
+provisioned tenants (which are created via `create_all`, not Alembic).
+Idempotent (`CREATE OR REPLACE` / `DROP ... IF EXISTS`), guarded by
+`_has_table("audit_log")`. Covered by `tests/test_audit_immutable.py`,
+including an assertion that the shipper's stamp still succeeds.
+
 ## Operational notes
 
 - **Disabled in local dev**. The default `audit_shipping_enabled=false`
