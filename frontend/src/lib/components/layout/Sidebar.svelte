@@ -2,9 +2,13 @@
 	import { page } from '$app/state';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { notificationStore } from '$lib/stores/notifications.svelte';
 
 	let collapsed = $derived(sidebar.collapsed);
 	let showProfile = $state(false);
+
+	let unread = $derived(notificationStore.unread);
+	let badgeLabel = $derived(unread > 99 ? '99+' : String(unread));
 
 	interface NavItem {
 		label: string;
@@ -12,6 +16,8 @@
 		icon: string;
 		/** If set, user must have at least one of these roles to see this item. */
 		requiredRoles?: string[];
+		/** When true, render the unread-notification badge. */
+		badge?: boolean;
 	}
 
 	interface NavGroup {
@@ -24,6 +30,7 @@
 			title: 'Overview',
 			items: [
 				{ label: 'Dashboard', href: '/', icon: 'dashboard' },
+				{ label: 'Notifications', href: '/notifications', icon: 'bell', badge: true },
 			],
 		},
 		{
@@ -115,10 +122,18 @@
 							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
 						{:else if item.icon === 'admin'}
 							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+						{:else if item.icon === 'bell'}
+							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+						{/if}
+						{#if item.badge && unread > 0 && collapsed}
+							<span class="nav-badge-dot" aria-hidden="true"></span>
 						{/if}
 					</span>
 					{#if !collapsed}
 						<span class="nav-label">{item.label}</span>
+						{#if item.badge && unread > 0}
+							<span class="nav-badge" aria-label={`${unread} unread notifications`}>{badgeLabel}</span>
+						{/if}
 					{/if}
 				</a>
 			{/each}
@@ -390,6 +405,36 @@
 		flex-shrink: 0;
 		width: 20px;
 		height: 20px;
+		position: relative;
+	}
+
+	/* Collapsed sidebar — a small dot over the bell instead of the pill count. */
+	.nav-badge-dot {
+		position: absolute;
+		top: -2px;
+		right: -2px;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: #e04040;
+		border: 1px solid var(--surface);
+	}
+
+	/* Expanded sidebar — pill count pushed to the row's right edge. */
+	.nav-badge {
+		margin-left: auto;
+		min-width: 18px;
+		padding: 0 6px;
+		height: 18px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 9px;
+		background: #e04040;
+		color: #fff;
+		font-size: 0.7rem;
+		font-weight: 700;
+		line-height: 1;
 	}
 
 	.nav-label {

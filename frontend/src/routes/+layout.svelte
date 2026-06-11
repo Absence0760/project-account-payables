@@ -5,6 +5,7 @@
 	import Toast from '$lib/components/ui/Toast.svelte';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { notificationStore } from '$lib/stores/notifications.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { getTenantSlug } from '$lib/tenant';
@@ -51,6 +52,23 @@
 			path !== '/change-password'
 		) {
 			goto('/change-password');
+		}
+	});
+
+	// Drive the sidebar's unread-notification badge. Start the 60s poll once the
+	// user is fully signed in (and past the change-password gate); stop it on
+	// logout so a stale timer doesn't fire 401s after the token is cleared.
+	$effect(() => {
+		const active =
+			!!tenant &&
+			auth.loggedIn &&
+			!!auth.user &&
+			!auth.user.must_change_password &&
+			!$page.url.pathname.startsWith(PORTAL_PREFIX);
+		if (active) {
+			notificationStore.startPolling();
+		} else {
+			notificationStore.stopPolling();
 		}
 	});
 </script>

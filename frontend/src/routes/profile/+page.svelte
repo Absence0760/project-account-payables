@@ -2,11 +2,56 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { notificationStore } from '$lib/stores/notifications.svelte';
+	import {
+		EVENT_ORDER,
+		EVENT_LABELS,
+		type NotificationEventType,
+		type NotificationPrefs,
+	} from '$lib/types/notification';
 
 	interface EnrollResponse {
 		secret: string;
 		provisioning_uri: string;
 		qr_code_data_url: string;
+	}
+
+	// Notification preferences
+	let prefsLoaded = $state(false);
+	let savingPrefs = $state(false);
+
+	$effect(() => {
+		if (!prefsLoaded) {
+			void loadPrefs();
+		}
+	});
+
+	async function loadPrefs() {
+		try {
+			await notificationStore.fetchPrefs();
+		} catch {
+			/* non-critical — keep the page usable */
+		} finally {
+			prefsLoaded = true;
+		}
+	}
+
+	async function togglePref(event: NotificationEventType, channel: 'email' | 'in_app') {
+		const prefs = notificationStore.prefs;
+		if (!prefs) return;
+		const current = prefs[event];
+		const next: NotificationPrefs[NotificationEventType] = {
+			...current,
+			[channel]: !current[channel],
+		};
+		savingPrefs = true;
+		try {
+			await notificationStore.updatePrefs({ [event]: next });
+		} catch {
+			toast('Failed to update notification preferences', 'error');
+		} finally {
+			savingPrefs = false;
+		}
 	}
 
 	let enrollment = $state<EnrollResponse | null>(null);
@@ -288,6 +333,57 @@
 				</button>
 			{/if}
 		</section>
+
+		<section class="card">
+			<h2>Notifications</h2>
+			<p class="hint">
+				Choose how you're notified about invoices assigned to you and the
+				invoices you've uploaded. In-app notifications appear in the
+				notification center; email is sent to {auth.user?.email ?? 'your address'}.
+			</p>
+
+			{#if !prefsLoaded}
+				<p class="hint">Loading…</p>
+			{:else if notificationStore.prefs}
+				{@const prefs = notificationStore.prefs}
+				<table class="prefs-table">
+					<thead>
+						<tr>
+							<th>Event</th>
+							<th class="center">In-app</th>
+							<th class="center">Email</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each EVENT_ORDER as event (event)}
+							<tr>
+								<td>{EVENT_LABELS[event]}</td>
+								<td class="center">
+									<input
+										type="checkbox"
+										checked={prefs[event].in_app}
+										disabled={savingPrefs}
+										onchange={() => togglePref(event, 'in_app')}
+										aria-label={`In-app notifications for ${EVENT_LABELS[event]}`}
+									/>
+								</td>
+								<td class="center">
+									<input
+										type="checkbox"
+										checked={prefs[event].email}
+										disabled={savingPrefs}
+										onchange={() => togglePref(event, 'email')}
+										aria-label={`Email notifications for ${EVENT_LABELS[event]}`}
+									/>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{:else}
+				<p class="warn">Could not load notification preferences.</p>
+			{/if}
+		</section>
 	</div>
 </div>
 
@@ -489,5 +585,37 @@
 
 	button.danger {
 		background: #e04040;
+	}
+
+	.prefs-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.88rem;
+	}
+
+	.prefs-table th {
+		text-align: left;
+		padding: 8px 10px;
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.prefs-table td {
+		padding: 10px;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.prefs-table .center {
+		text-align: center;
+		width: 90px;
+	}
+
+	.prefs-table input[type='checkbox'] {
+		width: auto;
+		cursor: pointer;
 	}
 </style>
