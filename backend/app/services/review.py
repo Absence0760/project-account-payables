@@ -337,18 +337,25 @@ async def assign_reviewer(
     from app.services.notification_dispatch import notify_event
     from app.services.notification_templates import InvoiceContext
 
-    await notify_event(
-        db,
-        correlation_id=invoice.correlation_id,
-        organization_id=invoice.organization_id,
-        event_type=EVENT_INVOICE_ASSIGNED,
-        entity_id=invoice.id,
-        recipient_user_ids=[reviewer_id],
-        invoice_ctx=InvoiceContext(
-            invoice_number=invoice.invoice_number,
-            vendor_name=invoice.vendor_name,
-            amount=invoice.amount,
-            currency=invoice.currency or "USD",
-        ),
-        actor_id=actor_id,
-    )
+    # `notify_event` swallows its own template/recipient/email failures, but its
+    # per-recipient `db.add(...)` is unguarded; this outer guard is the final
+    # backstop so a session error there can't abort an otherwise-valid
+    # assignment — mirrors the guard in workflow_engine.transition_invoice.
+    try:
+        await notify_event(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=invoice.organization_id,
+            event_type=EVENT_INVOICE_ASSIGNED,
+            entity_id=invoice.id,
+            recipient_user_ids=[reviewer_id],
+            invoice_ctx=InvoiceContext(
+                invoice_number=invoice.invoice_number,
+                vendor_name=invoice.vendor_name,
+                amount=invoice.amount,
+                currency=invoice.currency or "USD",
+            ),
+            actor_id=actor_id,
+        )
+    except Exception:  # noqa: BLE001 — never let a notification bug break assignment
+        _log.exception("assign_reviewer: notification dispatch failed for invoice=%s", invoice.id)

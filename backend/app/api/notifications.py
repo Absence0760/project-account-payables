@@ -78,9 +78,7 @@ async def list_notifications(
     if unread_only:
         base = base.where(Notification.read_at.is_(None))
 
-    total = (
-        await db.execute(select(func.count()).select_from(base.subquery()))
-    ).scalar() or 0
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
 
     rows = (
         (
@@ -119,7 +117,6 @@ async def unread_count(
 
 @router.get("/preferences", response_model=NotificationPrefs)
 async def get_preferences(
-    ctrl_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(*ALL_ROLES)),
 ):
     """Return the current user's notification preferences (defaults if unset)."""
@@ -140,9 +137,7 @@ async def update_preferences(
         merged[event_type] = channels
 
     # Re-fetch the row on the control session so the write is bound to it.
-    target = (
-        await ctrl_db.execute(select(User).where(User.id == user.id))
-    ).scalar_one()
+    target = (await ctrl_db.execute(select(User).where(User.id == user.id))).scalar_one()
     target.notification_prefs = merged
     await ctrl_db.commit()
 
