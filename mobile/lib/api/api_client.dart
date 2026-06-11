@@ -22,7 +22,7 @@ class ApiClient {
   ApiClient._();
 
   final _storage = const FlutterSecureStorage();
-  final _http = http.Client();
+  http.Client _http = http.Client();
 
   static const _tokenKey = 'auth_token';
   static const _tenantKey = 'tenant_slug';
@@ -40,6 +40,17 @@ class ApiClient {
   }
 
   bool get hasToken => _token != null;
+
+  /// Test seam: swap the underlying HTTP client for a fake and reset the
+  /// in-memory session so each test starts from a clean singleton. Not used
+  /// by production code — guarded by [visibleForTesting].
+  @visibleForTesting
+  void debugConfigure({http.Client? client}) {
+    if (client != null) _http = client;
+    _token = null;
+    _tenantSlug = null;
+    AppConfig.tenantSlug = null;
+  }
 
   Future<void> setToken(String token) async {
     _token = token;
