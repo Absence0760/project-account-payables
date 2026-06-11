@@ -1,0 +1,16 @@
+# Files copied into each new `claude --worktree <name>` checkout.
+#
+# A worktree starts from tracked content only, so the committed safe-default
+# env files (backend/.env.development, frontend/.env.development) already travel
+# with it and the stack runs out of the box. List here only the *gitignored*
+# personal overrides that a session would otherwise lose — they win over the
+# committed defaults (see CLAUDE.md → "No .env setup at all").
+#
+# NOT copied (and intentionally so): backend/.venv (hardcodes absolute paths —
+# copying breaks it) and node_modules (heavy; pnpm reinstalls fast from its
+# store). Run `pnpm install` / recreate the venv inside a worktree when you need
+# to build or test there.
+backend/.env
+backend/.env.local
+frontend/.env
+frontend/.env.local

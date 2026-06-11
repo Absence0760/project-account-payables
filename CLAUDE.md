@@ -340,8 +340,38 @@ below or in `## Project invariants` — this is the index.)
 ## Git workflow
 
 - **Commit each piece of work; never push.** Land every logical unit of work as its own path-scoped commit (`git commit -m "…" -- path/to/file …`) as you finish it — don't leave the tree dirty across tasks or batch unrelated changes into one commit. **Never `git push`** in this repo; publishing is the operator's call.
-- Path-scoped commits are also required by the `.claude/hooks/git-scope-guard.py` PreToolUse hook (concurrent sessions share one checkout) — bare `git commit`, `git add -A/.`, `git commit -a`, and whole-tree ops are blocked. If a git command is denied, follow the scoped alternative in its message.
+- Path-scoped commits are also required by the `.claude/hooks/git-scope-guard.py` PreToolUse hook — bare `git commit`, `git add -A/.`, `git commit -a`, and whole-tree ops are blocked. If a git command is denied, follow the scoped alternative in its message.
 - No `Co-Authored-By` / "Generated with" trailer in commits or PRs — write them as a human would.
+
+### Running concurrent sessions — use a worktree
+
+When more than one Claude (or person) works this repo at once, **start each
+session in its own git worktree** so they never share a working tree:
+
+```bash
+claude --worktree <name>      # e.g. claude --worktree clickable-rows
+```
+
+Each lands in `.claude/worktrees/<name>/` — a full checkout on its own branch,
+gitignored, branched from local `HEAD` (`worktree.baseRef: "head"` in
+`.claude/settings.json`, because this repo runs ahead of an unpushed `origin`).
+
+Why it matters: the scope-guard is **path-granular, not hunk-granular**. In a
+*shared* checkout it stops a session from committing files it didn't name, but
+it can't separate two sessions' edits to the **same file** — a path-scoped
+commit of that file captures whatever is in the one shared working tree. A
+worktree removes the shared tree entirely, which is the only real fix. (`isolation: "worktree"` on a subagent isolates that subagent, not the top-level session.)
+
+Worktree notes:
+- The committed `*.env.development` defaults travel with the worktree, so the
+  stack runs immediately. Gitignored personal env overrides are copied via
+  `.worktreeinclude`.
+- `backend/.venv` and `node_modules` do **not** carry over (venv paths are
+  absolute; node_modules is heavy) — run `pnpm install` / recreate the venv in
+  the worktree before building or testing there.
+- Merge back by committing on the worktree branch, then bringing those commits
+  into `main` from the primary checkout; Claude prompts to keep or remove the
+  worktree on exit (auto-removes it if you left no changes).
 
 ## Fix bugs at the source — never adjust the test to hide them
 

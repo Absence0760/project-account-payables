@@ -178,6 +178,10 @@ __pycache__/
 # shared across contributors. Only ignore the per-user / runtime bits.
 .claude/settings.local.json
 .claude/*.lock
+# Per-session git worktrees (`claude --worktree <name>`) live here — each is a
+# full isolated checkout on its own branch so concurrent sessions never share a
+# working tree. Never commit them; they're runtime state, not repo content.
+.claude/worktrees/
 
 # ---------------------------------------------------------------------------
 # Playwright

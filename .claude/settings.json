@@ -68,6 +68,9 @@
       "Bash(wget * | bash)"
     ]
   },
+  "worktree": {
+    "baseRef": "head"
+  },
   "hooks": {
     "PreToolUse": [
       {
