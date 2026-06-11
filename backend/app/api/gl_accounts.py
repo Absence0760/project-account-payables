@@ -16,6 +16,7 @@ from app.api.deps import (
 from app.models.gl_account import GLAccount
 from app.models.organization import Organization
 from app.models.user import User
+from app.schemas.gl_account import GLAccountCreate
 from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/gl-accounts", tags=["gl-accounts"])
@@ -58,16 +59,16 @@ async def list_gl_accounts(
 
 @router.post("", status_code=201)
 async def create_gl_account(
-    body: dict,
+    body: GLAccountCreate,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     account = GLAccount(
-        code=body["code"],
-        name=body["name"],
-        account_type=body.get("account_type"),
-        parent_code=body.get("parent_code"),
+        code=body.code,
+        name=body.name,
+        account_type=body.account_type,
+        parent_code=body.parent_code,
         organization_id=org_id,
     )
     db.add(account)
