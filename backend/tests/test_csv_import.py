@@ -259,3 +259,98 @@ async def test_import_invoices_dedupes_existing_invoice():
 
     assert result.imported == 0
     assert result.skipped == 1
+
+
+# ---------------------------------------------------------------------------
+# Dedup-reuse + validation branches the always-None stub can't reach
+#
+# Uses a session whose execute() inspects the statement so we can simulate
+# "an existing vendor/invoice row is already present" — the reuse branches.
+# Cross-tenant org-scoping (the WHERE organization_id == filter) and the
+# multipart endpoint path are SQL/API-level and would need a real-DB / API
+# harness this suite doesn't have.
+# ---------------------------------------------------------------------------
+
+
+def _stmt_aware_db(*, vendor_by_code=None, vendor_by_name=None, invoice_existing=None):
+    async def execute_fake(_stmt):
+        s = str(_stmt).lower()
+        result = MagicMock()
+        if "invoice" in s and "invoice_number" in s:
+            result.scalar_one_or_none = MagicMock(return_value=invoice_existing)
+        elif "lower(vendors.name)" in s:
+            result.scalar_one_or_none = MagicMock(return_value=vendor_by_name)
+        elif "vendors.code" in s:
+            result.scalar_one_or_none = MagicMock(return_value=vendor_by_code)
+        else:
+            result.scalar_one_or_none = MagicMock(return_value=None)
+        return result
+
+    db = AsyncMock()
+    db.execute = execute_fake
+    db.added = []
+    db.add = MagicMock(side_effect=lambda o: db.added.append(o))
+    db.flush = AsyncMock()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_import_vendors_reuses_existing_by_code():
+    existing = MagicMock(id=uuid.uuid4(), name="Acme")
+    db = _stmt_aware_db(vendor_by_code=existing)
+    result = await import_vendors_csv(db, uuid.uuid4(), "name,code\nAcme Corp,V001\n")
+    assert result.skipped == 1
+    assert result.imported == 0
+    assert db.added == []  # nothing new added — the existing row was reused
+
+
+@pytest.mark.asyncio
+async def test_import_vendors_reuses_existing_by_name_when_no_code():
+    existing = MagicMock(id=uuid.uuid4(), name="Acme")
+    db = _stmt_aware_db(vendor_by_name=existing)
+    result = await import_vendors_csv(db, uuid.uuid4(), "name\nAcme\n")
+    assert result.skipped == 1
+    assert result.imported == 0
+
+
+@pytest.mark.asyncio
+async def test_import_invoices_reuses_existing_vendor_by_code():
+    vendor = MagicMock(id=uuid.uuid4(), name="Acme")
+    db = _stmt_aware_db(vendor_by_code=vendor)  # invoice dedup → None, so not skipped
+    csv_text = "invoice_number,vendor_name,vendor_code,amount\nINV-1,Acme,V001,100\n"
+    result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
+
+    assert result.imported == 1
+    # The vendor was reused — only an Invoice was added, no new Vendor.
+    assert [type(o).__name__ for o in db.added] == ["Invoice"]
+    assert db.added[0].vendor_id == vendor.id
+
+
+@pytest.mark.asyncio
+async def test_import_invoices_rejects_negative_amount():
+    """amount < 0 is its own rejection branch, distinct from junk amounts."""
+    db = _stmt_aware_db()
+    result = await import_invoices_csv(
+        db, uuid.uuid4(), "invoice_number,vendor_name,amount\nINV-1,Acme,-100\n"
+    )
+    assert result.imported == 0
+    assert len(result.errors) == 1
+    assert "amount invalid" in result.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_import_invoices_normalizes_currency_and_persists_dates():
+    db = _stmt_aware_db()  # vendor auto-created
+    csv_text = (
+        "invoice_number,vendor_name,amount,currency,invoice_date,due_date\n"
+        "INV-1,Acme,100,usd,2026-03-15,2026-04-15\n"
+    )
+    result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
+
+    assert result.imported == 1
+    invoice = next(o for o in db.added if type(o).__name__ == "Invoice")
+    assert invoice.currency == "USD"  # lower-cased input, upper()[:3]
+    assert invoice.invoice_date is not None
+    assert (invoice.invoice_date.month, invoice.invoice_date.day) == (3, 15)
+    assert invoice.due_date is not None
+    assert invoice.due_date.month == 4
