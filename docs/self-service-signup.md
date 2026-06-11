@@ -39,11 +39,15 @@ End-to-end flow for anonymous visitors to provision their own workspace. Landing
 
 ## Abuse mitigations
 
-- **Captcha**: hCaptcha on `POST /signup/start`. Skipped locally when `AP_HCAPTCHA_SECRET` is empty.
-- **Rate limit**: Redis sliding window keyed by IP+endpoint. `AP_SIGNUP_RATE_LIMIT_PER_HOUR` (default 5).
+- **Captcha**: hCaptcha on `POST /signup/start`. Skipped locally when `AP_HCAPTCHA_SECRET` is empty — but a **deployed** env (`AP_ENVIRONMENT` not in `development`/`test`/`ci`/…) **refuses to boot** with the secret empty, so the gate can't silently fail open in production. The empty-secret skip logs at WARNING.
+- **Rate limit (per IP)**: Redis sliding window keyed by IP+endpoint. `AP_SIGNUP_RATE_LIMIT_PER_HOUR` (default 5) caps `/signup/start` and `/signup/complete`; `/signup/slug-check` has its own higher cap (`AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR`, default 120) so it can't be scripted for namespace enumeration / control-plane DB amplification.
+- **Rate limit (per email)**: a second limiter keyed on the target address (`AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, default 3) caps verification-email volume to one victim — the per-IP limit alone can't stop an attacker rotating IPs to email-bomb an address. A "resend" also **replaces** any prior un-consumed verification for that email, so the table can't grow unbounded per address.
 - **Email verification**: no resources are provisioned until the user proves inbox access by clicking the link. Stolen email addresses don't result in tenants.
+- **Single-use, race-safe tokens**: `/signup/complete` selects the verification row `FOR UPDATE`, so two concurrent completes for one token can't both pass the consumed-check and double-provision. Every non-actionable token state (missing / consumed / expired) returns the **same** 410 + message, so the response can't be used to tell a token that never existed from one that did.
 - **Slug squatting**: slugs are only locked when `/complete` runs. Abandoned `/start` submissions do not reserve the namespace.
 - **Reserved subdomains**: `utils/slug.py` → `RESERVED_SLUGS` blocks names that would collide with marketing/infra subdomains (`www`, `api`, `admin`, etc.).
+- **No orphan databases**: if provisioning fails after the tenant DB is created (control-plane insert or table creation errors), the DB this attempt created is dropped, so partial failures don't leak databases or squat the namespace.
+- **Log hygiene**: the submitter's email (PII) and raw captcha-network exception text are kept out of logs.
 - **Partial-failure visibility**: if the welcome email fails after provisioning, the tenant is usable but the admin needs a password reset. Logs warn loudly; a support runbook should resend manually.
 
 ## Email
@@ -64,9 +68,12 @@ Adding a provider: copy `app/services/email_adapters/console_adapter.py`, implem
 | `AP_AWS_SES_REGION` | `us-east-1` | Only used by the SES adapter |
 | `AP_PUBLIC_URL` | `http://localhost:7777` | Frontend URL — used to build verification links |
 | `AP_TENANT_URL_TEMPLATE` | `http://{slug}.localhost:7777` | `{slug}` is substituted in the welcome email |
-| `AP_HCAPTCHA_SECRET` | *(empty)* | Empty skips verification — OK for local dev |
+| `AP_ENVIRONMENT` | `development` | Deployment discriminator. Any value outside `development`/`dev`/`local`/`test`/`ci` is "deployed" and turns on the production safety guards (e.g. captcha must be configured). |
+| `AP_HCAPTCHA_SECRET` | *(empty)* | Empty skips verification — OK for local dev; a deployed env refuses to boot when empty. |
 | `AP_HCAPTCHA_SITEKEY` | *(empty)* | Exposed to the frontend via `/api/public-config` |
-| `AP_SIGNUP_RATE_LIMIT_PER_HOUR` | `5` | Per-IP cap on `/signup/start` |
+| `AP_SIGNUP_RATE_LIMIT_PER_HOUR` | `5` | Per-IP cap on `/signup/start` (and `/signup/complete`) |
+| `AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR` | `3` | Per-email cap on verification sends (anti email-bombing) |
+| `AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR` | `120` | Per-IP cap on `/signup/slug-check` (anti-enumeration) |
 
 ## Migration
 

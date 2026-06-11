@@ -417,14 +417,14 @@ The welcome email contains the tenant URL (`AP_TENANT_URL_TEMPLATE`, e.g. `https
 
 - `services/email_adapters/` — `console` (local dev, logs to stdout) and `ses` (AWS SES) via `AP_EMAIL_PROVIDER`. Same registry pattern as extraction/ERP adapters.
 - `services/tenant_provisioning.py` — reusable async `provision_tenant()` used by both the CLI and the API.
-- `services/rate_limit.py` — Redis sliding-window limiter. Signup: `AP_SIGNUP_RATE_LIMIT_PER_HOUR` (default 5).
+- `services/rate_limit.py` — Redis sliding-window limiter, keyed on `(endpoint, subject)` where `subject` defaults to client IP but can be an explicit value (e.g. email). Signup uses three limits: per-IP `/start` + `/complete` (`AP_SIGNUP_RATE_LIMIT_PER_HOUR`, default 5), per-email `/start` (`AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, default 3, anti email-bombing), and per-IP `/slug-check` (`AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR`, default 120, anti-enumeration).
 - `utils/slug.py` — regex + reserved-word blocklist + DB uniqueness check.
 - `utils/hcaptcha.py` — server-side siteverify. Skips when `AP_HCAPTCHA_SECRET` is empty (local dev).
 - `utils/passwords.py` — `generate_temp_password()` + `validate_password_complexity()` (min 12 chars, upper/lower/digit).
 
 The captcha sitekey is exposed to the frontend via `GET /api/public-config` so the SvelteKit build doesn't need to bake it in.
 
-Relevant env vars: `AP_EMAIL_PROVIDER`, `AP_EMAIL_FROM`, `AP_AWS_SES_REGION`, `AP_PUBLIC_URL`, `AP_TENANT_URL_TEMPLATE`, `AP_HCAPTCHA_SECRET`, `AP_HCAPTCHA_SITEKEY`, `AP_SIGNUP_RATE_LIMIT_PER_HOUR`.
+Relevant env vars: `AP_ENVIRONMENT` (deployed envs refuse to boot with an empty `AP_HCAPTCHA_SECRET`), `AP_EMAIL_PROVIDER`, `AP_EMAIL_FROM`, `AP_AWS_SES_REGION`, `AP_PUBLIC_URL`, `AP_TENANT_URL_TEMPLATE`, `AP_HCAPTCHA_SECRET`, `AP_HCAPTCHA_SITEKEY`, `AP_SIGNUP_RATE_LIMIT_PER_HOUR`, `AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR`, `AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR`.
 
 ## Secrets management (SOPS + AWS KMS)
 

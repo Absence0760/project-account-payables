@@ -81,7 +81,10 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_PUBLIC_URL`       | `http://localhost:7777`                                                  | Where the frontend is served — used in outbound email links |
 | `AP_TENANT_URL_TEMPLATE` | `http://{slug}.localhost:7777`                                        | Per-tenant URL shape; `{slug}` is substituted |
 | `AP_HCAPTCHA_SECRET` / `AP_HCAPTCHA_SITEKEY` | (empty)                                                   | hCaptcha keys for self-service signup |
-| `AP_SIGNUP_RATE_LIMIT_PER_HOUR` | `5`                                                            | Max signups per IP per hour (Redis sliding window) |
+| `AP_SIGNUP_RATE_LIMIT_PER_HOUR` | `5`                                                            | Max `/signup/start` + `/complete` per IP per hour (Redis sliding window) |
+| `AP_SIGNUP_EMAIL_RATE_LIMIT_PER_HOUR` | `3`                                                      | Max verification emails per target address per hour (anti email-bombing) |
+| `AP_SLUG_CHECK_RATE_LIMIT_PER_HOUR` | `120`                                                      | Max `/signup/slug-check` per IP per hour (anti-enumeration) |
+| `AP_ENVIRONMENT`      | `development`                                                            | Deployment discriminator; non-dev values turn on prod guards (captcha required to boot) |
 | `AP_RAG_ENABLED`      | `true`                                                                   | RAG retrieval of similar invoices as few-shot examples |
 | `AP_RAG_TOP_K`        | `3`                                                                      | Number of semantic neighbors retrieved per extraction |
 | `AP_EMBEDDING_PROVIDER` | `mock`                                                                 | `mock` (dev) or `openai` (text-embedding-3-small) |
