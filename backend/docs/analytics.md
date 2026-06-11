@@ -16,7 +16,8 @@ forecast variance). Both are computed by pure functions in
 | Operational dashboard | `app/api/dashboard.py` | Pipeline / aging / processing time / approval bottleneck / discount capture (AP clerk + manager + CFO) |
 | CFO dashboard | `app/api/analytics.py::get_cfo_analytics` | DPO + trend, CCC, accruals, working-capital impact, supplier concentration, fraud-rate trend, rebate yield (admin + CFO only) |
 | Drill-through | `/api/analytics/drill/*` | Per-metric "show me the rows" endpoints (spend_concentration, dpo) |
-| CSV export | `app/services/report_export.py` + `/api/analytics/export/{report}` | invoice_register, vendor_spend, payment_register, aging_snapshot |
+| Cash-flow forecasting | `/api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}` | Predictive AP outflow buckets, payment-timing what-if, running cash position (admin + CFO only). Web dashboard at `/cfo`. |
+| CSV export | `app/services/report_export.py` + `/api/analytics/export/{report}` | invoice_register, vendor_spend, payment_register, aging_snapshot, cashflow_forecast |
 | Scheduled delivery | `app/services/scheduled_reports.py` + migration 0020 | Per-tenant cron-like subscriptions; daily / weekly / monthly cadence; email via existing adapter |
 
 ## Operational metrics (dashboard)
@@ -66,6 +67,51 @@ Drill-through:
   Forecasts are NOT persisted — the CFO pastes from their FP&A
   tool.
 
+## Predictive cash-flow forecasting (`/api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`)
+
+Read-only, admin + CFO only. All three resolve the tenant DB through
+`get_tenant_db`. Source rows: open invoices `LEFT JOIN payment_schedules`
+on `invoice_id`, timed on the schedule's `due_date` (falling back to
+`Invoice.due_date`), bounded to `[today, today + horizon_days]`. Money is
+`Decimal` end-to-end (floated only at the JSON boundary). No writes, no
+audit rows, no new migration — pure aggregate math, like
+`forecast_variance`.
+
+**Committed vs pending status sets** (the rest — `rejected`, `paid`,
+`done`, `failed` — are excluded):
+
+- **committed** (firm AP commitment): `approved`, `sending_to_erp`,
+  `sent_to_erp`, `posted_in_erp`, `payment_scheduled`.
+- **pending** (in-flight pipeline, lower-certainty projection): `new`,
+  `pending`, `ready_for_review`. Drop with `include_pending=false`.
+
+`GET /cashflow_forecast?granularity=day|week|month&horizon_days=N&include_pending=bool`
+— per-period `{scheduled_amount, committed_amount, pending_amount,
+discount_eligible_amount, count}` plus a `totals` rollup. Weeks are
+Monday-anchored. Default `granularity=week`, `horizon_days=90`.
+
+`GET /cashflow_whatif?granularity=…&horizon_days=N&grace_days=N` —
+compares three payment-timing scenarios, each with `total_outflow`,
+`total_discount_captured`, amount-weighted `weighted_avg_pay_date_days`,
+and bucketed `periods`:
+
+- `on_time` — pay on `due_date`, full amount.
+- `early` — pay on `discount_date` when present, net of
+  `discount_percent` (the captured discount is reported separately); rows
+  without a discount fall back to the due date at full amount.
+- `late` — pay `due_date + grace_days`, full amount, discount forfeited.
+
+`GET /cash_position?granularity=…&horizon_days=N&opening_balance=STR&min_balance_threshold=STR`
+— running balance carried forward per period
+(`closing = opening − outflow`; receivables/inflows aren't modelled in an
+AP-only product). The opening balance is bring-your-own: the
+`opening_balance` query param wins, else
+`Organization.settings.cashflow.opening_balance`, else `0` with
+`opening_balance_source: "none"` so the UI prompts for one. Periods that
+close below `min_balance_threshold` are flagged (`below_threshold`) and
+collected in `breaches[]` with the `shortfall`. Money params are parsed as
+`Decimal` strings (never floats); garbage → 400.
+
 ## CSV export
 
 `GET /api/analytics/export/{report}?period_days=N` returns
@@ -77,6 +123,11 @@ Drill-through:
 | `vendor_spend` | vendor_name, invoice_count, total_amount |
 | `payment_register` | payment_id, invoice_id, invoice_number, vendor_name, amount, currency, method, status, provider, reference, submitted_at, completed_at |
 | `aging_snapshot` | as_of_date, current, days_30, days_60, days_90_plus, total |
+| `cashflow_forecast` | period, period_start, period_end, scheduled_amount, committed_amount, pending_amount, discount_eligible_amount, count |
+
+`cashflow_forecast` is forward-looking — it takes `granularity` +
+`horizon_days` (not `period_days`) and runs the same forecast query as the
+JSON endpoint.
 
 Column order is pinned by `tests/test_report_export.py` — finance
 imports rely on column position; a reorder breaks downstream

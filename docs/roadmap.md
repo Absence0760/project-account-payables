@@ -549,17 +549,17 @@ One-paragraph natural-language summary at the top of the invoice modal, generate
 ---
 
 ### Predictive Cash Flow Forecasting
-**Status:** Planned
+**Status:** Done — GET /api/analytics/cashflow_forecast (+ /cashflow_whatif, /cash_position) over Invoice/PaymentSchedule/Payment; what-if early/on-time/late with discount capture; cash-position with BYO opening balance + threshold alerts; CSV export via the analytics/export registry; CFO web dashboard at /cfo. Bank-balance auto-sync + persisted thresholds + mobile deferred.
 
 Use AP data to forecast cash outflows and optimize payment timing.
 
-- [ ] Forecast daily/weekly/monthly cash outflows from pending invoices
-- [ ] Factor in payment terms, early-pay discounts, and approval pipeline
-- [ ] "What-if" scenarios — impact of paying early vs. on-time vs. late
-- [ ] Cash position dashboard with AP commitments overlay
-- [ ] Alert when projected outflows exceed thresholds
-- [ ] Integration with bank balance data for complete cash picture
-- [ ] Export forecasts for CFO reporting
+- [x] Forecast daily/weekly/monthly cash outflows from pending invoices
+- [x] Factor in payment terms, early-pay discounts, and approval pipeline
+- [x] "What-if" scenarios — impact of paying early vs. on-time vs. late
+- [x] Cash position dashboard with AP commitments overlay
+- [x] Alert when projected outflows exceed thresholds
+- [~] Integration with bank balance data for complete cash picture — bring-your-own opening balance (query param or `Organization.settings.cashflow.opening_balance`); a live banking-feed auto-sync is deferred
+- [x] Export forecasts for CFO reporting (CSV via `/api/analytics/export/cashflow_forecast`)
 
 ---
 
