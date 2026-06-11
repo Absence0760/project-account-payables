@@ -27,8 +27,9 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from authlib.jose import jwt as jose_jwt
-from authlib.jose.errors import JoseError
+from joserfc import jwt
+from joserfc.errors import JoseError
+from joserfc.jwk import KeySet
 
 from app.config import settings
 from app.redis import get_redis
@@ -41,6 +42,25 @@ JWKS_CACHE_PREFIX = "sso:jwks:"
 # Discovery / JWKS caches — safe to cache for a day. Both providers rotate
 # signing keys on the order of weeks, so a day is conservative.
 DISCOVERY_CACHE_TTL = 86400
+
+# OIDC ID tokens are asymmetrically signed (RFC 7518). Pin verification to the
+# asymmetric algorithm set so a forged token can't downgrade the signature to
+# HMAC — the classic alg-confusion attack, where an attacker signs with the
+# IdP's *public* key bytes as an HMAC secret — or to `alg:none`. joserfc raises
+# UnsupportedAlgorithmError (a JoseError) for any header `alg` outside this set,
+# so the catch below turns that into a generic rejection. Never add HS*/none.
+ID_TOKEN_ALGORITHMS = [
+    "RS256",
+    "RS384",
+    "RS512",
+    "ES256",
+    "ES384",
+    "ES512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "EdDSA",
+]
 
 
 class SSOConfigError(ValueError):
@@ -222,20 +242,29 @@ async def validate_id_token(
     """Verify the ID token signature + standard claims. Returns decoded claims."""
     jwks = await fetch_jwks(discovery_doc["jwks_uri"])
     try:
-        claims = jose_jwt.decode(
-            id_token,
-            jwks,
-            claims_options={
-                "iss": {"essential": True, "value": discovery_doc["issuer"]},
-                "aud": {"essential": True, "value": client_id},
-                "exp": {"essential": True},
-            },
+        key_set = KeySet.import_key_set(jwks)
+        # decode() verifies the signature against the JWKS, restricted to the
+        # pinned asymmetric algorithms. The claims registry then enforces the
+        # standard OIDC checks — issuer + audience match, and (via the built-in
+        # exp validator) that the token has not expired.
+        token = jwt.decode(id_token, key_set, algorithms=ID_TOKEN_ALGORITHMS)
+        claims_registry = jwt.JWTClaimsRegistry(
+            iss={"essential": True, "value": discovery_doc["issuer"]},
+            aud={"essential": True, "value": client_id},
+            exp={"essential": True},
         )
-        claims.validate()
-    except JoseError as exc:
+        claims_registry.validate(token.claims)
+    except (JoseError, KeyError, TypeError) as exc:
+        # JoseError covers signature / claim / algorithm failures. KeyError and
+        # TypeError cover a malformed JWKS from the IdP (a JSON object without a
+        # "keys" field, or a non-object) — KeySet.import_key_set raises those
+        # bare, and without catching them the handler would 500 and leak the
+        # JWKS URL + contents in the traceback. All fail closed to the same
+        # generic rejection.
         logger.warning("ID token validation failed: %s", exc)
         raise SSOValidationError("Identity provider token could not be verified.") from exc
 
+    claims = token.claims
     if claims.get("nonce") != expected_nonce:
         raise SSOValidationError("Login was modified in transit. Please try again.")
 

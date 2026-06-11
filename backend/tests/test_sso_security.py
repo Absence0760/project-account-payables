@@ -25,10 +25,13 @@ Tests:
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 
 import pytest
+from joserfc import jwt
+from joserfc.jwk import OctKey, RSAKey
 
 
 class _FakeRedis:
@@ -227,87 +230,197 @@ def test_scim_token_hash_is_deterministic_for_the_same_plaintext():
 
 
 # ---------------------------------------------------------------------------
-# ID-token nonce check
+# ID-token signature + claims verification (joserfc)
+#
+# These exercise the real crypto path in `validate_id_token`: an RSA key is
+# generated, its public half is served as the JWKS, and tokens are signed with
+# the private half. So we cover signature verification, the standard OIDC claim
+# checks (iss/aud/exp), the nonce gate, AND the algorithm-confusion defence —
+# not just the nonce comparison in isolation.
 # ---------------------------------------------------------------------------
 
+_ISSUER = "https://idp.test"
+_CLIENT_ID = "client-1"
+_KID = "test-signing-key-1"
+_DISCOVERY = {"jwks_uri": "https://idp.test/jwks", "issuer": _ISSUER}
 
-@pytest.mark.asyncio
-async def test_id_token_validate_rejects_wrong_nonce(monkeypatch):
-    """The bound nonce from `consume_state` must equal the nonce in
-    the IdP-returned ID token. Without this check, a captured ID
-    token from a different session can be replayed against our
-    callback."""
-    from app.services import sso
 
-    # Mock JWKS fetch + jose decode to isolate the nonce check.
-    fake_claims = {
-        "iss": "https://idp.test",
-        "aud": "client-1",
+@pytest.fixture
+def signing_key():
+    """A fresh RSA signing key whose public JWKS the IdP 'serves'."""
+    return RSAKey.generate_key(2048, parameters={"kid": _KID}, private=True)
+
+
+@pytest.fixture
+def patch_jwks(monkeypatch, signing_key):
+    """Point `fetch_jwks` at the public half of `signing_key`."""
+    public_jwks = {"keys": [signing_key.as_dict(private=False)]}
+
+    async def _fake_fetch_jwks(_url):
+        return public_jwks
+
+    monkeypatch.setattr("app.services.sso.fetch_jwks", _fake_fetch_jwks)
+    return public_jwks
+
+
+def _sign(signing_key, claims, *, alg="RS256", key=None):
+    """Sign `claims` into a compact JWS the IdP would return as the id_token."""
+    return jwt.encode({"alg": alg, "kid": _KID}, claims, key or signing_key)
+
+
+def _claims(**overrides):
+    base = {
+        "iss": _ISSUER,
+        "aud": _CLIENT_ID,
         "exp": int(time.time()) + 300,
         "email": "user@x.test",
-        "nonce": "the-real-nonce-from-the-token",
+        "nonce": "the-real-nonce",
     }
-
-    class _FakeClaims(dict):
-        def validate(self):
-            return None
-
-    def fake_decode(*args, **kwargs):
-        return _FakeClaims(fake_claims)
-
-    async def fake_fetch_jwks(_url):
-        return {"keys": []}
-
-    monkeypatch.setattr(sso, "fetch_jwks", fake_fetch_jwks)
-    monkeypatch.setattr(sso.jose_jwt, "decode", fake_decode)
-
-    discovery = {"jwks_uri": "https://idp.test/jwks", "issuer": "https://idp.test"}
-    with pytest.raises(sso.SSOValidationError, match="modified in transit"):
-        await sso.validate_id_token(
-            id_token="x.y.z",
-            discovery_doc=discovery,
-            client_id="client-1",
-            expected_nonce="something-completely-different",
-        )
+    base.update(overrides)
+    return base
 
 
-@pytest.mark.asyncio
-async def test_id_token_validate_accepts_matching_nonce(monkeypatch):
-    """Positive control — when the nonce matches, the claims are
-    returned. Without this, the previous test could pass for the
-    wrong reason (everything rejected)."""
+async def _validate(token, *, expected_nonce="the-real-nonce"):
     from app.services import sso
 
-    nonce = "correct-nonce-abc"
-    fake_claims = {
-        "iss": "https://idp.test",
-        "aud": "client-1",
-        "exp": int(time.time()) + 300,
-        "email": "user@x.test",
-        "nonce": nonce,
-    }
-
-    class _FakeClaims(dict):
-        def validate(self):
-            return None
-
-    def fake_decode(*args, **kwargs):
-        return _FakeClaims(fake_claims)
-
-    async def fake_fetch_jwks(_url):
-        return {"keys": []}
-
-    monkeypatch.setattr(sso, "fetch_jwks", fake_fetch_jwks)
-    monkeypatch.setattr(sso.jose_jwt, "decode", fake_decode)
-
-    discovery = {"jwks_uri": "https://idp.test/jwks", "issuer": "https://idp.test"}
-    claims = await sso.validate_id_token(
-        id_token="x.y.z",
-        discovery_doc=discovery,
-        client_id="client-1",
-        expected_nonce=nonce,
+    return await sso.validate_id_token(
+        id_token=token,
+        discovery_doc=_DISCOVERY,
+        client_id=_CLIENT_ID,
+        expected_nonce=expected_nonce,
     )
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_accepts_valid_token(patch_jwks, signing_key):
+    """Positive control — a correctly signed token with matching
+    iss/aud/exp/nonce returns the decoded claims. Without this the
+    rejection tests below could pass for the wrong reason (everything
+    rejected)."""
+    claims = await _validate(_sign(signing_key, _claims()))
     assert claims["email"] == "user@x.test"
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_rejects_wrong_nonce(patch_jwks, signing_key):
+    """The bound nonce from `consume_state` must equal the nonce in the
+    IdP-returned ID token. Without this check, a captured ID token from
+    a different session can be replayed against our callback."""
+    from app.services import sso
+
+    token = _sign(signing_key, _claims(nonce="the-real-nonce"))
+    with pytest.raises(sso.SSOValidationError, match="modified in transit"):
+        await _validate(token, expected_nonce="something-completely-different")
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_rejects_tampered_signature(patch_jwks, signing_key):
+    """A token whose body was altered after signing must fail signature
+    verification — the whole point of validating the JWS."""
+    from app.services import sso
+
+    token = _sign(signing_key, _claims())
+    header_b64, payload_b64, sig_b64 = token.split(".")
+    # Swap in a different (validly-signed) payload while keeping the original
+    # signature — the signature no longer covers these bytes.
+    forged_payload = _sign(signing_key, _claims(email="attacker@evil.test")).split(".")[1]
+    tampered = f"{header_b64}.{forged_payload}.{sig_b64}"
+    with pytest.raises(sso.SSOValidationError, match="could not be verified"):
+        await _validate(tampered)
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_rejects_expired_token(patch_jwks, signing_key):
+    """An expired token must be rejected by the exp validator even though
+    the signature is valid — a replayed-but-stale token is still a replay."""
+    from app.services import sso
+
+    token = _sign(signing_key, _claims(exp=int(time.time()) - 10))
+    with pytest.raises(sso.SSOValidationError, match="could not be verified"):
+        await _validate(token)
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_rejects_wrong_audience(patch_jwks, signing_key):
+    """A token minted for a different client_id must be rejected —
+    otherwise a token issued for another relying party at the same IdP
+    could be replayed against us (audience confusion)."""
+    from app.services import sso
+
+    token = _sign(signing_key, _claims(aud="some-other-client"))
+    with pytest.raises(sso.SSOValidationError, match="could not be verified"):
+        await _validate(token)
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_rejects_wrong_issuer(patch_jwks, signing_key):
+    """A token whose `iss` doesn't match the discovery document's issuer
+    must be rejected — pins the token to the IdP we actually configured."""
+    from app.services import sso
+
+    token = _sign(signing_key, _claims(iss="https://evil-idp.test"))
+    with pytest.raises(sso.SSOValidationError, match="could not be verified"):
+        await _validate(token)
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_rejects_alg_confusion_hs256(patch_jwks, signing_key):
+    """Algorithm-confusion attack: an attacker who only has the IdP's
+    PUBLIC key forges an HS256 token using the public key bytes as the
+    HMAC secret. If we verified with the algorithm taken from the token
+    header, the public key would 'verify' it. Pinning to asymmetric
+    algorithms must reject it outright."""
+    from app.services import sso
+
+    public_modulus = base64.urlsafe_b64decode(signing_key.as_dict(private=False)["n"] + "==")
+    forged = _sign(
+        signing_key,
+        _claims(),
+        alg="HS256",
+        key=OctKey.import_key(public_modulus),
+    )
+    with pytest.raises(sso.SSOValidationError, match="could not be verified"):
+        await _validate(forged)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_jwks",
+    [
+        {"token_endpoint": "https://idp.test/token"},  # JSON object, no "keys"
+        ["not", "an", "object"],  # JSON array instead of an object
+    ],
+    ids=["missing-keys", "not-an-object"],
+)
+async def test_id_token_validate_rejects_malformed_jwks(monkeypatch, signing_key, bad_jwks):
+    """A malformed JWKS from the IdP (a JSON object without `keys`, or a
+    non-object) must fail closed to the generic rejection — not raise a
+    bare KeyError/TypeError that 500s and leaks the JWKS URL + contents
+    in the traceback. `KeySet.import_key_set` raises those un-wrapped."""
+    from app.services import sso
+
+    async def _fake_fetch_jwks(_url):
+        return bad_jwks
+
+    monkeypatch.setattr("app.services.sso.fetch_jwks", _fake_fetch_jwks)
+    token = _sign(signing_key, _claims())
+    with pytest.raises(sso.SSOValidationError, match="could not be verified"):
+        await _validate(token)
+
+
+@pytest.mark.asyncio
+async def test_id_token_validate_rejects_alg_none(patch_jwks):
+    """An unsigned (`alg: none`) token must never be accepted. Built by
+    hand — `{header}.{payload}.` with an empty signature — since a JWS
+    library rightly refuses to *emit* one."""
+    from app.services import sso
+
+    def _b64(d):
+        return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+
+    unsigned = f"{_b64({'alg': 'none', 'kid': _KID})}.{_b64(_claims())}."
+    with pytest.raises(sso.SSOValidationError, match="could not be verified"):
+        await _validate(unsigned)
 
 
 # ---------------------------------------------------------------------------

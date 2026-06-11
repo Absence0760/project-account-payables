@@ -25,7 +25,10 @@ dependencies = [
     "httpx>=0.28.1,<1",
     "PyMuPDF>=1.27.2.3,<2",
     "pgvector>=0.4.2,<1",
-    "authlib>=1.7.2,<2",
+    # OIDC ID-token signature + claims verification in services/sso.py.
+    # (Successor to authlib.jose, which deprecated that module in favour of
+    # joserfc; we use joserfc directly so there's no authlib dependency.)
+    "joserfc>=1.0,<2",
     "pyotp>=2.9,<3",
     "qrcode[pil]>=8.2,<9",
     "reportlab>=4.5.1,<5",
@@ -73,9 +76,4 @@ filterwarnings = [
     # on every import. We pin passlib via deps; nothing we can do until
     # upstream releases a fix (tracked at https://foss.heptapod.net/python-libs/passlib/-/issues/188).
     "ignore:'crypt' is deprecated:DeprecationWarning",
-    # authlib 1.x prints a per-import warning telling consumers to
-    # migrate to `joserfc`. We use authlib.jose in `app/services/sso.py`
-    # for the OIDC ID-token verify path. Migration is tracked but a
-    # third-party warning shouldn't pollute every test summary.
-    "ignore::authlib.deprecate.AuthlibDeprecationWarning",
 ]

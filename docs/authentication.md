@@ -225,7 +225,7 @@ A single OIDC flow supports both Okta and Entra because they're both OIDC-compli
 7. Backend:
    - Consumes the state (single-use) and extracts the bound tenant + nonce.
    - Exchanges the code for tokens via the IdP's `token_endpoint`.
-   - Validates the ID token against the IdP's JWKS (iss, aud, exp, nonce).
+   - Validates the ID token against the IdP's JWKS (signature + iss, aud, exp, nonce). Signature verification is pinned to asymmetric algorithms (`RS*`/`ES*`/`PS*`/`EdDSA`) via `services/sso.ID_TOKEN_ALGORITHMS`, so a forged token can't downgrade to HMAC (alg-confusion) or `alg:none`.
    - Optionally enforces `allowed_email_domains`.
    - JIT-provisions the user (match order: `(sso_provider, sso_provider_id)` → `(organization_id, email)` → new user with least-privilege `ap_clerk` role, or `admin` if it's the first user in the org).
    - Mints our own JWT and returns `{access_token, must_change_password, tenant_slug}`.
