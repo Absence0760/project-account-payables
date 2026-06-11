@@ -1470,6 +1470,29 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 )
             )
             pay_idx += 1
+
+        # A couple of voided payments so the `voided` status chip is covered
+        # too. A void is a terminal payment state that hands its invoice back
+        # to `approved` (see `void_payment` in app/api/payments.py), so tie
+        # these to `approved` filler invoices — that IS the post-void state:
+        # the invoice was scheduled/paid, the payment was reversed, and the
+        # invoice has re-entered the queue. Mirror the void handler's row
+        # shape (failure_reason prefix + completed_at stamp).
+        approved_fillers = [inv for inv in filler_invoices if inv.status == "approved"][:2]
+        for n, inv in enumerate(approved_fillers):
+            filler_payments.append(
+                Payment(
+                    correlation_id=inv.correlation_id,
+                    invoice_id=inv.id,
+                    amount=inv.amount,
+                    method=pay_methods[n % len(pay_methods)],
+                    status="voided",
+                    reference=f"PAY-2024-{2000 + n}",
+                    submitted_at=datetime(2024, 5, 28, 9, 0, tzinfo=UTC),
+                    completed_at=datetime(2024, 5, 28, 15, 0, tzinfo=UTC),
+                    failure_reason="Voided by Marcus Manager: duplicate payment caught in review",
+                )
+            )
         session.add_all(filler_payments)
 
         # Supplier-portal user — bound to Tech Hardware Corp (v_tech), which
