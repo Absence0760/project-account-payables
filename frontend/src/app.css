@@ -186,6 +186,12 @@ html, body {
 .grid-container tr.row-selected {
 	background: rgba(99, 140, 255, 0.08);
 }
+/* Whole-row click affordance for list rows whose primary cell is a RowLink.
+ * The pointer handler lives on the <tr>; isRowOpenClick (utils/rowNav.ts) keeps
+ * it from firing on the checkbox / actions cells or any nested control. */
+.grid-container tr.clickable {
+	cursor: pointer;
+}
 .grid-container th.right,
 .grid-container td.right {
 	text-align: right;
