@@ -32,7 +32,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -82,8 +82,22 @@ def _validate_email_shape(email: str) -> None:
 
 
 @router.get("/slug-check", response_model=SlugCheckResponse)
-async def slug_check(slug: str, db: AsyncSession = Depends(get_control_db)):
-    """Cheap availability check for the signup form's inline validation."""
+async def slug_check(
+    slug: str,
+    request: Request,
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Cheap availability check for the signup form's inline validation.
+
+    Rate-limited per IP — without a cap this is a free namespace-enumeration
+    and control-plane-DB amplification endpoint (one SELECT per call, no auth).
+    """
+    await check_rate_limit(
+        "signup_slug_check",
+        request,
+        limit=settings.slug_check_rate_limit_per_hour,
+        window_seconds=3600,
+    )
     try:
         await ensure_slug_available(slug, db)
         return SlugCheckResponse(slug=slug, available=True)
@@ -97,7 +111,7 @@ async def signup_start(
     request: Request,
     db: AsyncSession = Depends(get_control_db),
 ):
-    # 1. Rate limit BEFORE anything expensive.
+    # 1. Rate limit BEFORE anything expensive — per IP first.
     await check_rate_limit(
         "signup_start",
         request,
@@ -112,6 +126,16 @@ async def signup_start(
     except SlugError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # 2b. Per-EMAIL rate limit (keyed on the target address, normalised) so an
+    #     attacker rotating IPs can't bomb one victim with verification emails.
+    await check_rate_limit(
+        "signup_start_email",
+        request,
+        limit=settings.signup_email_rate_limit_per_hour,
+        window_seconds=3600,
+        subject=body.admin_email.strip().lower(),
+    )
+
     # 3. Captcha.
     client_ip = request.client.host if request.client else None
     try:
@@ -125,7 +149,17 @@ async def signup_start(
     except SlugError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    # 5. Create the verification token.
+    # 5. Drop any prior un-consumed verifications for this email so a "resend"
+    #    replaces rather than accumulates (caps unbounded pending-row growth,
+    #    and only the latest link stays valid).
+    await db.execute(
+        delete(EmailVerification).where(
+            EmailVerification.email == body.admin_email,
+            EmailVerification.consumed_at.is_(None),
+        )
+    )
+
+    # 6. Create the verification token.
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + VERIFICATION_TTL
     verification = EmailVerification(
@@ -160,7 +194,9 @@ async def signup_start(
             )
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to send verification email to %s", body.admin_email)
+        # Don't log the email address (PII). The verification id ties this to
+        # the row for ops without leaking the address into log sinks.
+        logger.exception("Failed to send verification email (verification id=%s)", verification.id)
         raise HTTPException(
             status_code=502,
             detail="Couldn't send the verification email. Please try again.",
@@ -183,23 +219,33 @@ async def signup_complete(
     await check_rate_limit(
         "signup_complete",
         request,
-        limit=settings.signup_rate_limit_per_hour * 2,
+        limit=settings.signup_rate_limit_per_hour,
         window_seconds=3600,
     )
 
-    # 1. Look up the verification.
+    # 1. Look up the verification and LOCK the row (SELECT ... FOR UPDATE) so
+    #    two concurrent /complete calls for the same token can't both pass the
+    #    consumed-check and double-provision the tenant. The loser blocks until
+    #    the winner commits, then sees consumed_at set below.
     result = await db.execute(
-        select(EmailVerification).where(EmailVerification.token == body.token)
+        select(EmailVerification)
+        .where(EmailVerification.token == body.token)
+        .with_for_update()
     )
     verification = result.scalar_one_or_none()
-    if verification is None:
-        raise HTTPException(status_code=404, detail="Verification link is invalid.")
 
-    if verification.consumed_at is not None:
-        raise HTTPException(status_code=410, detail="This link has already been used.")
-
-    if verification.expires_at < datetime.now(UTC):
-        raise HTTPException(status_code=410, detail="This link has expired.")
+    # Uniform response for every non-actionable token state (missing, already
+    # used, expired) — a distinct 404-vs-410 would let a scraper tell a token
+    # that never existed from one that did.
+    if (
+        verification is None
+        or verification.consumed_at is not None
+        or verification.expires_at < datetime.now(UTC)
+    ):
+        raise HTTPException(
+            status_code=410,
+            detail="This verification link is invalid or has expired. Please sign up again.",
+        )
 
     # 2. Re-check slug availability in case another signup raced ahead.
     try:

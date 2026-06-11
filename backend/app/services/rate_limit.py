@@ -86,8 +86,14 @@ async def check_rate_limit(
     *,
     limit: int,
     window_seconds: int,
+    subject: str | None = None,
 ) -> None:
     """Record this request and raise 429 if the caller is over the limit.
+
+    The bucket is keyed on ``(endpoint, subject)``. ``subject`` defaults to the
+    resolved client IP, but callers can pass an explicit value — e.g. the
+    target email address — to cap abuse that a per-IP limit can't (an attacker
+    rotating IPs to email-bomb one victim address).
 
     No-ops when ``settings.rate_limit_enabled`` is False. The switch
     exists so CI's e2e job (where every shard's 4 workers hit
@@ -98,7 +104,7 @@ async def check_rate_limit(
     if not settings.rate_limit_enabled:
         return
 
-    client = _client_ip(request)
+    client = subject if subject is not None else _client_ip(request)
     key = f"{KEY_PREFIX}{endpoint}:{client}"
     now = time.time()
     cutoff = now - window_seconds

@@ -225,6 +225,93 @@ async def test_signup_start_rate_limited_returns_429(realdb, cleanup_signup):
     assert last_resp.status_code == 429
 
 
+async def test_signup_start_per_email_rate_limited_returns_429(realdb, cleanup_signup):
+    """A single victim email is capped (default 3/hr) even across different
+    slugs — the per-email limiter catches IP-rotating email bombing that the
+    per-IP limiter (5/hr) can't."""
+    slugs, emails = cleanup_signup
+    victim = f"victim-{uuid.uuid4().hex[:8]}@example.com"
+    emails.append(victim)
+    last_resp = None
+    async with realdb.client(key="a", role=None) as c:
+        # 4 sends to the same address (per-email cap is 3) — the 4th trips it,
+        # while the per-IP count (4) stays under its own limit of 5.
+        for _ in range(4):
+            slug = _unique_slug()
+            slugs.append(slug)
+            last_resp = await c.post(
+                "/api/signup/start", json=_start_body(slug, email=victim)
+            )
+    assert last_resp is not None
+    assert last_resp.status_code == 429
+
+
+async def test_signup_start_resend_replaces_prior_pending(realdb, cleanup_signup):
+    """Re-requesting for the same email leaves exactly one un-consumed
+    verification (resend replaces, doesn't accumulate) — only the latest link
+    stays valid and the table can't be grown without bound per address."""
+    from sqlalchemy import func, select
+
+    slugs, emails = cleanup_signup
+    slug = _unique_slug()
+    email = f"{slug}@example.com"
+    slugs.append(slug)
+    emails.append(email)
+
+    async with realdb.client(key="a", role=None) as c:
+        await c.post("/api/signup/start", json=_start_body(slug, email=email))
+        await c.post("/api/signup/start", json=_start_body(slug, email=email))
+
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        pending = (
+            await s.execute(
+                select(func.count())
+                .select_from(EmailVerification)
+                .where(
+                    EmailVerification.email == email,
+                    EmailVerification.consumed_at.is_(None),
+                )
+            )
+        ).scalar_one()
+    assert pending == 1
+
+
+async def test_slug_check_rate_limited_returns_429(realdb, monkeypatch):
+    """slug-check is rate-limited so it can't be scripted for namespace
+    enumeration / control-plane DB amplification."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "slug_check_rate_limit_per_hour", 3)
+    last_resp = None
+    async with realdb.client(key="a", role=None) as c:
+        for _ in range(4):
+            last_resp = await c.get(
+                "/api/signup/slug-check", params={"slug": _unique_slug()}
+            )
+    assert last_resp is not None
+    assert last_resp.status_code == 429
+
+
+def test_config_requires_captcha_in_deployed_env():
+    """A deployed environment must refuse to boot with captcha disabled —
+    guards against a public, tenant-creating endpoint shipping fail-open."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    # Local/CI (development) is fine with an empty secret.
+    assert Settings(environment="development", hcaptcha_secret="").is_deployed is False
+
+    # A deployed env with no secret must blow up at construction.
+    with pytest.raises(ValidationError):
+        Settings(environment="production", hcaptcha_secret="")
+
+    # ...and is satisfied once the secret is provided.
+    assert Settings(environment="production", hcaptcha_secret="0xabc").is_deployed is True
+
+
 # ---------------------------------------------------------------------------
 # POST /api/signup/complete
 # ---------------------------------------------------------------------------
@@ -304,10 +391,13 @@ async def test_signup_complete_provisions_and_marks_consumed(realdb, monkeypatch
         assert row.consumed_at is not None
 
 
-async def test_signup_complete_unknown_token_404(realdb):
+async def test_signup_complete_unknown_token_returns_uniform_410(realdb):
+    # A never-existed token returns the SAME 410 + message as a consumed or
+    # expired one, so a scraper can't distinguish "never existed" from "did".
     async with realdb.client(key="a", role=None) as c:
         resp = await c.post("/api/signup/complete", json={"token": "x" * 40})
-    assert resp.status_code == 404
+    assert resp.status_code == 410
+    assert "invalid or has expired" in resp.json()["detail"].lower()
 
 
 async def test_signup_complete_already_consumed_410(realdb, cleanup_signup):
@@ -321,7 +411,8 @@ async def test_signup_complete_already_consumed_410(realdb, cleanup_signup):
     async with realdb.client(key="a", role=None) as c:
         resp = await c.post("/api/signup/complete", json={"token": token})
     assert resp.status_code == 410
-    assert "already" in resp.json()["detail"].lower()
+    # Uniform message — does not reveal that the token was specifically "consumed".
+    assert "invalid or has expired" in resp.json()["detail"].lower()
 
 
 async def test_signup_complete_expired_410(realdb, cleanup_signup):

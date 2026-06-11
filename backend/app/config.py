@@ -1,8 +1,18 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+# Environment names that are NOT a deployed/production environment. In these,
+# safety guards (e.g. the captcha requirement) are relaxed for local dev + CI.
+_NON_DEPLOYED_ENVS = frozenset({"development", "dev", "local", "test", "ci"})
 
 
 class Settings(BaseSettings):
     model_config = {"env_prefix": "AP_"}
+
+    # Deployment environment discriminator (AP_ENVIRONMENT). Defaults to
+    # "development" so local dev + CI are unaffected; deployed envs set it to
+    # "production"/"staging" to opt into the production safety guards below.
+    environment: str = "development"
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables"
@@ -150,6 +160,13 @@ class Settings(BaseSettings):
     hcaptcha_secret: str = ""  # empty = skip captcha verification
     hcaptcha_sitekey: str = ""  # exposed to frontend via a public endpoint
     signup_rate_limit_per_hour: int = 5
+    # Per-email cap on verification-email sends, so an attacker rotating IPs
+    # can't email-bomb one victim address (the per-IP limit can't catch that).
+    signup_email_rate_limit_per_hour: int = 3
+    # Inline slug-availability check fires on (debounced) keystrokes, so it
+    # needs a generous per-IP cap — high enough for real typing, low enough to
+    # stop wire-speed namespace enumeration / DB amplification.
+    slug_check_rate_limit_per_hour: int = 120
 
     # Master switch for the Redis-backed rate limiter at
     # ``app/services/rate_limit.py``. Defaults to True so deployed envs
@@ -227,6 +244,24 @@ class Settings(BaseSettings):
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local
     # dev sets `AP_DEBUG=true` in `.env`.
     debug: bool = False
+
+    @property
+    def is_deployed(self) -> bool:
+        """True for any deployed (non local-dev / non-CI) environment."""
+        return self.environment.strip().lower() not in _NON_DEPLOYED_ENVS
+
+    @model_validator(mode="after")
+    def _require_captcha_in_deployed_envs(self) -> "Settings":
+        # Fail fast at boot rather than silently shipping signup with captcha
+        # disabled — a 'fail open' captcha is an abuse hole on a public,
+        # tenant-creating endpoint.
+        if self.is_deployed and not self.hcaptcha_secret:
+            raise ValueError(
+                "AP_HCAPTCHA_SECRET must be set when AP_ENVIRONMENT is a deployed "
+                f"environment ({self.environment!r}); refusing to boot with captcha "
+                "verification disabled on the public signup endpoint."
+            )
+        return self
 
 
 settings = Settings()

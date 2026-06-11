@@ -39,8 +39,9 @@ class ProvisioningResult:
     db_name: str
 
 
-async def _create_postgres_database(db_name: str) -> None:
-    """Create a new Postgres database (CREATE DATABASE cannot be in a transaction)."""
+def _parse_maintenance_dsn() -> dict:
+    """Parse host/port/user/password out of the configured async URL, for an
+    asyncpg connection to the 'postgres' maintenance DB."""
     url = settings.database_url.replace("postgresql+asyncpg://", "")
     userpass, hostdb = url.split("@", 1)
     user, password = userpass.split(":", 1)
@@ -50,17 +51,35 @@ async def _create_postgres_database(db_name: str) -> None:
         port = int(port_str)
     else:
         host, port = host_port, 5432
+    return {"host": host, "port": port, "user": user, "password": password, "database": "postgres"}
 
-    conn = await asyncpg.connect(
-        host=host, port=port, user=user, password=password, database="postgres"
-    )
+
+async def _create_postgres_database(db_name: str) -> bool:
+    """Create a new Postgres database (CREATE DATABASE cannot be in a transaction).
+
+    Returns True if this call created the database, False if it already existed
+    — so the caller knows whether it's safe to drop on a later failure.
+    """
+    conn = await asyncpg.connect(**_parse_maintenance_dsn())
     try:
         exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
-        if not exists:
-            await conn.execute(f'CREATE DATABASE "{db_name}"')
-            logger.info("Created database: %s", db_name)
-        else:
+        if exists:
             logger.info("Database already exists: %s", db_name)
+            return False
+        await conn.execute(f'CREATE DATABASE "{db_name}"')
+        logger.info("Created database: %s", db_name)
+        return True
+    finally:
+        await conn.close()
+
+
+async def _drop_postgres_database(db_name: str) -> None:
+    """Drop a tenant DB we created during a provisioning attempt that then
+    failed, so a partial failure doesn't leak orphan databases."""
+    conn = await asyncpg.connect(**_parse_maintenance_dsn())
+    try:
+        await conn.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+        logger.info("Dropped orphan database after failed provisioning: %s", db_name)
     finally:
         await conn.close()
 
@@ -103,11 +122,47 @@ async def provision_tenant(
     """
     db_name = f"{settings.tenant_db_prefix}{slug}"
 
-    await _create_postgres_database(db_name)
-
+    created_db = await _create_postgres_database(db_name)
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
+    try:
+        return await _provision_into(
+            db_name=db_name,
+            org_id=org_id,
+            user_id=user_id,
+            company_name=company_name,
+            slug=slug,
+            admin_email=admin_email,
+            admin_name=admin_name,
+            admin_password=admin_password,
+            plan=plan,
+            must_change_password=must_change_password,
+        )
+    except Exception:
+        # The control-plane insert or tenant-table creation failed after the DB
+        # was created — drop the orphan so retries (and the namespace) stay clean.
+        # Only drop a DB this call created; never a pre-existing one.
+        if created_db:
+            try:
+                await _drop_postgres_database(db_name)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to drop orphan database after provisioning error")
+        raise
 
+
+async def _provision_into(
+    *,
+    db_name: str,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    company_name: str,
+    slug: str,
+    admin_email: str,
+    admin_name: str,
+    admin_password: str,
+    plan: str,
+    must_change_password: bool,
+) -> ProvisioningResult:
     async with control_session_factory() as session:
         org = Organization(
             id=org_id,

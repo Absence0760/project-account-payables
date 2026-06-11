@@ -29,7 +29,10 @@ class CaptchaError(ValueError):
 async def verify_captcha(token: str | None, remote_ip: str | None = None) -> None:
     """Validate a captcha response token with hCaptcha. No-op when unconfigured."""
     if not settings.hcaptcha_secret:
-        logger.debug("hCaptcha secret not configured — skipping verification.")
+        # WARNING (not DEBUG) so an accidentally-unset secret in a deployed env
+        # is visible in log sinks rather than silently disabling the gate. A
+        # hard startup guard (config.py) blocks this for non-dev environments.
+        logger.warning("hCaptcha secret not configured — captcha verification is DISABLED.")
         return
 
     if not token:
@@ -45,7 +48,9 @@ async def verify_captcha(token: str | None, remote_ip: str | None = None) -> Non
             response.raise_for_status()
             payload = response.json()
     except httpx.HTTPError as exc:
-        logger.warning("hCaptcha network error: %s", exc)
+        # Log the class only — the exception text can embed the request URL /
+        # response body (which carries the client-supplied token).
+        logger.warning("hCaptcha network error: %s", type(exc).__name__)
         raise CaptchaError("Captcha verification is temporarily unavailable.") from exc
 
     if not payload.get("success"):

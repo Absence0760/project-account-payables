@@ -443,3 +443,43 @@ async def test_provision_tenant_duplicate_slug_raises_and_keeps_one_org(
             await engine.dispose()
     finally:
         await _cleanup_org(slug)
+
+
+async def _database_exists(db_name: str) -> bool:
+    import asyncpg
+
+    from app.services.tenant_provisioning import _parse_maintenance_dsn
+
+    conn = await asyncpg.connect(**_parse_maintenance_dsn())
+    try:
+        return bool(await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name))
+    finally:
+        await conn.close()
+
+
+async def test_provision_tenant_drops_orphan_db_when_provisioning_fails(
+    throwaway_slug, _provision_on_test_loop
+):
+    """If the control-plane insert / tenant-table step fails AFTER the database
+    was created, provision_tenant drops the orphan DB so a partial failure
+    doesn't leak databases or squat the slug's namespace."""
+    import app.services.tenant_provisioning as tp
+
+    slug = throwaway_slug
+    db_name = f"{settings.tenant_db_prefix}{slug}"
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("simulated provisioning failure after DB creation")
+
+    with patch.object(tp, "_provision_into", _boom):
+        with pytest.raises(RuntimeError):
+            await provision_tenant(
+                company_name="Doomed Co",
+                slug=slug,
+                admin_email=f"admin@{slug}.test",
+                admin_name="Doomed Admin",
+                admin_password="Sup3rSecret!pw",
+            )
+
+    # The database created at the start of provisioning must have been dropped.
+    assert await _database_exists(db_name) is False
