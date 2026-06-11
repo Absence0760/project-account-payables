@@ -9,6 +9,8 @@
 	import AdvancedSearchModal from '$lib/components/modals/AdvancedSearchModal.svelte';
 	import BulkRecodeGLModal from '$lib/components/modals/BulkRecodeGLModal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -91,7 +93,9 @@
 		if (af.amount_max) params.amount_max = af.amount_max;
 		if (af.due_date_from) params.due_date_from = af.due_date_from;
 		if (af.due_date_to) params.due_date_to = af.due_date_to;
-		if (af.statuses.length > 0) params.status = af.statuses.join(',');
+		// Status is sourced solely from `activeStatuses` (the inline chips); the
+		// modal's Status section writes back into `activeStatuses` on apply, so
+		// the two never fight over `params.status`.
 		return params;
 	}
 
@@ -155,23 +159,33 @@
 		advancedFilters.amount_min !== '' ||
 		advancedFilters.amount_max !== '' ||
 		advancedFilters.due_date_from !== '' ||
-		advancedFilters.due_date_to !== '' ||
-		advancedFilters.statuses.length > 0
+		advancedFilters.due_date_to !== ''
 	);
 
 	let totalCount = $derived(
 		Object.values(invoiceStore.statusCounts).reduce((a, b) => a + b, 0)
 	);
 
-	// Only show statuses relevant to the active workflow
-	let visibleStatuses = $derived.by(() => {
+	// Quick-access status chips: the actionable stages people triage daily.
+	// The full status set lives in the Advanced Search modal — these are the
+	// high-traffic subset surfaced inline (with live counts). Gated on the
+	// active workflow so approval-only states don't appear without an approval
+	// step. The transient/terminal stages (Extracting, Sending/Sent to ERP,
+	// Rejected, Done, and the post-ERP payment states) stay in the modal.
+	let quickStatuses = $derived.by(() => {
 		const s = workflowStore.activeSteps;
-		const visible: InvoiceStatus[] = ['new'];
-		if (s.extraction) visible.push('pending');
-		if (s.approval) visible.push('ready_for_review', 'approved', 'rejected');
-		if (s.erp_export) visible.push('sending_to_erp', 'sent_to_erp');
-		visible.push('done', 'failed');
-		return visible;
+		const quick: InvoiceStatus[] = ['new'];
+		if (s.approval) quick.push('ready_for_review', 'approved');
+		quick.push('failed');
+		return quick;
+	});
+
+	// Chips actually rendered = the quick subset plus any active status that
+	// isn't in the subset (e.g. one picked in the Advanced Search modal), so an
+	// active status filter is never invisible. Canonical workflow order.
+	let chipStatuses = $derived.by(() => {
+		const quick = new Set(quickStatuses);
+		return INVOICE_STATUSES.filter((s) => quick.has(s) || activeStatuses.includes(s));
 	});
 
 	function statusCount(status: InvoiceStatus): number {
@@ -374,7 +388,7 @@
 			<button
 				class="advanced-btn"
 				class:has-filters={hasAdvancedFilters}
-				onclick={() => (showAdvancedSearch = true)}
+				onclick={() => { advancedFilters = { ...advancedFilters, statuses: [...activeStatuses] }; showAdvancedSearch = true; }}
 				aria-label="Advanced search"
 			>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -392,7 +406,7 @@
 			<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
 				All <span class="count">{totalCount}</span>
 			</button>
-			{#each visibleStatuses as s}
+			{#each chipStatuses as s}
 				<button class="filter-chip" class:active={activeStatuses.includes(s)} onclick={() => toggleStatus(s)}>
 					{STATUS_LABELS[s]} <span class="count">{statusCount(s)}</span>
 				</button>
@@ -481,10 +495,21 @@
 		{/snippet}
 		{#snippet body()}
 			{#each invoiceStore.all as invoice (invoice.id)}
-				<tr class:row-selected={selected.has(invoice.id)}>
+				<tr
+					class="clickable"
+					class:row-selected={selected.has(invoice.id)}
+					onclick={(e) => {
+						if (isRowOpenClick(e)) editing = invoice;
+					}}
+				>
 					<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
 					<td class="mono">
-						{invoice.invoice_number || '—'}
+						<RowLink
+							onclick={() => (editing = invoice)}
+							ariaLabel={`Edit invoice ${invoice.invoice_number || 'draft'}`}
+						>
+							{invoice.invoice_number || '—'}
+						</RowLink>
 						{#if invoice.warnings?.length}
 							<span class="warning-icon" title={invoice.warnings.map(w => w.message).join(', ')}>
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -510,7 +535,6 @@
 					<td>{invoice.due_date}</td>
 					<td><StatusBadge status={invoice.status} /></td>
 					<td class="actions">
-						<RowAction onclick={() => (editing = invoice)}>Edit</RowAction>
 						{#if !auth.isClerkOnly && !IMMUTABLE_STATUSES.has(invoice.status)}
 							<RowAction
 								variant="danger"
@@ -559,7 +583,7 @@
 	<AdvancedSearchModal
 		filters={advancedFilters}
 		onclose={() => (showAdvancedSearch = false)}
-		onapply={(f) => (advancedFilters = f)}
+		onapply={(f) => { advancedFilters = f; activeStatuses = [...f.statuses]; }}
 	/>
 {/if}
 

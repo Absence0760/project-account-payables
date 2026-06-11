@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
-	import type { AdvancedSearchFilters } from '$lib/types/invoice';
+	import type { AdvancedSearchFilters, InvoiceStatus } from '$lib/types/invoice';
 
 	let {
 		filters,
@@ -21,9 +21,9 @@
 	let amount_max = $state(filters.amount_max);
 	let due_date_from = $state(filters.due_date_from);
 	let due_date_to = $state(filters.due_date_to);
-	let statuses = $state<string[]>([...filters.statuses]);
+	let statuses = $state<InvoiceStatus[]>([...filters.statuses]);
 
-	function toggleStatus(s: string) {
+	function toggleStatus(s: InvoiceStatus) {
 		if (statuses.includes(s)) {
 			statuses = statuses.filter((v) => v !== s);
 		} else {

@@ -303,6 +303,17 @@ pill-shaped status filter above the table:
   whose filter is an array) keep an inline `<nav class="filters">` chip
   nav — it still uses the global `.filter-chip` / `.count` CSS, so the
   visible text/counts (and the `/^All\s+\d+/` e2e selectors) stay identical.
+- **Quick subset, not every status.** When the lifecycle has many statuses
+  (`/invoices` has 12), the inline row shows only a small, high-traffic
+  *quick subset* — the stages people triage daily (`new`, `ready_for_review`,
+  `approved`, `failed`), gated by the active workflow. The **full** set lives
+  in the Advanced Search modal. The two share **one** selection array: opening
+  the modal seeds its Status section from the live chip selection, and Apply
+  writes it back — so they never fight over `params.status` (do *not*
+  reintroduce a second status param in `buildParams`). Any status selected only
+  in the modal is appended to the rendered chips so an active filter is never
+  invisible (`chipStatuses` = quick subset ∪ active). See
+  `routes/invoices/+page.svelte` and `tests-e2e/invoices/advanced-status.spec.ts`.
 
 ### Modals
 
@@ -376,6 +387,61 @@ adding a `<svelte:window onclick>` that clears `confirmDeleteId` when
 the click target is not within `.row-action`. See
 `routes/admin/+page.svelte` for the canonical implementation.
 
+### Clickable rows (`RowLink` + `isRowOpenClick`)
+
+A list row that has a detail/edit destination opens it **by clicking the
+row**, not via a separate "Edit"/"View" button. Two layers make this
+accessible:
+
+1. **Primary cell** (the id / name / number — `invoice_number`,
+   `po_number`, workflow name, user name) wraps its content in
+   **`<RowLink>`** (`$lib/components/ui/RowLink.svelte`). RowLink renders
+   a real `<button>` (pass `onclick` — opens a modal) or `<a>` (pass
+   `href` — navigates), styled to look like plain cell text but
+   focusable, keyboard-operable, and announced by screen readers. This
+   is the canonical, a11y-correct affordance — a table `<tr>` must keep
+   its implicit `row` role (overriding it to `button` breaks column-header
+   semantics), so the focusable control lives in the cell, not on the row.
+   **Always pass a row-specific `ariaLabel`** (e.g. `Edit invoice INV-42`)
+   — e2e specs select on it.
+
+2. **Whole row** carries `class="clickable"` + an `onclick` that opens
+   the same destination, gated by **`isRowOpenClick(e)`**
+   (`$lib/utils/rowNav.ts`). The guard bails when the click lands on a
+   button, link, input, or the `.checkbox-col` / `.actions` cells — so the
+   bulk-select checkbox and the kept **Delete** (and other per-row action)
+   buttons still work. This is the Gmail/Linear "click anywhere except the
+   controls" pattern.
+
+```svelte
+<tr class="clickable" class:row-selected={selected.has(row.id)}
+    onclick={(e) => { if (isRowOpenClick(e)) editing = row; }}>
+    <td class="checkbox-col"><input type="checkbox" … /></td>
+    <td class="mono">
+        <RowLink onclick={() => (editing = row)} ariaLabel={`Edit ${row.number}`}>
+            {row.number}
+        </RowLink>
+    </td>
+    …
+    <td class="actions">
+        <!-- no Edit/View button — the row opens the editor. Keep Delete: -->
+        <RowAction variant="danger" armed={…} onclick={…}>Delete</RowAction>
+    </td>
+</tr>
+```
+
+- **Don't** add a separate Edit/View `RowAction` when the row is
+  clickable — the row IS the affordance. Keep destructive / state-changing
+  actions (Delete, Void, Verify, Activate…) as `RowAction`s in the
+  `.actions` cell.
+- **Don't** put `role="button"` / `tabindex` / `onkeydown` on the `<tr>`
+  — that's the wrong fix (kills table semantics, conflicts with nested
+  controls). The in-cell `RowLink` is the keyboard/AT path; the row
+  `onclick` is a pointer-only enhancement.
+- Lists with **no per-row detail view** (vendors, exceptions, credit
+  memos, payments history/cards) keep their existing conditional
+  `RowAction` buttons — there's no single "open" destination to wire.
+
 ### Class-name conventions
 
 The class names below are the shared contract (e2e specs select on
@@ -391,6 +457,7 @@ the `ui/` primitive in the Source column.
 | Bulk delete | `.bulk-delete-btn` (+ `.armed`) | `ui/BulkDeleteButton.svelte` |
 | Bulk action | `.bulk-action-btn` | per-route, but always inside a BulkBar |
 | Per-row action | `<RowAction>` (variant + armed) | `ui/RowAction.svelte` |
+| Clickable-row open control | `<RowLink>` + `.clickable` row + `isRowOpenClick` | `ui/RowLink.svelte` / `utils/rowNav.ts` |
 | Filter pill | `.filter-chip` (+ `.active`, `.count`) | `ui/FilterChips.svelte` |
 | Load more | `.btn-load-more` / `.load-more-row` / `.load-more-end` | per-route, copy /admin |
 | Modal dialog | `.modal[role="dialog"]` + `.backdrop` | `ui/Modal.svelte` |

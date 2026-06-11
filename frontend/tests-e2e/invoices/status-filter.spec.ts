@@ -4,9 +4,11 @@ import { expect, test } from '../fixtures/helpers';
  * Invoice status filtering — clicking a status chip filters the table.
  *
  * Seed creates acme invoices in 5 distinct statuses (new, pending,
- * ready_for_review, approved, posted_in_erp). Status chips render in
- * the visible-statuses subset; clicking one calls /api/invoices?
- * status=<chip> and re-renders the table to that subset only.
+ * ready_for_review, approved, posted_in_erp). The inline row shows a
+ * quick subset (New / Ready for Review / Approved / Failed); the full
+ * set lives in Advanced Search (see advanced-status.spec.ts). Clicking
+ * a chip calls /api/invoices?status=<chip> and re-renders the table to
+ * that subset only.
  */
 
 test.describe('/invoices status filter', () => {

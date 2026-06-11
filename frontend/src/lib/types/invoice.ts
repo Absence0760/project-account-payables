@@ -88,7 +88,7 @@ export interface AdvancedSearchFilters {
 	amount_max: string;
 	due_date_from: string;
 	due_date_to: string;
-	statuses: string[];
+	statuses: InvoiceStatus[];
 }
 
 export const EMPTY_ADVANCED_FILTERS: AdvancedSearchFilters = {
