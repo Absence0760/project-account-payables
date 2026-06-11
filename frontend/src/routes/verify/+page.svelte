@@ -45,13 +45,19 @@
 			</p>
 			<div class="spinner"></div>
 		{:else if phase === 'success' && result}
-			<h1>You're in.</h1>
+			<h1>Your workspace is ready</h1>
 			<p class="sub">
-				We sent the tenant URL and your temporary password to <strong>{result.admin_email}</strong>.
-				You'll be asked to change your password on first login.
+				We emailed your sign-in link and a temporary password to
+				<strong>{result.admin_email}</strong>. Use that password to sign in for the first
+				time — you'll set your own right after.
 			</p>
+			<ol class="steps">
+				<li>Open the welcome email and copy the temporary password.</li>
+				<li>Sign in at your workspace below.</li>
+				<li>Choose a new password — then you're in.</li>
+			</ol>
 			<div class="next">
-				<a class="primary" href={result.tenant_url}>Go to {result.slug}</a>
+				<a class="primary" href={result.tenant_url}>Continue to {result.slug} →</a>
 			</div>
 		{:else}
 			<h1>Something went wrong</h1>
@@ -92,6 +98,15 @@
 		color: #e04040;
 		font-size: 0.9rem;
 		margin: 0 0 16px;
+	}
+	.steps {
+		text-align: left;
+		margin: 0 auto 4px;
+		max-width: 320px;
+		padding-left: 20px;
+		color: var(--text-muted);
+		font-size: 0.85rem;
+		line-height: 1.6;
 	}
 	.next {
 		margin-top: 20px;

@@ -133,6 +133,10 @@
 		<div class="card success">
 			<h1>Check your email</h1>
 			<p>{successMessage}</p>
+			<p class="sub next">
+				Next: click the link in that email to finish creating your workspace. We'll send your
+				sign-in details once it's ready.
+			</p>
 			<p class="sub">Didn't receive it? Check spam, or <a href="/signup">try again</a>.</p>
 		</div>
 	{:else}
