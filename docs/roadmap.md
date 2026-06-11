@@ -462,13 +462,14 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 **Files:** `mobile/` — see `mobile/CLAUDE.md` for full structure
 
 ### Email & Notification System
-**Status:** Planned
+**Status:** In progress
 
-- [ ] Email notifications on key events (invoice assigned, approved, rejected, paid)
-- [ ] Configurable notification preferences per user
+- [x] Email notifications on key events (invoice assigned, approved, rejected, paid) — centralized `transition_invoice` hook + explicit `assign_reviewer` hook → `notification_dispatch.notify_event`, sent via the existing pluggable email adapter (`console`/`smtp`/`ses`). See `backend/docs/notifications.md`.
+- [x] Configurable notification preferences per user — `users.notification_prefs` JSONB, per-event in-app/email toggles in `/profile`, gating both channels.
+- [x] In-app notification center — tenant `notifications` table, `/api/notifications*`, `/notifications` route + sidebar unread badge.
 - [ ] Email-to-invoice — forward invoices to a dedicated email address for auto-import (Bill.com, Tipalti, Stampli, Medius have this)
 - [ ] Slack/Teams integration for approval notifications (Stampli, Airbase differentiate here)
-- [ ] In-app notification center
+- [ ] Mobile parity — the email/in-app backend serves mobile for free once a `NotificationsScreen` calls `GET /api/notifications`; no mobile screen ships in this slice.
 
 ---
 

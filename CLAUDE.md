@@ -126,6 +126,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
 | `/workflows` | Workflow definition CRUD, active steps |
 | `/exceptions` | Exception queue, resolution |
+| `/notifications` | Per-user in-app notification center (list, unread-count, mark-read, read-all) + email/in-app preferences |
 | `/dashboard` | KPI aggregates (pipeline, aging, spend, trends) |
 | `/erp` | Inbound ERP webhooks (status updates) |
 | `/email-intake` | Inbound email webhook (provider-signed) — turns attachments into invoices |
@@ -187,7 +188,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception
+**Tenant-scoped**: Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, Notification
 
 ### RBAC roles
 
@@ -218,6 +219,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_EMAIL_INTAKE_DOMAIN` | (empty) | Hostname for inbound intake addresses (`invoices+<token>@<domain>`). Empty disables email intake. |
 | `AP_EMAIL_INTAKE_SIGNING_SECRET` | (empty) | HMAC-SHA256 signing secret for the email-intake webhook body. Required whenever `AP_EMAIL_INTAKE_DOMAIN` is set — boot refuses otherwise. |
 | `AP_MAX_CONCURRENT_SESSIONS` | `5` | Max concurrent sessions per user. Oldest JTI is evicted onto the blocklist when exceeded. `0` disables the cap. |
+| `AP_NOTIFICATIONS_ENABLED` | `true` | Master switch for email + in-app notifications. When `false`, the `transition_invoice` / `assign_reviewer` hooks skip dispatch. Dispatch is always best-effort regardless (a failure never breaks a transition). See `backend/docs/notifications.md`. |
 
 Full list in `backend/app/config.py`.
 
@@ -252,6 +254,7 @@ Full list in `backend/app/config.py`.
 | Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
 | 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
+| Notifications | `backend/docs/notifications.md` — email + in-app events, the `transition_invoice` hook, recipient matrix, preferences |
 | Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |

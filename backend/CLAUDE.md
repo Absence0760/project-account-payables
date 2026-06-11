@@ -26,6 +26,7 @@ Deep-dive docs live in `backend/docs/`:
 | Redis | `docs/redis.md` |
 | MinIO / S3 | `docs/minio.md` |
 | Audit-log shipping (SOC 2) | `docs/audit-log-shipping.md` |
+| Email + in-app notifications | `docs/notifications.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -122,7 +123,7 @@ backend/
 
 1. **Control plane** (`account_payables`) — shared across all tenants
    - `Organization` — id, name, slug, db_name, settings (JSONB), plan
-   - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, organization_id
+   - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, notification_prefs (JSONB — per-user email/in-app channel prefs, user-global), organization_id
    - `Role` — name (admin, ap_manager, ap_clerk, cfo)
    - `UserRole` — junction table
    - `ExtractionUsage` — billing: invoice_id, provider, program_type, period
@@ -155,6 +156,7 @@ backend/
    - `VendorExtractionPrior` — accumulated vendor field priors that bias the next extraction
    - `VendorUser` — supplier-portal credentials scoped to a single Vendor
    - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
+   - `Notification` — in-app notification center rows (recipient_user_id, event_type, entity_id, title/body, read_at). See `docs/notifications.md`
 
 **Connection management** (`database.py`):
 - `get_control_db()` → AsyncSession for control plane
@@ -190,6 +192,8 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 `workflow_engine.py` functions: `validate_transition()`, `transition_invoice()`, `get_invoice_for_update()` (SELECT...FOR UPDATE), `create_workflow_instance()`, `advance_workflow()`, `is_step_enabled()`.
 
 **Snapshot pattern**: `WorkflowInstance.steps_config_snapshot` freezes the active definition at invoice creation. All runtime logic reads the snapshot, not the live definition.
+
+**Notification hook**: `transition_invoice()` is also the single chokepoint for invoice-event notifications — after the audit write it calls `notification_dispatch.notify_event()` keyed off the resulting status (`approved`/`rejected`/`paid`). The `invoice_assigned` event is fired separately from `review.assign_reviewer`. All best-effort (never breaks the transition). See `docs/notifications.md`.
 
 ## Key background services
 
