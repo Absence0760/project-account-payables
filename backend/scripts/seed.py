@@ -25,6 +25,7 @@ import asyncpg
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.deps import ROLE_ADMIN, ROLE_AP_CLERK, ROLE_AP_MANAGER, ROLE_CFO
 from app.config import settings
 from app.database import _make_tenant_url, control_engine, control_session_factory
 from app.models import Base
@@ -41,6 +42,17 @@ from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog, WorkflowDefinition
 from app.utils.passwords import pwd_context
+
+# Canonical role set seeded into every control plane, keyed by the same
+# ROLE_* constants `app.api.deps` composes into ALL_ROLES. Building the Role
+# rows from this map means the seeded roles and the `require_roles` allow-list
+# cannot drift — `tests/test_rbac.py` asserts the two sets are identical.
+ROLE_DEFINITIONS: dict[str, str] = {
+    ROLE_ADMIN: "Full access to all features and user management",
+    ROLE_AP_MANAGER: "Review and approve invoices",
+    ROLE_AP_CLERK: "Upload invoices and enter data",
+    ROLE_CFO: "Approve high-value invoices and view reports",
+}
 
 # Fixed UUIDs for reproducibility
 ACME_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -237,13 +249,12 @@ async def seed_control_plane():
             )
         )
 
-        # Roles
-        admin_role = Role(
-            name="admin", description="Full access to all features and user management"
-        )
-        ap_manager_role = Role(name="ap_manager", description="Review and approve invoices")
-        ap_clerk_role = Role(name="ap_clerk", description="Upload invoices and enter data")
-        cfo_role = Role(name="cfo", description="Approve high-value invoices and view reports")
+        # Roles — built from ROLE_DEFINITIONS so the seeded set stays in
+        # lockstep with ALL_ROLES (see tests/test_rbac.py).
+        admin_role = Role(name=ROLE_ADMIN, description=ROLE_DEFINITIONS[ROLE_ADMIN])
+        ap_manager_role = Role(name=ROLE_AP_MANAGER, description=ROLE_DEFINITIONS[ROLE_AP_MANAGER])
+        ap_clerk_role = Role(name=ROLE_AP_CLERK, description=ROLE_DEFINITIONS[ROLE_AP_CLERK])
+        cfo_role = Role(name=ROLE_CFO, description=ROLE_DEFINITIONS[ROLE_CFO])
         session.add_all([admin_role, ap_manager_role, ap_clerk_role, cfo_role])
 
         # Acme users — one per role

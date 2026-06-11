@@ -10,7 +10,6 @@ with. The test catches it at PR time, not after a customer hits the endpoint.
 from __future__ import annotations
 
 import inspect
-import re
 import uuid
 from collections.abc import Iterable
 from types import SimpleNamespace
@@ -262,20 +261,21 @@ async def test_require_roles_logs_denials(caplog):
 
 
 def test_all_roles_constant_matches_seed_script():
-    """ALL_ROLES drives `require_roles` typo-detection. Keep it in sync with
-    `scripts/seed.py`'s role list — if a new role is added there but not here,
-    `require_roles("new_role")` would explode at import time and lock that
-    role out of every protected endpoint."""
-    from pathlib import Path
+    """ALL_ROLES drives `require_roles` typo-detection and must stay in
+    lockstep with the roles `scripts/seed.py` actually creates. seed.py builds
+    its Role rows from ``ROLE_DEFINITIONS`` — keyed by the same ROLE_*
+    constants — so the two sets must be identical: a role in ALL_ROLES that
+    seed never creates would 403 every real user, and a role seed creates that
+    ALL_ROLES omits would make ``require_roles(<it>)`` explode at import time
+    and lock that role out of every protected endpoint.
 
-    seed_path = Path(__file__).resolve().parent.parent / "scripts" / "seed.py"
-    text = seed_path.read_text()
-    # Heuristic: pull every "name=\"role_name\"" inside Role(...) constructions.
-    seeded = set(re.findall(r'Role\([^)]*name="([^"]+)"', text))
-    if not seeded:
-        pytest.skip("Could not parse seed.py role list — heuristic missed")
+    Asserting against the imported ``ROLE_DEFINITIONS`` (not a regex over the
+    source) means this check can never silently skip when seed.py's formatting
+    changes — the previous heuristic could, turning the guard into a no-op."""
+    import scripts.seed as seed_module
+
+    seeded = set(seed_module.ROLE_DEFINITIONS)
     missing = seeded - set(ALL_ROLES)
     extra = set(ALL_ROLES) - seeded
     assert not missing, f"Roles seeded but not in ALL_ROLES: {missing}"
-    # `extra` is OK — ALL_ROLES is the canonical list, seed may not enumerate all
-    _ = extra
+    assert not extra, f"Roles in ALL_ROLES but never seeded: {extra}"
