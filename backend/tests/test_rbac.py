@@ -22,6 +22,7 @@ from fastapi.routing import APIRoute
 from app.api import (
     admin,
     analytics,
+    audit,
     auth,
     auth_sso,
     cards,
@@ -103,6 +104,7 @@ NO_AUTH_REQUIRED = {
 ROUTERS = [
     admin.router,
     analytics.router,
+    audit.router,
     auth.router,
     auth_sso.router,
     cards.router,
