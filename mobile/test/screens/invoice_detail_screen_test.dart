@@ -202,6 +202,36 @@ void main() {
 
     expect(find.textContaining('Error:'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
+    // The error state offers a way back without leaving the screen.
+    expect(find.widgetWithText(FilledButton, 'Retry'), findsOneWidget);
+  });
+
+  testWidgets('Retry on the error state reloads the invoice', (tester) async {
+    var failNext = true;
+    final client = MockClient((req) async {
+      final path = req.url.path;
+      if (path == '/api/auth/login') return _json({'access_token': 'tok-123'});
+      if (path == '/api/auth/me') return _json(_meBody(['admin']));
+      if (req.method == 'GET' && path.startsWith('/api/invoices/')) {
+        if (failNext) return http.Response('boom', 500);
+        return _json(_invoiceJson('1', vendor: 'Recovered Vendor'));
+      }
+      return http.Response('not found', 404);
+    });
+    ApiClient().debugConfigure(client: client);
+    await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.widgetWithText(FilledButton, 'Retry'));
+
+    failNext = false;
+    await tester.tap(find.widgetWithText(FilledButton, 'Retry'));
+    await _pumpUntil(tester, find.text('Recovered Vendor'));
+
+    expect(find.text('Recovered Vendor'), findsOneWidget);
+    expect(find.textContaining('Error:'), findsNothing);
   });
 
   testWidgets('shows Approve/Reject actions for an actionable invoice when the '
