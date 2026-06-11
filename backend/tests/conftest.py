@@ -316,6 +316,18 @@ class RealDB:
         self._engines.append(engine)
         return async_sessionmaker(engine, expire_on_commit=False)
 
+    def control_sessionmaker(self):
+        """Session maker for the control-plane DB (organizations, users,
+        roles, email_verifications) — used by signup / provisioning tests that
+        read or write control tables the tenant session makers can't reach."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.config import settings as cfg
+
+        engine = create_async_engine(cfg.database_url)
+        self._engines.append(engine)
+        return async_sessionmaker(engine, expire_on_commit=False)
+
     def client(self, *, key: str, role: str | None = "admin"):
         import httpx
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine

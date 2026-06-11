@@ -1,0 +1,367 @@
+"""Endpoint tests for the self-service signup router — app/api/signup.py.
+
+The pure helpers (slug format/reserved, password complexity, schema
+contracts) are covered in ``test_signup_utils.py``. This file drives the
+three HTTP endpoints against the real-Postgres control plane:
+
+  - GET  /api/signup/slug-check  — inline availability check
+  - POST /api/signup/start       — captcha + rate limit + slug check, then
+                                   creates an EmailVerification + emails a link
+  - POST /api/signup/complete    — consumes the token, provisions the tenant
+                                   (provision_tenant mocked so no real DB is
+                                   created), emails credentials, marks consumed
+
+Signup is public (no auth). It writes to the *control* DB; the
+``email_verifications`` table is a control table the realdb fixture does
+NOT truncate, so each test cleans up the rows it creates.
+
+The default email adapter is ``console`` (logs to stdout, no network) and
+the default hCaptcha secret is empty (verification skipped), so the happy
+path needs no external mocks. The conftest fake-Redis backs the rate limiter.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
+
+import pytest_asyncio
+from sqlalchemy import delete, select
+
+from app.models.organization import Organization
+from app.models.signup import EmailVerification
+
+
+def _unique_slug() -> str:
+    # Slug must start with a letter, be 3-30 chars, DNS-safe.
+    return "sgn" + uuid.uuid4().hex[:10]
+
+
+@pytest_asyncio.fixture
+async def cleanup_signup(realdb):
+    """Delete EmailVerification + any Organization rows created by a signup
+    test, since both live in the un-truncated control DB."""
+    created_slugs: list[str] = []
+    created_emails: list[str] = []
+    yield created_slugs, created_emails
+
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        if created_emails:
+            await s.execute(
+                delete(EmailVerification).where(EmailVerification.email.in_(created_emails))
+            )
+        if created_slugs:
+            await s.execute(
+                delete(EmailVerification).where(EmailVerification.slug.in_(created_slugs))
+            )
+            await s.execute(delete(Organization).where(Organization.slug.in_(created_slugs)))
+        await s.commit()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/signup/slug-check
+# ---------------------------------------------------------------------------
+
+
+async def test_slug_check_available(realdb):
+    slug = _unique_slug()
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.get("/api/signup/slug-check", params={"slug": slug})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["slug"] == slug
+    assert body["available"] is True
+    assert body["reason"] is None
+
+
+async def test_slug_check_taken_returns_unavailable(realdb):
+    # The seeded test tenant "pytesta" already owns its slug.
+    taken = realdb.info("a").slug
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.get("/api/signup/slug-check", params={"slug": taken})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert "taken" in body["reason"].lower()
+
+
+async def test_slug_check_reserved_returns_unavailable(realdb):
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.get("/api/signup/slug-check", params={"slug": "admin"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert "reserved" in body["reason"].lower()
+
+
+async def test_slug_check_malformed_returns_unavailable(realdb):
+    # Uppercase / underscore fail the format check — surfaced as unavailable,
+    # not a 422, because slug-check is a soft inline validator.
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.get("/api/signup/slug-check", params={"slug": "Bad_Slug"})
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
+
+
+# ---------------------------------------------------------------------------
+# POST /api/signup/start
+# ---------------------------------------------------------------------------
+
+
+def _start_body(slug: str, email: str | None = None) -> dict:
+    return {
+        "company_name": "Acme Corp",
+        "slug": slug,
+        "admin_name": "Jared Howard",
+        "admin_email": email or f"{slug}@example.com",
+        "captcha_token": "ignored-in-dev",
+    }
+
+
+async def test_signup_start_creates_verification_and_sends_email(realdb, cleanup_signup):
+    slugs, emails = cleanup_signup
+    slug = _unique_slug()
+    email = f"{slug}@example.com"
+    slugs.append(slug)
+    emails.append(email)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=_start_body(slug, email))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "verification_email_sent"
+    assert email in body["message"]
+
+    # An unconsumed EmailVerification row now exists with the captured payload.
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        row = (
+            await s.execute(select(EmailVerification).where(EmailVerification.slug == slug))
+        ).scalar_one()
+        assert row.email == email
+        assert row.company_name == "Acme Corp"
+        assert row.consumed_at is None
+        assert row.expires_at > datetime.now(UTC)
+        assert len(row.token) >= 16
+
+
+async def test_signup_start_rejects_malformed_email(realdb, cleanup_signup):
+    slugs, _ = cleanup_signup
+    slug = _unique_slug()
+    slugs.append(slug)
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=_start_body(slug, email="not-an-email"))
+    assert resp.status_code == 422
+    assert "valid email" in resp.json()["detail"]
+
+
+async def test_signup_start_rejects_bad_slug_format(realdb):
+    body = _start_body("ab")  # too short (schema min_length=3 → 422 at pydantic)
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=body)
+    assert resp.status_code == 422
+
+
+async def test_signup_start_rejects_reserved_slug(realdb):
+    body = _start_body("support")  # reserved, but passes schema length/shape
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=body)
+    assert resp.status_code == 422
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+async def test_signup_start_conflict_on_taken_slug(realdb):
+    taken = realdb.info("a").slug
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=_start_body(taken))
+    assert resp.status_code == 409
+    assert "taken" in resp.json()["detail"].lower()
+
+
+async def test_signup_start_captcha_failure_returns_400(realdb, monkeypatch, cleanup_signup):
+    """When a captcha secret IS configured and verification fails, /start 400s
+    before creating any verification row."""
+    from app.api import signup as signup_mod
+    from app.utils.hcaptcha import CaptchaError
+
+    slugs, _ = cleanup_signup
+    slug = _unique_slug()
+    slugs.append(slug)
+
+    async def _fail(token, ip):  # noqa: ARG001
+        raise CaptchaError("Captcha verification failed. Please try again.")
+
+    monkeypatch.setattr(signup_mod, "verify_captcha", _fail)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=_start_body(slug))
+
+    assert resp.status_code == 400
+    assert "captcha" in resp.json()["detail"].lower()
+
+    # No verification row was created (captcha is checked before the insert).
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        count = (
+            await s.execute(select(EmailVerification).where(EmailVerification.slug == slug))
+        ).all()
+    assert count == []
+
+
+async def test_signup_start_rate_limited_returns_429(realdb, cleanup_signup):
+    """The 6th /start within the hour (limit default 5) trips the limiter."""
+    slugs, emails = cleanup_signup
+    last_resp = None
+    async with realdb.client(key="a", role=None) as c:
+        for _ in range(6):
+            slug = _unique_slug()
+            slugs.append(slug)
+            emails.append(f"{slug}@example.com")
+            last_resp = await c.post("/api/signup/start", json=_start_body(slug))
+    assert last_resp is not None
+    assert last_resp.status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# POST /api/signup/complete
+# ---------------------------------------------------------------------------
+
+
+async def _seed_verification(
+    realdb,
+    *,
+    slug: str,
+    email: str,
+    consumed: bool = False,
+    expired: bool = False,
+) -> str:
+    token = uuid.uuid4().hex + uuid.uuid4().hex  # 64 chars, >= schema min 16
+    token = token[:60]
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        s.add(
+            EmailVerification(
+                token=token,
+                email=email,
+                company_name="Acme Corp",
+                slug=slug,
+                admin_name="Jared Howard",
+                expires_at=(
+                    datetime.now(UTC) - timedelta(hours=1)
+                    if expired
+                    else datetime.now(UTC) + timedelta(hours=1)
+                ),
+                consumed_at=datetime.now(UTC) if consumed else None,
+                meta={},
+            )
+        )
+        await s.commit()
+    return token
+
+
+async def test_signup_complete_provisions_and_marks_consumed(realdb, monkeypatch, cleanup_signup):
+    from app.api import signup as signup_mod
+
+    slugs, emails = cleanup_signup
+    slug = _unique_slug()
+    email = f"{slug}@example.com"
+    slugs.append(slug)
+    emails.append(email)
+    token = await _seed_verification(realdb, slug=slug, email=email)
+
+    # Don't actually create a Postgres database — assert provision_tenant is
+    # invoked with the captured payload.
+    provision = AsyncMock()
+    monkeypatch.setattr(signup_mod, "provision_tenant", provision)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/complete", json={"token": token})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "provisioned"
+    assert body["slug"] == slug
+    assert body["admin_email"] == email
+    assert slug in body["tenant_url"]
+
+    provision.assert_awaited_once()
+    kwargs = provision.await_args.kwargs
+    assert kwargs["slug"] == slug
+    assert kwargs["admin_email"] == email
+    assert kwargs["must_change_password"] is True
+    # A real, sufficiently-long temp password is generated and passed through.
+    assert len(kwargs["admin_password"]) >= 12
+
+    # The verification is now consumed.
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        row = (
+            await s.execute(select(EmailVerification).where(EmailVerification.token == token))
+        ).scalar_one()
+        assert row.consumed_at is not None
+
+
+async def test_signup_complete_unknown_token_404(realdb):
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/complete", json={"token": "x" * 40})
+    assert resp.status_code == 404
+
+
+async def test_signup_complete_already_consumed_410(realdb, cleanup_signup):
+    slugs, emails = cleanup_signup
+    slug = _unique_slug()
+    email = f"{slug}@example.com"
+    slugs.append(slug)
+    emails.append(email)
+    token = await _seed_verification(realdb, slug=slug, email=email, consumed=True)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/complete", json={"token": token})
+    assert resp.status_code == 410
+    assert "already" in resp.json()["detail"].lower()
+
+
+async def test_signup_complete_expired_410(realdb, cleanup_signup):
+    slugs, emails = cleanup_signup
+    slug = _unique_slug()
+    email = f"{slug}@example.com"
+    slugs.append(slug)
+    emails.append(email)
+    token = await _seed_verification(realdb, slug=slug, email=email, expired=True)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/complete", json={"token": token})
+    assert resp.status_code == 410
+    assert "expired" in resp.json()["detail"].lower()
+
+
+async def test_signup_complete_slug_taken_409(realdb, monkeypatch, cleanup_signup):
+    """If the slug got registered between start and complete, complete 409s and
+    does NOT provision."""
+    from app.api import signup as signup_mod
+
+    slugs, emails = cleanup_signup
+    # Use the already-existing seeded tenant slug to force the conflict.
+    taken = realdb.info("a").slug
+    email = f"{_unique_slug()}@example.com"
+    emails.append(email)
+    token = await _seed_verification(realdb, slug=taken, email=email)
+
+    provision = AsyncMock()
+    monkeypatch.setattr(signup_mod, "provision_tenant", provision)
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/complete", json={"token": token})
+
+    assert resp.status_code == 409
+    provision.assert_not_awaited()
+
+
+async def test_signup_complete_token_too_short_422(realdb):
+    # Schema enforces min_length=16 on the token.
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/complete", json={"token": "short"})
+    assert resp.status_code == 422
