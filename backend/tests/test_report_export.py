@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from app.services.report_export import (
     EXPORTERS,
     export_aging_snapshot,
+    export_cashflow_forecast,
     export_invoice_register,
     export_payment_register,
     export_vendor_spend,
@@ -37,13 +38,61 @@ def _read(csv_text: str) -> list[list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def test_exporters_registry_lists_all_four_reports():
+def test_exporters_registry_lists_all_reports():
     assert set(EXPORTERS) == {
         "invoice_register",
         "vendor_spend",
         "payment_register",
         "aging_snapshot",
+        "cashflow_forecast",
     }
+
+
+# ---------------------------------------------------------------------------
+# cashflow_forecast
+# ---------------------------------------------------------------------------
+
+
+def test_cashflow_forecast_header_and_row_order():
+    rows = [
+        {
+            "period": "2026-06",
+            "period_start": date(2026, 6, 1),
+            "period_end": date(2026, 6, 30),
+            "scheduled_amount": Decimal("1500.00"),
+            "committed_amount": Decimal("1000.00"),
+            "pending_amount": Decimal("500.00"),
+            "discount_eligible_amount": Decimal("250.00"),
+            "count": 3,
+        }
+    ]
+    out = _read(export_cashflow_forecast(rows))
+    assert out[0] == [
+        "period",
+        "period_start",
+        "period_end",
+        "scheduled_amount",
+        "committed_amount",
+        "pending_amount",
+        "discount_eligible_amount",
+        "count",
+    ]
+    assert out[1] == [
+        "2026-06",
+        "2026-06-01",
+        "2026-06-30",
+        "1500.00",
+        "1000.00",
+        "500.00",
+        "250.00",
+        "3",
+    ]
+
+
+def test_cashflow_forecast_empty_emits_header_only():
+    out = _read(export_cashflow_forecast([]))
+    assert len(out) == 1
+    assert out[0][0] == "period"
 
 
 # ---------------------------------------------------------------------------

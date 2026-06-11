@@ -452,8 +452,9 @@ def test_bucket_outflows_discount_eligible_amount():
     """Only rows with both a discount_date and a positive discount_percent
     count toward discount_eligible_amount."""
     rows = [
-        _commit(date(2026, 6, 1), "100", discount_date=date(2026, 5, 25),
-                discount_percent=Decimal("2")),
+        _commit(
+            date(2026, 6, 1), "100", discount_date=date(2026, 5, 25), discount_percent=Decimal("2")
+        ),
         _commit(date(2026, 6, 2), "50", discount_date=None, discount_percent=None),
     ]
     out = bucket_outflows(rows, granularity="week")
@@ -485,8 +486,12 @@ def test_whatif_early_captures_discount():
     discount percent; the captured discount is reported separately."""
     today = date(2026, 5, 20)
     rows = [
-        _commit(date(2026, 6, 10), "1000", discount_date=date(2026, 5, 30),
-                discount_percent=Decimal("2")),
+        _commit(
+            date(2026, 6, 10),
+            "1000",
+            discount_date=date(2026, 5, 30),
+            discount_percent=Decimal("2"),
+        ),
     ]
     out = apply_payment_timing_scenario(rows, scenario="early", today=today)
     # 2% of 1000 = 20 captured; net outflow 980.
@@ -497,8 +502,12 @@ def test_whatif_early_captures_discount():
 def test_whatif_on_time_takes_no_discount():
     today = date(2026, 5, 20)
     rows = [
-        _commit(date(2026, 6, 10), "1000", discount_date=date(2026, 5, 30),
-                discount_percent=Decimal("2")),
+        _commit(
+            date(2026, 6, 10),
+            "1000",
+            discount_date=date(2026, 5, 30),
+            discount_percent=Decimal("2"),
+        ),
     ]
     out = apply_payment_timing_scenario(rows, scenario="on_time", today=today)
     assert out["total_discount_captured"] == Decimal("0.00")
@@ -510,8 +519,12 @@ def test_whatif_late_shifts_pay_date_and_forfeits_discount():
     days-to-pay is larger than on-time for the same rows."""
     today = date(2026, 5, 20)
     rows = [
-        _commit(date(2026, 6, 10), "1000", discount_date=date(2026, 5, 30),
-                discount_percent=Decimal("2")),
+        _commit(
+            date(2026, 6, 10),
+            "1000",
+            discount_date=date(2026, 5, 30),
+            discount_percent=Decimal("2"),
+        ),
     ]
     on_time = apply_payment_timing_scenario(rows, scenario="on_time", today=today)
     late = apply_payment_timing_scenario(rows, scenario="late", grace_days=15, today=today)
@@ -536,10 +549,18 @@ def test_whatif_early_without_discount_falls_back_to_due_date():
 def test_cash_position_running_balance_carries_forward():
     """Closing of period N equals opening of period N+1."""
     periods = [
-        {"period": "2026-06-01", "period_start": date(2026, 6, 1),
-         "period_end": date(2026, 6, 7), "scheduled_amount": Decimal("300")},
-        {"period": "2026-06-08", "period_start": date(2026, 6, 8),
-         "period_end": date(2026, 6, 14), "scheduled_amount": Decimal("200")},
+        {
+            "period": "2026-06-01",
+            "period_start": date(2026, 6, 1),
+            "period_end": date(2026, 6, 7),
+            "scheduled_amount": Decimal("300"),
+        },
+        {
+            "period": "2026-06-08",
+            "period_start": date(2026, 6, 8),
+            "period_end": date(2026, 6, 14),
+            "scheduled_amount": Decimal("200"),
+        },
     ]
     rows = compute_cash_position(Decimal("1000"), periods)
     assert rows[0]["opening"] == Decimal("1000.00")
@@ -550,12 +571,14 @@ def test_cash_position_running_balance_carries_forward():
 
 def test_cash_position_flags_threshold_breach():
     periods = [
-        {"period": "2026-06-01", "period_start": date(2026, 6, 1),
-         "period_end": date(2026, 6, 7), "scheduled_amount": Decimal("800")},
+        {
+            "period": "2026-06-01",
+            "period_start": date(2026, 6, 1),
+            "period_end": date(2026, 6, 7),
+            "scheduled_amount": Decimal("800"),
+        },
     ]
-    rows = compute_cash_position(
-        Decimal("1000"), periods, min_balance_threshold=Decimal("500")
-    )
+    rows = compute_cash_position(Decimal("1000"), periods, min_balance_threshold=Decimal("500"))
     # closing = 200 < 500 → flagged.
     assert rows[0]["below_threshold"] is True
     breaches = detect_threshold_breaches(rows, min_balance_threshold=Decimal("500"))
@@ -565,8 +588,12 @@ def test_cash_position_flags_threshold_breach():
 
 def test_cash_position_no_threshold_no_flag():
     periods = [
-        {"period": "2026-06-01", "period_start": date(2026, 6, 1),
-         "period_end": date(2026, 6, 7), "scheduled_amount": Decimal("800")},
+        {
+            "period": "2026-06-01",
+            "period_start": date(2026, 6, 1),
+            "period_end": date(2026, 6, 7),
+            "scheduled_amount": Decimal("800"),
+        },
     ]
     rows = compute_cash_position(Decimal("1000"), periods)
     assert rows[0]["below_threshold"] is False
@@ -574,8 +601,12 @@ def test_cash_position_no_threshold_no_flag():
 
 def test_cash_position_money_is_decimal():
     periods = [
-        {"period": "2026-06-01", "period_start": date(2026, 6, 1),
-         "period_end": date(2026, 6, 7), "scheduled_amount": Decimal("123.45")},
+        {
+            "period": "2026-06-01",
+            "period_start": date(2026, 6, 1),
+            "period_end": date(2026, 6, 7),
+            "scheduled_amount": Decimal("123.45"),
+        },
     ]
     rows = compute_cash_position(Decimal("1000"), periods)
     assert isinstance(rows[0]["opening"], Decimal)

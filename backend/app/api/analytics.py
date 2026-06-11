@@ -197,9 +197,7 @@ async def get_cashflow_whatif(
     discount captured, amount-weighted average days-to-pay, and the
     bucketed period breakdown."""
     today = date.today()
-    rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=True
-    )
+    rows = await _commitment_rows(db, today=today, horizon_days=horizon_days, include_pending=True)
 
     def _serialise(result: dict) -> dict:
         return {
@@ -258,9 +256,7 @@ async def get_cash_position(
     `0` with `opening_balance_source: "none"` so the UI prompts for one.
     Inflows (receivables) aren't modelled — `closing = opening - outflow`."""
     today = date.today()
-    rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=True
-    )
+    rows = await _commitment_rows(db, today=today, horizon_days=horizon_days, include_pending=True)
     periods = bucket_outflows(rows, granularity=granularity, today=today)
 
     opening = _parse_decimal_param(opening_balance, "opening_balance")
@@ -275,9 +271,7 @@ async def get_cash_position(
         source = "none"
 
     threshold = _parse_decimal_param(min_balance_threshold, "min_balance_threshold")
-    position = compute_cash_position(
-        opening, periods, min_balance_threshold=threshold
-    )
+    position = compute_cash_position(opening, periods, min_balance_threshold=threshold)
     breaches = (
         detect_threshold_breaches(position, min_balance_threshold=threshold)
         if threshold is not None

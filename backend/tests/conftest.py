@@ -411,6 +411,22 @@ async def realdb():
         engine = create_async_engine(_make_tenant_url(info.db_name))
         try:
             async with engine.begin() as conn:
+                # A prior test's request can leave a pooled backend lingering on
+                # this tenant DB — `idle in transaction` (auth/RBAC raised after
+                # FastAPI opened the tenant-DB session, before its `finally`
+                # closed it) or `idle` but still pinning an old MVCC snapshot /
+                # AccessShareLock. `cleanup()` calls `engine.dispose()`, but
+                # Postgres doesn't always process the close before THIS test's
+                # TRUNCATE fires next — which then either deadlocks or, worse,
+                # makes the freshly-inserted rows invisible to the request under
+                # test (an empty-result flake, ~1-in-3). These `ap_pytest{a,b}`
+                # DBs are exclusive to the (sequential) realdb suite, so reaping
+                # every *other* backend on the DB before the reset is safe and
+                # makes per-test isolation deterministic.
+                await conn.exec_driver_sql(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+                )
                 await conn.exec_driver_sql(truncate)
         finally:
             await engine.dispose()

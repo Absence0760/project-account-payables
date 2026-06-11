@@ -25,12 +25,12 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-import pytest_asyncio
-from sqlalchemy import delete
-
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import PaymentSchedule
 
+# The `realdb` fixture TRUNCATEs every tenant table at setup, so each test
+# starts from a clean slate — no per-test cleanup fixture needed (and a
+# second concurrent DELETE/TRUNCATE would deadlock against the fixture's).
 _TODAY = date.today()
 
 
@@ -73,19 +73,6 @@ async def _add_invoice(
         return inv.id
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _clean_invoices(realdb):
-    """Each test owns a clean invoice/schedule slate in both tenants so a
-    seeded back-catalogue from other suites can't skew the forecast math."""
-    for key in ("a", "b"):
-        mk = realdb.sessionmaker(key)
-        async with mk() as s:
-            await s.execute(delete(PaymentSchedule))
-            await s.execute(delete(Invoice))
-            await s.commit()
-    yield
-
-
 # ---------------------------------------------------------------------------
 # cashflow_forecast
 # ---------------------------------------------------------------------------
@@ -93,11 +80,17 @@ async def _clean_invoices(realdb):
 
 async def test_forecast_buckets_committed_and_pending(realdb):
     await _add_invoice(
-        realdb, "a", amount="1000", status=InvoiceStatus.approved.value,
+        realdb,
+        "a",
+        amount="1000",
+        status=InvoiceStatus.approved.value,
         due_date=_TODAY + timedelta(days=10),
     )
     await _add_invoice(
-        realdb, "a", amount="500", status=InvoiceStatus.pending.value,
+        realdb,
+        "a",
+        amount="500",
+        status=InvoiceStatus.pending.value,
         due_date=_TODAY + timedelta(days=12),
     )
     async with realdb.client(key="a", role="cfo") as c:
@@ -120,7 +113,10 @@ async def test_forecast_excludes_terminal_and_paid(realdb):
         InvoiceStatus.failed.value,
     ):
         await _add_invoice(
-            realdb, "a", amount="999", status=status,
+            realdb,
+            "a",
+            amount="999",
+            status=status,
             due_date=_TODAY + timedelta(days=10),
         )
     async with realdb.client(key="a", role="cfo") as c:
@@ -131,7 +127,10 @@ async def test_forecast_excludes_terminal_and_paid(realdb):
 
 async def test_forecast_include_pending_false_drops_pipeline(realdb):
     await _add_invoice(
-        realdb, "a", amount="500", status=InvoiceStatus.pending.value,
+        realdb,
+        "a",
+        amount="500",
+        status=InvoiceStatus.pending.value,
         due_date=_TODAY + timedelta(days=10),
     )
     async with realdb.client(key="a", role="cfo") as c:
@@ -165,7 +164,10 @@ async def test_forecast_requires_auth(realdb):
 
 async def test_whatif_early_captures_discount(realdb):
     await _add_invoice(
-        realdb, "a", amount="1000", status=InvoiceStatus.approved.value,
+        realdb,
+        "a",
+        amount="1000",
+        status=InvoiceStatus.approved.value,
         due_date=_TODAY + timedelta(days=20),
         discount_date=_TODAY + timedelta(days=5),
         discount_percent="2",
@@ -192,7 +194,10 @@ async def test_whatif_clerk_forbidden(realdb):
 
 async def test_cash_position_with_opening_balance_and_breach(realdb):
     await _add_invoice(
-        realdb, "a", amount="800", status=InvoiceStatus.approved.value,
+        realdb,
+        "a",
+        amount="800",
+        status=InvoiceStatus.approved.value,
         due_date=_TODAY + timedelta(days=10),
     )
     async with realdb.client(key="a", role="cfo") as c:
@@ -232,7 +237,10 @@ async def test_cash_position_bad_opening_balance_400(realdb):
 
 async def test_export_cashflow_forecast_csv(realdb):
     await _add_invoice(
-        realdb, "a", amount="1000", status=InvoiceStatus.approved.value,
+        realdb,
+        "a",
+        amount="1000",
+        status=InvoiceStatus.approved.value,
         due_date=_TODAY + timedelta(days=10),
     )
     async with realdb.client(key="a", role="cfo") as c:
@@ -259,7 +267,10 @@ async def test_forecast_tenant_isolation(realdb):
     """An invoice seeded under tenant `a` must not surface when the
     forecast is queried under tenant `b`."""
     await _add_invoice(
-        realdb, "a", amount="1234", status=InvoiceStatus.approved.value,
+        realdb,
+        "a",
+        amount="1234",
+        status=InvoiceStatus.approved.value,
         due_date=_TODAY + timedelta(days=10),
     )
     async with realdb.client(key="b", role="cfo") as c:

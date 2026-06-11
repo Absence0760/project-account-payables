@@ -654,9 +654,10 @@ def bucket_outflows(rows: list[dict], *, granularity: str = "week", today=None) 
             b["committed_amount"] += amount
         else:
             b["pending_amount"] += amount
-        if r.get("discount_date") is not None and Decimal(
-            str(r.get("discount_percent") or "0")
-        ) > 0:
+        if (
+            r.get("discount_date") is not None
+            and Decimal(str(r.get("discount_percent") or "0")) > 0
+        ):
             b["discount_eligible_amount"] += amount
         b["count"] += 1
 
