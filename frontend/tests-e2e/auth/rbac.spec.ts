@@ -20,6 +20,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
  * | Vendors      |       |   ✓    |  ✓  |  ✓    |
  * | Purchase Orders |    |   ✓    |  ✓  |  ✓    |
  * | Goods Receipts |     |   ✓    |  ✓  |  ✓    |
+ * | Cash Flow    |       |        |  ✓  |  ✓    |
  * | Exceptions   |       |   ✓    |     |  ✓    |
  * | Workflows    |       |        |     |  ✓    |
  * | Organization |       |        |     |  ✓    |
@@ -64,7 +65,7 @@ test.describe('RBAC — sidebar visibility', () => {
 		]);
 	});
 
-	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs (no Exceptions, no Users)', async ({
+	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Cash Flow (no Exceptions, no Users)', async ({
 		page,
 		tenantCfo
 	}) => {
@@ -76,7 +77,8 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/payments',
 			'/vendors',
 			'/purchase-orders',
-			'/goods-receipts'
+			'/goods-receipts',
+			'/cfo'
 		]);
 	});
 });
