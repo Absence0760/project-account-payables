@@ -632,6 +632,13 @@ jobs:
 
       - name: Run service integration tests (LocalStack + stripe-mock)
         working-directory: backend
+        # AP_REQUIRE_INTEGRATION turns an unreachable service from a silent
+        # skip into a hard failure — this job started both containers on
+        # purpose, so a skip here would mean the readiness wait passed but the
+        # service still isn't usable, and we must not stay green on dropped
+        # coverage.
+        env:
+          AP_REQUIRE_INTEGRATION: "1"
         run: python -m pytest tests/test_localstack_integration.py tests/test_stripe_mock_integration.py -v
 
       - name: Upload Playwright report on failure

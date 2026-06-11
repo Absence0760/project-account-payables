@@ -41,9 +41,23 @@ def _stripe_mock_up() -> bool:
         return False
 
 
+_UP = _stripe_mock_up()
+
+# Locally this module skips when stripe-mock isn't up, so a dev box without
+# `pnpm stripe:up` still runs the rest of the suite. But the CI service-e2e
+# job starts stripe-mock on purpose and sets AP_REQUIRE_INTEGRATION — there,
+# an unreachable service is a hard failure, never a silent skip that leaves
+# the job green with this coverage quietly dropped.
+if not _UP and os.environ.get("AP_REQUIRE_INTEGRATION"):
+    raise RuntimeError(
+        "stripe-mock is required (AP_REQUIRE_INTEGRATION is set) but was not "
+        "reachable at AP_STRIPE_API_BASE. The CI service-e2e job starts it "
+        "on purpose; refusing to skip and drop coverage silently."
+    )
+
 pytestmark = [
     pytest.mark.skipif(
-        not _stripe_mock_up(),
+        not _UP,
         reason="stripe-mock not configured/reachable — set AP_STRIPE_API_BASE + `pnpm stripe:up`",
     ),
     pytest.mark.asyncio,

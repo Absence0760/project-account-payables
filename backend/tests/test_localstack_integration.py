@@ -42,9 +42,23 @@ def _localstack_up() -> bool:
         return False
 
 
+_UP = _localstack_up()
+
+# Locally this module skips when LocalStack isn't up, so a dev box without
+# `pnpm aws:up` still runs the rest of the suite. But the CI service-e2e job
+# starts LocalStack on purpose and sets AP_REQUIRE_INTEGRATION — there, an
+# unreachable service is a hard failure, never a silent skip that leaves the
+# job green with this coverage quietly dropped.
+if not _UP and os.environ.get("AP_REQUIRE_INTEGRATION"):
+    raise RuntimeError(
+        "LocalStack is required (AP_REQUIRE_INTEGRATION is set) but was not "
+        "reachable at AP_AWS_ENDPOINT_URL. The CI service-e2e job starts it "
+        "on purpose; refusing to skip and drop coverage silently."
+    )
+
 pytestmark = [
     pytest.mark.skipif(
-        not _localstack_up(),
+        not _UP,
         reason="LocalStack not configured/reachable — set AP_AWS_ENDPOINT_URL + `pnpm aws:up`",
     ),
     pytest.mark.asyncio,
