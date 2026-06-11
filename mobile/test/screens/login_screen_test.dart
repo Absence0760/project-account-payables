@@ -1,0 +1,67 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/screens/login_screen.dart';
+
+void main() {
+  setUp(() {
+    FlutterSecureStorage.setMockInitialValues({});
+    ApiClient().debugConfigure();
+  });
+
+  testWidgets('renders the tenant/email/password fields and Sign In button',
+      (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+
+    expect(find.widgetWithText(TextFormField, 'Tenant'), findsOneWidget);
+    expect(find.widgetWithText(TextFormField, 'Email'), findsOneWidget);
+    expect(find.widgetWithText(TextFormField, 'Password'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Sign In'), findsOneWidget);
+    // tenant defaults to 'acme' (value + hint both read "acme")
+    expect(find.text('acme'), findsWidgets);
+  });
+
+  testWidgets('blocks submit and shows validation errors when email/password '
+      'are empty', (tester) async {
+    // Any network hit would fail the test — submit must not reach the API.
+    ApiClient().debugConfigure(
+      client: MockClient((req) async {
+        fail('login should not be attempted with an invalid form');
+      }),
+    );
+
+    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+
+    // Clear the prefilled tenant so all three are empty.
+    await tester.enterText(find.widgetWithText(TextFormField, 'Tenant'), '');
+    await tester.tap(find.widgetWithText(FilledButton, 'Sign In'));
+    await tester.pump();
+
+    expect(find.text('Required'), findsNWidgets(3));
+  });
+
+  testWidgets('surfaces the auth error after a failed sign-in', (tester) async {
+    ApiClient().debugConfigure(
+      client: MockClient((req) async => http.Response('nope', 401)),
+    );
+
+    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+
+    await tester.enterText(
+        find.widgetWithText(TextFormField, 'Email'), 'demo@acme.com');
+    await tester.enterText(
+        find.widgetWithText(TextFormField, 'Password'), 'wrong');
+    await tester.tap(find.widgetWithText(FilledButton, 'Sign In'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Invalid credentials'), findsOneWidget);
+  });
+
+  // The successful-login path navigates to the real HomeScreen (which spins an
+  // infinite progress indicator); that's covered at the right altitude by
+  // auth_store_test + home_screen_test, not by mounting the whole tree here.
+}
