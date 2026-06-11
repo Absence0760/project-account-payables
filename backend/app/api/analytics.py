@@ -23,20 +23,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO, require_roles
 from app.models.invoice import Invoice, InvoiceStatus
-from app.models.payment import Payment
+from app.models.organization import Organization
+from app.models.payment import Payment, PaymentSchedule
 from app.models.user import User
 from app.models.virtual_card import CardRebate
 from app.services.analytics import (
+    apply_payment_timing_scenario,
+    bucket_outflows,
     compute_accruals,
     compute_cash_conversion_cycle,
+    compute_cash_position,
     compute_dpo,
     compute_forecast_variance,
     compute_fraud_rate_trend,
     compute_rebate_yield,
     compute_supplier_concentration,
     compute_working_capital_impact,
+    detect_threshold_breaches,
 )
-from app.tenant import get_tenant_db
+from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -45,6 +50,269 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 # AP managers see the operational dashboard but not the CFO surface
 # unless the org explicitly grants them.
 _CFO_ROLES = (ROLE_ADMIN, ROLE_CFO)
+
+
+# ---------------------------------------------------------------------------
+# Predictive cash-flow forecasting
+# ---------------------------------------------------------------------------
+#
+# Committed = firm AP commitment (approved → payment_scheduled). Pending =
+# still-in-flight pipeline (new / pending / ready_for_review) — projected,
+# lower-certainty outflow. Everything else (rejected / paid / done /
+# failed) is excluded: terminal, already-paid, or never going to pay.
+_COMMITTED_STATUSES = (
+    InvoiceStatus.approved.value,
+    InvoiceStatus.sending_to_erp.value,
+    InvoiceStatus.sent_to_erp.value,
+    InvoiceStatus.posted_in_erp.value,
+    InvoiceStatus.payment_scheduled.value,
+)
+_PENDING_STATUSES = (
+    InvoiceStatus.new.value,
+    InvoiceStatus.pending.value,
+    InvoiceStatus.ready_for_review.value,
+)
+
+
+async def _commitment_rows(
+    db: AsyncSession, *, today: date, horizon_days: int, include_pending: bool
+) -> list[dict]:
+    """Pull open invoices that represent future AP outflows and shape them
+    into the commitment-row dicts the pure-math layer consumes.
+
+    Outflow timing comes from the `PaymentSchedule` row when present
+    (`due_date` / `discount_date` / `discount_percent`); otherwise we fall
+    back to `Invoice.due_date` with no discount. Rows are bounded to
+    `[today, today + horizon_days]` on the effective due date so the query
+    doesn't scan the whole back-catalogue."""
+    statuses = list(_COMMITTED_STATUSES)
+    if include_pending:
+        statuses += list(_PENDING_STATUSES)
+    horizon_end = today + timedelta(days=horizon_days)
+
+    result = await db.execute(
+        select(
+            Invoice.amount,
+            Invoice.status,
+            Invoice.due_date,
+            PaymentSchedule.due_date.label("sched_due"),
+            PaymentSchedule.discount_date,
+            PaymentSchedule.discount_percent,
+        )
+        .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+        .where(Invoice.status.in_(statuses))
+    )
+    committed_set = set(_COMMITTED_STATUSES)
+    rows: list[dict] = []
+    for amount, status, inv_due, sched_due, discount_date, discount_percent in result.all():
+        due = sched_due or inv_due
+        if due is None or due < today or due > horizon_end:
+            continue
+        status_value = status.value if hasattr(status, "value") else status
+        rows.append(
+            {
+                "due_date": due,
+                "amount": Decimal(str(amount or 0)),
+                "committed": status_value in committed_set,
+                "discount_date": discount_date,
+                "discount_percent": discount_percent,
+            }
+        )
+    return rows
+
+
+def _parse_decimal_param(raw: str | None, field: str) -> Decimal | None:
+    """Parse an optional money query-param into Decimal, 400 on garbage.
+    Used for `opening_balance` / `min_balance_threshold` — passed as
+    strings so we never round-trip currency through a float."""
+    if raw is None or raw == "":
+        return None
+    try:
+        return Decimal(raw)
+    except (ArithmeticError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"`{field}` must be a number") from exc
+
+
+@router.get("/cashflow_forecast")
+async def get_cashflow_forecast(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    horizon_days: int = Query(90, ge=7, le=730),
+    include_pending: bool = Query(True),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_CFO_ROLES)),
+):
+    """Projected AP cash outflows bucketed by `day` / `week` / `month`
+    over the next `horizon_days`. Each period splits the scheduled total
+    into firm `committed_amount` and lower-certainty `pending_amount`
+    (the in-flight approval pipeline; drop it with `include_pending=false`)
+    and reports the discount-eligible slice."""
+    today = date.today()
+    rows = await _commitment_rows(
+        db, today=today, horizon_days=horizon_days, include_pending=include_pending
+    )
+    periods = bucket_outflows(rows, granularity=granularity, today=today)
+    totals = {
+        "scheduled_amount": float(sum((p["scheduled_amount"] for p in periods), Decimal("0"))),
+        "committed_amount": float(sum((p["committed_amount"] for p in periods), Decimal("0"))),
+        "pending_amount": float(sum((p["pending_amount"] for p in periods), Decimal("0"))),
+        "discount_eligible_amount": float(
+            sum((p["discount_eligible_amount"] for p in periods), Decimal("0"))
+        ),
+        "count": sum(p["count"] for p in periods),
+    }
+    return {
+        "granularity": granularity,
+        "horizon_days": horizon_days,
+        "include_pending": include_pending,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "periods": [
+            {
+                "period": p["period"],
+                "period_start": p["period_start"].isoformat(),
+                "period_end": p["period_end"].isoformat(),
+                "scheduled_amount": float(p["scheduled_amount"]),
+                "committed_amount": float(p["committed_amount"]),
+                "pending_amount": float(p["pending_amount"]),
+                "discount_eligible_amount": float(p["discount_eligible_amount"]),
+                "count": p["count"],
+            }
+            for p in periods
+        ],
+        "totals": totals,
+    }
+
+
+@router.get("/cashflow_whatif")
+async def get_cashflow_whatif(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    horizon_days: int = Query(90, ge=7, le=730),
+    grace_days: int = Query(15, ge=0, le=90),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_CFO_ROLES)),
+):
+    """Payment-timing what-if: compares paying every open commitment
+    `early` (on the discount date, capturing the early-pay discount),
+    `on_time` (on the due date), and `late` (`due_date + grace_days`,
+    forfeiting any discount). Each scenario reports its total outflow,
+    discount captured, amount-weighted average days-to-pay, and the
+    bucketed period breakdown."""
+    today = date.today()
+    rows = await _commitment_rows(
+        db, today=today, horizon_days=horizon_days, include_pending=True
+    )
+
+    def _serialise(result: dict) -> dict:
+        return {
+            "scenario": result["scenario"],
+            "total_outflow": float(result["total_outflow"]),
+            "total_discount_captured": float(result["total_discount_captured"]),
+            "weighted_avg_pay_date_days": float(result["weighted_avg_pay_date_days"]),
+            "periods": [
+                {
+                    "period": p["period"],
+                    "period_start": p["period_start"].isoformat(),
+                    "period_end": p["period_end"].isoformat(),
+                    "scheduled_amount": float(p["scheduled_amount"]),
+                }
+                for p in result["periods"]
+            ],
+        }
+
+    scenarios = {
+        name: _serialise(
+            apply_payment_timing_scenario(
+                rows,
+                scenario=name,
+                granularity=granularity,
+                grace_days=grace_days,
+                today=today,
+            )
+        )
+        for name in ("early", "on_time", "late")
+    }
+    return {
+        "granularity": granularity,
+        "horizon_days": horizon_days,
+        "grace_days": grace_days,
+        "scenarios": scenarios,
+    }
+
+
+@router.get("/cash_position")
+async def get_cash_position(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    horizon_days: int = Query(90, ge=7, le=730),
+    opening_balance: str | None = Query(None),
+    min_balance_threshold: str | None = Query(None),
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_CFO_ROLES)),
+):
+    """Running cash-position projection: opening balance carried forward
+    period-by-period minus scheduled AP outflows, flagging periods that
+    close below `min_balance_threshold`.
+
+    The opening balance is a bring-your-own input (this is AP-only — we
+    don't hold a banking integration): the `opening_balance` query param
+    wins, else `Organization.settings.cashflow.opening_balance`, else
+    `0` with `opening_balance_source: "none"` so the UI prompts for one.
+    Inflows (receivables) aren't modelled — `closing = opening - outflow`."""
+    today = date.today()
+    rows = await _commitment_rows(
+        db, today=today, horizon_days=horizon_days, include_pending=True
+    )
+    periods = bucket_outflows(rows, granularity=granularity, today=today)
+
+    opening = _parse_decimal_param(opening_balance, "opening_balance")
+    source = "query"
+    if opening is None:
+        settings_balance = (org.settings or {}).get("cashflow", {}).get("opening_balance")
+        if settings_balance is not None:
+            opening = _parse_decimal_param(str(settings_balance), "opening_balance")
+            source = "settings"
+    if opening is None:
+        opening = Decimal("0")
+        source = "none"
+
+    threshold = _parse_decimal_param(min_balance_threshold, "min_balance_threshold")
+    position = compute_cash_position(
+        opening, periods, min_balance_threshold=threshold
+    )
+    breaches = (
+        detect_threshold_breaches(position, min_balance_threshold=threshold)
+        if threshold is not None
+        else []
+    )
+    return {
+        "granularity": granularity,
+        "horizon_days": horizon_days,
+        "opening_balance": float(opening),
+        "opening_balance_source": source,
+        "threshold": float(threshold) if threshold is not None else None,
+        "periods": [
+            {
+                "period": p["period"],
+                "period_start": p["period_start"].isoformat() if p["period_start"] else None,
+                "period_end": p["period_end"].isoformat() if p["period_end"] else None,
+                "opening": float(p["opening"]),
+                "outflow": float(p["outflow"]),
+                "inflow": float(p["inflow"]),
+                "closing": float(p["closing"]),
+                "below_threshold": p["below_threshold"],
+            }
+            for p in position
+        ],
+        "breaches": [
+            {
+                "period": b["period"],
+                "period_start": b["period_start"].isoformat() if b["period_start"] else None,
+                "period_end": b["period_end"].isoformat() if b["period_end"] else None,
+                "closing": float(b["closing"]),
+                "shortfall": float(b["shortfall"]),
+            }
+            for b in breaches
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +696,8 @@ async def drill_dpo(
 async def export_report(
     report: str,
     period_days: int = Query(90, ge=1, le=730),
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    horizon_days: int = Query(90, ge=7, le=730),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
@@ -437,6 +707,9 @@ async def export_report(
       - `vendor_spend` — per-vendor totals
       - `payment_register` — every payment in the period
       - `aging_snapshot` — current/30/60/90+ buckets as-of-today
+      - `cashflow_forecast` — projected AP outflows per period
+        (forward-looking; uses `granularity` + `horizon_days`, not
+        `period_days`)
 
     Returns `text/csv` with a Content-Disposition header so the
     browser saves it with a sensible filename. AP-manager + CFO
@@ -454,7 +727,14 @@ async def export_report(
     period_start = date.today() - timedelta(days=period_days)
     payload: str
 
-    if report == "invoice_register":
+    if report == "cashflow_forecast":
+        today = date.today()
+        rows = await _commitment_rows(
+            db, today=today, horizon_days=horizon_days, include_pending=True
+        )
+        periods = bucket_outflows(rows, granularity=granularity, today=today)
+        payload = EXPORTERS[report](periods)
+    elif report == "invoice_register":
         rows = await db.execute(select(Invoice).where(Invoice.invoice_date >= period_start))
         payload = EXPORTERS[report](rows.scalars().all())
     elif report == "vendor_spend":
