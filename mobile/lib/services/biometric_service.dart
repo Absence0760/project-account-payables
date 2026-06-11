@@ -1,5 +1,4 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
 
@@ -19,7 +18,10 @@ class BiometricService {
       final canCheck = await _auth.canCheckBiometrics;
       final isSupported = await _auth.isDeviceSupported();
       return canCheck || isSupported;
-    } on PlatformException {
+    } on Exception {
+      // PlatformException on a real device, MissingPluginException when no
+      // native impl is registered (e.g. unsupported platform / test VM). The
+      // contract is "is it available?" — any failure means no.
       return false;
     }
   }
@@ -42,7 +44,9 @@ class BiometricService {
       return await _auth.authenticate(
         localizedReason: 'Unlock Account Payables',
       );
-    } on PlatformException catch (e) {
+    } on Exception catch (e) {
+      // PlatformException on a real device, MissingPluginException when no
+      // native impl is registered — either way, treat as auth failure.
       debugPrint('[biometric] Auth failed: $e');
       return false;
     }
