@@ -332,7 +332,7 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 **Competitive gap: all competitors have a supplier portal**
 
 ### Vendor Self-Service
-**Status:** Partial — Phase 1 MVP shipped (separate auth, invoice submission, status/payment tracking). See [`backend/docs/supplier-portal.md`](../backend/docs/supplier-portal.md).
+**Status:** Partial — Phase 2 self-service shipped (PO flip, remittance download, approval-gated company/bank/tax self-update) on top of the Phase 1 MVP (separate auth, invoice submission, status/payment tracking). See [`backend/docs/supplier-portal.md`](../backend/docs/supplier-portal.md).
 
 Separate portal for vendors to interact with the AP system. Biggest workflow gap — forces email/manual invoice intake without this. Every competitor (Coupa CSP, Tipalti Supplier Hub, Basware Network, Stampli) offers this.
 
@@ -341,10 +341,10 @@ Separate portal for vendors to interact with the AP system. Biggest workflow gap
 - [x] Check invoice status and payment status
 - [x] View payment history — joins `payments` ↔ `invoices` on `vendor_id`
 - [x] Admin invite flow — `POST /api/vendors/{id}/portal-users` mints a temp password + welcome email
-- [ ] PO flip — create invoice from PO (pre-populate fields)
-- [ ] Download remittances (PDF generation)
-- [ ] Update company info, bank details, tax ID
-- [ ] Bank detail change requires AP admin approval (fraud prevention)
+- [x] PO flip — create invoice from PO (pre-populate fields) — `POST /api/portal/purchase-orders/{id}/flip` seeds an invoice from a vendor-owned PO into the existing extraction/workflow path; idempotent per `(vendor, po)`
+- [x] Download remittances (PDF generation) — `GET /api/portal/payments/{id}/remittance` reuses `services/remittance_pdf.py`, ownership-joined on `Invoice.vendor_id`
+- [x] Update company info, bank details, tax ID — `GET/PATCH /api/portal/company` (contact fields apply live, masked bank/tax) + `POST /api/portal/company/{bank-change,tax-id-change}` staging
+- [x] Bank detail change requires AP admin approval (fraud prevention) — bank/tax changes stage a `VendorChangeRequest`; the vendor row is untouched until an admin approves via `POST /api/vendors/change-requests/{id}/approve`
 - [ ] W-9/W-8 form upload and management
 - [ ] Notification preferences (email on payment, on rejection)
 - [ ] Virtual card detail viewing (secure, one-time access)

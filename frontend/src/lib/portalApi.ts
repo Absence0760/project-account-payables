@@ -63,11 +63,37 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	return res.json();
 }
 
+async function download(path: string): Promise<Blob> {
+	// The remittance endpoint returns application/pdf, not JSON, so it can't go
+	// through `request<T>` (which assumes a JSON body). Same auth + tenant
+	// headers, but we read the response as a Blob and let the caller save it.
+	const token = getToken();
+	const headers: Record<string, string> = {};
+	if (token) headers['Authorization'] = `Bearer ${token}`;
+	const tenant = getTenantSlug();
+	if (tenant) headers['X-Tenant-Slug'] = tenant;
+
+	const res = await fetch(`${BASE}${path}`, { headers });
+	if (res.status === 401 && token) {
+		clearPortalToken();
+		if (typeof window !== 'undefined') window.location.href = '/portal/login';
+		throw new Error('Unauthorized');
+	}
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({}));
+		throw new Error(body.detail || `API error ${res.status}`);
+	}
+	return res.blob();
+}
+
 export const portalApi = {
 	get: <T>(path: string) => request<T>(path),
 	post: <T>(path: string, body: unknown) =>
 		request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
+	patch: <T>(path: string, body: unknown) =>
+		request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
 	delete: (path: string) => request<void>(path, { method: 'DELETE' }),
+	download,
 	upload: <T>(path: string, file: File) => {
 		const form = new FormData();
 		form.append('file', file);

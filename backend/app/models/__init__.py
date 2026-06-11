@@ -10,6 +10,7 @@ from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, Purchas
 from app.models.signup import EmailVerification
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
+from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_priors import VendorExtractionPrior
 from app.models.vendor_user import VendorUser
 from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, WorkflowStep
@@ -36,6 +37,7 @@ __all__ = [
     "PaymentSchedule",
     "Payment",
     "Vendor",
+    "VendorChangeRequest",
     "VendorExtractionPrior",
     "VendorUser",
     "APException",

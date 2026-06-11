@@ -156,6 +156,7 @@ backend/
    - `InvoiceEmbedding` — vector embedding per invoice for RAG / duplicate detection
    - `VendorExtractionPrior` — accumulated vendor field priors that bias the next extraction
    - `VendorUser` — supplier-portal credentials scoped to a single Vendor
+   - `VendorChangeRequest` — staged supplier-portal change to a vendor's `bank_details` / `tax_id`, pending AP approval (migration 0022; fraud-prevention gate — see `docs/supplier-portal.md`)
    - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
    - `Notification` — in-app notification center rows (recipient_user_id, event_type, entity_id, title/body, read_at). See `docs/notifications.md`
 

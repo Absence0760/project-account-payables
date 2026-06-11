@@ -1,0 +1,381 @@
+"""Supplier-portal self-service — PO flip, remittance, company self-update.
+
+DB-backed (the `realdb` fixture) because the security-critical behaviour here
+is data-layer: a flipped invoice carries the right vendor_id + Decimal amount,
+a bank change stages WITHOUT mutating the vendor, and AP approval applies it.
+Source-level mocks can't prove the staging table actually leaves the vendor
+untouched — only a real round-trip can.
+
+Each test uses ONE tenant sessionmaker (`realdb.sessionmaker`) threaded through
+every seed/read so a single engine is reused per test — matching the stable
+pattern in `test_credit_memos.py`.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import func, select
+
+from app.api.deps import create_vendor_access_token
+from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
+from app.models.payment import Payment, PaymentRun
+from app.models.procurement import POLineItem, PurchaseOrder
+from app.models.vendor import Vendor
+from app.models.vendor_change_request import VendorChangeRequest
+from app.models.vendor_user import VendorUser
+from app.models.workflow import AuditLog
+
+TENANT = "a"
+
+
+async def _seed_vendor_and_user(mk, org_id, *, name="Acme Supply") -> tuple[uuid.UUID, uuid.UUID]:
+    vendor_id = uuid.uuid4()
+    vu_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Vendor(
+                id=vendor_id,
+                name=name,
+                organization_id=org_id,
+                status="active",
+                source="manual",
+            )
+        )
+        s.add(
+            VendorUser(
+                id=vu_id,
+                vendor_id=vendor_id,
+                email=f"{vu_id}@portal.test",
+                full_name="Portal User",
+                hashed_password="x",
+                is_active=True,
+            )
+        )
+        await s.commit()
+    return vendor_id, vu_id
+
+
+def _portal_client(realdb, vendor_user_id: uuid.UUID, vendor_id: uuid.UUID):
+    """A realdb ASGI client carrying a vendor JWT instead of an employee one."""
+    token = create_vendor_access_token(vendor_user_id, vendor_id)
+    client = realdb.client(key=TENANT, role=None)
+    client.headers["Authorization"] = f"Bearer {token}"
+    return client
+
+
+# ---------------------------------------------------------------------------
+# PO flip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_po_flip_creates_invoice_from_po(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+
+    po_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            PurchaseOrder(
+                id=po_id,
+                po_number="PO-FLIP-1",
+                vendor_id=vendor_id,
+                total=Decimal("4250.75"),
+                status="open",
+                organization_id=org_id,
+            )
+        )
+        s.add(
+            POLineItem(
+                po_id=po_id,
+                description="Widgets",
+                quantity=Decimal("10"),
+                unit_price=Decimal("425.075"),
+                total=Decimal("4250.75"),
+            )
+        )
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/purchase-orders/{po_id}/flip")
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["status"] in (InvoiceStatus.new.value, "pending")
+
+    async with mk() as s:
+        inv = (
+            await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(body["id"])))
+        ).scalar_one()
+        assert inv.vendor_id == vendor_id
+        assert inv.po_number == "PO-FLIP-1"
+        assert inv.amount == Decimal("4250.75")
+        assert isinstance(inv.amount, Decimal)
+        lines = (
+            (await s.execute(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == inv.id)))
+            .scalars()
+            .all()
+        )
+        assert lines  # PO line copied across
+        assert lines[0].description == "Widgets"
+        actions = {r.action for r in (await s.execute(select(AuditLog))).scalars().all()}
+    assert "invoice.created_from_po" in actions
+
+
+@pytest.mark.asyncio
+async def test_po_flip_is_idempotent(realdb):
+    """Two flips of the same PO from the same vendor return the same invoice
+    — a double-click can't mint two invoices that each seed the payment path."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    po_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            PurchaseOrder(
+                id=po_id,
+                po_number="PO-FLIP-DUP",
+                vendor_id=vendor_id,
+                total=Decimal("100.00"),
+                status="open",
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        first = await client.post(f"/api/portal/purchase-orders/{po_id}/flip")
+        second = await client.post(f"/api/portal/purchase-orders/{po_id}/flip")
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["id"] == second.json()["id"]
+
+    async with mk() as s:
+        count = (
+            await s.execute(
+                select(func.count()).select_from(Invoice).where(Invoice.po_number == "PO-FLIP-DUP")
+            )
+        ).scalar()
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_po_flip_cross_vendor_404(realdb):
+    """A PO owned by a different vendor is invisible — 404, never flipped."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    other_vendor_id, _ = await _seed_vendor_and_user(mk, org_id, name="Other Co")
+    po_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            PurchaseOrder(
+                id=po_id,
+                po_number="PO-OTHER",
+                vendor_id=other_vendor_id,
+                total=Decimal("999.00"),
+                status="open",
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/purchase-orders/{po_id}/flip")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Remittance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remittance_download_for_own_payment(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    inv_id = uuid.uuid4()
+    pay_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Invoice(
+                id=inv_id,
+                invoice_number="INV-REM-1",
+                vendor_name="Acme Supply",
+                vendor_id=vendor_id,
+                amount=Decimal("321.00"),
+                currency="USD",
+                status=InvoiceStatus.paid,
+                organization_id=org_id,
+            )
+        )
+        run = PaymentRun(organization_id=org_id, status="completed", total_amount=Decimal("321.00"))
+        s.add(run)
+        await s.flush()
+        s.add(
+            Payment(
+                id=pay_id,
+                payment_run_id=run.id,
+                invoice_id=inv_id,
+                amount=Decimal("321.00"),
+                method="ach",
+                status="completed",
+                reference="REM-REF-1",
+                completed_at=datetime.now(UTC),
+            )
+        )
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.get(f"/api/portal/payments/{pay_id}/remittance")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content[:4] == b"%PDF"
+
+
+@pytest.mark.asyncio
+async def test_remittance_foreign_payment_404(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    other_vendor_id, _ = await _seed_vendor_and_user(mk, org_id, name="Other Co")
+    inv_id = uuid.uuid4()
+    pay_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Invoice(
+                id=inv_id,
+                invoice_number="INV-OTHER",
+                vendor_name="Other Co",
+                vendor_id=other_vendor_id,
+                amount=Decimal("50.00"),
+                currency="USD",
+                status=InvoiceStatus.paid,
+                organization_id=org_id,
+            )
+        )
+        await s.flush()
+        s.add(
+            Payment(
+                id=pay_id,
+                invoice_id=inv_id,
+                amount=Decimal("50.00"),
+                method="ach",
+                status="completed",
+                reference="FOREIGN",
+            )
+        )
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.get(f"/api/portal/payments/{pay_id}/remittance")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Company self-service + change-request staging
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_company_patch_applies_contact_fields_live(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.patch(
+            "/api/portal/company",
+            json={"phone": "555-0100", "address": "1 New St"},
+        )
+    assert resp.status_code == 200, resp.text
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert v.phone == "555-0100"
+        assert v.address == "1 New St"
+
+
+@pytest.mark.asyncio
+async def test_bank_change_stages_and_does_not_mutate_vendor(realdb):
+    """The fraud control: a bank change creates a PENDING row and leaves
+    `Vendor.bank_details` untouched."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(
+            "/api/portal/company/bank-change",
+            json={"bank_details": {"account_number": "12345678", "bank_name": "New Bank"}},
+        )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["change_type"] == "bank_details"
+    assert body["status"] == "pending"
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert v.bank_details is None  # NOT applied
+        req = (
+            await s.execute(
+                select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+            )
+        ).scalar_one()
+        assert req.status == "pending"
+        assert req.proposed_value["bank_details"]["account_number"] == "12345678"
+
+
+@pytest.mark.asyncio
+async def test_tax_id_change_stages_and_does_not_mutate_vendor(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post("/api/portal/company/tax-id-change", json={"tax_id": "98-7654321"})
+    assert resp.status_code == 202, resp.text
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert v.tax_id is None  # NOT applied
+
+
+@pytest.mark.asyncio
+async def test_duplicate_pending_bank_change_409(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        first = await client.post(
+            "/api/portal/company/bank-change",
+            json={"bank_details": {"account_number": "111"}},
+        )
+        second = await client.post(
+            "/api/portal/company/bank-change",
+            json={"bank_details": {"account_number": "222"}},
+        )
+    assert first.status_code == 202
+    assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_company_get_masks_bank_and_tax(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        v.tax_id = "12-3456789"
+        v.bank_details = {"account_last4": "6789"}
+        await s.commit()
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.get("/api/portal/company")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tax_id_last4"] == "6789"
+    assert body["has_bank_details"] is True
+    # The full tax id must never appear in the payload.
+    assert "12-3456789" not in resp.text

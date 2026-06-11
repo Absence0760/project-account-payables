@@ -120,3 +120,69 @@ class VendorResponse(BaseModel):
             created_at=v.created_at.isoformat() if v.created_at else "",
             bank_details=bank_details,
         )
+
+
+def _mask_change_value(change_type: str, proposed_value: dict) -> dict:
+    """Mask the sensitive parts of a staged change for list/summary views.
+
+    Bank account numbers and the full tax ID never appear in a list payload
+    — only enough to identify the change (a last-4). The full value is
+    revealed only on the dedicated detail/approve path so AP can verify it.
+    """
+    if change_type == "tax_id":
+        tax_id = str(proposed_value.get("tax_id") or "")
+        return {"tax_id_last4": tax_id[-4:] if len(tax_id) >= 4 else None}
+    if change_type == "bank_details":
+        bank = proposed_value.get("bank_details") or {}
+        account = str(bank.get("account_number") or "")
+        return {
+            "bank_name": bank.get("bank_name"),
+            "account_last4": account[-4:] if len(account) >= 4 else bank.get("account_last4"),
+        }
+    return {}
+
+
+class VendorChangeRequestResponse(BaseModel):
+    """Admin-side view of a staged vendor change request.
+
+    `proposed_value` is masked by default (`reveal=False`); the full
+    banking / tax value is included only when an admin explicitly opens
+    the detail or is about to apply the change. The route is RBAC-gated.
+    """
+
+    id: str
+    vendor_id: str
+    vendor_name: str | None = None
+    change_type: str
+    status: str
+    proposed_value: dict
+    requested_by_vendor_user_id: str
+    reviewed_by_user_id: str | None = None
+    reviewed_at: str | None = None
+    review_note: str | None = None
+    created_at: str
+
+    @classmethod
+    def from_db(
+        cls, r, *, vendor_name: str | None = None, reveal: bool = False
+    ) -> "VendorChangeRequestResponse":
+        proposed = (
+            r.proposed_value if reveal else _mask_change_value(r.change_type, r.proposed_value)
+        )
+        return cls(
+            id=str(r.id),
+            vendor_id=str(r.vendor_id),
+            vendor_name=vendor_name,
+            change_type=r.change_type,
+            status=r.status,
+            proposed_value=proposed,
+            requested_by_vendor_user_id=str(r.requested_by_vendor_user_id),
+            reviewed_by_user_id=str(r.reviewed_by_user_id) if r.reviewed_by_user_id else None,
+            reviewed_at=r.reviewed_at.isoformat() if r.reviewed_at else None,
+            review_note=r.review_note,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+
+
+class VendorChangeReviewRequest(BaseModel):
+    review_note: str | None = Field(default=None, max_length=1000)

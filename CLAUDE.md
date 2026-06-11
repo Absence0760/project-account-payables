@@ -111,7 +111,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
 | `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra/Authentik — list/get/create/PUT/PATCH/delete (per-tenant bearer auth) |
 | `/portal/auth` | Supplier-portal auth (VendorUser, JWT `typ=vendor`) — login, logout, me, change-password |
-| `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, vendor-scoped |
+| `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, PO flip, remittance download, company/bank/tax self-service (bank/tax stage for AP approval), vendor-scoped |
 | `/admin` | User CRUD, role assignment |
 | `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
 | `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`) |
@@ -190,7 +190,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, Notification
+**Tenant-scoped**: Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, Notification
 
 ### RBAC roles
 
