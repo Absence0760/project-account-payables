@@ -1,5 +1,6 @@
 """Invoice workflow state machine — validates transitions and orchestrates steps."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -11,6 +12,8 @@ from sqlalchemy.orm import selectinload
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowStep
 from app.services.audit_dispatch import dispatch_audit
+
+_log = logging.getLogger(__name__)
 
 # ---------- valid status transitions ----------
 
@@ -181,7 +184,100 @@ async def transition_invoice(
         entity_id=invoice.id,
         details={**(details or {}), "old_status": old_status, "new_status": target_status.value},
     )
+
+    # Best-effort notification fan-out. Keyed off the *resulting* status so all
+    # the paths that converge on a given status (e.g. payment webhook + ERP
+    # webhook + ERP-sync all reaching `paid`) notify once, here, rather than at
+    # every call site. Never allowed to break the transition — notify_event
+    # swallows its own failures, and this outer guard is a final backstop so a
+    # bug in recipient resolution can't abort a committed status change.
+    try:
+        await _maybe_notify_transition(
+            db,
+            invoice,
+            target_status,
+            actor_id=actor_id,
+            details=details,
+        )
+    except Exception:  # noqa: BLE001
+        _log.exception(
+            "notification hook failed for invoice transition to %s", target_status.value
+        )
     return invoice
+
+
+async def _maybe_notify_transition(
+    db: AsyncSession,
+    invoice: Invoice,
+    target_status: InvoiceStatus,
+    *,
+    actor_id: uuid.UUID | None,
+    details: dict | None,
+) -> None:
+    """Map a status transition to a notification event + recipients and dispatch.
+
+    The "assigned" event is NOT handled here (assignment doesn't always change
+    status) — it's fired explicitly from `review.assign_reviewer`.
+    """
+    from app.models.notification import (
+        EVENT_INVOICE_APPROVED,
+        EVENT_INVOICE_PAID,
+        EVENT_INVOICE_REJECTED,
+    )
+    from app.services.notification_dispatch import (
+        notify_event,
+        resolve_role_user_ids,
+    )
+    from app.services.notification_templates import InvoiceContext
+
+    event_type: str | None = None
+    recipients: list[uuid.UUID] = []
+
+    # Read every invoice field defensively — the hook must never assume more
+    # about `invoice` than `dispatch_audit` does (which only needs id /
+    # correlation_id / organization_id). A missing optional field degrades to
+    # "no notification," never an exception that aborts the transition.
+    uploaded_by_id = getattr(invoice, "uploaded_by_id", None)
+
+    if target_status is InvoiceStatus.approved:
+        event_type = EVENT_INVOICE_APPROVED
+        if uploaded_by_id:
+            recipients.append(uploaded_by_id)
+    elif target_status is InvoiceStatus.rejected:
+        event_type = EVENT_INVOICE_REJECTED
+        if uploaded_by_id:
+            recipients.append(uploaded_by_id)
+    elif target_status is InvoiceStatus.paid:
+        event_type = EVENT_INVOICE_PAID
+        if uploaded_by_id:
+            recipients.append(uploaded_by_id)
+        try:
+            recipients.extend(
+                await resolve_role_user_ids(invoice.organization_id, "ap_manager")
+            )
+        except Exception:  # noqa: BLE001 — role lookup must not break the transition
+            pass
+
+    if not event_type or not recipients:
+        return
+
+    ctx = InvoiceContext(
+        invoice_number=getattr(invoice, "invoice_number", ""),
+        vendor_name=getattr(invoice, "vendor_name", ""),
+        amount=getattr(invoice, "amount", None),
+        currency=getattr(invoice, "currency", None) or "USD",
+        reason=(details or {}).get("reason"),
+    )
+    await notify_event(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        event_type=event_type,
+        entity_id=invoice.id,
+        recipient_user_ids=recipients,
+        invoice_ctx=ctx,
+        actor_id=actor_id,
+    )
 
 
 # ---------- workflow instance / step helpers ----------

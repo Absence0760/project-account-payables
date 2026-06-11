@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -59,6 +59,15 @@ class User(Base, TimestampMixin):
     # their approval assignments are routed to the delegate.
     delegate_to_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     delegate_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Per-user notification preferences. Shape: a map of event_type ->
+    # {"email": bool, "in_app": bool}. Empty `{}` means "use defaults"
+    # (all channels on) — see services/notification_dispatch.resolve_prefs.
+    # User-global (preferences aren't tenant-scoped), so they live here on the
+    # control-plane User rather than in any tenant DB.
+    notification_prefs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False

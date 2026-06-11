@@ -165,6 +165,13 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = False
     public_url: str = "http://localhost:7777"  # where the frontend is served
     tenant_url_template: str = "http://{slug}.localhost:7777"
+
+    # Master switch for the email + in-app notification system. When false,
+    # the `transition_invoice` hook and `assign_reviewer` skip notification
+    # dispatch entirely — no in-app rows, no emails. Defaults on; flip off to
+    # silence notifications without a code change. Notification *send* is always
+    # best-effort regardless of this flag (failures never break a transition).
+    notifications_enabled: bool = True
     hcaptcha_secret: str = ""  # empty = skip captcha verification
     hcaptcha_sitekey: str = ""  # exposed to frontend via a public endpoint
     signup_rate_limit_per_hour: int = 5

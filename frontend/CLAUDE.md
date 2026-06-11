@@ -42,6 +42,8 @@ pnpm check            # typecheck
 | `/organization` | `routes/organization/+page.svelte` | `GET/PATCH /api/organization` |
 | `/admin` | `routes/admin/+page.svelte` | `GET/POST/PATCH/DELETE /api/admin/users`, `GET /api/admin/roles` |
 | `/cfo` | `routes/cfo/+page.svelte` | `GET /api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`, `GET /api/analytics/export/cashflow_forecast` (admin + cfo) — predictive cash-flow dashboard |
+| `/notifications` | `routes/notifications/+page.svelte` | `GET /api/notifications` (list, `?unread_only=`), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` — clickable rows open the related invoice (`/invoices?id=`) |
+| `/profile` (notifications prefs) | `routes/profile/+page.svelte` | `GET/PATCH /api/notifications/preferences` — per-event in-app/email toggles |
 
 Root layout (`+layout.svelte`) routing logic:
 - No tenant subdomain → Landing component (public) or `<slot />` for `/signup` / `/verify`
@@ -80,6 +82,7 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 | `workflowStore` | `workflows.svelte.ts` | `all`, `loading`, `total`, `hasMore`, `activeSteps` | `fetch()`, `loadMore()`, `fetchActiveSteps()`, `getById()`, `create()`, `update()` |
 | `adminStore` | `admin.svelte.ts` | `users`, `roles`, `loading` | `fetchUsers()`, `fetchRoles()`, `createUser()`, `updateUser()`, `deleteUser()` |
 | `sidebar` | `sidebar.svelte.ts` | `collapsed` | `toggle()` |
+| `notificationStore` | `notifications.svelte.ts` | `items`, `unread`, `total`, `loading`, `hasMore`, `prefs` | `fetchList({unreadOnly})`, `loadMore()`, `fetchUnreadCount()`, `markRead(id)`, `markAllRead()`, `fetchPrefs()`, `updatePrefs()`, `startPolling()`/`stopPolling()` (60s unread-count poll for the sidebar badge; started from `+layout` when signed in) |
 
 ### Components (`src/lib/components/`)
 

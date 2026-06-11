@@ -55,8 +55,8 @@ List endpoints share one contract, defined once in `app/api/pagination.py`
 The frontend renders the first page then a "Load more" control that requests
 `page=N+1` and appends. Paginated lists: `/invoices`, `/vendors`, `/payments`,
 `/payments/runs/`, `/purchase-orders`, `/goods-receipts`, `/credit-memos`,
-`/exceptions`, `/cards`, `/workflows`, `/admin/users`, and the supplier-portal
-`/portal/invoices` + `/portal/payments`.
+`/exceptions`, `/notifications`, `/cards`, `/workflows`, `/admin/users`, and the
+supplier-portal `/portal/invoices` + `/portal/payments`.
 
 **Intentionally not paginated** (bounded reference collections returned in
 full): `/gl-accounts` (feeds the invoice GL dropdown, which needs every row)
@@ -257,6 +257,22 @@ All exception endpoints require `admin/manager`.
 | `GET`  | `/api/exceptions`                 | List flagged invoices (filter by `status`, `type`, `severity`) |
 | `GET`  | `/api/exceptions/summary`         | Counts by status + open-by-type breakdown |
 | `POST` | `/api/exceptions/{id}/resolve`    | Body `{resolution, action}` (`resolve`/`escalate`/`dismiss`) |
+
+## Notifications
+
+Per-user, any authenticated role. List + mark endpoints are tenant-scoped to
+`recipient_user_id == current user`; a notification belonging to another user
+returns the same `404` as a missing one (no enumeration). Preferences are
+user-global (control plane). See `notifications.md`.
+
+| Method  | Path                                  | Description |
+|---------|---------------------------------------|-------------|
+| `GET`   | `/api/notifications`                  | List current user's notifications (`?unread_only=&page=&page_size=`); envelope adds `unread` |
+| `GET`   | `/api/notifications/unread-count`     | `{unread}` for the sidebar badge |
+| `POST`  | `/api/notifications/{id}/read`        | Mark one read (naturally idempotent); `404` if not owned |
+| `POST`  | `/api/notifications/read-all`         | Mark all current-user unread → read; returns `{updated}` |
+| `GET`   | `/api/notifications/preferences`      | Per-event `{email, in_app}` map (defaults if unset) |
+| `PATCH` | `/api/notifications/preferences`      | Partial update; unspecified events unchanged |
 
 ## Dashboard
 
