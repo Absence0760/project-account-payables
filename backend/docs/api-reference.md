@@ -201,6 +201,10 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `POST`   | `/api/vendors/{id}/verify`      | admin/manager | Promote `unverified` → `active` |
 | `POST`   | `/api/vendors/{id}/reject`      | admin/manager | Mark `rejected` |
 | `POST`   | `/api/vendors/sync-erp`         | admin/manager | Pull vendors from connected ERP |
+| `GET`    | `/api/vendors/change-requests`  | admin/manager | Pending supplier change-request queue (`?status=`); proposed value masked |
+| `GET`    | `/api/vendors/{id}/change-requests` | admin/manager/cfo | One vendor's change requests; value revealed |
+| `POST`   | `/api/vendors/change-requests/{id}/approve` | admin/manager | Apply staged bank/tax change to the vendor (exactly-once) |
+| `POST`   | `/api/vendors/change-requests/{id}/reject`  | admin/manager | Reject; vendor untouched |
 
 ## Purchase Orders
 
@@ -307,6 +311,28 @@ Used by 3-way matching. `admin` / `ap_manager` / `ap_clerk`.
 | `GET`  | `/api/tax/vendors/{vendor_id}`           | admin, ap_manager, cfo | Vendor's 1099 status (W-9 received, classification, YTD totals) |
 | `POST` | `/api/tax/vendors/{vendor_id}/w9`        | admin, ap_manager | Upload signed W-9 PDF + mark vendor 1099-eligible |
 | `GET`  | `/api/tax/1099/{year}`                   | admin, ap_manager, cfo | YTD 1099 summary across all eligible vendors |
+
+## Supplier Portal (`typ=vendor` JWT, vendor-scoped)
+
+All require a vendor JWT (`get_current_vendor_user`); every query filters on the
+caller's own `vendor_id`; cross-vendor IDs return 404. See
+[`supplier-portal.md`](supplier-portal.md).
+
+| Method | Path                                    | Description |
+|--------|-----------------------------------------|-------------|
+| `GET`  | `/api/portal/invoices`                  | Vendor-scoped invoice list |
+| `GET`  | `/api/portal/invoices/{id}`             | Get one (404 cross-vendor) |
+| `POST` | `/api/portal/invoices`                  | Multipart PDF upload → extraction pipeline |
+| `GET`  | `/api/portal/payments`                  | Payment history |
+| `GET`  | `/api/portal/payments/{id}/remittance`  | Remittance-advice PDF (404 on a foreign payment) |
+| `GET`  | `/api/portal/purchase-orders`           | Vendor-scoped PO list |
+| `GET`  | `/api/portal/purchase-orders/{id}`      | PO detail + line items |
+| `POST` | `/api/portal/purchase-orders/{id}/flip` | PO flip → new invoice (idempotent per vendor+PO) |
+| `GET`  | `/api/portal/company`                   | Company info (bank/tax masked) + pending change |
+| `PATCH`| `/api/portal/company`                   | Update phone/address/email (applies live) |
+| `POST` | `/api/portal/company/bank-change`       | Stage a bank-details change (202; AP approval required) |
+| `POST` | `/api/portal/company/tax-id-change`     | Stage a tax-ID change (202; AP approval required) |
+| `GET`  | `/api/portal/company/change-requests`   | This vendor's change requests + statuses |
 
 ## Analytics
 

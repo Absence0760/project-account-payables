@@ -124,6 +124,11 @@ Migrations may target either the control plane or tenant DBs — never both. Eac
 | 0005     | Control | `users`      | Adds `users.mfa_secret`, `users.mfa_enabled`, `users.mfa_enrolled_at` (TOTP MFA).                                        |
 | 0006     | Tenant  | `invoices`   | Adds `invoices.po_match` JSONB column (latest 2/3-way PO match result).                                                  |
 | 0007     | Tenant  | `payments`   | Adds `payments.provider`, `provider_payment_id`, `failure_reason`, `submitted_at`, `completed_at` (adapter lifecycle).   |
+| 0022     | Tenant  | `vendors`    | Creates `vendor_change_requests` (supplier-portal staged bank/tax changes pending AP approval) + a partial index on `status='pending'`. |
+
+> Migration 0022 may need renumbering or a merge revision at integration time — sibling features built on parallel branches may also claim `0022` (all branch off `0021_scim_bearer_hash`).
+
+The `vendor_change_requests` table (tenant DB): `id`, `vendor_id` (FK → `vendors`, ON DELETE CASCADE), `organization_id`, `requested_by_vendor_user_id`, `change_type` (`bank_details` | `tax_id`), `status` (`pending` | `approved` | `rejected`), `proposed_value` (JSONB — banking PII, never logged), `reviewed_by_user_id`, `reviewed_at`, `review_note`, `created_at`, `updated_at`. Bank/tax changes from the supplier portal stage a row here instead of mutating the vendor; AP approval applies them. See `docs/supplier-portal.md`.
 
 ## Seeding
 

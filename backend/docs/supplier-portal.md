@@ -58,14 +58,57 @@ uses `get_current_vendor_user` (except `/portal/auth/login` and
 | GET    | `/portal/invoices/{id}`          | 404 for "doesn't exist" AND "belongs to another vendor" (no ID enumeration)   |
 | POST   | `/portal/invoices`               | Multipart PDF upload — routes into the same extraction pipeline as AP uploads |
 | GET    | `/portal/payments`               | Payments joined to Invoice to filter on `vendor_id`                           |
+| GET    | `/portal/payments/{id}/remittance` | Vendor-scoped remittance PDF; ownership via `Payment→Invoice.vendor_id`; 404 on a foreign payment |
 
-### Admin invite (`vendors.py`)
+### Purchase orders + PO flip (`portal.py`)
+
+| Method | Path                                  | Notes                                                                        |
+|--------|---------------------------------------|------------------------------------------------------------------------------|
+| GET    | `/portal/purchase-orders`             | Vendor-scoped PO list (with line-item counts)                                |
+| GET    | `/portal/purchase-orders/{id}`        | PO detail + line items; 404 for a foreign PO                                 |
+| POST   | `/portal/purchase-orders/{id}/flip`   | **PO flip** — create an invoice pre-populated from a vendor-owned PO         |
+
+### Company self-service (`portal.py`)
+
+| Method | Path                                  | Notes                                                                        |
+|--------|---------------------------------------|------------------------------------------------------------------------------|
+| GET    | `/portal/company`                     | Current company info; bank/tax **masked**; surfaces any pending change       |
+| PATCH  | `/portal/company`                     | Update phone/address/email — **applies live**                               |
+| POST   | `/portal/company/bank-change`         | **Stages** a `bank_details` change (NOT applied); 202; deduped on pending    |
+| POST   | `/portal/company/tax-id-change`       | **Stages** a `tax_id` change (NOT applied); 202                             |
+| GET    | `/portal/company/change-requests`     | This vendor's own change requests + statuses                                |
+
+### Admin invite + change-request approval (`vendors.py`)
 
 | Method | Path                                                 | Notes                                 |
 |--------|------------------------------------------------------|---------------------------------------|
 | GET    | `/vendors/{id}/portal-users`                         | List portal users for a vendor        |
 | POST   | `/vendors/{id}/portal-users`                         | Invite — temp password + welcome email |
 | DELETE | `/vendors/{id}/portal-users/{vendor_user_id}`        | Remove a portal user                  |
+| GET    | `/vendors/change-requests`                           | Pending change-request queue (admin, ap_manager); value masked |
+| GET    | `/vendors/{id}/change-requests`                      | One vendor's requests (admin, ap_manager, cfo); value revealed |
+| POST   | `/vendors/change-requests/{id}/approve`              | Apply the staged change to the vendor (admin, ap_manager); `FOR UPDATE` locked, exactly-once |
+| POST   | `/vendors/change-requests/{id}/reject`               | Mark rejected; never touches the vendor (admin, ap_manager) |
+
+## Self-service change-request gate (fraud prevention)
+
+Bank-detail and tax-ID changes from the portal do **not** apply live — they
+stage a `vendor_change_requests` row (`status=pending`) and leave the `Vendor`
+row untouched. AP approval is what applies the change:
+
+- **bank_details** → on approve, merged into `Vendor.bank_details` via
+  `_merge_bank_details` (the same merge the AP PATCH uses).
+- **tax_id** → on approve, sets `Vendor.tax_id` and clears `tin_verified_at`
+  (a re-keyed TIN must be re-verified).
+
+The approve handler locks the request row `FOR UPDATE` and 409s if it's already
+resolved, so the apply is exactly-once. Every stage / approve / reject writes an
+append-only audit row; the audit `details` (and the staging table) carry only
+`{change_type, request_id, last4}` — never the full account number or tax ID.
+A vendor can hold at most one pending request per `change_type` (dedupe → 409).
+
+This is the fraud control: a redirected bank account has **zero effect on where
+money goes** until an AP admin explicitly approves it.
 
 ## Security invariants
 
@@ -115,16 +158,26 @@ Routes:
 | `/portal/login`               | Sign-in form                                           |
 | `/portal/change-password`     | Forced first-login rotation                            |
 | `/portal/invoices`            | List + upload                                          |
-| `/portal/payments`            | Payment history                                        |
+| `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
+| `/portal/payments`            | Payment history + per-row "Download remittance"        |
+| `/portal/company`             | Contact (live) + bank/tax change requests (staged)     |
 
-## Phase 2 (deferred)
+The portal company form makes the approval-gating visible: bank/tax changes
+show a "pending AP approval" banner (read from `GET /portal/company`'s
+`pending_change`) so the vendor isn't surprised the change didn't take effect.
 
-Items intentionally out of scope for the initial landing cut. Add these only
-when there's demand from the first paying customer:
+## Phase 2 (shipped)
 
-- Bank-detail changes (with AP admin approval workflow for fraud mitigation)
+- [x] PO flip — create invoice pre-populated from a PO (idempotent per `(vendor, po)`)
+- [x] Remittance download (reuses `services/remittance_pdf.py`)
+- [x] Company info self-update (contact live; bank/tax staged)
+- [x] Bank-detail changes with AP admin approval workflow (fraud mitigation)
+
+## Phase 3 (deferred)
+
+Add these when there's demand from the first paying customer:
+
 - W-9 / W-8 upload + storage
-- PO flip — create invoice pre-populated from a PO
 - Virtual card viewing (secure, one-time access)
 - Notification preferences (email-on-paid, email-on-rejected)
 - Dynamic-discount offers
