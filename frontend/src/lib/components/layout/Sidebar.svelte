@@ -60,6 +60,7 @@
 		{
 			title: 'Settings',
 			items: [
+				{ label: 'Audit Trail', href: '/audit', icon: 'audit', requiredRoles: ['admin', 'cfo'] },
 				{ label: 'Organization', href: '/organization', icon: 'organization', requiredRoles: ['admin'] },
 				{ label: 'Users', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
 				{ label: 'Roles', href: '/admin/roles', icon: 'admin', requiredRoles: ['admin'] },
@@ -130,6 +131,8 @@
 							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
 						{:else if item.icon === 'bell'}
 							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+						{:else if item.icon === 'audit'}
+							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
 						{/if}
 						{#if item.badge && unread > 0 && collapsed}
 							<span class="nav-badge-dot" aria-hidden="true"></span>

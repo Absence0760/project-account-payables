@@ -330,6 +330,16 @@ Every webhook handler returns **204 silently** on every rejection path (bad sign
 - **Filename sanitiser**: `app/services/storage.py::_safe_filename` strips path separators, `..`, leading dots (no dotfiles), and control / non-printable characters. Used by `upload_invoice_file` before interpolating the filename into the S3 key. Without it, a vendor portal POST with filename `../../other-org/secret.pdf` could land under another tenant's prefix.
 - **File download cross-tenant check**: `GET /api/workflow/file/{file_key:path}` verifies the key's first segment equals the requesting user's `organization_id`. Same 404 for wrong-org and missing-file so the response doesn't enumerate prefixes.
 
+## Audit immutability + access auditing (SOX)
+
+The `audit_log` table is **append-only at the database level**: migration `0022_sox_audit_immutable` installs `BEFORE` triggers (DDL in `app/services/audit_immutability.py`) that reject every DELETE and every UPDATE touching a column other than `shipped_at`. The `shipped_at` carve-out lets `audit_log_shipper.py` stamp shipped rows; everything else is frozen, so a rogue ORM call or a direct `psql` session can't tamper with the trail. Installed on every tenant DB — migration fan-out for existing tenants, `tenant_provisioning._create_tenant_tables` for fresh ones (which use `create_all`, not Alembic). See `docs/audit-log-shipping.md`.
+
+Two request-path helpers in `app/services/audit_access.py` (thin wrappers over `dispatch_audit`, not reimplementations):
+- `log_access(...)` — writes a `<entity_type>.viewed` row for SOX access-control auditing. Instrumented reads: vendor detail (`vendor.viewed`), payment detail (`payment.viewed`), card PAN reveal (`card.details_viewed`), the audit-trail view (`audit.viewed`), and every auditor export (`audit.exported`). The `details` payload records the field-**names** accessed, never the values — no tax id / bank number / PAN ever enters the audit trail (PII-out-of-logs).
+- `build_field_diff(before, after, fields)` — produces `{field: {old, new}}` for SOX change history on invoice edits + approve-with-corrections. Money serialises as **string-Decimal**, never float.
+
+The auditor-export surface is `app/api/audit.py` (`/api/audit/export`, `/api/audit/invoice/{id}` — GET-only, admin/CFO). See `docs/api-reference.md` § Audit Trail.
+
 ## Dispatch modes
 
 Extraction, ERP push, and audit logging support two execution modes:

@@ -114,13 +114,23 @@ async def approve_invoice(
     # Threshold enforcement
     await _enforce_approval_thresholds(db, invoice, actor_roles or set())
 
-    # Apply any field corrections
+    # Apply any field corrections, capturing a per-field before/after diff for
+    # the audit trail (SOX change-history requirement). Money fields serialise
+    # as string-Decimal inside the diff (build_field_diff handles the typing).
+    field_diff: dict = {}
     if corrections:
+        from app.services.audit_access import build_field_diff
+
         field_map = {"vendor": "vendor_name"}
+        before: dict = {}
+        after: dict = {}
         for field, value in corrections.items():
             if value is not None:
                 attr = field_map.get(field, field)
+                before[attr] = getattr(invoice, attr, None)
                 setattr(invoice, attr, value)
+                after[attr] = getattr(invoice, attr, None)
+        field_diff = build_field_diff(before, after, list(after.keys()))
 
         # Store vendor-consistent corrections in the correction cache so
         # future extractions from the same vendor pick up the right values.
@@ -179,7 +189,7 @@ async def approve_invoice(
         InvoiceStatus.approved,
         actor_id=actor_id,
         action_name="invoice.approved",
-        details={"corrections": corrections} if corrections else None,
+        details={"changes": field_diff} if field_diff else None,
     )
 
     if instance:

@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
 
 /**
  * Invoice detail modal — opens when the row's invoice-number link
@@ -73,5 +73,62 @@ test.describe('/invoices invoice detail modal', () => {
 
 		await modal.getByRole('button', { name: 'Close' }).click();
 		await expect(modal).toBeHidden();
+	});
+
+	test('Activity timeline renders the per-field before/after change diff', async ({
+		page
+	}) => {
+		// SOX change history: editing an invoice writes an `invoice.edited`
+		// audit row carrying details.changes = {field: {old, new}}. The modal's
+		// Activity tab renders that as a struck-through old → new diff. Drive the
+		// edit through the API (the UI form-submit path is covered in edit.spec),
+		// then reopen the modal and assert the diff is visible.
+		const headers = await authedTenantHeaders(page);
+		const listResp = await page.request.get(`${API_BASE}/api/invoices`, { headers });
+		const listed = (await listResp.json()) as {
+			items: Array<{ id: string; invoice_number: string; description: string | null; status: string }>;
+		};
+		const immutable = new Set([
+			'sending_to_erp',
+			'sent_to_erp',
+			'posted_in_erp',
+			'payment_scheduled',
+			'paid',
+			'done'
+		]);
+		const target = listed.items.find((i) => !immutable.has(i.status));
+		expect(target, 'no editable invoice in the seed').toBeTruthy();
+		const original = target!.description ?? '';
+		const next = `e2e-diff-${Date.now()}`;
+
+		try {
+			const patch = await page.request.fetch(`${API_BASE}/api/invoices/${target!.id}`, {
+				method: 'PATCH',
+				headers: { ...headers, 'Content-Type': 'application/json' },
+				data: JSON.stringify({ description: next })
+			});
+			expect(patch.status()).toBe(200);
+
+			// Reload the list, open the edited invoice's modal.
+			await page.reload();
+			await page
+				.locator('table tbody tr', { hasText: target!.invoice_number })
+				.first()
+				.getByRole('button', { name: 'Edit' })
+				.click();
+			const modal = page.locator('div.modal[role="dialog"]');
+			await expect(modal).toBeVisible();
+
+			// The change diff row shows the new value (and the struck-through old).
+			const changes = modal.locator('.activity-changes');
+			await expect(changes.first()).toBeVisible({ timeout: 10_000 });
+			await expect(changes.locator('.change-new', { hasText: next })).toBeVisible();
+		} finally {
+			await page.request.fetch(`${API_BASE}/api/invoices/${target!.id}`, {
+				method: 'PATCH',
+				headers: { ...headers, 'Content-Type': 'application/json' },
+				data: JSON.stringify({ description: original })
+			});
+		}
 	});
 });

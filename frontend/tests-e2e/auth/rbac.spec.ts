@@ -14,6 +14,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
  * | Item         | clerk | manager | cfo | admin |
  * |--------------|-------|---------|-----|-------|
  * | Dashboard    |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Notifications|  ✓    |   ✓    |  ✓  |  ✓    |
  * | Invoices     |  ✓    |   ✓    |  ✓  |  ✓    |
  * | Credit Memos |       |   ✓    |  ✓  |  ✓    |
  * | Payments     |       |   ✓    |  ✓  |  ✓    |
@@ -23,6 +24,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
  * | Cash Flow    |       |        |  ✓  |  ✓    |
  * | Exceptions   |       |   ✓    |     |  ✓    |
  * | Workflows    |       |        |     |  ✓    |
+ * | Audit Trail  |       |        |  ✓  |  ✓    |
  * | Organization |       |        |     |  ✓    |
  * | Users        |       |        |     |  ✓    |
  *
@@ -43,18 +45,19 @@ async function assertSidebarLinks(page: import('@playwright/test').Page, expecte
 }
 
 test.describe('RBAC — sidebar visibility', () => {
-	test('clerk: only Dashboard + Invoices', async ({ page, tenantClerk }) => {
+	test('clerk: only Dashboard + Notifications + Invoices', async ({ page, tenantClerk }) => {
 		await signInAndWait(page, tenantClerk);
-		await assertSidebarLinks(page, ['/', '/invoices']);
+		await assertSidebarLinks(page, ['/', '/notifications', '/invoices']);
 	});
 
-	test('manager: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Exceptions', async ({
+	test('manager: Dashboard, Notifications, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Exceptions', async ({
 		page,
 		tenantManager
 	}) => {
 		await signInAndWait(page, tenantManager);
 		await assertSidebarLinks(page, [
 			'/',
+			'/notifications',
 			'/invoices',
 			'/credit-memos',
 			'/payments',
@@ -65,20 +68,22 @@ test.describe('RBAC — sidebar visibility', () => {
 		]);
 	});
 
-	test('cfo: Dashboard, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Cash Flow (no Exceptions, no Users)', async ({
+	test('cfo: Dashboard, Notifications, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Cash Flow, Audit Trail (no Exceptions, no Users)', async ({
 		page,
 		tenantCfo
 	}) => {
 		await signInAndWait(page, tenantCfo);
 		await assertSidebarLinks(page, [
 			'/',
+			'/notifications',
 			'/invoices',
 			'/credit-memos',
 			'/payments',
 			'/vendors',
 			'/purchase-orders',
 			'/goods-receipts',
-			'/cfo'
+			'/cfo',
+			'/audit'
 		]);
 	});
 });

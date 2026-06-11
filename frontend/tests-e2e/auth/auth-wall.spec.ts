@@ -20,6 +20,7 @@ const PROTECTED_ROUTES = [
 	'/vendors',
 	'/exceptions',
 	'/workflows',
+	'/audit',
 	'/organization',
 	'/admin',
 	'/profile'

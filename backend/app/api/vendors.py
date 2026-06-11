@@ -27,6 +27,7 @@ from app.schemas.portal import (
     PortalUserResponse,
 )
 from app.schemas.vendor import VendorCreate, VendorResponse, VendorUpdate
+from app.services.audit_access import log_access
 from app.services.csv_import import import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.vendor_sync import sync_vendors_from_erp
@@ -105,6 +106,24 @@ async def get_vendor(
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
+
+    # SOX access-control auditing: record who VIEWED a vendor's regulated
+    # fields. Log the field-NAMES surfaced, never the values (PII-out-of-logs).
+    viewed_fields = [
+        name
+        for name, present in (("tax_id", vendor.tax_id), ("bank_details", vendor.bank_details))
+        if present
+    ]
+    await log_access(
+        db,
+        user=user,
+        organization_id=vendor.organization_id,
+        entity_type="vendor",
+        entity_id=vendor.id,
+        fields=viewed_fields or None,
+    )
+    await db.commit()
+
     return VendorResponse.from_db(vendor)
 
 

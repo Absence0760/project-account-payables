@@ -586,19 +586,19 @@ Tipalti, Coupa, Medius, and Basware all screen vendors against sanctions lists. 
 ---
 
 ### SOX-Compliant Audit Trails
-**Status:** Partial (audit log exists, not SOX-certified)
+**Status:** Partial — immutable log + access auditing + field history + auditor export shipped; periodic access reviews / retention / digital signatures deferred (each its own slice, tracked below)
 
 Enhance the existing audit trail to meet SOX (Sarbanes-Oxley) compliance requirements.
 
-- [ ] Immutable audit log — prevent any modification or deletion of audit entries
+- [x] Immutable audit log — DB-level `BEFORE` triggers on `audit_log` reject every DELETE and every UPDATE that touches a column other than `shipped_at` (the shipper's carve-out). Survives a rogue ORM call or direct `psql`. See `app/services/audit_immutability.py` + migration `0022_sox_audit_immutable`; installed on every tenant DB (migration fan-out + `tenant_provisioning`).
 - [x] Segregation of duties enforcement — default-on in the approval step; see `app/services/approval_chain.py::check_segregation`
-- [ ] Access control audit — log who viewed what, not just who changed what
-- [ ] Periodic access reviews — flag users with unused elevated permissions
-- [ ] Retention policies — configurable retention periods, archival
-- [ ] Audit report generation — formatted for external auditors
-- [ ] Digital signatures on approvals (timestamp + user hash)
-- [ ] Change history on every field — before/after values
-- [ ] Export audit trail per invoice or date range for auditor review
+- [x] Access control audit — log who viewed what, not just who changed what. Sensitive reads (vendor detail, payment detail, card PAN, audit-trail view, every export) write a `<entity>.viewed` row via `app/services/audit_access.py::log_access`, recording field-NAMES not values (PII-out-of-logs).
+- [ ] Periodic access reviews — flag users with unused elevated permissions *(deferred — own slice; trigger: SOC 2 Type II access-review control. Needs a per-user last-elevated-use index + a review workflow.)*
+- [ ] Retention policies — configurable retention periods, archival *(deferred — own slice; trigger: customer retention SLA. Must compose with the immutability trigger, i.e. archival via a privileged, audited path, not a raw DELETE.)*
+- [ ] Audit report generation — formatted for external auditors *(partially covered by the export below; formatted PDF report deferred to its own slice.)*
+- [ ] Digital signatures on approvals (timestamp + user hash) *(deferred — own slice; trigger: auditor request for cryptographic non-repudiation. Needs a signing-key story + verification endpoint.)*
+- [x] Change history on every field — before/after values. Invoice edits + approve-with-corrections write `details.changes = {field: {old, new}}` (money serialised as string-Decimal, never float) via `audit_access.build_field_diff`; rendered in the invoice-modal Activity timeline.
+- [x] Export audit trail per invoice or date range for auditor review — `GET /api/audit/export` (JSON/CSV, admin/CFO) + the `/audit` auditor console. Every export is itself audited (`audit.exported`).
 
 ---
 
