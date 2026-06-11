@@ -15,7 +15,12 @@ test.describe('/workflows list (acme admin)', () => {
 		await expect(page.getByRole('heading', { name: 'Workflows' })).toBeVisible();
 		const row = page.locator('table tbody tr').first();
 		await expect(row).toBeVisible();
-		await expect(row.locator('a.wf-name')).toContainText('Default Workflow');
+		// The name cell is a RowLink (`<a class="row-link" aria-label="Edit workflow …">`),
+		// selected here by its accessible name — the old `a.wf-name` was removed in the
+		// clickable-rows refactor.
+		await expect(row.getByRole('link', { name: /^Edit workflow/ })).toContainText(
+			'Default Workflow'
+		);
 		await expect(row.locator('.default-badge')).toBeVisible();
 	});
 
