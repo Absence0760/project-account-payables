@@ -347,3 +347,46 @@ def test_usable_attachments_drops_wrong_content_type():
     assert {a.filename for a in kept} == {"a.pdf", "c.jpg"}
     assert any("b.exe" in s for s in result.skipped_attachments)
     assert any("d.pdf" in s for s in result.skipped_attachments)
+
+
+# ---------------------------------------------------------------------------
+# Real-DB e2e: the admin rotate-token endpoint actually changes the intake
+# address and the prior address stops resolving (role-gated to admin).
+# ---------------------------------------------------------------------------
+
+
+async def test_admin_rotate_token_changes_address_and_kills_old(realdb, monkeypatch):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.config import settings as cfg
+    from app.services.email_intake import resolve_tenant_from_recipient
+
+    # An intake domain must be configured for an address to render.
+    monkeypatch.setattr(cfg, "email_intake_domain", "intake.test")
+
+    # Non-admins cannot rotate.
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post("/api/organization/email-intake/rotate-token")).status_code == 403
+
+    async with realdb.client(key="a", role="admin") as c:
+        first = (await c.post("/api/organization/email-intake/rotate-token")).json()["address"]
+        second = (await c.post("/api/organization/email-intake/rotate-token")).json()["address"]
+        shown = await c.get("/api/organization/email-intake")
+
+    assert first.startswith("invoices+") and first.endswith("@intake.test")
+    assert second != first  # rotation minted a new token → new address
+    body = shown.json()
+    assert body["address"] == second
+    assert body["enabled"] is True
+
+    # The old address no longer resolves; the current one does.
+    engine = create_async_engine(cfg.database_url)
+    mk = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with mk() as s:
+            assert await resolve_tenant_from_recipient(s, first) is None
+            org = await resolve_tenant_from_recipient(s, second)
+            assert org is not None
+            assert org.slug == realdb.info("a").slug
+    finally:
+        await engine.dispose()
