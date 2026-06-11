@@ -202,6 +202,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+		min-width: 0;
 	}
 
 	label span {
@@ -213,6 +214,9 @@
 	}
 
 	input {
+		width: 100%;
+		min-width: 0;
+		box-sizing: border-box;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 4px;
