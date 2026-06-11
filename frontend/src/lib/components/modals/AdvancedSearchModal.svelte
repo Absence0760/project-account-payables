@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import type { AdvancedSearchFilters } from '$lib/types/invoice';
 
@@ -56,190 +57,96 @@
 		due_date_to = '';
 		statuses = [];
 	}
-
-	function handleBackdrop(e: MouseEvent) {
-		if (e.target === e.currentTarget) onclose();
-	}
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') onclose();
-	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<Modal ariaLabel="Advanced search" title="Advanced Search" onclose={onclose}>
+	<form onsubmit={(e) => { e.preventDefault(); apply(); }}>
+		<div class="form-grid">
+			<label>
+				<span>Vendor</span>
+				<input type="text" placeholder="e.g. Acme Corp" bind:value={vendor} />
+			</label>
+			<label>
+				<span>Invoice #</span>
+				<input type="text" placeholder="e.g. INV-2024-001" bind:value={invoice_number} />
+			</label>
+			<label>
+				<span>PO Number</span>
+				<input type="text" placeholder="e.g. PO-1001" bind:value={po_number} />
+			</label>
+			<label>
+				<span>Description</span>
+				<input type="text" placeholder="Keywords..." bind:value={description} />
+			</label>
+			<label>
+				<span>Amount Min</span>
+				<input type="number" step="0.01" placeholder="0.00" bind:value={amount_min} />
+			</label>
+			<label>
+				<span>Amount Max</span>
+				<input type="number" step="0.01" placeholder="Any" bind:value={amount_max} />
+			</label>
+			<label>
+				<span>Due Date From</span>
+				<input type="date" bind:value={due_date_from} />
+			</label>
+			<label>
+				<span>Due Date To</span>
+				<input type="date" bind:value={due_date_to} />
+			</label>
+		</div>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={handleBackdrop}>
-	<div class="modal" role="dialog" aria-label="Advanced search">
-		<header>
-			<h2>Advanced Search</h2>
-			<button class="close-btn" onclick={onclose} aria-label="Close">&times;</button>
-		</header>
-
-		<form onsubmit={(e) => { e.preventDefault(); apply(); }}>
-			<div class="form-grid">
-				<label>
-					<span>Vendor</span>
-					<input type="text" placeholder="e.g. Acme Corp" bind:value={vendor} />
-				</label>
-				<label>
-					<span>Invoice #</span>
-					<input type="text" placeholder="e.g. INV-2024-001" bind:value={invoice_number} />
-				</label>
-				<label>
-					<span>PO Number</span>
-					<input type="text" placeholder="e.g. PO-1001" bind:value={po_number} />
-				</label>
-				<label>
-					<span>Description</span>
-					<input type="text" placeholder="Keywords..." bind:value={description} />
-				</label>
-				<label>
-					<span>Amount Min</span>
-					<input type="number" step="0.01" placeholder="0.00" bind:value={amount_min} />
-				</label>
-				<label>
-					<span>Amount Max</span>
-					<input type="number" step="0.01" placeholder="Any" bind:value={amount_max} />
-				</label>
-				<label>
-					<span>Due Date From</span>
-					<input type="date" bind:value={due_date_from} />
-				</label>
-				<label>
-					<span>Due Date To</span>
-					<input type="date" bind:value={due_date_to} />
-				</label>
+		<fieldset>
+			<legend>Status</legend>
+			<div class="status-chips">
+				{#each INVOICE_STATUSES as s}
+					<button
+						type="button"
+						class="status-chip"
+						class:selected={statuses.includes(s)}
+						onclick={() => toggleStatus(s)}
+					>
+						{STATUS_LABELS[s]}
+					</button>
+				{/each}
 			</div>
+		</fieldset>
 
-			<fieldset>
-				<legend>Status</legend>
-				<div class="status-chips">
-					{#each INVOICE_STATUSES as s}
-						<button
-							type="button"
-							class="status-chip"
-							class:selected={statuses.includes(s)}
-							onclick={() => toggleStatus(s)}
-						>
-							{STATUS_LABELS[s]}
-						</button>
-					{/each}
-				</div>
-			</fieldset>
-
-			<footer>
-				<button type="button" class="btn-clear" onclick={clear}>Clear All</button>
-				<div class="footer-right">
-					<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
-					<button type="submit" class="btn-apply">Apply Filters</button>
-				</div>
-			</footer>
-		</form>
-	</div>
-</div>
+		<footer>
+			<button type="button" class="btn-clear" onclick={clear}>Clear All</button>
+			<div class="footer-right">
+				<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
+				<button type="submit" class="btn-apply">Apply Filters</button>
+			</div>
+		</footer>
+	</form>
+</Modal>
 
 <style>
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: grid;
-		place-items: center;
-		z-index: 100;
-		backdrop-filter: blur(2px);
-	}
-
-	.modal {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		width: min(520px, 95vw);
-		max-height: 90vh;
-		overflow-y: auto;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-	}
-
-	header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 16px 20px;
-		border-bottom: 1px solid var(--border);
-	}
-
-	h2 {
-		margin: 0;
-		font-size: 1.1rem;
-		font-weight: 600;
-	}
-
-	.close-btn {
-		background: none;
-		border: none;
-		font-size: 1.5rem;
-		cursor: pointer;
-		color: var(--text-muted);
-		line-height: 1;
-		padding: 0 4px;
-	}
-
-	.close-btn:hover {
-		color: var(--text);
-	}
-
-	form {
-		padding: 20px;
-	}
-
+	/* Shell, header, and base input styling come from the shared Modal
+	   component + global `.modal*` CSS in app.css. Only the bits unique to
+	   this dialog — the two-column field grid, the status chip picker, and
+	   the Clear-All footer — are scoped here. */
 	.form-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 14px;
 	}
 
-	label {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
+	/* Number/date inputs carry a UA intrinsic min-width; without these the
+	   right column overflows the dialog and adds a horizontal scrollbar. */
+	.form-grid label {
 		min-width: 0;
 	}
 
-	label span {
-		font-size: 0.78rem;
-		font-weight: 500;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
-	input {
+	.form-grid input {
 		width: 100%;
 		min-width: 0;
-		box-sizing: border-box;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 8px 10px;
-		font-size: 0.88rem;
-		color: var(--text);
-		font-family: inherit;
-	}
-
-	input:focus {
-		outline: none;
-		border-color: var(--accent);
-		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
-	}
-
-	input::placeholder {
-		color: var(--text-muted);
-		opacity: 0.6;
 	}
 
 	fieldset {
 		border: none;
-		margin: 18px 0 0;
+		margin: 0;
 		padding: 0;
 	}
 
@@ -288,7 +195,7 @@
 		align-items: center;
 		padding-top: 18px;
 		border-top: 1px solid var(--border);
-		margin-top: 20px;
+		margin-top: 6px;
 	}
 
 	.footer-right {

@@ -330,8 +330,18 @@ centred dialog with backdrop-click + Esc to close:
   dereferences a nullable var, gate `open={x !== null}` and wrap the
   children in `{#if x}…{/if}`.
 - Cancel sits left of the primary action. Required-field markers use
-  `<em class="required">*</em>`. Feature dialogs in
-  `$lib/components/modals/` keep their own bespoke internals.
+  `<em class="required">*</em>`.
+- **Never hand-roll a modal shell.** Every dialog — including the feature
+  dialogs in `$lib/components/modals/` — wraps its body in `<Modal>`. Do
+  not write your own `.backdrop` / `div.modal[role="dialog"]`, your own
+  Esc / backdrop-click handlers, or a `<svelte:window onkeydown>` to close
+  — `Modal` already owns all of that, and a private copy drifts (the
+  `AdvancedSearchModal` overflow + scrollbar bug came from a hand-rolled
+  shell that never picked up the global `.modal` CSS). "Bespoke internals"
+  means the dialog's *body* (custom field grids, pickers, footers) is
+  feature-specific — the shell, backdrop, and close behaviour are not.
+  If you find yourself writing `position: fixed; inset: 0` or
+  `role="dialog"` in a component, stop and use `<Modal>`.
 
 ### Per-row actions
 
