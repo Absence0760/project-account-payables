@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.pagination import PaginationParams, pagination_params
@@ -435,7 +436,25 @@ async def flip_purchase_order(
         organization_id=vendor.organization_id,
     )
     db.add(invoice)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # A concurrent flip of the same PO won the race: the partial unique
+        # index on the `po-flip:<po_id>` marker (migration 0024) rejected this
+        # duplicate before it could enter the AP→payment pipeline. Roll back and
+        # return the same idempotent short-circuit as the fast-path check above.
+        await db.rollback()
+        existing = (
+            await db.execute(select(Invoice).where(Invoice.reference_number == f"po-flip:{po.id}"))
+        ).scalar_one_or_none()
+        if existing:
+            return PortalFlipResponse(
+                id=str(existing.id),
+                correlation_id=str(existing.correlation_id),
+                status=existing.status.value,
+                message="Invoice already created from this PO.",
+            )
+        raise
 
     for idx, li in enumerate(po_lines, start=1):
         db.add(

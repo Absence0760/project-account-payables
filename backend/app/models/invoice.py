@@ -7,10 +7,12 @@ from sqlalchemy import (
     Date,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -98,6 +100,23 @@ class Invoice(Base, TimestampMixin):
     )
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("vendors.id")
+    )
+
+    __table_args__ = (
+        # Idempotency backstop for the supplier-portal PO flip
+        # (POST /api/portal/purchase-orders/{id}/flip). The marker
+        # `po-flip:<po_id>` is unique per tenant, so this partial unique index
+        # makes a concurrent double-flip of the same PO impossible to persist —
+        # the second INSERT raises IntegrityError, which the handler catches and
+        # turns into the idempotent short-circuit response. The app-level
+        # existing-invoice check stays as the fast path. Partial predicate keeps
+        # it from ever constraining ordinary invoices' `reference_number`.
+        Index(
+            "uq_invoice_po_flip_ref",
+            "reference_number",
+            unique=True,
+            postgresql_where=text("reference_number LIKE 'po-flip:%'"),
+        ),
     )
 
     vendor_rel: Mapped["Vendor | None"] = relationship(back_populates="invoices")  # noqa: F821

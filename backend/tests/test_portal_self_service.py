@@ -19,6 +19,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import create_vendor_access_token
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
@@ -161,6 +162,77 @@ async def test_po_flip_is_idempotent(realdb):
             )
         ).scalar()
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_po_flip_marker_has_db_level_unique_guard(realdb):
+    """The durable backstop: the partial unique index on the `po-flip:<po_id>`
+    marker (migration 0024 / Invoice.__table_args__) rejects a second invoice
+    for the same PO at the DB layer, so a race that slips past the app-level
+    existing-invoice check still cannot persist two payment-seeding invoices."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, _ = await _seed_vendor_and_user(mk, org_id)
+    po_id = uuid.uuid4()
+    marker = f"po-flip:{po_id}"
+
+    async with mk() as s:
+        s.add(
+            Invoice(
+                invoice_number="",
+                vendor_name="Acme",
+                vendor_id=vendor_id,
+                amount=Decimal("10.00"),
+                status=InvoiceStatus.new,
+                reference_number=marker,
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+
+    # A second invoice carrying the identical flip marker must be rejected by
+    # the partial unique index — independent of any application-level check.
+    with pytest.raises(IntegrityError):
+        async with mk() as s:
+            s.add(
+                Invoice(
+                    invoice_number="",
+                    vendor_name="Acme",
+                    vendor_id=vendor_id,
+                    amount=Decimal("10.00"),
+                    status=InvoiceStatus.new,
+                    reference_number=marker,
+                    organization_id=org_id,
+                )
+            )
+            await s.commit()
+
+    # An ordinary invoice (reference_number not a flip marker) is unaffected —
+    # the predicate keeps the constraint scoped to flips only.
+    async with mk() as s:
+        s.add(
+            Invoice(
+                invoice_number="",
+                vendor_name="Acme",
+                vendor_id=vendor_id,
+                amount=Decimal("5.00"),
+                status=InvoiceStatus.new,
+                reference_number="REF-NORMAL-001",
+                organization_id=org_id,
+            )
+        )
+        s.add(
+            Invoice(
+                invoice_number="",
+                vendor_name="Acme",
+                vendor_id=vendor_id,
+                amount=Decimal("6.00"),
+                status=InvoiceStatus.new,
+                reference_number="REF-NORMAL-001",
+                organization_id=org_id,
+            )
+        )
+        await s.commit()  # no raise — duplicate non-flip references are allowed
 
 
 @pytest.mark.asyncio
