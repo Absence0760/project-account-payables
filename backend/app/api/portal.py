@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
+from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.payment import Payment
 from app.models.procurement import POLineItem, PurchaseOrder
@@ -536,6 +537,7 @@ async def flip_purchase_order(
 async def get_my_payment_remittance(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
     """Vendor-scoped remittance-advice PDF. Ownership is enforced by the
@@ -564,15 +566,16 @@ async def get_my_payment_remittance(
 
     # The payer (the AP customer) is an Organization in the control plane —
     # portal sessions don't carry one, so resolve it by the invoice's org_id.
-    from app.database import control_session_factory
+    # Use the injected control session (not the module-global factory) so this
+    # rides the request's event loop — reaching for the global engine directly
+    # breaks under async test loops and bypasses dependency overrides.
     from app.models.organization import Organization
 
-    async with control_session_factory() as ctrl:
-        org = (
-            await ctrl.execute(
-                select(Organization).where(Organization.id == invoice.organization_id)
-            )
-        ).scalar_one_or_none()
+    org = (
+        await ctrl_db.execute(
+            select(Organization).where(Organization.id == invoice.organization_id)
+        )
+    ).scalar_one_or_none()
     company = (org.settings or {}).get("company") if org else None
 
     ctx = RemittanceContext(
