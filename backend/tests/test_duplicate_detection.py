@@ -1,11 +1,13 @@
 """Unit tests for semantic duplicate detection.
 
-Pure-function tests — exercises matches_to_warning contract and the
-DuplicateMatch dataclass. The find_semantic_duplicates DB query is
-integration-tested indirectly via the RAG store tests.
+Covers the pure-function contracts (matches_to_warning / DuplicateMatch) and
+the find_semantic_duplicates threshold/ordering logic via a mocked pgvector
+query (see the section comment lower down for what stays DB-level).
 """
 
 import uuid
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def test_matches_to_warning_none_when_empty():
@@ -85,3 +87,102 @@ def test_max_candidates_bounded():
     from app.services.duplicate_detection import MAX_CANDIDATES
 
     assert 1 <= MAX_CANDIDATES <= 20
+
+
+# ---------------------------------------------------------------------------
+# find_semantic_duplicates — the threshold/ordering logic the module exists for
+#
+# Mock-based: the pgvector query is mocked to return crafted
+# (invoice_id, corrected_fields, distance) rows so we exercise the Python
+# discrimination/threshold/break logic. The cosine_distance ranking and the
+# exclude_invoice_id WHERE are enforced in SQL (a real-DB harness, which this
+# suite doesn't have, would be needed to assert those two).
+# ---------------------------------------------------------------------------
+
+
+def _db_returning(rows):
+    """Mock AsyncSession whose execute().all() yields the given rows."""
+    db = MagicMock()
+    result = MagicMock()
+    result.all = MagicMock(return_value=rows)
+    db.execute = AsyncMock(return_value=result)
+    return db
+
+
+def _patched(*, rag_enabled=True, threshold=0.95):
+    """Patch settings + the embedding adapter for find_semantic_duplicates."""
+    from app.services import duplicate_detection as dd
+
+    adapter = MagicMock()
+    adapter.embed = AsyncMock(return_value=SimpleNamespace(vector=[0.1, 0.2, 0.3]))
+    return (
+        patch.object(dd.settings, "rag_enabled", rag_enabled),
+        patch.object(dd.settings, "duplicate_similarity_threshold", threshold),
+        patch.object(dd, "get_embedding_adapter", MagicMock(return_value=adapter)),
+    )
+
+
+async def test_find_semantic_duplicates_returns_empty_when_rag_disabled():
+    from app.services.duplicate_detection import find_semantic_duplicates
+
+    p1, p2, p3 = _patched(rag_enabled=False)
+    with p1, p2, p3:
+        db = _db_returning([(uuid.uuid4(), {}, 0.0)])
+        assert await find_semantic_duplicates(db, "some text") == []
+    db.execute.assert_not_called()  # short-circuits before any query
+
+
+async def test_find_semantic_duplicates_returns_empty_for_empty_text():
+    from app.services.duplicate_detection import find_semantic_duplicates
+
+    p1, p2, p3 = _patched()
+    with p1, p2, p3:
+        assert await find_semantic_duplicates(_db_returning([]), "") == []
+
+
+async def test_find_semantic_duplicates_flags_near_identical_not_recurring():
+    """A 0.98 near-identical match is flagged; a 0.90 recurring-but-distinct
+    invoice (below the 0.95 duplicate threshold) is not."""
+    from app.services.duplicate_detection import find_semantic_duplicates
+
+    identical = (uuid.uuid4(), {"invoice_number": "INV-1", "vendor_name": "Acme"}, 0.02)
+    recurring = (uuid.uuid4(), {"invoice_number": "INV-2", "vendor_name": "Acme"}, 0.10)
+    p1, p2, p3 = _patched(threshold=0.95)
+    with p1, p2, p3:
+        matches = await find_semantic_duplicates(_db_returning([identical, recurring]), "text")
+
+    assert [m.invoice_id for m in matches] == [identical[0]]
+    assert matches[0].similarity == 0.98
+    assert matches[0].invoice_number == "INV-1"
+    assert matches[0].vendor_name == "Acme"
+
+
+async def test_find_semantic_duplicates_breaks_at_first_subthreshold_row():
+    """Rows arrive sorted ascending by distance; the loop must stop at the
+    first sub-threshold row (and not resurrect a later high-similarity one)."""
+    from app.services.duplicate_detection import find_semantic_duplicates
+
+    rows = [
+        (uuid.uuid4(), {}, 0.01),  # 0.99 — keep
+        (uuid.uuid4(), {}, 0.04),  # 0.96 — keep
+        (uuid.uuid4(), {}, 0.20),  # 0.80 — below 0.95 → break here
+        (uuid.uuid4(), {}, 0.30),  # never considered
+    ]
+    p1, p2, p3 = _patched(threshold=0.95)
+    with p1, p2, p3:
+        matches = await find_semantic_duplicates(_db_returning(rows), "text")
+
+    assert [round(m.similarity, 2) for m in matches] == [0.99, 0.96]
+
+
+async def test_find_semantic_duplicates_honours_per_call_threshold_override():
+    from app.services.duplicate_detection import find_semantic_duplicates
+
+    rows = [(uuid.uuid4(), {}, 0.10)]  # similarity 0.90
+    p1, p2, p3 = _patched(threshold=0.95)
+    with p1, p2, p3:
+        # Default 0.95 excludes it; an explicit 0.80 includes it.
+        assert await find_semantic_duplicates(_db_returning(rows), "t") == []
+        got = await find_semantic_duplicates(_db_returning(rows), "t", threshold=0.80)
+    assert len(got) == 1
+    assert got[0].similarity == 0.90
