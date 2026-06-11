@@ -45,6 +45,16 @@ from app.models.usage import ExtractionUsage
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
+
+# Imported for the side effect of registering these tables on Base.metadata so
+# create_tenant_tables() actually creates them. Without the import the
+# virtual-card tables are absent from a seeded tenant DB and every
+# /api/payments call (which outer-joins virtual_cards) 500s.
+from app.models.virtual_card import (  # noqa: F401
+    CardRebate,
+    CardRevealToken,
+    VirtualCard,
+)
 from app.models.workflow import AuditLog, WorkflowDefinition
 from app.utils.passwords import pwd_context
 
