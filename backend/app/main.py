@@ -18,6 +18,7 @@ from app.api import (
     gl_accounts,
     goods_receipts,
     invoices,
+    notifications,
     organization,
     payments,
     portal,
@@ -178,6 +179,7 @@ app.include_router(exceptions.router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")
 app.include_router(goods_receipts.router, prefix="/api")
 app.include_router(invoices.router, prefix="/api")
+app.include_router(notifications.router, prefix="/api")
 app.include_router(purchase_orders.router, prefix="/api")
 app.include_router(vendors.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")

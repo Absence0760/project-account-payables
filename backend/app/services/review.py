@@ -319,3 +319,26 @@ async def assign_reviewer(
             **({"delegated_from": str(original_id)} if original_id else {}),
         },
     )
+
+    # Best-effort notification to the (possibly delegated) reviewer. Assignment
+    # is the one notifiable event that does not flow through transition_invoice,
+    # so it's dispatched explicitly here. Never breaks the assignment.
+    from app.models.notification import EVENT_INVOICE_ASSIGNED
+    from app.services.notification_dispatch import notify_event
+    from app.services.notification_templates import InvoiceContext
+
+    await notify_event(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        event_type=EVENT_INVOICE_ASSIGNED,
+        entity_id=invoice.id,
+        recipient_user_ids=[reviewer_id],
+        invoice_ctx=InvoiceContext(
+            invoice_number=invoice.invoice_number,
+            vendor_name=invoice.vendor_name,
+            amount=invoice.amount,
+            currency=invoice.currency or "USD",
+        ),
+        actor_id=actor_id,
+    )

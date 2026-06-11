@@ -3,6 +3,7 @@ from app.models.credit_memo import CreditMemo
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice_embedding import InvoiceEmbedding
+from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
@@ -40,4 +41,5 @@ __all__ = [
     "APException",
     "CreditMemo",
     "EmailVerification",
+    "Notification",
 ]
