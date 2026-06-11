@@ -66,7 +66,7 @@ project-account-payables/
 │   │   │   ├── stores/        # Svelte 5 rune stores
 │   │   │   └── types/         # TypeScript interfaces
 │   │   └── routes/            # SvelteKit file-based routing
-│   └── .env.example
+│   └── .env.development       # committed local-dev defaults (Vite loads in dev)
 ├── backend/                   # FastAPI API
 │   ├── app/
 │   │   ├── api/               # Route handlers

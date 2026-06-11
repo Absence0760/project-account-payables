@@ -80,7 +80,7 @@ All ten `.tf` files plus the encrypted tfvars + template:
 
 7. **API Gateway (`api_gateway.tf`).**
    - HTTP API (not REST API — cheaper, no edge cases we need).
-   - CORS: `allow_origins` matches `frontend/.env.example`'s `PUBLIC_API_URL` host (the production frontend domain). No `*` wildcard. No localhost in prod.
+   - CORS: `allow_origins` matches `frontend/.env.development`'s `PUBLIC_API_URL` host (the production frontend domain). No `*` wildcard. No localhost in prod.
    - No `route_settings` with unbounded throttling — at least set `throttling_burst_limit` and `throttling_rate_limit` on `$default` to a sane value (per-second 100ish; per-IP rate limits already exist in `backend/src/rate-limit.ts`, but API Gateway is the global cap).
 
 8. **KMS keys.** The SOPS key (`alias/my-project-sops` in `<aws-region>`) is provisioned out-of-band by `bin/sops-init.sh`, not by this Terraform module. Confirm no `.tf` file tries to manage it (would conflict). DynamoDB SSE-KMS, if added, uses the AWS-managed `aws/dynamodb` key, not the SOPS CMK (per `docs/orders-pii-split-plan.md`).

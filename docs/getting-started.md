@@ -44,10 +44,11 @@ pnpm i                    # first time only
 pnpm dev
 ```
 
-> No manual `.env` copying: `pnpm dev` (and `pnpm install:all`) auto-runs
-> `pnpm setup` / `bin/bootstrap-env.sh`, which stamps `backend/.env` and
-> `frontend/.env` from their `.env.example` templates — all safe local
-> defaults. Idempotent and non-destructive, so existing files are left alone.
+> No `.env` setup: `backend/.env.development` and `frontend/.env.development`
+> are committed with safe local defaults. The backend loads them via `main.py`;
+> the frontend loads `.env.development` natively in Vite dev mode. For a
+> personal override, drop a gitignored `backend/.env` / `frontend/.env.local` —
+> it wins over the committed defaults.
 
 ### 4. Open the app
 

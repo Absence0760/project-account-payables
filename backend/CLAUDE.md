@@ -428,14 +428,14 @@ Relevant env vars: `AP_EMAIL_PROVIDER`, `AP_EMAIL_FROM`, `AP_AWS_SES_REGION`, `A
 
 ## Secrets management (SOPS + AWS KMS)
 
-Deployed-environment secrets are encrypted at rest with [SOPS](https://github.com/getsops/sops) backed by an AWS KMS key. Local dev uses plain `backend/.env` (gitignored), which `pnpm setup` (`bin/bootstrap-env.sh`, auto-run by `install:all` + every `dev*`) stamps from `backend/.env.example` — every value there is a safe, no-risk local default, so a fresh clone needs no manual secret setup. The backend also runs straight off `app/config.py` defaults even with no `.env` at all.
+Deployed-environment secrets are encrypted at rest with [SOPS](https://github.com/getsops/sops) backed by an AWS KMS key. Local dev needs no secret setup: `backend/.env.development` is **committed** with safe, no-risk local defaults and is loaded by `main.py` (the local-dev entrypoint) via `python-dotenv`, so a fresh clone runs immediately. A gitignored `backend/.env` holds personal overrides and wins over the committed defaults. The backend also runs straight off `app/config.py` defaults even with neither file present.
 
 **File layout:**
 
 ```
 backend/
-├── .env                 # local dev — gitignored, auto-stamped from .env.example by `pnpm setup`
-├── .env.example         # local dev template — committed
+├── .env.development     # local dev defaults — committed (safe, no-risk only); loaded by main.py
+├── .env                 # personal local overrides — gitignored; wins over .env.development
 └── .env.sops            # deployed secrets, AWS KMS-encrypted — committed
 
 infra/

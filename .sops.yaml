@@ -28,9 +28,9 @@
 # - backend/.env.sops              — backend secrets for non-local environments
 #
 # Plaintext sibling files (infra/terraform.tfvars, backend/.env) are
-# gitignored. The repo keeps plaintext backend/.env.example + infra/
-# terraform.tfvars.example as templates, and the usual local-dev backend/.env
-# (copied from .env.example) stays on your laptop only.
+# gitignored. The repo commits backend/.env.development (safe local-dev
+# defaults, loaded by main.py) and infra/terraform.tfvars.example (template);
+# any local-dev backend/.env override stays on your laptop only.
 #
 # ---------------------------------------------------------------------------
 # Why KMS and not age

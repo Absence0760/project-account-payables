@@ -68,15 +68,19 @@ web_modules/
 # ---------------------------------------------------------------------------
 # Environment & secrets
 # ---------------------------------------------------------------------------
-# Plaintext env files are always secret and never committed. The SOPS
-# variants (*.sops) are committed because they are encrypted under the
-# project's AWS KMS key — decryption requires kms:Decrypt permission via
-# IAM, not a key file.
+# Plaintext env files are secret and never committed — EXCEPT .env.development,
+# which holds only safe, no-risk local-dev defaults (loopback URLs, mock
+# adapters, the `change-me` JWT key, MinIO's minioadmin/minioadmin). It is
+# committed on purpose so a fresh clone runs with zero env setup. Personal
+# overrides go in a gitignored .env / .env.local / .env.development.local and
+# win over the committed defaults. Real deployed secrets live ONLY in the SOPS
+# variants (*.sops), encrypted under the project's AWS KMS key — decryption
+# requires kms:Decrypt via IAM, not a key file.
 #
 # See .sops.yaml + backend/CLAUDE.md § Secrets management for the workflow.
 .env
 .env.*
-!.env.example
+!.env.development
 !.env.sops
 
 # parcel-bundler cache (https://parceljs.org/)

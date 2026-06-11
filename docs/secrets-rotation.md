@@ -127,7 +127,7 @@ Every rotation must leave a paper trail:
 
 If any of these end up in a SOPS file, they're misclassified — move them out:
 
-- Non-sensitive endpoint URLs (already in plain `backend/.env.example`)
+- Non-sensitive endpoint URLs (already in plain `backend/.env.development`)
 - Feature flags (use config, not secrets)
 - Tenant slugs, plan names, feature toggles
 - AWS region, account ID (treated as low-sensitivity by AWS itself)

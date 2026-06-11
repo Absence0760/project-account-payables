@@ -247,7 +247,7 @@ seed_encrypted_files() {
 		"$REPO_ROOT/infra/terraform.tfvars.sops" \
 		"infra/terraform.tfvars.sops"
 	seed_encrypted_file \
-		"$REPO_ROOT/backend/.env.example" \
+		"$REPO_ROOT/backend/.env.development" \
 		"$REPO_ROOT/backend/.env.sops" \
 		"backend/.env.sops"
 }
@@ -280,9 +280,10 @@ ${C_BOLD}Next steps:${C_RESET}
 
        sops -d backend/.env.sops > backend/.env
 
-     The plaintext .env is gitignored. Local dev with Docker Compose works
-     fine with backend/.env (copied from .env.example) — only deployed
-     environments consume backend/.env.sops.
+     The plaintext .env is gitignored and overrides the committed
+     backend/.env.development. Local dev with Docker Compose works fine off
+     the committed backend/.env.development alone — only deployed environments
+     consume backend/.env.sops.
 
 ${C_BOLD}Daily workflow:${C_RESET}
   - Edit a secret:      sops <file>.sops

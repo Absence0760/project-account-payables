@@ -22,8 +22,9 @@ This repo uses SOPS-encrypted `*.sops` files for secrets at rest. The trust boun
    - `git log --all --full-history -- backend/.env infra/terraform.tfvars` should return zero commits ever. If it returns any, the secret is permanently exposed and every value in it needs rotation — flag as Critical.
 
 3. **`.env` files at workspace roots.**
-   - `frontend/.env`, `studio/.env`: gitignored. `frontend/.env.example` and `studio/.env.example` are the committed templates (PUBLIC_* / SANITY_STUDIO_* only; no real secrets).
-   - Run `git log --all --full-history -- frontend/.env studio/.env` to confirm neither has ever been committed.
+   - `backend/.env`, `frontend/.env`, `frontend/.env.local`: gitignored (personal overrides). The committed env files are `backend/.env.development` + `frontend/.env.development` — safe local-dev defaults only (loopback URLs, mock adapters, the `change-me` JWT key, `PUBLIC_*`; no real secrets) — plus the KMS-encrypted `*.sops` files.
+   - Confirm a committed `.env.development` holds no real secret: grep it for anything that looks live (non-loopback hostnames, base64 blobs, real-looking API keys). A real secret in a committed `.env.development` is Critical.
+   - Run `git log --all --full-history -- backend/.env frontend/.env` to confirm neither plaintext-secret file has ever been committed.
 
 4. **Client-bundle leakage (frontend).**
    - SvelteKit env vars are split: `$env/static/public` is inlined into the client bundle, `$env/static/private` is server-only. Per `frontend/CLAUDE.md`, the frontend stays static — there's no `$env/dynamic/private` anywhere; if it appears, that's a Critical because it implies an SSR adapter was added.
@@ -36,7 +37,7 @@ This repo uses SOPS-encrypted `*.sops` files for secrets at rest. The trust boun
 6. **Backend env hygiene.**
    - `backend/src/` references `process.env.X` directly (per `backend/CLAUDE.md`, no `dotenv` imports reachable from `lambda.ts`).
    - Grep `backend/src/lambda.ts` and everything it transitively imports for `import 'dotenv'` or `dotenv/config`. Any hit is a finding — dotenv must only live in `server.ts`.
-   - `backend/.env.example` lists the env-var names. Compare against the SOPS-encrypted `backend/.env.sops` (run `sops -d backend/.env.sops` if you have `kms:Decrypt` and report by name, never by value) — any key in `.env.example` missing from the encrypted file is a Medium; any extra key in the encrypted file is a Low.
+   - `backend/.env.development` lists the env-var names. Compare against the SOPS-encrypted `backend/.env.sops` (run `sops -d backend/.env.sops` if you have `kms:Decrypt` and report by name, never by value) — any key in `.env.development` missing from the encrypted file is a Medium; any extra key in the encrypted file is a Low.
 
 7. **GitHub Actions workflow secrets.**
    - `.github/workflows/*.yml`: every `env:` block should reference `${{ secrets.X }}` or `${{ vars.X }}`, never a literal value.
@@ -57,14 +58,14 @@ This repo uses SOPS-encrypted `*.sops` files for secrets at rest. The trust boun
 
 - **Critical** — a real secret in git history, an SSR adapter that exposes server-only env to the client, an AWS access key in a workflow, an unencrypted `*.sops` file committed.
 - **High** — server-only env referenced from a non-server frontend path, dotenv reachable from Lambda bundle, workflow logs an env var, OIDC role's `:sub` condition missing or wildcarded.
-- **Medium** — env var in `.env.example` missing from the encrypted file, key in the encrypted file with no documented purpose, `.gitignore` missing a path.
+- **Medium** — env var in `.env.development` missing from the encrypted file, key in the encrypted file with no documented purpose, `.gitignore` missing a path.
 - **Low** — undocumented env intent, missing example entry, overscoped key (e.g. a write-scope <CMS> token used only for reads).
 
 For each: the literal env-var name and the file:line, what should change. **Never paste a found key value into the report — identify by name + location only.**
 
 ## Useful starting points
 
-- `backend/.env.example`, `infra/terraform.tfvars.example` — declared env shapes
+- `backend/.env.development`, `infra/terraform.tfvars.example` — declared env shapes
 - `backend/CLAUDE.md § Three entry points` — dotenv-isolation rationale
 - `frontend/CLAUDE.md § Hard rules` — static-only invariant
 - `.github/workflows/deploy-*.yml` — OIDC pattern

@@ -1,18 +1,18 @@
 # Environment Variables
 
-## Frontend (`frontend/.env`)
+## Frontend (`frontend/.env.development`)
 
 | Variable         | Default                 | Description                         |
 |------------------|-------------------------|-------------------------------------|
 | `PUBLIC_API_URL` | `http://localhost:8000` | Backend API URL (embedded at build time) |
 | `BASE_PATH`      | (empty)                 | URL prefix for GitHub Pages deploys |
 
-`frontend/.env` is created automatically — `pnpm setup` (auto-run by
-`pnpm install:all` and every `dev*` script) stamps it from
-`frontend/.env.example` with the safe local default above. You only edit it by
-hand to override the build-time API URL. Because `api.ts` imports
-`PUBLIC_API_URL` from `$env/static/public`, the var must exist for the dev
-server / build to start — the auto-stamp guarantees it does.
+`frontend/.env.development` is **committed** with the safe local default above
+and Vite loads it automatically in dev mode — no setup step. Because `api.ts`
+imports `PUBLIC_API_URL` from `$env/static/public`, the var must exist for the
+dev server to start, and the committed file guarantees it does. For a personal
+override, create a gitignored `frontend/.env.local` (it wins in Vite's
+precedence over `.env.development`).
 
 Override at build time for different environments:
 
@@ -34,7 +34,7 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_S3_ACCESS_KEY`    | `minioadmin`                                                             | MinIO/S3 access key              |
 | `AP_S3_SECRET_KEY`    | `minioadmin`                                                             | MinIO/S3 secret key              |
 | `AP_S3_BUCKET`        | `invoices`                                                               | S3 bucket for invoice files      |
-| `AP_DEBUG`            | `false`                                                                  | Enable debug logging + SQLAlchemy echo. Default `false` so a forgotten deploy doesn't ship Python tracebacks to clients; `backend/.env.example` sets it to `true` for local dev. The boot guard also relaxes the AP_SECRET_KEY / AP_EMAIL_INTAKE_SIGNING_SECRET defaults when this is `true`. |
+| `AP_DEBUG`            | `false`                                                                  | Enable debug logging + SQLAlchemy echo. Default `false` so a forgotten deploy doesn't ship Python tracebacks to clients; `backend/.env.development` sets it to `true` for local dev. The boot guard also relaxes the AP_SECRET_KEY / AP_EMAIL_INTAKE_SIGNING_SECRET defaults when this is `true`. |
 | `AP_SSO_REDIRECT_PATH` | `/login/sso-callback`                                                   | Path the IdP redirects back to after OIDC auth (per tenant subdomain) |
 | `AP_SSO_STATE_TTL_SECONDS` | `600`                                                               | TTL on the OIDC state/nonce stored in Redis  |
 | `AP_SCIM_URL_PATH`    | `/api/scim/v2`                                                           | Mount path for SCIM 2.0 endpoints |
@@ -94,10 +94,11 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_HSTS_INCLUDE_SUBDOMAINS` | `true`                                                            | Emit the `includeSubDomains` directive (recommended; subdomains inherit the pin). |
 | `AP_HSTS_PRELOAD`     | `true`                                                                   | Emit the `preload` directive. Only meaningful if you actually submit to the preload list. |
 
-`backend/.env` is created automatically by `pnpm setup` (auto-run by
-`pnpm install:all` and every `dev*` script) from `backend/.env.example`. It's
-optional anyway — the defaults in `app/config.py` work with Docker Compose even
-with no `.env` present — but the auto-stamp gives your local overrides a home.
+`backend/.env.development` is **committed** with safe local defaults and is
+loaded by `main.py` (the local-dev entrypoint) via `python-dotenv` — no setup
+step. It's belt-and-suspenders anyway: the defaults in `app/config.py` already
+work with Docker Compose even with no env file present. For personal overrides,
+add a gitignored `backend/.env`; it wins over `.env.development`.
 
 All backend variables are prefixed with `AP_` and loaded via `pydantic-settings` in `app/config.py`.
 

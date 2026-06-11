@@ -52,7 +52,7 @@ For each classification, list the docs that should be considered:
 |---|---|
 | Endpoint | `docs/architecture.md`, `backend/docs/api-reference.md` (the endpoint table), `README.md` if it's in the public sketch, the relevant per-area `CLAUDE.md` |
 | Schema | `docs/architecture.md`, `backend/docs/database.md`, the Alembic migration's own header comment, any per-area `CLAUDE.md` describing the table |
-| Env-var | `docs/environment.md` (the canonical env-var reference), `README.md` (env section), the relevant per-area `CLAUDE.md`, `infra/` Terraform variables / docs, `backend/.env.example` |
+| Env-var | `docs/environment.md` (the canonical env-var reference), `README.md` (env section), the relevant per-area `CLAUDE.md`, `infra/` Terraform variables / docs, `backend/.env.development` |
 | Auth / permissions | `docs/authentication.md`, `docs/user-management.md`, the per-area `CLAUDE.md` |
 | Money / posting | `docs/architecture.md`, `backend/docs/payments.md`, `backend/docs/po-matching.md`, ADR if the rule is novel |
 | Audit-trail | `backend/docs/audit-log-shipping.md`, the per-area `CLAUDE.md`, ADR if the policy changed |

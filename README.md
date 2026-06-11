@@ -21,17 +21,16 @@ pnpm dev:frontend      # vite on :7777
 
 Open http://acme.localhost:7777 — login with `demo@acme.com` / `demo`
 
-**Local-first, zero secret setup.** You don't copy or edit any `.env` files
-by hand. The first `pnpm dev*` / `pnpm install:all` (or a manual `pnpm setup`)
-runs [`bin/bootstrap-env.sh`](bin/bootstrap-env.sh), which stamps
-`backend/.env` and `frontend/.env` from their committed `.env.example`
-templates. Every value in those templates is a safe, no-risk local default
-(loopback URLs, `mock` adapters, MinIO's `minioadmin/minioadmin`, a
-`change-me` JWT key); the backend additionally runs straight off
-`app/config.py` defaults, and the mobile app hardcodes its localhost API URL.
-The step is idempotent and non-destructive — an existing `.env` is never
-overwritten, so local overrides survive. Real deployed secrets never live in
-`.env`; they're in the SOPS-encrypted `*.sops` files (see
+**Local-first, zero secret setup.** You don't copy, stamp, or edit any `.env`
+files by hand. `backend/.env.development` and `frontend/.env.development` are
+**committed** with safe, no-risk local defaults (loopback URLs, `mock`
+adapters, MinIO's `minioadmin/minioadmin`, a `change-me` JWT key), so a fresh
+clone runs immediately. The backend loads them via `main.py` (its local-dev
+entrypoint); the frontend loads `.env.development` natively in Vite dev mode;
+the mobile app hardcodes its localhost API URL. Personal overrides go in a
+gitignored `backend/.env` / `frontend/.env.local` and win over the committed
+defaults. Real deployed secrets never live in any `.env*`; they're in the
+SOPS-encrypted `*.sops` files (see
 [`backend/CLAUDE.md` § Secrets management](backend/CLAUDE.md)).
 
 The `pnpm` commands above are thin wrappers that `cd` into the right workspace and call its native toolchain (pip / pnpm / flutter). See [Root scripts](#root-scripts) for the full list, or run `pnpm run` to print them.
@@ -42,7 +41,6 @@ Common cross-workspace tasks are exposed via `pnpm run` at the repo root. Each s
 
 | Script | Dispatches to |
 |---|---|
-| `pnpm setup` | `bin/bootstrap-env.sh` — stamp `backend/.env` + `frontend/.env` from their `.env.example` templates (idempotent; auto-run by `install:all` and every `dev*`) |
 | `pnpm install:{backend,frontend,mobile,all}` | `pip install -e '.[dev]'` / `pnpm install` / `flutter pub get` |
 | `pnpm dev:{backend,frontend,mobile}` | `python main.py` / `vite dev` / `flutter run` |
 | `pnpm dev` / `pnpm dev:all` / `pnpm dev:full` | backend + frontend together (one Ctrl-C stops both) / `db:up` (core) then `dev` / `services:up` (core + **every** opt-in profile) then `dev` — the whole stack from cold |
