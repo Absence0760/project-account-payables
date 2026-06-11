@@ -43,7 +43,8 @@ postgresql+asyncpg://postgres:postgres@localhost:5432/ap_acme
 ### Tenant Tables
 
 #### Invoice Pipeline
-- `invoices` — master record (invoice_number, vendor_name, amount, currency, due_date, status, file_url, vendor_address, vendor_tax_id, ship_to_address, tax_rate, payment_method, reference_number, assigned_to_id, assigned_to, approved_by, rejected_by)
+- `invoices` — master record (invoice_number, vendor_name, amount, currency, due_date, status, file_url, vendor_address, vendor_tax_id, ship_to_address, tax_rate, payment_method, reference_number, assigned_to_id, assigned_to, approved_by, rejected_by, **warnings** JSONB, **po_match** JSONB, **meta** JSONB)
+  - `meta` is a free-form per-invoice metadata bag. Currently holds the cached audit-log summary under `meta["audit_summary"]` = `{text, confidence_context, source_fingerprint: {count, last_at}, generated_at, model}` — regenerated lazily when the audit-log fingerprint changes. No PII / banking data. See [`audit-summary.md`](audit-summary.md).
 - `invoice_line_items` — individual lines (description, qty, unit_price, tax, total)
 - `invoice_extraction_results` — AI extraction output per attempt (method, confidence, raw JSON, **priors_metadata** — summary of vendor cache overrides + RAG neighbors applied during extraction)
 - `invoice_embeddings` — pgvector `vector(1536)` RAG store. One row per approved invoice; corrected_fields snapshot + embedding. Queried via cosine distance for few-shot retrieval. See [`ai-extraction.md`](ai-extraction.md).

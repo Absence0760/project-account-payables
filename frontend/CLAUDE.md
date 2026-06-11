@@ -33,7 +33,7 @@ pnpm check            # typecheck
 | `/login/sso-callback` | `routes/login/sso-callback/+page.svelte` | `POST /api/auth/sso/callback` — exchanges OIDC code+state for our JWT after IdP redirect |
 | `/profile` | `routes/profile/+page.svelte` | `POST /api/auth/mfa/enroll`, `POST /api/auth/mfa/enroll/verify`, `POST /api/auth/mfa/disable` — manage two-factor |
 | `/change-password` | `routes/change-password/+page.svelte` | `POST /api/auth/change-password` |
-| `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `GET /api/invoices/counts` (status-chip tallies), `GET /api/invoices/{id}` (`?id=` deep-link opens the detail modal), `POST /api/invoices/upload` (supports multi-file; frontend batches 5 at a time via `Promise.allSettled`), `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, bulk ops |
+| `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `GET /api/invoices/counts` (status-chip tallies), `GET /api/invoices/{id}` (`?id=` deep-link opens the detail modal), `POST /api/invoices/upload` (supports multi-file; frontend batches 5 at a time via `Promise.allSettled`), `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, `GET /api/invoices/{id}/summary` (audit-log summary; `POST .../summary/regenerate` for admins/managers), bulk ops |
 | `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors` |
 | `/payments` | `routes/payments/+page.svelte` | `GET /api/payments/{queue,summary,runs/}`, `GET /api/payments`, `POST /api/payments/runs` (creates draft), `GET /api/payments/runs/{id}` + `POST .../execute` (via `RunDetailModal`) |
 | `/exceptions` | `routes/exceptions/+page.svelte` | `GET /api/exceptions`, `PATCH /api/exceptions/{id}` |
