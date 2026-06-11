@@ -20,18 +20,43 @@ const DEFAULT_ACTIVE_STEPS: ActiveSteps = {
 	approval_config: null,
 };
 
+const PAGE_SIZE = 20;
+
+interface WorkflowListResponse {
+	items: WorkflowDefinition[];
+	total: number;
+	page: number;
+	page_size: number;
+}
+
 function createWorkflowStore() {
 	let workflows = $state<WorkflowDefinition[]>([]);
 	let loading = $state(false);
+	let total = $state(0);
+	let page = $state(1);
 	let activeSteps = $state<ActiveSteps>({ ...DEFAULT_ACTIVE_STEPS });
 
-	async function fetch() {
+	async function load(opts: { append?: boolean; nextPage?: number } = {}) {
+		const nextPage = opts.nextPage ?? 1;
 		loading = true;
 		try {
-			workflows = await api.get<WorkflowDefinition[]>('/api/workflows');
+			const res = await api.get<WorkflowListResponse>(
+				`/api/workflows?page=${nextPage}&page_size=${PAGE_SIZE}`
+			);
+			workflows = opts.append ? [...workflows, ...res.items] : res.items;
+			total = res.total;
+			page = nextPage;
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function fetch() {
+		await load();
+	}
+
+	async function loadMore() {
+		await load({ append: true, nextPage: page + 1 });
 	}
 
 	async function getById(id: string): Promise<WorkflowDefinition> {
@@ -45,6 +70,7 @@ function createWorkflowStore() {
 	}): Promise<WorkflowDefinition> {
 		const created = await api.post<WorkflowDefinition>('/api/workflows', data);
 		workflows = [...workflows, created];
+		total += 1;
 		return created;
 	}
 
@@ -60,6 +86,7 @@ function createWorkflowStore() {
 	async function remove(id: string): Promise<void> {
 		await api.delete(`/api/workflows/${id}`);
 		workflows = workflows.filter((w) => w.id !== id);
+		total = Math.max(0, total - 1);
 	}
 
 	interface BulkDeleteFailure {
@@ -78,6 +105,7 @@ function createWorkflowStore() {
 		});
 		const deletedSet = new Set(result.deleted);
 		workflows = workflows.filter((w) => !deletedSet.has(w.id));
+		total = Math.max(0, total - deletedSet.size);
 		return result;
 	}
 
@@ -102,10 +130,17 @@ function createWorkflowStore() {
 		get loading() {
 			return loading;
 		},
+		get total() {
+			return total;
+		},
+		get hasMore() {
+			return workflows.length < total;
+		},
 		get activeSteps() {
 			return activeSteps;
 		},
 		fetch,
+		loadMore,
 		fetchActiveSteps,
 		getById,
 		create,

@@ -237,7 +237,9 @@
 	let runs = $state<RunItem[]>([]);
 
 	function buildParams(): Record<string, string> {
-		const params: Record<string, string> = { page_size: '100' };
+		// Paging (page / page_size) is owned by the store's Load-More; only
+		// the filter params belong here.
+		const params: Record<string, string> = {};
 		if (activeStatus !== 'all') params.status = activeStatus;
 		if (search.trim()) params.search = search.trim();
 		return params;
@@ -309,8 +311,13 @@
 		vendor_name: string | null;
 		invoice_number: string | null;
 	}
+	const CARDS_PAGE_SIZE = 20;
 	let cards = $state<CardItem[]>([]);
+	let cardsTotal = $state(0);
+	let cardsPage = $state(1);
 	let loadingCards = $state(false);
+	let loadingMoreCards = $state(false);
+	let hasMoreCards = $derived(cards.length < cardsTotal);
 
 	interface CardDashboard {
 		active_cards: number;
@@ -322,20 +329,33 @@
 	}
 	let cardDashboard = $state<CardDashboard | null>(null);
 
-	async function loadCards() {
-		loadingCards = true;
+	async function loadCards(opts: { append?: boolean; nextPage?: number } = {}) {
+		const nextPage = opts.nextPage ?? 1;
+		if (opts.append) loadingMoreCards = true;
+		else loadingCards = true;
 		try {
-			const [list, dash] = await Promise.all([
-				api.get<{ items: CardItem[] }>('/api/cards'),
-				api.get<CardDashboard>('/api/cards/dashboard').catch(() => null)
-			]);
-			cards = list.items;
+			const listReq = api.get<{ items: CardItem[]; total: number }>(
+				`/api/cards?page=${nextPage}&page_size=${CARDS_PAGE_SIZE}`
+			);
+			// The dashboard is page-independent — only (re)fetch it on a fresh load.
+			const dashReq = opts.append
+				? Promise.resolve(cardDashboard)
+				: api.get<CardDashboard>('/api/cards/dashboard').catch(() => null);
+			const [list, dash] = await Promise.all([listReq, dashReq]);
+			cards = opts.append ? [...cards, ...list.items] : list.items;
+			cardsTotal = list.total;
+			cardsPage = nextPage;
 			cardDashboard = dash;
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Failed to load cards', 'error');
 		} finally {
 			loadingCards = false;
+			loadingMoreCards = false;
 		}
+	}
+
+	async function loadMoreCards() {
+		await loadCards({ append: true, nextPage: cardsPage + 1 });
 	}
 
 	let revealedCard = $state<{ pan: string; cvv: string; expires: string; last_four: string } | null>(
@@ -612,6 +632,22 @@
 			{/snippet}
 		</DataTable>
 
+		{#if paymentStore.hasMore}
+			<div class="load-more-row">
+				<button class="btn-load-more" onclick={() => paymentStore.loadMore()} disabled={paymentStore.loading}>
+					{paymentStore.loading
+						? 'Loading…'
+						: `Load more (${paymentStore.all.length} of ${paymentStore.total})`}
+				</button>
+			</div>
+		{:else if paymentStore.total > 0}
+			<div class="load-more-row">
+				<span class="load-more-end"
+					>Showing all {paymentStore.total} payment{paymentStore.total === 1 ? '' : 's'}</span
+				>
+			</div>
+		{/if}
+
 	{:else if activeTab === 'runs'}
 		<DataTable
 			columns={RUNS_COLUMNS}
@@ -706,6 +742,18 @@
 				{/each}
 			{/snippet}
 		</DataTable>
+
+		{#if hasMoreCards}
+			<div class="load-more-row">
+				<button class="btn-load-more" onclick={loadMoreCards} disabled={loadingMoreCards}>
+					{loadingMoreCards ? 'Loading…' : `Load more (${cards.length} of ${cardsTotal})`}
+				</button>
+			</div>
+		{:else if cardsTotal > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">Showing all {cardsTotal} card{cardsTotal === 1 ? '' : 's'}</span>
+			</div>
+		{/if}
 	{/if}
 </PageHeader>
 

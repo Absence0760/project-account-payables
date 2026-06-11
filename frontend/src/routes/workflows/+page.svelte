@@ -240,6 +240,22 @@
 			{/each}
 		{/snippet}
 	</DataTable>
+
+	{#if workflowStore.hasMore}
+		<div class="load-more-row">
+			<button class="btn-load-more" onclick={() => workflowStore.loadMore()} disabled={workflowStore.loading}>
+				{workflowStore.loading
+					? 'Loading…'
+					: `Load more (${workflowStore.all.length} of ${workflowStore.total})`}
+			</button>
+		</div>
+	{:else if workflowStore.total > 0}
+		<div class="load-more-row">
+			<span class="load-more-end"
+				>Showing all {workflowStore.total} workflow{workflowStore.total === 1 ? '' : 's'}</span
+			>
+		</div>
+	{/if}
 </PageHeader>
 
 <Modal

@@ -8,28 +8,51 @@ interface PaymentListResponse {
 	page_size: number;
 }
 
+const PAGE_SIZE = 20;
+
 function createPaymentStore() {
 	let payments = $state<Payment[]>([]);
 	let loading = $state(false);
 	let total = $state(0);
+	let page = $state(1);
+	// The active filter params (status/method/search/amount), minus paging —
+	// remembered so loadMore() requests the next page with the same filters.
+	let lastParams: Record<string, string> = {};
 
-	async function fetch(params?: Record<string, string>) {
+	async function load(params: Record<string, string>, opts: { append?: boolean; nextPage?: number } = {}) {
+		const nextPage = opts.nextPage ?? 1;
 		loading = true;
 		try {
-			const query = params ? '?' + new URLSearchParams(params).toString() : '';
-			const res = await api.get<PaymentListResponse>(`/api/payments${query}`);
-			payments = res.items;
+			const query = new URLSearchParams({
+				...params,
+				page: String(nextPage),
+				page_size: String(PAGE_SIZE),
+			}).toString();
+			const res = await api.get<PaymentListResponse>(`/api/payments?${query}`);
+			payments = opts.append ? [...payments, ...res.items] : res.items;
 			total = res.total;
+			page = nextPage;
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function fetch(params?: Record<string, string>) {
+		lastParams = params ?? {};
+		await load(lastParams);
+	}
+
+	async function loadMore() {
+		await load(lastParams, { append: true, nextPage: page + 1 });
 	}
 
 	return {
 		get all() { return payments; },
 		get loading() { return loading; },
 		get total() { return total; },
+		get hasMore() { return payments.length < total; },
 		fetch,
+		loadMore,
 	};
 }
 

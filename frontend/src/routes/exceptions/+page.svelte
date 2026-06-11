@@ -40,11 +40,17 @@
 
 	type Action = 'resolve' | 'escalate' | 'dismiss';
 
+	const PAGE_SIZE = 20;
 	let exceptions = $state<ExceptionItem[]>([]);
+	let total = $state(0);
+	let page = $state(1);
+	let loadingMore = $state(false);
 	let summary = $state<Summary | null>(null);
 	let statusFilter = $state('open');
 	let typeFilter = $state<string | null>(null);
 	let selectedIds = $state<Set<string>>(new Set());
+
+	let hasMore = $derived(exceptions.length < total);
 
 	let resolveTarget = $state<ExceptionItem | null>(null); // single-row resolve modal
 	let bulkResolveOpen = $state(false);                    // bulk-resolve modal
@@ -78,19 +84,33 @@
 		loadSummary();
 	});
 
-	async function loadExceptions() {
+	async function loadExceptions(opts: { append?: boolean; nextPage?: number } = {}) {
+		const nextPage = opts.nextPage ?? 1;
+		if (opts.append) loadingMore = true;
 		try {
 			const params = new URLSearchParams();
 			if (statusFilter !== 'all') params.set('status', statusFilter);
 			if (typeFilter) params.set('type', typeFilter);
-			const data = await api.get<{ items: ExceptionItem[] }>(`/api/exceptions?${params}`);
-			exceptions = data.items;
+			params.set('page', String(nextPage));
+			params.set('page_size', String(PAGE_SIZE));
+			const data = await api.get<{ items: ExceptionItem[]; total: number }>(
+				`/api/exceptions?${params}`
+			);
+			exceptions = opts.append ? [...exceptions, ...data.items] : data.items;
+			total = data.total;
+			page = nextPage;
 			// Drop selections for ids that fell off the list.
-			const visible = new Set(data.items.map((e) => e.id));
+			const visible = new Set(exceptions.map((e) => e.id));
 			selectedIds = new Set([...selectedIds].filter((id) => visible.has(id)));
 		} catch {
 			toast('Failed to load exceptions', 'error');
+		} finally {
+			loadingMore = false;
 		}
+	}
+
+	async function loadMoreExceptions() {
+		await loadExceptions({ append: true, nextPage: page + 1 });
 	}
 
 	async function loadSummary() {
@@ -382,6 +402,18 @@
 			{/each}
 		{/snippet}
 	</DataTable>
+
+	{#if hasMore}
+		<div class="load-more-row">
+			<button class="btn-load-more" onclick={loadMoreExceptions} disabled={loadingMore}>
+				{loadingMore ? 'Loading…' : `Load more (${exceptions.length} of ${total})`}
+			</button>
+		</div>
+	{:else if total > 0}
+		<div class="load-more-row">
+			<span class="load-more-end">Showing all {total} exception{total === 1 ? '' : 's'}</span>
+		</div>
+	{/if}
 </PageHeader>
 
 <!-- Single-row resolve modal -->
