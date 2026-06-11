@@ -287,6 +287,74 @@ void main() {
     expect(find.text('Invoice approved'), findsOneWidget);
   });
 
+  testWidgets('a double-tap on Approve only fires one approval POST',
+      (tester) async {
+    var approveCalls = 0;
+    final gate = Completer<http.Response>();
+    final client = MockClient((req) async {
+      final path = req.url.path;
+      if (req.method == 'POST' && path == '/api/auth/login') {
+        return _json({'access_token': 'tok-123'});
+      }
+      if (req.method == 'GET' && path == '/api/auth/me') {
+        return _json(_meBody(['admin']));
+      }
+      if (req.method == 'POST' && path.endsWith('/approve')) {
+        approveCalls++;
+        return gate.future; // hold the approval in flight
+      }
+      if (req.method == 'GET' && path == '/api/invoices') {
+        return _json({'invoices': <Map<String, dynamic>>[]});
+      }
+      if (req.method == 'GET' && path.startsWith('/api/invoices/')) {
+        return _json(_invoiceJson('1',
+            status: approveCalls == 0 ? 'ready_for_review' : 'approved'));
+      }
+      return http.Response('not found', 404);
+    });
+    ApiClient().debugConfigure(client: client);
+    await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Approve'));
+
+    final approveBtn = find.widgetWithText(FilledButton, 'Approve');
+    await tester.tap(approveBtn);
+    await tester.pump(); // _submitting=true → button disabled
+    // Second tap while the first is in flight must be ignored.
+    await tester.tap(approveBtn, warnIfMissed: false);
+    await tester.pump();
+
+    expect(approveCalls, 1, reason: 'double-tap must not double-POST');
+
+    // Release the held approval so nothing outlives the test.
+    gate.complete(_json(_invoiceJson('1', status: 'approved')));
+    await _pumpUntil(tester, find.text('Invoice approved'));
+  });
+
+  testWidgets('shows an error snackbar when the approval fails',
+      (tester) async {
+    final client = _detailClient(
+      _invoiceJson('1', status: 'ready_for_review'),
+      onApprove: (req) => http.Response('boom', 500),
+    );
+    ApiClient().debugConfigure(client: client);
+    await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Approve'));
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
+    await _pumpUntil(tester, find.textContaining('Could not approve'));
+
+    // The user gets explicit failure feedback instead of a silent no-op.
+    expect(find.textContaining('Could not approve'), findsOneWidget);
+  });
+
   testWidgets('tapping Reject opens the reason dialog with Cancel/Reject',
       (tester) async {
     await _arrange(

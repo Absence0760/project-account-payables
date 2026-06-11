@@ -25,6 +25,9 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   Invoice? _invoice;
   bool _loading = true;
   String? _error;
+  // True while an approve/reject network call is in flight — guards against a
+  // double-tap firing the money-path POST twice and disables the buttons.
+  bool _submitting = false;
 
   @override
   void initState() {
@@ -52,14 +55,19 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   }
 
   Future<void> _approve() async {
-    final success = await InvoiceStore.instance.approve(widget.invoiceId);
-    if (success) {
-      await _load();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invoice approved')),
-        );
+    if (_submitting) return;
+    setState(() => _submitting = true);
+    try {
+      final success = await InvoiceStore.instance.approve(widget.invoiceId);
+      if (!mounted) return;
+      if (success) {
+        await _load();
+        _showSnack('Invoice approved');
+      } else {
+        _showSnack('Could not approve invoice — please try again');
       }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
   }
 
@@ -92,18 +100,29 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       },
     );
 
-    if (reason != null && reason.isNotEmpty) {
+    if (reason == null || reason.isEmpty || _submitting) return;
+
+    setState(() => _submitting = true);
+    try {
       final success =
           await InvoiceStore.instance.reject(widget.invoiceId, reason);
+      if (!mounted) return;
       if (success) {
         await _load();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Invoice rejected')),
-          );
-        }
+        _showSnack('Invoice rejected');
+      } else {
+        _showSnack('Could not reject invoice — please try again');
       }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override
@@ -281,7 +300,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           children: [
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: _reject,
+                onPressed: _submitting ? null : _reject,
                 icon: const Icon(Icons.close, color: Colors.red),
                 label: const Text(
                   'Reject',
@@ -296,7 +315,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             const SizedBox(width: 16),
             Expanded(
               child: FilledButton.icon(
-                onPressed: _approve,
+                onPressed: _submitting ? null : _approve,
                 icon: const Icon(Icons.check),
                 label: const Text('Approve'),
                 style: FilledButton.styleFrom(
