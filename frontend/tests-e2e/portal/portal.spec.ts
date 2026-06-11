@@ -275,19 +275,26 @@ test.describe("/portal — self-service (PO flip, remittance, company)", () => {
     await portalSignIn(page);
     await expect(page).toHaveURL(/\/portal\/invoices/, { timeout: 15_000 });
 
-    // Both seed shapes bind the portal user to a vendor that owns a PO
-    // (full: PO-2024-104 on v_tech; lean: LEAN-PO-001 on v_alpha), so the
-    // flip always has a row to act on — this is ground-truth, not assumed.
     const vendorId = tenantPsql(
       `SELECT vendor_id FROM vendor_users WHERE email='${PORTAL_EMAIL}'`,
     ).trim();
-    const ownPOs = parseInt(
-      tenantPsql(
-        `SELECT count(*) FROM purchase_orders WHERE vendor_id='${vendorId}'`,
-      ).trim(),
-      10,
+    const orgId = tenantPsql(
+      `SELECT organization_id FROM vendors WHERE id='${vendorId}'`,
+    ).trim();
+
+    // Seed a fresh, never-flipped PO for this vendor so the test is
+    // isolation-safe across repeated runs against the same tenant. The flip
+    // is idempotent at the DB layer (partial unique index on the
+    // `po-flip:<po_id>` marker), so re-flipping a PO the seed already flipped
+    // on a prior run is a no-op and would NOT raise the invoice count. A
+    // unique PO per run is guaranteed un-flipped, and since the portal PO list
+    // is ordered created_at DESC, this newest row is the first "Create
+    // invoice" button the UI offers.
+    const freshPo = `E2E-FLIP-${Date.now()}`;
+    tenantPsql(
+      `INSERT INTO purchase_orders (id, po_number, vendor_id, total, status, organization_id)
+       VALUES (gen_random_uuid(), '${freshPo}', '${vendorId}', 250.00, 'open', '${orgId}')`,
     );
-    expect(ownPOs).toBeGreaterThan(0);
 
     const invoicesBefore = parseInt(
       tenantPsql(
