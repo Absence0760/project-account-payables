@@ -178,6 +178,11 @@ async def _ensure_test_tenants() -> dict:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    # Importing the app wires every router, which transitively imports every
+    # model — so Base.metadata is COMPLETE before any create_all. Without this,
+    # only the models imported so far get tables, and later TRUNCATE/queries
+    # reference tables that were never created.
+    import app.main  # noqa: F401
     from app.api.deps import ALL_ROLES
     from app.config import settings as cfg
     from app.models import Base
@@ -189,12 +194,6 @@ async def _ensure_test_tenants() -> dict:
         _create_tenant_tables,
     )
     from app.utils.passwords import pwd_context
-
-    # Importing the app wires every router, which transitively imports every
-    # model — so Base.metadata is COMPLETE before any create_all. Without this,
-    # only the models imported so far get tables, and later TRUNCATE/queries
-    # reference tables that were never created.
-    import app.main  # noqa: F401
 
     ctrl_engine = create_async_engine(cfg.database_url)
     ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
