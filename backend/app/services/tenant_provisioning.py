@@ -100,6 +100,14 @@ async def _create_tenant_tables(db_name: str) -> None:
                 sync_conn, tables=tenant_tables, checkfirst=True
             )
         )
+        # SOX: install the DB-level append-only guard on audit_log. Migration
+        # 0022 does the same across existing tenants; this keeps tenants created
+        # outside Alembic (fresh provisioning + the test harness) consistent.
+        # Statements run one-at-a-time — asyncpg rejects multi-command strings.
+        from app.services.audit_immutability import install_statements
+
+        for stmt in install_statements():
+            await conn.exec_driver_sql(stmt)
     await engine.dispose()
     logger.info("Created tenant tables in: %s", db_name)
 
