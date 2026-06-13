@@ -117,10 +117,11 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, PO flip, remittance download, UBL 2.1 e-invoice download (`GET /portal/invoices/{id}/einvoice`, vendor-scoped), company/bank/tax self-service (bank/tax stage for AP approval), vendor-scoped |
 | `/admin` | User CRUD, role assignment |
 | `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
-| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid), PEPPOL AS4 transmission (`POST {id}/peppol-send`, role-gated, idempotent) |
+| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid), PEPPOL AS4 transmission (`POST {id}/peppol-send`, role-gated, idempotent), contract link (`POST {id}/link-contract` \| `/unlink-contract`, spend attribution) |
 | `/vendors` | Vendor CRUD, ERP sync |
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
+| `/contracts` | Contract lifecycle (CLM) — CRUD + search/filter, document upload (`POST {id}/upload`) + proxy (`GET /file/{file_key}`, cross-tenant-checked), lifecycle (`POST {id}/activate\|terminate\|cancel\|renew`), spend summary on detail, contract-based PO creation (`POST {id}/create-po`). Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager; every mutation audited |
 | `/purchase-orders` | PO listing, ERP sync |
 | `/goods-receipts` | Goods-receipt list / detail (3-way match feeder) |
 | `/gl-accounts` | GL account CRUD, ERP sync |
@@ -198,7 +199,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 2 + 2b scope reads/writes (incl. the dashboard + CFO analytics) by the `X-Entity-ID` header (`app/tenant.py` → `get_entity_id` / `get_write_entity_id` / `apply_entity_scope`) with a sidebar entity switcher; per-entity workflow selection is deferred (Phase 3). See `docs/multi-entity.md`.
 
@@ -244,6 +245,9 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_PEPPOL_PROVIDER` | `mock` | PEPPOL Access Point adapter — `mock` (in-process, no network — local-first default) \| `as4_gateway`. Per-org override on `Organization.settings.peppol.provider`. See `backend/docs/peppol.md`. |
 | `AP_PEPPOL_GATEWAY_URL` | (empty) | Hosted Access Point base URL (deployed only). |
 | `AP_PEPPOL_GATEWAY_API_KEY` | (empty) | PEPPOL gateway API key — **no hardcoded fallback**; sops in deployed. |
+| `AP_CONTRACT_RENEWAL_ENABLED` | `false` | Master switch for the contract renewal-alert background sweep — keep `false` in local dev, flip on in deployed envs. See `backend/docs/contracts.md`. |
+| `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` | `3600` | Renewal sweep interval. |
+| `AP_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS` | `30` | Platform default renewal lead window; per-contract `renewal_notice_days` overrides it. |
 
 Full list in `backend/app/config.py`.
 
@@ -280,6 +284,7 @@ Full list in `backend/app/config.py`.
 | Founder runbooks (non-code) | `docs/founder-runbooks/` — legal, prod deploy, Stripe, payment rails, SOC 2 vendor, support + status |
 | CSV data import | `backend/docs/csv-import.md` — pilot Day-0 vendor + invoice migration |
 | Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
+| Contract Management (CLM) | `backend/docs/contracts.md` — lifecycle, Contract/ContractLineItem model, repository + upload, spend-to-contract tracking, renewal sweep + env vars, compliance (`contract_noncompliant`), contract-based PO creation, migrations 0036/0037 |
 | Automated E-Invoicing (PEPPOL send + receive) | `backend/docs/peppol.md` — four-corner model, mock/as4_gateway adapters, ParticipantId, BIS Billing 3.0, transmission model + idempotency guard, send route, inbound AS4 receive webhook (C4 corner), HMAC-gated, MessageId dedupe, routes to einvoice extractor |
 | 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |

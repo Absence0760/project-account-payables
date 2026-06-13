@@ -728,15 +728,15 @@ Procure-to-pay: requisitioning, PO creation, catalog management. Coupa and Baswa
 ---
 
 ### Contract Management
-**Status:** Planned
+**Status:** Done — full CLM: contract repository + document upload, spend-to-contract tracking, renewal alerts (background sweep), compliance monitoring (`contract_noncompliant` exception), and contract-based PO creation. `/api/contracts` + invoice link/unlink. See [contracts.md](../backend/docs/contracts.md).
 
 Contract lifecycle management. Only enterprise tools (Coupa, Basware) have this natively. Most mid-market competitors don't.
 
-- [ ] Contract repository — upload and store contracts
-- [ ] Spend-to-contract tracking — link invoices to contracts
-- [ ] Renewal alerts — notify before contract expiry
-- [ ] Contract compliance monitoring — flag spend outside contract terms
-- [ ] Contract-based PO creation — auto-populate PO from contract terms
+- [x] Contract repository — upload and store contracts
+- [x] Spend-to-contract tracking — link invoices to contracts
+- [x] Renewal alerts — notify before contract expiry
+- [x] Contract compliance monitoring — flag spend outside contract terms
+- [x] Contract-based PO creation — auto-populate PO from contract terms
 
 **Competitors:** Coupa (full CLM), Basware (moderate), Airbase (basic repository)
 
@@ -796,3 +796,4 @@ Contract lifecycle management. Only enterprise tools (Coupa, Basware) have this 
 - [x] Fraud detection (duplicate invoices, round amounts, future dates, unverified vendors)
 - [x] Dashboard KPIs (pipeline, aging, vendor spend, monthly trends, upcoming payments)
 - [x] Payment run creation and execution with ERP sync
+- [x] Contract management (repository + upload, spend-to-contract tracking, renewal alerts, compliance monitoring, contract-based PO creation)

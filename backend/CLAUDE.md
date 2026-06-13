@@ -36,6 +36,7 @@ Deep-dive docs live in `backend/docs/`:
 | Adaptive AI workflows | `docs/adaptive-workflows.md` |
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
 | PEPPOL AS4 outbound (e-invoice transmission) | `docs/peppol.md` |
+| Contract management (CLM) | `docs/contracts.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -170,6 +171,8 @@ backend/
    - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
    - `Notification` — in-app notification center rows (recipient_user_id, event_type, entity_id, title/body, read_at). See `docs/notifications.md`
    - `PeppolTransmission` — one row per PEPPOL transmission (direction=outbound|inbound). Outbound idempotency: partial unique index `uq_peppol_one_live_per_invoice_direction` on `(invoice_id, direction) WHERE status <> 'failed'`. Inbound dedupe: partial unique index `uq_peppol_message_id` on `message_id WHERE message_id IS NOT NULL`. See `docs/peppol.md`
+   - `Contract` — vendor contract / CLM spine. contract_number, contract_type (purchase/service/subscription/lease/sla/msa/sow/other), status (draft/active/expired/terminated/cancelled), vendor_id, money (`Numeric` total_value / spend_limit + not_to_exceed), lifecycle dates, renewal config (auto_renew, renewal_notice_days, renewal_alert_sent_at), terms (JSONB), file_key. Spend link is `Invoice.contract_id`. See `docs/contracts.md`
+   - `ContractLineItem` — contract_id, line_number, item_code, description, quantity, unit_price, total, gl_account
 
 **Connection management** (`database.py`):
 - `get_control_db()` → AsyncSession for control plane
@@ -216,8 +219,9 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 | `services/audit_log_shipper.py` | Centralized audit-log shipper (SOC 2). Sweeps every tenant DB, reads unshipped `audit_log` rows in batches, fans them out to every configured `audit_shipping` adapter (CloudWatch Logs + S3 Object Lock), then marks `shipped_at=now()`. All adapters must ACK before rows are marked; failures leave rows unshipped so the next tick retries. Disabled by default — flip `AP_AUDIT_SHIPPING_ENABLED` on in deployed envs. See `docs/audit-log-shipping.md`. |
 | `services/approval_escalation.py` | Sweeps every tenant's active workflow instances and appends `escalation_to_user_ids` onto any approval chain level waiting longer than its configured `escalation_hours`. Disabled by default (`AP_APPROVAL_ESCALATION_ENABLED`); flip on in deployed envs. |
 | `services/payment_reconciler.py` | Backstop polling for payments whose processor webhook went missing. Re-fetches status from the payment adapter when a `submitted`/`processing` payment sits longer than `AP_PAYMENT_RECONCILE_AFTER_MINUTES`. Disabled by default (`AP_PAYMENT_RECONCILE_ENABLED`); flip on in deployed envs alongside Modern Treasury. |
+| `services/contract_renewal.py` | Contract renewal-alert sweep. Sweeps every tenant DB; finds `active` contracts within their own `renewal_notice_days` of `end_date` with no alert sent, notifies the owner + AP managers once (`contract_renewal_due` event), then stamps `renewal_alert_sent_at` for idempotency (cleared on `POST /api/contracts/{id}/renew`). Disabled by default (`AP_CONTRACT_RENEWAL_ENABLED`); `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` / `_DEFAULT_NOTICE_DAYS`. See `docs/contracts.md`. |
 
-All four are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
+All five are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
 
 ## Adapter patterns
 
@@ -488,7 +492,7 @@ The three `webhook_*_secret` fields are HMAC keys used by the inbound webhook ha
 
 ## Exception types
 
-`duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`, `quality_hold`
+`duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`, `quality_hold`, `contract_noncompliant`
 
 Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`.
 
