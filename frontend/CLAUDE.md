@@ -43,6 +43,7 @@ pnpm check            # typecheck
 | `/organization` | `routes/organization/+page.svelte` | `GET/PATCH /api/organization` |
 | `/admin` | `routes/admin/+page.svelte` | `GET/POST/PATCH/DELETE /api/admin/users`, `GET /api/admin/roles` |
 | `/cfo` | `routes/cfo/+page.svelte` | `GET /api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`, `GET /api/analytics/export/cashflow_forecast` (admin + cfo) — predictive cash-flow dashboard |
+| `/tax` | `routes/tax/+page.svelte` | `GET /api/tax/1099-report?year=` (via `lib/api/tax.ts`) — 1099 vendor reporting dashboard. KPI summary, year selector, per-vendor 1099-eligible / W-9-on-file / TIN-verified chips, >$600 threshold flags, vendor search + filter chips (all / reportable / missing W-9 / over threshold). admin/ap_manager/cfo. The report outer-joins vendors→payments, so the row set is the tenant's vendor list and the year only re-aggregates each vendor's YTD; the table is empty only when there are no vendors. |
 | `/notifications` | `routes/notifications/+page.svelte` | `GET /api/notifications` (list, `?unread_only=`), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` — clickable rows open the related invoice (`/invoices?id=`) |
 | `/profile` (notifications prefs) | `routes/profile/+page.svelte` | `GET/PATCH /api/notifications/preferences` — per-event in-app/email toggles |
 
@@ -68,7 +69,15 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 - 401 responses clear token and redirect to `/login`
 - Methods: `api.get<T>()`, `api.post<T>()`, `api.patch<T>()`, `api.put<T>()`, `api.delete()`, `api.upload<T>()`
 - Token helpers: `setToken()`, `clearToken()`, `hasToken()`
-- Typed feature helpers wrap `api` per domain — e.g. `src/lib/api/audit.ts` (`getInvoiceAuditLog`, `getAuditExport`, `downloadAuditExportCsv`) over the SOX audit endpoints, with `AuditEntry` / `AuditFieldChange` types in `src/lib/types/audit.ts`. The invoice-modal Activity timeline renders `details.changes` (per-field before/after) from these.
+- Typed feature helpers wrap `api` per domain — e.g. `src/lib/api/audit.ts` (`getInvoiceAuditLog`, `getAuditExport`, `downloadAuditExportCsv`) over the SOX audit endpoints, with `AuditEntry` / `AuditFieldChange` types in `src/lib/types/audit.ts`. The invoice-modal Activity timeline renders `details.changes` (per-field before/after) from these. `src/lib/api/tax.ts` (`get1099Report`) wraps the 1099 endpoint, with `Report1099` / `Vendor1099Row` types in `src/lib/types/tax.ts`.
+
+### Money formatting — `src/lib/utils/money.ts` + `ui/Money.svelte`
+
+**Never hand-roll `Intl.NumberFormat` for currency.** `formatMoney(amount, opts?, placeholder?)` is the single locale-aware formatter (currency-code driven via `Intl.NumberFormat`, browser locale), and `<Money amount currency? whole? accounting? mono? />` is the component over it. Each amount renders with its **own** ISO 4217 code — never a hardcoded `$`.
+
+- Per-row amounts pass their own `currency` (invoices, credit memos, POs, cards, payments).
+- Tenant-wide roll-ups (dashboard KPIs, payment-summary totals, aging, CFO forecast) have no per-row currency, so they use the **org default** from the `orgCurrency` store (`src/lib/stores/orgSettings.svelte.ts`). It lazy-loads `Organization.settings.invoice_defaults.currency` from `GET /api/organization` once per session and falls back to USD for non-admin roles (403) or any error. Call `orgCurrency.ensureLoaded()` from the page's init `$effect` and read `orgCurrency.currency`.
+- `formatMoney` accepts `number | string-Decimal | null` and returns the placeholder (`—` by default) for null/empty/non-finite; a bad currency code falls back to USD rather than throwing.
 
 ### Tenant — `src/lib/tenant.ts`
 
@@ -84,6 +93,7 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 | `workflowStore` | `workflows.svelte.ts` | `all`, `loading`, `total`, `hasMore`, `activeSteps` | `fetch()`, `loadMore()`, `fetchActiveSteps()`, `getById()`, `create()`, `update()` |
 | `adminStore` | `admin.svelte.ts` | `users`, `roles`, `loading` | `fetchUsers()`, `fetchRoles()`, `createUser()`, `updateUser()`, `deleteUser()` |
 | `sidebar` | `sidebar.svelte.ts` | `collapsed` | `toggle()` |
+| `orgCurrency` | `orgSettings.svelte.ts` | `currency` | `ensureLoaded()`, `reset()` — tenant default display currency for aggregate (non-per-row) money; lazy-loads from `/api/organization`, USD fallback |
 | `notificationStore` | `notifications.svelte.ts` | `items`, `unread`, `total`, `loading`, `hasMore`, `prefs` | `fetchList({unreadOnly})`, `loadMore()`, `fetchUnreadCount()`, `markRead(id)`, `markAllRead()`, `fetchPrefs()`, `updatePrefs()`, `startPolling()`/`stopPolling()` (60s unread-count poll for the sidebar badge; started from `+layout` when signed in) |
 
 ### Components (`src/lib/components/`)
@@ -98,6 +108,7 @@ Grouped into subfolders by role. Import with the full path, e.g.
 - `Modal.svelte` — `.backdrop` + `div.modal[role="dialog"]`. `<Modal open ariaLabel="EXACT" title? width="sm|md|lg" onclose>`; keep the page's own `<form>` + `.modal-footer` inside `children` (preserves submit). Custom heading → `{#snippet header()}`. Handles backdrop-click + Esc.
 - `KpiCard.svelte` — `.kpi` card. `<KpiCard value label highlight={'green'|'red'|null} />`; wrap a row in `<div class="kpi-row">`.
 - `SearchBox`, `StatusBadge`, `RowAction`, `BulkBar`, `BulkDeleteButton`, `Toast` — see the pattern sections below.
+- `Money.svelte` — locale-aware currency display. `<Money amount={row.amount} currency={row.currency} />`. Opt-in `whole` (no decimals), `accounting` (parenthesised negatives), `mono` (tabular-nums). Over `utils/money.ts::formatMoney`; see *Money formatting* above. Use this (or `formatMoney` in script) for every currency value — don't write `Intl.NumberFormat` inline.
 
 The visual styling for all of the above lives **globally in `src/app.css`** (class-scoped: `.workspace`, `.grid-container td`, `.filter-chip`, `.modal`, `.kpi`, …) so route pages carry no duplicated `<style>`. Feature components below keep their own scoped CSS (Svelte's `.svelte-<hash>` outranks the bare-class globals).
 
@@ -117,6 +128,7 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
 - `payment.ts` — `Payment`, `PaymentRun`, `PaymentStatus`, `PaymentMethod` (ach, wire, check, virtual_card)
 - `workflow.ts` — `WorkflowDefinition`, `WorkflowStep`, step configs (extraction, approval, erp_export)
 - `admin.ts` — `AdminUser`, `Role` (admin, ap_manager, ap_clerk, cfo)
+- `tax.ts` — `Report1099`, `Vendor1099Row` (1099 reporting dashboard)
 
 ## Multi-tenant routing
 
@@ -469,6 +481,7 @@ the `ui/` primitive in the Source column.
 | Modal dialog | `.modal[role="dialog"]` + `.backdrop` | `ui/Modal.svelte` |
 | KPI card | `.kpi` / `.kpi-value` / `.kpi-label` | `ui/KpiCard.svelte` |
 | Status badge | `<StatusBadge>` | `ui/StatusBadge.svelte` |
+| Money / currency | `<Money>` / `formatMoney` | `ui/Money.svelte` / `utils/money.ts` |
 
 (All Source paths are under `$lib/components/`.) If a shared style is
 missing, add it to `src/app.css` (class-scoped) — not a per-route

@@ -6,6 +6,8 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import { formatMoney } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 
@@ -67,6 +69,7 @@
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 	$effect(() => {
+		orgCurrency.ensureLoaded();
 		void loadPos();
 	});
 
@@ -147,8 +150,7 @@
 	}
 
 	function formatCurrency(n: number | null): string {
-		if (n === null) return '—';
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
+		return formatMoney(n, { currency: orgCurrency.currency });
 	}
 
 	function formatDate(s: string | null): string {

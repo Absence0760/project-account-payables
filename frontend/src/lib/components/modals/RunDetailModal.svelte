@@ -5,6 +5,7 @@
 	import { PAYMENT_METHOD_LABELS } from '$lib/types/payment';
 	import type { PaymentMethod } from '$lib/types/payment';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { formatMoney } from '$lib/utils/money';
 
 	let {
 		runId,
@@ -124,8 +125,8 @@
 		if (e.key === 'Escape') onclose();
 	}
 
-	function fmt(amount: number, currency = 'USD'): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
+	function fmt(amount: number, currency?: string | null): string {
+		return formatMoney(amount, { currency });
 	}
 
 	function fmtDate(s: string | null): string {

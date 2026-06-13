@@ -1,0 +1,318 @@
+<script lang="ts">
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import FilterChips from '$lib/components/ui/FilterChips.svelte';
+	import Money from '$lib/components/ui/Money.svelte';
+	import { formatMoney } from '$lib/utils/money';
+	import { get1099Report } from '$lib/api/tax';
+	import type { Report1099, Vendor1099Row } from '$lib/types/tax';
+
+	// Year selector — current year and the prior five (1099s are filed for
+	// completed calendar years, so people mostly look back).
+	const currentYear = new Date().getFullYear();
+	const YEARS = Array.from({ length: 6 }, (_, i) => currentYear - i);
+
+	let year = $state(currentYear);
+	let report = $state<Report1099 | null>(null);
+	let loading = $state(true);
+	let error = $state<string | null>(null);
+
+	let search = $state('');
+	// Chip keys: 'all' | 'reportable' | 'missing_w9' | 'over_threshold'.
+	// Typed as string to match FilterChips' bindable `active`.
+	let rowFilter = $state('all');
+
+	async function load() {
+		loading = true;
+		error = null;
+		try {
+			report = await get1099Report(year);
+		} catch (e) {
+			report = null;
+			error = e instanceof Error ? e.message : 'Could not load the 1099 report';
+		} finally {
+			loading = false;
+		}
+	}
+
+	$effect(() => {
+		// Re-load whenever the year changes.
+		void year;
+		load();
+	});
+
+	// A vendor is "reportable" when it's 1099-eligible and crossed the
+	// threshold — that's the set that actually needs a form filed.
+	function isReportable(r: Vendor1099Row): boolean {
+		return r.is_1099_eligible && r.over_threshold;
+	}
+
+	let filteredRows = $derived.by(() => {
+		const rows = report?.rows ?? [];
+		const q = search.trim().toLowerCase();
+		return rows.filter((r) => {
+			if (q && !r.vendor_name.toLowerCase().includes(q)) return false;
+			switch (rowFilter) {
+				case 'reportable':
+					return isReportable(r);
+				case 'missing_w9':
+					return isReportable(r) && !r.w9_on_file;
+				case 'over_threshold':
+					return r.over_threshold;
+				default:
+					return true;
+			}
+		});
+	});
+
+	const COLUMNS = [
+		{ label: 'Vendor' },
+		{ label: 'Classification' },
+		{ label: '1099', class: 'center' },
+		{ label: 'W-9', class: 'center' },
+		{ label: 'TIN', class: 'center' },
+		{ label: 'Payments', class: 'right' },
+		{ label: 'YTD Paid', class: 'right' }
+	];
+
+	function fmtDate(s: string | null): string {
+		if (!s) return '—';
+		const d = new Date(s);
+		if (Number.isNaN(d.getTime())) return s;
+		return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+	}
+
+	// A TIN counts as "on file" when the vendor has a tax id captured.
+	function hasTin(r: Vendor1099Row): boolean {
+		return !!r.tax_id && r.tax_id.trim().length > 0;
+	}
+
+	// Display string for the IRS threshold, e.g. "$600". Derived so the
+	// snippet body (where `report` isn't narrowed) can use it safely.
+	let thresholdLabel = $derived(report ? `$${report.threshold_usd}` : '$600');
+</script>
+
+<PageHeader title="1099 Reporting">
+	{#snippet actions()}
+		<label class="year-select">
+			<span class="year-label">Tax year</span>
+			<select bind:value={year} aria-label="Tax year">
+				{#each YEARS as y (y)}
+					<option value={y}>{y}</option>
+				{/each}
+			</select>
+		</label>
+	{/snippet}
+
+	{#if error}
+		<div class="state-card error" role="alert">
+			<p>{error}</p>
+			<button class="btn-primary" onclick={load}>Retry</button>
+		</div>
+	{:else if loading && !report}
+		<div class="state-card" aria-busy="true">Loading {year} 1099 report…</div>
+	{:else if report}
+		<div class="kpi-row">
+			<KpiCard value={String(report.vendor_count_total)} label="Vendors with payments" />
+			<KpiCard
+				value={String(report.vendor_count_eligible_over_threshold)}
+				label={`Reportable (1099 + over $${report.threshold_usd})`}
+				highlight="green"
+			/>
+			<KpiCard
+				value={String(report.vendor_count_over_threshold_without_w9)}
+				label="Reportable without W-9"
+				highlight={report.vendor_count_over_threshold_without_w9 > 0 ? 'red' : null}
+			/>
+			<KpiCard value={formatMoney(report.total_reportable_usd)} label="Total reportable" />
+		</div>
+
+		<div class="toolbar-row">
+			<FilterChips
+				chips={[
+					{ key: 'all', label: 'All', count: report.rows.length },
+					{
+						key: 'reportable',
+						label: 'Reportable',
+						count: report.rows.filter(isReportable).length
+					},
+					{
+						key: 'missing_w9',
+						label: 'Missing W-9',
+						count: report.rows.filter((r) => isReportable(r) && !r.w9_on_file).length,
+						alert: report.vendor_count_over_threshold_without_w9 > 0
+					},
+					{
+						key: 'over_threshold',
+						label: `Over $${report.threshold_usd}`,
+						count: report.rows.filter((r) => r.over_threshold).length
+					}
+				]}
+				bind:active={rowFilter}
+			/>
+			<SearchBox bind:value={search} placeholder="Search vendors…" ariaLabel="Search vendors" />
+		</div>
+
+		<DataTable
+			columns={COLUMNS}
+			isEmpty={filteredRows.length === 0}
+			empty={report.rows.length === 0
+				? 'No vendors yet. Add vendors to see 1099 reporting.'
+				: 'No vendors match this filter.'}
+		>
+			{#snippet body()}
+				{#each filteredRows as r (r.vendor_id)}
+					<tr class:row-flag={isReportable(r) && !r.w9_on_file}>
+						<td class="vendor">{r.vendor_name}</td>
+						<td class="muted">{r.tax_classification ?? '—'}</td>
+						<td class="center">
+							{#if r.is_1099_eligible}
+								<span class="chip chip-on">Eligible</span>
+							{:else}
+								<span class="chip chip-off">No</span>
+							{/if}
+						</td>
+						<td class="center">
+							{#if r.w9_on_file}
+								<span class="chip chip-on" title={fmtDate(r.w9_received_date)}>On file</span>
+							{:else}
+								<span class="chip chip-warn">Missing</span>
+							{/if}
+						</td>
+						<td class="center">
+							{#if hasTin(r)}
+								<span class="chip chip-on">Verified</span>
+							{:else}
+								<span class="chip chip-warn">Missing</span>
+							{/if}
+						</td>
+						<td class="right mono">{r.payment_count}</td>
+						<td class="right mono">
+							<span class:over={r.over_threshold}>
+								<Money amount={r.ytd_paid} />
+							</span>
+							{#if r.over_threshold}
+								<span
+									class="threshold-flag"
+									title={`Over the ${thresholdLabel} filing threshold`}>▲</span
+								>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			{/snippet}
+		</DataTable>
+
+		<p class="report-meta">
+			Report generated {fmtDate(report.generated_at)}. Reportable = 1099-eligible vendors paid more
+			than ${report.threshold_usd} in completed payments during {year}.
+		</p>
+		<!-- $ above is a literal dollar sign; {report.threshold_usd} is the interpolated value. -->
+	{/if}
+</PageHeader>
+
+<style>
+	.year-select {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.year-label {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+	}
+
+	.year-select select {
+		padding: 6px 10px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-family: inherit;
+		font-size: 0.88rem;
+	}
+
+	.state-card {
+		padding: 32px;
+		text-align: center;
+		color: var(--text-muted);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+	}
+
+	.state-card.error {
+		color: #e04040;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.toolbar-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+
+	.center {
+		text-align: center;
+	}
+
+	.muted {
+		color: var(--text-muted);
+	}
+
+	.vendor {
+		font-weight: 500;
+	}
+
+	.chip {
+		display: inline-block;
+		padding: 2px 8px;
+		border-radius: 10px;
+		font-size: 0.72rem;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.chip-on {
+		background: rgba(31, 168, 106, 0.15);
+		color: #1fa86a;
+	}
+
+	.chip-off {
+		background: rgba(150, 150, 150, 0.15);
+		color: var(--text-muted);
+	}
+
+	.chip-warn {
+		background: rgba(240, 70, 70, 0.15);
+		color: #e04040;
+	}
+
+	.row-flag {
+		background: rgba(240, 70, 70, 0.04);
+	}
+
+	.over {
+		font-weight: 600;
+	}
+
+	.threshold-flag {
+		color: #d4940a;
+		margin-left: 4px;
+		font-size: 0.7rem;
+	}
+
+	.report-meta {
+		font-size: 0.8rem;
+		color: var(--text-muted);
+		margin: 4px 2px 0;
+	}
+</style>
