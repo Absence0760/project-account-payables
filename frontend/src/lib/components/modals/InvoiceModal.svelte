@@ -479,6 +479,61 @@
 	let lineItemsDirty = $state(false);
 	let savingLines = $state(false);
 
+	// --- Contract link ---
+	interface ContractOption {
+		id: string;
+		contract_number: string;
+		vendor_name: string | null;
+	}
+	let contractId = $state<string | null>(invoice.contract_id);
+	let contracts = $state<ContractOption[]>([]);
+	let pickContractId = $state('');
+	let linkingContract = $state(false);
+	let linkedContract = $derived(contracts.find((c) => c.id === contractId) ?? null);
+
+	$effect(() => {
+		loadContracts();
+	});
+
+	async function loadContracts() {
+		try {
+			const data = await api.get<{ items: ContractOption[] }>('/api/contracts?status=active&page_size=100');
+			contracts = data.items;
+		} catch {
+			// non-critical — link control still renders, just without options
+		}
+	}
+
+	async function linkContract() {
+		if (!pickContractId) return;
+		linkingContract = true;
+		try {
+			await api.post(`/api/invoices/${invoice.id}/link-contract`, { contract_id: pickContractId });
+			contractId = pickContractId;
+			pickContractId = '';
+			await invoiceStore.fetch();
+			toast('Contract linked', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Link failed', 'error');
+		} finally {
+			linkingContract = false;
+		}
+	}
+
+	async function unlinkContract() {
+		linkingContract = true;
+		try {
+			await api.post(`/api/invoices/${invoice.id}/unlink-contract`, {});
+			contractId = null;
+			await invoiceStore.fetch();
+			toast('Contract unlinked', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Unlink failed', 'error');
+		} finally {
+			linkingContract = false;
+		}
+	}
+
 	function updateLineItem(idx: number, field: string, value: unknown) {
 		lineItems = lineItems.map((li, i) => i === idx ? { ...li, [field]: value } : li);
 		lineItemsDirty = true;
@@ -1040,6 +1095,30 @@
 									{savingLines ? 'Saving...' : 'Save Line Items'}
 								</button>
 							</div>
+						{/if}
+					</div>
+
+					<div class="contract-section">
+						<span class="contract-label">Contract</span>
+						{#if contractId}
+							<span class="contract-linked mono">{linkedContract?.contract_number ?? 'Linked'}</span>
+							{#if !isClerkOnly}
+								<button type="button" class="btn-contract-unlink" disabled={linkingContract} onclick={unlinkContract}>
+									{linkingContract ? '…' : 'Unlink'}
+								</button>
+							{/if}
+						{:else if isClerkOnly}
+							<span class="contract-empty">No contract linked.</span>
+						{:else}
+							<select class="contract-select" bind:value={pickContractId}>
+								<option value="">Select contract…</option>
+								{#each contracts as c (c.id)}
+									<option value={c.id}>{c.contract_number}{c.vendor_name ? ` — ${c.vendor_name}` : ''}</option>
+								{/each}
+							</select>
+							<button type="button" class="btn-contract-link" disabled={linkingContract || !pickContractId} onclick={linkContract}>
+								{linkingContract ? '…' : 'Link'}
+							</button>
 						{/if}
 					</div>
 
@@ -1898,6 +1977,63 @@
 		text-align: center;
 		padding: 12px;
 		margin: 0;
+	}
+
+	/* --- Contract link --- */
+	.contract-section {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 16px;
+		flex-wrap: wrap;
+	}
+	.contract-label {
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--text);
+	}
+	.contract-linked {
+		font-size: 0.85rem;
+		color: var(--accent);
+		font-weight: 600;
+	}
+	.contract-empty {
+		font-size: 0.82rem;
+		color: var(--text-muted);
+	}
+	.contract-select {
+		padding: 6px 8px;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--bg);
+		color: var(--text);
+		font-family: inherit;
+		font-size: 0.85rem;
+		max-width: 280px;
+	}
+	.btn-contract-link,
+	.btn-contract-unlink {
+		padding: 5px 12px;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.btn-contract-link:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.btn-contract-unlink:hover:not(:disabled) {
+		border-color: #e04040;
+		color: #e04040;
+	}
+	.btn-contract-link:disabled,
+	.btn-contract-unlink:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.line-items-actions {
