@@ -2,6 +2,7 @@ from app.models.adaptive_suggestion import WorkflowSuggestion
 from app.models.agent_decision import AgentDecision
 from app.models.assistant import AssistantUsage, Conversation, ConversationMessage
 from app.models.base import Base
+from app.models.contract import Contract, ContractLineItem, ContractStatus, ContractType
 from app.models.credit_memo import CreditMemo
 from app.models.entity import Entity
 from app.models.exception import Exception as APException
@@ -55,6 +56,10 @@ __all__ = [
     "AgentDecision",
     "WorkflowSuggestion",
     "CreditMemo",
+    "Contract",
+    "ContractLineItem",
+    "ContractStatus",
+    "ContractType",
     "EmailVerification",
     "Notification",
     "Tax1099Filing",
