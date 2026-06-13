@@ -165,6 +165,26 @@ def test_fielderror_is_a_dataclass():
     assert all(dataclasses.is_dataclass(e) for e in errors)
 
 
+def test_check_tax_true_appends_tax_errors():
+    """A malformed country tax id surfaces as an additive FieldError when
+    check_tax is on (the default)."""
+    doc = _valid_doc()
+    doc.seller = EInvoiceParty(name="Seller Inc", tax_id="DE12", country_code="DE")
+    codes = {e.field: e.code for e in validate_document(doc)}
+    assert codes.get("seller.tax_id") == "malformed"
+
+
+def test_check_tax_false_preserves_structural_only_behaviour():
+    """Regression guard for inbound callers: with check_tax=False the result is
+    structural-only — a malformed country tax id is NOT reported."""
+    doc = _valid_doc()
+    doc.seller = EInvoiceParty(name="Seller Inc", tax_id="DE12", country_code="DE")
+    errors = validate_document(doc, check_tax=False)
+    assert all(e.field != "seller.tax_id" for e in errors)
+    # A structurally-valid doc is still clean without tax checks.
+    assert validate_document(_valid_doc(), check_tax=False) == []
+
+
 def test_parse_e_invoice_translates_syntactically_broken_xml_to_malformed():
     """The except-XMLSyntaxError translate branch in parse.py must surface a
     field-named 'malformed' EInvoiceValidationError — never an unhandled
