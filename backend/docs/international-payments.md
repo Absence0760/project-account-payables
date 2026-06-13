@@ -167,6 +167,13 @@ Sign convention matches GAAP / IFRS. A zero `fx_rate_at_invoice`
 raises `ValueError` — defensive against a caller passing a stale
 record.
 
+This `compute_fx_gain_loss` measures the **realized** gain/loss at
+settlement. The **unrealized** gain/loss on open (approved-but-unpaid)
+foreign-currency invoices — plus the reporting-currency rollup that
+collapses multi-currency volume into one figure for the analytics +
+dashboard aggregates — lives in `services/currency_conversion.py`. See
+`multi-currency.md`.
+
 ## Vendor bank fields
 
 Stored in `Vendor.bank_details` (JSONB):
