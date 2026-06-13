@@ -5,15 +5,15 @@ whether a W-9 is on file, and what tax classification they reported. The
 report endpoint is pure-query so it can be run ad-hoc during January
 close without side effects.
 
-E-filing (submitting 1099-NEC / 1099-MISC to the IRS) is intentionally
-not implemented here. It's a third-party API call (Tax1099 is the
-common choice) and requires the tenant to hand us the vendor's address
-+ a signed 8655 authorization. See ``backend/docs/tax-1099.md`` for the
-integration sketch; for pilot #1 the tenant exports the report and hand-
-files or uses Tax1099's web UI directly.
+This module is the aggregation layer. Form *generation* lives in
+``tax_1099_forms`` (PDF), and *e-filing* lives in the
+``tax_filing_adapters`` package + the ``POST /api/tax/1099/file``
+endpoint — both reuse the rows this module computes. See
+``backend/docs/tax-1099.md``.
 
 Public API:
     - ``build_1099_report(db, organization_id, year)`` — compute the list
+    - ``build_1099_dashboard(db, organization_id, year)`` — readiness view
     - ``THRESHOLD_USD`` — $600, the IRS filing threshold
 """
 
@@ -49,6 +49,9 @@ class VendorReportRow:
     ytd_paid: Decimal
     over_threshold: bool
     payment_count: int
+    # True once a TIN match has stamped ``Vendor.tin_verified_at``. Defaulted
+    # so older call sites that build rows by hand keep working.
+    tin_verified: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -64,6 +67,7 @@ class VendorReportRow:
             "ytd_paid": str(self.ytd_paid),
             "over_threshold": self.over_threshold,
             "payment_count": self.payment_count,
+            "tin_verified": self.tin_verified,
         }
 
 
@@ -117,6 +121,7 @@ async def build_1099_report(
             Vendor.is_1099_eligible.label("is_1099_eligible"),
             Vendor.w9_received_date.label("w9_received_date"),
             Vendor.w9_file_key.label("w9_file_key"),
+            Vendor.tin_verified_at.label("tin_verified_at"),
             func.coalesce(func.sum(Payment.amount), 0).label("ytd_paid"),
             func.count(Payment.id).label("payment_count"),
         )
@@ -137,6 +142,7 @@ async def build_1099_report(
             Vendor.is_1099_eligible,
             Vendor.w9_received_date,
             Vendor.w9_file_key,
+            Vendor.tin_verified_at,
         )
         .order_by(Vendor.name)
     )
@@ -156,6 +162,7 @@ async def build_1099_report(
                 ytd_paid=ytd,
                 over_threshold=ytd >= THRESHOLD_USD,
                 payment_count=int(row.payment_count or 0),
+                tin_verified=row.tin_verified_at is not None,
             )
         )
 
@@ -163,4 +170,77 @@ async def build_1099_report(
         year=year,
         generated_at=date.today(),
         rows=rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1099 vendor dashboard
+# ---------------------------------------------------------------------------
+
+
+def _row_needs_attention(row: VendorReportRow) -> bool:
+    """A 1099-eligible vendor over the $600 threshold that is missing either
+    a W-9 on file or a verified TIN can't be cleanly filed — surface it."""
+    return (
+        row.is_1099_eligible and row.over_threshold and (not row.w9_on_file or not row.tin_verified)
+    )
+
+
+@dataclass
+class Dashboard1099:
+    """A compliance-readiness view over the 1099 report rows.
+
+    Same underlying aggregation as ``build_1099_report``; this adds the
+    W-9 / TIN-verified / threshold readiness flags an AP team needs to know
+    who still needs chasing before filing season.
+    """
+
+    year: int
+    generated_at: date
+    rows: list[VendorReportRow]
+    threshold_usd: Decimal = THRESHOLD_USD
+
+    def summary(self) -> dict:
+        eligible = [r for r in self.rows if r.is_1099_eligible]
+        eligible_over = [r for r in eligible if r.over_threshold]
+        return {
+            "year": self.year,
+            "threshold_usd": str(self.threshold_usd),
+            "vendor_count_total": len(self.rows),
+            "vendor_count_eligible": len(eligible),
+            "vendor_count_eligible_over_threshold": len(eligible_over),
+            "vendor_count_over_threshold_without_w9": sum(
+                1 for r in eligible_over if not r.w9_on_file
+            ),
+            "vendor_count_over_threshold_tin_unverified": sum(
+                1 for r in eligible_over if not r.tin_verified
+            ),
+            "vendor_count_needs_attention": sum(1 for r in self.rows if _row_needs_attention(r)),
+            "total_reportable_usd": str(sum((r.ytd_paid for r in eligible_over), Decimal("0"))),
+        }
+
+    def to_dict(self) -> dict:
+        return {
+            **self.summary(),
+            "generated_at": self.generated_at.isoformat(),
+            "rows": [
+                {**r.to_dict(), "needs_attention": _row_needs_attention(r)} for r in self.rows
+            ],
+        }
+
+
+async def build_1099_dashboard(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    year: int,
+) -> Dashboard1099:
+    """Build the 1099-eligible vendor dashboard for a year.
+
+    Reuses ``build_1099_report``'s aggregation and re-frames it around filing
+    readiness (W-9-on-file, TIN-verified, threshold, needs-attention)."""
+    report = await build_1099_report(db, organization_id, year)
+    return Dashboard1099(
+        year=report.year,
+        generated_at=report.generated_at,
+        rows=report.rows,
     )
