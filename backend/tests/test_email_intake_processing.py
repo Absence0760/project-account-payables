@@ -142,9 +142,45 @@ async def test_process_no_usable_attachments_returns_error():
             MagicMock(),
             InboundEmail(to="invoices+aaa@ap.co", sender="v@x.com", attachments=[bad]),
         )
-    assert result.error == "No usable PDF / image attachments"
+    assert result.error == "No usable PDF / image / XML attachments"
     assert "memo.docx" in result.skipped_attachments[0]
     create_engine.assert_not_called()
+
+
+async def test_xml_attachment_is_accepted_not_skipped():
+    """A structured e-invoice arrives as an .xml attachment — it must pass the
+    content-type gate (application/xml) and create an invoice, not be skipped."""
+    org = _org(token="aaa", enabled=True, slug="acme")
+    session = _FakeSession()
+    engine = MagicMock(dispose=AsyncMock())
+    dispatch = AsyncMock()
+    xml = InboundAttachment(
+        filename="invoice.xml", content_type="application/xml", content=b"<Invoice/>"
+    )
+    inv_id = uuid.uuid4()
+    with (
+        patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=org)),
+        patch.object(
+            email_intake, "_create_invoice_from_attachment", AsyncMock(return_value=inv_id)
+        ),
+        patch(
+            "app.database._make_tenant_url",
+            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+        ),
+        patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine)),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
+        patch("app.services.storage._get_client", MagicMock(return_value=MagicMock())),
+        patch("app.services.storage._ensure_bucket", MagicMock()),
+        patch("app.services.extraction_dispatch.dispatch_extraction", dispatch),
+    ):
+        result = await email_intake.process_inbound_email(
+            MagicMock(),
+            InboundEmail(to="invoices+aaa@ap.co", sender="v@x.com", attachments=[xml]),
+        )
+    assert result.error is None
+    assert result.skipped_attachments == []
+    assert result.invoices_created == [inv_id]
+    dispatch.assert_awaited_once()
 
 
 async def test_process_creates_invoice_per_attachment_and_dispatches_system_extraction():
