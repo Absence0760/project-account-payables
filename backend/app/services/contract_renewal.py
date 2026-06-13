@@ -116,9 +116,11 @@ async def _sweep_tenant(db_name: str, ref_today: date) -> int:
                 if contract.owner_user_id:
                     recipients.append(contract.owner_user_id)
                 if not recipients:
-                    # No one to tell — still stamp so we don't re-scan it every
-                    # tick. A later org with managers will get future contracts.
-                    contract.renewal_alert_sent_at = datetime.now(UTC)
+                    # No one to notify yet — leave renewal_alert_sent_at unset so
+                    # a later sweep (once the org has an AP manager / owner) still
+                    # fires the alert for this term. Re-scanning a recipient-less
+                    # contract each tick is cheap; silently dropping the alert is
+                    # not.
                     continue
 
                 rendered = render_contract_renewal(
