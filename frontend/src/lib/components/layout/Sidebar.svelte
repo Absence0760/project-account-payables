@@ -48,6 +48,7 @@
 			title: 'Insights',
 			items: [
 				{ label: 'Cash Flow', href: '/cfo', icon: 'payments', requiredRoles: ['admin', 'cfo'] },
+				{ label: '1099 Reporting', href: '/tax', icon: 'audit', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 			],
 		},
 		{
