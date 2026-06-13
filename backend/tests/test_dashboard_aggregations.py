@@ -45,6 +45,14 @@ def _user():
     return MagicMock()
 
 
+def _org(settings=None):
+    """Org stub for the dashboard's reporting-currency rollup. Defaults to
+    no settings → reporting currency falls back to USD."""
+    m = MagicMock()
+    m.settings = settings
+    return m
+
+
 def _mk_db(*results):
     """Build an AsyncMock whose execute() cycles through the given
     result mocks in order. Each entry is what we want the executor's
@@ -61,21 +69,23 @@ def _mk_db(*results):
 # endpoint AND the comments below.
 #
 #   1.  totals (count + sum)              → .one() → (count, sum)
-#   2.  pipeline status rows              → .all()
-#   3.  vendor spend rows                 → .all()
-#   4.  aging rows (due_date, amount)     → .all()
-#   5.  trend invoice rows                → .all()
-#   6.  upcoming payment rows             → .all()
-#   7.  total paid                        → .scalar()
-#   8.  total pending                     → .scalar()
-#   9.  total rebates                     → .scalar()
-#  10.  stale approvals                   → .scalar()
-#  11.  open exceptions                   → .scalar()
+#   2.  reporting amount rows             → .all()  (multi-currency rollup)
+#   3.  pipeline status rows              → .all()
+#   4.  vendor spend rows                 → .all()
+#   5.  aging rows (due_date, amount)     → .all()
+#   6.  trend invoice rows                → .all()
+#   7.  upcoming payment rows             → .all()
+#   8.  total paid                        → .scalar()
+#   9.  total pending                     → .scalar()
+#  10.  total rebates                     → .scalar()
+#  11.  stale approvals                   → .scalar()
+#  12.  open exceptions                   → .scalar()
 
 
 def _full_results(
     *,
     totals=(0, Decimal("0")),
+    reporting_rows=(),
     pipeline=(),
     vendor_spend=(),
     aging=(),
@@ -89,6 +99,7 @@ def _full_results(
 ):
     return [
         _r(one=totals),
+        _r(all_=list(reporting_rows)),
         _r(all_=list(pipeline)),
         _r(all_=list(vendor_spend)),
         _r(all_=list(aging)),
@@ -125,7 +136,7 @@ async def test_aging_buckets_split_at_correct_day_boundaries():
     ]
     db = _mk_db(*_full_results(aging=aging_rows))
 
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["aging"]["current"] == 100.0
     assert result["aging"]["days_30"] == 600.0  # 200 + 400
     assert result["aging"]["days_60"] == 2400.0  # 800 + 1600
@@ -143,7 +154,7 @@ async def test_aging_buckets_treat_future_due_date_as_current():
         (today + timedelta(days=60), Decimal("250.00")),  # far future
     ]
     db = _mk_db(*_full_results(aging=aging_rows))
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["aging"]["current"] == 350.0
     assert result["aging"]["days_30"] == 0.0
     assert result["aging"]["days_60"] == 0.0
@@ -176,7 +187,7 @@ async def test_touchless_rate_excludes_rejected_from_numerator_only():
         (InvoiceStatus.rejected, 20),
     ]
     db = _mk_db(*_full_results(pipeline=pipeline_rows))
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     # processed = 30 + 20 + 20 + 10 = 80; rejected = 20.
     assert result["touchless_rate"] == 75.0
     assert result["pipeline"]["rejected"] == 20
@@ -187,7 +198,7 @@ async def test_touchless_rate_is_zero_when_no_invoices_processed():
     """No invoices have hit a terminal state — touchless rate must be
     0, not a ZeroDivisionError."""
     db = _mk_db(*_full_results(pipeline=[(InvoiceStatus.new, 5)]))
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["touchless_rate"] == 0
 
 
@@ -211,7 +222,7 @@ async def test_monthly_trend_is_sorted_ascending_by_month():
     db = _mk_db(*_full_results(trend=trend_rows))
     # Patch today() so the 180-day filter doesn't matter — endpoint
     # already filtered at the query layer (which we mock).
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     months = [m["month"] for m in result["monthly_trend"]]
     assert months == sorted(months), "monthly_trend not sorted ascending"
     # Two Jan rows must collapse into a single bucket with both
@@ -242,7 +253,7 @@ async def test_upcoming_payments_flag_overdue_only_when_due_date_before_today():
         (uuid.uuid4(), "INV-3", "Charlie", Decimal("100"), today + timedelta(days=3)),  # future
     ]
     db = _mk_db(*_full_results(upcoming=upcoming_rows))
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     flags = {row["invoice_number"]: row["is_overdue"] for row in result["upcoming_payments"]}
     assert flags == {"INV-1": True, "INV-2": False, "INV-3": False}
 
@@ -267,7 +278,7 @@ async def test_payment_totals_pass_through_as_float():
             rebates=Decimal("123.45"),
         )
     )
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     assert isinstance(result["total_paid"], float)
     assert result["total_paid"] == 12345.67
     assert result["total_pending"] == 8900.50
@@ -280,7 +291,7 @@ async def test_totals_default_to_zero_when_db_returns_zero_rows():
     dashboard returns a fully-shaped response with zeros, not nulls
     (the frontend would crash on a null in the KPI tile)."""
     db = _mk_db(*_full_results())
-    result = await get_dashboard(db=db, user=_user())
+    result = await get_dashboard(db=db, org=_org(), user=_user())
     assert result["total_invoices"] == 0
     assert result["total_amount"] == 0.0
     assert result["total_paid"] == 0.0
@@ -290,3 +301,58 @@ async def test_totals_default_to_zero_when_db_returns_zero_rows():
     assert result["upcoming_payments"] == []
     assert result["monthly_trend"] == []
     assert result["touchless_rate"] == 0
+    # Reporting rollup is present even on an empty tenant.
+    assert result["reporting"]["reporting_currency"] == "USD"
+    assert result["reporting"]["total_amount"] == 0.0
+    assert result["reporting"]["by_currency"] == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-currency reporting rollup — the dashboard must collapse mixed-currency
+# invoices into ONE reporting-currency total using each row's rate-locked
+# reporting_amount, not the naive cross-currency SUM. See
+# backend/docs/multi-currency.md.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reporting_rollup_collapses_mixed_currencies_into_one_total():
+    """USD row (no lock needed) + EUR row with a locked USD reporting amount
+    add up correctly in the reporting block, while `total_amount` stays the
+    legacy naive SUM. Org reports in USD."""
+    # totals = naive SUM across currencies (1000 USD + 1000 EUR face = 2000).
+    reporting_rows = [
+        # (amount, currency, reporting_amount, reporting_currency)
+        (Decimal("1000.00"), "USD", None, None),
+        (Decimal("1000.00"), "EUR", Decimal("1086.96"), "USD"),
+    ]
+    db = _mk_db(*_full_results(totals=(2, Decimal("2000.00")), reporting_rows=reporting_rows))
+    org = _org(settings={"reporting_currency": "USD"})
+    result = await get_dashboard(db=db, org=org, user=_user())
+
+    assert result["total_amount"] == 2000.0  # legacy naive SUM unchanged
+    rep = result["reporting"]
+    assert rep["reporting_currency"] == "USD"
+    # 1000 (USD 1:1) + 1086.96 (EUR locked) = 2086.96
+    assert rep["total_amount"] == 2086.96
+    assert rep["total_count"] == 2
+    assert rep["unconverted_count"] == 0
+    by_cur = {e["currency"]: e for e in rep["by_currency"]}
+    assert by_cur["EUR"]["reporting_amount"] == 1086.96
+    assert by_cur["USD"]["reporting_amount"] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_reporting_rollup_flags_foreign_rows_without_a_rate_lock():
+    """A foreign invoice with no materialized reporting amount falls back to
+    face value and is counted in `unconverted_count` so the UI can warn rather
+    than silently mixing currencies."""
+    reporting_rows = [
+        (Decimal("500.00"), "USD", None, None),
+        (Decimal("300.00"), "GBP", None, None),  # no lock
+    ]
+    db = _mk_db(*_full_results(totals=(2, Decimal("800.00")), reporting_rows=reporting_rows))
+    result = await get_dashboard(db=db, org=_org(), user=_user())
+    rep = result["reporting"]
+    assert rep["unconverted_count"] == 1
+    assert rep["total_amount"] == 800.0  # GBP falls through at face value

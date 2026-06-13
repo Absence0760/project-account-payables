@@ -11,10 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
+from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.user import User
 from app.models.virtual_card import CardRebate
-from app.tenant import get_tenant_db
+from app.services.currency_conversion import (
+    resolve_reporting_currency,
+    rollup_to_reporting_currency,
+)
+from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -47,6 +52,7 @@ class SimpleNamespaceDiscount:
 @router.get("")
 async def get_dashboard(
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(get_current_user),
 ):
     today = date.today()
@@ -56,6 +62,35 @@ async def get_dashboard(
         select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.amount), 0))
     )
     total_invoices, total_amount = totals.one()
+
+    # ----- Multi-currency reporting rollup --------------------------
+    # `total_amount` above is a naive SUM that mixes currencies — fine when
+    # every invoice is in one currency, wrong the moment an org books a EUR
+    # invoice alongside USD ones. Re-roll the whole book into the org's
+    # reporting currency using each row's rate-locked `reporting_amount`
+    # (foreign rows without a lock fall back to face value and are counted in
+    # `unconverted_count`). See backend/docs/multi-currency.md.
+    reporting_currency = resolve_reporting_currency(org.settings)
+    amount_rows = await db.execute(
+        select(
+            Invoice.amount,
+            Invoice.currency,
+            Invoice.reporting_amount,
+            Invoice.reporting_currency,
+        )
+    )
+    rollup = rollup_to_reporting_currency(
+        [
+            {
+                "amount": r[0],
+                "currency": r[1],
+                "reporting_amount": r[2],
+                "reporting_currency": r[3],
+            }
+            for r in amount_rows.all()
+        ],
+        reporting_currency=reporting_currency,
+    )
 
     # Pipeline (count per status)
     status_rows = await db.execute(
@@ -318,6 +353,24 @@ async def get_dashboard(
     return {
         "total_invoices": total_invoices or 0,
         "total_amount": float(total_amount),
+        # Currency-aware rollup of the whole invoice book into ONE reporting
+        # currency, plus the per-currency split so the UI can show the mix.
+        "reporting": {
+            "reporting_currency": rollup.reporting_currency,
+            "total_amount": float(rollup.total_reporting_amount),
+            "total_count": rollup.total_count,
+            "unconverted_count": rollup.unconverted_count,
+            "by_currency": [
+                {
+                    "currency": e.currency,
+                    "original_amount": float(e.original_amount),
+                    "reporting_amount": float(e.reporting_amount),
+                    "count": e.count,
+                    "unconverted_count": e.unconverted_count,
+                }
+                for e in rollup.by_currency
+            ],
+        },
         "total_paid": total_paid,
         "total_pending": total_pending,
         "total_rebates": total_rebates,

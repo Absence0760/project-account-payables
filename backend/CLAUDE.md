@@ -16,6 +16,7 @@ Deep-dive docs live in `backend/docs/`:
 | Workflow snapshot semantics | `docs/workflow-snapshots.md` |
 | Payment runs + ERP sync | `docs/payments.md` |
 | International payments (FX + SEPA + SWIFT) | `docs/international-payments.md` |
+| Multi-currency reporting (reporting currency + unrealized FX) | `docs/multi-currency.md` |
 | Bank reconciliation | `docs/bank-reconciliation.md` |
 | Analytics + CFO dashboard + CSV + scheduled reports | `docs/analytics.md` |
 | Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
