@@ -94,9 +94,16 @@ export const portalApi = {
 		request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
 	delete: (path: string) => request<void>(path, { method: 'DELETE' }),
 	download,
-	upload: <T>(path: string, file: File) => {
+	upload: <T>(path: string, file: File, fields?: Record<string, string | undefined>) => {
 		const form = new FormData();
 		form.append('file', file);
+		// Optional extra multipart form fields (e.g. a chat attachment body).
+		if (fields) {
+			for (const [key, value] of Object.entries(fields)) {
+				if (value === undefined) continue;
+				form.append(key, value);
+			}
+		}
 		return request<T>(path, { method: 'POST', body: form, headers: {} });
 	},
 };

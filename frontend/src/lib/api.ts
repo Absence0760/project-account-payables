@@ -101,9 +101,22 @@ export const api = {
 	patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
 	put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
 	delete: (path: string) => request<void>(path, { method: 'DELETE' }),
-	upload: <T>(path: string, file: File) => {
+	upload: <T>(path: string, file: File, fields?: Record<string, string | string[] | undefined>) => {
 		const form = new FormData();
 		form.append('file', file);
+		// Optional extra multipart form fields (e.g. chat attachment body /
+		// mention ids). Arrays repeat the key so FastAPI binds them to a
+		// `list[str]` Form param; undefined / empty values are skipped.
+		if (fields) {
+			for (const [key, value] of Object.entries(fields)) {
+				if (value === undefined) continue;
+				if (Array.isArray(value)) {
+					for (const v of value) form.append(key, v);
+				} else {
+					form.append(key, value);
+				}
+			}
+		}
 		return request<T>(path, {
 			method: 'POST',
 			body: form,
