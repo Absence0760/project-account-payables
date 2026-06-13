@@ -31,6 +31,7 @@ Deep-dive docs live in `backend/docs/`:
 | Audit-log summarization (invoice modal) | `docs/audit-summary.md` |
 | Email + in-app notifications | `docs/notifications.md` |
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
+| Adaptive AI workflows | `docs/adaptive-workflows.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 

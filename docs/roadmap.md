@@ -492,17 +492,19 @@ AI agents that autonomously resolve common exceptions without human intervention
 ---
 
 ### Adaptive AI Workflows
-**Status:** Planned
+**Status:** First slice shipped (read model + anomaly read + advisory suggestions)
 
-Workflows that learn from team behavior and adapt over time — routing, approval timing, exception handling.
+Workflows that learn from team behavior and adapt over time — routing, approval timing, exception handling. The first slice ships the **read** surfaces (learning, on-demand anomaly, advisory suggestions); the **act** surfaces (smart routing, auto-adjust thresholds, A/B, retraining) remain follow-ups. All learning + anomaly detection is deterministic statistics over existing tenant data — no LLM, runs with no cloud key.
 
-- [ ] Learn approval patterns — who approves what, how fast, rejection rates
-- [ ] Smart routing — assign invoices to the fastest/most-appropriate approver
-- [ ] Auto-adjust thresholds — raise auto-approve limit as accuracy improves
-- [ ] Anomaly detection — flag invoices that deviate from learned patterns
-- [ ] Suggest workflow changes — "Invoices from Vendor X are always approved, consider auto-approve"
-- [ ] A/B testing for workflow rules — compare performance of different configs
-- [ ] Feedback loop — corrections feed back into the AI model
+- [x] Adaptive approval-pattern learning (read model) — per-approver + per-vendor approval stats (counts, approval/consistency rates, time-to-approve). `services/adaptive_workflows.py`, `GET /api/adaptive/approval-patterns`.
+- [x] Baseline anomaly detection (on-demand, explainable) — `GET /api/adaptive/anomalies`; flags amount / approver / timing deviation and **returns the per-vendor baseline it compared against**. Read-only — distinct from (and does not duplicate) the per-invoice `fraud_stat_anomaly` warning, which writes warnings + Exceptions.
+- [x] Advisory workflow-change suggestions — "consider auto-approve under $X" auto-approve-threshold suggestions persisted in `workflow_suggestions` (migration 0031) with `open/dismissed/applied/stale`; advisory only — nothing is auto-applied.
+- [ ] Smart routing — assign invoices to the fastest/most-appropriate approver *(follow-up)*
+- [ ] Auto-adjust thresholds — raise auto-approve limit as accuracy improves *(follow-up; the apply path must route through the audited `review.approve_invoice` / workflow-definition PATCH)*
+- [ ] A/B testing for workflow rules — compare performance of different configs *(follow-up)*
+- [ ] Feedback loop — corrections feed back into the AI model *(follow-up)*
+
+**Files:** `backend/app/services/adaptive_workflows.py`, `backend/app/api/adaptive_workflows.py`, `backend/app/schemas/adaptive_workflows.py`, `backend/app/models/adaptive_suggestion.py`, `backend/alembic/versions/0031_workflow_suggestions.py`, `backend/docs/adaptive-workflows.md`, `backend/tests/test_adaptive_workflows.py`
 
 ---
 

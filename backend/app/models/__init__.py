@@ -1,3 +1,4 @@
+from app.models.adaptive_suggestion import WorkflowSuggestion
 from app.models.agent_decision import AgentDecision
 from app.models.base import Base
 from app.models.credit_memo import CreditMemo
@@ -47,6 +48,7 @@ __all__ = [
     "VendorUser",
     "APException",
     "AgentDecision",
+    "WorkflowSuggestion",
     "CreditMemo",
     "EmailVerification",
     "Notification",

@@ -128,6 +128,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/tax` | 1099 tracking (W-9 upload, YTD totals, Tax1099 export) |
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
 | `/workflows` | Workflow definition CRUD, active steps |
+| `/adaptive` | Approval-pattern learning, baseline anomalies, advisory workflow suggestions (read-only + dismiss) |
 | `/audit` | SOX auditor export — per-invoice / date-range trail (JSON+CSV, admin/CFO, GET-only); itself audited |
 | `/exceptions` | Exception queue, resolution; autonomous AI agents — `agent-resolve` (run an agent on one exception), `agent-decisions` (decision log), `agent-stats` (resolution/escalation rates) |
 | `/notifications` | Per-user in-app notification center (list, unread-count, mark-read, read-all) + email/in-app preferences |
@@ -153,6 +154,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `storage.py` | S3/MinIO file upload/download |
 | `audit_summary.py` | One-paragraph LLM/template summary of an invoice's audit timeline; cached on `invoices.meta`, keyed to an audit-log fingerprint. Fail-soft to a deterministic template (local-dev default). See `backend/docs/audit-summary.md`. |
 | `audit_log_shipper.py` | Background loop that ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock (SOC 2 centralized WORM store) |
+| `adaptive_workflows.py` | Deterministic per-vendor/per-approver approval stats + baseline anomaly + advisory suggestion derivation (pure, no LLM). See `backend/docs/adaptive-workflows.md`. |
 
 ### Adapter patterns (pluggable providers)
 
@@ -271,6 +273,7 @@ Full list in `backend/app/config.py`.
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
 | Notifications | `backend/docs/notifications.md` — email + in-app events, the `transition_invoice` hook, recipient matrix, preferences |
 | Exception agents | `backend/docs/exception-agents.md` — autonomous exception resolution, autonomy thresholds, `AgentDecision` log, amount-mismatch resolver |
+| Adaptive AI workflows | `backend/docs/adaptive-workflows.md` — approval-pattern learning, baseline anomaly read, advisory suggestions (advisory-only, no LLM) |
 | Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |
