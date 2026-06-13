@@ -40,6 +40,7 @@ from app.api import (
     notifications,
     organization,
     payments,
+    peppol_inbound,
     portal,
     portal_auth,
     purchase_orders,
@@ -115,6 +116,9 @@ NO_AUTH_REQUIRED = {
     ("GET", "/portal/cards/{token}"),
     # email_intake.py — webhook authenticated by HMAC + per-tenant token in address
     ("POST", "/email-intake/inbound/{provider}"),
+    # peppol_inbound.py — inbound AS4 receive webhook; HMAC-verified, tenant in
+    # URL path, public-by-design (an external Access Point calls it).
+    ("POST", "/peppol/inbound/{tenant_slug}"),
 }
 
 # Routers wired into the app at /api — same set as app/main.py.
@@ -140,6 +144,7 @@ ROUTERS = [
     notifications.router,
     organization.router,
     payments.router,
+    peppol_inbound.public_router,
     portal.router,
     portal_auth.router,
     purchase_orders.router,

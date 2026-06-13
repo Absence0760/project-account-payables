@@ -605,7 +605,7 @@ Enhance the existing audit trail to meet SOX (Sarbanes-Oxley) compliance require
 ---
 
 ### Automated E-Invoicing
-**Status:** Inbound + outbound UBL 2.1 shipped (parse + generate, auto-detect, schema validation, country VAT/GST/IVA tax validation); PEPPOL AS4 **outbound send** shipped (hosted Access Point adapter, mock default, idempotent transmission log) — PEPPOL **inbound receive** + country-specific formats (FatturaPA, CFDI, NFe, DIAN) remaining.
+**Status:** Inbound + outbound UBL 2.1 shipped (parse + generate, auto-detect, schema validation, country VAT/GST/IVA tax validation); PEPPOL AS4 **outbound send AND inbound receive** shipped (hosted Access Point adapter, mock default, idempotent transmission log; inbound webhook dedupes redeliveries by AS4 MessageId and routes to the einvoice extractor) — country-specific formats (FatturaPA, CFDI, NFe, DIAN) remaining.
 
 Support structured electronic invoice formats required in the EU, Australia, and other regions. Inbound parsing is pure/local-first (no network, no SaaS key) and on by default; see `backend/docs/e-invoicing.md`.
 
@@ -614,12 +614,12 @@ Support structured electronic invoice formats required in the EU, Australia, and
 - [x] Auto-detect format on upload — structured data parsed instead of OCR (`extraction.run_extraction` choke point routes to the `einvoice` adapter at confidence 1.0)
 - [x] Validate against schema — malformed e-invoices rejected with clear field-level errors (EN 16931 structural subset)
 - [x] UBL 2.1 **generate** (outbound) — reuses `EInvoiceDocument` via `mapper.invoice_to_einvoice_document`; `GET /api/invoices/{id}/einvoice` (role-gated AP export, 422 on tax-invalid) + `GET /portal/invoices/{id}/einvoice` (vendor-scoped supplier download). CII generate deferred (own slice; trigger: a corridor that requires CII outbound)
-- [x] Peppol BIS Billing 3.0 — **send** via Peppol network shipped (`POST /api/invoices/{id}/peppol-send`; reuses the UBL generator; `PEPPOL_BIS_BILLING_DOCTYPE`/`PROCESSID` constants). Inbound **receive** is the next slice and reuses this package (the `PeppolTransmission.direction`/`message_id` columns, `ParticipantId`, `webhook_security`)
+- [x] Peppol BIS Billing 3.0 — **receive and send** via Peppol network shipped. **Send:** `POST /api/invoices/{id}/peppol-send` (reuses the UBL generator; `PEPPOL_BIS_BILLING_DOCTYPE`/`PROCESSID` constants). **Receive:** `POST /api/peppol/inbound/{tenant_slug}` (public-by-design, HMAC-gated webhook; dedupes redeliveries by AS4 MessageId via the `uq_peppol_message_id` index; parses the inbound UBL with the existing `e_invoice` parser, creates the Invoice, and hands to `dispatch_extraction` → the `einvoice` adapter). Reuses the `PeppolTransmission.direction`/`message_id` columns, `ParticipantId`, and `webhook_security`
 - [ ] FatturaPA — Italian e-invoicing format
 - [ ] CFDI 4.0 — Mexican e-invoicing (SAT stamping, UUID, PAC integration)
 - [ ] NFe / NFS-e — Brazilian electronic invoicing (state-level SEFAZ integration)
 - [ ] DIAN — Colombian e-invoicing
-- [x] Access point / PEPPOL AS4 gateway integration — **send** half shipped (`services/peppol_adapters/`: mock in-process default + `as4_gateway` real adapter talking to a hosted AP's HTTP API; SMP/SML resolution behind `resolve_participant`; SBDH wrapping in the adapter, not the generator). Inbound delivery (the receive half) is the next slice. See `backend/docs/peppol.md`
+- [x] Access point / PEPPOL AS4 gateway integration — **send and receive** shipped (`services/peppol_adapters/`: mock in-process default + `as4_gateway` real adapter talking to a hosted AP's HTTP API; SMP/SML resolution behind `resolve_participant`; SBDH wrapping in the adapter, not the generator). Inbound delivery: both adapters implement `parse_inbound`; the AP's inbound POST is verified (`AP_PEPPOL_INBOUND_SIGNING_SECRET`) and deduped at the receive webhook. See `backend/docs/peppol.md`
 - [x] Country-specific tax validation (VAT, GST, IVA) — `e_invoice/tax_rules.py`: per-country tax-ID format (EU/GB VAT, AU ABN, NZ/IN/CA GST, MX/ES/IT IVA), rate plausibility per regime, zero-rate/reverse-charge handling. Pure, PII-free `FieldError`s; wired into inbound `validate_document` + the outbound export guard
 
 ---

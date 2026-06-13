@@ -178,6 +178,74 @@ class AS4GatewayAdapter(PeppolAdapter):
         return response.status_code < 400
 
     def parse_inbound(self, headers: dict, body: bytes):
-        # Inbound-ready stub — the next slice verifies the gateway HMAC
-        # (webhook_security.verify_hmac_sha256) and dedupes by AS4 MessageId.
-        return None
+        """Parse the hosted Access Point's inbound delivery envelope.
+
+        The route already verified the gateway HMAC over ``body`` (via
+        ``peppol_receive.verify_inbound_signature`` + the
+        ``AP_PEPPOL_INBOUND_SIGNING_SECRET``) and dedupes by the AS4 MessageId,
+        so this only unpacks the (trusted) envelope into an
+        :class:`InboundPeppolMessage`.
+
+        Most hosted APs POST a JSON envelope with the SBDH metadata extracted
+        plus the inbound UBL/CII base64-encoded — the inverse of the outbound
+        ``send`` body. The exact field names are provider-specific; this maps
+        the common shape and tolerates a couple of aliases. Returns ``None`` on
+        an unparseable body or a missing MessageId so the route refuses a
+        delivery it could never dedupe.
+        """
+        import base64 as _b64
+        import json as _json
+
+        from app.services.peppol_receive import InboundPeppolMessage
+
+        try:
+            envelope = _json.loads(body.decode("utf-8")) if body else None
+        except (ValueError, UnicodeDecodeError):
+            envelope = None
+        if not isinstance(envelope, dict):
+            return None
+
+        # The AS4 MessageId — providers name it variously.
+        message_id = str(
+            envelope.get("message_id")
+            or envelope.get("messageId")
+            or envelope.get("as4_message_id")
+            or ""
+        )
+        if not message_id:
+            return None
+
+        sender = envelope.get("sender") or {}
+        if isinstance(sender, str):
+            # Wire form "iso6523-actorid-upis::9930:DE..." or "9930:DE...".
+            try:
+                pid = ParticipantId.parse(sender)
+                sender_scheme, sender_value = pid.scheme, pid.value
+            except ValueError:
+                sender_scheme, sender_value = "", ""
+        else:
+            sender_scheme = str(sender.get("scheme") or envelope.get("sender_scheme") or "")
+            sender_value = str(sender.get("value") or envelope.get("sender_value") or "")
+
+        doc_type_id = str(envelope.get("doc_type_id") or envelope.get("docTypeId") or "")
+        process_id = str(envelope.get("process_id") or envelope.get("processId") or "")
+
+        payload_b64 = envelope.get("payload_base64") or envelope.get("payloadBase64")
+        if payload_b64:
+            try:
+                payload = _b64.b64decode(payload_b64)
+            except (ValueError, TypeError):
+                return None
+        elif envelope.get("payload"):
+            payload = str(envelope["payload"]).encode("utf-8")
+        else:
+            return None
+
+        return InboundPeppolMessage(
+            message_id=message_id,
+            sender_scheme=sender_scheme,
+            sender_value=sender_value,
+            doc_type_id=doc_type_id,
+            process_id=process_id,
+            payload=payload,
+        )

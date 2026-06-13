@@ -13,7 +13,9 @@ path. Send always succeeds with a deterministic-shape MessageId.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 
 from app.services.peppol_adapters.base import (
     ParticipantCapability,
@@ -75,7 +77,76 @@ class MockPeppolAdapter(PeppolAdapter):
         return True
 
     def parse_inbound(self, headers: dict, body: bytes):
-        # Inbound-ready stub — the next slice implements verify + dedupe via
-        # webhook_security. Returns None so a premature call is a no-op rather
-        # than a crash.
-        return None
+        """Parse a dev-shaped inbound delivery into an InboundPeppolMessage.
+
+        The HMAC over ``body`` is verified BEFORE this is called (in the route),
+        so this only unpacks the (already-trusted) envelope. Two dev shapes are
+        accepted so the local webhook is easy to exercise:
+
+        1. **JSON envelope** — ``{"message_id", "sender_scheme", "sender_value",
+           "doc_type_id", "process_id", "payload_base64"}``. ``payload_base64``
+           (or a raw ``payload`` string) carries the UBL/CII bytes. This is the
+           shape a real gateway's inbound delivery most resembles.
+        2. **Raw UBL body + metadata headers** — the body IS the UBL/CII XML and
+           the metadata rides on ``X-Peppol-Message-Id`` /
+           ``X-Peppol-Sender-Scheme`` / ``X-Peppol-Sender-Value`` /
+           ``X-Peppol-Doc-Type`` / ``X-Peppol-Process-Id``.
+
+        Returns ``None`` when the message id can't be determined (so the route
+        refuses a delivery it could never dedupe), mirroring the email-intake
+        parse-None drop.
+        """
+        # Local import to avoid a module-level import cycle (peppol_receive
+        # imports the adapter package).
+        from app.services.peppol_receive import InboundPeppolMessage
+
+        message_id = ""
+        sender_scheme = ""
+        sender_value = ""
+        doc_type_id = PEPPOL_BIS_BILLING_DOCTYPE
+        process_id = ""
+        payload: bytes = b""
+
+        envelope: dict | None = None
+        text = (body or b"").lstrip()
+        if text[:1] in (b"{", b"["):
+            try:
+                envelope = json.loads(body.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                envelope = None
+
+        if isinstance(envelope, dict):
+            message_id = str(envelope.get("message_id") or "")
+            sender_scheme = str(envelope.get("sender_scheme") or "")
+            sender_value = str(envelope.get("sender_value") or "")
+            doc_type_id = str(envelope.get("doc_type_id") or PEPPOL_BIS_BILLING_DOCTYPE)
+            process_id = str(envelope.get("process_id") or "")
+            b64 = envelope.get("payload_base64")
+            if b64:
+                try:
+                    payload = base64.b64decode(b64)
+                except (ValueError, TypeError):
+                    payload = b""
+            elif envelope.get("payload"):
+                payload = str(envelope["payload"]).encode("utf-8")
+        else:
+            # Raw UBL body + metadata headers (case-insensitive lookup).
+            lower = {k.lower(): v for k, v in (headers or {}).items()}
+            message_id = lower.get("x-peppol-message-id", "")
+            sender_scheme = lower.get("x-peppol-sender-scheme", "")
+            sender_value = lower.get("x-peppol-sender-value", "")
+            doc_type_id = lower.get("x-peppol-doc-type", PEPPOL_BIS_BILLING_DOCTYPE)
+            process_id = lower.get("x-peppol-process-id", "")
+            payload = body or b""
+
+        if not message_id:
+            return None
+
+        return InboundPeppolMessage(
+            message_id=message_id,
+            sender_scheme=sender_scheme,
+            sender_value=sender_value,
+            doc_type_id=doc_type_id,
+            process_id=process_id,
+            payload=payload,
+        )

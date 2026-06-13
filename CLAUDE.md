@@ -136,6 +136,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/dashboard` | KPI aggregates (pipeline, aging, spend, trends) |
 | `/erp` | Inbound ERP webhooks (status updates) |
 | `/email-intake` | Inbound email webhook (provider-signed) — turns attachments into invoices |
+| `/peppol` | Inbound PEPPOL AS4 receive webhook — `POST /peppol/inbound/{tenant_slug}` (public-by-design, HMAC-gated, tenant in path). Dedupes redeliveries by AS4 MessageId (`uq_peppol_message_id`), parses the UBL/CII, creates the Invoice + an inbound `PeppolTransmission`, hands to the einvoice extractor. Always 204 |
 | `/organization/email-intake` | Admin — show / rotate the per-tenant intake address |
 | `/signup` | Self-service tenant signup (start / slug-check / complete) |
 | `/health` | Health check |
@@ -237,6 +238,8 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_MAX_CONCURRENT_SESSIONS` | `5` | Max concurrent sessions per user. Oldest JTI is evicted onto the blocklist when exceeded. `0` disables the cap. |
 | `AP_NOTIFICATIONS_ENABLED` | `true` | Master switch for email + in-app notifications. When `false`, the `transition_invoice` / `assign_reviewer` hooks skip dispatch. Dispatch is always best-effort regardless (a failure never breaks a transition). See `backend/docs/notifications.md`. |
 | `AP_REPORTING_CURRENCY_DEFAULT` | `USD` | Platform last-resort reporting (base) currency for multi-currency rollups when an org sets no `reporting_currency`. Per-org override on `Organization.settings.reporting_currency`. See `backend/docs/multi-currency.md`. |
+| `AP_PEPPOL_INBOUND_ENABLED` | `false` | Master switch for the inbound PEPPOL AS4 receive webhook (`POST /api/peppol/inbound/{tenant_slug}`). When `false` the route is a silent no-op 204. See `backend/docs/peppol.md` § Inbound. |
+| `AP_PEPPOL_INBOUND_SIGNING_SECRET` | (empty) | HMAC-SHA256 key the Access Point signs the inbound POST body with. Required when `AP_PEPPOL_INBOUND_ENABLED` is true — boot refuses otherwise. No hardcoded fallback; real secret via sops. A NON-secret dev value is committed in `backend/.env.development`. |
 | `AP_PEPPOL_PROVIDER` | `mock` | PEPPOL Access Point adapter — `mock` (in-process, no network — local-first default) \| `as4_gateway`. Per-org override on `Organization.settings.peppol.provider`. See `backend/docs/peppol.md`. |
 | `AP_PEPPOL_GATEWAY_URL` | (empty) | Hosted Access Point base URL (deployed only). |
 | `AP_PEPPOL_GATEWAY_API_KEY` | (empty) | PEPPOL gateway API key — **no hardcoded fallback**; sops in deployed. |

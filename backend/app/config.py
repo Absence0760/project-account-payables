@@ -336,6 +336,18 @@ class Settings(BaseSettings):
     peppol_gateway_url: str = ""  # hosted Access Point base URL (deployed only)
     peppol_gateway_api_key: str = ""  # secret — empty for mock; sops in deployed
 
+    # PEPPOL AS4 INBOUND receive (the receiver-corner C4 webhook the Access
+    # Point posts inbound documents to). Master switch — mirrors
+    # ``email_intake_domain`` / ``audit_shipping_enabled`` gating: the public
+    # ``POST /api/peppol/inbound/{tenant_slug}`` route is a no-op 204 until this
+    # is on, so the surface is closed by default. The signing secret is the
+    # HMAC-SHA256 key the Access Point signs the inbound POST body with; it has
+    # NO hardcoded secret fallback (the boot guard refuses to start a deployed
+    # env that enables inbound without it). The committed .env.development sets a
+    # NON-secret dev value so the webhook is locally testable under `pnpm dev`.
+    peppol_inbound_enabled: bool = False
+    peppol_inbound_signing_secret: str = ""
+
     # App
     # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local

@@ -158,13 +158,82 @@ row through `dispatch_audit` (`details` records provider, `receiver_scheme`,
 `message_id`, `doc_type` — **never** the receiver value / tax id). The
 idempotent short-circuit deliberately writes **no** duplicate audit row.
 
-## Inbound-ready design
+## Inbound (AS4 receive)
 
-The `direction` column (default `outbound`), the partial-unique `message_id`
-column, the `ParticipantId` value object, and the `parse_inbound` adapter stub
-all exist so the next (inbound) slice can verify the gateway HMAC via
-`services/webhook_security.py` and dedupe redeliveries by AS4 `MessageId` —
-no schema churn.
+We are the receiver corner **C4**. The receiver's Access Point (**C3**) delivers
+an inbound BIS Billing 3.0 document to us by POSTing the UBL/CII payload plus
+metadata (sender participant id, AS4 `MessageId`, doc type, process id) with a
+provider HMAC signature.
+
+**Route (public-by-design, signature-gated, tenant in path):**
+
+```
+POST /api/peppol/inbound/{tenant_slug}      → always 204 No Content
+```
+
+The route mirrors the payment webhook (`/api/payments/webhook/{tenant_slug}/…`):
+no JWT, no `X-Tenant-Slug` header — the tenant is the URL path segment, so each
+tenant configures its own inbound URL with the Access Point and a leaked URL
+only affects that one tenant. **Every** path — success and every rejection —
+returns `204` silently with a PII-free `logger.warning` (reason code only); a
+distinct 4xx would enumerate which slugs / signing secrets / payload shapes are
+accepted, and the supplier's participant value / tax id / payload never enters a
+log line or the body.
+
+**Receive flow** (`api/peppol_inbound.peppol_inbound_webhook` →
+`services/peppol_receive.receive_peppol_message`, mirroring
+`email_intake.process_inbound_email`):
+
+1. Master switch `AP_PEPPOL_INBOUND_ENABLED` off → 204 (closed by default).
+2. Read raw bytes + headers.
+3. **Verify HMAC** over the raw body via `verify_inbound_signature` (reuses
+   `webhook_security.extract_signature_header` for `X-Peppol-Signature` /
+   `X-Signature` / `X-Webhook-Signature`). Bad/missing → 204.
+4. Resolve the org from the path slug (control DB). Unknown → 204.
+5. The tenant's configured adapter `parse_inbound(headers, body)` →
+   `InboundPeppolMessage` (message id, sender scheme/value, doc type, process
+   id, payload). `None` / missing message id → 204 (can't dedupe → refuse).
+6. In a short-lived tenant session: dedupe pre-check → parse/validate the
+   payload with the **existing** `e_invoice.parse_e_invoice` (malformed →
+   204, no invoice) → create `Invoice(status=new)` (vendor/amount/currency from
+   the UBL; **amount is `Decimal`**) → claim the dedupe slot
+   (`PeppolTransmission(direction="inbound", status="delivered", message_id=…)`,
+   flushed **before** the S3 upload) → upload the raw payload to S3 →
+   `invoice.peppol_received` audit row (PII-free details) → commit.
+7. **Outside** the tenant transaction, `dispatch_extraction` — `run_extraction`
+   auto-routes the stored UBL/CII to the `einvoice` adapter (confidence 1.0,
+   auto-approve); **no** config change, no second parse in the adapter path.
+
+**Dedupe — DB-enforced, the AS4 `MessageId` is the key.** Two layers, the DB
+authoritative:
+
+- *Fast path (advisory):* a `SELECT` on `message_id` short-circuits the common
+  sequential redelivery without creating an invoice.
+- *Authoritative guarantee (the concurrent-redelivery race):* the partial unique
+  index `uq_peppol_message_id` (`WHERE message_id IS NOT NULL`, created by
+  migration 0034) lets only one transmission INSERT commit. The loser's
+  `IntegrityError` on `db.flush()` rolls back its **entire** tenant transaction —
+  the Invoice it created included — so no second invoice survives; both
+  redeliveries return 204. The transmission row is flushed (claiming the slot)
+  **before** the S3 upload, so the loser never writes an S3 object. This mirrors
+  `peppol_send`'s claim-the-slot-then-transmit ordering.
+
+**Deliberate divergence from the payment webhook:** Redis
+`is_event_already_processed` is **not** used here. For a create-an-invoice
+one-time effect the durable DB unique index is the correct guarantee; a 24h
+Redis TTL would let a later redelivery slip through and is redundant given the
+index.
+
+**No new migration / model column.** The `peppol_transmissions` table already
+carries `direction` (CHECK allows `inbound`), the partial-unique `message_id`,
+and `status` (CHECK allows `delivered`) — inbound writes zero DDL.
+
+`parse_inbound` is implemented on both adapters: the `mock` adapter parses a
+dev-shaped JSON envelope (`message_id` / `sender_*` / `doc_type_id` /
+`process_id` / `payload_base64`) **or** raw-UBL-body + `X-Peppol-*` metadata
+headers, so the webhook is exercisable locally; the `as4_gateway` adapter maps
+the hosted AP's JSON inbound-delivery envelope. The route verifies the HMAC
+before either is called.
 
 ## Environment variables
 
@@ -173,6 +242,8 @@ no schema churn.
 | `AP_PEPPOL_PROVIDER` | `mock` | `mock` (in-process default) \| `as4_gateway` |
 | `AP_PEPPOL_GATEWAY_URL` | (empty) | Hosted Access Point base URL (deployed only) |
 | `AP_PEPPOL_GATEWAY_API_KEY` | (empty) | Gateway API key — **no hardcoded fallback**; sops in deployed |
+| `AP_PEPPOL_INBOUND_ENABLED` | `false` | Master switch for the inbound receive webhook — no-op 204 until on |
+| `AP_PEPPOL_INBOUND_SIGNING_SECRET` | (empty) | HMAC-SHA256 key the Access Point signs the inbound POST body with — **no hardcoded fallback**; boot refuses if inbound is enabled without it; a NON-secret dev value is set in `.env.development` |
 
 Per-org overrides live on `Organization.settings.peppol` and win over the
 process-level defaults.
@@ -180,9 +251,12 @@ process-level defaults.
 ## Local-first
 
 The mock adapter is in-process, so there is **no** new long-running service and
-**no** new `pnpm` script — `pnpm dev` transmits e-invoices without any PEPPOL
-credential. Set `AP_PEPPOL_PROVIDER=as4_gateway` with a real gateway URL + key
-(sops) to transmit for real.
+**no** new `pnpm` script — `pnpm dev` transmits **and** receives e-invoices
+without any PEPPOL credential. Inbound ships a NON-secret dev signing secret
+(`AP_PEPPOL_INBOUND_SIGNING_SECRET=dev-peppol-inbound-secret`) in
+`.env.development` so the webhook is locally testable with a known key. Set
+`AP_PEPPOL_PROVIDER=as4_gateway` with a real gateway URL + key (sops) and the
+real inbound signing secret (sops) to receive/transmit for real.
 
 ## Tests
 
@@ -193,5 +267,9 @@ credential. Set `AP_PEPPOL_PROVIDER=as4_gateway` with a real gateway URL + key
   re-send (one adapter call), tax-invalid (no row), unknown receiver, failed-
   then-retry, PII-not-in-logs.
 - `tests/test_peppol_route.py` — 200 / already_sent / 404 / 400 / 422 / 403.
+- `tests/test_peppol_inbound.py` — inbound receive: signed happy path (one
+  Invoice + one inbound transmission), sequential + concurrent-race dedupe (one
+  invoice), bad/missing signature, unknown tenant, malformed payload, master
+  switch off, no-PII-in-logs/body, boot guard, mock `parse_inbound` unit.
 - `tests/test_tenant_provisioning.py` — `peppol_transmissions` fans out + the
   two partial unique indexes are built by `create_all`.

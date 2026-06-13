@@ -367,14 +367,16 @@ class MyAdapter(PeppolAdapter):
     async def resolve_participant(self, pid: ParticipantId) -> ParticipantCapability: ...
     async def send(self, request: TransmissionRequest) -> TransmissionResult: ...
     async def test_connection(self) -> bool: ...
-    def parse_inbound(self, headers, body): ...   # inbound-ready stub
+    def parse_inbound(self, headers, body) -> InboundPeppolMessage | None: ...
 ```
 
-Registered: `mock` (in-process, no network — the **local-first default**), `as4_gateway` (real — `httpx` to a hosted Access Point; key via sops, no hardcoded fallback). Selection via `Organization.settings.peppol.provider` → `AP_PEPPOL_PROVIDER` (default `mock`). Outbound **send** turns an invoice into UBL via the `e_invoice` package, resolves the receiver via SMP/SML (`resolve_participant`), and transmits via the gateway; SBDH wrapping lives in the adapter, never the generator. `services/peppol_send.send_invoice_over_peppol` orchestrates it (map → tax-validate → UBL → resolve → INSERT `peppol_transmissions('sending')` → send → audit), idempotent at the DB layer. Route `POST /api/invoices/{id}/peppol-send`. See `docs/peppol.md`.
+Registered: `mock` (in-process, no network — the **local-first default**), `as4_gateway` (real — `httpx` to a hosted Access Point; key via sops, no hardcoded fallback). Selection via `Organization.settings.peppol.provider` → `AP_PEPPOL_PROVIDER` (default `mock`). Outbound **send** turns an invoice into UBL via the `e_invoice` package, resolves the receiver via SMP/SML (`resolve_participant`), and transmits via the gateway; SBDH wrapping lives in the adapter, never the generator. `services/peppol_send.send_invoice_over_peppol` orchestrates it (map → tax-validate → UBL → resolve → INSERT `peppol_transmissions('sending')` → send → audit), idempotent at the DB layer. Route `POST /api/invoices/{id}/peppol-send`.
+
+**Inbound receive** (the C4 corner) is now implemented: `parse_inbound` is real on both adapters (mock parses a dev JSON/header envelope; `as4_gateway` maps the hosted AP's inbound-delivery envelope). `api/peppol_inbound.public_router` mounts `POST /api/peppol/inbound/{tenant_slug}` (public-by-design, HMAC-gated, tenant in path, always 204). `services/peppol_receive.receive_peppol_message` mirrors `email_intake.process_inbound_email`: dedupe-precheck → `e_invoice.parse_e_invoice` (structural validate) → create `Invoice(status=new)` → claim the `uq_peppol_message_id` slot with a `PeppolTransmission(direction="inbound", status="delivered")` flushed **before** the S3 upload (so a concurrent-redelivery loser's `IntegrityError` rolls back the whole tenant txn — no second invoice, no orphaned S3 object) → upload payload → `invoice.peppol_received` audit → commit → `dispatch_extraction` (auto-routes to the `einvoice` adapter). Dedupe is the DB unique index only (deliberately **not** Redis — a 24h TTL would let a later redelivery slip through). See `docs/peppol.md`.
 
 ## Webhook security (`services/webhook_security.py`)
 
-Every inbound webhook handler — payments, cards, ERP, email-intake — verifies the provider's HMAC over the raw request body and dedupes by event id before mutating state (project invariant #9). Shared helpers:
+Every inbound webhook handler — payments, cards, ERP, email-intake, PEPPOL inbound — verifies the provider's HMAC over the raw request body and dedupes (by event id, or — for PEPPOL inbound — by the AS4 MessageId at the DB layer) before mutating state (project invariant #9). Shared helpers:
 
 - `verify_hmac_sha256(secret, raw_body, provided_hex)` — constant-time HMAC-SHA256 check via `hmac.compare_digest`. Empty / missing secret or signature fail closed.
 - `is_event_already_processed(provider, event_id, ttl_seconds=86400)` — Redis `SET NX EX` dedup. First delivery returns `False`; replays within the TTL window return `True` so the handler short-circuits.
@@ -387,8 +389,9 @@ Per-tenant secrets:
 | `/api/payments/webhook/...` | `Organization.settings.payments.webhook_secret` (verified inside the adapter's `parse_webhook`) |
 | `/api/cards/webhook/{provider}` | `Organization.settings.cards.webhook_signing_secret` |
 | `/api/erp/webhook/{erp_type}` | `Organization.settings.erp.webhook_signing_secret` |
+| `/api/peppol/inbound/{tenant_slug}` | `AP_PEPPOL_INBOUND_SIGNING_SECRET` (process-level HMAC key; verified by `peppol_receive.verify_inbound_signature`). Dedupe is the DB `uq_peppol_message_id` index, not Redis. |
 
-Every webhook handler returns **204 silently** on every rejection path (bad signature, unknown tenant, missing event id, unknown card / invoice / payment). Distinct 4xx responses would enumerate tenant slugs or card tokens. Tests: `backend/tests/test_webhook_security.py`, `tests/test_payment_webhook_security.py`.
+Every webhook handler returns **204 silently** on every rejection path (bad signature, unknown tenant, missing event id, unknown card / invoice / payment, disabled master switch, unparseable / malformed inbound document). Distinct 4xx responses would enumerate tenant slugs or card tokens. Tests: `backend/tests/test_webhook_security.py`, `tests/test_payment_webhook_security.py`, `tests/test_peppol_inbound.py`.
 
 ## Security utilities
 

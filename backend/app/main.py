@@ -29,6 +29,7 @@ from app.api import (
     notifications,
     organization,
     payments,
+    peppol_inbound,
     portal,
     portal_auth,
     purchase_orders,
@@ -57,6 +58,11 @@ async def lifespan(app: FastAPI):
             raise RuntimeError(
                 "AP_EMAIL_INTAKE_SIGNING_SECRET must be set when "
                 "AP_EMAIL_INTAKE_DOMAIN is configured"
+            )
+        if settings.peppol_inbound_enabled and not settings.peppol_inbound_signing_secret:
+            raise RuntimeError(
+                "AP_PEPPOL_INBOUND_SIGNING_SECRET must be set when "
+                "AP_PEPPOL_INBOUND_ENABLED is true"
             )
 
     # Background reaper for invoices stuck in `pending` extraction. Started
@@ -214,6 +220,7 @@ app.include_router(portal_auth.router, prefix="/api")
 app.include_router(portal.router, prefix="/api")
 app.include_router(email_intake.public_router, prefix="/api")
 app.include_router(email_intake.admin_router, prefix="/api")
+app.include_router(peppol_inbound.public_router, prefix="/api")
 app.include_router(tax.router, prefix="/api")
 app.include_router(tax_intl.router, prefix="/api")
 

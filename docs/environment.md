@@ -99,6 +99,8 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_PEPPOL_PROVIDER`  | `mock`                                                                   | PEPPOL Access Point adapter — `mock` (in-process, local-first default) or `as4_gateway` (real hosted AP). Per-org override via `Organization.settings.peppol.provider`. |
 | `AP_PEPPOL_GATEWAY_URL` | (empty)                                                                | Base URL of the hosted Access Point. Required when `AP_PEPPOL_PROVIDER=as4_gateway`. |
 | `AP_PEPPOL_GATEWAY_API_KEY` | (empty)                                                            | Gateway API key — no hardcoded fallback; empty disables the gateway (returns `peppol_not_configured`). Store via sops in deployed envs. |
+| `AP_PEPPOL_INBOUND_ENABLED` | `false`                                                            | Master switch for the inbound PEPPOL AS4 receive webhook (`POST /api/peppol/inbound/{tenant_slug}`). When `false` the route is a silent no-op 204. `backend/.env.development` sets it `true` so the webhook is locally testable. |
+| `AP_PEPPOL_INBOUND_SIGNING_SECRET` | (empty)                                                     | HMAC-SHA256 key the Access Point signs the inbound POST body with. Boot refuses if `AP_PEPPOL_INBOUND_ENABLED` is true and this is empty (unless `AP_DEBUG=true`). No hardcoded fallback; real secret via sops. `backend/.env.development` carries a NON-secret dev value (`dev-peppol-inbound-secret`). |
 
 `backend/.env.development` is **committed** with safe local defaults and is
 loaded by `main.py` (the local-dev entrypoint) via `python-dotenv` — no setup
