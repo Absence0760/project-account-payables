@@ -24,6 +24,40 @@ from app.services.e_invoice.model import (
 
 _DEFAULT_INVOICE_TYPE_CODE = "380"  # UNCL1001 "Commercial invoice".
 
+# VAT-id prefix → ISO-2 country, for the EU/UK schemes whose VAT number begins
+# with a country letter pair. Greece is the one EU member whose VAT prefix
+# (``EL``) differs from its ISO-2 code (``GR``); map it explicitly. This is the
+# only signal of the seller's (vendor's) country the Invoice row carries — the
+# model has no vendor-country column — so we derive it from the VAT id so the
+# outbound export guard can actually validate the supplier's tax-id format and
+# rate plausibility. A tax id with no recognised prefix leaves country_code
+# None (validation then skips the seller side, same as before).
+_VAT_PREFIX_TO_COUNTRY = {
+    # EU member states whose VAT number is ISO-2-prefixed.
+    "AT": "AT", "BE": "BE", "BG": "BG", "CY": "CY", "CZ": "CZ", "DE": "DE",
+    "DK": "DK", "EE": "EE", "ES": "ES", "FI": "FI", "FR": "FR", "HR": "HR",
+    "HU": "HU", "IE": "IE", "IT": "IT", "LT": "LT", "LU": "LU", "LV": "LV",
+    "MT": "MT", "NL": "NL", "PL": "PL", "PT": "PT", "RO": "RO", "SE": "SE",
+    "SI": "SI", "SK": "SK",
+    # Greece: VAT prefix EL, ISO-2 GR.
+    "EL": "GR",
+    # UK (post-Brexit) keeps the GB prefix.
+    "GB": "GB",
+}
+
+
+def _country_from_tax_id(tax_id: str | None) -> str | None:
+    """Derive an ISO-2 country from a VAT-id prefix, where the scheme uses one.
+
+    Returns ``None`` for an absent id or an unrecognised prefix (e.g. a US EIN,
+    an AU ABN, or a bare number) — the tax-rule validators skip a ``None``
+    country, so this is safe. Never logs the id (PII).
+    """
+    if not tax_id:
+        return None
+    prefix = tax_id.strip().upper().replace(" ", "")[:2]
+    return _VAT_PREFIX_TO_COUNTRY.get(prefix)
+
 
 @dataclass
 class BuyerIdentity:
@@ -58,12 +92,20 @@ def invoice_to_einvoice_document(
     """Build a normalized :class:`EInvoiceDocument` from an Invoice row.
 
     Seller = the vendor (from ``invoice.vendor_name`` / ``vendor_tax_id`` /
-    ``vendor_address``). Buyer = ``buyer_identity`` (our org/entity).
+    ``vendor_address``). The seller's country is derived from the VAT-id prefix
+    (:func:`_country_from_tax_id`) — the Invoice row has no vendor-country
+    column — so the outbound export guard can validate the supplier's tax-id
+    format and rate plausibility. Buyer = ``buyer_identity`` (our org/entity).
     """
     seller = EInvoiceParty(
         name=invoice.vendor_name,
         tax_id=invoice.vendor_tax_id,
         address_lines=_split_address(invoice.vendor_address),
+        # The Invoice model has no vendor-country column; derive it from the
+        # VAT-id prefix so the outbound export guard validates the supplier's
+        # tax-id format + rate plausibility (not just the buyer side). Falls
+        # back to None for non-prefixed schemes (then validation skips seller).
+        country_code=_country_from_tax_id(invoice.vendor_tax_id),
     )
     buyer = EInvoiceParty(
         name=buyer_identity.name,
