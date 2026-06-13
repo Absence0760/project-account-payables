@@ -1,12 +1,12 @@
-# Dedicated SSO end-to-end workflow.
+# Dedicated SSO end-to-end workflow (OIDC + SAML).
 #
 # SSO is also exercised by the broader `service-e2e` job in `ci.yml` (bundled
 # with email / LocalStack / stripe-mock). This workflow is the focused,
 # fast-feedback counterpart: it boots ONLY Keycloak, seeds SSO on the acme
-# tenant, and drives the real OIDC handshake through the browser
-# (`frontend/tests-e2e/sso/`). It gives a single, isolated green/red signal for
-# "can a user sign in via SSO" without waiting on the 25-minute four-service
-# bundle.
+# tenant, and drives the real OIDC handshake (`frontend/tests-e2e/sso/`) and
+# then the real SAML handshake (`frontend/tests-e2e/saml/`) through the browser.
+# It gives a single, isolated green/red signal for "can a user sign in via SSO"
+# without waiting on the 25-minute four-service bundle.
 #
 # Triggers: push / PR to main that touch the SSO surface (backend SSO routes +
 # service, the Keycloak realm + seed script, the login routes, the SSO specs),
@@ -19,12 +19,15 @@ on:
     branches: [main]
     paths: &sso-paths
       - "backend/app/api/auth_sso.py"
+      - "backend/app/api/auth_saml.py"
       - "backend/app/services/sso.py"
       - "backend/keycloak/realm-export.json"
       - "backend/scripts/enable_keycloak_sso.py"
+      - "backend/scripts/enable_keycloak_saml.py"
       - "backend/docker-compose.yml"
       - "frontend/src/routes/login/**"
       - "frontend/tests-e2e/sso/**"
+      - "frontend/tests-e2e/saml/**"
       - "frontend/tests-e2e/fixtures/**"
       - ".github/workflows/sso-e2e.yml"
   pull_request:
@@ -189,6 +192,24 @@ jobs:
           PUBLIC_API_URL: http://localhost:8000
           PLAYWRIGHT_WORKERS: "1"
         run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts sso/
+
+      # SAML reuses the SAME Keycloak + acme tenant. Seeding SAML rewrites acme's
+      # settings.sso (protocol=saml), replacing the OIDC block — the backend
+      # reads it live per-request, so no restart is needed. Run the OIDC specs
+      # first (above), then flip acme to SAML and run the SAML specs.
+      - name: Enable Keycloak SAML on the acme tenant
+        working-directory: backend
+        run: python scripts/enable_keycloak_saml.py
+
+      - name: Run SAML e2e specs
+        working-directory: frontend
+        env:
+          PUBLIC_API_URL: http://localhost:8000
+          PLAYWRIGHT_WORKERS: "1"
+          # Keycloak is up on purpose here — an unreachable IdP is a hard fail,
+          # never a silent skip that would drop SAML coverage.
+          AP_REQUIRE_INTEGRATION: "1"
+        run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts saml/
 
       - name: Upload Playwright report on failure
         if: failure()

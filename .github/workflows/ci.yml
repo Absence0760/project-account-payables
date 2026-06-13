@@ -639,6 +639,21 @@ jobs:
           AP_REQUIRE_INTEGRATION: "1"
         run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts sso/ email/ scim/
 
+      # SAML shares Keycloak + the acme tenant with OIDC; seeding it rewrites
+      # acme's settings.sso (protocol=saml), so it must run AFTER the OIDC specs
+      # above. The backend reads the block live per-request — no restart.
+      - name: Enable Keycloak SAML on the acme tenant
+        working-directory: backend
+        run: python scripts/enable_keycloak_saml.py
+
+      - name: Run SAML e2e specs
+        working-directory: frontend
+        env:
+          PUBLIC_API_URL: http://localhost:8000
+          PLAYWRIGHT_WORKERS: "1"
+          AP_REQUIRE_INTEGRATION: "1"
+        run: pnpm exec playwright test --config=tests-e2e/playwright.config.ts saml/
+
       - name: Run service integration tests (LocalStack + stripe-mock)
         working-directory: backend
         # AP_REQUIRE_INTEGRATION turns an unreachable service from a silent

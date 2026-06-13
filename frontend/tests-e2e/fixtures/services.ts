@@ -19,6 +19,7 @@ import { test } from './helpers';
 /** Probe URLs — any HTTP response (even 4xx) means the service is up. */
 export const SERVICES = {
 	keycloak: 'http://localhost:8088/realms/account-payables/.well-known/openid-configuration',
+	keycloakSaml: 'http://localhost:8088/realms/account-payables/protocol/saml/descriptor',
 	mailpit: 'http://localhost:8025/api/v1/info',
 	localstack: 'http://localhost:4566/_localstack/health',
 	stripeMock: 'http://localhost:12111/v1'
@@ -27,6 +28,7 @@ export const SERVICES = {
 /** Hint shown when a service is down, keyed by probe URL. */
 const HINTS: Record<string, string> = {
 	[SERVICES.keycloak]: 'Keycloak not running — `pnpm idp:up && pnpm idp:seed`',
+	[SERVICES.keycloakSaml]: 'Keycloak SAML not seeded — `pnpm idp:up && pnpm saml:seed`',
 	[SERVICES.mailpit]: 'Mailpit not running — `pnpm mail:up` (+ backend AP_EMAIL_PROVIDER=smtp)',
 	[SERVICES.localstack]: 'LocalStack not running — `pnpm aws:up`',
 	[SERVICES.stripeMock]: 'stripe-mock not running — `pnpm stripe:up`'

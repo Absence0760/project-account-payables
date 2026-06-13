@@ -126,7 +126,7 @@ def test_resolve_saml_cert_multi_for_rotation():
 
 def test_saml_sp_entity_id_is_per_tenant():
     assert saml_sp_entity_id("acme") != saml_sp_entity_id("techflow")
-    assert "slug=acme" in saml_sp_entity_id("acme")
+    assert saml_sp_entity_id("acme").endswith("/acme")
 
 
 def test_saml_acs_url_is_static_backend_url():

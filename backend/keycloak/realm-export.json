@@ -37,6 +37,59 @@
       },
       "defaultClientScopes": ["openid", "email", "profile", "roles", "web-origins"],
       "optionalClientScopes": ["address", "phone", "offline_access"]
+    },
+    {
+      "clientId": "http://localhost:8000/api/auth/saml/metadata",
+      "name": "Account Payables SAML (local dev)",
+      "description": "Shared local SAML SP. One client serves every tenant; the backend recovers the tenant from the server-minted RelayState (not the assertion), so the SP entityId + ACS are shared. See docs/local-sso-saml.md.",
+      "enabled": true,
+      "protocol": "saml",
+      "frontchannelLogout": false,
+      "redirectUris": ["http://localhost:8000/api/auth/saml/acs"],
+      "attributes": {
+        "saml.assertion.signature": "true",
+        "saml.client.signature": "false",
+        "saml.authnstatement": "true",
+        "saml.signature.algorithm": "RSA_SHA256",
+        "saml_name_id_format": "email",
+        "saml_force_name_id_format": "true",
+        "saml_assertion_consumer_url_post": "http://localhost:8000/api/auth/saml/acs"
+      },
+      "protocolMappers": [
+        {
+          "name": "email",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "config": {
+            "user.attribute": "email",
+            "attribute.name": "email",
+            "attribute.nameformat": "Basic",
+            "friendly.name": "email"
+          }
+        },
+        {
+          "name": "givenName",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "config": {
+            "user.attribute": "firstName",
+            "attribute.name": "givenName",
+            "attribute.nameformat": "Basic",
+            "friendly.name": "givenName"
+          }
+        },
+        {
+          "name": "surname",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "config": {
+            "user.attribute": "lastName",
+            "attribute.name": "sn",
+            "attribute.nameformat": "Basic",
+            "friendly.name": "sn"
+          }
+        }
+      ]
     }
   ],
   "users": [

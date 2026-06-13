@@ -156,11 +156,13 @@ class ResolvedSAMLConfig:
 
 
 def saml_sp_entity_id(tenant_slug: str) -> str:
-    """Per-tenant SP EntityID (== SAML Audience the IdP must assert). Derived
-    from the backend public URL so each tenant's IdP only trusts that tenant's
-    SP. Admins may override via settings.sso.sp_entity_id."""
+    """Per-tenant SP EntityID (== SAML Audience the IdP must assert). A stable
+    per-tenant URI derived from the backend public URL so each tenant's IdP only
+    trusts that tenant's SP. Path form (no query string) so it drops cleanly
+    into an IdP's client-id field. Admins may override via
+    settings.sso.sp_entity_id."""
     base = settings.api_public_url.rstrip("/")
-    return f"{base}/api/auth/saml/metadata?slug={tenant_slug}"
+    return f"{base}/api/auth/saml/sp/{tenant_slug}"
 
 
 def saml_acs_url() -> str:
