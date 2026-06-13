@@ -249,10 +249,9 @@ class Settings(BaseSettings):
     scim_url_path: str = "/api/scim/v2"
 
     # SAML 2.0 SSO (Service-Provider side). Additive, separate code path from
-    # OIDC; per-tenant IdP config lives on Organization.settings.sso with
-    # protocol="saml". Master switch defaults off so a fresh clone + pnpm dev
-    # needs no IdP (local-first), mirroring AP_MFA_ENABLED.
-    saml_enabled: bool = False
+    # OIDC; like OIDC it is gated PER-TENANT via Organization.settings.sso
+    # (protocol="saml") — there is no global on/off, so a fresh clone + pnpm dev
+    # simply has no SAML tenant configured and the routes 400/404.
     # Frontend bridge route the SAML ACS 303-redirects to after minting a
     # one-time handoff code. The bridge POSTs the code to /api/auth/saml/exchange
     # and receives the JWT in the response body — the JWT never transits a URL.

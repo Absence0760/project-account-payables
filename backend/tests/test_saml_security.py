@@ -306,12 +306,16 @@ def test_xsw_injected_second_assertion_rejected(idp_keypair):
         assert auth.get_nameid() == "user@acme.com"
 
 
-def test_wrong_issuer_caught_by_pin(idp_keypair):
-    # Signed correctly but Issuer != configured idp_entity_id. The router rejects
-    # via `_assertion_issuer(auth) != config.idp_entity_id`; prove the extracted
-    # issuer is the evil one (so the pin fires) regardless of python3-saml.
+def test_wrong_issuer_rejected_at_both_layers(idp_keypair):
+    # Signed correctly but Issuer != configured idp_entity_id. python3-saml in
+    # strict mode rejects this ("Invalid issuer"), so it never authenticates —
+    # AND the router's explicit pin (`_assertion_issuer != idp_entity_id`) would
+    # independently reject it if the library check ever regressed. Assert both:
+    # the library rejection (primary) and that the pin reads the bad issuer
+    # (defence-in-depth is real, not a redundant read).
     config = _config(idp_keypair[2])
     auth = _run_acs(config, _signed_response(idp_keypair, issuer="https://evil.test/idp"))
+    assert not auth.is_authenticated()
     assert _assertion_issuer(auth) != config.idp_entity_id
 
 

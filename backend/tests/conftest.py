@@ -105,6 +105,12 @@ class _FakeRedis:
         self._kv[key] = value
         return True
 
+    async def setex(self, key: str, ttl: int, value: str):
+        # SSO state / SAML RelayState + token handoff store via SETEX. TTL is
+        # not enforced in-memory; single-use is via the explicit delete.
+        self._kv[key] = value
+        return True
+
     async def get(self, key: str):
         return self._kv.get(key)
 
