@@ -285,6 +285,15 @@ class Settings(BaseSettings):
     # when none of those are set. ISO 4217. See backend/docs/multi-currency.md.
     reporting_currency_default: str = "USD"
 
+    # US 1099 tax compliance (TIN validation + e-filing). Both default to the
+    # offline `mock` adapter so a fresh clone runs with no cloud account
+    # (local-first). Per-org overrides live on
+    # ``Organization.settings.tax.{tin_validation,filing}`` and win over these
+    # process-level defaults; deployed envs that validate/file for real set the
+    # provider to `tax1099` there (with the live key in the encrypted settings).
+    tin_validation_provider: str = "mock"  # "mock" (offline) | "tax1099"
+    tax_filing_provider: str = "mock"  # "mock" (offline) | "tax1099"
+
     # App
     # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local
