@@ -278,6 +278,14 @@ class Settings(BaseSettings):
     hsts_include_subdomains: bool = True
     hsts_preload: bool = True
 
+    # Multi-currency reporting. The reporting (base) currency an org rolls
+    # multi-currency invoices/payments up into for analytics + dashboards. A
+    # per-org override lives on `Organization.settings.reporting_currency` (and
+    # falls back to the legacy `payments.home_currency`, then
+    # `invoice_defaults.currency`); this is the platform-wide last-resort default
+    # when none of those are set. ISO 4217. See backend/docs/multi-currency.md.
+    reporting_currency_default: str = "USD"
+
     # App
     # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local
