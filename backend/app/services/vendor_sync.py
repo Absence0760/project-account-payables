@@ -13,8 +13,13 @@ async def sync_vendors_from_erp(
     db: AsyncSession,
     organization_id: uuid.UUID,
     erp_vendors: list[dict],
+    entity_id: uuid.UUID | None = None,
 ) -> dict:
     """Sync a list of vendor records from an ERP into the local database.
+
+    ``entity_id`` (multi-entity Phase 2) is the entity newly-created vendors
+    land under — the selected entity or the tenant default, resolved at the
+    endpoint. Vendors matched/updated keep their existing entity.
 
     Each erp_vendor dict should have:
         - erp_vendor_id: str (required — the vendor ID in the ERP)
@@ -101,6 +106,7 @@ async def sync_vendors_from_erp(
                 status="active",
                 source="erp_sync",
                 organization_id=organization_id,
+                entity_id=entity_id,
             )
             db.add(vendor)
             created += 1

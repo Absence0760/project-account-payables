@@ -154,7 +154,9 @@ async def match_and_link_vendor(
         invoice.vendor_id = vendor.id
         return vendor, "linked"
 
-    # No match — create unverified vendor from invoice data
+    # No match — create unverified vendor from invoice data. It inherits the
+    # invoice's entity so the auto-created vendor lands in the same subsidiary
+    # as the invoice it came from (multi-entity Phase 2).
     new_vendor = Vendor(
         name=invoice.vendor_name,
         address=invoice.vendor_address,
@@ -162,6 +164,7 @@ async def match_and_link_vendor(
         status="unverified",
         source="ai_extracted",
         organization_id=organization_id,
+        entity_id=invoice.entity_id,
     )
     db.add(new_vendor)
     await db.flush()

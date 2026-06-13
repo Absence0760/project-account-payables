@@ -39,7 +39,13 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.vendor_sync import sync_vendors_from_erp
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant,
+    get_tenant_db,
+    get_write_entity_id,
+)
 from app.utils.passwords import generate_temp_password
 from app.utils.passwords import pwd_context as _pwd
 
@@ -74,8 +80,9 @@ async def list_vendors(
     source: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(Vendor)
+    query = apply_entity_scope(select(Vendor), Vendor, entity_id)
     if search:
         pattern = f"%{search}%"
         query = query.where(
@@ -182,10 +189,12 @@ async def create_vendor(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     vendor = Vendor(
         **body.model_dump(),
         organization_id=org_id,
+        entity_id=entity_id,
         status="active",
         source="manual",
         verified_by=user.full_name,
@@ -282,6 +291,7 @@ async def sync_vendors_from_erp_endpoint(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     """Pull vendors from the connected ERP and sync to local database."""
     erp_config = (org.settings or {}).get("erp")
@@ -319,7 +329,7 @@ async def sync_vendors_from_erp_endpoint(
         },
     ]
 
-    result = await sync_vendors_from_erp(db, org_id, mock_erp_vendors)
+    result = await sync_vendors_from_erp(db, org_id, mock_erp_vendors, entity_id=entity_id)
     await db.commit()
 
     return {
@@ -339,6 +349,7 @@ async def import_vendors_from_csv(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     """Bulk-create vendors from a CSV export.
 
@@ -353,7 +364,7 @@ async def import_vendors_from_csv(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
 
-    result = await import_vendors_csv(db, org_id, csv_text)
+    result = await import_vendors_csv(db, org_id, csv_text, entity_id=entity_id)
     await db.commit()
     return result.to_dict()
 

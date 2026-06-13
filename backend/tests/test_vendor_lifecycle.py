@@ -251,12 +251,14 @@ async def test_no_match_creates_unverified_vendor_from_invoice():
     """Nothing matched → create a Vendor with status='unverified',
     source='ai_extracted'. The AP team reviews these from the
     `unverified` queue before activating."""
+    entity_id = uuid.uuid4()
     invoice = SimpleNamespace(
         id=uuid.uuid4(),
         vendor_name="Brand New Supplier",
         vendor_tax_id="99-9999999",
         vendor_address="123 Newco St",
         vendor_id=None,
+        entity_id=entity_id,
     )
     db = _mk_db(expects_tax_query=True)  # tax_id supplied → 3 queries
     org_id = uuid.uuid4()
@@ -272,6 +274,8 @@ async def test_no_match_creates_unverified_vendor_from_invoice():
     assert added.source == "ai_extracted"
     assert added.tax_id == "99-9999999"
     assert added.organization_id == org_id
+    # The auto-created vendor inherits the invoice's entity (multi-entity P2).
+    assert added.entity_id == entity_id
     # The link must have happened — invoice.vendor_id is assigned
     # from the new Vendor's .id (which the DB populates on flush;
     # against the mock here it stays whatever the model default is,

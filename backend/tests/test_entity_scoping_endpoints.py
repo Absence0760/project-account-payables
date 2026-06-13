@@ -91,3 +91,25 @@ async def test_invoice_list_malformed_entity_header_is_400(realdb):
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.get("/api/invoices", headers={"X-Entity-ID": "not-a-uuid"})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Vendors
+# ---------------------------------------------------------------------------
+
+
+async def test_vendor_list_scopes_by_entity(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        us = await _create_entity(c, name="US Inc", slug="us")
+
+        r_us = await c.post("/api/vendors", json={"name": "US Vendor"}, headers={"X-Entity-ID": us})
+        assert r_us.status_code == 201, r_us.text
+        r_def = await c.post("/api/vendors", json={"name": "Default Vendor"})
+        assert r_def.status_code == 201, r_def.text
+
+        scoped = await c.get("/api/vendors", headers={"X-Entity-ID": us})
+        names = {v["name"] for v in scoped.json()["items"]}
+        assert names == {"US Vendor"}
+
+        allv = await c.get("/api/vendors")
+        assert {v["name"] for v in allv.json()["items"]} == {"US Vendor", "Default Vendor"}
