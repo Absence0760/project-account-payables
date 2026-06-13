@@ -11,7 +11,9 @@ from app.models.invoice_embedding import InvoiceEmbedding
 from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
+from app.models.peppol_transmission import PeppolTransmission
 from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
+from app.models.quality_inspection import QualityInspection
 from app.models.signup import EmailVerification
 from app.models.tax_filing import Tax1099Filing
 from app.models.user import Role, User, UserRole
@@ -36,6 +38,7 @@ __all__ = [
     "POLineItem",
     "GoodsReceipt",
     "GRLineItem",
+    "QualityInspection",
     "WorkflowDefinition",
     "WorkflowInstance",
     "WorkflowStep",
@@ -43,6 +46,7 @@ __all__ = [
     "PaymentRun",
     "PaymentSchedule",
     "Payment",
+    "PeppolTransmission",
     "Vendor",
     "VendorChangeRequest",
     "VendorExtractionPrior",

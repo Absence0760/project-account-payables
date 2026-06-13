@@ -70,16 +70,22 @@ def _li(quantity=None, received=None):
     return SimpleNamespace(quantity=quantity, quantity_received=received)
 
 
-def _mk_db(*, po=None, gr=None):
-    """Two execute calls: PO lookup, then GR lookup (only if PO found)."""
+def _mk_db(*, po=None, gr=None, inspection=None):
+    """Three execute calls when a PO is found: PO lookup, GR lookup, then the
+    4-way quality-inspection lookup (added in the 4-way-matching slice). The
+    inspection result defaults to None so existing 2-way/3-way cases are
+    unaffected."""
     po_res = MagicMock()
     po_res.scalar_one_or_none = MagicMock(return_value=po)
 
     gr_res = MagicMock()
     gr_res.scalar_one_or_none = MagicMock(return_value=gr)
 
+    insp_res = MagicMock()
+    insp_res.scalar_one_or_none = MagicMock(return_value=inspection)
+
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[po_res, gr_res])
+    db.execute = AsyncMock(side_effect=[po_res, gr_res, insp_res])
     return db
 
 

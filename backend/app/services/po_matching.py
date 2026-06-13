@@ -1,6 +1,7 @@
 """PO matching service — match invoices against purchase orders and goods receipts.
 
-Supports 2-way (invoice vs PO) and 3-way (invoice vs PO vs GR) matching.
+Supports 2-way (invoice vs PO), 3-way (invoice vs PO vs GR), and 4-way
+(invoice vs PO vs GR vs Quality Inspection) matching.
 """
 
 from dataclasses import dataclass, field
@@ -11,13 +12,14 @@ from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice
 from app.models.procurement import GoodsReceipt, PurchaseOrder
+from app.models.quality_inspection import QualityInspection
 
 
 @dataclass
 class MatchResult:
     """Result of PO matching for an invoice."""
 
-    match_type: str = "none"  # "none", "2-way", "3-way"
+    match_type: str = "none"  # "none", "2-way", "3-way", "4-way"
     status: str = "no_po"  # "no_po", "matched", "mismatch", "partial"
 
     po_id: str | None = None
@@ -29,6 +31,12 @@ class MatchResult:
     amount_variance_pct: float = 0.0
     within_tolerance: bool = False
 
+    # 4-way: quality inspection leg
+    inspection_id: str | None = None
+    inspection_result: str | None = None  # 'pass' | 'fail' | 'partial' or None
+    inspection_accepted_quantity: float | None = None
+    inspection_required: bool = False
+
     issues: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
 
@@ -37,15 +45,20 @@ async def match_invoice_to_po(
     db: AsyncSession,
     invoice: Invoice,
     tolerance_pct: float = 5.0,
+    require_inspection: bool = False,
 ) -> MatchResult:
-    """Match an invoice against POs and goods receipts.
+    """Match an invoice against POs, goods receipts, and quality inspections.
 
     1. Find PO by po_number on the invoice
     2. Compare amounts (2-way match)
     3. If GR exists for the PO, verify quantities (3-way match)
+    4. If a quality inspection exists, fold its verdict in (4-way match)
 
     Args:
         tolerance_pct: Allowed variance percentage (default 5%)
+        require_inspection: When True, a PO match with no inspection record is
+            flagged (inspection_required) so the warnings layer can raise a
+            quality_hold.
 
     Returns:
         MatchResult with match status, variances, and issues
@@ -128,6 +141,46 @@ async def match_invoice_to_po(
                 if result.status == "matched":
                     result.status = "partial"
 
+    # 4-way match: check for a quality inspection. Prefer one tied to the
+    # goods receipt (the goods we actually received); fall back to one tied
+    # to the PO. Take the most recent.
+    inspection_query = select(QualityInspection)
+    if gr is not None:
+        inspection_query = inspection_query.where(QualityInspection.gr_id == gr.id)
+    else:
+        inspection_query = inspection_query.where(QualityInspection.po_id == po.id)
+    inspection_query = inspection_query.order_by(QualityInspection.created_at.desc()).limit(1)
+
+    inspection_result = await db.execute(inspection_query)
+    inspection = inspection_result.scalar_one_or_none()
+
+    if inspection is not None:
+        result.match_type = "4-way"
+        result.inspection_id = str(inspection.id)
+        result.inspection_result = inspection.result
+        if inspection.accepted_quantity is not None:
+            result.inspection_accepted_quantity = float(inspection.accepted_quantity)
+
+        if inspection.result == "fail":
+            result.status = "mismatch"
+            msg = "Failed quality inspection"
+            if inspection.deviation_notes:
+                msg = f"{msg}: {inspection.deviation_notes}"
+            result.issues.append(msg)
+        elif inspection.result == "partial":
+            if result.status == "matched":
+                result.status = "partial"
+            accepted = (
+                f"{result.inspection_accepted_quantity:g}"
+                if result.inspection_accepted_quantity is not None
+                else "part"
+            )
+            result.issues.append(f"Partial acceptance: {accepted} of ordered quantity accepted")
+        # result == "pass" -> no status change
+    elif require_inspection and po is not None:
+        result.inspection_required = True
+        result.issues.append("Quality inspection required but missing")
+
     result.details = {
         "match_type": result.match_type,
         "po_total": result.po_total,
@@ -137,6 +190,8 @@ async def match_invoice_to_po(
         "tolerance_pct": tolerance_pct,
         "within_tolerance": result.within_tolerance,
         "has_gr": gr is not None,
+        "has_inspection": inspection is not None,
+        "inspection_result": result.inspection_result,
     }
 
     return result

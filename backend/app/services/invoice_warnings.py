@@ -431,7 +431,10 @@ async def _refresh_po_match(
     Stores the structured result on `invoice.po_match` for UI rendering.
     Mutates `warnings` in place.
     """
-    match = await match_invoice_to_po(db, invoice)
+    require_inspection = bool(
+        (org_settings or {}).get("matching", {}).get("require_inspection", False)
+    )
+    match = await match_invoice_to_po(db, invoice, require_inspection=require_inspection)
     invoice.po_match = asdict(match)
 
     if match.status == "no_po":
@@ -469,6 +472,37 @@ async def _refresh_po_match(
         )
         warnings.append({"type": "po_mismatch", "severity": "info", "message": msg})
         await _ensure_exception(db, invoice, "po_mismatch", "info", msg, org_settings=org_settings)
+
+    # 4-way: quality-inspection outcomes route to a `quality_hold` exception.
+    # Independent of the po-status handling above — a quality failure can ride
+    # alongside an otherwise-matched amount. Maps verdict → severity:
+    #   fail               -> error   (block: goods were rejected)
+    #   required + missing -> warning (no inspection on record yet)
+    #   partial            -> info    (some quantity accepted)
+    if match.inspection_result == "fail":
+        msg = "Failed quality inspection for PO " + (match.po_number or invoice.po_number or "")
+        if match.issues:
+            # Surface the deviation detail the matcher already composed.
+            detail = next((i for i in match.issues if i.startswith("Failed quality")), None)
+            if detail:
+                msg = detail
+        warnings.append({"type": "quality_hold", "severity": "error", "message": msg})
+        await _ensure_exception(
+            db, invoice, "quality_hold", "error", msg, org_settings=org_settings
+        )
+    elif match.inspection_required and match.inspection_result is None:
+        msg = "Quality inspection required but missing for PO " + (
+            match.po_number or invoice.po_number or ""
+        )
+        warnings.append({"type": "quality_hold", "severity": "warning", "message": msg})
+        await _ensure_exception(
+            db, invoice, "quality_hold", "warning", msg, org_settings=org_settings
+        )
+    elif match.inspection_result == "partial":
+        detail = next((i for i in match.issues if i.startswith("Partial acceptance")), None)
+        msg = detail or "Partial quality acceptance on inspection"
+        warnings.append({"type": "quality_hold", "severity": "info", "message": msg})
+        await _ensure_exception(db, invoice, "quality_hold", "info", msg, org_settings=org_settings)
 
 
 async def _ensure_exception(
