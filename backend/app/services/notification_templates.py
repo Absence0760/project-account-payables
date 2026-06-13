@@ -9,6 +9,7 @@ emails and log-adjacent in-app rows.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from app.models.notification import (
@@ -68,3 +69,26 @@ def render(event_type: str, ctx: InvoiceContext) -> RenderedNotification:
 
     body_html = f"<p>{body}</p>"
     return RenderedNotification(title=title, body_text=body, body_html=body_html)
+
+
+def render_contract_renewal(
+    *,
+    contract_number: str,
+    vendor_name: str | None,
+    end_date: date,
+    days_until: int,
+) -> RenderedNotification:
+    """Render the contract-renewal-due notification (PII-free).
+
+    Built separately from `render` because it carries a contract context, not
+    an invoice one — the dispatcher passes the result through as a pre-rendered
+    notification.
+    """
+    vendor = f" with {vendor_name}" if vendor_name else ""
+    when = "today" if days_until <= 0 else f"in {days_until} day{'s' if days_until != 1 else ''}"
+    title = f"Contract {contract_number} expires {when}"
+    body = (
+        f"Contract {contract_number}{vendor} expires on {end_date.isoformat()} ({when}). "
+        "Review it for renewal."
+    )
+    return RenderedNotification(title=title, body_text=body, body_html=f"<p>{body}</p>")

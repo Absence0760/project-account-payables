@@ -545,6 +545,84 @@ async def test_create_po_from_contract(realdb):
         assert len(actions) >= 1
 
 
+async def test_renewal_alert_sweep(realdb):
+    from datetime import date, timedelta
+
+    from app.models.notification import Notification
+    from app.services.contract_renewal import notify_renewals_once
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    today = date.today()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # Within the 30-day notice window → should alert.
+        due_id = (
+            await _create_contract(c, vendor_id, end_date=(today + timedelta(days=10)).isoformat())
+        ).json()["id"]
+        await c.post(f"/api/contracts/{due_id}/activate")
+        # Far outside the window → should NOT alert.
+        far_id = (
+            await _create_contract(
+                c,
+                vendor_id,
+                contract_number="FAR-001",
+                end_date=(today + timedelta(days=900)).isoformat(),
+            )
+        ).json()["id"]
+        await c.post(f"/api/contracts/{far_id}/activate")
+
+    result = await notify_renewals_once(today=today)
+    assert result.alerts_sent >= 1
+
+    async with mk() as s:
+        due_notes = (
+            (
+                await s.execute(
+                    select(Notification).where(
+                        Notification.event_type == "contract_renewal_due",
+                        Notification.entity_id == uuid.UUID(due_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(due_notes) >= 1
+        assert due_notes[0].entity_type == "contract"
+
+        far_notes = (
+            await s.execute(
+                select(func.count())
+                .select_from(Notification)
+                .where(Notification.entity_id == uuid.UUID(far_id))
+            )
+        ).scalar()
+        assert far_notes == 0
+
+        due = (
+            await s.execute(select(Contract).where(Contract.id == uuid.UUID(due_id)))
+        ).scalar_one()
+        assert due.renewal_alert_sent_at is not None
+
+    # Idempotent: a second sweep sends no new alert for the already-alerted one.
+    before = len(due_notes)
+    await notify_renewals_once(today=today)
+    async with mk() as s:
+        after = (
+            await s.execute(
+                select(func.count())
+                .select_from(Notification)
+                .where(
+                    Notification.event_type == "contract_renewal_due",
+                    Notification.entity_id == uuid.UUID(due_id),
+                )
+            )
+        ).scalar()
+    assert after == before
+
+
 async def test_create_po_from_cancelled_contract_409(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id

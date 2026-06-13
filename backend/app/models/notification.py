@@ -23,12 +23,16 @@ EVENT_INVOICE_ASSIGNED = "invoice_assigned"
 EVENT_INVOICE_APPROVED = "invoice_approved"
 EVENT_INVOICE_REJECTED = "invoice_rejected"
 EVENT_INVOICE_PAID = "invoice_paid"
+# Contract lifecycle — emitted by services.contract_renewal's background sweep
+# when a contract nears its end_date. entity_type on the row is "contract".
+EVENT_CONTRACT_RENEWAL_DUE = "contract_renewal_due"
 
 NOTIFICATION_EVENT_TYPES = (
     EVENT_INVOICE_ASSIGNED,
     EVENT_INVOICE_APPROVED,
     EVENT_INVOICE_REJECTED,
     EVENT_INVOICE_PAID,
+    EVENT_CONTRACT_RENEWAL_DUE,
 )
 
 

@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     # by default in local dev (no clock to escalate against in a one-shot
     # demo); flip on in deployed envs.
     approval_escalation_enabled: bool = False
+
+    # Contract renewal-alert sweep. A long-lived loop that finds contracts
+    # nearing their end_date and notifies the owner + AP managers once
+    # (deduped via Contract.renewal_alert_sent_at). Disabled by default so
+    # local dev / tests don't run a background sweep; flip on in deployed
+    # envs. The per-contract `renewal_notice_days` overrides the default
+    # lead window below.
+    contract_renewal_enabled: bool = False
+    contract_renewal_interval_seconds: int = 3600
+    contract_renewal_default_notice_days: int = 30
     approval_escalation_interval_seconds: int = 600
     # Payment-status reconciler: backstop polling for processors whose
     # webhooks have gone missing. Disabled by default in local dev (the

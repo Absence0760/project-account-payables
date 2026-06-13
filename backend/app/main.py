@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
 
     from app.services.approval_escalation import run_escalation_loop
     from app.services.audit_log_shipper import run_shipper_loop
+    from app.services.contract_renewal import run_renewal_loop
     from app.services.extraction_reaper import run_reaper_loop
     from app.services.payment_reconciler import run_reconciler_loop
 
@@ -80,6 +81,7 @@ async def lifespan(app: FastAPI):
     shipper_task: asyncio.Task | None = None
     escalation_task: asyncio.Task | None = None
     reconciler_task: asyncio.Task | None = None
+    renewal_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -91,11 +93,15 @@ async def lifespan(app: FastAPI):
         escalation_task = asyncio.create_task(run_escalation_loop(), name="approval-escalation")
     if settings.payment_reconcile_enabled:
         reconciler_task = asyncio.create_task(run_reconciler_loop(), name="payment-reconciler")
+    # Contract renewal-alert sweep. Disabled by default; flip
+    # AP_CONTRACT_RENEWAL_ENABLED on in deployed envs.
+    if settings.contract_renewal_enabled:
+        renewal_task = asyncio.create_task(run_renewal_loop(), name="contract-renewal")
 
     try:
         yield
     finally:
-        for task in (reaper_task, shipper_task, escalation_task, reconciler_task):
+        for task in (reaper_task, shipper_task, escalation_task, reconciler_task, renewal_task):
             if task is not None:
                 task.cancel()
                 try:

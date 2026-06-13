@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.notification import NOTIFICATION_EVENT_TYPES, Notification
-from app.services.notification_templates import InvoiceContext, render
+from app.services.notification_templates import InvoiceContext, RenderedNotification, render
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +97,16 @@ async def notify_event(
     event_type: str,
     entity_id: uuid.UUID | None,
     recipient_user_ids: list[uuid.UUID],
-    invoice_ctx: InvoiceContext,
+    invoice_ctx: InvoiceContext | None = None,
+    rendered: RenderedNotification | None = None,
     actor_id: uuid.UUID | None = None,
     entity_type: str = "invoice",
 ) -> None:
     """Notify each recipient of `event_type`, gated by their preferences.
+
+    Pass either ``invoice_ctx`` (the dispatcher renders the invoice template)
+    or a pre-``rendered`` notification (for non-invoice events like contract
+    renewals, which carry a different context). Exactly one is required.
 
     Never raises — all failures are swallowed and logged (without PII) so the
     caller's transaction is unaffected. The in-app rows are *added* to `db`
@@ -115,11 +120,15 @@ async def notify_event(
         logger.warning("notify_event: unknown event_type=%s — skipping", event_type)
         return
 
-    try:
-        rendered = render(event_type, invoice_ctx)
-    except Exception:  # noqa: BLE001 — never let a template bug break a transition
-        logger.exception("notify_event: template render failed for event_type=%s", event_type)
-        return
+    if rendered is None:
+        if invoice_ctx is None:
+            logger.warning("notify_event: no invoice_ctx or rendered for %s — skipping", event_type)
+            return
+        try:
+            rendered = render(event_type, invoice_ctx)
+        except Exception:  # noqa: BLE001 — never let a template bug break a transition
+            logger.exception("notify_event: template render failed for event_type=%s", event_type)
+            return
 
     try:
         users_by_id = await _load_recipients(recipient_user_ids)
