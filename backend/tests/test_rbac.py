@@ -24,6 +24,7 @@ from app.api import (
     analytics,
     audit,
     auth,
+    auth_saml,
     auth_sso,
     cards,
     credit_memos,
@@ -68,6 +69,12 @@ NO_AUTH_REQUIRED = {
     ("GET", "/auth/sso/config"),
     ("GET", "/auth/sso/authorize"),
     ("POST", "/auth/sso/callback"),
+    # auth_saml.py — SAML SSO login flow (IdP-driven; no app session yet)
+    ("GET", "/auth/saml/config"),
+    ("GET", "/auth/saml/login"),
+    ("POST", "/auth/saml/acs"),
+    ("POST", "/auth/saml/exchange"),
+    ("GET", "/auth/saml/metadata"),
     # auth.py — pre-login + MFA challenge
     ("POST", "/auth/login"),
     ("POST", "/auth/mfa/challenge/email"),
@@ -107,6 +114,7 @@ ROUTERS = [
     analytics.router,
     audit.router,
     auth.router,
+    auth_saml.router,
     auth_sso.router,
     cards.router,
     credit_memos.router,

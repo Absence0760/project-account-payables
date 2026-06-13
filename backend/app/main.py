@@ -9,6 +9,7 @@ from app.api import (
     analytics,
     audit,
     auth,
+    auth_saml,
     auth_sso,
     cards,
     credit_memos,
@@ -190,6 +191,7 @@ app.include_router(organization.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(signup.router, prefix="/api")
 app.include_router(auth_sso.router, prefix="/api")
+app.include_router(auth_saml.router, prefix="/api")
 app.include_router(scim.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")

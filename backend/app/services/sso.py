@@ -296,6 +296,76 @@ async def consume_state(state: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# SAML RelayState + one-time token handoff
+# ---------------------------------------------------------------------------
+
+SAML_RELAYSTATE_PREFIX = "saml:relaystate:"
+SAML_HANDOFF_PREFIX = "saml:handoff:"
+
+
+async def store_saml_relay_state(state: str, tenant_slug: str, request_id: str) -> None:
+    """Bind a SAML RelayState to its tenant AND the AuthnRequest ID, atomically,
+    as a single single-use Redis record. The ACS recovers BOTH from the one
+    consume — so InResponseTo can be enforced against the exact request that was
+    issued, and the tenant is taken from server-minted state (never the IdP)."""
+    r = await get_redis()
+    payload = json.dumps({"tenant": tenant_slug, "request_id": request_id, "ts": time.time()})
+    await r.setex(f"{SAML_RELAYSTATE_PREFIX}{state}", settings.sso_state_ttl_seconds, payload)
+
+
+async def consume_saml_relay_state(state: str) -> dict[str, Any]:
+    """Look up + delete the RelayState binding (single-use). Raises if unknown
+    or expired. Returns {tenant, request_id}."""
+    r = await get_redis()
+    key = f"{SAML_RELAYSTATE_PREFIX}{state}"
+    raw = await r.get(key)
+    if not raw:
+        raise SSOValidationError("Login session expired or was tampered with. Please try again.")
+    await r.delete(key)
+    return json.loads(raw)
+
+
+async def create_saml_handoff(
+    access_token: str, must_change_password: bool, tenant_slug: str
+) -> str:
+    """Stash a freshly-minted JWT behind a one-time code so the ACS can
+    303-redirect WITHOUT putting the token in the URL. The SPA bridge POSTs the
+    code to /exchange and gets the token in the response body — mirroring the
+    OIDC POST-to-callback shape (token never transits a URL / Referer / history)."""
+    code = secrets.token_urlsafe(32)
+    r = await get_redis()
+    payload = json.dumps(
+        {
+            "access_token": access_token,
+            "must_change_password": must_change_password,
+            "tenant": tenant_slug,
+        }
+    )
+    await r.setex(f"{SAML_HANDOFF_PREFIX}{code}", settings.saml_handoff_ttl_seconds, payload)
+    return code
+
+
+async def consume_saml_handoff(code: str) -> dict[str, Any]:
+    """Look up + delete the handoff record (single-use). Raises if expired."""
+    r = await get_redis()
+    key = f"{SAML_HANDOFF_PREFIX}{code}"
+    raw = await r.get(key)
+    if not raw:
+        raise SSOValidationError("This login link has expired. Please sign in again.")
+    await r.delete(key)
+    return json.loads(raw)
+
+
+def saml_bridge_url(tenant_slug: str) -> str:
+    """Per-tenant SPA bridge route the ACS 303-redirects to after minting the
+    one-time handoff code. Lands on the tenant origin so the stored JWT works
+    without a cross-origin hop, exactly like the OIDC callback page."""
+    template = settings.tenant_url_template or "http://{slug}.localhost:7777"
+    base = template.replace("{slug}", tenant_slug).rstrip("/")
+    return f"{base}{settings.saml_acs_path}"
+
+
+# ---------------------------------------------------------------------------
 # Authorize URL + token exchange
 # ---------------------------------------------------------------------------
 
@@ -370,7 +440,7 @@ async def validate_id_token(
         # bare, and without catching them the handler would 500 and leak the
         # JWKS URL + contents in the traceback. All fail closed to the same
         # generic rejection.
-        logger.warning("ID token validation failed: %s", exc)
+        logger.warning("ID token validation failed: %s", exc.__class__.__name__)
         raise SSOValidationError("Identity provider token could not be verified.") from exc
 
     claims = token.claims
