@@ -1,5 +1,6 @@
 """Dashboard aggregation endpoints — rich KPIs for the main page."""
 
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -19,7 +20,7 @@ from app.services.currency_conversion import (
     resolve_reporting_currency,
     rollup_to_reporting_currency,
 )
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -54,12 +55,27 @@ async def get_dashboard(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     today = date.today()
 
+    # Every Invoice/Payment/Exception query below is entity-scoped via
+    # `_inv` / `_pay` / `_exc` helpers (None = consolidated). Metrics keyed by
+    # invoice id (processing time) inherit the scope from the invoice query they
+    # consume; WorkflowStep- and AuditLog-derived inputs have no entity column
+    # and stay org-wide until the workflow engine is entity-aware (Phase 3).
+    def _inv(q):
+        return apply_entity_scope(q, Invoice, entity_id)
+
+    def _pay(q):
+        return apply_entity_scope(q, Payment, entity_id)
+
+    def _exc(q):
+        return apply_entity_scope(q, APException, entity_id)
+
     # KPIs
     totals = await db.execute(
-        select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.amount), 0))
+        _inv(select(func.count(Invoice.id), func.coalesce(func.sum(Invoice.amount), 0)))
     )
     total_invoices, total_amount = totals.one()
 
@@ -72,11 +88,13 @@ async def get_dashboard(
     # `unconverted_count`). See backend/docs/multi-currency.md.
     reporting_currency = resolve_reporting_currency(org.settings)
     amount_rows = await db.execute(
-        select(
-            Invoice.amount,
-            Invoice.currency,
-            Invoice.reporting_amount,
-            Invoice.reporting_currency,
+        _inv(
+            select(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            )
         )
     )
     rollup = rollup_to_reporting_currency(
@@ -94,7 +112,7 @@ async def get_dashboard(
 
     # Pipeline (count per status)
     status_rows = await db.execute(
-        select(Invoice.status, func.count(Invoice.id)).group_by(Invoice.status)
+        _inv(select(Invoice.status, func.count(Invoice.id)).group_by(Invoice.status))
     )
     pipeline = {
         str(row[0].value if hasattr(row[0], "value") else row[0]): row[1]
@@ -103,11 +121,13 @@ async def get_dashboard(
 
     # Spend by vendor (top 10)
     vendor_spend_rows = await db.execute(
-        select(Invoice.vendor_name, func.sum(Invoice.amount).label("total"))
-        .where(Invoice.vendor_name.isnot(None), Invoice.vendor_name != "")
-        .group_by(Invoice.vendor_name)
-        .order_by(func.sum(Invoice.amount).desc())
-        .limit(10)
+        _inv(
+            select(Invoice.vendor_name, func.sum(Invoice.amount).label("total"))
+            .where(Invoice.vendor_name.isnot(None), Invoice.vendor_name != "")
+            .group_by(Invoice.vendor_name)
+            .order_by(func.sum(Invoice.amount).desc())
+            .limit(10)
+        )
     )
     vendor_spend = [{"vendor": row[0], "amount": float(row[1])} for row in vendor_spend_rows.all()]
 
@@ -115,8 +135,10 @@ async def get_dashboard(
     aging = {"current": 0.0, "days_30": 0.0, "days_60": 0.0, "days_90_plus": 0.0}
     open_statuses = ("new", "pending", "ready_for_review", "approved")
     aging_rows = await db.execute(
-        select(Invoice.due_date, Invoice.amount).where(
-            Invoice.status.in_(open_statuses), Invoice.due_date.isnot(None)
+        _inv(
+            select(Invoice.due_date, Invoice.amount).where(
+                Invoice.status.in_(open_statuses), Invoice.due_date.isnot(None)
+            )
         )
     )
     for row in aging_rows.all():
@@ -134,8 +156,10 @@ async def get_dashboard(
     # Monthly trend (last 6 months) — compute in Python to avoid GROUP BY issues
     six_months_ago = today - timedelta(days=180)
     trend_inv_rows = await db.execute(
-        select(Invoice.invoice_date, Invoice.amount).where(
-            Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None)
+        _inv(
+            select(Invoice.invoice_date, Invoice.amount).where(
+                Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None)
+            )
         )
     )
     trend_buckets: dict[str, dict] = {}
@@ -151,20 +175,22 @@ async def get_dashboard(
     week_ahead = today + timedelta(days=7)
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
     upcoming_rows = await db.execute(
-        select(
-            Invoice.id,
-            Invoice.invoice_number,
-            Invoice.vendor_name,
-            Invoice.amount,
-            Invoice.due_date,
+        _inv(
+            select(
+                Invoice.id,
+                Invoice.invoice_number,
+                Invoice.vendor_name,
+                Invoice.amount,
+                Invoice.due_date,
+            )
+            .where(
+                Invoice.due_date.isnot(None),
+                Invoice.due_date <= week_ahead,
+                Invoice.id.notin_(paid_ids),
+            )
+            .order_by(Invoice.due_date)
+            .limit(10)
         )
-        .where(
-            Invoice.due_date.isnot(None),
-            Invoice.due_date <= week_ahead,
-            Invoice.id.notin_(paid_ids),
-        )
-        .order_by(Invoice.due_date)
-        .limit(10)
     )
     upcoming = [
         {
@@ -189,13 +215,17 @@ async def get_dashboard(
 
     # Payment totals — separate queries to avoid complex CASE expressions
     paid_q = await db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed")
+        _pay(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed")
+        )
     )
     total_paid = float(paid_q.scalar() or 0)
 
     pending_q = await db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(
-            Payment.status.in_(["pending", "processing"])
+        _pay(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.status.in_(["pending", "processing"])
+            )
         )
     )
     total_pending = float(pending_q.scalar() or 0)
@@ -211,9 +241,11 @@ async def get_dashboard(
     # Stale approvals (waiting > 3 days)
     stale_date = today - timedelta(days=3)
     stale_q = await db.execute(
-        select(func.count()).where(
-            Invoice.status == "ready_for_review",
-            Invoice.created_at <= stale_date,
+        _inv(
+            select(func.count()).where(
+                Invoice.status == "ready_for_review",
+                Invoice.created_at <= stale_date,
+            )
         )
     )
     stale_approvals = stale_q.scalar() or 0
@@ -221,7 +253,7 @@ async def get_dashboard(
     # Open exceptions
     try:
         exc_q = await db.execute(
-            select(func.count()).where(APException.status.in_(["open", "escalated"]))
+            _exc(select(func.count()).where(APException.status.in_(["open", "escalated"])))
         )
         open_exceptions = exc_q.scalar() or 0
     except Exception:
@@ -252,7 +284,7 @@ async def get_dashboard(
             .group_by(Payment.invoice_id)
         )
         paid_at_by_invoice = {row[0]: row[1] for row in paid_rows.all() if row[1]}
-        inv_rows = await db.execute(select(Invoice.id, Invoice.created_at))
+        inv_rows = await db.execute(_inv(select(Invoice.id, Invoice.created_at)))
         for inv_id, created in inv_rows.all():
             invoice_legs.append(
                 SimpleNamespaceTimings(
@@ -311,23 +343,25 @@ async def get_dashboard(
 
     try:
         sched_rows = await db.execute(
-            select(
-                Invoice.amount,
-                PaymentSchedule.discount_percent,
-                PaymentSchedule.discount_date,
-                func.min(Payment.completed_at).label("paid_at"),
-            )
-            .join(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
-            .outerjoin(
-                Payment,
-                (Payment.invoice_id == Invoice.id) & (Payment.status == "completed"),
-            )
-            .where(PaymentSchedule.discount_percent.isnot(None))
-            .group_by(
-                Invoice.id,
-                Invoice.amount,
-                PaymentSchedule.discount_percent,
-                PaymentSchedule.discount_date,
+            _inv(
+                select(
+                    Invoice.amount,
+                    PaymentSchedule.discount_percent,
+                    PaymentSchedule.discount_date,
+                    func.min(Payment.completed_at).label("paid_at"),
+                )
+                .join(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+                .outerjoin(
+                    Payment,
+                    (Payment.invoice_id == Invoice.id) & (Payment.status == "completed"),
+                )
+                .where(PaymentSchedule.discount_percent.isnot(None))
+                .group_by(
+                    Invoice.id,
+                    Invoice.amount,
+                    PaymentSchedule.discount_percent,
+                    PaymentSchedule.discount_date,
+                )
             )
         )
         discount_input = []

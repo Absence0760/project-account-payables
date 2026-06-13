@@ -156,6 +156,34 @@ async def test_payment_list_and_summary_scope_by_entity(realdb):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+
+
+async def test_dashboard_scopes_by_entity(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        us = await _create_entity(c, name="US Inc", slug="us")
+
+        await c.post(
+            "/api/invoices",
+            json={"invoice_number": "D-US", "vendor": "Acme", "amount": "100.00"},
+            headers={"X-Entity-ID": us},
+        )
+        await c.post(
+            "/api/invoices",
+            json={"invoice_number": "D-DEF", "vendor": "Beta", "amount": "200.00"},
+        )
+
+        scoped = (await c.get("/api/dashboard", headers={"X-Entity-ID": us})).json()
+        assert scoped["total_invoices"] == 1
+        assert scoped["total_amount"] == 100.0
+
+        allv = (await c.get("/api/dashboard")).json()
+        assert allv["total_invoices"] == 2
+        assert allv["total_amount"] == 300.0
+
+
+# ---------------------------------------------------------------------------
 # Credit memos
 # ---------------------------------------------------------------------------
 
