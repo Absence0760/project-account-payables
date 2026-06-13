@@ -153,3 +153,135 @@ async def test_payment_list_and_summary_scope_by_entity(realdb):
         assert s_us.json()["payment_count"] == 1
         s_all = await c.get("/api/payments/summary")
         assert s_all.json()["payment_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Credit memos
+# ---------------------------------------------------------------------------
+
+
+async def test_credit_memo_list_scopes_by_entity(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        us = await _create_entity(c, name="US Inc", slug="us")
+
+        # Vendor per entity; each credit memo inherits its vendor's entity.
+        v_us = (
+            await c.post("/api/vendors", json={"name": "US V"}, headers={"X-Entity-ID": us})
+        ).json()
+        v_def = (await c.post("/api/vendors", json={"name": "Def V"})).json()
+        for vid, num in ((v_us["id"], "CM-US"), (v_def["id"], "CM-DEF")):
+            r = await c.post(
+                "/api/credit-memos",
+                json={"memo_number": num, "vendor_id": vid, "amount": "10.00"},
+            )
+            assert r.status_code == 201, r.text
+
+        scoped = await c.get("/api/credit-memos", headers={"X-Entity-ID": us})
+        assert {m["memo_number"] for m in scoped.json()["items"]} == {"CM-US"}
+        allv = await c.get("/api/credit-memos")
+        assert {m["memo_number"] for m in allv.json()["items"]} == {"CM-US", "CM-DEF"}
+
+
+# ---------------------------------------------------------------------------
+# GL accounts — shared chart (NULL = shared) ∪ entity's own
+# ---------------------------------------------------------------------------
+
+
+async def test_gl_account_shared_chart_scoping(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        us = await _create_entity(c, name="US Inc", slug="us")
+        default_id = await _default_entity_id(c)
+
+        # Shared account created in the consolidated view (no header) -> NULL.
+        r_shared = await c.post(
+            "/api/gl-accounts", json={"code": "1000", "name": "Cash", "account_type": "asset"}
+        )
+        assert r_shared.status_code == 201, r_shared.text
+        # Entity-specific account created under US.
+        r_us = await c.post(
+            "/api/gl-accounts",
+            json={"code": "6000", "name": "US Marketing", "account_type": "expense"},
+            headers={"X-Entity-ID": us},
+        )
+        assert r_us.status_code == 201, r_us.text
+
+        # Scoped to US -> shared (Cash) ∪ US's own (US Marketing).
+        us_codes = {
+            a["code"] for a in (await c.get("/api/gl-accounts", headers={"X-Entity-ID": us})).json()
+        }
+        assert us_codes == {"1000", "6000"}
+
+        # Scoped to the default entity -> shared only (US's account is hidden).
+        def_codes = {
+            a["code"]
+            for a in (await c.get("/api/gl-accounts", headers={"X-Entity-ID": default_id})).json()
+        }
+        assert def_codes == {"1000"}
+
+        # Consolidated -> everything.
+        all_codes = {a["code"] for a in (await c.get("/api/gl-accounts")).json()}
+        assert all_codes == {"1000", "6000"}
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+async def test_exception_list_and_summary_scope_by_entity(realdb):
+    import uuid
+
+    from app.models.exception import Exception as APException
+
+    async with realdb.client(key="a", role="admin") as c:
+        us = await _create_entity(c, name="US Inc", slug="us")
+        default_id = await _default_entity_id(c)
+
+        # An invoice per entity to hang exceptions off (FK requires an invoice).
+        inv_us = (
+            await c.post(
+                "/api/invoices",
+                json={"invoice_number": "E-US", "vendor": "X", "amount": "1.00"},
+                headers={"X-Entity-ID": us},
+            )
+        ).json()
+        inv_def = (
+            await c.post(
+                "/api/invoices",
+                json={"invoice_number": "E-DEF", "vendor": "Y", "amount": "1.00"},
+            )
+        ).json()
+
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        s.add(
+            APException(
+                invoice_id=uuid.UUID(inv_us["id"]),
+                exception_type="missing_data",
+                status="open",
+                organization_id=org_id,
+                entity_id=uuid.UUID(us),
+            )
+        )
+        s.add(
+            APException(
+                invoice_id=uuid.UUID(inv_def["id"]),
+                exception_type="missing_data",
+                status="open",
+                organization_id=org_id,
+                entity_id=uuid.UUID(default_id),
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        scoped = await c.get("/api/exceptions", headers={"X-Entity-ID": us})
+        assert scoped.json()["total"] == 1
+        allv = await c.get("/api/exceptions")
+        assert allv.json()["total"] == 2
+
+        sum_us = await c.get("/api/exceptions/summary", headers={"X-Entity-ID": us})
+        assert sum_us.json()["open"] == 1
+        sum_all = await c.get("/api/exceptions/summary")
+        assert sum_all.json()["open"] == 2

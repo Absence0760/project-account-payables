@@ -17,7 +17,7 @@ from app.models.gl_account import GLAccount
 from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.gl_account import GLAccountCreate
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/gl-accounts", tags=["gl-accounts"])
 
@@ -29,8 +29,11 @@ async def list_gl_accounts(
     active_only: bool = True,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(GLAccount)
+    # A scoped chart is the shared accounts (NULL entity_id) ∪ the entity's own
+    # (include_shared=True); the consolidated view (None) returns everything.
+    query = apply_entity_scope(select(GLAccount), GLAccount, entity_id, include_shared=True)
     if active_only:
         query = query.where(GLAccount.is_active)
     if search:
@@ -63,13 +66,20 @@ async def create_gl_account(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
+    # Unlike other tables, a NULL entity_id is meaningful for GL: it makes the
+    # account SHARED across every entity. So we deliberately use get_entity_id
+    # (not get_write_entity_id) — creating an account while an entity is
+    # selected makes it entity-specific; creating it in the consolidated view
+    # leaves it shared (NULL). See docs/multi-entity.md § Chart of accounts.
     account = GLAccount(
         code=body.code,
         name=body.name,
         account_type=body.account_type,
         parent_code=body.parent_code,
         organization_id=org_id,
+        entity_id=entity_id,
     )
     db.add(account)
     await db.flush()
@@ -86,8 +96,13 @@ async def sync_gl_accounts_from_erp(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Pull chart of accounts from the connected ERP via its adapter."""
+    """Pull chart of accounts from the connected ERP via its adapter.
+
+    New accounts land shared (NULL entity_id) in the consolidated view, or
+    entity-specific when an entity is selected — same rule as manual create.
+    """
     erp_config = (org.settings or {}).get("erp")
     if not erp_config:
         raise HTTPException(status_code=400, detail="No ERP configured")
@@ -144,6 +159,7 @@ async def sync_gl_accounts_from_erp(
                     account_type=acct.account_type,
                     parent_code=acct.parent_code,
                     organization_id=org_id,
+                    entity_id=entity_id,
                     erp_account_id=acct.erp_account_id or acct.code,
                 )
             )

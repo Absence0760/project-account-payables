@@ -31,7 +31,7 @@ from app.schemas.virtual_card import (
     RebateListResponse,
     RebateResponse,
 )
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/cards", tags=["cards"])
 
@@ -119,8 +119,13 @@ async def list_cards(
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(VirtualCard, Invoice).outerjoin(Invoice, VirtualCard.invoice_id == Invoice.id)
+    query = apply_entity_scope(
+        select(VirtualCard, Invoice).outerjoin(Invoice, VirtualCard.invoice_id == Invoice.id),
+        VirtualCard,
+        entity_id,
+    )
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
         query = query.where(VirtualCard.status.in_(statuses))
@@ -147,21 +152,31 @@ async def list_cards(
 async def card_dashboard(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     now = datetime.now(UTC)
 
-    # Active cards
-    active_q = select(func.count(), func.coalesce(func.sum(VirtualCard.amount_limit), 0)).where(
-        VirtualCard.status.in_(["created", "sent", "active"])
+    # Active cards (scoped to the entity; rebates below are control-plane and
+    # stay org-wide, like the payments summary).
+    active_q = apply_entity_scope(
+        select(func.count(), func.coalesce(func.sum(VirtualCard.amount_limit), 0)).where(
+            VirtualCard.status.in_(["created", "sent", "active"])
+        ),
+        VirtualCard,
+        entity_id,
     )
     active_result = await db.execute(active_q)
     active_count, active_value = active_result.one()
 
     # Spend this month
-    spend_q = select(func.coalesce(func.sum(VirtualCard.amount_charged), 0)).where(
-        VirtualCard.status.in_(["charged", "completed"]),
-        extract("month", VirtualCard.charged_at) == now.month,
-        extract("year", VirtualCard.charged_at) == now.year,
+    spend_q = apply_entity_scope(
+        select(func.coalesce(func.sum(VirtualCard.amount_charged), 0)).where(
+            VirtualCard.status.in_(["charged", "completed"]),
+            extract("month", VirtualCard.charged_at) == now.month,
+            extract("year", VirtualCard.charged_at) == now.year,
+        ),
+        VirtualCard,
+        entity_id,
     )
     spend_result = await db.execute(spend_q)
     spend_this_month = spend_result.scalar() or 0
@@ -257,6 +272,7 @@ async def generate_cards(
             status="created",
             expires_at=datetime.now(UTC) + timedelta(days=expiry_days),
             organization_id=org_id,
+            entity_id=inv.entity_id,  # card follows the invoice it pays (P2)
         )
         db.add(card)
         cards.append(card)

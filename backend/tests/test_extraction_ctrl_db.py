@@ -35,6 +35,7 @@ def _make_invoice(*, status_value="pending"):
         id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),  # multi-entity P2: exception inherits invoice entity
         file_key="invoices/test.pdf",
         status=status,
         amount=None,

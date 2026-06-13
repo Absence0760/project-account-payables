@@ -11,7 +11,7 @@ from app.api.deps import get_current_user
 from app.api.pagination import PaginationParams, paginated, pagination_params
 from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.user import User
-from app.tenant import get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/goods-receipts", tags=["goods-receipts"])
 
@@ -31,8 +31,9 @@ async def list_goods_receipts(
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = select(GoodsReceipt)
+    base = apply_entity_scope(select(GoodsReceipt), GoodsReceipt, entity_id)
     if po_id:
         base = base.where(GoodsReceipt.po_id == uuid.UUID(po_id))
     if status_filter:

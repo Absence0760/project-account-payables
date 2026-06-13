@@ -24,6 +24,7 @@ def _invoice():
     return SimpleNamespace(
         id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),  # multi-entity P2: exception inherits invoice entity
         vendor_id=None,
     )
 

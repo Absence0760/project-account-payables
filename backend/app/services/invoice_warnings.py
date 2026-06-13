@@ -525,6 +525,7 @@ async def _ensure_exception(
             description=description,
             status="open",
             organization_id=invoice.organization_id,
+            entity_id=invoice.entity_id,  # exception follows its invoice (P2)
             assigned_to_user_id=assigned_to_user_id,
             due_at=due_at,
         )

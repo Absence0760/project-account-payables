@@ -26,7 +26,7 @@ from app.schemas.credit_memo import (
     CreditMemoListResponse,
     CreditMemoResponse,
 )
-from app.tenant import get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/credit-memos", tags=["credit-memos"])
 
@@ -61,21 +61,24 @@ async def list_credit_memos(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
     status_filter: str | None = Query(None, alias="status"),
     pagination: PaginationParams = Depends(pagination_params),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = select(CreditMemo)
+    base = apply_entity_scope(select(CreditMemo), CreditMemo, entity_id)
     if status_filter:
         base = base.where(CreditMemo.status == status_filter)
 
     total_q = await db.execute(select(func.count()).select_from(base.subquery()))
     total = int(total_q.scalar() or 0)
 
-    paged = (
+    paged = apply_entity_scope(
         select(CreditMemo, Vendor.name, Invoice.invoice_number)
         .outerjoin(Vendor, CreditMemo.vendor_id == Vendor.id)
         .outerjoin(Invoice, CreditMemo.invoice_id == Invoice.id)
         .order_by(CreditMemo.created_at.desc())
         .offset(pagination.offset)
-        .limit(pagination.limit)
+        .limit(pagination.limit),
+        CreditMemo,
+        entity_id,
     )
     if status_filter:
         paged = paged.where(CreditMemo.status == status_filter)
@@ -124,6 +127,8 @@ async def create_credit_memo(
         applied_at=datetime.now(UTC) if invoice_uuid else None,
         applied_by=user.full_name if invoice_uuid else None,
         organization_id=org_id,
+        # Credit memo follows the vendor it credits (multi-entity Phase 2).
+        entity_id=vendor.entity_id,
     )
     db.add(memo)
     await db.commit()

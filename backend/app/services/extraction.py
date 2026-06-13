@@ -307,6 +307,7 @@ async def run_extraction(
                     description=duplicate_warning["message"],
                     status="open",
                     organization_id=invoice_org_id,
+                    entity_id=invoice.entity_id,  # exception follows its invoice (P2)
                 )
             )
             print(f"[extraction] Duplicate detection: {len(duplicate_matches)} near-match(es)")
@@ -455,6 +456,7 @@ async def run_extraction(
                 description=f"Extraction failed: {str(exc)[:500]}",
                 status="open",
                 organization_id=invoice_org_id,
+                entity_id=invoice.entity_id,  # exception follows its invoice (P2)
             )
         )
 

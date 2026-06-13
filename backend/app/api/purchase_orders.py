@@ -21,7 +21,13 @@ from app.models.organization import Organization
 from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.user import User
 from app.models.vendor import Vendor
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant,
+    get_tenant_db,
+    get_write_entity_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +52,9 @@ async def list_purchase_orders(
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = select(PurchaseOrder)
+    base = apply_entity_scope(select(PurchaseOrder), PurchaseOrder, entity_id)
     if search:
         pattern = f"%{search}%"
         base = base.where(PurchaseOrder.po_number.ilike(pattern))
@@ -148,6 +155,7 @@ async def sync_pos_from_erp(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     """Pull purchase orders from the connected ERP via its adapter."""
     erp_config = (org.settings or {}).get("erp")
@@ -197,6 +205,7 @@ async def sync_pos_from_erp(
             total=erp_po.total,
             status=erp_po.status,
             organization_id=org_id,
+            entity_id=entity_id,
         )
         db.add(po)
         await db.flush()

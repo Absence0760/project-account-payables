@@ -14,7 +14,7 @@ from app.database import get_control_db
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice
 from app.models.user import User
-from app.tenant import get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/exceptions", tags=["exceptions"])
 
@@ -73,8 +73,13 @@ async def list_exceptions(
     pagination: PaginationParams = Depends(pagination_params),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(APException, Invoice).outerjoin(Invoice, APException.invoice_id == Invoice.id)
+    query = apply_entity_scope(
+        select(APException, Invoice).outerjoin(Invoice, APException.invoice_id == Invoice.id),
+        APException,
+        entity_id,
+    )
 
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
@@ -107,19 +112,28 @@ async def list_exceptions(
 async def exception_summary(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Counts by status and type for the exception queue."""
+    """Counts by status and type for the exception queue. Scoped to the entity."""
     # By status
     status_rows = await db.execute(
-        select(APException.status, func.count(APException.id)).group_by(APException.status)
+        apply_entity_scope(
+            select(APException.status, func.count(APException.id)).group_by(APException.status),
+            APException,
+            entity_id,
+        )
     )
     by_status = {row[0]: row[1] for row in status_rows.all()}
 
     # By type (open only)
     type_rows = await db.execute(
-        select(APException.exception_type, func.count(APException.id))
-        .where(APException.status == "open")
-        .group_by(APException.exception_type)
+        apply_entity_scope(
+            select(APException.exception_type, func.count(APException.id))
+            .where(APException.status == "open")
+            .group_by(APException.exception_type),
+            APException,
+            entity_id,
+        )
     )
     by_type = {row[0]: row[1] for row in type_rows.all()}
 

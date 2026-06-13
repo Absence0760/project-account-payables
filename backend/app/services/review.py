@@ -224,6 +224,7 @@ async def reject_invoice(
             description=reason,
             status="open",
             organization_id=invoice.organization_id,
+            entity_id=invoice.entity_id,  # exception follows its invoice (P2)
         )
     )
 
