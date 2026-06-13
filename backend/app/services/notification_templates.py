@@ -13,6 +13,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.notification import (
+    EVENT_CHAT_MESSAGE,
     EVENT_INVOICE_APPROVED,
     EVENT_INVOICE_ASSIGNED,
     EVENT_INVOICE_PAID,
@@ -29,6 +30,9 @@ class InvoiceContext:
     amount: Decimal | None = None
     currency: str = "USD"
     reason: str | None = None  # e.g. rejection reason — free text, no PII expected
+    # Short, PII-free chat snippet (e.g. an author label like "from supplier").
+    # NEVER the raw message body — see EVENT_CHAT_MESSAGE render branch.
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,13 @@ def render(event_type: str, ctx: InvoiceContext) -> RenderedNotification:
     elif event_type == EVENT_INVOICE_PAID:
         title = f"{ref} was paid"
         body = f"{ref}{money} has been marked paid."
+    elif event_type == EVENT_CHAT_MESSAGE:
+        # NEVER put the raw message body into title/body. ctx.note may carry at
+        # most a short author label (e.g. "from supplier") — no message text.
+        title = f"New message on {ref}"
+        body = f"A new message was posted on {ref}."
+        if ctx.note:
+            body += f" ({ctx.note})"
     else:
         raise ValueError(f"No notification template for event type '{event_type}'")
 

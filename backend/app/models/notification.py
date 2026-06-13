@@ -26,6 +26,10 @@ EVENT_INVOICE_PAID = "invoice_paid"
 # Contract lifecycle — emitted by services.contract_renewal's background sweep
 # when a contract nears its end_date. entity_type on the row is "contract".
 EVENT_CONTRACT_RENEWAL_DUE = "contract_renewal_due"
+# A new message was posted on a per-invoice supplier chat thread. Fans out to
+# AP managers (supplier replies) or the mentioned users (AP posts). entity_type
+# on the row is "invoice". See services.supplier_chat + docs/supplier-chat.md.
+EVENT_CHAT_MESSAGE = "chat_message"
 
 NOTIFICATION_EVENT_TYPES = (
     EVENT_INVOICE_ASSIGNED,
@@ -33,6 +37,7 @@ NOTIFICATION_EVENT_TYPES = (
     EVENT_INVOICE_REJECTED,
     EVENT_INVOICE_PAID,
     EVENT_CONTRACT_RENEWAL_DUE,
+    EVENT_CHAT_MESSAGE,
 )
 
 

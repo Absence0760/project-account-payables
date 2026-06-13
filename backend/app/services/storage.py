@@ -133,6 +133,46 @@ async def upload_contract_file(
     return file_key, file_url
 
 
+async def upload_chat_file(
+    org_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    message_id: uuid.UUID,
+    file: UploadFile,
+) -> tuple[str, str, str, int]:
+    """Upload a supplier-chat attachment to S3.
+
+    Returns ``(file_key, filename, content_type, size)``. The key is
+    ``<org_id>/chat/<invoice_id>/<message_id>/<safe-filename>`` — the leading
+    ``org_id`` segment is the cross-tenant download gate (the chat file
+    endpoints refuse keys whose first segment isn't the caller's org),
+    mirroring the invoice / contract file paths. The ``file_url`` is built by
+    the caller (it differs between the AP and portal surfaces).
+    """
+    content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError(f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB")
+
+    content_type = file.content_type or "application/octet-stream"
+    if content_type not in ALLOWED_CONTENT_TYPES:
+        raise ValueError(
+            f"File type '{content_type}' not allowed. Accepted: PDF, PNG, JPEG, TIFF, XML"
+        )
+
+    safe_name = _safe_filename(file.filename)
+    file_key = f"{org_id}/chat/{invoice_id}/{message_id}/{safe_name}"
+
+    client = _get_client()
+    _ensure_bucket(client)
+    client.put_object(
+        Bucket=settings.s3_bucket,
+        Key=file_key,
+        Body=content,
+        ContentType=content_type,
+    )
+    return file_key, safe_name, content_type, len(content)
+
+
 def get_file(file_key: str) -> tuple[bytes, str]:
     """Download a file from S3 and return (content, content_type)."""
     client = _get_client()
