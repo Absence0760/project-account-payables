@@ -278,3 +278,50 @@ class AuditSummaryResponse(BaseModel):
     confidence_context: str | None = None
     generated_at: str | None = None
     stale: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Supplier chat (AP side) — datetimes serialized as ISO 8601 strings, matching
+# the rest of invoice.py. See backend/docs/supplier-chat.md.
+# ---------------------------------------------------------------------------
+
+
+class ChatMessageCreate(BaseModel):
+    body: str = Field(..., min_length=1, max_length=10_000)
+    mention_user_ids: list[str] = []  # control-plane users.id strings
+    template_key: str | None = None  # one of the CHAT_TEMPLATES keys
+
+
+class ChatAttachmentOut(BaseModel):
+    file_url: str
+    filename: str
+    content_type: str
+    size: int
+
+
+class ChatMessageResponse(BaseModel):
+    id: str
+    thread_id: str
+    author_role: str  # "ap_team" | "supplier" | "system"
+    author_user_id: str | None
+    author_name: str | None
+    body: str
+    mention_user_ids: list[str] = []  # maps from model `mentions`
+    template_key: str | None = None
+    attachments: list[ChatAttachmentOut] = []
+    created_at: str  # ISO 8601
+
+
+class ChatThreadResponse(BaseModel):
+    id: str | None  # None when not yet lazy-created
+    invoice_id: str
+    status: str  # "open" | "resolved"
+    resolved_at: str | None = None  # ISO 8601 or None
+    resolved_by: str | None = None
+    messages: list[ChatMessageResponse] = []
+
+
+class ChatTemplate(BaseModel):
+    key: str  # "missing_po" | "amount_mismatch" | "payment_status"
+    label: str
+    body: str

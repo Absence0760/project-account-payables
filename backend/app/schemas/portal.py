@@ -183,3 +183,36 @@ class PortalChangeRequestResponse(BaseModel):
     change_type: str
     status: str
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Supplier chat (portal side) — datetimes are raw `datetime`, matching the rest
+# of portal.py. AP author ids are masked (never exposed to the supplier).
+# See backend/docs/supplier-chat.md.
+# ---------------------------------------------------------------------------
+
+
+class PortalChatMessageCreate(BaseModel):
+    body: str = Field(..., min_length=1, max_length=10_000)
+
+
+class PortalChatAttachmentOut(BaseModel):
+    file_url: str
+    filename: str
+    content_type: str
+    size: int
+
+
+class PortalChatMessageResponse(BaseModel):
+    id: str
+    author_role: str  # "ap_team" | "supplier" | "system"
+    author_name: str | None  # NO author_user_id exposed to supplier
+    body: str
+    attachments: list[PortalChatAttachmentOut] = []
+    created_at: datetime
+
+
+class PortalChatThreadResponse(BaseModel):
+    invoice_id: str
+    status: str  # "open" | "resolved"
+    messages: list[PortalChatMessageResponse] = []

@@ -4,10 +4,10 @@ import csv
 import io
 import uuid
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete
@@ -32,7 +32,9 @@ from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice import InvoiceStatus as DBInvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentSchedule
+from app.models.supplier_chat import ChatAuthorRole, ChatThreadStatus, SupplierChatMessage
 from app.models.user import User
+from app.models.vendor import Vendor
 from app.models.workflow import WorkflowInstance, WorkflowStep
 from app.schemas.invoice import (
     AuditSummaryResponse,
@@ -42,6 +44,11 @@ from app.schemas.invoice import (
     BulkRecodeGLRequest,
     BulkStatusRequest,
     BulkStatusResponse,
+    ChatAttachmentOut,
+    ChatMessageCreate,
+    ChatMessageResponse,
+    ChatTemplate,
+    ChatThreadResponse,
     InvoiceCountsResponse,
     InvoiceCreate,
     InvoiceListResponse,
@@ -54,6 +61,17 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
+from app.services.storage import get_file, upload_chat_file
+from app.services.supplier_chat import (
+    CHAT_TEMPLATES,
+    chat_enabled,
+    get_or_create_thread,
+    get_thread,
+    is_valid_template_key,
+    list_messages,
+    notify_ap_mentions,
+    notify_supplier_of_ap_message,
+)
 from app.services.workflow_engine import create_workflow_instance, transition_invoice
 from app.tenant import (
     apply_entity_scope,
@@ -781,6 +799,310 @@ async def unlink_contract(
         await refresh_warnings(db, invoice, org_settings=org.settings)
     await db.flush()
     return InvoiceResponse.from_db(invoice)
+
+
+# ---------------------------------------------------------------------------
+# Supplier chat (AP side). Service logic lives in services/supplier_chat.py;
+# these handlers own the HTTP shape + RBAC. Datetimes serialize as ISO strings
+# (invoice.py convention). See backend/docs/supplier-chat.md.
+# ---------------------------------------------------------------------------
+
+
+def _chat_message_to_response(msg: SupplierChatMessage) -> ChatMessageResponse:
+    return ChatMessageResponse(
+        id=str(msg.id),
+        thread_id=str(msg.thread_id),
+        author_role=str(msg.author_role),
+        author_user_id=str(msg.author_user_id) if msg.author_user_id else None,
+        author_name=msg.author_name,
+        body=msg.body,
+        mention_user_ids=[str(m) for m in (msg.mentions or [])],
+        template_key=msg.template_key,
+        attachments=[ChatAttachmentOut(**a) for a in (msg.attachments or [])],
+        created_at=msg.created_at.isoformat() if msg.created_at else "",
+    )
+
+
+async def _chat_thread_response(db: AsyncSession, invoice: Invoice) -> ChatThreadResponse:
+    thread = await get_thread(db, invoice.id)
+    if thread is None:
+        return ChatThreadResponse(
+            id=None,
+            invoice_id=str(invoice.id),
+            status=ChatThreadStatus.open.value,
+            messages=[],
+        )
+    messages = await list_messages(db, thread.id)
+    return ChatThreadResponse(
+        id=str(thread.id),
+        invoice_id=str(invoice.id),
+        status=str(thread.status),
+        resolved_at=thread.resolved_at.isoformat() if thread.resolved_at else None,
+        resolved_by=str(thread.resolved_by) if thread.resolved_by else None,
+        messages=[_chat_message_to_response(m) for m in messages],
+    )
+
+
+async def _load_invoice_or_404(db: AsyncSession, invoice_id: uuid.UUID) -> Invoice:
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    ).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return invoice
+
+
+@router.get("/chat/templates", response_model=list[ChatTemplate])
+async def get_chat_templates(
+    user: User = Depends(get_current_user),
+):
+    """Static, in-code canned templates (the source of truth)."""
+    return [ChatTemplate(**t) for t in CHAT_TEMPLATES]
+
+
+@router.get("/chat/file/{file_key:path}")
+async def get_chat_file(
+    file_key: str,
+    user: User = Depends(get_current_user),
+):
+    """Proxy a stored chat attachment from S3.
+
+    Keys are stamped ``<org_id>/chat/<invoice_id>/<message_id>/<filename>``. The
+    caller must belong to the org in the first segment — same 404 for wrong-org
+    and missing-file so the response can't enumerate prefixes.
+    """
+    prefix = file_key.split("/", 1)[0]
+    if prefix != str(user.organization_id):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        content, content_type = get_file(file_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(content=content, media_type=content_type)
+
+
+@router.get("/{invoice_id}/chat", response_model=ChatThreadResponse)
+async def get_invoice_chat(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(get_current_user),
+):
+    invoice = await _load_invoice_or_404(db, invoice_id)
+    # Feature off → empty thread (never lazy-create on a read either way).
+    if not chat_enabled(org):
+        return ChatThreadResponse(
+            id=None,
+            invoice_id=str(invoice.id),
+            status=ChatThreadStatus.open.value,
+            messages=[],
+        )
+    return await _chat_thread_response(db, invoice)
+
+
+async def _post_ap_chat_message(
+    db: AsyncSession,
+    org: Organization,
+    user: User,
+    invoice: Invoice,
+    *,
+    body: str,
+    mention_user_ids: list[str],
+    template_key: str | None,
+    attachments: list[dict] | None,
+) -> ChatMessageResponse:
+    """Shared core for the JSON and multipart AP message POSTs."""
+    if not is_valid_template_key(template_key):
+        raise HTTPException(status_code=400, detail="Unknown template_key")
+
+    parsed_mentions: list[uuid.UUID] = []
+    for raw in mention_user_ids:
+        try:
+            parsed_mentions.append(uuid.UUID(raw))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid mention_user_ids")
+
+    thread = await get_or_create_thread(db, invoice)
+    msg = SupplierChatMessage(
+        thread_id=thread.id,
+        author_role=ChatAuthorRole.ap_team,
+        author_user_id=user.id,
+        author_name=user.full_name,
+        body=body,
+        mentions=[str(m) for m in parsed_mentions] or None,
+        attachments=attachments or None,
+        template_key=template_key,
+    )
+    db.add(msg)
+    await db.flush()
+
+    # Audit (PII-free: ids/roles/booleans only — no body/email/filename).
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        actor_id=user.id,
+        action="chat_message_posted",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={
+            "thread_id": str(thread.id),
+            "message_id": str(msg.id),
+            "author_role": str(msg.author_role),
+            "has_attachment": bool(msg.attachments),
+            "template_key": msg.template_key,
+        },
+    )
+
+    # In-app notifications to mentioned teammates (gated by notifications_enabled
+    # inside notify_event); adds rows onto this same tenant txn → call before commit.
+    await notify_ap_mentions(
+        db,
+        invoice=invoice,
+        mention_user_ids=parsed_mentions,
+        actor_id=user.id,
+    )
+
+    # Direct supplier email (best-effort, PII-free, gated internally).
+    vendor = None
+    if invoice.vendor_id:
+        vendor = (
+            await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
+        ).scalar_one_or_none()
+    await notify_supplier_of_ap_message(db, org=org, invoice=invoice, vendor=vendor)
+
+    await db.commit()
+    await db.refresh(msg)
+    return _chat_message_to_response(msg)
+
+
+@router.post(
+    "/{invoice_id}/chat",
+    response_model=ChatMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_invoice_chat(
+    invoice_id: uuid.UUID,
+    payload: ChatMessageCreate,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(get_current_user),
+):
+    if not chat_enabled(org):
+        raise HTTPException(status_code=403, detail="Supplier chat is disabled")
+    invoice = await _load_invoice_or_404(db, invoice_id)
+    return await _post_ap_chat_message(
+        db,
+        org,
+        user,
+        invoice,
+        body=payload.body,
+        mention_user_ids=payload.mention_user_ids,
+        template_key=payload.template_key,
+        attachments=None,
+    )
+
+
+@router.post(
+    "/{invoice_id}/chat/attachments",
+    response_model=ChatMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_invoice_chat_attachment(
+    invoice_id: uuid.UUID,
+    file: UploadFile = File(...),
+    body: str = Form(default=""),
+    mention_user_ids: list[str] = Form(default=[]),
+    template_key: str | None = Form(default=None),
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(get_current_user),
+):
+    if not chat_enabled(org):
+        raise HTTPException(status_code=403, detail="Supplier chat is disabled")
+    invoice = await _load_invoice_or_404(db, invoice_id)
+
+    message_id = uuid.uuid4()
+    try:
+        file_key, filename, content_type, size = await upload_chat_file(
+            org.id, invoice.id, message_id, file
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    attachment = {
+        "file_key": file_key,
+        "file_url": f"/api/invoices/{invoice.id}/chat/file/{file_key}",
+        "filename": filename,
+        "content_type": content_type,
+        "size": size,
+    }
+    return await _post_ap_chat_message(
+        db,
+        org,
+        user,
+        invoice,
+        body=body or filename,
+        mention_user_ids=mention_user_ids,
+        template_key=template_key,
+        attachments=[attachment],
+    )
+
+
+@router.post("/{invoice_id}/chat/resolve", response_model=ChatThreadResponse)
+async def resolve_invoice_chat(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    invoice = await _load_invoice_or_404(db, invoice_id)
+    thread = await get_thread(db, invoice.id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="No chat thread found")
+    thread.status = ChatThreadStatus.resolved
+    thread.resolved_at = datetime.now(UTC)
+    thread.resolved_by = user.id
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        actor_id=user.id,
+        action="chat_thread_resolved",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={"thread_id": str(thread.id)},
+    )
+    await db.commit()
+    return await _chat_thread_response(db, invoice)
+
+
+@router.post("/{invoice_id}/chat/reopen", response_model=ChatThreadResponse)
+async def reopen_invoice_chat(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    invoice = await _load_invoice_or_404(db, invoice_id)
+    thread = await get_thread(db, invoice.id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="No chat thread found")
+    thread.status = ChatThreadStatus.open
+    thread.resolved_at = None
+    thread.resolved_by = None
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        actor_id=user.id,
+        action="chat_thread_reopened",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={"thread_id": str(thread.id)},
+    )
+    await db.commit()
+    return await _chat_thread_response(db, invoice)
 
 
 @router.delete("/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
