@@ -170,7 +170,13 @@ Pure mapper from an ORM `Invoice` (+ its `InvoiceLineItem` rows + our identity)
 into the normalized model. The **seller** is the vendor (`vendor_name` /
 `vendor_tax_id` / `vendor_address` split on newline into address lines); the
 **buyer** (AccountingCustomerParty = us) is filled from `BuyerIdentity` — a
-dataclass that lives in `mapper.py`, *not* on the model. Totals map as:
+dataclass that lives in `mapper.py`, *not* on the model. The seller's
+`country_code` is **derived from the VAT-id prefix** (`DE…` → DE, `FR…` → FR,
+Greece's `EL…` → GR, `GB…` → GB) because the `Invoice` row has no vendor-country
+column — this is what lets the outbound export guard validate the supplier's
+tax-id format and rate plausibility (not just the buyer side). A non-prefixed
+scheme (US EIN, AU ABN, bare number) leaves `country_code` `None`, and the
+tax-rule validators then skip the seller side. Totals map as:
 `line_extension_amount`/`tax_exclusive_amount` ← `subtotal`,
 `tax_inclusive_amount`/`payable_amount` ← `amount`, `tax_total` ← `tax_amount`,
 `allowance_total` ← `discount_amount`, `charge_total` ← `shipping_amount`. One
@@ -186,10 +192,18 @@ Decimal is preserved end to end.
 
 ### Country tax validation (`tax_rules.py`)
 
-A shared building block used as an inbound guard (`validate_document` appends it
-when `check_tax=True`, the default) and an outbound pre-generation guard (the
-authenticated export's `assert_valid`). Three checks, all PII-free
-(`FieldError` names the field path + a code, never the value):
+A shared building block used in two postures. **Inbound** (`parse_e_invoice`) it
+is **advisory only**: structural validation is strict (`assert_valid(doc,
+check_tax=False)`), but country tax findings are logged field-only and never
+raise — a vendor's legitimately-issued document with an unenumerated-but-valid
+rate or a regex-rejected VAT id must not fail ingestion (the regexes carry no
+checksums and the rate sets are a sanity band, not a full schedule).
+**Outbound** (the authenticated export's `assert_valid` with the default
+`check_tax=True`) it is a **hard pre-generation guard** (422) — there a human AP
+user can fix the document before emission. `validate_document(doc,
+check_tax=True)` is still available for any caller that wants the combined
+result directly. Three checks, all PII-free (`FieldError` names the field path +
+a code, never the value):
 
 - **Tax-ID format** per country — every EU member-state VAT regex + GB VAT,
   AU ABN (11 digits), NZ/IN/CA GST, MX RFC, ES/IT IVA (their EU VAT regex). An

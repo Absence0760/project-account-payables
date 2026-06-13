@@ -196,6 +196,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `GET`  | `/api/invoices/{id}/workflow`     | * | Workflow instance + steps |
 | `GET`  | `/api/invoices/{id}/extraction`   | * | AI extraction results |
 | `GET`  | `/api/invoices/{id}/export`       | * | Export single invoice |
+| `GET`  | `/api/invoices/{id}/einvoice`     | admin/manager/cfo/ap_clerk | Export invoice as UBL 2.1 XML (`?format=ubl`). 400 bad format, 404 unknown, 422 (PII-free `field:code` list) on tax-invalid; returns `application/xml` attachment. See [`e-invoicing.md`](e-invoicing.md). |
 | `GET`  | `/api/invoices/file/{file_key}`   | * | Proxy invoice file from S3 |
 
 ## Audit Trail (auditor export — SOX)
@@ -371,6 +372,7 @@ caller's own `vendor_id`; cross-vendor IDs return 404. See
 |--------|-----------------------------------------|-------------|
 | `GET`  | `/api/portal/invoices`                  | Vendor-scoped invoice list |
 | `GET`  | `/api/portal/invoices/{id}`             | Get one (404 cross-vendor) |
+| `GET`  | `/api/portal/invoices/{id}/einvoice`    | UBL 2.1 XML download (vendor-scoped; 404 cross-vendor; soft tax warnings logged only, never 422'd to the supplier). |
 | `POST` | `/api/portal/invoices`                  | Multipart PDF upload → extraction pipeline |
 | `GET`  | `/api/portal/payments`                  | Payment history |
 | `GET`  | `/api/portal/payments/{id}/remittance`  | Remittance-advice PDF (404 on a foreign payment) |
