@@ -642,17 +642,18 @@ Go beyond static early-pay discounts — dynamically negotiate and optimize paym
 ---
 
 ### 4-Way Matching (with Quality Inspection)
-**Status:** Planned
+**Status:** Shipped (first slice)
 
 Extend PO matching to include quality inspection data — critical for manufacturing.
 
-- [ ] 4-way match: invoice vs. PO vs. goods receipt vs. quality inspection
-- [ ] Quality inspection model — pass/fail, partial acceptance, deviation notes
-- [ ] Reject invoices for goods that failed inspection
-- [ ] Partial payment — pay only for accepted quantity
+- [x] 4-way match: invoice vs. PO vs. goods receipt vs. quality inspection
+- [x] Quality inspection model — pass/fail, partial acceptance, deviation notes
+- [x] Reject invoices for goods that failed inspection (`quality_hold` error)
+- [x] Partial payment — pay only for accepted quantity (`accepted_quantity`)
+- [x] Configurable `require_inspection` per org (`Organization.settings.matching.require_inspection`)
+- [x] Exception routing when quality data is missing or mismatched (`quality_hold`)
 - [ ] Configurable match rules per vendor or commodity type
 - [ ] Integration with QMS (Quality Management Systems)
-- [ ] Exception routing when quality data is missing or mismatched
 
 ---
 

@@ -111,7 +111,7 @@ export interface InvoiceWarning {
 
 export interface PoMatch {
 	status: 'no_po' | 'matched' | 'mismatch' | 'partial';
-	match_type: 'none' | '2-way' | '3-way';
+	match_type: 'none' | '2-way' | '3-way' | '4-way';
 	po_id: string | null;
 	po_number: string | null;
 	po_total: number | null;
@@ -119,6 +119,10 @@ export interface PoMatch {
 	amount_variance: number;
 	amount_variance_pct: number;
 	within_tolerance: boolean;
+	inspection_id: string | null;
+	inspection_result: 'pass' | 'fail' | 'partial' | null;
+	inspection_accepted_quantity: number | null;
+	inspection_required: boolean;
 	issues: string[];
 	details: Record<string, unknown>;
 }

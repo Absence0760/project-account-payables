@@ -147,6 +147,7 @@ backend/
    - `POLineItem` — po_id, description, quantity, unit_price, total
    - `GoodsReceipt` — gr_number, po_id, received_date, status
    - `GRLineItem` — gr_id, description, quantity_received
+   - `QualityInspection` — inspection_number, po_id, gr_id, result (pass/fail/partial), accepted_quantity, rejected_quantity, deviation_notes — the 4-way match leg (see `docs/po-matching.md`)
    - `GLAccount` — code, name, account_type, parent_code, erp_account_id
    - `PaymentRun` — status, total_amount, initiated_by, executed_at
    - `PaymentSchedule` — invoice_id, due_date, discount_date, discount_percent
@@ -469,7 +470,7 @@ The three `webhook_*_secret` fields are HMAC keys used by the inbound webhook ha
 
 ## Exception types
 
-`duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`
+`duplicate`, `po_mismatch`, `fraud_flag`, `extraction_failed`, `unverified_vendor`, `review_rejected`, `amount_exceeded`, `missing_data`, `quality_hold`
 
 Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`.
 

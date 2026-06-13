@@ -148,7 +148,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `extraction.py` | Dispatches AI extraction (platform Claude Vision or BYOK provider) |
 | `erp.py` | Pushes approved invoices to ERP with retry logic |
 | `review.py` | Approve/reject with field corrections |
-| `po_matching.py` | 2-way/3-way invoice-to-PO matching — invoked by `invoice_warnings.refresh_warnings` after every extraction and on every invoice mutation; result persisted on `Invoice.po_match` |
+| `po_matching.py` | 2-way/3-way/4-way invoice-to-PO matching — invoked by `invoice_warnings.refresh_warnings` after every extraction and on every invoice mutation; result persisted on `Invoice.po_match`. The 4-way leg adds a Quality Inspection gate (pass/fail/partial acceptance), gated per-org by `Organization.settings.matching.require_inspection` |
 | `vendor_matching.py` | Fuzzy vendor matching by name/code/tax_id |
 | `invoice_warnings.py` | Generates warnings and exceptions (duplicates, fraud, etc.) |
 | `payment_erp_sync.py` | Syncs payment status back to ERP |
@@ -196,7 +196,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 2 + 2b scope reads/writes (incl. the dashboard + CFO analytics) by the `X-Entity-ID` header (`app/tenant.py` → `get_entity_id` / `get_write_entity_id` / `apply_entity_scope`) with a sidebar entity switcher; per-entity workflow selection is deferred (Phase 3). See `docs/multi-entity.md`.
 

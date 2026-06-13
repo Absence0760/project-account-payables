@@ -1026,6 +1026,26 @@
 									{/if}
 								</div>
 							{/if}
+							{#if m.match_type === '4-way' || m.inspection_result || m.inspection_required}
+								<div class="po-match-inspection">
+									<span class="po-match-label">Quality Inspection</span>
+									{#if m.inspection_result}
+										<span class="inspection-badge {m.inspection_result}">
+											{#if m.inspection_result === 'pass'}Passed
+											{:else if m.inspection_result === 'fail'}Failed
+											{:else}Partial
+											{/if}
+										</span>
+										{#if m.inspection_accepted_quantity !== null}
+											<span class="po-match-value mono">
+												{m.inspection_accepted_quantity} accepted
+											</span>
+										{/if}
+									{:else if m.inspection_required}
+										<span class="inspection-badge missing">Required — Missing</span>
+									{/if}
+								</div>
+							{/if}
 							{#if m.issues.length > 0}
 								<ul class="po-match-issues">
 									{#each m.issues as issue}
@@ -2164,6 +2184,38 @@
 
 	.po-match-issues li {
 		margin-bottom: 2px;
+	}
+
+	.po-match-inspection {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 8px;
+		padding-top: 8px;
+		border-top: 1px solid var(--border);
+	}
+
+	.inspection-badge {
+		font-size: 0.72rem;
+		font-weight: 600;
+		padding: 2px 10px;
+		border-radius: 10px;
+	}
+
+	.inspection-badge.pass {
+		background: rgba(31, 168, 106, 0.15);
+		color: #1fa86a;
+	}
+
+	.inspection-badge.fail,
+	.inspection-badge.missing {
+		background: rgba(224, 64, 64, 0.15);
+		color: #e04040;
+	}
+
+	.inspection-badge.partial {
+		background: rgba(212, 148, 10, 0.15);
+		color: #d4940a;
 	}
 
 	.required {

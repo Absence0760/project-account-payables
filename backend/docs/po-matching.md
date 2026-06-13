@@ -10,6 +10,7 @@ PO matching compares invoices against purchase orders (and optionally goods rece
 |---|---|---|
 | **2-way** | Invoice vs. PO (amount, vendor) | Standard — most invoices |
 | **3-way** | Invoice vs. PO vs. Goods Receipt (amount + quantities) | Manufacturing, physical goods |
+| **4-way** | Invoice vs. PO vs. Goods Receipt vs. Quality Inspection (adds a pass/fail/partial-acceptance gate) | Regulated / high-spec goods where receipt alone isn't enough (pharma, aerospace, food) |
 
 ## How It Works
 
@@ -35,7 +36,27 @@ Invoice has po_number?
                           └── Yes → 3-way match
                                 ├── Quantities match → status: "matched"
                                 └── Partial receipt → status: "partial"
+                                      |
+                                      QualityInspection exists (by GR, else by PO)?
+                                      |
+                                      ├── No → if require_inspection: inspection_required,
+                                      │        status unchanged, quality_hold (warning) raised
+                                      |
+                                      └── Yes → 4-way match
+                                            ├── result == "pass"    → no status change
+                                            ├── result == "partial" → status: "partial"
+                                            │                          (accepted_quantity shown)
+                                            └── result == "fail"     → status: "mismatch",
+                                                                       quality_hold (error) raised
 ```
+
+The 4-way leg runs **after** the 3-way GR block. It looks up the most recent
+`QualityInspection` — preferring the matched GR (`gr_id`), falling back to the
+PO (`po_id`). A `fail` blocks the invoice; a `partial` surfaces the accepted
+quantity (pay-only-accepted); a `pass` is a clean gate. When
+`require_inspection` is on and no inspection exists for a found PO, the match
+flags `inspection_required` so the warnings layer can route a `quality_hold`
+exception.
 
 ## Tolerance
 
@@ -51,16 +72,24 @@ The system allows a configurable variance percentage (default: 5%) between invoi
 
 ```python
 MatchResult:
-    match_type: "none" | "2-way" | "3-way"
+    match_type: "none" | "2-way" | "3-way" | "4-way"
     status: "no_po" | "matched" | "mismatch" | "partial"
     po_id, po_number, po_total
     gr_id  # if 3-way
     amount_variance: float      # invoice - PO in dollars
     amount_variance_pct: float  # as percentage
     within_tolerance: bool
+    inspection_id: str | None              # if 4-way
+    inspection_result: "pass" | "fail" | "partial" | None
+    inspection_accepted_quantity: float | None  # partial acceptance qty
+    inspection_required: bool              # require_inspection on + inspection missing
     issues: list[str]           # human-readable issues
-    details: dict               # full match data for audit
+    details: dict               # full match data for audit (has_inspection, inspection_result)
 ```
+
+`match_invoice_to_po(db, invoice, tolerance_pct=5.0, require_inspection=False)`
+takes the `require_inspection` flag; `invoice_warnings._refresh_po_match` reads
+it from `Organization.settings.matching.require_inspection`.
 
 ## Integration Points
 
@@ -80,6 +109,31 @@ Reviewers see the match status:
 ### Before Payment
 Mismatched invoices can be blocked from the payment queue until the mismatch is resolved (exception cleared).
 
+### Quality-hold exceptions
+The 4-way leg routes inspection outcomes to a dedicated `quality_hold`
+exception type (created by `invoice_warnings._refresh_po_match`):
+
+| Inspection outcome | Warning severity | `quality_hold` exception |
+|---|---|---|
+| `fail` | error | created (error) — invoice blocked |
+| missing + `require_inspection` on | warning | created (warning) |
+| `partial` | info | created (info) — accepted quantity noted |
+| `pass` | — | none |
+
+The existing `po_mismatch` handling is unchanged; `quality_hold` is additive.
+
+### Config
+Per-org, in `Organization.settings.matching`:
+
+```json
+{ "matching": { "require_inspection": true } }
+```
+
+When `require_inspection` is `true`, an invoice that matches a PO but has **no**
+quality inspection on file raises a `quality_hold` warning/exception (the
+inspection is mandatory before payment). Default `false` — 4-way only kicks in
+when an inspection actually exists.
+
 ## Data Models
 
 The procurement models already exist:
@@ -90,6 +144,7 @@ The procurement models already exist:
 | `po_line_items` | PO lines (description, quantity, unit_price, total) |
 | `goods_receipts` | GR header (gr_number, po_id, received_date, status) |
 | `gr_line_items` | GR lines (description, quantity_received) |
+| `quality_inspections` | Inspection header (inspection_number, po_id, gr_id, result, accepted/rejected_quantity, deviation_notes) — the 4-way leg |
 
 ## API
 
@@ -102,7 +157,16 @@ The procurement models already exist:
 
 | Feature | Status |
 |---|---|
-| PO matching service (2-way and 3-way) | Done |
+| PO matching service (2-way, 3-way, 4-way) | Done |
+| Quality inspection model (`quality_inspections`, alembic 0033) | Done |
+| 4-way match (Invoice vs PO vs GR vs Quality Inspection) | Done |
+| `quality_hold` exception routing (fail → error, missing → warning, partial → info) | Done |
+| Partial acceptance (`accepted_quantity` surfaced in match + modal) | Done |
+| Configurable `require_inspection` per org (`Organization.settings.matching.require_inspection`) | Done |
+| Inspections API (`/api/inspections` list/create/detail) | Done |
+| Inspection display in invoice modal (Quality Inspection sub-panel) | Done |
+| QMS integration (real inspection-system sync) | Planned |
+| Per-vendor / per-commodity inspection rules | Planned |
 | Tolerance configuration | Done (5% default) |
 | Vendor-aware matching (match PO by vendor_id) | Done |
 | Goods receipt quantity comparison | Done |

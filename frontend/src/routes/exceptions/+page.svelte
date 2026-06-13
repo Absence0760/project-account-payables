@@ -68,6 +68,7 @@
 		review_rejected: '#e04040',
 		amount_exceeded: '#e04040',
 		missing_data: '#d4940a',
+		quality_hold: '#e04040',
 	};
 
 	const SEVERITY_COLORS: Record<string, string> = {
