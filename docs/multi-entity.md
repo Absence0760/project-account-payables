@@ -5,12 +5,12 @@ inside its single tenant database. This is distinct from multi-tenancy: the
 tenant boundary is still the per-org database (`app/tenant.py`,
 `X-Tenant-Slug` → `ap_<slug>`). Entities subdivide data *within* one tenant.
 
-**Status: Phase 2 (query scoping + entity switcher) shipped.** On top of the
-Phase 1 schema, requests now scope to a selected subsidiary via the
-`X-Entity-ID` header, new rows are stamped with an `entity_id`, and a sidebar
-switcher drives it. Two pieces are deferred: the CFO **analytics** surface
-(`analytics.py`) to Phase 2b, and per-entity **workflow** selection to Phase 3
-(both detailed under *Phase 2 — what's scoped* below). See `docs/roadmap.md` →
+**Status: Phase 2 + 2b (query scoping + entity switcher + CFO analytics)
+shipped.** On top of the Phase 1 schema, requests scope to a selected subsidiary
+via the `X-Entity-ID` header, new rows are stamped with an `entity_id`, a sidebar
+switcher drives it, and the full CFO analytics surface (`analytics.py`) is
+scoped. One piece remains deferred: per-entity **workflow** selection to Phase 3
+(detailed under *Deferred from Phase 2* below). See `docs/roadmap.md` →
 Priority 5 → Multi-Entity.
 
 ## Data model
@@ -116,9 +116,10 @@ Three primitives back this (all in `app/tenant.py`):
 | GL accounts | `GET /gl-accounts` — **shared (NULL) ∪ entity's own** (`include_shared=True`) | create + ERP sync use `get_entity_id`: consolidated view → NULL (shared), entity selected → entity-specific |
 | Virtual cards | `GET /cards`, `/cards/dashboard` (active + spend) | generate → the invoice's entity |
 | Dashboard | `GET /dashboard` — every Invoice/Payment/Exception query | n/a |
+| CFO analytics (2b) | `GET /analytics/{cashflow_forecast,cashflow_whatif,cash_position,cfo,drill/spend_concentration,drill/dpo,export/{report}}` + `POST /analytics/forecast_variance` — every Invoice/Payment/PaymentSchedule(via Invoice)/PurchaseOrder/Exception query | n/a |
 
 Control-plane `CardRebate` KPIs (payments summary, card dashboard, dashboard
-rebates) stay **org-wide** — rebates live in the control DB, cross-DB from the
++ CFO rebate yield) stay **org-wide** — rebates live in the control DB, cross-DB from the
 tenant's entities. Invoice-id-keyed metrics (dashboard processing-time) inherit
 the scope from the scoped invoice query they consume.
 
@@ -139,14 +140,6 @@ the scope from the scoped invoice query they consume.
 
 ### Deferred from Phase 2
 
-- **CFO analytics (`app/api/analytics.py`) → Phase 2b.** The cashflow forecast,
-  what-if, cash position, drill-downs, exports, and forecast variance are one
-  cohesive projection feature whose forecast math needs careful per-entity
-  treatment; a consolidated default is the natural CFO view until then. The
-  durable fix: thread `get_entity_id` + `apply_entity_scope` through every
-  Invoice/Payment/PaymentSchedule query in that file (same pattern as
-  `dashboard.py`) and add per-entity forecast tests. Trigger: when a customer
-  needs per-subsidiary cash forecasting.
 - **Per-entity workflow selection → Phase 3.** `workflow_definitions` carries an
   `entity_id` (Phase 1 backfill) but is **not** scoped: the workflow engine
   picks the active/default definition by `organization_id`, and there's one
@@ -169,8 +162,6 @@ Reads are open to all roles because the Phase 2 entity selector needs the list.
 
 ## Remaining phases
 
-- **Phase 2b** — CFO analytics (`analytics.py`) entity scoping. See *Deferred
-  from Phase 2* above.
 - **Phase 3** — entity-level COA wired into the extraction catalog (shared ∪
   entity) + bulk-recode validation, **and** per-entity workflow selection
   (teach `create_workflow_instance` to pick the entity's active/default

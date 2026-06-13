@@ -14,6 +14,7 @@ This file does the SQL and the response shaping.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -48,7 +49,7 @@ from app.services.currency_conversion import (
     rollup_to_reporting_currency,
 )
 from app.services.fx_adapters import get_fx_adapter
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,12 @@ _PENDING_STATUSES = (
 
 
 async def _commitment_rows(
-    db: AsyncSession, *, today: date, horizon_days: int, include_pending: bool
+    db: AsyncSession,
+    *,
+    today: date,
+    horizon_days: int,
+    include_pending: bool,
+    entity_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """Pull open invoices that represent future AP outflows and shape them
     into the commitment-row dicts the pure-math layer consumes.
@@ -93,23 +99,30 @@ async def _commitment_rows(
     (`due_date` / `discount_date` / `discount_percent`); otherwise we fall
     back to `Invoice.due_date` with no discount. Rows are bounded to
     `[today, today + horizon_days]` on the effective due date so the query
-    doesn't scan the whole back-catalogue."""
+    doesn't scan the whole back-catalogue.
+
+    Scoped to ``entity_id`` (the invoice's subsidiary) when set; ``None`` is
+    the consolidated view (multi-entity Phase 2b)."""
     statuses = list(_COMMITTED_STATUSES)
     if include_pending:
         statuses += list(_PENDING_STATUSES)
     horizon_end = today + timedelta(days=horizon_days)
 
     result = await db.execute(
-        select(
-            Invoice.amount,
-            Invoice.status,
-            Invoice.due_date,
-            PaymentSchedule.due_date.label("sched_due"),
-            PaymentSchedule.discount_date,
-            PaymentSchedule.discount_percent,
+        apply_entity_scope(
+            select(
+                Invoice.amount,
+                Invoice.status,
+                Invoice.due_date,
+                PaymentSchedule.due_date.label("sched_due"),
+                PaymentSchedule.discount_date,
+                PaymentSchedule.discount_percent,
+            )
+            .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
+            .where(Invoice.status.in_(statuses)),
+            Invoice,
+            entity_id,
         )
-        .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
-        .where(Invoice.status.in_(statuses))
     )
     committed_set = set(_COMMITTED_STATUSES)
     rows: list[dict] = []
@@ -149,6 +162,7 @@ async def get_cashflow_forecast(
     include_pending: bool = Query(True),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_CFO_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Projected AP cash outflows bucketed by `day` / `week` / `month`
     over the next `horizon_days`. Each period splits the scheduled total
@@ -157,7 +171,11 @@ async def get_cashflow_forecast(
     and reports the discount-eligible slice."""
     today = date.today()
     rows = await _commitment_rows(
-        db, today=today, horizon_days=horizon_days, include_pending=include_pending
+        db,
+        today=today,
+        horizon_days=horizon_days,
+        include_pending=include_pending,
+        entity_id=entity_id,
     )
     periods = bucket_outflows(rows, granularity=granularity, today=today)
     totals = {
@@ -198,6 +216,7 @@ async def get_cashflow_whatif(
     grace_days: int = Query(15, ge=0, le=90),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_CFO_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Payment-timing what-if: compares paying every open commitment
     `early` (on the discount date, capturing the early-pay discount),
@@ -206,7 +225,9 @@ async def get_cashflow_whatif(
     discount captured, amount-weighted average days-to-pay, and the
     bucketed period breakdown."""
     today = date.today()
-    rows = await _commitment_rows(db, today=today, horizon_days=horizon_days, include_pending=True)
+    rows = await _commitment_rows(
+        db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+    )
 
     def _serialise(result: dict) -> dict:
         return {
@@ -254,6 +275,7 @@ async def get_cash_position(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Running cash-position projection: opening balance carried forward
     period-by-period minus scheduled AP outflows, flagging periods that
@@ -265,7 +287,9 @@ async def get_cash_position(
     `0` with `opening_balance_source: "none"` so the UI prompts for one.
     Inflows (receivables) aren't modelled — `closing = opening - outflow`."""
     today = date.today()
-    rows = await _commitment_rows(db, today=today, horizon_days=horizon_days, include_pending=True)
+    rows = await _commitment_rows(
+        db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
+    )
     periods = bucket_outflows(rows, granularity=granularity, today=today)
 
     opening = _parse_decimal_param(opening_balance, "opening_balance")
@@ -329,6 +353,7 @@ async def get_cfo_analytics(
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Aggregate every CFO metric into one response so the dashboard
     can render in a single round-trip. Per-metric drill-through is
@@ -337,15 +362,31 @@ async def get_cfo_analytics(
     `period_days` defaults to a trailing 365 (annual view); the CFO
     can flip to 90/180 from the UI. Anything outside [30, 730] is
     refused — a 1-day analytics window is noise, a 5-year window
-    is a query the operational DB shouldn't be running."""
+    is a query the operational DB shouldn't be running.
+
+    Every Invoice/Payment/Exception/PO query is entity-scoped via the
+    `_inv` / `_pay` / `_exc` helpers (None = consolidated). The control-plane
+    `CardRebate` rebate total stays org-wide (cross-DB from the tenant's
+    entities), matching the dashboard + payments-summary KPIs."""
     today = date.today()
     period_start = today - timedelta(days=period_days)
 
+    def _inv(q):
+        return apply_entity_scope(q, Invoice, entity_id)
+
+    def _pay(q):
+        return apply_entity_scope(q, Payment, entity_id)
+
+    def _exc(q, model):
+        return apply_entity_scope(q, model, entity_id)
+
     # ----- Total spend in window + accounts-payable balance -----
     total_spend_q = await db.execute(
-        select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-            Invoice.invoice_date >= period_start,
-            Invoice.status != InvoiceStatus.rejected.value,
+        _inv(
+            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                Invoice.invoice_date >= period_start,
+                Invoice.status != InvoiceStatus.rejected.value,
+            )
         )
     )
     total_spend = Decimal(str(total_spend_q.scalar() or 0))
@@ -356,14 +397,16 @@ async def get_cfo_analytics(
     # and a USD invoice add up correctly. See backend/docs/multi-currency.md.
     reporting_currency = resolve_reporting_currency(org.settings)
     spend_rows_q = await db.execute(
-        select(
-            Invoice.amount,
-            Invoice.currency,
-            Invoice.reporting_amount,
-            Invoice.reporting_currency,
-        ).where(
-            Invoice.invoice_date >= period_start,
-            Invoice.status != InvoiceStatus.rejected.value,
+        _inv(
+            select(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(
+                Invoice.invoice_date >= period_start,
+                Invoice.status != InvoiceStatus.rejected.value,
+            )
         )
     )
     spend_rollup = rollup_to_reporting_currency(
@@ -375,15 +418,17 @@ async def get_cfo_analytics(
     )
 
     ap_balance_q = await db.execute(
-        select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-            Invoice.status.in_(
-                [
-                    InvoiceStatus.approved.value,
-                    InvoiceStatus.sending_to_erp.value,
-                    InvoiceStatus.sent_to_erp.value,
-                    InvoiceStatus.posted_in_erp.value,
-                    InvoiceStatus.payment_scheduled.value,
-                ]
+        _inv(
+            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                Invoice.status.in_(
+                    [
+                        InvoiceStatus.approved.value,
+                        InvoiceStatus.sending_to_erp.value,
+                        InvoiceStatus.sent_to_erp.value,
+                        InvoiceStatus.posted_in_erp.value,
+                        InvoiceStatus.payment_scheduled.value,
+                    ]
+                )
             )
         )
     )
@@ -401,23 +446,27 @@ async def get_cfo_analytics(
         month_end = cursor - timedelta(days=1)
         month_start = month_end.replace(day=1)
         month_spend_q = await db.execute(
-            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                Invoice.invoice_date >= month_start,
-                Invoice.invoice_date <= month_end,
+            _inv(
+                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                    Invoice.invoice_date >= month_start,
+                    Invoice.invoice_date <= month_end,
+                )
             )
         )
         month_ap_q = await db.execute(
-            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                Invoice.invoice_date <= month_end,
-                Invoice.status.in_(
-                    [
-                        InvoiceStatus.approved.value,
-                        InvoiceStatus.sending_to_erp.value,
-                        InvoiceStatus.sent_to_erp.value,
-                        InvoiceStatus.posted_in_erp.value,
-                        InvoiceStatus.payment_scheduled.value,
-                    ]
-                ),
+            _inv(
+                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                    Invoice.invoice_date <= month_end,
+                    Invoice.status.in_(
+                        [
+                            InvoiceStatus.approved.value,
+                            InvoiceStatus.sending_to_erp.value,
+                            InvoiceStatus.sent_to_erp.value,
+                            InvoiceStatus.posted_in_erp.value,
+                            InvoiceStatus.payment_scheduled.value,
+                        ]
+                    ),
+                )
             )
         )
         cogs_m = Decimal(str(month_spend_q.scalar() or 0))
@@ -437,10 +486,10 @@ async def get_cfo_analytics(
     ccc = compute_cash_conversion_cycle(dso_days=None, dio_days=None, dpo_days=dpo)
 
     # ----- Accruals — open POs, GRs, unposted invoices -----
-    open_po_q = await db.execute(select(func.coalesce(func.sum(_safe_total_column()), 0)))
-    # We use a helper rather than importing PurchaseOrder here to
-    # keep the failure surface narrow on tenants that never enabled
-    # PO matching — return zero.
+    # `_open_po_sum_query` keeps the failure surface narrow on tenants that
+    # never enabled PO matching (returns a literal-0 query) and entity-scopes
+    # the PO sum when a subsidiary is selected.
+    open_po_q = await db.execute(_open_po_sum_query(entity_id))
     try:
         open_po_amount = Decimal(str(open_po_q.scalar() or 0))
     except Exception:  # noqa: BLE001
@@ -448,13 +497,15 @@ async def get_cfo_analytics(
 
     # Unposted invoices: approved + sending_to_erp + sent_to_erp
     unposted_q = await db.execute(
-        select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-            Invoice.status.in_(
-                [
-                    InvoiceStatus.approved.value,
-                    InvoiceStatus.sending_to_erp.value,
-                    InvoiceStatus.sent_to_erp.value,
-                ]
+        _inv(
+            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                Invoice.status.in_(
+                    [
+                        InvoiceStatus.approved.value,
+                        InvoiceStatus.sending_to_erp.value,
+                        InvoiceStatus.sent_to_erp.value,
+                    ]
+                )
             )
         )
     )
@@ -471,10 +522,12 @@ async def get_cfo_analytics(
 
     # ----- Working-capital impact (extend by 5 days) -----
     paid_q = await db.execute(
-        select(func.coalesce(func.sum(Payment.amount), 0)).where(
-            Payment.completed_at
-            >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC),
-            Payment.status == "completed",
+        _pay(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.completed_at
+                >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC),
+                Payment.status == "completed",
+            )
         )
     )
     paid_in_period = Decimal(str(paid_q.scalar() or 0))
@@ -486,18 +539,20 @@ async def get_cfo_analytics(
 
     # ----- Supplier concentration (top-10 / top-50) -----
     vendor_rows = await db.execute(
-        select(
-            Invoice.vendor_name,
-            func.sum(Invoice.amount).label("total"),
+        _inv(
+            select(
+                Invoice.vendor_name,
+                func.sum(Invoice.amount).label("total"),
+            )
+            .where(
+                Invoice.invoice_date >= period_start,
+                Invoice.vendor_name.isnot(None),
+                Invoice.vendor_name != "",
+            )
+            .group_by(Invoice.vendor_name)
+            .order_by(func.sum(Invoice.amount).desc())
+            .limit(50)
         )
-        .where(
-            Invoice.invoice_date >= period_start,
-            Invoice.vendor_name.isnot(None),
-            Invoice.vendor_name != "",
-        )
-        .group_by(Invoice.vendor_name)
-        .order_by(func.sum(Invoice.amount).desc())
-        .limit(50)
     )
     vendor_spend = [{"vendor": v, "amount": Decimal(str(amt))} for v, amt in vendor_rows.all()]
     concentration = compute_supplier_concentration(vendor_spend)
@@ -510,9 +565,11 @@ async def get_cfo_analytics(
         month_end = cursor - timedelta(days=1)
         month_start = month_end.replace(day=1)
         inv_count_q = await db.execute(
-            select(func.count(Invoice.id)).where(
-                Invoice.invoice_date >= month_start,
-                Invoice.invoice_date <= month_end,
+            _inv(
+                select(func.count(Invoice.id)).where(
+                    Invoice.invoice_date >= month_start,
+                    Invoice.invoice_date <= month_end,
+                )
             )
         )
         exc_count = 0
@@ -520,11 +577,14 @@ async def get_cfo_analytics(
             from app.models.exception import Exception as APException
 
             exc_count_q = await db.execute(
-                select(func.count(APException.id)).where(
-                    APException.created_at
-                    >= datetime.combine(month_start, datetime.min.time()).replace(tzinfo=UTC),
-                    APException.created_at
-                    <= datetime.combine(month_end, datetime.max.time()).replace(tzinfo=UTC),
+                _exc(
+                    select(func.count(APException.id)).where(
+                        APException.created_at
+                        >= datetime.combine(month_start, datetime.min.time()).replace(tzinfo=UTC),
+                        APException.created_at
+                        <= datetime.combine(month_end, datetime.max.time()).replace(tzinfo=UTC),
+                    ),
+                    APException,
                 )
             )
             exc_count = int(exc_count_q.scalar() or 0)
@@ -576,12 +636,14 @@ async def get_cfo_analytics(
     }
     try:
         open_rows_q = await db.execute(
-            select(
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            ).where(Invoice.status.in_(open_statuses))
+            _inv(
+                select(
+                    Invoice.amount,
+                    Invoice.currency,
+                    Invoice.reporting_amount,
+                    Invoice.reporting_currency,
+                ).where(Invoice.status.in_(open_statuses))
+            )
         )
         open_invoices = [
             {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
@@ -667,19 +729,21 @@ async def get_cfo_analytics(
     }
 
 
-def _safe_total_column():
-    """Lazily resolve PurchaseOrder.total — keeps the import out of
-    the module-level so a tenant without procurement tables doesn't
-    blow up on import. Returns a `0` literal column if PO model
-    isn't reachable."""
+def _open_po_sum_query(entity_id: uuid.UUID | None):
+    """Build the open-PO accrual sum query, entity-scoped when a subsidiary is
+    selected. Lazily imports PurchaseOrder so a tenant without procurement
+    tables doesn't blow up — it falls back to a literal-0 sum. Keeping the
+    import lazy also keeps the failure surface narrow on those tenants."""
     try:
         from app.models.procurement import PurchaseOrder
 
-        return PurchaseOrder.total
+        return apply_entity_scope(
+            select(func.coalesce(func.sum(PurchaseOrder.total), 0)), PurchaseOrder, entity_id
+        )
     except Exception:  # noqa: BLE001
         from sqlalchemy import literal
 
-        return literal(0)
+        return select(func.coalesce(func.sum(literal(0)), 0))
 
 
 # ---------------------------------------------------------------------------
@@ -693,25 +757,30 @@ async def drill_spend_concentration(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_CFO_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Drill-through for the supplier-concentration tile. Returns
     the top-N vendors by spend with their share, invoice count,
     and a few representative invoice IDs the CFO can click into."""
     period_start = date.today() - timedelta(days=period_days)
     rows = await db.execute(
-        select(
-            Invoice.vendor_name,
-            func.sum(Invoice.amount).label("total"),
-            func.count(Invoice.id).label("invoice_count"),
+        apply_entity_scope(
+            select(
+                Invoice.vendor_name,
+                func.sum(Invoice.amount).label("total"),
+                func.count(Invoice.id).label("invoice_count"),
+            )
+            .where(
+                Invoice.invoice_date >= period_start,
+                Invoice.vendor_name.isnot(None),
+                Invoice.vendor_name != "",
+            )
+            .group_by(Invoice.vendor_name)
+            .order_by(func.sum(Invoice.amount).desc())
+            .limit(limit),
+            Invoice,
+            entity_id,
         )
-        .where(
-            Invoice.invoice_date >= period_start,
-            Invoice.vendor_name.isnot(None),
-            Invoice.vendor_name != "",
-        )
-        .group_by(Invoice.vendor_name)
-        .order_by(func.sum(Invoice.amount).desc())
-        .limit(limit)
     )
     rows_list = rows.all()
     total = sum((Decimal(str(r[1])) for r in rows_list), Decimal("0"))
@@ -744,6 +813,7 @@ async def drill_dpo(
     months: int = Query(12, ge=1, le=24),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_CFO_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Per-month accounts-payable balance + COGS used to derive
     each DPO point. Lets the CFO see what's driving a spike."""
@@ -754,23 +824,31 @@ async def drill_dpo(
         month_end = cursor - timedelta(days=1)
         month_start = month_end.replace(day=1)
         cogs_q = await db.execute(
-            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                Invoice.invoice_date >= month_start,
-                Invoice.invoice_date <= month_end,
+            apply_entity_scope(
+                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                    Invoice.invoice_date >= month_start,
+                    Invoice.invoice_date <= month_end,
+                ),
+                Invoice,
+                entity_id,
             )
         )
         ap_q = await db.execute(
-            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                Invoice.invoice_date <= month_end,
-                Invoice.status.in_(
-                    [
-                        InvoiceStatus.approved.value,
-                        InvoiceStatus.sending_to_erp.value,
-                        InvoiceStatus.sent_to_erp.value,
-                        InvoiceStatus.posted_in_erp.value,
-                        InvoiceStatus.payment_scheduled.value,
-                    ]
+            apply_entity_scope(
+                select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                    Invoice.invoice_date <= month_end,
+                    Invoice.status.in_(
+                        [
+                            InvoiceStatus.approved.value,
+                            InvoiceStatus.sending_to_erp.value,
+                            InvoiceStatus.sent_to_erp.value,
+                            InvoiceStatus.posted_in_erp.value,
+                            InvoiceStatus.payment_scheduled.value,
+                        ]
+                    ),
                 ),
+                Invoice,
+                entity_id,
             )
         )
         cogs = Decimal(str(cogs_q.scalar() or 0))
@@ -807,6 +885,7 @@ async def export_report(
     horizon_days: int = Query(90, ge=7, le=730),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """CSV download. Supported reports:
 
@@ -837,36 +916,48 @@ async def export_report(
     if report == "cashflow_forecast":
         today = date.today()
         rows = await _commitment_rows(
-            db, today=today, horizon_days=horizon_days, include_pending=True
+            db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
         )
         periods = bucket_outflows(rows, granularity=granularity, today=today)
         payload = EXPORTERS[report](periods)
     elif report == "invoice_register":
-        rows = await db.execute(select(Invoice).where(Invoice.invoice_date >= period_start))
+        rows = await db.execute(
+            apply_entity_scope(
+                select(Invoice).where(Invoice.invoice_date >= period_start), Invoice, entity_id
+            )
+        )
         payload = EXPORTERS[report](rows.scalars().all())
     elif report == "vendor_spend":
         rows = await db.execute(
-            select(
-                Invoice.vendor_name,
-                func.count(Invoice.id).label("invoice_count"),
-                func.coalesce(func.sum(Invoice.amount), 0).label("total"),
+            apply_entity_scope(
+                select(
+                    Invoice.vendor_name,
+                    func.count(Invoice.id).label("invoice_count"),
+                    func.coalesce(func.sum(Invoice.amount), 0).label("total"),
+                )
+                .where(
+                    Invoice.invoice_date >= period_start,
+                    Invoice.vendor_name.isnot(None),
+                    Invoice.vendor_name != "",
+                )
+                .group_by(Invoice.vendor_name)
+                .order_by(func.sum(Invoice.amount).desc()),
+                Invoice,
+                entity_id,
             )
-            .where(
-                Invoice.invoice_date >= period_start,
-                Invoice.vendor_name.isnot(None),
-                Invoice.vendor_name != "",
-            )
-            .group_by(Invoice.vendor_name)
-            .order_by(func.sum(Invoice.amount).desc())
         )
         payload = EXPORTERS[report](rows.all())
     elif report == "payment_register":
         rows = await db.execute(
-            select(Payment, Invoice)
-            .outerjoin(Invoice, Invoice.id == Payment.invoice_id)
-            .where(
-                Payment.created_at
-                >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC)
+            apply_entity_scope(
+                select(Payment, Invoice)
+                .outerjoin(Invoice, Invoice.id == Payment.invoice_id)
+                .where(
+                    Payment.created_at
+                    >= datetime.combine(period_start, datetime.min.time()).replace(tzinfo=UTC)
+                ),
+                Payment,
+                entity_id,
             )
         )
         payload = EXPORTERS[report](rows.all())
@@ -879,9 +970,13 @@ async def export_report(
             "approved",
         )
         aging_rows = await db.execute(
-            select(Invoice.due_date, Invoice.amount).where(
-                Invoice.status.in_(open_statuses),
-                Invoice.due_date.isnot(None),
+            apply_entity_scope(
+                select(Invoice.due_date, Invoice.amount).where(
+                    Invoice.status.in_(open_statuses),
+                    Invoice.due_date.isnot(None),
+                ),
+                Invoice,
+                entity_id,
             )
         )
         buckets = {
@@ -916,6 +1011,7 @@ async def post_forecast_variance(
     body: dict,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(*_CFO_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """The org POSTs `{"months": [{"month": "YYYY-MM",
     "forecast": "100000"}, ...]}` and we return the same list with
@@ -939,12 +1035,16 @@ async def post_forecast_variance(
         start = date(year, mon, 1)
         end = date(year + (mon // 12), (mon % 12) + 1, 1) - timedelta(days=1)
         actual_q = await db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                Payment.status == "completed",
-                Payment.completed_at
-                >= datetime.combine(start, datetime.min.time()).replace(tzinfo=UTC),
-                Payment.completed_at
-                <= datetime.combine(end, datetime.max.time()).replace(tzinfo=UTC),
+            apply_entity_scope(
+                select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                    Payment.status == "completed",
+                    Payment.completed_at
+                    >= datetime.combine(start, datetime.min.time()).replace(tzinfo=UTC),
+                    Payment.completed_at
+                    <= datetime.combine(end, datetime.max.time()).replace(tzinfo=UTC),
+                ),
+                Payment,
+                entity_id,
             )
         )
         augmented.append(

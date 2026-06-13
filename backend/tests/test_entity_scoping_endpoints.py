@@ -184,6 +184,54 @@ async def test_dashboard_scopes_by_entity(realdb):
 
 
 # ---------------------------------------------------------------------------
+# CFO analytics (Phase 2b)
+# ---------------------------------------------------------------------------
+
+
+async def test_cfo_analytics_and_cashflow_scope_by_entity(realdb):
+    from datetime import date, timedelta
+
+    today = date.today().isoformat()
+    soon = (date.today() + timedelta(days=10)).isoformat()
+
+    async with realdb.client(key="a", role="admin") as c:
+        us = await _create_entity(c, name="US Inc", slug="us")
+
+        # An invoice (dated today, due soon) under each entity.
+        for headers, num, amt in (
+            ({"X-Entity-ID": us}, "AN-US", "100.00"),
+            ({}, "AN-DEF", "200.00"),
+        ):
+            r = await c.post(
+                "/api/invoices",
+                json={
+                    "invoice_number": num,
+                    "vendor": "Acme",
+                    "amount": amt,
+                    "invoice_date": today,
+                    "due_date": soon,
+                },
+                headers=headers,
+            )
+            assert r.status_code == 201, r.text
+
+        # /cfo total_spend scopes to the entity.
+        cfo_us = (await c.get("/api/analytics/cfo", headers={"X-Entity-ID": us})).json()
+        assert cfo_us["total_spend"] == 100.0
+        cfo_all = (await c.get("/api/analytics/cfo")).json()
+        assert cfo_all["total_spend"] == 300.0
+
+        # /cashflow_forecast bucketed totals scope too (new invoices are in the
+        # pending pipeline, due within the default 90-day horizon).
+        f_us = (await c.get("/api/analytics/cashflow_forecast", headers={"X-Entity-ID": us})).json()
+        assert f_us["totals"]["count"] == 1
+        assert f_us["totals"]["scheduled_amount"] == 100.0
+        f_all = (await c.get("/api/analytics/cashflow_forecast")).json()
+        assert f_all["totals"]["count"] == 2
+        assert f_all["totals"]["scheduled_amount"] == 300.0
+
+
+# ---------------------------------------------------------------------------
 # Credit memos
 # ---------------------------------------------------------------------------
 
