@@ -134,7 +134,7 @@ backend/
    - `CardRebate` — virtual_card_id, amount, rate, status, period
 
 2. **Tenant DBs** (`ap_<slug>`) — isolated per customer
-   - `Entity` — legal entity / subsidiary within the tenant (name, slug, currency, is_default, is_active). Business tables carry a nullable `entity_id` FK (`EntityMixin`); every tenant has one `is_default` Entity. Multi-entity Phase 1 — see `../docs/multi-entity.md`
+   - `Entity` — legal entity / subsidiary within the tenant (name, slug, currency, is_default, is_active). Business tables carry a nullable `entity_id` FK (`EntityMixin`); every tenant has one `is_default` Entity. Multi-entity Phase 2 (reads/writes scoped by the `X-Entity-ID` header) — see `../docs/multi-entity.md`
    - `Invoice` — invoice_number, vendor_name, amount, status (12 states), file_key, warnings (JSONB), po_match (JSONB), meta (JSONB — holds `audit_summary`)
    - `InvoiceLineItem` — invoice_id, item_code, description, quantity, unit_price, total, gl_account
    - `InvoiceExtractionResult` — invoice_id, method, confidence, raw_result (JSONB)

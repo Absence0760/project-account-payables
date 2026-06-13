@@ -5,10 +5,13 @@ inside its single tenant database. This is distinct from multi-tenancy: the
 tenant boundary is still the per-org database (`app/tenant.py`,
 `X-Tenant-Slug` → `ap_<slug>`). Entities subdivide data *within* one tenant.
 
-**Status: Phase 1 (foundation) shipped.** The schema, the per-tenant Default
-entity, and admin CRUD exist; query scoping + the entity switcher are Phase 2
-(not yet wired — every list/aggregate still returns all rows regardless of
-entity). See `docs/roadmap.md` → Priority 5 → Multi-Entity.
+**Status: Phase 2 (query scoping + entity switcher) shipped.** On top of the
+Phase 1 schema, requests now scope to a selected subsidiary via the
+`X-Entity-ID` header, new rows are stamped with an `entity_id`, and a sidebar
+switcher drives it. Two pieces are deferred: the CFO **analytics** surface
+(`analytics.py`) to Phase 2b, and per-entity **workflow** selection to Phase 3
+(both detailed under *Phase 2 — what's scoped* below). See `docs/roadmap.md` →
+Priority 5 → Multi-Entity.
 
 ## Data model
 
@@ -73,8 +76,84 @@ extraction catalog and bulk-recode validation.
   per-test TRUNCATE (which wipes `entities` along with the rest), so every
   test starts from the single-entity baseline.
 
-Because there's exactly one entity and no query scoping yet, Phase 1 is a pure
-no-op behaviorally — a single-entity tenant behaves exactly as before.
+A single-entity tenant still behaves exactly as before: with one entity the
+switcher is hidden, the `X-Entity-ID` header is never sent, and every endpoint
+returns the consolidated (all-rows) view.
+
+## Phase 2 — request scoping + entity switcher
+
+### The `X-Entity-ID` contract
+
+The frontend sends an optional `X-Entity-ID` header. The backend resolves it in
+`app/tenant.py`:
+
+- **absent**, or the literal **`all`** → `None` = the consolidated view (every
+  entity's rows). Absent is the backward-compatible default, so any client that
+  predates multi-entity keeps seeing everything.
+- a **UUID** → validated against this tenant's `entities` table. An id that
+  doesn't exist here (including another tenant's entity id) is a **400**, never
+  a silent fall-through to "all" — a leaked header can't widen scope.
+
+Three primitives back this (all in `app/tenant.py`):
+
+| Primitive | Use |
+|-----------|-----|
+| `get_entity_id` (dependency) | resolves the header → validated entity UUID or `None`. Read-side scoping + the GL-account create rule. |
+| `get_write_entity_id` (dependency) | the entity a *new* row lands under: the selected entity, else the tenant's default entity (never NULL, so a new row is always visible in some entity-scoped view). |
+| `apply_entity_scope(query, Model, entity_id, *, include_shared=False)` | filters a `select()` to one entity; passthrough when `entity_id is None`. `include_shared=True` also admits NULL rows — only the GL chart uses it. |
+
+### What's scoped (read) + how new rows are stamped (write)
+
+| Area | List / aggregate scoped | New-row `entity_id` |
+|------|-------------------------|----------------------|
+| Invoices | `GET /invoices`, `/invoices/counts` | create + upload + CSV import → write-entity; portal submit → vendor's; PO-flip → PO's; email intake → default |
+| Vendors | `GET /vendors` | create + ERP sync + CSV import → write-entity; AI-extraction match-miss → invoice's |
+| Payments | `GET /payments`, `/payments/queue`, `/payments/summary`, `/payments/runs/` | payment → its invoice's; payment run → write-entity (each payment still follows its own invoice) |
+| Purchase orders | `GET /purchase-orders` | ERP sync → write-entity |
+| Goods receipts | `GET /goods-receipts` | (no API create path) |
+| Credit memos | `GET /credit-memos` | create → the vendor's entity |
+| Exceptions | `GET /exceptions`, `/exceptions/summary` | all 4 creation sites (warnings, extraction dup/fail, review reject) → the invoice's entity |
+| GL accounts | `GET /gl-accounts` — **shared (NULL) ∪ entity's own** (`include_shared=True`) | create + ERP sync use `get_entity_id`: consolidated view → NULL (shared), entity selected → entity-specific |
+| Virtual cards | `GET /cards`, `/cards/dashboard` (active + spend) | generate → the invoice's entity |
+| Dashboard | `GET /dashboard` — every Invoice/Payment/Exception query | n/a |
+
+Control-plane `CardRebate` KPIs (payments summary, card dashboard, dashboard
+rebates) stay **org-wide** — rebates live in the control DB, cross-DB from the
+tenant's entities. Invoice-id-keyed metrics (dashboard processing-time) inherit
+the scope from the scoped invoice query they consume.
+
+### Frontend
+
+- `frontend/src/lib/entity.ts` — tenant-scoped localStorage selection (key
+  `selected_entity_id:<slug>`, so a stale entity id never leaks across
+  subdomains). `getSelectedEntityId()` returns `null` for the `all` view.
+- `frontend/src/lib/api.ts` — sends `X-Entity-ID` on every request/blob when a
+  specific entity is selected.
+- `frontend/src/lib/stores/entity.svelte.ts` — loads `GET /api/entities`, tracks
+  the selection, resets a stale selection to consolidated, and `select()`
+  persists + reloads (pages fetch in `$effect`, not SvelteKit `load`, so a hard
+  reload is the simplest correct way to re-scope the whole app at once).
+- `frontend/src/lib/components/layout/EntitySwitcher.svelte` — sidebar dropdown
+  (All entities + each entity, Default first). Renders **only when the tenant
+  has >1 entity**, so a single-entity tenant sees the pre-multi-entity UI.
+
+### Deferred from Phase 2
+
+- **CFO analytics (`app/api/analytics.py`) → Phase 2b.** The cashflow forecast,
+  what-if, cash position, drill-downs, exports, and forecast variance are one
+  cohesive projection feature whose forecast math needs careful per-entity
+  treatment; a consolidated default is the natural CFO view until then. The
+  durable fix: thread `get_entity_id` + `apply_entity_scope` through every
+  Invoice/Payment/PaymentSchedule query in that file (same pattern as
+  `dashboard.py`) and add per-entity forecast tests. Trigger: when a customer
+  needs per-subsidiary cash forecasting.
+- **Per-entity workflow selection → Phase 3.** `workflow_definitions` carries an
+  `entity_id` (Phase 1 backfill) but is **not** scoped: the workflow engine
+  picks the active/default definition by `organization_id`, and there's one
+  `is_default` per org. Scoping the list without teaching
+  `create_workflow_instance` to choose the entity's workflow (and rethinking
+  one-default-per-org → per-entity) would be incoherent. Folded into the Phase 3
+  engine work below.
 
 ## API
 
@@ -88,13 +167,13 @@ no-op behaviorally — a single-entity tenant behaves exactly as before.
 
 Reads are open to all roles because the Phase 2 entity selector needs the list.
 
-## Phase 2+ (not yet built)
+## Remaining phases
 
-- **Scoping + selector** — `get_entity_id` dependency (reads `X-Entity-ID`,
-  validates it belongs to the tenant, accepts `all`) + an
-  `apply_entity_scope(query, Model, entity_id)` helper across list/aggregate
-  endpoints; sidebar entity switcher; per-entity dashboards + an "All entities
-  (consolidated)" view (currency-aware via the multi-currency reporting
-  rollups). Seeded demo rows already sit under the Default entity.
-- **Phase 3** — entity-level COA wired into extraction + bulk-recode.
+- **Phase 2b** — CFO analytics (`analytics.py`) entity scoping. See *Deferred
+  from Phase 2* above.
+- **Phase 3** — entity-level COA wired into the extraction catalog (shared ∪
+  entity) + bulk-recode validation, **and** per-entity workflow selection
+  (teach `create_workflow_instance` to pick the entity's active/default
+  definition; rethink one-`is_default`-per-org → per-entity). See *Deferred from
+  Phase 2*.
 - **Phase 4** — inter-company invoice routing (entity A payable by entity B).
