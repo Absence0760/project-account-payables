@@ -1,4 +1,5 @@
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/models/payment.dart';
 import 'package:ap_mobile/models/user.dart';
@@ -66,6 +67,51 @@ class InvoiceApi {
       'reason': reason,
     });
     return Invoice.fromJson(data);
+  }
+}
+
+class ContractApi {
+  static final _api = ApiClient();
+
+  static Future<List<Contract>> list({
+    String? status,
+    String? contractType,
+    String? search,
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    final params = <String, String>{
+      'page': page.toString(),
+      'page_size': pageSize.toString(),
+    };
+    if (status != null) params['status'] = status;
+    if (contractType != null) params['contract_type'] = contractType;
+    if (search != null) params['search'] = search;
+
+    final items = await _api.getList('/contracts', params);
+    return items
+        .map((e) => Contract.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  static Future<Contract> getById(String id) async {
+    final data = await _api.get('/contracts/$id');
+    return Contract.fromJson(data);
+  }
+
+  static Future<Contract> activate(String id) async {
+    final data = await _api.post('/contracts/$id/activate');
+    return Contract.fromJson(data);
+  }
+
+  static Future<Contract> terminate(String id) async {
+    final data = await _api.post('/contracts/$id/terminate');
+    return Contract.fromJson(data);
+  }
+
+  static Future<Contract> cancel(String id) async {
+    final data = await _api.post('/contracts/$id/cancel');
+    return Contract.fromJson(data);
   }
 }
 

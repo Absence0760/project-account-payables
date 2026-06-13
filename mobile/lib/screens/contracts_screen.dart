@@ -1,0 +1,135 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+
+import 'package:ap_mobile/models/contract.dart';
+import 'package:ap_mobile/screens/contract_detail_screen.dart';
+import 'package:ap_mobile/stores/contract_store.dart';
+import 'package:ap_mobile/widgets/contract_list_tile.dart';
+
+class ContractsScreen extends StatefulWidget {
+  const ContractsScreen({super.key});
+
+  @override
+  State<ContractsScreen> createState() => _ContractsScreenState();
+}
+
+class _ContractsScreenState extends State<ContractsScreen> {
+  final _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      ContractStore.instance.fetch();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Contracts'),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(56),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: SearchBar(
+              controller: _searchController,
+              hintText: 'Search contracts...',
+              leading: const Icon(Icons.search, size: 20),
+              onChanged: (q) => ContractStore.instance.setSearch(
+                q.isEmpty ? null : q,
+              ),
+              elevation: WidgetStateProperty.all(0),
+            ),
+          ),
+        ),
+      ),
+      body: Column(
+        children: [
+          // Status filter chips
+          SizedBox(
+            height: 48,
+            child: ListenableBuilder(
+              listenable: ContractStore.instance,
+              builder: (context, _) {
+                final current = ContractStore.instance.statusFilter;
+                return ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  children: [
+                    _filterChip('All', null, current),
+                    _filterChip('Draft', 'draft', current),
+                    _filterChip('Active', 'active', current),
+                    _filterChip('Expired', 'expired', current),
+                    _filterChip('Terminated', 'terminated', current),
+                    _filterChip('Cancelled', 'cancelled', current),
+                  ],
+                );
+              },
+            ),
+          ),
+
+          // Contract list
+          Expanded(
+            child: ListenableBuilder(
+              listenable: ContractStore.instance,
+              builder: (context, _) {
+                final store = ContractStore.instance;
+
+                if (store.loading && store.contracts.isEmpty) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                if (store.contracts.isEmpty) {
+                  return const Center(child: Text('No contracts found'));
+                }
+
+                return RefreshIndicator(
+                  onRefresh: store.fetch,
+                  child: ListView.separated(
+                    itemCount: store.contracts.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final contract = store.contracts[index];
+                      return ContractListTile(
+                        contract: contract,
+                        onTap: () => _openDetail(contract),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _filterChip(String label, String? value, String? current) {
+    final selected = current == value;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: FilterChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: (_) => ContractStore.instance.setStatusFilter(value),
+      ),
+    );
+  }
+
+  void _openDetail(Contract contract) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ContractDetailScreen(contractId: contract.id),
+      ),
+    );
+  }
+}

@@ -11,6 +11,7 @@ import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/screens/home_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
+import 'package:ap_mobile/stores/contract_store.dart';
 import 'package:ap_mobile/stores/dashboard_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 
@@ -85,6 +86,9 @@ MockClient _homeClient(
     if (req.method == 'GET' && path == '/api/payments') {
       return _json({'payments': <Map<String, dynamic>>[]});
     }
+    if (req.method == 'GET' && path == '/api/contracts') {
+      return _json({'items': <Map<String, dynamic>>[]});
+    }
     return http.Response('not found', 404);
   });
 }
@@ -102,6 +106,7 @@ void main() {
   setUp(() async {
     DashboardStore.instance.debugReset();
     InvoiceStore.instance.debugReset();
+    ContractStore.instance.debugReset();
     await OfflineStore.instance.clear();
     FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();
@@ -174,50 +179,64 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   }
 
-  testWidgets('clerk sees Dashboard / Invoices / Settings only (3 tabs)',
+  testWidgets('clerk sees Dashboard / Invoices / Contracts / Settings (4 tabs)',
       (tester) async {
     await loginAs(['ap_clerk']);
     await pumpHome(tester);
 
     expect(find.byType(BottomNavigationBar), findsOneWidget);
-    // Clerk: no approval / payment privileges -> 3 tabs only.
+    // Clerk: no approval / payment privileges, but Contracts is all-roles.
     expect(
       navLabels(tester),
-      ['Dashboard', 'Invoices', 'Settings'],
+      ['Dashboard', 'Invoices', 'Contracts', 'Settings'],
     );
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
-  testWidgets('cfo sees Payments but not Approvals (4 tabs)', (tester) async {
+  testWidgets('cfo sees Payments but not Approvals (5 tabs)', (tester) async {
     await loginAs(['cfo']);
     await pumpHome(tester);
 
     expect(
       navLabels(tester),
-      ['Dashboard', 'Invoices', 'Payments', 'Settings'],
+      ['Dashboard', 'Invoices', 'Contracts', 'Payments', 'Settings'],
     );
   });
 
-  testWidgets('ap_manager sees all five tabs including Approvals and Payments',
+  testWidgets('ap_manager sees all six tabs including Approvals and Payments',
       (tester) async {
     await loginAs(['ap_manager']);
     await pumpHome(tester);
 
     expect(
       navLabels(tester),
-      ['Dashboard', 'Invoices', 'Approvals', 'Payments', 'Settings'],
+      [
+        'Dashboard',
+        'Invoices',
+        'Contracts',
+        'Approvals',
+        'Payments',
+        'Settings',
+      ],
     );
   });
 
-  testWidgets('admin sees all five tabs', (tester) async {
+  testWidgets('admin sees all six tabs', (tester) async {
     await loginAs(['admin']);
     await pumpHome(tester);
 
-    expect(navLabels(tester), hasLength(5));
+    expect(navLabels(tester), hasLength(6));
     expect(
       navLabels(tester),
-      ['Dashboard', 'Invoices', 'Approvals', 'Payments', 'Settings'],
+      [
+        'Dashboard',
+        'Invoices',
+        'Contracts',
+        'Approvals',
+        'Payments',
+        'Settings',
+      ],
     );
   });
 
@@ -241,7 +260,7 @@ void main() {
     await loginAs(['admin']);
     await pumpHome(tester);
 
-    // Move to the Settings tab (last item, index 4 for admin).
+    // Move to the Settings tab (last item, index 5 for admin).
     await tester.tap(navItem('Settings'));
     await tester.pump();
 
@@ -249,7 +268,7 @@ void main() {
       tester
           .widget<BottomNavigationBar>(find.byType(BottomNavigationBar))
           .currentIndex,
-      4,
+      5,
     );
     // IndexedStack keeps all children mounted; Settings renders the logged-in
     // user's email in its profile header.

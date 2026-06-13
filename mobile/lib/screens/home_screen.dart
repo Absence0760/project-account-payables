@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/screens/approvals_screen.dart';
+import 'package:ap_mobile/screens/contracts_screen.dart';
 import 'package:ap_mobile/screens/dashboard_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/screens/payments_screen.dart';
@@ -21,6 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final screens = <Widget>[
       const DashboardScreen(),
       const InvoicesScreen(),
+      const ContractsScreen(),
     ];
     if (AuthStore.instance.canApprove) {
       screens.add(const ApprovalsScreen());
@@ -41,6 +43,10 @@ class _HomeScreenState extends State<HomeScreen> {
       const BottomNavigationBarItem(
         icon: Icon(Icons.receipt_long),
         label: 'Invoices',
+      ),
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.description),
+        label: 'Contracts',
       ),
     ];
     if (AuthStore.instance.canApprove) {
