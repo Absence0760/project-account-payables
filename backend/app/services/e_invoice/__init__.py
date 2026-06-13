@@ -17,6 +17,8 @@ from __future__ import annotations
 from app.services.e_invoice.cii import parse_cii
 from app.services.e_invoice.detect import DetectedFormat, detect_format
 from app.services.e_invoice.facturx import extract_embedded_cii_xml
+from app.services.e_invoice.generate import generate_ubl
+from app.services.e_invoice.mapper import BuyerIdentity, invoice_to_einvoice_document
 from app.services.e_invoice.model import (
     EInvoiceDocument,
     EInvoiceFormat,
@@ -25,6 +27,11 @@ from app.services.e_invoice.model import (
     EInvoiceTax,
 )
 from app.services.e_invoice.parse import parse_e_invoice
+from app.services.e_invoice.tax_rules import (
+    validate_tax_document,
+    validate_tax_id,
+    validate_tax_rate,
+)
 from app.services.e_invoice.ubl import parse_ubl
 from app.services.e_invoice.validate import (
     EInvoiceValidationError,
@@ -49,4 +56,10 @@ __all__ = [
     "EInvoiceValidationError",
     "FieldError",
     "parse_e_invoice",
+    "generate_ubl",
+    "invoice_to_einvoice_document",
+    "BuyerIdentity",
+    "validate_tax_document",
+    "validate_tax_id",
+    "validate_tax_rate",
 ]

@@ -40,8 +40,15 @@ class EInvoiceValidationError(ValueError):
         super().__init__("; ".join(f"{e.field}: {e.code}" for e in errors))
 
 
-def validate_document(doc: EInvoiceDocument) -> list[FieldError]:
-    """Return a list of structural problems; empty list means valid."""
+def validate_document(doc: EInvoiceDocument, *, check_tax: bool = True) -> list[FieldError]:
+    """Return a list of problems; empty list means valid.
+
+    Structural checks run first (required fields, currency, monetary identity).
+    When ``check_tax`` is True (the default), country-specific tax rules from
+    :mod:`app.services.e_invoice.tax_rules` are appended — the same PII-free
+    :class:`FieldError` shape. Pass ``check_tax=False`` to get the historical
+    structural-only behaviour (inbound parse callers can opt out).
+    """
     errors: list[FieldError] = []
 
     if not doc.invoice_number:
@@ -88,11 +95,18 @@ def validate_document(doc: EInvoiceDocument) -> list[FieldError]:
                 )
             )
 
+    if check_tax:
+        # Imported lazily to avoid a circular import: tax_rules imports
+        # FieldError from this module.
+        from app.services.e_invoice.tax_rules import validate_tax_document
+
+        errors.extend(validate_tax_document(doc))
+
     return errors
 
 
-def assert_valid(doc: EInvoiceDocument) -> None:
+def assert_valid(doc: EInvoiceDocument, *, check_tax: bool = True) -> None:
     """Raise :class:`EInvoiceValidationError` if the document is invalid."""
-    errors = validate_document(doc)
+    errors = validate_document(doc, check_tax=check_tax)
     if errors:
         raise EInvoiceValidationError(errors)
