@@ -1,5 +1,6 @@
 from app.models.base import Base
 from app.models.credit_memo import CreditMemo
+from app.models.entity import Entity
 from app.models.exception import Exception as APException
 from app.models.international_tax import IntlTaxRecord, TaxKind
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
@@ -19,6 +20,7 @@ from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, 
 
 __all__ = [
     "Base",
+    "Entity",
     "Organization",
     "User",
     "Role",

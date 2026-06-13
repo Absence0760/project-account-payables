@@ -193,7 +193,9 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, Notification
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, Notification
+
+**Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 1 only — no query scoping/selector yet. See `docs/multi-entity.md`.
 
 ### RBAC roles
 
@@ -257,6 +259,7 @@ Full list in `backend/app/config.py`.
 | Local AWS testing | `docs/local-aws-localstack.md` — LocalStack via Docker for SQS/SES/CloudWatch/S3-ObjectLock; `pnpm aws:up`, `AP_AWS_ENDPOINT_URL` |
 | Local email preview | `docs/local-email-mailpit.md` — Mailpit via Docker for the `smtp` email adapter; `pnpm mail:up`, `AP_EMAIL_PROVIDER=smtp` |
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |
+| Multi-entity | `docs/multi-entity.md` — subsidiaries within a tenant (`entity_id`, Default entity, Phase 1) |
 | Architecture | `docs/architecture.md` — system overview |
 | Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |

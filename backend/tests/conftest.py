@@ -257,8 +257,9 @@ async def _ensure_test_tenants() -> dict:
                 org_id = org.id
             # Always (re)create tenant tables — idempotent (checkfirst) and
             # backfills any table missing from a DB provisioned earlier with an
-            # incomplete model metadata.
-            await _create_tenant_tables(db_name)
+            # incomplete model metadata. Pass org_id so the Default entity is
+            # seeded (multi-entity Phase 1).
+            await _create_tenant_tables(db_name, organization_id=org_id)
 
             users: dict = {}
             async with ctrl_mk() as s:
@@ -389,6 +390,7 @@ class RealDB:
 async def realdb():
     """Function-scoped real-Postgres handle; truncates tenant data per test."""
     import asyncpg
+    from sqlalchemy import text
     from sqlalchemy.exc import OperationalError
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -434,6 +436,17 @@ async def realdb():
                     "WHERE datname = current_database() AND pid <> pg_backend_pid()"
                 )
                 await conn.exec_driver_sql(truncate)
+                # Multi-entity (Phase 1): TRUNCATE wipes `entities` too, but every
+                # tenant is expected to always have its Default entity. Restore it
+                # so each test starts from the same single-entity baseline.
+                await conn.execute(
+                    text(
+                        "INSERT INTO entities "
+                        "(id, organization_id, name, slug, is_default, is_active) "
+                        "VALUES (:id, :org, 'Default', 'default', true, true)"
+                    ),
+                    {"id": uuid.uuid4(), "org": info.org_id},
+                )
         finally:
             await engine.dispose()
 

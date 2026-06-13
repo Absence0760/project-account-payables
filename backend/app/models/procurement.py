@@ -6,10 +6,10 @@ from sqlalchemy import Date, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, EntityMixin, TimestampMixin
 
 
-class PurchaseOrder(Base, TimestampMixin):
+class PurchaseOrder(Base, EntityMixin, TimestampMixin):
     __tablename__ = "purchase_orders"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -44,7 +44,7 @@ class POLineItem(Base, TimestampMixin):
     purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="line_items")
 
 
-class GoodsReceipt(Base, TimestampMixin):
+class GoodsReceipt(Base, EntityMixin, TimestampMixin):
     __tablename__ = "goods_receipts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

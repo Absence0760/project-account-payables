@@ -5,10 +5,10 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, EntityMixin, TimestampMixin
 
 
-class WorkflowDefinition(Base, TimestampMixin):
+class WorkflowDefinition(Base, EntityMixin, TimestampMixin):
     __tablename__ = "workflow_definitions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

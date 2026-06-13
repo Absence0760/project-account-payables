@@ -15,6 +15,7 @@ from app.api import (
     credit_memos,
     dashboard,
     email_intake,
+    entities,
     erp_webhook,
     exceptions,
     gl_accounts,
@@ -178,6 +179,7 @@ app.include_router(audit.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
+app.include_router(entities.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")
 app.include_router(exceptions.router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")

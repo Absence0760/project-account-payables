@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, EntityMixin, TimestampMixin
 
 
 class InvoiceStatus(enum.StrEnum):
@@ -36,7 +36,7 @@ class InvoiceStatus(enum.StrEnum):
     failed = "failed"
 
 
-class Invoice(Base, TimestampMixin):
+class Invoice(Base, EntityMixin, TimestampMixin):
     __tablename__ = "invoices"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass
 
 import asyncpg
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import settings
@@ -84,7 +84,7 @@ async def _drop_postgres_database(db_name: str) -> None:
         await conn.close()
 
 
-async def _create_tenant_tables(db_name: str) -> None:
+async def _create_tenant_tables(db_name: str, organization_id: uuid.UUID | None = None) -> None:
     tenant_url = _make_tenant_url(db_name)
     engine = create_async_engine(tenant_url)
     tenant_tables = [
@@ -108,6 +108,20 @@ async def _create_tenant_tables(db_name: str) -> None:
 
         for stmt in install_statements():
             await conn.exec_driver_sql(stmt)
+
+        # Multi-entity: every tenant gets a single Default entity that new rows
+        # belong to (migration 0029 does this for existing tenants). Idempotent
+        # — the uq_entities_one_default index also guards against a second one.
+        if organization_id is not None:
+            await conn.execute(
+                text(
+                    "INSERT INTO entities "
+                    "(id, organization_id, name, slug, is_default, is_active) "
+                    "SELECT :id, :org, 'Default', 'default', true, true "
+                    "WHERE NOT EXISTS (SELECT 1 FROM entities WHERE is_default)"
+                ),
+                {"id": uuid.uuid4(), "org": organization_id},
+            )
     await engine.dispose()
     logger.info("Created tenant tables in: %s", db_name)
 
@@ -206,7 +220,7 @@ async def _provision_into(
         await session.commit()
         logger.info("Provisioned org %s (%s) + admin user %s", slug, org_id, admin_email)
 
-    await _create_tenant_tables(db_name)
+    await _create_tenant_tables(db_name, organization_id=org_id)
 
     return ProvisioningResult(
         organization_id=org_id,

@@ -5,10 +5,10 @@ from sqlalchemy import Date, DateTime, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, EntityMixin, TimestampMixin
 
 
-class Vendor(Base, TimestampMixin):
+class Vendor(Base, EntityMixin, TimestampMixin):
     __tablename__ = "vendors"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

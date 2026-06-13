@@ -5,10 +5,10 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, EntityMixin, TimestampMixin
 
 
-class Exception(Base, TimestampMixin):
+class Exception(Base, EntityMixin, TimestampMixin):
     __tablename__ = "exceptions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

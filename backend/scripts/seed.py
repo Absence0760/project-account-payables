@@ -2024,6 +2024,50 @@ async def seed_tenant_lean(db_name: str, org_id: uuid.UUID, tenant_label: str):
         await engine.dispose()
 
 
+async def finalize_entities(db_name: str, org_id: uuid.UUID):
+    """Multi-entity Phase 1: ensure a Default entity exists in the tenant and
+    assign every seeded business row to it (so local/e2e demo data sits under a
+    single entity, exactly as migration 0029 does for existing tenants). Mirrors
+    the migration's table list; gl_accounts is intentionally skipped — a NULL
+    entity_id there means the account is shared across entities.
+    """
+    backfill_tables = [
+        "invoices",
+        "vendors",
+        "purchase_orders",
+        "goods_receipts",
+        "payments",
+        "payment_runs",
+        "credit_memos",
+        "exceptions",
+        "workflow_definitions",
+        "virtual_cards",
+    ]
+    engine = create_async_engine(_make_tenant_url(db_name))
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO entities "
+                    "(id, organization_id, name, slug, is_default, is_active) "
+                    "SELECT :id, :org, 'Default', 'default', true, true "
+                    "WHERE NOT EXISTS (SELECT 1 FROM entities WHERE is_default)"
+                ),
+                {"id": uuid.uuid4(), "org": org_id},
+            )
+            default_id = (
+                await conn.execute(text("SELECT id FROM entities WHERE is_default LIMIT 1"))
+            ).scalar_one()
+            for table in backfill_tables:
+                await conn.execute(
+                    text(f"UPDATE {table} SET entity_id = :eid WHERE entity_id IS NULL"),
+                    {"eid": default_id},
+                )
+    finally:
+        await engine.dispose()
+    print("  Assigned seeded rows to the Default entity")
+
+
 async def _load_seeded_roles() -> dict[str, "Role"]:
     """Fetch the four role rows seeded by ``seed_control_plane``."""
     async with control_session_factory() as session:
@@ -2062,6 +2106,7 @@ async def seed(lean: bool = False):
         await create_database(db_name)
         await create_tenant_tables(db_name)
         await tenant_seeder(db_name, org_id, label)
+        await finalize_entities(db_name, org_id)
 
     await control_engine.dispose()
 

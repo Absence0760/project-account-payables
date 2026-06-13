@@ -6,10 +6,10 @@ from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, EntityMixin, TimestampMixin
 
 
-class CreditMemo(Base, TimestampMixin):
+class CreditMemo(Base, EntityMixin, TimestampMixin):
     """Vendor-issued credit reducing what's owed.
 
     Lifecycle: ``open`` (issued, unapplied) → ``applied`` (linked to an

@@ -354,12 +354,27 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
         tenant_engine = create_async_engine(_make_tenant_url(db_name))
         try:
             async with tenant_engine.connect() as conn:
-                for tbl in ("invoices", "vendors", "payments"):
+                for tbl in ("invoices", "vendors", "payments", "entities"):
                     present = await conn.exec_driver_sql(f"SELECT to_regclass('{tbl}')")
                     assert present.scalar() is not None, f"tenant table {tbl} missing"
                 # And a control-plane table must NOT have been created here.
                 orgs_here = await conn.exec_driver_sql("SELECT to_regclass('organizations')")
                 assert orgs_here.scalar() is None
+                # Multi-entity: provisioning seeds exactly one Default entity,
+                # owned by the new org, and the business tables carry entity_id.
+                default_count = await conn.exec_driver_sql(
+                    "SELECT count(*) FROM entities WHERE is_default"
+                )
+                assert default_count.scalar() == 1
+                default_org = await conn.exec_driver_sql(
+                    "SELECT organization_id FROM entities WHERE is_default"
+                )
+                assert default_org.scalar() == result.organization_id
+                has_col = await conn.exec_driver_sql(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'invoices' AND column_name = 'entity_id'"
+                )
+                assert has_col.scalar() == 1
         finally:
             await tenant_engine.dispose()
     finally:
