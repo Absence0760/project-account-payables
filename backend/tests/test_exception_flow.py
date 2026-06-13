@@ -45,6 +45,7 @@ def _invoice(**overrides):
         status=InvoiceStatus.new,
         po_number=None,
         po_match=None,
+        contract_id=None,
         remit_to_address=None,
         warnings=None,
     )

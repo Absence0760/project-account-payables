@@ -3,18 +3,24 @@
 These are pure (no DB, no Redis), so they always run.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
 from app.models.notification import (
+    EVENT_CONTRACT_RENEWAL_DUE,
     EVENT_INVOICE_APPROVED,
     EVENT_INVOICE_ASSIGNED,
     EVENT_INVOICE_PAID,
     EVENT_INVOICE_REJECTED,
     NOTIFICATION_EVENT_TYPES,
 )
-from app.services.notification_templates import InvoiceContext, render
+from app.services.notification_templates import (
+    InvoiceContext,
+    render,
+    render_contract_renewal,
+)
 
 # Fields that must NEVER appear in a notification subject/body (PII / banking).
 _FORBIDDEN_PII = [
@@ -37,6 +43,20 @@ def _ctx() -> InvoiceContext:
 
 def test_every_event_renders():
     for event_type in NOTIFICATION_EVENT_TYPES:
+        if event_type == EVENT_CONTRACT_RENEWAL_DUE:
+            # Contract renewal carries a contract context, not an invoice one, so
+            # it is pre-rendered by its own function and handed to
+            # notify_event(rendered=...) — it never flows through render().
+            rendered = render_contract_renewal(
+                contract_number="MSA-2026-007",
+                vendor_name="Globex Corp",
+                end_date=date(2026, 12, 31),
+                days_until=14,
+            )
+            assert rendered.title
+            assert rendered.body_text
+            assert "MSA-2026-007" in rendered.body_text
+            continue
         rendered = render(event_type, _ctx())
         assert rendered.title
         assert rendered.body_text

@@ -64,6 +64,7 @@ def _fake_invoice(*, po_number="PO-001", amount=100.0, status_value="ready_for_r
         po_number=po_number,
         amount=amount,
         po_match=None,
+        contract_id=None,
         status=SimpleNamespace(value=status_value),
     )
 
