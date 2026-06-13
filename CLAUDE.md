@@ -362,6 +362,20 @@ below or in `## Project invariants` — this is the index.)
 12. **Docs-as-code.** A behaviour, command, env var, port, or convention change
     updates its docs in the same turn — deferred docs are drift. See [Every
     change must update docs and tests](#every-change-must-update-docs-and-tests).
+13. **One worktree per concurrent session; merge it back to `main`.** When more
+    than one Claude (or person) works this repo at once, each session runs in its
+    own git worktree (`claude --worktree <name>`) — never two sessions in the
+    shared checkout. The scope-guard is path-granular, not hunk-granular, so two
+    sessions editing the *same file* in one checkout silently capture each
+    other's edits (a path-scoped commit grabs whatever is in the one shared tree);
+    a worktree is the only real fix. Then **consolidate**: a worktree commits on
+    its own branch and only reaches `main` via an explicit `git merge` from the
+    primary checkout — retiring a worktree does NOT merge it. Before ending such
+    work, run `git branch --no-merged main` and merge anything still off `main`.
+    The `SessionStart` hook `.claude/hooks/unmerged-worktree-check.sh` is the
+    backstop: it warns at every session start about branches holding commits not
+    on `main` — when it fires, surface it and offer to consolidate. See [Running
+    concurrent sessions — use a worktree](#running-concurrent-sessions--use-a-worktree).
 
 ## Every change must update docs and tests
 
