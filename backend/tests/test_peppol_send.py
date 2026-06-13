@@ -123,6 +123,105 @@ async def test_send_happy_path_persists_row_and_one_audit(realdb):
 
 
 @pytest.mark.asyncio
+async def test_send_idempotent_concurrent_collision(realdb, monkeypatch):
+    """Exercise the DB-level IntegrityError race branch (peppol_send.py 134-141).
+
+    The authoritative idempotency guarantee is the partial unique index, not the
+    application-level short-circuit. Here a live row already exists, but we force
+    the send past the short-circuit (patch `_select_live_outbound` to return None
+    once) so the flush hits the real index → IntegrityError → rollback → reselect
+    returns the committed racer with `already_sent=True`, and the adapter is never
+    called.
+    """
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _seed_invoice(mk, org_id)
+    _, items = await _load(mk, inv_id)
+
+    # Commit a live 'sending' row first — this is the row the racer should win.
+    existing_id = uuid.uuid4()
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        s.add(
+            PeppolTransmission(
+                id=existing_id,
+                invoice_id=inv_id,
+                direction="outbound",
+                participant_scheme=_RECEIVER.scheme,
+                participant_value=_RECEIVER.value,
+                sender_scheme=_SENDER.scheme,
+                sender_value=_SENDER.value,
+                doc_type_id="dt",
+                process_id="pr",
+                business_message_id=inv.correlation_id.hex,
+                status="sending",
+                provider="mock",
+                amount=Decimal("100.00"),
+                currency="USD",
+                organization_id=org_id,
+                entity_id=inv.entity_id,
+            )
+        )
+        await s.commit()
+
+    import app.services.peppol_adapters.mock_adapter as mod
+    import app.services.peppol_send as send_mod
+
+    real_select = send_mod._select_live_outbound
+    state = {"first": True}
+
+    async def select_skip_once(db, invoice_id):
+        # First call (the short-circuit) returns None to force the insert path;
+        # the rollback-reselect call uses the real selector and finds the racer.
+        if state["first"]:
+            state["first"] = False
+            return None
+        return await real_select(db, invoice_id)
+
+    monkeypatch.setattr(send_mod, "_select_live_outbound", select_skip_once)
+
+    send_calls = {"n": 0}
+    orig_send = mod.MockPeppolAdapter.send
+
+    async def counting_send(self, request):
+        send_calls["n"] += 1
+        return await orig_send(self, request)
+
+    mod.MockPeppolAdapter.send = counting_send
+    try:
+        async with mk() as s:
+            inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+            transmission, already = await send_invoice_over_peppol(
+                s,
+                invoice=inv,
+                line_items=items,
+                buyer=_BUYER,
+                sender_id=_SENDER,
+                receiver_id=_RECEIVER,
+                organization_id=org_id,
+                entity_id=inv.entity_id,
+                actor_id=uuid.uuid4(),
+                peppol_config=None,
+            )
+    finally:
+        mod.MockPeppolAdapter.send = orig_send
+
+    assert already is True
+    assert transmission.id == existing_id  # the committed racer, not a new row
+    assert send_calls["n"] == 0  # the network was never touched
+
+    async with mk() as s:
+        rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(PeppolTransmission)
+                .where(PeppolTransmission.invoice_id == inv_id)
+            )
+        ).scalar_one()
+        assert rows == 1  # the IntegrityError rolled back the second insert
+
+
+@pytest.mark.asyncio
 async def test_send_is_idempotent(realdb):
     """Two sends → ONE live row, ONE adapter.send call, ONE audit row."""
     mk = realdb.sessionmaker("a")
@@ -274,8 +373,15 @@ async def test_failed_send_allows_retry(realdb):
     from app.services.peppol_adapters.base import TransmissionResult
 
     async def failing_send(self, request):
+        # The failing AP still returns a non-NULL message_id — the send service
+        # must NOT persist it on the failed row, or the supported retry (which
+        # reuses the same business_message_id, so a real AP echoes the same
+        # MessageId) would collide on uq_peppol_message_id → IntegrityError.
         return TransmissionResult(
-            success=False, status="failed", failure_reason="gateway_error:500"
+            success=False,
+            status="failed",
+            message_id="ap-msg-same",
+            failure_reason="gateway_error:500",
         )
 
     orig = mod.MockPeppolAdapter.send
@@ -297,8 +403,23 @@ async def test_failed_send_allows_retry(realdb):
             )
         assert already is False
         assert t1.status == "failed"
+        assert t1.message_id is None  # never persisted on a failed row
     finally:
         mod.MockPeppolAdapter.send = orig
+
+    # The failure branch wrote exactly one PII-free audit row.
+    async with mk() as s:
+        failed_audits = (
+            await s.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(
+                    AuditLog.entity_id == inv_id,
+                    AuditLog.action == "invoice.peppol_send_failed",
+                )
+            )
+        ).scalar_one()
+        assert failed_audits == 1
 
     # Retry now succeeds (the failed row does not block the live index).
     async with mk() as s:
@@ -331,3 +452,57 @@ async def test_failed_send_allows_retry(realdb):
             )
         ).scalar_one()
         assert live == 1
+
+
+@pytest.mark.asyncio
+async def test_receiver_doctype_unsupported_refuses_before_persisting(realdb):
+    """A receiver registered for a DIFFERENT doc type is refused at the SMP step,
+    before any live row or audit row is written."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _seed_invoice(mk, org_id)
+    _, items = await _load(mk, inv_id)
+
+    import app.services.peppol_adapters.mock_adapter as mod
+    from app.services.peppol_adapters.base import ParticipantCapability
+
+    async def resolve_other_doctype(self, participant_id):
+        # Registered, but only accepts an Order doc type — not BIS Billing.
+        return ParticipantCapability(
+            participant_id=participant_id,
+            registered=True,
+            access_point_url="https://ap.mock-peppol.invalid/as4",
+            supported_doc_types=("urn:some:other:Order::Order##x::1.0",),
+        )
+
+    orig = mod.MockPeppolAdapter.resolve_participant
+    mod.MockPeppolAdapter.resolve_participant = resolve_other_doctype
+    try:
+        async with mk() as s:
+            inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+            with pytest.raises(PeppolSendError) as excinfo:
+                await send_invoice_over_peppol(
+                    s,
+                    invoice=inv,
+                    line_items=items,
+                    buyer=_BUYER,
+                    sender_id=_SENDER,
+                    receiver_id=_RECEIVER,
+                    organization_id=org_id,
+                    entity_id=inv.entity_id,
+                    actor_id=uuid.uuid4(),
+                    peppol_config=None,
+                )
+        assert excinfo.value.code == "receiver_doctype_unsupported"
+    finally:
+        mod.MockPeppolAdapter.resolve_participant = orig
+
+    async with mk() as s:
+        rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(PeppolTransmission)
+                .where(PeppolTransmission.invoice_id == inv_id)
+            )
+        ).scalar_one()
+        assert rows == 0

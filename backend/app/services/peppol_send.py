@@ -107,14 +107,27 @@ async def send_invoice_over_peppol(
     capability = await adapter.resolve_participant(receiver_id)
     if not capability.registered:
         raise PeppolSendError(capability.unregistered_reason or "receiver_not_registered")
+    # The receiver must actually accept the BIS Billing 3.0 invoice doc type —
+    # the SMP step exists to catch this before we commit a live row + emit. Only
+    # enforce when the AP reported a doc-type set (an empty tuple means the
+    # mock/gateway didn't enumerate, so we don't false-reject).
+    if (
+        capability.supported_doc_types
+        and PEPPOL_BIS_BILLING_DOCTYPE not in capability.supported_doc_types
+    ):
+        raise PeppolSendError("receiver_doctype_unsupported")
 
     business_message_id = invoice.correlation_id.hex
+    # Capture the id BEFORE the flush: an IntegrityError + rollback expires the
+    # ORM `invoice`, so a later `invoice.id` would trigger a lazy reload (IO)
+    # outside the async greenlet → MissingGreenlet. The local is rollback-safe.
+    invoice_id = invoice.id
 
     # 7. Claim the idempotency slot: INSERT 'sending' and flush BEFORE the
     # networked transmit. A concurrent send that already claimed it raises
     # IntegrityError on the partial unique index → return the committed live row.
     transmission = PeppolTransmission(
-        invoice_id=invoice.id,
+        invoice_id=invoice_id,
         direction=_DIRECTION_OUTBOUND,
         participant_scheme=receiver_id.scheme,
         participant_value=receiver_id.value,
@@ -135,7 +148,7 @@ async def send_invoice_over_peppol(
         await db.flush()
     except IntegrityError:
         await db.rollback()
-        racer = await _select_live_outbound(db, invoice.id)
+        racer = await _select_live_outbound(db, invoice_id)
         if racer is not None:
             return racer, True
         raise
@@ -152,9 +165,13 @@ async def send_invoice_over_peppol(
         )
     )
 
-    # 9. Update the row from the adapter outcome.
+    # 9. Update the row from the adapter outcome. A failed send NEVER persists a
+    # message_id (defence in depth alongside the adapter): a non-NULL message_id
+    # on a failed row would occupy `uq_peppol_message_id`, and the supported
+    # failed→retry path reuses the same business_message_id — so a real AP that
+    # echoes the same MessageId on the retry would collide on commit.
     transmission.status = result.status if result.success else "failed"
-    transmission.message_id = result.message_id
+    transmission.message_id = result.message_id if result.success else None
     transmission.failure_reason = result.failure_reason
     transmission.raw_response = result.raw_response
     transmission.transmitted_at = datetime.now(UTC)

@@ -26,7 +26,16 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,6 +82,15 @@ class PeppolTransmission(Base, EntityMixin, TimestampMixin):
     # entity_id comes from EntityMixin; created_at/updated_at from TimestampMixin.
 
     __table_args__ = (
+        # Constrain the enumerated columns at the DB level so a typo (e.g.
+        # 'failure') can't slip past the partial-index predicate (WHERE
+        # status <> 'failed') and strand a live row that never matches.
+        CheckConstraint(
+            "direction IN ('outbound','inbound')", name="ck_peppol_direction"
+        ),
+        CheckConstraint(
+            "status IN ('sending','sent','delivered','failed')", name="ck_peppol_status"
+        ),
         # The single-column ix_peppol_transmissions_{invoice_id,organization_id,
         # entity_id} indexes are auto-created by `index=True` on those columns
         # (and on EntityMixin.entity_id) with the same `ix_<table>_<col>` names

@@ -19,7 +19,9 @@ from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.peppol_transmission import PeppolTransmission
 
 
-async def _seed_invoice(mk, org_id, *, vendor_tax_id=None) -> uuid.UUID:
+async def _seed_invoice(
+    mk, org_id, *, vendor_tax_id=None, status=InvoiceStatus.approved
+) -> uuid.UUID:
     inv_id = uuid.uuid4()
     async with mk() as s:
         s.add(
@@ -34,7 +36,7 @@ async def _seed_invoice(mk, org_id, *, vendor_tax_id=None) -> uuid.UUID:
                 currency="USD",
                 invoice_date=date(2026, 1, 1),
                 subtotal=Decimal("100.00"),
-                status=InvoiceStatus.approved,
+                status=status,
             )
         )
         s.add(
@@ -147,3 +149,38 @@ async def test_peppol_send_rbac_ap_clerk_forbidden(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         resp = await c.post(f"/api/invoices/{inv_id}/peppol-send", json=_BODY)
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_peppol_send_non_approved_invoice_422(realdb):
+    """A 'new' invoice must not be transmittable — PEPPOL send is gated on AP
+    approval like the ERP-send / payment-run paths."""
+    mk = realdb.sessionmaker("a")
+    inv_id = await _seed_invoice(mk, realdb.info("a").org_id, status=InvoiceStatus.new)
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(f"/api/invoices/{inv_id}/peppol-send", json=_BODY)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "invoice_not_approved"
+
+    # No transmission row was written for the rejected status.
+    async with mk() as s:
+        rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(PeppolTransmission)
+                .where(PeppolTransmission.invoice_id == inv_id)
+            )
+        ).scalar_one()
+        assert rows == 0
+
+
+@pytest.mark.asyncio
+async def test_peppol_send_missing_sender_400(realdb):
+    """No sender id in the body AND none in org settings.peppol → 400."""
+    mk = realdb.sessionmaker("a")
+    inv_id = await _seed_invoice(mk, realdb.info("a").org_id)
+    body = {"receiver_scheme": "9930", "receiver_value": "SUPPLIER123"}
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(f"/api/invoices/{inv_id}/peppol-send", json=body)
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "sender participant id is not configured"

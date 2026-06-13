@@ -71,6 +71,12 @@ IMMUTABLE_STATUSES = {
     DBInvoiceStatus.done,
 }
 
+# An invoice may be transmitted over PEPPOL only once it has cleared AP
+# approval (mirrors the ERP-send / payment-run gate). `approved` plus every
+# post-approval state; never `new` / `pending` / `ready_for_review` /
+# `rejected` / `failed`.
+_PEPPOL_SENDABLE_STATUSES = {DBInvoiceStatus.approved} | IMMUTABLE_STATUSES
+
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
@@ -417,6 +423,13 @@ async def peppol_send(
     ).scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # PEPPOL transmission is a compliance-significant outbound to a counterparty
+    # (inserts a row, emits to the network, writes an audit row) — gate it on AP
+    # approval, exactly like the ERP-send / payment-run paths. A new / rejected /
+    # failed invoice must not be transmittable.
+    if invoice.status not in _PEPPOL_SENDABLE_STATUSES:
+        raise HTTPException(status_code=422, detail="invoice_not_approved")
 
     line_items = list(
         (

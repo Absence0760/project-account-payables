@@ -26,11 +26,15 @@ from app.services.peppol_adapters.mock_adapter import MockPeppolAdapter
 
 
 class _FakeResponse:
-    def __init__(self, body, status_code=200):
+    def __init__(self, body, status_code=200, *, raise_json=False):
         self._body = body
         self.status_code = status_code
+        self._raise_json = raise_json
 
     def json(self):
+        if self._raise_json:
+            # Mirror httpx: a non-JSON body raises a ValueError subclass.
+            raise ValueError("not json")
         return self._body
 
 
@@ -262,6 +266,96 @@ async def test_gateway_send_transport_error_is_pii_free():
     assert result.success is False
     assert result.failure_reason == "gateway_transport_error:ConnectError"
     assert "DE123456789" not in (result.failure_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_gateway_resolve_404_returns_not_registered():
+    fake = _fake_async_client([_FakeResponse({}, 404)])
+    adapter = AS4GatewayAdapter({"gateway_url": "https://gw.example", "api_key": "k"})
+    with patch("app.services.peppol_adapters.as4_gateway.httpx.AsyncClient", fake):
+        cap = await adapter.resolve_participant(ParticipantId("9930", "DE123456789"))
+    assert cap.registered is False
+    assert cap.unregistered_reason == "receiver_not_registered"
+
+
+@pytest.mark.asyncio
+async def test_gateway_resolve_4xx_returns_gateway_error():
+    fake = _fake_async_client([_FakeResponse({}, 503)])
+    adapter = AS4GatewayAdapter({"gateway_url": "https://gw.example", "api_key": "k"})
+    with patch("app.services.peppol_adapters.as4_gateway.httpx.AsyncClient", fake):
+        cap = await adapter.resolve_participant(ParticipantId("9930", "DE123456789"))
+    assert cap.registered is False
+    assert cap.unregistered_reason == "gateway_error:503"
+
+
+@pytest.mark.asyncio
+async def test_gateway_resolve_transport_error_is_pii_free():
+    class _Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            raise httpx.ConnectError("down")
+
+    adapter = AS4GatewayAdapter({"gateway_url": "https://gw.example", "api_key": "k"})
+    with patch("app.services.peppol_adapters.as4_gateway.httpx.AsyncClient", _Boom):
+        cap = await adapter.resolve_participant(ParticipantId("9930", "DE123456789"))
+    assert cap.registered is False
+    assert cap.unregistered_reason == "gateway_transport_error:ConnectError"
+    assert "DE123456789" not in (cap.unregistered_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_gateway_send_non_json_2xx_defaults_to_sent():
+    """A 200 with a non-JSON body (CDN/WAF page) is recoverable: default 'sent',
+    no unhandled JSONDecodeError propagating out as a 500."""
+    fake = _fake_async_client([_FakeResponse(None, 200, raise_json=True)])
+    adapter = AS4GatewayAdapter({"gateway_url": "https://gw.example", "api_key": "k"})
+    req = TransmissionRequest(
+        sender=ParticipantId("9930", "DE000000000"),
+        receiver=ParticipantId("9930", "DE123456789"),
+        doc_type_id=PEPPOL_BIS_BILLING_DOCTYPE,
+        process_id=PEPPOL_BIS_BILLING_PROCESSID,
+        payload=b"<Invoice/>",
+        business_message_id="bm-nojson",
+    )
+    with patch("app.services.peppol_adapters.as4_gateway.httpx.AsyncClient", fake):
+        result = await adapter.send(req)
+    assert result.success is True
+    assert result.status == "sent"
+    assert result.message_id is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_send_failed_status_carries_no_message_id():
+    """A 2xx body reporting status='failed' must NOT surface a message_id, so a
+    retry (same business_message_id) can't collide on uq_peppol_message_id."""
+    fake = _fake_async_client(
+        [_FakeResponse({"status": "failed", "message_id": "ap-msg-1", "failure_code": "x"}, 200)]
+    )
+    adapter = AS4GatewayAdapter({"gateway_url": "https://gw.example", "api_key": "k"})
+    req = TransmissionRequest(
+        sender=ParticipantId("9930", "DE000000000"),
+        receiver=ParticipantId("9930", "DE123456789"),
+        doc_type_id=PEPPOL_BIS_BILLING_DOCTYPE,
+        process_id=PEPPOL_BIS_BILLING_PROCESSID,
+        payload=b"<Invoice/>",
+        business_message_id="bm-fail",
+    )
+    with patch("app.services.peppol_adapters.as4_gateway.httpx.AsyncClient", fake):
+        result = await adapter.send(req)
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.message_id is None
+    # On a 2xx with status='failed' the failure_reason is the gateway's
+    # failure_code verbatim (the 'gateway_error:' prefix is only on >=400).
+    assert result.failure_reason == "x"
 
 
 # --------------------------------------------------------------------------

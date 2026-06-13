@@ -44,12 +44,19 @@ from app.utils.passwords import pwd_context
 
 
 def test_control_tables_are_the_expected_control_plane_set():
-    # These five live in the control plane DB and must never be created inside
-    # a tenant DB. A regression here would either leak control tables into
-    # tenant DBs or (if a tenant table were added) silently drop a tenant table
-    # from provisioning.
+    # These live in the control plane DB and must never be created inside a
+    # tenant DB. A regression here would either leak control tables into tenant
+    # DBs or (if a tenant table were added) silently drop a tenant table from
+    # provisioning.
     assert CONTROL_TABLES == frozenset(
-        {"organizations", "users", "roles", "user_roles", "email_verifications"}
+        {
+            "organizations",
+            "users",
+            "roles",
+            "user_roles",
+            "email_verifications",
+            "assistant_usage",
+        }
     )
 
 

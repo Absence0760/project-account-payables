@@ -144,11 +144,21 @@ class AS4GatewayAdapter(PeppolAdapter):
                 status="failed",
                 failure_reason=f"gateway_error:{err.get('code') or response.status_code}",
             )
-        data = response.json() or {}
+        try:
+            data = response.json() or {}
+        except ValueError:
+            # A non-JSON 2xx body (CDN/WAF interception) is recoverable: treat
+            # it as an empty success so status resolves to the default 'sent'.
+            data = {}
         status = data.get("status", "sent")
+        # A failed transmission must NOT carry a message_id: it would land in
+        # the partial unique index `uq_peppol_message_id` and an explicitly-
+        # supported retry (which reuses the same business_message_id, so a real
+        # AP returns the same MessageId) would then collide → IntegrityError.
+        message_id = data.get("message_id") if status != "failed" else None
         return TransmissionResult(
             success=status != "failed",
-            message_id=data.get("message_id"),
+            message_id=message_id,
             status=status,
             failure_reason=data.get("failure_code") if status == "failed" else None,
             raw_response=data,

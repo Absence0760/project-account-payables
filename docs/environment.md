@@ -96,6 +96,9 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_HSTS_MAX_AGE`     | `63072000`                                                               | HSTS `max-age` in seconds. Default is two years — the minimum for `hstspreload.org` submission. |
 | `AP_HSTS_INCLUDE_SUBDOMAINS` | `true`                                                            | Emit the `includeSubDomains` directive (recommended; subdomains inherit the pin). |
 | `AP_HSTS_PRELOAD`     | `true`                                                                   | Emit the `preload` directive. Only meaningful if you actually submit to the preload list. |
+| `AP_PEPPOL_PROVIDER`  | `mock`                                                                   | PEPPOL Access Point adapter — `mock` (in-process, local-first default) or `as4_gateway` (real hosted AP). Per-org override via `Organization.settings.peppol.provider`. |
+| `AP_PEPPOL_GATEWAY_URL` | (empty)                                                                | Base URL of the hosted Access Point. Required when `AP_PEPPOL_PROVIDER=as4_gateway`. |
+| `AP_PEPPOL_GATEWAY_API_KEY` | (empty)                                                            | Gateway API key — no hardcoded fallback; empty disables the gateway (returns `peppol_not_configured`). Store via sops in deployed envs. |
 
 `backend/.env.development` is **committed** with safe local defaults and is
 loaded by `main.py` (the local-dev entrypoint) via `python-dotenv` — no setup

@@ -43,7 +43,8 @@ _STATEMENTS = [
     CREATE TABLE IF NOT EXISTS peppol_transmissions (
         id uuid PRIMARY KEY,
         invoice_id uuid NOT NULL REFERENCES invoices(id),
-        direction varchar(10) NOT NULL DEFAULT 'outbound',
+        direction varchar(10) NOT NULL DEFAULT 'outbound'
+            CONSTRAINT ck_peppol_direction CHECK (direction IN ('outbound','inbound')),
         participant_scheme varchar(20) NOT NULL,
         participant_value varchar(100) NOT NULL,
         sender_scheme varchar(20),
@@ -52,7 +53,8 @@ _STATEMENTS = [
         process_id text NOT NULL,
         business_message_id varchar(100) NOT NULL,
         message_id varchar(255),
-        status varchar(20) NOT NULL DEFAULT 'sending',
+        status varchar(20) NOT NULL DEFAULT 'sending'
+            CONSTRAINT ck_peppol_status CHECK (status IN ('sending','sent','delivered','failed')),
         provider varchar(50) NOT NULL,
         failure_reason varchar(255),
         transmitted_at timestamptz,

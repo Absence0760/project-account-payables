@@ -197,6 +197,7 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `GET`  | `/api/invoices/{id}/extraction`   | * | AI extraction results |
 | `GET`  | `/api/invoices/{id}/export`       | * | Export single invoice |
 | `GET`  | `/api/invoices/{id}/einvoice`     | admin/manager/cfo/ap_clerk | Export invoice as UBL 2.1 XML (`?format=ubl`). 400 bad format, 404 unknown, 422 (PII-free `field:code` list) on tax-invalid; returns `application/xml` attachment. See [`e-invoicing.md`](e-invoicing.md). |
+| `POST` | `/api/invoices/{id}/peppol-send`  | admin/manager/cfo | Transmit invoice as PEPPOL BIS Billing 3.0 via the configured Access Point. Body: `{receiver_scheme, receiver_value, sender_scheme?, sender_value?}`. 200 `PeppolSendResponse` `{transmission_id, status, message_id, direction, already_sent}`; 400 malformed participant / no sender; 403 role; 404 invoice; 422 invoice not approved, tax-invalid, or receiver not registered / doc-type unsupported (PII-free). Idempotent — a re-send of a live transmission returns `already_sent=true` with no second adapter call. See [`peppol.md`](peppol.md). |
 | `GET`  | `/api/invoices/file/{file_key}`   | * | Proxy invoice file from S3 |
 
 ## Audit Trail (auditor export — SOX)

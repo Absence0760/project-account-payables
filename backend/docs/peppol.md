@@ -109,10 +109,20 @@ fresh row.
 
 A second partial unique index dedupes the AP-assigned `message_id`
 (`WHERE message_id IS NOT NULL`) so the future inbound slice can dedupe
-redeliveries the same way payment webhooks dedupe by `event_id`.
+redeliveries the same way payment webhooks dedupe by `event_id`. A **failed**
+send never persists a `message_id` (nulled in both the adapter and the send
+service): the supported failed→retry reuses the same `business_message_id`, so
+a real AP that echoes the same MessageId on the retry would otherwise collide
+on this index.
 
-The model's `__table_args__` partial-index predicates match the
-`0034_peppol_transmissions` migration verbatim, so a fresh tenant built by
+`direction` and `status` carry DB `CHECK` constraints (`ck_peppol_direction` ∈
+`{outbound,inbound}`, `ck_peppol_status` ∈ `{sending,sent,delivered,failed}`)
+so a typo can't slip past the `WHERE status <> 'failed'` index predicate and
+strand a live row. Migration `0034` creates them inline on fresh tenants;
+`0035` is the idempotent catch-up `ADD CONSTRAINT` for tenants already at `0034`.
+
+The model's `__table_args__` (partial-index predicates + the two CHECK
+constraints) match the migrations verbatim, so a fresh tenant built by
 `tenant_provisioning` (`create_all`) is schema-identical to a migrated one.
 
 ## Send route
@@ -127,12 +137,20 @@ Role-gated `require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)` (same gate as
 the e-invoice export). `sender_*` falls back to
 `Organization.settings.peppol.{sender_scheme,sender_value}`.
 
+The invoice must have cleared **AP approval** — only `approved` and the
+post-approval states (`sending_to_erp` … `done`) are transmittable, mirroring
+the ERP-send / payment-run gate. A `new` / `pending` / `rejected` / `failed`
+invoice is refused (`422 invoice_not_approved`) before any row or audit is
+written. The SMP step also refuses a receiver that doesn't advertise the BIS
+Billing 3.0 doc type (`422 receiver_doctype_unsupported`) when the AP returns a
+non-empty `supported_doc_types`.
+
 | Outcome | HTTP |
 |---------|------|
 | transmitted (or idempotent re-send) | 200 |
 | invoice not found | 404 |
 | malformed participant id / no sender configured | 400 |
-| tax-invalid document / receiver not registered | 422 (PII-free detail) |
+| invoice not approved / tax-invalid / receiver not registered / doc-type unsupported | 422 (PII-free detail) |
 | role not permitted | 403 |
 
 A send writes a `invoice.peppol_sent` (or `invoice.peppol_send_failed`) audit
