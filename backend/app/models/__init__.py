@@ -16,6 +16,12 @@ from app.models.peppol_transmission import PeppolTransmission
 from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
 from app.models.quality_inspection import QualityInspection
 from app.models.signup import EmailVerification
+from app.models.supplier_chat import (
+    ChatAuthorRole,
+    ChatThreadStatus,
+    SupplierChatMessage,
+    SupplierChatThread,
+)
 from app.models.tax_filing import Tax1099Filing
 from app.models.user import Role, User, UserRole
 from app.models.vendor import Vendor
@@ -60,6 +66,10 @@ __all__ = [
     "ContractLineItem",
     "ContractStatus",
     "ContractType",
+    "SupplierChatThread",
+    "SupplierChatMessage",
+    "ChatThreadStatus",
+    "ChatAuthorRole",
     "EmailVerification",
     "Notification",
     "Tax1099Filing",
