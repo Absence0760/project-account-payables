@@ -65,6 +65,8 @@ def test_tenant_table_set_excludes_control_and_is_nonempty():
     assert "invoices" in tenant_tables
     assert "vendors" in tenant_tables
     assert "payments" in tenant_tables
+    # PEPPOL transmission log is tenant-scoped — fans out to every tenant DB.
+    assert "peppol_transmissions" in tenant_tables
     assert tenant_tables.isdisjoint(CONTROL_TABLES)
     assert "organizations" not in tenant_tables
     assert "users" not in tenant_tables
@@ -354,9 +356,17 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
         tenant_engine = create_async_engine(_make_tenant_url(db_name))
         try:
             async with tenant_engine.connect() as conn:
-                for tbl in ("invoices", "vendors", "payments", "entities"):
+                for tbl in ("invoices", "vendors", "payments", "entities", "peppol_transmissions"):
                     present = await conn.exec_driver_sql(f"SELECT to_regclass('{tbl}')")
                     assert present.scalar() is not None, f"tenant table {tbl} missing"
+                # The PEPPOL idempotency guard + message-id dedupe must be built
+                # by create_all on a fresh tenant — identical to the migration.
+                peppol_indexes = await conn.exec_driver_sql(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'peppol_transmissions'"
+                )
+                built = {row[0] for row in peppol_indexes}
+                assert "uq_peppol_one_live_per_invoice_direction" in built
+                assert "uq_peppol_message_id" in built
                 # And a control-plane table must NOT have been created here.
                 orgs_here = await conn.exec_driver_sql("SELECT to_regclass('organizations')")
                 assert orgs_here.scalar() is None
