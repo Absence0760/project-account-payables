@@ -169,7 +169,7 @@ backend/
    - `VendorChangeRequest` — staged supplier-portal change to a vendor's `bank_details` / `tax_id`, pending AP approval (migration 0022; fraud-prevention gate — see `docs/supplier-portal.md`)
    - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
    - `Notification` — in-app notification center rows (recipient_user_id, event_type, entity_id, title/body, read_at). See `docs/notifications.md`
-   - `PeppolTransmission` — one row per PEPPOL outbound transmission of an invoice (direction, participant scheme/value, doc_type/process id, business_message_id, message_id, status, provider, amount `Numeric(15,2)`). Idempotency = a partial unique index `uq_peppol_one_live_per_invoice_direction` on `(invoice_id, direction) WHERE status <> 'failed'`. Inbound-ready (direction + partial-unique message_id). See `docs/peppol.md`
+   - `PeppolTransmission` — one row per PEPPOL transmission (direction=outbound|inbound). Outbound idempotency: partial unique index `uq_peppol_one_live_per_invoice_direction` on `(invoice_id, direction) WHERE status <> 'failed'`. Inbound dedupe: partial unique index `uq_peppol_message_id` on `message_id WHERE message_id IS NOT NULL`. See `docs/peppol.md`
 
 **Connection management** (`database.py`):
 - `get_control_db()` → AsyncSession for control plane

@@ -347,6 +347,11 @@ class Settings(BaseSettings):
     # NON-secret dev value so the webhook is locally testable under `pnpm dev`.
     peppol_inbound_enabled: bool = False
     peppol_inbound_signing_secret: str = ""
+    # Hard cap on the inbound webhook body the route will buffer before parsing.
+    # A signed-but-oversized POST is fully read into memory then handed to lxml;
+    # PEPPOL UBL documents are tens of KB, so a few-MB ceiling rejects a
+    # memory-exhaustion attempt (204, no parse) without truncating real invoices.
+    peppol_inbound_max_bytes: int = 4 * 1024 * 1024
 
     # App
     # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not

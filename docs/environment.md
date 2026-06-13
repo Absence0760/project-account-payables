@@ -101,6 +101,7 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_PEPPOL_GATEWAY_API_KEY` | (empty)                                                            | Gateway API key — no hardcoded fallback; empty disables the gateway (returns `peppol_not_configured`). Store via sops in deployed envs. |
 | `AP_PEPPOL_INBOUND_ENABLED` | `false`                                                            | Master switch for the inbound PEPPOL AS4 receive webhook (`POST /api/peppol/inbound/{tenant_slug}`). When `false` the route is a silent no-op 204. `backend/.env.development` sets it `true` so the webhook is locally testable. |
 | `AP_PEPPOL_INBOUND_SIGNING_SECRET` | (empty)                                                     | HMAC-SHA256 key the Access Point signs the inbound POST body with. Boot refuses if `AP_PEPPOL_INBOUND_ENABLED` is true and this is empty (unless `AP_DEBUG=true`). No hardcoded fallback; real secret via sops. `backend/.env.development` carries a NON-secret dev value (`dev-peppol-inbound-secret`). |
+| `AP_PEPPOL_INBOUND_MAX_BYTES` | `4194304`                                                          | Hard cap (bytes) on the inbound PEPPOL webhook body — oversized POSTs are rejected with 204 before buffering/parsing (memory-exhaustion guard). PEPPOL UBL documents are tens of KB; the 4 MiB default leaves headroom. |
 
 `backend/.env.development` is **committed** with safe local defaults and is
 loaded by `main.py` (the local-dev entrypoint) via `python-dotenv` — no setup

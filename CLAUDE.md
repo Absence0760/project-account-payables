@@ -170,7 +170,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 - **Email (outbound)** (`services/email_adapters/`): console (dev default), smtp (Mailpit / any relay), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
 - **Email intake (inbound)** (`services/email_intake_adapters/`): ses, mailgun, generic. Parses provider-specific inbound webhook payloads into a normalised `InboundEmail`.
 - **Embeddings** (`services/embedding_adapters/`): mock (dev default), openai. Powers RAG + duplicate-similarity search.
-- **PEPPOL AS4 (outbound)** (`services/peppol_adapters/`): mock (in-process default — no network), as4_gateway (real — hosted Access Point HTTP API, key via sops/no fallback). Registry via `@register_peppol_adapter`. Transmits the `e_invoice` UBL onto the PEPPOL network; SMP/SML resolution + send; idempotent at the DB layer (partial unique index on `peppol_transmissions`). See `backend/docs/peppol.md`.
+- **PEPPOL AS4 (send + receive)** (`services/peppol_adapters/`): mock (in-process default — no network), as4_gateway (real — hosted Access Point HTTP API, key via sops/no fallback). Registry via `@register_peppol_adapter`. Outbound transmits the `e_invoice` UBL onto the PEPPOL network; SMP/SML resolution + send; idempotent at the DB layer (partial unique index on `peppol_transmissions`). Inbound receive: the same adapters implement `parse_inbound`; the C4 webhook at `POST /api/peppol/inbound/{tenant_slug}` is HMAC-gated and dedupes redeliveries via `uq_peppol_message_id`. See `backend/docs/peppol.md` § Inbound.
 
 To add a new adapter: copy `mock_adapter.py`, implement the interface, register with the decorator.
 
@@ -240,6 +240,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_REPORTING_CURRENCY_DEFAULT` | `USD` | Platform last-resort reporting (base) currency for multi-currency rollups when an org sets no `reporting_currency`. Per-org override on `Organization.settings.reporting_currency`. See `backend/docs/multi-currency.md`. |
 | `AP_PEPPOL_INBOUND_ENABLED` | `false` | Master switch for the inbound PEPPOL AS4 receive webhook (`POST /api/peppol/inbound/{tenant_slug}`). When `false` the route is a silent no-op 204. See `backend/docs/peppol.md` § Inbound. |
 | `AP_PEPPOL_INBOUND_SIGNING_SECRET` | (empty) | HMAC-SHA256 key the Access Point signs the inbound POST body with. Required when `AP_PEPPOL_INBOUND_ENABLED` is true — boot refuses otherwise. No hardcoded fallback; real secret via sops. A NON-secret dev value is committed in `backend/.env.development`. |
+| `AP_PEPPOL_INBOUND_MAX_BYTES` | `4194304` | Hard cap (bytes) on the inbound PEPPOL webhook body — oversized POSTs are rejected with 204 before buffering/parsing (memory-exhaustion guard). |
 | `AP_PEPPOL_PROVIDER` | `mock` | PEPPOL Access Point adapter — `mock` (in-process, no network — local-first default) \| `as4_gateway`. Per-org override on `Organization.settings.peppol.provider`. See `backend/docs/peppol.md`. |
 | `AP_PEPPOL_GATEWAY_URL` | (empty) | Hosted Access Point base URL (deployed only). |
 | `AP_PEPPOL_GATEWAY_API_KEY` | (empty) | PEPPOL gateway API key — **no hardcoded fallback**; sops in deployed. |
@@ -279,7 +280,7 @@ Full list in `backend/app/config.py`.
 | Founder runbooks (non-code) | `docs/founder-runbooks/` — legal, prod deploy, Stripe, payment rails, SOC 2 vendor, support + status |
 | CSV data import | `backend/docs/csv-import.md` — pilot Day-0 vendor + invoice migration |
 | Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
-| Automated E-Invoicing (PEPPOL send) | `backend/docs/peppol.md` — four-corner model, mock/as4_gateway adapters, ParticipantId, BIS Billing 3.0, transmission model + idempotency guard, send route |
+| Automated E-Invoicing (PEPPOL send + receive) | `backend/docs/peppol.md` — four-corner model, mock/as4_gateway adapters, ParticipantId, BIS Billing 3.0, transmission model + idempotency guard, send route, inbound AS4 receive webhook (C4 corner), HMAC-gated, MessageId dedupe, routes to einvoice extractor |
 | 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
 | Notifications | `backend/docs/notifications.md` — email + in-app events, the `transition_invoice` hook, recipient matrix, preferences |

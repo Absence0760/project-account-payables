@@ -33,6 +33,7 @@ from sqlalchemy import func, select
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.peppol_transmission import PeppolTransmission
+from app.models.workflow import AuditLog
 from app.services.e_invoice import generate_ubl
 from app.services.e_invoice.model import (
     EInvoiceDocument,
@@ -156,6 +157,26 @@ async def test_valid_inbound_creates_invoice_and_transmission(realdb):
         assert t.invoice_id == inv.id
         assert t.amount == Decimal("119.00")
 
+        # The SOX-regulated append-only audit row proving inbound receipt.
+        audit_rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "invoice.peppol_received",
+                        AuditLog.entity_id == inv.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(audit_rows) == 1
+        row = audit_rows[0]
+        assert row.actor_id == uuid.UUID("00000000-0000-0000-0000-000000000000")
+        # PII-free details: scheme present, the supplier PII value absent.
+        assert row.details["sender_scheme"] == _SENDER_SCHEME
+        assert _SENDER_VALUE not in json.dumps(row.details)
+
 
 # ---------------------------------------------------------------------------
 # Dedupe — sequential redelivery
@@ -256,6 +277,70 @@ async def test_concurrent_redelivery_race_one_invoice(realdb):
 
 
 # ---------------------------------------------------------------------------
+# Dedupe — true IntegrityError branch (both receives pass the fast-path SELECT)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_receive_integrityerror_one_invoice(realdb, monkeypatch):
+    """Drive the AUTHORITATIVE race defence, not just the fast-path SELECT: make
+    both receives pass the advisory dedupe SELECT (force it to return None), so
+    the loser only stops at the transmission flush() — where uq_peppol_message_id
+    raises IntegrityError, rolls back the whole tenant txn (invoice included), and
+    returns duplicate=True. Exactly one Invoice + one transmission must survive."""
+    from app.services import peppol_receive as pr
+    from app.services.peppol_receive import InboundPeppolMessage, receive_peppol_message
+
+    mk = realdb.sessionmaker("a")
+    ctrl_mk = realdb.control_sessionmaker()
+    slug = realdb.info("a").slug
+    message_id = f"as4-ie-{uuid.uuid4().hex}"
+
+    # Neuter the fast-path SELECT so BOTH receives reach the transmission flush.
+    # Patch the module's `select` so the dedupe pre-check resolves to no row even
+    # after the winner committed — exactly the concurrent window the index guards.
+    real_select = pr.select
+    seen_dedupe = {"n": 0}
+
+    def _fake_select(*args, **kwargs):
+        # The dedupe pre-check selects PeppolTransmission.id; force it to a query
+        # that returns nothing the first two calls (the two racing receives).
+        if args and args[0] is PeppolTransmission.id and seen_dedupe["n"] < 2:
+            seen_dedupe["n"] += 1
+            return real_select(PeppolTransmission.id).where(
+                PeppolTransmission.id == uuid.UUID("00000000-0000-0000-0000-000000000000")
+            )
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(pr, "select", _fake_select)
+
+    def _msg() -> InboundPeppolMessage:
+        return InboundPeppolMessage(
+            message_id=message_id,
+            sender_scheme=_SENDER_SCHEME,
+            sender_value=_SENDER_VALUE,
+            doc_type_id="urn:doc-type",
+            process_id="urn:process",
+            payload=_ubl_bytes(),
+        )
+
+    # First receive commits the winner (its flush claims the slot).
+    async with ctrl_mk() as ctrl1:
+        r1 = await receive_peppol_message(ctrl1, tenant_slug=slug, message=_msg())
+    # Second receive passes the (neutered) SELECT, then its flush hits the index.
+    async with ctrl_mk() as ctrl2:
+        r2 = await receive_peppol_message(ctrl2, tenant_slug=slug, message=_msg())
+
+    assert r1.accepted is True
+    assert r2.accepted is False
+    assert r2.duplicate is True
+    assert r2.invoice_id is None
+    # The DB index — not the app pre-check — kept it to one invoice + one txn.
+    assert await _count(mk, Invoice) == 1
+    assert await _count(mk, PeppolTransmission) == 1
+
+
+# ---------------------------------------------------------------------------
 # Signature gate
 # ---------------------------------------------------------------------------
 
@@ -309,6 +394,66 @@ async def test_malformed_document_returns_204_no_invoice(realdb):
     body = _envelope(
         message_id=f"as4-{uuid.uuid4().hex}", payload=b"<not-an-invoice>garbage</not-an-invoice>"
     )
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(
+            f"/api/peppol/inbound/{slug}",
+            content=body,
+            headers={"X-Peppol-Signature": _sign(body)},
+        )
+
+    assert resp.status_code == 204
+    assert await _count(mk, Invoice) == 0
+    assert await _count(mk, PeppolTransmission) == 0
+
+
+# ---------------------------------------------------------------------------
+# Route-level parse_inbound → None guard (unparseable envelope)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unparseable_envelope_returns_204_no_invoice(realdb):
+    """A signed body the adapter cannot parse into an InboundPeppolMessage (no
+    JSON envelope → no MessageId → can't dedupe) hits the route's parse_inbound
+    None guard: 204, no invoice, no transmission — exercised end-to-end."""
+    mk = realdb.sessionmaker("a")
+    slug = realdb.info("a").slug
+    # Raw UBL with no dev JSON envelope wrapper → mock adapter returns None.
+    body = b'<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"/>'
+
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post(
+            f"/api/peppol/inbound/{slug}",
+            content=body,
+            headers={"X-Peppol-Signature": _sign(body)},
+        )
+
+    assert resp.status_code == 204
+    assert await _count(mk, Invoice) == 0
+    assert await _count(mk, PeppolTransmission) == 0
+
+
+# ---------------------------------------------------------------------------
+# Body size cap (unbounded-payload DoS guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_oversized_body_returns_204_no_invoice(realdb, monkeypatch):
+    """A signed-but-oversized POST is rejected (204) BEFORE parsing — the
+    memory-exhaustion guard. No invoice, no transmission."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "peppol_inbound_max_bytes", 1024)
+    mk = realdb.sessionmaker("a")
+    slug = realdb.info("a").slug
+    # A valid signed envelope, but larger than the 1 KB test cap.
+    body = _envelope(
+        message_id=f"as4-{uuid.uuid4().hex}",
+        payload=_ubl_bytes(invoice_number="X" * 4096),
+    )
+    assert len(body) > 1024
 
     async with realdb.client(key="a", role=None) as c:
         resp = await c.post(

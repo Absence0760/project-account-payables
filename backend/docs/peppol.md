@@ -185,10 +185,18 @@ log line or the body.
 `email_intake.process_inbound_email`):
 
 1. Master switch `AP_PEPPOL_INBOUND_ENABLED` off → 204 (closed by default).
-2. Read raw bytes + headers.
-3. **Verify HMAC** over the raw body via `verify_inbound_signature` (reuses
-   `webhook_security.extract_signature_header` for `X-Peppol-Signature` /
-   `X-Signature` / `X-Webhook-Signature`). Bad/missing → 204.
+2. **Bound the body** before buffering it — reject (204, no parse) when the
+   declared `Content-Length`, or the actual read, exceeds
+   `AP_PEPPOL_INBOUND_MAX_BYTES` (default 4 MiB; PEPPOL UBL is tens of KB). This
+   stops a signed-but-oversized POST from exhausting memory on a public route.
+   Then read the raw bytes + headers.
+3. **Verify HMAC** over the raw body via `verify_inbound_signature`, which
+   delegates the constant-time digest to the shared chokepoint
+   `webhook_security.verify_hmac_sha256` (its try/except fails closed, so a
+   pathological body returns `False` rather than 500-ing the public route). The
+   one PEPPOL carve-out is local: an empty secret returns `bool(AP_DEBUG)`. The
+   header lookup reuses `webhook_security.extract_signature_header` for
+   `X-Peppol-Signature` / `X-Signature` / `X-Webhook-Signature`. Bad/missing → 204.
 4. Resolve the org from the path slug (control DB). Unknown → 204.
 5. The tenant's configured adapter `parse_inbound(headers, body)` →
    `InboundPeppolMessage` (message id, sender scheme/value, doc type, process
@@ -244,6 +252,7 @@ before either is called.
 | `AP_PEPPOL_GATEWAY_API_KEY` | (empty) | Gateway API key — **no hardcoded fallback**; sops in deployed |
 | `AP_PEPPOL_INBOUND_ENABLED` | `false` | Master switch for the inbound receive webhook — no-op 204 until on |
 | `AP_PEPPOL_INBOUND_SIGNING_SECRET` | (empty) | HMAC-SHA256 key the Access Point signs the inbound POST body with — **no hardcoded fallback**; boot refuses if inbound is enabled without it; a NON-secret dev value is set in `.env.development` |
+| `AP_PEPPOL_INBOUND_MAX_BYTES` | `4194304` | Hard cap (bytes) on the inbound webhook body — oversized POSTs are rejected (204) before buffering/parsing. PEPPOL UBL is tens of KB; 4 MiB headroom |
 
 Per-org overrides live on `Organization.settings.peppol` and win over the
 process-level defaults.

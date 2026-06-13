@@ -54,7 +54,26 @@ async def peppol_inbound_webhook(
         logger.warning("PEPPOL inbound disabled")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+    # 1b. Bound the body BEFORE buffering it. A signed-but-oversized POST would
+    #     otherwise be read fully into memory then handed to lxml (memory-
+    #     exhaustion on a public route). Reject on the declared Content-Length
+    #     when present, and re-check the actual read in case the header lied /
+    #     was absent (chunked). PEPPOL UBL is tens of KB; cap defaults to a few MB.
+    max_bytes = settings.peppol_inbound_max_bytes
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                logger.warning("PEPPOL inbound rejected: body exceeds size cap")
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
+        except ValueError:
+            logger.warning("PEPPOL inbound rejected: invalid content-length")
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     body = await request.body()
+    if len(body) > max_bytes:
+        logger.warning("PEPPOL inbound rejected: body exceeds size cap")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     headers = dict(request.headers)
 
     # 2. Verify the gateway HMAC over the raw bytes. The signature is the gate

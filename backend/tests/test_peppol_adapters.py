@@ -369,3 +369,92 @@ def test_bis_billing_constants_exact():
         "##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1"
     )
     assert PEPPOL_BIS_BILLING_PROCESSID == "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"
+
+
+# --------------------------------------------------------------------------
+# AS4 gateway inbound parsing (the production parse_inbound — synchronous, pure)
+# --------------------------------------------------------------------------
+
+
+def _as4_envelope(**fields) -> bytes:
+    import json as _json
+
+    return _json.dumps(fields).encode("utf-8")
+
+
+def test_as4_gateway_parse_inbound_canonical_payload_base64():
+    import base64 as _b64
+    import json as _json
+
+    adapter = AS4GatewayAdapter({})
+    payload = b"<Invoice>real-ubl</Invoice>"
+    body = _json.dumps(
+        {
+            "message_id": "as4-001",
+            "sender": {"scheme": "9930", "value": "DE123456"},
+            "doc_type_id": "urn:doc",
+            "process_id": "urn:proc",
+            "payload_base64": _b64.b64encode(payload).decode("ascii"),
+        }
+    ).encode("utf-8")
+    msg = adapter.parse_inbound({}, body)
+    assert msg is not None
+    assert msg.message_id == "as4-001"
+    assert msg.sender_scheme == "9930"
+    assert msg.sender_value == "DE123456"
+    assert msg.doc_type_id == "urn:doc"
+    assert msg.process_id == "urn:proc"
+    assert msg.payload == payload
+
+
+def test_as4_gateway_parse_inbound_string_sender_wire_form():
+    adapter = AS4GatewayAdapter({})
+    body = _as4_envelope(
+        message_id="as4-002",
+        sender="iso6523-actorid-upis::9930:DE999",
+        payload="<Invoice/>",
+    )
+    msg = adapter.parse_inbound({}, body)
+    assert msg is not None
+    assert msg.message_id == "as4-002"
+    assert msg.sender_scheme == "9930"
+    assert msg.sender_value == "DE999"
+    assert msg.payload == b"<Invoice/>"
+
+
+def test_as4_gateway_parse_inbound_aliased_keys():
+    import base64 as _b64
+
+    adapter = AS4GatewayAdapter({})
+    payload = b"<Invoice>aliased</Invoice>"
+    body = _as4_envelope(
+        messageId="as4-003",
+        sender={"scheme": "0192", "value": "NO123"},
+        docTypeId="urn:doc-alias",
+        processId="urn:proc-alias",
+        payloadBase64=_b64.b64encode(payload).decode("ascii"),
+    )
+    msg = adapter.parse_inbound({}, body)
+    assert msg is not None
+    assert msg.message_id == "as4-003"
+    assert msg.doc_type_id == "urn:doc-alias"
+    assert msg.process_id == "urn:proc-alias"
+    assert msg.payload == payload
+
+
+def test_as4_gateway_parse_inbound_non_json_body_none():
+    adapter = AS4GatewayAdapter({})
+    assert adapter.parse_inbound({}, b"<not-json/>") is None
+    assert adapter.parse_inbound({}, b"") is None
+
+
+def test_as4_gateway_parse_inbound_missing_message_id_none():
+    adapter = AS4GatewayAdapter({})
+    body = _as4_envelope(sender={"scheme": "9930", "value": "DE1"}, payload="<Invoice/>")
+    assert adapter.parse_inbound({}, body) is None
+
+
+def test_as4_gateway_parse_inbound_bad_base64_none():
+    adapter = AS4GatewayAdapter({})
+    body = _as4_envelope(message_id="as4-004", payload_base64="!!!not-base64!!!")
+    assert adapter.parse_inbound({}, body) is None

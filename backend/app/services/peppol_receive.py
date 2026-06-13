@@ -36,8 +36,6 @@ fields. Money (``amount``) is ``Decimal`` — never float.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import uuid
 from dataclasses import dataclass
@@ -57,6 +55,7 @@ from app.services.e_invoice import (
     parse_e_invoice,
 )
 from app.services.peppol_adapters import get_peppol_adapter
+from app.services.webhook_security import verify_hmac_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -97,19 +96,21 @@ class ReceiveResult:
 def verify_inbound_signature(body: bytes, signature: str | None) -> bool:
     """Verify the HMAC-SHA256 signature of the inbound webhook body.
 
-    Mirrors :func:`email_intake.verify_signature`: fails closed. Returns
-    ``bool(settings.debug)`` when the secret is empty (local-dev convenience) —
-    the boot guard in :func:`app.main.lifespan` refuses to start a deployed env
-    that enables inbound without the secret, so that carve-out can only fire for
-    an explicitly debug-mode developer.
+    Delegates the constant-time HMAC check to the single shared chokepoint
+    :func:`webhook_security.verify_hmac_sha256` (which wraps the digest in a
+    fail-closed try/except so a pathological body returns ``False`` rather than
+    crashing the public route — a 500 would itself be an enumeration signal).
+
+    The one PEPPOL-specific carve-out lives here, *before* the shared helper:
+    when the secret is empty, return ``bool(settings.debug)`` (local-dev
+    convenience). The boot guard in :func:`app.main.lifespan` refuses to start a
+    deployed env that enables inbound without the secret, so that carve-out can
+    only fire for an explicitly debug-mode developer.
     """
     secret = settings.peppol_inbound_signing_secret
     if not secret:
         return bool(settings.debug)
-    if not signature:
-        return False
-    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    return verify_hmac_sha256(secret, body, signature)
 
 
 async def receive_peppol_message(
