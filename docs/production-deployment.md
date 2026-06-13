@@ -223,13 +223,15 @@ its own `ImageConfig.Command` set to its handler; deploying is just
 `update-function-code --image-uri <image>` for every name in
 `LAMBDA_FUNCTIONS`. Add the next worker to that list and it ships gated too.
 
-> **Container-Lambda prerequisite:** for a container image to run on Lambda it
-> must carry the Lambda Runtime Interface Client (`awslambdaric`). The backend
-> `Dockerfile` ships a `uvicorn` image for ECS today; before arming, add
-> `awslambdaric` to the runtime lock and let each function's `ImageConfig`
-> override the entrypoint to the RIC + its handler. (The alternative — zip
-> packaging — runs into native-dep cross-compilation and the 250 MB unzipped
-> limit, which is why the container path is preferred here.)
+> **Container-Lambda packaging:** a container image needs the Lambda Runtime
+> Interface Client (`awslambdaric`) to run on Lambda. It is **bundled** in the
+> backend image (a runtime dependency in `pyproject.toml`, hash-pinned in
+> `requirements.lock`, cp314 manylinux wheel — no compiler added). The ECS
+> entrypoint stays `uvicorn`; each Lambda function's `ImageConfig` overrides
+> the entrypoint to `python -m awslambdaric` + its handler. So the only
+> remaining infra step is provisioning the functions with that `ImageConfig`
+> (Terraform) — no second image, no zip. (Zip packaging was rejected: native-dep
+> cross-compilation + the 250 MB unzipped limit.)
 
 ### Credentials — OIDC, no static keys
 
@@ -270,9 +272,9 @@ a release won't turn it red before the infrastructure exists. To go live:
 1. Build the AWS infra in `infra/` (ECR, ECS cluster/service/task family,
    frontend S3 bucket, CloudFront distribution, the three worker Lambda
    functions + their SQS triggers) — the stack today is KMS + S3 buckets only.
-2. Add `awslambdaric` to the backend image so it can run as a container Lambda,
-   and set each worker function's `ImageConfig.Command` to its handler (see
-   *Lambda workers* above).
+2. Provision each worker function with its `ImageConfig` — entrypoint
+   `python -m awslambdaric`, command its handler (see *Lambda workers* above).
+   The RIC is already bundled in the image, so nothing else is needed here.
 3. Create the OIDC deploy role and store `AWS_DEPLOY_ROLE_ARN`.
 4. Set the environment variables above on the `production` environment and the
    protection rules (reviewer / wait timer).

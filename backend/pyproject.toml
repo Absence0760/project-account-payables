@@ -45,6 +45,17 @@ dependencies = [
     # .env. Already pulled in transitively by uvicorn[standard]; declared here
     # because main.py imports it directly. Never imported on Lambda/prod paths.
     "python-dotenv>=1.0,<2",
+    # AWS Lambda Runtime Interface Client. The single container image is
+    # dual-use: ECS runs it via the uvicorn CMD, and the async-worker Lambdas
+    # (services/{extraction,erp,audit}_lambda.py) run the SAME image as a
+    # container Lambda — each function's ImageConfig overrides the entrypoint
+    # to `python -m awslambdaric` + its handler. Bundling the RIC here is what
+    # lets aws-deploy.yml's `lambdas` job point every worker at the one image
+    # the backend job built (one build, many runtimes). Ships a cp314
+    # manylinux wheel, so no compiler is added to the slim image. The RIC is
+    # imported only by the Lambda runtime, never on the ECS/API path. See
+    # docs/production-deployment.md → Lambda workers.
+    "awslambdaric>=4.0,<5",
 ]
 
 [project.optional-dependencies]

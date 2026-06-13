@@ -39,4 +39,10 @@ COPY . .
 
 EXPOSE 8000
 
+# Default entrypoint is the ECS/Fargate API (uvicorn). This same image is
+# ALSO deployed as the async-worker Lambdas (extraction / ERP / audit): on
+# Lambda the function's ImageConfig overrides the entrypoint to
+# `python -m awslambdaric` + its handler, so no Lambda-specific image is
+# built. The awslambdaric runtime client is bundled via requirements.lock —
+# see pyproject.toml + docs/production-deployment.md → Lambda workers.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
