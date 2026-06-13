@@ -32,6 +32,7 @@ def _invoice(**overrides):
     base = dict(
         id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),  # multi-entity P2: exception inherits invoice entity
         vendor_name="Acme Corp",
         invoice_number="INV-100",
         amount=Decimal("500.00"),
