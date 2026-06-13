@@ -1,7 +1,7 @@
 """US 1099 tax: e-filing batch ledger.
 
 Revision ID: 0026_us_tax_1099
-Revises: 0024_invoice_po_flip_unique
+Revises: 0025_multicurrency
 Create Date: 2026-06-12
 
 Tenant DB only. Adds ``tax_1099_filings`` — one row per 1099 e-filing batch
@@ -25,7 +25,7 @@ from sqlalchemy import text
 from alembic import op
 
 revision = "0026_us_tax_1099"
-down_revision = "0024_invoice_po_flip_unique"
+down_revision = "0025_multicurrency"
 branch_labels = None
 depends_on = None
 

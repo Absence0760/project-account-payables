@@ -1,7 +1,7 @@
 """International-tax records — per-invoice VAT / GST / withholding figures.
 
 Revision ID: 0027_intl_tax
-Revises: 0024_invoice_po_flip_unique
+Revises: 0026_us_tax_1099
 Create Date: 2026-06-12
 
 Tenant DB only. Adds `intl_tax_records` — one row per computed VAT / GST /
@@ -20,7 +20,7 @@ from sqlalchemy import text
 from alembic import op
 
 revision = "0027_intl_tax"
-down_revision = "0024_invoice_po_flip_unique"
+down_revision = "0026_us_tax_1099"
 branch_labels = None
 depends_on = None
 
