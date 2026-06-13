@@ -220,6 +220,16 @@ class Settings(BaseSettings):
     # identical ones.
     duplicate_similarity_threshold: float = 0.95
 
+    # International tax (VAT / GST / withholding) — see docs/international-tax.md.
+    # The consumption-tax *rate* is resolved by a pluggable adapter. Default
+    # `mock` reads deterministic rates from the country-rules engine, so a
+    # fresh clone needs no cloud account (local-first). Cloud providers
+    # (`avalara`, `taxjar`) are skeletons until a real key is wired up. A
+    # tenant can override per-org via `Organization.settings.tax.rate_provider`;
+    # this is the platform-wide fallback.
+    tax_rate_provider: str = "mock"  # "mock" (dev default) | "avalara" | "taxjar"
+    tax_rate_api_key: str = ""  # secret — empty for mock; set via sops for cloud providers
+
     # MFA (TOTP + email backup)
     # Master switch — when false, all MFA enrollment, challenge, and enforcement
     # is bypassed. Default is `false` so local dev "just works" without TOTP
