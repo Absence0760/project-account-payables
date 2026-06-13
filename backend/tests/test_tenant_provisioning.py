@@ -483,3 +483,57 @@ async def test_provision_tenant_drops_orphan_db_when_provisioning_fails(
 
     # The database created at the start of provisioning must have been dropped.
     assert await _database_exists(db_name) is False
+
+
+# ---------------------------------------------------------------------------
+# Role-name uniqueness (the constraint provision_tenant's role lookup relies on)
+# ---------------------------------------------------------------------------
+
+
+async def test_duplicate_system_role_name_is_rejected(realdb):
+    """Two system roles (organization_id NULL) with the same name are rejected
+    by ``uq_roles_system_name``. Without it, a re-seeded control plane could
+    accumulate duplicate ``admin`` rows and ``provision_tenant``'s
+    ``scalar_one_or_none()`` role lookup raised ``MultipleResultsFound``."""
+    from sqlalchemy.exc import IntegrityError
+
+    engine, mk = await _control_mk()
+    try:
+        async with mk() as s:
+            # "admin" already exists as a system role in the seeded control
+            # plane — a second one must violate the partial unique index.
+            s.add(Role(name="admin", description="dup system admin"))
+            with pytest.raises(IntegrityError):
+                await s.flush()
+            await s.rollback()
+    finally:
+        await engine.dispose()
+
+
+async def test_org_scoped_roles_unique_within_org_not_across(realdb):
+    """Org-scoped custom roles are unique only within an org: two different
+    orgs may both define ``Approver`` (``uq_roles_org_name`` keys on
+    ``(organization_id, name)``), but one org cannot define it twice."""
+    from sqlalchemy.exc import IntegrityError
+
+    engine, mk = await _control_mk()
+    org_a, org_b = uuid.uuid4(), uuid.uuid4()
+    try:
+        async with mk() as s:
+            # Same name across two different orgs is allowed — flush succeeds.
+            s.add_all(
+                [
+                    Role(name="Approver", organization_id=org_a),
+                    Role(name="Approver", organization_id=org_b),
+                ]
+            )
+            await s.flush()
+            # A second "Approver" in org_a violates uq_roles_org_name.
+            s.add(Role(name="Approver", organization_id=org_a))
+            with pytest.raises(IntegrityError):
+                await s.flush()
+            # Roll back everything — the cross-org pair was only flushed, never
+            # committed, so this test persists nothing.
+            await s.rollback()
+    finally:
+        await engine.dispose()

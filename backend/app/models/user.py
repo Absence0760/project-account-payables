@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -10,6 +10,27 @@ from app.models.base import Base, TimestampMixin
 
 class Role(Base, TimestampMixin):
     __tablename__ = "roles"
+
+    # Role-name uniqueness, the invariant `provision_tenant` and the RBAC
+    # checks rely on:
+    #   * uq_roles_name_org  — plain UNIQUE(name, organization_id) from
+    #     migration 0014. Keeps org-scoped custom roles unique within an org,
+    #     but does NOT constrain system roles: Postgres treats two NULL
+    #     organization_ids as distinct, so duplicate `admin` rows could slip in
+    #     (and did — breaking provision_tenant's `scalar_one_or_none()` role
+    #     lookup with MultipleResultsFound). Declared here too so create_all
+    #     (CI / fresh control DBs) matches what migrations produce.
+    #   * uq_roles_system_name — partial unique on `name` WHERE org_id IS NULL,
+    #     which closes that gap. Added in migration 0028 for existing DBs.
+    __table_args__ = (
+        UniqueConstraint("name", "organization_id", name="uq_roles_name_org"),
+        Index(
+            "uq_roles_system_name",
+            "name",
+            unique=True,
+            postgresql_where=text("organization_id IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(50), nullable=False)

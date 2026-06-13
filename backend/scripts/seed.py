@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import asyncpg
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_CLERK, ROLE_AP_MANAGER, ROLE_CFO
@@ -294,12 +294,27 @@ async def seed_control_plane():
         )
 
         # Roles — built from ROLE_DEFINITIONS so the seeded set stays in
-        # lockstep with ALL_ROLES (see tests/test_rbac.py).
-        admin_role = Role(name=ROLE_ADMIN, description=ROLE_DEFINITIONS[ROLE_ADMIN])
-        ap_manager_role = Role(name=ROLE_AP_MANAGER, description=ROLE_DEFINITIONS[ROLE_AP_MANAGER])
-        ap_clerk_role = Role(name=ROLE_AP_CLERK, description=ROLE_DEFINITIONS[ROLE_AP_CLERK])
-        cfo_role = Role(name=ROLE_CFO, description=ROLE_DEFINITIONS[ROLE_CFO])
-        session.add_all([admin_role, ap_manager_role, ap_clerk_role, cfo_role])
+        # lockstep with ALL_ROLES (see tests/test_rbac.py). Get-or-create so a
+        # re-seed onto a control plane that still holds the system roles (e.g.
+        # orgs wiped but roles kept) reuses them instead of inserting
+        # duplicates — duplicates are now rejected by the uq_roles_system_name
+        # index and would have broken provision_tenant's role lookup.
+        async def _get_or_create_system_role(name: str) -> Role:
+            existing = (
+                await session.execute(
+                    select(Role).where(Role.name == name, Role.organization_id.is_(None))
+                )
+            ).scalars().first()
+            if existing is not None:
+                return existing
+            role = Role(name=name, description=ROLE_DEFINITIONS[name])
+            session.add(role)
+            return role
+
+        admin_role = await _get_or_create_system_role(ROLE_ADMIN)
+        ap_manager_role = await _get_or_create_system_role(ROLE_AP_MANAGER)
+        ap_clerk_role = await _get_or_create_system_role(ROLE_AP_CLERK)
+        cfo_role = await _get_or_create_system_role(ROLE_CFO)
 
         # Acme users — one per role
         hashed = pwd_context.hash("demo")
