@@ -159,7 +159,7 @@
 			columns={COLUMNS}
 			isEmpty={filteredRows.length === 0}
 			empty={report.rows.length === 0
-				? `No vendor payments recorded for ${year}.`
+				? 'No vendors yet. Add vendors to see 1099 reporting.'
 				: 'No vendors match this filter.'}
 		>
 			{#snippet body()}
