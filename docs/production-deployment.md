@@ -162,28 +162,52 @@ See `docs/environment.md` for the full var list including extraction, ERP, and c
 - **S3** accessed via VPC endpoint (no NAT needed)
 - **SQS/EventBridge** accessed via VPC endpoints
 
-## CI/CD: gated AWS deploy
+## CI/CD: gated production deploy
 
-`.github/workflows/aws-deploy.yml` deploys both surfaces to AWS:
+Two workflows fire on `release: published`, and **nothing else** — production
+deploys happen only through a published release, never an ad-hoc manual run.
+Every job in both is gated by the `production` GitHub Environment:
+
+`.github/workflows/aws-deploy.yml` deploys the web stack to AWS:
 
 | Job | Target | Steps |
 |---|---|---|
 | `frontend` | S3 + CloudFront | `pnpm build` → `aws s3 sync --delete` → CloudFront invalidation |
-| `backend` | ECS / Fargate | `docker build backend` → push to ECR (commit-SHA tag) → register a new task-definition revision with that image → `update-service` → wait for stable |
+| `backend` | ECS / Fargate | `docker build backend` → push to ECR (commit-SHA tag) → register a new task-definition revision with that image → **run DB migrations** (one-off Fargate task) → `update-service` → wait for stable |
 
-It triggers on `release: published` and on manual `workflow_dispatch`.
+`.github/workflows/mobile-release.yml` builds the mobile artifacts:
+
+| Job | Target | Steps |
+|---|---|---|
+| `mobile-android` | APK artifact | `flutter build apk --release` → upload artifact |
+| `mobile-ios` | iOS build | `flutter build ios --release --no-codesign` |
+
+> The web frontend's old **GitHub Pages** deploy has been **retired** — AWS
+> S3 + CloudFront is now the single production frontend. (Pages could never use
+> this `production` environment anyway: a Pages deploy is hard-wired to the
+> `github-pages` environment.)
 
 ### Production gate
 
-Both jobs declare `environment: production`, so the protection rules on that
+Every job declares `environment: production`, so the protection rules on that
 GitHub Environment (Settings → Environments → `production`) apply: **GitHub
-pauses each job for the required reviewer's approval before any AWS call
+pauses the job for the required reviewer's approval before any deploy step
 runs**. Add your reviewer / wait-timer / branch rules there.
 
-> The GitHub **Pages** frontend deploy in `deploy.yml` is a *different*
-> pipeline and cannot use this environment — Pages is hard-wired to the
-> `github-pages` environment. Protect that one by adding rules to
-> `github-pages`. Retire the Pages job once the AWS frontend is live.
+Note on granularity: when one release triggers several jobs that share the
+`production` environment, a single reviewer approval releases all of them in
+that run. If you need to approve services **independently** (e.g. ship the
+backend but hold the frontend), give them separate environments
+(`production-backend`, `production-frontend`, …), each with its own rules.
+
+### Database migrations
+
+The `backend` job runs `alembic upgrade head && python scripts/migrate_all_tenants.py`
+as a one-off Fargate task on the freshly-registered task definition **before**
+rolling the service, so new code never serves against an un-migrated schema and
+the revision fans out to **every tenant DB** (not just the control plane). A
+non-zero exit fails the job and the service is never rolled. This needs the
+task's network placement — `ECS_SUBNETS` + `ECS_SECURITY_GROUPS` below.
 
 ### Credentials — OIDC, no static keys
 
@@ -192,8 +216,10 @@ long-lived access keys in the repo. Create a deploy role whose trust policy is
 scoped to this repository **and** the `production` environment
 (`token.actions.githubusercontent.com:sub` like
 `repo:<owner>/<repo>:environment:production`), with least-privilege permissions
-for ECR push, ECS register/update, S3 sync, and CloudFront invalidation. Store
-its ARN as the `AWS_DEPLOY_ROLE_ARN` **environment secret** on `production`.
+for ECR push, ECS register/update + `run-task`/`describe-tasks` (the migration
+task), `iam:PassRole` for the task + execution roles, S3 sync, and CloudFront
+invalidation. Store its ARN as the `AWS_DEPLOY_ROLE_ARN` **environment secret**
+on `production`.
 
 ### Required configuration
 
@@ -205,16 +231,18 @@ its ARN as the `AWS_DEPLOY_ROLE_ARN` **environment secret** on `production`.
 | `ECR_REPOSITORY` | variable | environment | ECR repo name for the API image. |
 | `ECS_CLUSTER` / `ECS_SERVICE` | variable | environment | ECS cluster + service to roll. |
 | `ECS_TASK_FAMILY` | variable | environment | Task-definition family to re-register. |
-| `ECS_CONTAINER_NAME` | variable | environment | Container name within the task def to swap the image on. |
+| `ECS_CONTAINER_NAME` | variable | environment | Container name within the task def to swap the image on + target for the migration command override. |
+| `ECS_SUBNETS` | variable | environment | Comma-separated private subnet IDs for the one-off migration task (e.g. `subnet-a,subnet-b`). |
+| `ECS_SECURITY_GROUPS` | variable | environment | Comma-separated security-group IDs for the migration task (needs DB egress). |
 | `FRONTEND_BUCKET` | variable | environment | S3 bucket serving the SPA. |
 | `CLOUDFRONT_DISTRIBUTION_ID` | variable | environment | Distribution to invalidate. |
 | `PUBLIC_API_URL` | variable | environment | API base URL — baked into the frontend build; also the backend job's deploy URL. |
 | `APP_URL` | variable | environment | Public site URL — the frontend job's deploy URL. |
 
-### Arming the pipeline
+### Arming the AWS pipeline
 
-The workflow is committed as a **scaffold** and stays inert until armed, so a
-release won't turn it red before the infrastructure exists. To go live:
+`aws-deploy.yml` is committed as a **scaffold** and stays inert until armed, so
+a release won't turn it red before the infrastructure exists. To go live:
 
 1. Build the AWS infra in `infra/` (ECR, ECS cluster/service/task family,
    frontend S3 bucket, CloudFront distribution) — the stack today is KMS + S3
@@ -224,4 +252,6 @@ release won't turn it red before the infrastructure exists. To go live:
    protection rules (reviewer / wait timer).
 4. Set the repository variable `AWS_DEPLOY_ENABLED=true`.
 
-Until step 4, both jobs skip via their `if:` guard.
+Until step 4, the two AWS jobs skip via their `if:` guard. (The
+`mobile-release.yml` jobs have no such guard — they build on every release and
+are gated only by the `production` reviewer.)

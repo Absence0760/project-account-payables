@@ -1,0 +1,78 @@
+name: Mobile Release
+
+# Builds the Flutter mobile artifacts (Android APK, iOS .app) on a published
+# release. Both jobs reference the `production` GitHub Environment, so the
+# release's required reviewer must approve before either build runs — keeping
+# every release-triggered action behind the same production gate as the
+# AWS deploy (see aws-deploy.yml).
+#
+# The web frontend is NOT built here — it deploys to S3 + CloudFront via
+# aws-deploy.yml. (The old GitHub Pages deploy that lived in this file has
+# been retired now that AWS is the production frontend.)
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  mobile-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    # Approver-gated by the production environment, same as the AWS deploys.
+    environment:
+      name: production
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.1
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: android-apk-${{ github.event.release.tag_name }}
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk
+
+  mobile-ios:
+    name: Build iOS
+    runs-on: macos-latest
+
+    environment:
+      name: production
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.1
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build iOS (no codesign)
+        run: flutter build ios --release --no-codesign

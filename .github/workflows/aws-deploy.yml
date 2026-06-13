@@ -22,13 +22,11 @@ name: Deploy to AWS
 # No static AWS keys: credentials come from short-lived OIDC role assumption.
 
 on:
+  # Release-only: production deploys happen exclusively through a published
+  # release, never an ad-hoc manual run. The published release's tag is what
+  # the default checkout resolves, so each deploy ships a tagged commit.
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: Git ref to deploy (defaults to the triggering ref)
-        required: false
 
 # Read-only by default. Each job elevates to `id-token: write` for OIDC.
 permissions:
@@ -60,8 +58,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.ref || github.ref }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
@@ -119,6 +115,38 @@ jobs:
             --query taskDefinition.taskDefinitionArn --output text)"
           echo "arn=$arn" >> "$GITHUB_OUTPUT"
 
+      - name: Run database migrations
+        env:
+          CONTAINER: ${{ vars.ECS_CONTAINER_NAME }}
+        run: |
+          # Migrate BEFORE rolling the service so the new code never serves
+          # against an un-migrated schema. Runs as a one-off Fargate task on
+          # the freshly-registered task definition (same image + env/secrets
+          # as the service): alembic upgrades the control plane, then
+          # migrate_all_tenants.py fans the same revision out to every tenant
+          # DB — the project invariant that migrations hit every tenant, not
+          # just the control plane. A non-zero container exit fails the job
+          # and the service is never rolled.
+          task_arn="$(aws ecs run-task \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --task-definition "${{ steps.taskdef.outputs.arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"$CONTAINER\",\"command\":[\"sh\",\"-c\",\"alembic upgrade head && python scripts/migrate_all_tenants.py\"]}]}" \
+            --query 'tasks[0].taskArn' --output text)"
+          echo "Migration task: $task_arn"
+          aws ecs wait tasks-stopped \
+            --cluster "${{ vars.ECS_CLUSTER }}" --tasks "$task_arn"
+          exit_code="$(aws ecs describe-tasks \
+            --cluster "${{ vars.ECS_CLUSTER }}" --tasks "$task_arn" \
+            --query "tasks[0].containers[?name=='$CONTAINER'].exitCode | [0]" \
+            --output text)"
+          echo "Migration container exit code: $exit_code"
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::Database migration failed — aborting deploy before the service roll."
+            exit 1
+          fi
+
       - name: Deploy to ECS service
         run: |
           aws ecs update-service \
@@ -150,8 +178,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.ref || github.ref }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.2
