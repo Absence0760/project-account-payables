@@ -43,6 +43,7 @@ from app.services.sso import (
     create_state,
     exchange_code_for_tokens,
     fetch_discovery,
+    is_sso_only,
     redirect_uri,
     resolve_sso_config,
     validate_id_token,
@@ -56,10 +57,13 @@ router = APIRouter(prefix="/auth/sso", tags=["auth-sso"])
 class SSOConfigPublic(BaseModel):
     """Unauthenticated config surface for the login page. NEVER returns the
     client_secret or SCIM bearer — only whether SSO is available + provider
-    label for the button."""
+    label for the button + whether the tenant requires SSO (so the page can
+    hide the password form). `sso_only` is only ever true alongside
+    `enabled=True`, so a broken IdP config can't hide password login."""
 
     enabled: bool = False
     provider: str | None = None
+    sso_only: bool = False
 
 
 class SSOCallbackRequest(BaseModel):
@@ -96,7 +100,9 @@ async def sso_config(slug: str, db: AsyncSession = Depends(get_control_db)):
         return SSOConfigPublic(enabled=False)
     if config is None:
         return SSOConfigPublic(enabled=False)
-    return SSOConfigPublic(enabled=True, provider=config.provider)
+    return SSOConfigPublic(
+        enabled=True, provider=config.provider, sso_only=is_sso_only(org.settings)
+    )
 
 
 @router.get("/authorize")

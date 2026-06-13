@@ -185,6 +185,20 @@ deterministically. Intentional; no migration needed (config is additive JSONB).
 (only when the IdP requires signed AuthnRequests) is a real secret → `AP_SAML_SP_*`
 via sops; empty by default so local Keycloak runs with no SP keypair.
 
+## SSO-only mode
+
+`settings.sso.sso_only` (a per-tenant flag, shared by OIDC + SAML) closes
+password login for the whole org. The `/api/auth/login` handler refuses with
+`403` + an `auth.login.failure` / `reason=sso_only` audit row **after** verifying
+the password (so it reuses the org load and doesn't perturb the unknown-vs-
+wrong-password enumeration parity). `services/sso.py::is_sso_only` gates on
+`sso.enabled` too, so setting the flag without a working IdP can't lock everyone
+out. The public `/auth/{sso,saml}/config` endpoints echo `sso_only` **only when
+the IdP config resolves** — so the login page hides the password form for an
+SSO-only tenant, but a broken config (enabled=False) leaves password login
+visible as the escape hatch. Backend enforcement is the security boundary; the
+hidden form is UX.
+
 ## Frontend Implementation
 
 - Auth state is managed in `src/lib/stores/auth.svelte.ts` (Svelte 5 runes)

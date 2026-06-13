@@ -9,6 +9,7 @@
 	interface SSOConfigPublic {
 		enabled: boolean;
 		provider: string | null;
+		sso_only?: boolean;
 	}
 
 	let email = $state('');
@@ -19,6 +20,9 @@
 	let ssoProviderLabel = $state<string>('');
 	let samlEnabled = $state(false);
 	let samlProviderLabel = $state<string>('');
+	// When the tenant requires SSO, hide the password form entirely. Only ever
+	// true alongside an enabled config, so a broken IdP can't lock everyone out.
+	let ssoOnly = $state(false);
 
 	const PROVIDER_LABELS: Record<string, string> = {
 		okta: 'Okta',
@@ -40,6 +44,7 @@
 			);
 			ssoEnabled = cfg.enabled;
 			ssoProviderLabel = PROVIDER_LABELS[cfg.provider ?? 'oidc'] ?? 'SSO';
+			if (cfg.enabled && cfg.sso_only) ssoOnly = true;
 		} catch {
 			// Non-fatal
 		}
@@ -49,6 +54,7 @@
 			);
 			samlEnabled = cfg.enabled;
 			samlProviderLabel = PROVIDER_LABELS[cfg.provider ?? 'saml'] ?? 'SSO';
+			if (cfg.enabled && cfg.sso_only) ssoOnly = true;
 		} catch {
 			// Non-fatal
 		}
@@ -105,20 +111,24 @@
 			<div class="error">{error}</div>
 		{/if}
 
-		<label>
-			<span>Email</span>
-			<input type="email" bind:value={email} required autocomplete="email" />
-		</label>
-		<label>
-			<span>Password</span>
-			<input type="password" bind:value={password} required autocomplete="current-password" />
-		</label>
+		{#if !ssoOnly}
+			<label>
+				<span>Email</span>
+				<input type="email" bind:value={email} required autocomplete="email" />
+			</label>
+			<label>
+				<span>Password</span>
+				<input type="password" bind:value={password} required autocomplete="current-password" />
+			</label>
 
-		<button type="submit" disabled={loading}>
-			{loading ? 'Signing in...' : 'Sign in'}
-		</button>
+			<button type="submit" disabled={loading}>
+				{loading ? 'Signing in...' : 'Sign in'}
+			</button>
+		{:else}
+			<p class="sso-only-note">This workspace uses single sign-on.</p>
+		{/if}
 
-		{#if ssoEnabled || samlEnabled}
+		{#if !ssoOnly && (ssoEnabled || samlEnabled)}
 			<div class="divider"><span>or</span></div>
 		{/if}
 		{#if ssoEnabled}
@@ -164,6 +174,13 @@
 		margin: -8px 0 8px;
 		font-size: 0.88rem;
 		color: var(--text-muted);
+	}
+
+	.sso-only-note {
+		margin: 4px 0;
+		font-size: 0.9rem;
+		color: var(--text-muted);
+		text-align: center;
 	}
 
 	.error {

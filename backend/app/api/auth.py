@@ -34,6 +34,7 @@ from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.rate_limit import check_rate_limit
 from app.services.session_management import end_session, register_session
+from app.services.sso import is_sso_only
 from app.utils.passwords import (
     PasswordError,
     pwd_context,
@@ -134,6 +135,25 @@ async def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     org = await _load_user_org(db, user.organization_id)
+
+    # SSO-only enforcement. When the tenant requires SSO, password login is
+    # closed even for users who still carry a password hash — checked after the
+    # password is verified so it reuses the org load and doesn't perturb the
+    # unknown-vs-wrong-password enumeration parity. (Passwordless SSO users
+    # already 401'd above; the login page hides the password form when
+    # sso_only, so they use the IdP button.)
+    if is_sso_only(org.settings if org else None):
+        await dispatch_auth_audit(
+            organization_id=user.organization_id,
+            actor_id=None,
+            action="auth.login.failure",
+            details={"email": body.email, "ip": ip, "reason": "sso_only"},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This workspace requires single sign-on. Sign in with your identity provider.",
+        )
+
     org_required = mfa.org_requires_mfa(org.settings if org else None)
 
     # MFA gate. The master switch (`AP_MFA_ENABLED`) wins — if MFA is off

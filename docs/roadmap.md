@@ -372,7 +372,7 @@ No SSO = no enterprise sale. OIDC (Okta + Entra), SAML 2.0, and SCIM 2.0 user pr
 - [x] Force password change on first login (non-SSO users) — `User.must_change_password` flag, cleared on `/api/auth/change-password`
 - [x] SAML 2.0 SSO (Okta, Azure AD, OneLogin, ADFS) — SP-initiated, separate code path (`api/auth_saml.py`) reusing the OIDC JIT + session-mint tail. python3-saml verification pinned to the per-tenant IdP cert; hardened (wantAssertionsSigned, SHA-256-only, issuer/audience/destination/InResponseTo enforced, per-tenant replay dedup, XXE-hardened parsing). Local IdP via Keycloak (`pnpm saml:seed`).
 - [ ] SCIM `/Groups` — needs IdP-group → Role mapping design (per-tenant config? convention?)
-- [ ] SSO-only mode — disable password login when SSO is configured (flag on `Organization.settings.sso`)
+- [x] SSO-only mode — `settings.sso.sso_only` (covers OIDC + SAML) closes password login org-wide: `/api/auth/login` 403s with an `sso_only` audit reason, and the login page hides the password form. `sso_only` is echoed on the public `/config` endpoints only when the IdP config resolves, so a broken config can't lock everyone out. `services.sso.is_sso_only`
 - [x] MFA — TOTP enrollment + email-OTP backup, opt-in per user with org-level enforcement toggle (`AP_MFA_ENABLED` master switch; default off in dev)
 - [ ] MFA — WebAuthn / passkeys (TOTP shipped first; passkeys are a separate code path)
 - [ ] MFA — mobile app support (Flutter login currently expects `TokenResponse` only)

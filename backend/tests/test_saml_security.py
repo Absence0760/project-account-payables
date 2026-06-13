@@ -343,7 +343,7 @@ def test_extract_email_none_when_absent():
 
 
 def test_saml_config_public_field_allowlist():
-    assert set(SAMLConfigPublic.model_fields) == {"enabled", "provider"}
+    assert set(SAMLConfigPublic.model_fields) == {"enabled", "provider", "sso_only"}
 
 
 # --- RelayState + handoff + replay dedup (Redis-backed) ---------------------

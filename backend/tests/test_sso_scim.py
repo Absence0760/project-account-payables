@@ -189,8 +189,8 @@ def test_sso_config_public_omits_secrets():
     from app.api.auth_sso import SSOConfigPublic
 
     fields = set(SSOConfigPublic.model_fields.keys())
-    # Allowed fields only
-    assert fields == {"enabled", "provider"}
+    # Allowed fields only (sso_only is a non-secret policy flag for the login UI)
+    assert fields == {"enabled", "provider", "sso_only"}
 
 
 # ---------- redirect_uri threaded through the OIDC handshake --------------

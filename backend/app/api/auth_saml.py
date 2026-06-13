@@ -63,6 +63,7 @@ from app.services.sso import (
     consume_saml_handoff,
     consume_saml_relay_state,
     create_saml_handoff,
+    is_sso_only,
     resolve_saml_config,
     saml_acs_url,
     saml_bridge_url,
@@ -103,12 +104,14 @@ _FAMILY_ATTRS = ("sn", "surname", "lastName", "urn:oid:2.5.4.4")
 
 
 class SAMLConfigPublic(BaseModel):
-    """Unauthenticated config surface for the login page. Pinned to exactly
-    {enabled, provider} — NEVER leaks idp_x509_cert / sp_entity_id / URLs.
-    A field-allowlist test guards this contract."""
+    """Unauthenticated config surface for the login page. Pinned to
+    {enabled, provider, sso_only} — NEVER leaks idp_x509_cert / sp_entity_id /
+    URLs. A field-allowlist test guards this contract. `sso_only` lets the page
+    hide the password form; only ever true alongside `enabled=True`."""
 
     enabled: bool = False
     provider: str | None = None
+    sso_only: bool = False
 
 
 class SAMLExchangeRequest(BaseModel):
@@ -269,7 +272,9 @@ async def saml_config(slug: str, db: AsyncSession = Depends(get_control_db)):
         return SAMLConfigPublic(enabled=False)
     if config is None:
         return SAMLConfigPublic(enabled=False)
-    return SAMLConfigPublic(enabled=True, provider=config.provider)
+    return SAMLConfigPublic(
+        enabled=True, provider=config.provider, sso_only=is_sso_only(org.settings)
+    )
 
 
 @router.get("/login")

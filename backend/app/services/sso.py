@@ -93,6 +93,21 @@ def _settings_protocol(sso: dict) -> str:
     return (sso.get("protocol") or "oidc").lower()
 
 
+def is_sso_only(org_settings: dict | None) -> bool:
+    """True when the tenant has SSO enabled AND requires it — password login is
+    closed for the whole org (both OIDC and SAML set the same flag).
+
+    Deliberately requires ``sso.enabled`` too, so setting ``sso_only`` alone
+    (without configuring an IdP) can't lock everyone out. Admins must stand up
+    SSO first; the public /config endpoints only echo ``sso_only`` once the IdP
+    config actually resolves, so a broken config never hides the password form.
+    """
+    if not org_settings:
+        return False
+    sso = org_settings.get("sso") or {}
+    return bool(sso.get("enabled") and sso.get("sso_only"))
+
+
 def resolve_sso_config(org_settings: dict | None) -> ResolvedSSOConfig | None:
     """Pull + validate the OIDC SSO block from Organization.settings. Returns
     None if OIDC SSO isn't configured for this tenant (incl. when the tenant is
