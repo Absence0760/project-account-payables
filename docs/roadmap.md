@@ -288,12 +288,12 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 ## Priority 5: Multi-Currency & Tax
 
 ### Multi-Currency Support
-**Status:** Partial (currency field exists, no conversion)
+**Status:** Done — reporting-currency rollups + locale-aware display, built on the existing FX adapters (`services/fx_adapters/`) and international-payments rate locking. See `backend/docs/multi-currency.md`.
 
-- [ ] Real-time exchange rate lookup (e.g., Open Exchange Rates API)
-- [ ] Auto-convert to reporting currency
-- [ ] Realized/unrealized gain/loss tracking
-- [ ] Currency displayed correctly per locale
+- [x] Real-time exchange rate lookup — reuses the existing `fx_adapters` (`mock` + Open Exchange Rates) `get_rate`; no new provider
+- [x] Auto-convert to reporting currency — `services/currency_conversion.py` + per-org `Organization.settings.reporting_currency` (falls back to `payments.home_currency` → `invoice_defaults.currency` → `AP_REPORTING_CURRENCY_DEFAULT`); `/analytics/cfo` (`reporting_spend`) and `/dashboard` (`reporting` block) roll multi-currency invoices into one reporting currency. The rate is locked + materialized on the invoice (`reporting_amount` / `reporting_fx_rate` / `reporting_fx_locked_at`, migration 0025) — no silent recompute at today's rate
+- [x] Realized/unrealized gain/loss tracking — payment-level realized (`compute_fx_gain_loss`, pre-existing) + open-position `compute_unrealized_fx_gain_loss` surfaced as `unrealized_fx` on `/analytics/cfo`
+- [x] Currency displayed correctly per locale — frontend `<Money>` component + `formatMoney()` (`Intl.NumberFormat`, ISO-4217-code-driven) applied across invoices / payments / dashboard / analytics / portal; each amount renders with its own currency code, never a hardcoded `$`
 
 ### Multi-Entity
 **Status:** Partial (multi-tenant exists, not multi-entity within org)
@@ -304,25 +304,25 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 - [ ] Consolidated reporting across entities
 
 ### Tax Compliance
-**Status:** Planned — **Competitive gap: 1099 is table stakes for US AP**
+**Status:** Done (US 1099 + international VAT/GST/withholding) — e-invoicing (Peppol/ZUGFeRD etc.) tracked separately under Priority 10. See `backend/docs/tax-1099.md` + `backend/docs/international-tax.md`.
 
 1099 compliance is required for US AP operations. Bill.com, Tipalti, AvidXchange, Stampli, MineralTree all have it. VAT/e-invoicing is required for EU expansion (Medius and Basware lead).
 
 **US Tax (Priority):**
-- [ ] W-9 collection — request, store, and validate vendor W-9 forms
-- [ ] TIN validation — verify Tax Identification Numbers against IRS database
-- [ ] 1099 tracking — flag vendors exceeding $600 annual threshold
-- [ ] 1099-NEC and 1099-MISC generation — auto-generate from payment data
-- [ ] 1099 e-filing — file electronically with IRS (direct or via partner like Tax1099)
-- [ ] 1099 vendor dashboard — summary of all 1099-eligible vendors and YTD totals
+- [x] W-9 collection — request, store, validate vendor W-9 forms (`POST /api/tax/vendors/{id}/w9`, vendor tax fields)
+- [x] TIN validation — pluggable `tin_validation_adapters/` (offline `mock` default + Tax1099 TIN-match skeleton, local-first); `POST /api/tax/vendors/{id}/tin-verify` stamps `tin_verified_at`; format + checksum validation, raw TIN never logged
+- [x] 1099 tracking — `build_1099_report` / `build_1099_dashboard` flag vendors over the $600 annual threshold
+- [x] 1099-NEC and 1099-MISC generation — `services/tax_1099_forms.py` renders reportlab PDFs from payment data (`GET /api/tax/vendors/{id}/1099`); TIN masked in the PDF text layer
+- [x] 1099 e-filing — pluggable `tax_filing_adapters/` (offline `mock` default + Tax1099 partner skeleton); `POST /api/tax/1099/file`, idempotent at two layers (DB unique constraint on `(org, idempotency_key)` in migration 0026 + deterministic adapter)
+- [x] 1099 vendor dashboard — `GET /api/tax/1099-dashboard` (eligible vendors, YTD totals, W-9-on-file + TIN-verified status, threshold flags) + frontend `/tax` route
 
 **International Tax:**
-- [ ] Tax rate lookup by jurisdiction (e.g., Avalara, TaxJar)
-- [ ] VAT handling for international invoices
-- [ ] Withholding tax calculation
-- [ ] GST handling (Australia, India, Canada)
-- [ ] Tax report generation
-- [ ] Country-specific tax rules engine
+- [x] Tax rate lookup by jurisdiction — pluggable `tax_rate_adapters/` (offline `mock` default + Avalara / TaxJar skeletons, local-first), per-org override via `Organization.settings.tax.rate_provider`
+- [x] VAT handling for international invoices — incl. EU reverse-charge (`services/international_tax/vat.py`)
+- [x] Withholding tax calculation — by jurisdiction / vendor (`services/international_tax/withholding.py`)
+- [x] GST handling (Australia, India, Canada) — `services/international_tax/gst.py`
+- [x] Tax report generation — per-period collected-vs-owed report (`services/international_tax/report.py`, `/api/international-tax` router); figures persisted on `intl_tax_records` (migration 0027) as the audit fact
+- [x] Country-specific tax rules engine — data-driven `services/international_tax/country_rules.py`; new countries are config, not code
 
 **Competitors:** Tipalti (1099 + W-8BEN + VAT), Bill.com (1099 e-filing), Basware (global VAT, 60+ countries), Medius (EU e-invoicing mandates)
 
