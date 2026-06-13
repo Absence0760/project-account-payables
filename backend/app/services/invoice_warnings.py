@@ -3,6 +3,7 @@
 Also creates exception records for issues that need human resolution.
 """
 
+import logging
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.services.po_matching import match_invoice_to_po
+
+logger = logging.getLogger(__name__)
 
 # ---------- Fraud rules: per-org tunable thresholds -----------------------
 #
@@ -378,9 +381,43 @@ async def refresh_warnings(
     else:
         invoice.po_match = None
 
+    # Reporting-currency conversion — lock the invoice's amount into the org's
+    # reporting (base) currency so multi-currency analytics roll up correctly.
+    # The rate is snapshotted on the row (see currency_conversion) and never
+    # recomputed for an already-locked row, so historical totals stay stable.
+    # Best-effort: an FX failure must never block saving an invoice.
+    await _refresh_reporting_amount(invoice, org_settings)
+
     # Persist
     invoice.warnings = warnings or None
     return warnings
+
+
+async def _refresh_reporting_amount(invoice: Invoice, org_settings: dict | None) -> None:
+    """Materialize `invoice.reporting_*` for the org's reporting currency.
+
+    Imported lazily so the warning engine doesn't pull the FX stack on every
+    import. Swallows FX/adapter errors (logged) — a missing rate leaves the
+    reporting fields NULL and the rollup falls back to face value for that one
+    row rather than failing the whole save."""
+    if invoice.amount is None:
+        return
+    try:
+        from app.services.currency_conversion import (
+            materialize_reporting_amount,
+            resolve_reporting_currency,
+        )
+        from app.services.fx_adapters import get_fx_adapter
+
+        reporting_currency = resolve_reporting_currency(org_settings)
+        fx_adapter = get_fx_adapter((org_settings or {}).get("fx"))
+        await materialize_reporting_amount(
+            invoice,
+            reporting_currency=reporting_currency,
+            fx_adapter=fx_adapter,
+        )
+    except Exception:  # noqa: BLE001 — best-effort; never break the save path
+        logger.warning("reporting-currency materialization failed for invoice; left NULL")
 
 
 async def _refresh_po_match(
