@@ -373,6 +373,115 @@ async def export_einvoice(
     )
 
 
+class PeppolSendRequest(BaseModel):
+    receiver_scheme: str  # EAS code, e.g. "9930"
+    receiver_value: str  # receiver registered id
+    sender_scheme: str | None = None  # falls back to org settings.peppol.sender_scheme
+    sender_value: str | None = None  # falls back to org settings.peppol.sender_value
+
+
+class PeppolSendResponse(BaseModel):
+    transmission_id: uuid.UUID
+    status: str  # "sent" | "failed" | (existing status on re-send)
+    message_id: str | None
+    direction: str  # "outbound"
+    already_sent: bool  # True when the idempotency short-circuit hit
+
+
+@router.post("/{invoice_id}/peppol-send", response_model=PeppolSendResponse)
+async def peppol_send(
+    invoice_id: uuid.UUID,
+    body: PeppolSendRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Transmit an invoice over the PEPPOL network via the configured Access Point.
+
+    Reuses the e-invoice pipeline (map → tax-validate → UBL) then hands the UBL
+    to the PEPPOL adapter (mock default; ``as4_gateway`` when configured).
+    Idempotent: a second call for the same invoice returns the existing
+    transmission with ``already_sent=True`` and does not re-transmit (enforced
+    at the data layer by a partial unique index).
+
+    422 on a tax-invalid invoice or an unregistered receiver; 400 on a malformed
+    participant id; 404 if the invoice is missing. PII-free error bodies.
+    """
+    from app.models.entity import Entity
+    from app.services.e_invoice import EInvoiceValidationError
+    from app.services.peppol_adapters import ParticipantId, PeppolSendError
+    from app.services.peppol_send import send_invoice_over_peppol
+
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    ).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    line_items = list(
+        (
+            await db.execute(
+                select(InvoiceLineItem)
+                .where(InvoiceLineItem.invoice_id == invoice_id)
+                .order_by(InvoiceLineItem.line_number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    entity_name: str | None = None
+    if invoice.entity_id is not None:
+        entity = (
+            await db.execute(select(Entity).where(Entity.id == invoice.entity_id))
+        ).scalar_one_or_none()
+        if entity is not None:
+            entity_name = entity.name
+
+    buyer = _buyer_identity_from_org(org, entity_name=entity_name)
+
+    peppol_config = (org.settings or {}).get("peppol") or {}
+    sender_scheme = body.sender_scheme or peppol_config.get("sender_scheme")
+    sender_value = body.sender_value or peppol_config.get("sender_value")
+    if not sender_scheme or not sender_value:
+        raise HTTPException(status_code=400, detail="sender participant id is not configured")
+
+    try:
+        sender_id = ParticipantId(scheme=str(sender_scheme), value=str(sender_value))
+        # Round-trip through parse to validate the scheme format (PII-free error).
+        ParticipantId.parse(sender_id.format())
+        receiver_id = ParticipantId.parse(f"{body.receiver_scheme}:{body.receiver_value}")
+    except ValueError as exc:
+        # str(exc) names the field only — never the value (PII-free).
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        transmission, already_sent = await send_invoice_over_peppol(
+            db,
+            invoice=invoice,
+            line_items=line_items,
+            buyer=buyer,
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            organization_id=invoice.organization_id,
+            entity_id=invoice.entity_id,
+            actor_id=user.id,
+            peppol_config=peppol_config,
+        )
+    except EInvoiceValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PeppolSendError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+
+    return PeppolSendResponse(
+        transmission_id=transmission.id,
+        status=transmission.status,
+        message_id=transmission.message_id,
+        direction=transmission.direction,
+        already_sent=already_sent,
+    )
+
+
 @router.get("/{invoice_id}/line-items")
 async def get_invoice_line_items(
     invoice_id: uuid.UUID,
