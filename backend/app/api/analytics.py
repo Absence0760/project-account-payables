@@ -13,6 +13,7 @@ This file does the SQL and the response shaping.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -41,7 +42,15 @@ from app.services.analytics import (
     compute_working_capital_impact,
     detect_threshold_breaches,
 )
+from app.services.currency_conversion import (
+    compute_unrealized_fx_gain_loss,
+    resolve_reporting_currency,
+    rollup_to_reporting_currency,
+)
+from app.services.fx_adapters import get_fx_adapter
 from app.tenant import get_tenant, get_tenant_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -318,6 +327,7 @@ async def get_cash_position(
 async def get_cfo_analytics(
     period_days: int = Query(365, ge=30, le=730),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
 ):
     """Aggregate every CFO metric into one response so the dashboard
@@ -339,6 +349,30 @@ async def get_cfo_analytics(
         )
     )
     total_spend = Decimal(str(total_spend_q.scalar() or 0))
+
+    # ----- Multi-currency reporting rollup of spend in window -----
+    # The naive SUM above mixes currencies. Re-roll into the org's reporting
+    # currency using each row's rate-locked `reporting_amount` so a EUR invoice
+    # and a USD invoice add up correctly. See backend/docs/multi-currency.md.
+    reporting_currency = resolve_reporting_currency(org.settings)
+    spend_rows_q = await db.execute(
+        select(
+            Invoice.amount,
+            Invoice.currency,
+            Invoice.reporting_amount,
+            Invoice.reporting_currency,
+        ).where(
+            Invoice.invoice_date >= period_start,
+            Invoice.status != InvoiceStatus.rejected.value,
+        )
+    )
+    spend_rollup = rollup_to_reporting_currency(
+        [
+            {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
+            for r in spend_rows_q.all()
+        ],
+        reporting_currency=reporting_currency,
+    )
 
     ap_balance_q = await db.execute(
         select(func.coalesce(func.sum(Invoice.amount), 0)).where(
@@ -520,10 +554,89 @@ async def get_cfo_analytics(
         months_in_period=max(period_days // 30, 1),
     )
 
+    # ----- Unrealized FX gain/loss on OPEN foreign-currency invoices -----
+    # Realized FX gain/loss is measured at payment time by
+    # `international_payments.compute_fx_gain_loss`. This is the reporting-layer
+    # companion: for approved-but-unpaid foreign invoices we mark the open
+    # liability to today's rate and report the difference vs the booked
+    # (rate-locked) reporting amount. One FX call per distinct foreign currency;
+    # best-effort so an FX outage doesn't 500 the whole CFO dashboard.
+    open_statuses = [
+        InvoiceStatus.approved.value,
+        InvoiceStatus.sending_to_erp.value,
+        InvoiceStatus.sent_to_erp.value,
+        InvoiceStatus.posted_in_erp.value,
+        InvoiceStatus.payment_scheduled.value,
+    ]
+    unrealized_payload: dict = {
+        "reporting_currency": reporting_currency,
+        "total_unrealized_gain_loss": 0.0,
+        "by_currency": [],
+        "available": True,
+    }
+    try:
+        open_rows_q = await db.execute(
+            select(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(Invoice.status.in_(open_statuses))
+        )
+        open_invoices = [
+            {"amount": r[0], "currency": r[1], "reporting_amount": r[2], "reporting_currency": r[3]}
+            for r in open_rows_q.all()
+        ]
+        fx_adapter = get_fx_adapter((org.settings or {}).get("fx"))
+        unrealized = await compute_unrealized_fx_gain_loss(
+            open_invoices,
+            reporting_currency=reporting_currency,
+            fx_adapter=fx_adapter,
+        )
+        unrealized_payload = {
+            "reporting_currency": unrealized.reporting_currency,
+            "total_unrealized_gain_loss": float(unrealized.total_unrealized_gain_loss),
+            "by_currency": [
+                {
+                    "currency": e.currency,
+                    "open_original_amount": float(e.open_original_amount),
+                    "booked_reporting_amount": float(e.booked_reporting_amount),
+                    "current_reporting_amount": float(e.current_reporting_amount),
+                    "unrealized_gain_loss": float(e.unrealized_gain_loss),
+                }
+                for e in unrealized.by_currency
+            ],
+            "available": True,
+        }
+    except Exception:  # noqa: BLE001 — FX outage shouldn't break the dashboard
+        logger.warning("unrealized FX gain/loss unavailable; FX lookup failed")
+        unrealized_payload["available"] = False
+
     return {
         "period_days": period_days,
         "period_start": period_start.isoformat(),
         "total_spend": float(total_spend),
+        # Currency-aware spend rollup (the unified reporting-currency total +
+        # the per-currency split). `total_spend` above stays as the legacy
+        # naive SUM for back-compat; `reporting_spend.total_amount` is the
+        # figure to trust when the org books in multiple currencies.
+        "reporting_spend": {
+            "reporting_currency": spend_rollup.reporting_currency,
+            "total_amount": float(spend_rollup.total_reporting_amount),
+            "total_count": spend_rollup.total_count,
+            "unconverted_count": spend_rollup.unconverted_count,
+            "by_currency": [
+                {
+                    "currency": e.currency,
+                    "original_amount": float(e.original_amount),
+                    "reporting_amount": float(e.reporting_amount),
+                    "count": e.count,
+                    "unconverted_count": e.unconverted_count,
+                }
+                for e in spend_rollup.by_currency
+            ],
+        },
+        "unrealized_fx": unrealized_payload,
         "accounts_payable_balance": float(ap_balance),
         "dpo_current": float(dpo),
         "dpo_trend": [{"month": r["month"], "dpo": float(r["dpo"])} for r in monthly_dpo_rows],
