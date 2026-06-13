@@ -605,22 +605,22 @@ Enhance the existing audit trail to meet SOX (Sarbanes-Oxley) compliance require
 ---
 
 ### Automated E-Invoicing
-**Status:** Inbound shipped (UBL 2.1 + Factur-X/ZUGFeRD CII, auto-detect, schema validation) — outbound + Peppol network + country formats remaining.
+**Status:** Inbound + outbound UBL 2.1 shipped (parse + generate, auto-detect, schema validation, country VAT/GST/IVA tax validation) — Peppol network + country-specific formats (FatturaPA, CFDI, NFe, DIAN) remaining.
 
 Support structured electronic invoice formats required in the EU, Australia, and other regions. Inbound parsing is pure/local-first (no network, no SaaS key) and on by default; see `backend/docs/e-invoicing.md`.
 
 - [x] Factur-X / ZUGFeRD — hybrid PDF/XML format (EU standard): embedded CII XML extracted from PDF/A-3 and parsed
-- [x] UBL (Universal Business Language) 2.1 — **parse** (PEPPOL BIS Billing 3.0 payload). Generate is the next slice (the `EInvoiceDocument` model is already bidirectional)
+- [x] UBL (Universal Business Language) 2.1 — **parse + generate** (PEPPOL BIS Billing 3.0 payload). `generate_ubl(doc) -> bytes` is the exact inverse of the parser; round-trip property `parse_ubl(generate_ubl(doc)) == doc` holds on core fields
 - [x] Auto-detect format on upload — structured data parsed instead of OCR (`extraction.run_extraction` choke point routes to the `einvoice` adapter at confidence 1.0)
 - [x] Validate against schema — malformed e-invoices rejected with clear field-level errors (EN 16931 structural subset)
-- [ ] UBL 2.1 / CII **generate** (outbound) — reuse `EInvoiceDocument`; supplier-portal responses + PO flips
+- [x] UBL 2.1 **generate** (outbound) — reuses `EInvoiceDocument` via `mapper.invoice_to_einvoice_document`; `GET /api/invoices/{id}/einvoice` (role-gated AP export, 422 on tax-invalid) + `GET /portal/invoices/{id}/einvoice` (vendor-scoped supplier download). CII generate deferred (own slice; trigger: a corridor that requires CII outbound)
 - [ ] Peppol BIS Billing 3.0 — send via Peppol network (receive payload already parses)
 - [ ] FatturaPA — Italian e-invoicing format
 - [ ] CFDI 4.0 — Mexican e-invoicing (SAT stamping, UUID, PAC integration)
 - [ ] NFe / NFS-e — Brazilian electronic invoicing (state-level SEFAZ integration)
 - [ ] DIAN — Colombian e-invoicing
 - [ ] Access point / PEPPOL AS4 gateway integration
-- [ ] Country-specific tax validation (VAT, GST, IVA)
+- [x] Country-specific tax validation (VAT, GST, IVA) — `e_invoice/tax_rules.py`: per-country tax-ID format (EU/GB VAT, AU ABN, NZ/IN/CA GST, MX/ES/IT IVA), rate plausibility per regime, zero-rate/reverse-charge handling. Pure, PII-free `FieldError`s; wired into inbound `validate_document` + the outbound export guard
 
 ---
 

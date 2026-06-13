@@ -27,8 +27,11 @@ for the hybrid format.
 | `ubl.py` | `parse_ubl(xml_bytes) -> EInvoiceDocument`. |
 | `cii.py` | `parse_cii(xml_bytes) -> EInvoiceDocument`. |
 | `facturx.py` | `extract_embedded_cii_xml(pdf_bytes) -> bytes \| None` via PyMuPDF embedded-file API. Never raises. |
-| `validate.py` | `validate_document` / `assert_valid` + `FieldError` + `EInvoiceValidationError`. EN 16931-subset structural checks. |
+| `validate.py` | `validate_document(doc, *, check_tax=True)` / `assert_valid` + `FieldError` + `EInvoiceValidationError`. EN 16931-subset structural checks; appends `tax_rules.validate_tax_document(doc)` when `check_tax`. |
 | `parse.py` | `parse_e_invoice(file_bytes, mime_type, filename)` orchestrator: detect → embedded-extract → parse → assert_valid. |
+| `generate.py` | `generate_ubl(doc) -> bytes`. Outbound UBL 2.1 serializer — the exact inverse of `ubl.py`. lxml etree, money via `Decimal.quantize`, `currencyID` on amounts. |
+| `mapper.py` | `BuyerIdentity` dataclass + `invoice_to_einvoice_document(invoice, line_items, buyer_identity) -> EInvoiceDocument`. Pure ORM `Invoice` → normalized model. |
+| `tax_rules.py` | Country tax validation: `validate_tax_id` / `validate_tax_rate` / `validate_tax_document(doc) -> list[FieldError]`. VAT/GST/IVA id formats + rate plausibility + zero-rate/reverse-charge. Shared by inbound (`validate.py`) and outbound (export route). |
 
 ## Auto-detect-on-ingest routing
 
@@ -140,10 +143,67 @@ XML attachments are accepted on both ingest paths:
   include `application/xml` + `text/xml` (25 MB cap unchanged).
 - Factur-X / ZUGFeRD arrive as PDF and are already covered by `application/pdf`.
 
-## Future: outbound UBL generation
+## Outbound UBL 2.1 generation
 
-The `EInvoiceDocument` model is intentionally a full bidirectional
-representation (separate seller/buyer `EInvoiceParty`, structured taxes,
-monetary-summation totals, UNCL type/means codes). The next slice can generate
-UBL 2.1 from the same model without remodeling — the natural hook is a
-`generate_ubl(doc) -> bytes` companion to `parse_ubl`.
+The `EInvoiceDocument` model is a full bidirectional representation, so outbound
+generation reuses it as-is — **no model change**. Three pure modules (no DB, no
+network, on by default, no new dependency):
+
+### `generate_ubl(doc) -> bytes`
+
+Serializes an `EInvoiceDocument` to UBL 2.1 Invoice XML (UTF-8 + declaration).
+It is the exact inverse of `ubl.py`'s parser: same root
+(`...:xsd:Invoice-2`), same `cbc:` / `cac:` namespaces, same element order.
+Built with `lxml.etree` (etree escapes text nodes automatically, so a vendor
+name with `<`, `&`, `>` can never inject markup — no string templating). Money
+is serialized via `Decimal.quantize` (amounts 2dp, quantities 4dp) — never
+`float` — and every monetary element carries `currencyID = doc.currency`.
+Optional fields are omitted when `None`, so the round-trip property holds:
+
+```
+parse_ubl(generate_ubl(doc)) == doc   # on every core field
+```
+
+### `invoice_to_einvoice_document(invoice, line_items, buyer_identity)`
+
+Pure mapper from an ORM `Invoice` (+ its `InvoiceLineItem` rows + our identity)
+into the normalized model. The **seller** is the vendor (`vendor_name` /
+`vendor_tax_id` / `vendor_address` split on newline into address lines); the
+**buyer** (AccountingCustomerParty = us) is filled from `BuyerIdentity` — a
+dataclass that lives in `mapper.py`, *not* on the model. Totals map as:
+`line_extension_amount`/`tax_exclusive_amount` ← `subtotal`,
+`tax_inclusive_amount`/`payable_amount` ← `amount`, `tax_total` ← `tax_amount`,
+`allowance_total` ← `discount_amount`, `charge_total` ← `shipping_amount`. One
+`EInvoiceTax` is built from `(tax_rate, subtotal, tax_amount)` when tax is set.
+Decimal is preserved end to end.
+
+### Routes
+
+| Route | Auth | Behaviour |
+|-------|------|-----------|
+| `GET /api/invoices/{id}/einvoice?format=ubl` | employee JWT + `require_roles(admin, ap_manager, cfo, ap_clerk)`, `get_tenant_db` + `get_tenant` | Maps the tenant invoice → doc, resolves `BuyerIdentity` from `org.settings["company"]` (+ `Entity.name` override when `invoice.entity_id` is set), **asserts tax-valid (422 on failure** — an AP user must not emit a non-compliant invoice; body is the PII-free `field: code` join), then returns the UBL as an `application/xml` attachment. `format != "ubl"` → 400; unknown invoice → 404. |
+| `GET /portal/invoices/{id}/einvoice` | vendor JWT (`get_current_vendor_user`) | **Vendor-scoped**: the query is `WHERE Invoice.id == id AND Invoice.vendor_id == vu.vendor_id` — a foreign or unknown invoice returns 404 (never a foreign document). Resolves the buyer `Organization` via the injected control session (`get_control_db`) by `invoice.organization_id` (same pattern as the remittance route). Does **not** 422 the supplier on a tax soft-warning — the UBL is always returned and any validation issue is logged field-only, never surfaced to the vendor. |
+
+### Country tax validation (`tax_rules.py`)
+
+A shared building block used as an inbound guard (`validate_document` appends it
+when `check_tax=True`, the default) and an outbound pre-generation guard (the
+authenticated export's `assert_valid`). Three checks, all PII-free
+(`FieldError` names the field path + a code, never the value):
+
+- **Tax-ID format** per country — every EU member-state VAT regex + GB VAT,
+  AU ABN (11 digits), NZ/IN/CA GST, MX RFC, ES/IT IVA (their EU VAT regex). An
+  **unknown / unsupported country code is skipped** (inbound documents arrive
+  from any country); only a *known* country with a *malformed* id fails.
+- **Tax-rate plausibility** per regime — a rate outside the country's standard
+  + reduced set (with a 0.01 tolerance) is `implausible`.
+- **Reverse-charge / zero-rate** — categories `Z` (zero-rated) and `AE`/`E`
+  (reverse-charge / exempt) are plausible at `0.00`, so a legitimate 0% line is
+  never flagged.
+
+| Regime | Countries | Tax-ID example |
+|--------|-----------|----------------|
+| VAT (EU) | AT BE BG CY CZ DE DK EE ES FI FR GR HR HU IE IT LT LU LV MT NL PL PT RO SE SI SK | `DE123456789`, `FR40123456789`, `NL123456789B01` |
+| VAT (UK) | GB | `GB123456789` |
+| GST / ABN | AU NZ IN CA | `12345678901` (ABN), `29ABCDE1234F1Z5` (GSTIN) |
+| IVA | ES IT MX | `ESA12345674`, `IT12345678901`, `ABCD901231XYZ` (RFC) |
