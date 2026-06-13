@@ -5,6 +5,7 @@ Every endpoint is vendor-scoped: the caller's `vendor_id` (from the JWT via
 A vendor user cannot reference another vendor's invoices even by guessing IDs.
 """
 
+import logging
 import uuid
 from decimal import Decimal
 
@@ -50,6 +51,8 @@ from app.services.workflow_engine import (
     transition_invoice,
 )
 from app.tenant import get_tenant_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/portal", tags=["portal"])
 
@@ -122,6 +125,95 @@ async def get_my_invoice(
         due_date=inv.due_date,
         submitted_at=inv.created_at,
         file_url=inv.file_url,
+    )
+
+
+@router.get("/invoices/{invoice_id}/einvoice")
+async def get_my_invoice_einvoice(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Vendor-scoped UBL 2.1 e-invoice download for one of the supplier's own
+    invoices.
+
+    Ownership is enforced by the `Invoice.vendor_id == vu.vendor_id` clause — a
+    request for another vendor's (or another tenant's) invoice returns 404, the
+    same "doesn't exist / not yours" conflation the other portal routes use, so
+    a vendor can never probe for or download a foreign document.
+
+    Unlike the authenticated AP export, this does NOT 422 a supplier on a
+    tax-validation soft-warning: the supplier is downloading a representation of
+    an already-stored invoice, so we always return the generated UBL. Any
+    validation issue is logged field-only (never to the vendor, never the value).
+    """
+    from app.models.organization import Organization
+    from app.services.e_invoice import (
+        BuyerIdentity,
+        generate_ubl,
+        invoice_to_einvoice_document,
+        validate_document,
+    )
+
+    invoice = (
+        await db.execute(
+            select(Invoice).where(Invoice.id == invoice_id, Invoice.vendor_id == vu.vendor_id)
+        )
+    ).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    line_items = list(
+        (
+            await db.execute(
+                select(InvoiceLineItem)
+                .where(InvoiceLineItem.invoice_id == invoice_id)
+                .order_by(InvoiceLineItem.line_number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # The buyer (the AP customer) is an Organization in the control plane —
+    # portal sessions don't carry one, so resolve it via the injected control
+    # session by the invoice's org id (same pattern as get_my_payment_remittance).
+    org = (
+        await ctrl_db.execute(
+            select(Organization).where(Organization.id == invoice.organization_id)
+        )
+    ).scalar_one_or_none()
+    company = ((org.settings or {}).get("company") if org else None) or {}
+    address = company.get("address")
+    address_lines = (
+        [line.strip() for line in address.splitlines() if line.strip()] if address else []
+    )
+    buyer = BuyerIdentity(
+        name=company.get("name") or (org.name if org else "Customer"),
+        tax_id=company.get("tax_id"),
+        address_lines=address_lines,
+        city=company.get("city"),
+        postal_code=company.get("postal_code"),
+        country_code=company.get("country_code"),
+        email=company.get("email"),
+    )
+
+    doc = invoice_to_einvoice_document(invoice, line_items, buyer)
+    # Soft-validate: log field-only codes, never block the supplier or leak values.
+    errors = validate_document(doc)
+    if errors:
+        logger.info(
+            "portal e-invoice export has validation warnings: %s",
+            "; ".join(f"{e.field}: {e.code}" for e in errors),
+        )
+
+    xml_bytes = generate_ubl(doc)
+    filename = f"einvoice-{invoice.invoice_number or invoice.id}.xml"
+    return Response(
+        content=xml_bytes,
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
