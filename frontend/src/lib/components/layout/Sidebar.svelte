@@ -3,8 +3,16 @@
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { notificationStore } from '$lib/stores/notifications.svelte';
+	import { entityStore } from '$lib/stores/entity.svelte';
+	import EntitySwitcher from '$lib/components/layout/EntitySwitcher.svelte';
 
 	let collapsed = $derived(sidebar.collapsed);
+
+	// Load the tenant's entities once so the switcher can render (it hides
+	// itself for single-entity tenants — see EntitySwitcher).
+	$effect(() => {
+		entityStore.ensureLoaded();
+	});
 	let showProfile = $state(false);
 
 	let unread = $derived(notificationStore.unread);
@@ -101,6 +109,8 @@
 			<span class="logo-text">Account Payables</span>
 		{/if}
 	</div>
+
+	<EntitySwitcher {collapsed} />
 
 	<nav class="nav-main">
 		{#each navGroups as group}

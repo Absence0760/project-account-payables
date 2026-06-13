@@ -1,5 +1,6 @@
 import { PUBLIC_API_URL } from '$env/static/public';
 import { getTenantSlug } from '$lib/tenant';
+import { getSelectedEntityId } from '$lib/entity';
 
 const BASE = PUBLIC_API_URL.replace(/\/+$/, '');
 
@@ -33,6 +34,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const tenant = getTenantSlug();
 	if (tenant) {
 		headers['X-Tenant-Slug'] = tenant;
+	}
+	// Multi-entity: scope to the selected subsidiary. Absent = consolidated.
+	const entity = getSelectedEntityId();
+	if (entity) {
+		headers['X-Entity-ID'] = entity;
 	}
 
 	const res = await fetch(`${BASE}${path}`, { ...init, headers });
@@ -74,6 +80,8 @@ async function downloadBlob(path: string): Promise<Blob> {
 	if (token) headers['Authorization'] = `Bearer ${token}`;
 	const tenant = getTenantSlug();
 	if (tenant) headers['X-Tenant-Slug'] = tenant;
+	const entity = getSelectedEntityId();
+	if (entity) headers['X-Entity-ID'] = entity;
 
 	const res = await fetch(`${BASE}${path}`, { headers });
 	if (res.status === 401) {
