@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { portalApi } from '$lib/portalApi';
+	import { portalAuth } from '$lib/stores/portalAuth.svelte';
 	import { onMount } from 'svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
+	import type { PortalChatThread } from '$lib/types/supplierChat';
+	import {
+		getPortalChatThread,
+		postPortalChatMessage,
+		uploadPortalChatAttachment,
+	} from '$lib/portalChat';
 
 	interface PortalInvoice {
 		id: string;
@@ -58,6 +66,61 @@
 		}
 	}
 
+	// --- Per-row expandable chat panel. Clicking a row toggles its thread;
+	// the thread loads lazily on first expand and caches per invoice id. ---
+	let expandedId = $state<string | null>(null);
+	let chatThreads = $state<Record<string, PortalChatThread | null>>({});
+	let chatLoading = $state<Record<string, boolean>>({});
+
+	async function toggleChat(invoiceId: string) {
+		if (expandedId === invoiceId) {
+			expandedId = null;
+			return;
+		}
+		expandedId = invoiceId;
+		if (chatThreads[invoiceId] === undefined) {
+			await loadChat(invoiceId);
+		}
+	}
+
+	async function loadChat(invoiceId: string) {
+		chatLoading = { ...chatLoading, [invoiceId]: true };
+		try {
+			chatThreads = { ...chatThreads, [invoiceId]: await getPortalChatThread(invoiceId) };
+		} catch {
+			chatThreads = {
+				...chatThreads,
+				[invoiceId]: { invoice_id: invoiceId, status: 'open', messages: [] },
+			};
+		} finally {
+			chatLoading = { ...chatLoading, [invoiceId]: false };
+		}
+	}
+
+	function chatSender(invoiceId: string) {
+		return async (body: string, _mentions: string[], file?: File) => {
+			if (file) {
+				await uploadPortalChatAttachment(invoiceId, file, body || undefined);
+			} else {
+				await postPortalChatMessage(invoiceId, { body });
+			}
+			await loadChat(invoiceId);
+		};
+	}
+
+	async function chatDownload(fileUrl: string, filename: string) {
+		// `file_url` is "/api/portal/invoices/{id}/chat/file/{file_key}". The
+		// download helper rebuilds that path from id + key, so pass the bytes
+		// path straight through the portal client.
+		const blob = await portalApi.download(fileUrl);
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
 	function fmtDate(iso: string | null | undefined): string {
 		if (!iso) return '—';
 		return new Date(iso).toLocaleDateString();
@@ -103,14 +166,34 @@
 			</thead>
 			<tbody>
 				{#each items as inv}
-					<tr>
-						<td>{inv.invoice_number || '(pending extraction)'}</td>
+					<tr class="clickable" class:expanded={expandedId === inv.id} onclick={() => toggleChat(inv.id)}>
+						<td>
+							<span class="row-caret">{expandedId === inv.id ? '▾' : '▸'}</span>
+							{inv.invoice_number || '(pending extraction)'}
+						</td>
 						<td>{fmtDate(inv.submitted_at)}</td>
 						<td>{fmtDate(inv.invoice_date)}</td>
 						<td>{fmtDate(inv.due_date)}</td>
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
 						<td><span class="status s-{inv.status}">{inv.status}</span></td>
 					</tr>
+					{#if expandedId === inv.id}
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<tr class="chat-row" onclick={(e) => e.stopPropagation()}>
+							<td colspan="6">
+								<SupplierChatThread
+									surface="vendor"
+									thread={chatThreads[inv.id] ?? null}
+									currentUserId={portalAuth.user?.id}
+									members={[]}
+									templates={[]}
+									loading={chatLoading[inv.id] ?? false}
+									onsend={chatSender(inv.id)}
+									ondownload={chatDownload}
+								/>
+							</td>
+						</tr>
+					{/if}
 				{/each}
 			</tbody>
 		</table>
@@ -173,6 +256,26 @@
 	}
 	tbody tr:last-child td {
 		border-bottom: none;
+	}
+	tr.clickable {
+		cursor: pointer;
+	}
+	tr.clickable:hover td {
+		background: var(--bg);
+	}
+	tr.expanded td {
+		background: var(--bg);
+	}
+	.row-caret {
+		display: inline-block;
+		width: 14px;
+		color: var(--text-muted);
+		font-size: 0.75rem;
+	}
+	tr.chat-row td {
+		background: var(--bg);
+		cursor: default;
+		padding: 14px 16px;
 	}
 	.num {
 		text-align: right;
