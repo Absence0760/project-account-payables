@@ -14,6 +14,7 @@ from app.api import (
     auth_saml,
     auth_sso,
     cards,
+    contracts,
     credit_memos,
     dashboard,
     email_intake,
@@ -190,6 +191,7 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
+app.include_router(contracts.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
 app.include_router(enrichment.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")

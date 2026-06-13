@@ -113,6 +113,12 @@ class Invoice(Base, EntityMixin, TimestampMixin):
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("vendors.id")
     )
+    # Spend-to-contract link. Set via POST /api/invoices/{id}/link-contract;
+    # drives the contract spend rollup (services.contract_spend) and compliance
+    # monitoring (services.contract_compliance). NULL = off-contract spend.
+    contract_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contracts.id"), index=True
+    )
 
     __table_args__ = (
         # Idempotency backstop for the supplier-portal PO flip

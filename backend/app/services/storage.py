@@ -21,6 +21,13 @@ ALLOWED_CONTENT_TYPES = {
 }
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
+# Contract documents are usually signed PDFs but may also arrive as Word
+# files, so the contract repository accepts a superset of the invoice types.
+CONTRACT_CONTENT_TYPES = ALLOWED_CONTENT_TYPES | {
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
 # Strips path separators, parent-directory tokens, and control chars
 # from a user-supplied filename before it's interpolated into the S3
 # key. Without this, a crafted filename like `../../other-org/x.pdf`
@@ -85,6 +92,44 @@ async def upload_invoice_file(
 
     # Store an API-relative URL — the file endpoint generates a presigned URL on demand
     file_url = f"/api/invoices/file/{file_key}"
+    return file_key, file_url
+
+
+async def upload_contract_file(
+    org_id: uuid.UUID,
+    contract_id: uuid.UUID,
+    file: UploadFile,
+) -> tuple[str, str]:
+    """Upload a contract document to S3 and return (file_key, file_url).
+
+    The key is ``<org_id>/contracts/<contract_id>/<safe-filename>`` — the
+    leading ``org_id`` segment is the cross-tenant download gate (the
+    contracts file endpoint refuses keys whose first segment isn't the
+    caller's org), mirroring the invoice file path.
+    """
+    content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError(f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB")
+
+    content_type = file.content_type or "application/octet-stream"
+    if content_type not in CONTRACT_CONTENT_TYPES:
+        raise ValueError(
+            f"File type '{content_type}' not allowed. Accepted: PDF, PNG, JPEG, TIFF, XML, Word"
+        )
+
+    file_key = f"{org_id}/contracts/{contract_id}/{_safe_filename(file.filename)}"
+
+    client = _get_client()
+    _ensure_bucket(client)
+    client.put_object(
+        Bucket=settings.s3_bucket,
+        Key=file_key,
+        Body=content,
+        ContentType=content_type,
+    )
+
+    file_url = f"/api/contracts/file/{file_key}"
     return file_key, file_url
 
 
