@@ -381,6 +381,13 @@ async def refresh_warnings(
     else:
         invoice.po_match = None
 
+    # Contract compliance — flag spend that falls outside the terms of the
+    # invoice's linked contract (over spend-limit, expired/terminated, wrong
+    # vendor, off-contract GL). One `contract_noncompliant` exception covers
+    # all findings (de-duped by _ensure_exception). Skip un-extracted drafts.
+    if invoice.contract_id and _status_str(invoice.status) != "new":
+        await _refresh_contract_compliance(db, invoice, warnings, org_settings)
+
     # Reporting-currency conversion — lock the invoice's amount into the org's
     # reporting (base) currency so multi-currency analytics roll up correctly.
     # The rate is snapshotted on the row (see currency_conversion) and never
@@ -503,6 +510,34 @@ async def _refresh_po_match(
         msg = detail or "Partial quality acceptance on inspection"
         warnings.append({"type": "quality_hold", "severity": "info", "message": msg})
         await _ensure_exception(db, invoice, "quality_hold", "info", msg, org_settings=org_settings)
+
+
+async def _refresh_contract_compliance(
+    db: AsyncSession,
+    invoice: Invoice,
+    warnings: list[dict],
+    org_settings: dict | None = None,
+) -> None:
+    """Append contract-compliance findings to ``warnings`` and raise one
+    ``contract_noncompliant`` exception covering them. Mutates ``warnings``."""
+    from app.services.contract_compliance import (
+        COMPLIANCE_EXCEPTION_TYPE,
+        evaluate_contract_compliance,
+    )
+
+    findings = await evaluate_contract_compliance(db, invoice)
+    if not findings:
+        return
+    warnings.extend(findings)
+    worst = "error" if any(f["severity"] == "error" for f in findings) else "warning"
+    await _ensure_exception(
+        db,
+        invoice,
+        COMPLIANCE_EXCEPTION_TYPE,
+        worst,
+        "; ".join(f["message"] for f in findings),
+        org_settings=org_settings,
+    )
 
 
 async def _ensure_exception(

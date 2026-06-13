@@ -411,6 +411,61 @@ async def test_link_and_unlink_contract(realdb):
         assert "invoice.contract_unlinked" in actions
 
 
+async def test_compliance_over_not_to_exceed_limit(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        contract_id = (
+            await _create_contract(c, vendor_id, spend_limit="1000.00", not_to_exceed=True)
+        ).json()["id"]
+        invoice_id = await _add_invoice(mk, org_id, vendor_id, amount="1500.00")
+
+        linked = await c.post(
+            f"/api/invoices/{invoice_id}/link-contract", json={"contract_id": contract_id}
+        )
+    assert linked.status_code == 200
+    warnings = linked.json()["warnings"] or []
+    compliance = [w for w in warnings if w["type"] == "contract_noncompliant"]
+    assert compliance, warnings
+    assert any(w["severity"] == "error" for w in compliance)  # not_to_exceed → error
+
+    # A contract_noncompliant exception was raised for the queue.
+    async with mk() as s:
+        from app.models.exception import Exception as APException
+
+        cnt = (
+            await s.execute(
+                select(func.count())
+                .select_from(APException)
+                .where(APException.exception_type == "contract_noncompliant")
+            )
+        ).scalar()
+        assert cnt >= 1
+
+
+async def test_compliance_expired_contract(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        # Contract already expired.
+        contract_id = (
+            await _create_contract(c, vendor_id, end_date="2020-01-01", spend_limit=None)
+        ).json()["id"]
+        invoice_id = await _add_invoice(mk, org_id, vendor_id, amount="100.00")
+
+        linked = await c.post(
+            f"/api/invoices/{invoice_id}/link-contract", json={"contract_id": contract_id}
+        )
+    warnings = linked.json()["warnings"] or []
+    assert any(
+        w["type"] == "contract_noncompliant" and "expired" in w["message"] for w in warnings
+    ), warnings
+
+
 async def test_link_unknown_contract_404(realdb):
     import uuid
 
