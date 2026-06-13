@@ -161,3 +161,67 @@ See `docs/environment.md` for the full var list including extraction, ERP, and c
 - **Lambda functions** in private subnets with NAT Gateway for outbound access
 - **S3** accessed via VPC endpoint (no NAT needed)
 - **SQS/EventBridge** accessed via VPC endpoints
+
+## CI/CD: gated AWS deploy
+
+`.github/workflows/aws-deploy.yml` deploys both surfaces to AWS:
+
+| Job | Target | Steps |
+|---|---|---|
+| `frontend` | S3 + CloudFront | `pnpm build` → `aws s3 sync --delete` → CloudFront invalidation |
+| `backend` | ECS / Fargate | `docker build backend` → push to ECR (commit-SHA tag) → register a new task-definition revision with that image → `update-service` → wait for stable |
+
+It triggers on `release: published` and on manual `workflow_dispatch`.
+
+### Production gate
+
+Both jobs declare `environment: production`, so the protection rules on that
+GitHub Environment (Settings → Environments → `production`) apply: **GitHub
+pauses each job for the required reviewer's approval before any AWS call
+runs**. Add your reviewer / wait-timer / branch rules there.
+
+> The GitHub **Pages** frontend deploy in `deploy.yml` is a *different*
+> pipeline and cannot use this environment — Pages is hard-wired to the
+> `github-pages` environment. Protect that one by adding rules to
+> `github-pages`. Retire the Pages job once the AWS frontend is live.
+
+### Credentials — OIDC, no static keys
+
+The jobs assume an AWS role via GitHub OIDC (`id-token: write`); there are no
+long-lived access keys in the repo. Create a deploy role whose trust policy is
+scoped to this repository **and** the `production` environment
+(`token.actions.githubusercontent.com:sub` like
+`repo:<owner>/<repo>:environment:production`), with least-privilege permissions
+for ECR push, ECS register/update, S3 sync, and CloudFront invalidation. Store
+its ARN as the `AWS_DEPLOY_ROLE_ARN` **environment secret** on `production`.
+
+### Required configuration
+
+| Name | Kind | Scope | Purpose |
+|---|---|---|---|
+| `AWS_DEPLOY_ENABLED` | variable | **repository** | Kill switch — must equal `true` to arm either job. Repository-scoped (not environment) so it is readable in the job-level `if`, which is evaluated before the environment gate. |
+| `AWS_DEPLOY_ROLE_ARN` | secret | environment | OIDC role the jobs assume. |
+| `AWS_REGION` | variable | environment | Target region. |
+| `ECR_REPOSITORY` | variable | environment | ECR repo name for the API image. |
+| `ECS_CLUSTER` / `ECS_SERVICE` | variable | environment | ECS cluster + service to roll. |
+| `ECS_TASK_FAMILY` | variable | environment | Task-definition family to re-register. |
+| `ECS_CONTAINER_NAME` | variable | environment | Container name within the task def to swap the image on. |
+| `FRONTEND_BUCKET` | variable | environment | S3 bucket serving the SPA. |
+| `CLOUDFRONT_DISTRIBUTION_ID` | variable | environment | Distribution to invalidate. |
+| `PUBLIC_API_URL` | variable | environment | API base URL — baked into the frontend build; also the backend job's deploy URL. |
+| `APP_URL` | variable | environment | Public site URL — the frontend job's deploy URL. |
+
+### Arming the pipeline
+
+The workflow is committed as a **scaffold** and stays inert until armed, so a
+release won't turn it red before the infrastructure exists. To go live:
+
+1. Build the AWS infra in `infra/` (ECR, ECS cluster/service/task family,
+   frontend S3 bucket, CloudFront distribution) — the stack today is KMS + S3
+   buckets only.
+2. Create the OIDC deploy role and store `AWS_DEPLOY_ROLE_ARN`.
+3. Set the environment variables above on the `production` environment and the
+   protection rules (reviewer / wait timer).
+4. Set the repository variable `AWS_DEPLOY_ENABLED=true`.
+
+Until step 4, both jobs skip via their `if:` guard.

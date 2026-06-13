@@ -1,0 +1,195 @@
+name: Deploy to AWS
+
+# Production deploy pipeline for the AWS architecture in
+# docs/production-deployment.md — static frontend to S3 + CloudFront, the
+# FastAPI backend to ECS/Fargate. Both jobs reference the `production` GitHub
+# Environment, so its protection rules (required reviewer / wait timer) gate
+# every run: GitHub pauses the job for approval before any AWS call happens.
+#
+# SCAFFOLD — inert by default. Both jobs are guarded by the repository
+# variable `AWS_DEPLOY_ENABLED`; until it is set to "true" they skip, so a
+# release can't turn this workflow red before the infrastructure exists.
+# Arm it only once ALL of the following are in place:
+#   1. Terraform infra: ECR repo, ECS cluster + service + task family,
+#      frontend S3 bucket, CloudFront distribution (see infra/, still a
+#      skeleton today — KMS + S3 only).
+#   2. A GitHub OIDC deploy role in AWS (trust policy scoped to this repo +
+#      the `production` environment) whose ARN is stored as the
+#      `AWS_DEPLOY_ROLE_ARN` environment secret.
+#   3. The environment variables listed under docs/production-deployment.md
+#      → "CI/CD: gated AWS deploy".
+#
+# No static AWS keys: credentials come from short-lived OIDC role assumption.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to deploy (defaults to the triggering ref)
+        required: false
+
+# Read-only by default. Each job elevates to `id-token: write` for OIDC.
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize prod deploys — never let two runs race the same environment.
+  # `cancel-in-progress: false` so an in-flight rollout is allowed to finish
+  # rather than being torn down half-way.
+  group: aws-deploy-production
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    name: Deploy Backend (ECS/Fargate)
+    runs-on: ubuntu-latest
+    # Kill switch — repository variable, NOT environment-scoped, so it is
+    # readable in this job-level `if` (environment vars/secrets only resolve
+    # after the environment gate, which is too late for `if`).
+    if: vars.AWS_DEPLOY_ENABLED == 'true'
+
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_API_URL }}
+
+    permissions:
+      id-token: write # OIDC: assume the AWS deploy role, no long-lived keys
+      contents: read
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        run: |
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          registry="$account.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
+          aws ecr get-login-password --region "${{ vars.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "$registry"
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          # Immutable, traceable tag: the 12-char commit SHA. No `:latest` —
+          # the task definition pins this exact digest so a rollback is just
+          # re-deploying an earlier revision.
+          tag="${GITHUB_SHA::12}"
+          uri="$REGISTRY/$REPOSITORY:$tag"
+          docker build -t "$uri" backend
+          docker push "$uri"
+          echo "uri=$uri" >> "$GITHUB_OUTPUT"
+
+      - name: Render new ECS task definition
+        id: taskdef
+        env:
+          CONTAINER: ${{ vars.ECS_CONTAINER_NAME }}
+          IMAGE: ${{ steps.image.outputs.uri }}
+        run: |
+          # Pull the live task definition, swap the image on the app
+          # container, and strip the read-only fields AWS rejects on
+          # re-register. Keeps every other setting (cpu/memory, env, secrets,
+          # log config) exactly as Terraform last applied it.
+          aws ecs describe-task-definition \
+            --task-definition "${{ vars.ECS_TASK_FAMILY }}" \
+            --query taskDefinition > taskdef.json
+          jq --arg img "$IMAGE" --arg name "$CONTAINER" '
+            .containerDefinitions = (
+              .containerDefinitions
+              | map(if .name == $name then .image = $img else . end)
+            )
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)
+          ' taskdef.json > taskdef.new.json
+          arn="$(aws ecs register-task-definition \
+            --cli-input-json file://taskdef.new.json \
+            --query taskDefinition.taskDefinitionArn --output text)"
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to ECS service
+        run: |
+          aws ecs update-service \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --service "${{ vars.ECS_SERVICE }}" \
+            --task-definition "${{ steps.taskdef.outputs.arn }}"
+          # Block until the new tasks are healthy behind the ALB so the job
+          # status reflects the real rollout outcome, not just the API call.
+          aws ecs wait services-stable \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --services "${{ vars.ECS_SERVICE }}"
+
+  frontend:
+    name: Deploy Frontend (S3 + CloudFront)
+    runs-on: ubuntu-latest
+    if: vars.AWS_DEPLOY_ENABLED == 'true'
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.2
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build
+        # Served from the bucket/CDN root on AWS, so no BASE_PATH (the Pages
+        # build in deploy.yml sets one because Pages serves under /<repo>).
+        env:
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: pnpm build
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Sync to S3
+        # `--delete` prunes stale assets so the bucket mirrors the build
+        # exactly. The build dir is relative to the `frontend` working dir.
+        run: aws s3 sync build/ "s3://${{ vars.FRONTEND_BUCKET }}/" --delete
+
+      - name: Invalidate CloudFront
+        # Bust the edge cache so the new SPA shell + assets go live
+        # immediately rather than after the cache TTL.
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths '/*'
