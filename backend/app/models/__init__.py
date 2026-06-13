@@ -1,3 +1,4 @@
+from app.models.agent_decision import AgentDecision
 from app.models.base import Base
 from app.models.credit_memo import CreditMemo
 from app.models.entity import Entity
@@ -45,6 +46,7 @@ __all__ = [
     "VendorExtractionPrior",
     "VendorUser",
     "APException",
+    "AgentDecision",
     "CreditMemo",
     "EmailVerification",
     "Notification",

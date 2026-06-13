@@ -3,6 +3,7 @@
 import logging
 import uuid
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,11 +66,13 @@ async def _enforce_approval_thresholds(
     if not config:
         return
 
-    amount = float(invoice.amount or 0)
+    # Compare on the money path with Decimal, never float — a float cast of the
+    # invoice amount can misjudge a boundary amount against the CFO/max gate.
+    amount = Decimal(str(invoice.amount or 0))
 
     # Hard reject if over max
     max_amount = config.get("max_invoice_amount")
-    if max_amount is not None and amount > max_amount:
+    if max_amount is not None and amount > Decimal(str(max_amount)):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount:,.2f}."),
@@ -77,7 +80,7 @@ async def _enforce_approval_thresholds(
 
     # CFO role gate for high-value invoices
     cfo_threshold = config.get("require_cfo_above")
-    if cfo_threshold is not None and amount > cfo_threshold:
+    if cfo_threshold is not None and amount > Decimal(str(cfo_threshold)):
         if "cfo" not in actor_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

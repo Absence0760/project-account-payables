@@ -17,6 +17,7 @@ from app.api import (
     email_intake,
     entities,
     erp_webhook,
+    exception_agents,
     exceptions,
     gl_accounts,
     goods_receipts,
@@ -181,6 +182,9 @@ app.include_router(cards.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")
+# Registered BEFORE exceptions.router so the literal /exceptions/agent-* collection
+# routes win over exceptions.py's parameterised /{exception_id}/... matcher.
+app.include_router(exception_agents.router, prefix="/api")
 app.include_router(exceptions.router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")
 app.include_router(goods_receipts.router, prefix="/api")

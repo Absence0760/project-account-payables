@@ -476,18 +476,18 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 ## Priority 9: AI-Powered Automation (strong differentiators)
 
 ### AI Agents for Autonomous Exception Handling
-**Status:** Planned
+**Status:** In progress (first slice: amount-mismatch resolver shipped)
 
-AI agents that autonomously resolve common exceptions without human intervention — mismatched amounts, missing PO references, GL coding errors.
+AI agents that autonomously resolve common exceptions without human intervention — mismatched amounts, missing PO references, GL coding errors. See `backend/docs/exception-agents.md`.
 
-- [ ] Agent framework — define rules + AI fallback for each exception type
-- [ ] Auto-resolve: small amount mismatches within tolerance (adjust and approve)
-- [ ] Auto-resolve: missing PO — match by vendor + amount + date range
-- [ ] Auto-resolve: GL coding errors — correct based on historical patterns
-- [ ] Escalation rules — when agent confidence is low, route to human
-- [ ] Agent decision log — full audit trail of what the agent decided and why
-- [ ] Dashboard: agent resolution rate, accuracy, escalation rate
-- [ ] Configurable autonomy level per org (conservative → aggressive)
+- [x] Agent framework — registry + coordinator + autonomy thresholds (`services/exception_agents/`)
+- [x] Auto-resolve: small amount mismatches within tolerance (`amount_mismatch_v1`)
+- [ ] Auto-resolve: missing PO — match by vendor + amount + date range *(deferred — stub escalates)*
+- [ ] Auto-resolve: GL coding errors — correct based on historical patterns *(deferred)*
+- [x] Escalation rules — sub-threshold confidence routes to human (`escalated`)
+- [x] Agent decision log — `AgentDecision` table + `/api/exceptions/agent-decisions`
+- [ ] Dashboard: agent resolution rate, accuracy, escalation rate *(API delivered: `/agent-stats`; UI deferred; accuracy is a placeholder pending a human-overturn signal)*
+- [x] Configurable autonomy level per org (conservative → aggressive)
 
 ---
 

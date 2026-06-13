@@ -129,7 +129,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
 | `/workflows` | Workflow definition CRUD, active steps |
 | `/audit` | SOX auditor export — per-invoice / date-range trail (JSON+CSV, admin/CFO, GET-only); itself audited |
-| `/exceptions` | Exception queue, resolution |
+| `/exceptions` | Exception queue, resolution; autonomous AI agents — `agent-resolve` (run an agent on one exception), `agent-decisions` (decision log), `agent-stats` (resolution/escalation rates) |
 | `/notifications` | Per-user in-app notification center (list, unread-count, mark-read, read-all) + email/in-app preferences |
 | `/dashboard` | KPI aggregates (pipeline, aging, spend, trends) |
 | `/erp` | Inbound ERP webhooks (status updates) |
@@ -193,7 +193,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, Notification
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 1 only — no query scoping/selector yet. See `docs/multi-entity.md`.
 
@@ -270,6 +270,7 @@ Full list in `backend/app/config.py`.
 | 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
 | Notifications | `backend/docs/notifications.md` — email + in-app events, the `transition_invoice` hook, recipient matrix, preferences |
+| Exception agents | `backend/docs/exception-agents.md` — autonomous exception resolution, autonomy thresholds, `AgentDecision` log, amount-mismatch resolver |
 | Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |

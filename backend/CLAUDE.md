@@ -30,6 +30,7 @@ Deep-dive docs live in `backend/docs/`:
 | Audit-log shipping (SOC 2) | `docs/audit-log-shipping.md` |
 | Audit-log summarization (invoice modal) | `docs/audit-summary.md` |
 | Email + in-app notifications | `docs/notifications.md` |
+| Exception agents (autonomous resolution) | `docs/exception-agents.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -336,6 +337,19 @@ class MyAdapter:
 
 Registered: `mock` (offline, deterministic, idempotent — the local-first default), `tax1099` (partner e-file skeleton — live key required). Selected per-org via `Organization.settings.tax.filing` → falls back to `AP_TAX_FILING_PROVIDER` (default `mock`). `POST /api/tax/1099/file` is idempotent on `(organization_id, idempotency_key)` via the `tax_1099_filings` table (a duplicate IRS filing is a real problem); the filing row carries no recipient TIN. See `docs/tax-1099.md`.
 
+### Exception-agent resolvers (`services/exception_agents/`)
+
+```python
+@register_exception_agent("po_mismatch")
+class AmountMismatchResolver(ExceptionResolver):
+    agent_type = "amount_mismatch_v1"
+    exception_type = "po_mismatch"
+    async def evaluate(self, db, *, exception, invoice, org_settings) -> AgentEvaluation: ...
+    async def apply(self, db, *, exception, invoice, evaluation, actor_id) -> None: ...
+```
+
+Registry by `exception_type` (`@register_exception_agent`). The `coordinator.run_agent` dispatches by exception type, gates auto-resolve on the org's `autonomy_level` → confidence threshold, and writes an append-only `AgentDecision` row every run; auto-resolves also write the DB-immutable `invoice.approved` audit row via `review.approve_invoice`. Registered: `amount_mismatch_v1` (real — `po_mismatch` amount variance), plus escalate-only stubs for `missing_data`, `duplicate`, `fraud_flag`. Local-first: the optional LLM rationale fails soft to a deterministic template with no key. See `docs/exception-agents.md`.
+
 ## Webhook security (`services/webhook_security.py`)
 
 Every inbound webhook handler — payments, cards, ERP, email-intake — verifies the provider's HMAC over the raw request body and dedupes by event id before mutating state (project invariant #9). Shared helpers:
@@ -440,7 +454,8 @@ Stored in `Organization.settings`:
   "payments": { "provider", "credentials": { ... }, "webhook_secret": "...", "cfo_approval_above": Decimal },
   "mfa": { "required": true|false },
   "sso": { ... },
-  "fraud_rules": { ... }
+  "fraud_rules": { ... },
+  "exception_agents": { "autonomy_level": "conservative"|"balanced"|"aggressive", "amount_tolerance_pct": 2.5 }
 }
 ```
 
