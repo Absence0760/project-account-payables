@@ -307,6 +307,32 @@ Registered: `mock`, `cloudwatch`, `s3_objectlock`.
 
 The `audit_log_shipper` background loop instantiates every adapter named in `AP_AUDIT_SHIPPING_PROVIDERS` and ships each batch to all of them; all must succeed before the rows are marked shipped. See `docs/audit-log-shipping.md`.
 
+### TIN-validation adapters (`services/tin_validation_adapters/`)
+
+```python
+@register_tin_validation_adapter("my_provider")
+class MyAdapter:
+    provider_name = "my_provider"
+    def __init__(self, config: dict | None = None): ...
+    async def validate(self, *, tin, legal_name=None, tin_type_hint=None) -> TINValidationResult: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock` (offline EIN/SSN format + IRS structural rules — the local-first default), `tax1099` (IRS TIN-match skeleton — live key required; degrades to format-only without a key). Selected per-org via `Organization.settings.tax.tin_validation` → falls back to `AP_TIN_VALIDATION_PROVIDER` (default `mock`). Results carry only the verdict + redacted last-4 — never the raw TIN. Wired at `POST /api/tax/vendors/{id}/tin-verify`. See `docs/tax-1099.md`.
+
+### 1099 e-filing adapters (`services/tax_filing_adapters/`)
+
+```python
+@register_tax_filing_adapter("my_provider")
+class MyAdapter:
+    provider_name = "my_provider"
+    def __init__(self, config: dict | None = None): ...
+    async def submit_batch(self, *, tax_year, forms, idempotency_key) -> FilingBatchResult: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock` (offline, deterministic, idempotent — the local-first default), `tax1099` (partner e-file skeleton — live key required). Selected per-org via `Organization.settings.tax.filing` → falls back to `AP_TAX_FILING_PROVIDER` (default `mock`). `POST /api/tax/1099/file` is idempotent on `(organization_id, idempotency_key)` via the `tax_1099_filings` table (a duplicate IRS filing is a real problem); the filing row carries no recipient TIN. See `docs/tax-1099.md`.
+
 ## Webhook security (`services/webhook_security.py`)
 
 Every inbound webhook handler — payments, cards, ERP, email-intake — verifies the provider's HMAC over the raw request body and dedupes by event id before mutating state (project invariant #9). Shared helpers:
