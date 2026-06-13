@@ -11,6 +11,17 @@
 	import type { AuditEntry, AuditFieldChange } from '$lib/types/audit';
 	import { getInvoiceAuditLog } from '$lib/api/audit';
 
+	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
+	import type { ChatThread, ChatTemplate } from '$lib/types/supplierChat';
+	import {
+		getChatThread,
+		postChatMessage,
+		uploadChatAttachment,
+		resolveChatThread,
+		reopenChatThread,
+		getChatTemplates,
+	} from '$lib/api/supplierChat';
+
 	// Render-side helper: extract the per-field before/after diff (SOX change
 	// history) the backend writes onto details.changes for edit/approve events.
 	function fieldChanges(entry: AuditEntry): [string, AuditFieldChange][] {
@@ -45,6 +56,9 @@
 		'invoice.edited': 'Edited fields',
 		'audit.viewed': 'Audit trail viewed',
 		'audit.exported': 'Audit trail exported',
+		'chat_message_posted': 'Posted a chat message',
+		'chat_thread_resolved': 'Resolved chat thread',
+		'chat_thread_reopened': 'Reopened chat thread',
 	};
 
 	let {
@@ -515,6 +529,63 @@
 
 	let auditLog = $state<AuditEntry[]>([]);
 
+	// --- Supplier chat (between AP and the supplier). Lazily loaded on open,
+	// modeled on loadAuditLog(). Local $state per the contract (no store). ---
+	let chatThread = $state<ChatThread | null>(null);
+	let chatLoading = $state(false);
+	let chatTemplates = $state<ChatTemplate[]>([]);
+
+	async function loadChatThread() {
+		const id = invoice.id;
+		chatLoading = true;
+		try {
+			chatThread = await getChatThread(id);
+		} catch {
+			// non-critical — feature flag off or older invoice; show empty thread
+			chatThread = { id: null, invoice_id: id, status: 'open', resolved_at: null, resolved_by: null, messages: [] };
+		} finally {
+			chatLoading = false;
+		}
+	}
+
+	async function loadChatTemplates() {
+		try {
+			chatTemplates = await getChatTemplates();
+		} catch {
+			// non-critical — composer still works without canned templates
+		}
+	}
+
+	async function handleChatSend(body: string, mentionUserIds: string[], file?: File) {
+		if (file) {
+			await uploadChatAttachment(invoice.id, file, body || undefined, mentionUserIds);
+		} else {
+			await postChatMessage(invoice.id, {
+				body,
+				mention_user_ids: mentionUserIds.length ? mentionUserIds : undefined,
+			});
+		}
+		await loadChatThread();
+		// Surface the new chat_message_posted row in the Activity timeline.
+		await loadAuditLog();
+	}
+
+	async function handleChatResolve() {
+		chatThread = await resolveChatThread(invoice.id);
+		await loadAuditLog();
+	}
+
+	async function handleChatReopen() {
+		chatThread = await reopenChatThread(invoice.id);
+		await loadAuditLog();
+	}
+
+	async function handleChatDownload(fileUrl: string, filename: string) {
+		// AP side renders the bytes through the auth'd client and saves them.
+		const blob = await api.downloadBlob(fileUrl);
+		triggerDownload(blob, filename);
+	}
+
 	// Per-field confidence from extraction
 	type FieldConfidence = Record<string, number>;
 	let fieldConfidence = $state<FieldConfidence>({});
@@ -599,6 +670,8 @@
 		loadLineItems();
 		loadPriors();
 		loadSummary();
+		loadChatThread();
+		loadChatTemplates();
 	});
 
 	async function loadSummary() {
@@ -1235,6 +1308,21 @@
 							</div>
 						</div>
 					{/if}
+
+					<div class="chat-section">
+						<SupplierChatThread
+							surface="ap"
+							thread={chatThread}
+							currentUserId={auth.user?.id}
+							members={adminStore.users}
+							templates={chatTemplates}
+							loading={chatLoading}
+							onsend={handleChatSend}
+							onresolve={handleChatResolve}
+							onreopen={handleChatReopen}
+							ondownload={handleChatDownload}
+						/>
+					</div>
 
 					{#if canReview}
 						<div class="review-section">
@@ -2467,6 +2555,14 @@
 	/* --- Review section --- */
 
 	.review-section {
+		margin-top: 14px;
+		padding: 12px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+	}
+
+	.chat-section {
 		margin-top: 14px;
 		padding: 12px;
 		background: var(--bg);
