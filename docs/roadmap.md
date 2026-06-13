@@ -362,15 +362,15 @@ Separate portal for vendors to interact with the AP system. Biggest workflow gap
 **Competitive gap: SSO is an enterprise deal-blocker**
 
 ### SSO / Enterprise Authentication
-**Status:** OIDC + SCIM /Users shipped · SAML + SCIM /Groups planned
+**Status:** OIDC + SAML + SCIM /Users shipped · SCIM /Groups planned
 
-No SSO = no enterprise sale. OIDC (Okta + Entra) + SCIM 2.0 user provisioning are live; SAML is a separate code path for regulated buyers that require it. See [`docs/authentication.md`](authentication.md) § SSO and § SCIM for the full design.
+No SSO = no enterprise sale. OIDC (Okta + Entra), SAML 2.0, and SCIM 2.0 user provisioning are live. See [`docs/authentication.md`](authentication.md) § SSO and § SCIM for the full design, and [`docs/local-sso-saml.md`](local-sso-saml.md) for local SAML testing via Keycloak.
 
 - [x] OIDC (OpenID Connect) support — single flow covers Okta + Entra via per-tenant discovery URL
 - [x] JIT (Just-In-Time) user provisioning from SSO — match by `(provider, sub)` then `(org, email)`, otherwise create
 - [x] SCIM 2.0 `/Users` provisioning (create / list / get / PATCH / soft-delete) with per-tenant bearer token
 - [x] Force password change on first login (non-SSO users) — `User.must_change_password` flag, cleared on `/api/auth/change-password`
-- [ ] SAML 2.0 SSO (Okta, Azure AD, OneLogin) — separate code path for regulated buyers
+- [x] SAML 2.0 SSO (Okta, Azure AD, OneLogin, ADFS) — SP-initiated, separate code path (`api/auth_saml.py`) reusing the OIDC JIT + session-mint tail. python3-saml verification pinned to the per-tenant IdP cert; hardened (wantAssertionsSigned, SHA-256-only, issuer/audience/destination/InResponseTo enforced, per-tenant replay dedup, XXE-hardened parsing). Local IdP via Keycloak (`pnpm saml:seed`).
 - [ ] SCIM `/Groups` — needs IdP-group → Role mapping design (per-tenant config? convention?)
 - [ ] SSO-only mode — disable password login when SSO is configured (flag on `Organization.settings.sso`)
 - [x] MFA — TOTP enrollment + email-OTP backup, opt-in per user with org-level enforcement toggle (`AP_MFA_ENABLED` master switch; default off in dev)

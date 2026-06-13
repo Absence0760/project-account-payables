@@ -24,7 +24,9 @@ The repo root has a `package.json` with `pnpm` dispatch scripts that wrap each w
 pnpm install:all              # bootstrap all three workspaces
 pnpm db:up                    # core services: Postgres + Redis + MinIO (docker compose up -d)
 pnpm idp:up                   # local IdPs (opt-in `idp` profile): Keycloak (OIDC SSO, :8088) + Authentik (SCIM, :9002)
-pnpm idp:seed                 # point the acme tenant's settings.sso at local Keycloak (SSO)
+pnpm idp:seed                 # point the acme tenant's settings.sso at local Keycloak (OIDC SSO)
+pnpm saml:seed                # point acme's settings.sso at local Keycloak via SAML (protocol=saml; replaces OIDC block)
+pnpm test:saml                # SAML SSO e2e (tests-e2e/saml/) — real Keycloak handshake
 pnpm scim:seed                # set acme's SCIM bearer token to match the Authentik blueprint (SCIM)
 pnpm test:scim                # SCIM provisioning e2e (tests-e2e/scim/)
 pnpm aws:up                   # local AWS emulator (LocalStack :4566, opt-in `aws` profile): SQS/SES/CloudWatch/S3-ObjectLock
@@ -109,6 +111,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 |--------|---------|
 | `/auth` | Login, logout, profile (JWT + Redis blocklist), MFA enroll/verify/disable, MFA challenge |
 | `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
+| `/auth/saml` | SAML 2.0 SSO — config (public), login (302 AuthnRequest), acs (verify + JIT + mint), exchange (one-time-code → JWT), metadata. SP-initiated; reuses the OIDC JIT/session tail |
 | `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra/Authentik — list/get/create/PUT/PATCH/delete (per-tenant bearer auth) |
 | `/portal/auth` | Supplier-portal auth (VendorUser, JWT `typ=vendor`) — login, logout, me, change-password |
 | `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, PO flip, remittance download, company/bank/tax self-service (bank/tax stage for AP approval), vendor-scoped |
@@ -214,6 +217,9 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
 | `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |
 | `AP_MFA_ENABLED` | `false` | Master MFA switch — keep `false` in local dev, flip on in deployed envs |
+| `AP_API_PUBLIC_URL` | `http://localhost:8000` | Externally-reachable backend base URL. Builds the SAML SP entityId + ACS URL the IdP POSTs to (unlike OIDC's frontend redirect). Set to the real API host in deployed envs |
+| `AP_SAML_ACS_PATH` | `/login/saml-callback` | Frontend SPA bridge route the SAML ACS 303-redirects to (with a one-time handoff code) |
+| `AP_SAML_SP_PRIVATE_KEY` / `AP_SAML_SP_CERT` | (empty) | Optional SP signing keypair — only when an IdP requires SP-signed AuthnRequests. Real secret → sops; empty by default (local Keycloak runs with SP signing off) |
 | `AP_HSTS_ENABLED` | `false` | Emit `Strict-Transport-Security` on every response — keep `false` in local HTTP dev, flip on in deployed envs |
 | `AP_AUDIT_SHIPPING_ENABLED` | `false` | Master switch for the centralized audit-log shipper — keep `false` in local dev, flip on in deployed envs |
 | `AP_AUDIT_SHIPPING_PROVIDERS` | `mock` | Comma-separated adapter names (e.g. `cloudwatch,s3_objectlock`). All must succeed before rows are marked shipped. |
@@ -247,6 +253,7 @@ Full list in `backend/app/config.py`.
 | DB / Redis / MinIO | `backend/docs/{database,redis,minio,docker}.md` — backend infra |
 | Auth & RBAC | `docs/authentication.md`, `docs/user-management.md` |
 | Local SSO + SCIM testing | `docs/local-sso-keycloak.md` — Keycloak (OIDC SSO) + Authentik (SCIM) via Docker; `pnpm idp:up`, `idp:seed`, `scim:seed`, `test:scim` |
+| Local SAML SSO testing | `docs/local-sso-saml.md` — SAML via the same Keycloak; `pnpm idp:up`, `saml:seed`, `test:saml` |
 | Local AWS testing | `docs/local-aws-localstack.md` — LocalStack via Docker for SQS/SES/CloudWatch/S3-ObjectLock; `pnpm aws:up`, `AP_AWS_ENDPOINT_URL` |
 | Local email preview | `docs/local-email-mailpit.md` — Mailpit via Docker for the `smtp` email adapter; `pnpm mail:up`, `AP_EMAIL_PROVIDER=smtp` |
 | Multi-tenancy | `docs/multi-tenancy.md` — DB isolation, provisioning |

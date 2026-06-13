@@ -98,6 +98,18 @@ The challenge endpoints don't take a JWT — they're authenticated by the short-
 
 See [`docs/authentication.md`](../../docs/authentication.md) § SSO for the full handshake. Note: SSO sign-in does not trigger our MFA challenge — IdPs handle their own MFA.
 
+## SSO (SAML 2.0 — Okta, Azure AD, OneLogin, ADFS)
+
+| Method  | Path                          | Roles | Description |
+|---------|-------------------------------|-------|-------------|
+| `GET`   | `/api/auth/saml/config`       | (public) | `?slug=<s>` — `{enabled, provider}` for the login button. Never leaks secrets. |
+| `GET`   | `/api/auth/saml/login`        | (public) | `?slug=<s>` — 302 AuthnRequest to the IdP. Binds a single-use RelayState to `{tenant, request_id}`. |
+| `POST`  | `/api/auth/saml/acs`          | (public) | IdP POSTs `SAMLResponse`+`RelayState`. Verifies signature/conditions, JIT-provisions, 303s to the SPA bridge with a one-time code. |
+| `POST`  | `/api/auth/saml/exchange`     | (public) | `{code}` → `{access_token, must_change_password, tenant_slug}`. Swaps the one-time handoff code for the JWT (body, never a URL). |
+| `GET`   | `/api/auth/saml/metadata`     | (public) | `?slug=<s>` — SP EntityDescriptor XML to register at the IdP. No secrets. |
+
+Same per-tenant `settings.sso` block as OIDC, discriminated by `protocol="saml"`. Verification is pinned to the tenant's `idp_x509_cert` (hardened: signed-assertion-required, SHA-256-only, issuer/audience/destination/InResponseTo enforced, per-tenant replay dedup). MFA is skipped (IdP-owned). See [`docs/authentication.md`](../../docs/authentication.md) § SAML SSO + [`docs/local-sso-saml.md`](../../docs/local-sso-saml.md).
+
 ## SCIM 2.0 (user provisioning from the IdP)
 
 All `/api/scim/v2/*` endpoints authenticate via the **per-tenant SCIM bearer** (not a user JWT). Tenant is resolved by sha256-matching the bearer against `Organization.settings.sso.scim_bearer_hash`.

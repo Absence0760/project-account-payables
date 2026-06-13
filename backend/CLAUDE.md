@@ -410,6 +410,21 @@ user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
 - SSO sign-in skips our MFA challenge — IdPs handle their own MFA.
 - Full reference: `../docs/authentication.md` § MFA.
 
+### SSO — OIDC + SAML (`api/auth_sso.py`, `api/auth_saml.py`, `services/sso.py`)
+
+- Per-tenant config in `Organization.settings.sso`, discriminated by `protocol`
+  (absent / `"oidc"` → OIDC; `"saml"` → SAML). `resolve_sso_config` /
+  `resolve_saml_config` each return `None` for the other protocol.
+- Both protocols share the identity tail in `services/identity_provisioning.py`
+  (`jit_provision` + `extract_and_check_email`) and the session-mint tail — only
+  IdP-response *verification* differs.
+- SAML verification (`auth_saml.py`) is `python3-saml` pinned to a hardened
+  posture: `wantAssertionsSigned`, SHA-256-only, issuer/audience/destination +
+  mandatory InResponseTo, per-tenant replay dedup, IdP cert pinned (no
+  fingerprint/embedded), XXE-hardened parsing. SP signing keypair (optional) →
+  `AP_SAML_SP_*` via sops. Local IdP: Keycloak (`pnpm saml:seed`).
+- Full reference: `../docs/authentication.md` § SAML SSO + `../docs/local-sso-saml.md`.
+
 ## Organization settings (JSONB)
 
 Stored in `Organization.settings`:

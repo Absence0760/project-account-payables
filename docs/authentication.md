@@ -101,6 +101,8 @@ Action names:
 | Failed MFA verify | `auth.mfa.verify.failure` |
 | Successful SSO login | `auth.sso.login.success` |
 | Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
+| Successful SAML login | `auth.saml.login.success` |
+| Failed SAML login (assertion invalid / issuer / unsolicited / replay / domain blocked) | `auth.saml.login.failure` |
 
 Login-failure rows for unknown emails are dropped — without an `organization_id` there is no tenant DB to route to. Failures for known users carry the email, IP (when the client is reachable), and a machine-readable `reason`.
 
@@ -129,6 +131,59 @@ or mutate tenant B's data simply by sending
 `X-Tenant-Slug: <other-tenant>` on the request. The guard is pinned
 by `backend/tests/test_tenant_isolation.py` (unit) and
 `frontend/tests-e2e/auth/tenant-isolation.spec.ts` (e2e).
+
+## SAML SSO
+
+SAML 2.0 is an **additive, separate** SSO code path (`app/api/auth_saml.py`)
+alongside OIDC. Both protocols share the same per-tenant `Organization.settings.sso`
+block, discriminated by a `protocol` key (absent / `"oidc"` → OIDC; `"saml"` →
+SAML), and the same identity tail: JIT provisioning + JWT mint + session
+registration (`app/services/identity_provisioning.py`). Only *verification*
+differs. Local testing: [`local-sso-saml.md`](local-sso-saml.md).
+
+**SP-initiated flow.** `GET /auth/saml/login?slug=` builds the AuthnRequest and
+302s to the IdP, binding a single-use Redis **RelayState** to `{tenant,
+AuthnRequest-ID}`. The IdP HTTP-POSTs the signed `SAMLResponse` to
+`POST /auth/saml/acs`; the handler recovers the tenant from the RelayState
+(**never** the assertion or a header), verifies the response, JIT-provisions, and
+303-redirects to the SPA bridge `/login/saml-callback?code=<once>`. The bridge
+`POST`s the one-time code to `/auth/saml/exchange`, which returns the JWT **in the
+body** — the token never transits a URL.
+
+**Verification (the load-bearing control).** Delegated to `python3-saml` but
+pinned to an explicit hardened posture (the library defaults are unsafe):
+
+- Trust anchor = the tenant's pre-registered `idp_x509_cert` (`x509certMulti` for
+  rotation) — never a fingerprint, never a cert embedded in the document. An
+  empty/blank/malformed cert fails closed at config resolution.
+- `wantAssertionsSigned` + `rejectDeprecatedAlgorithm` (rejects SHA-1/none),
+  SHA-256 sig/digest — the SAML analog of the OIDC `ID_TOKEN_ALGORITHMS` pin.
+- Issuer pinned to the configured IdP; Audience (= per-tenant `sp_entity_id`) and
+  Destination validated from trusted server config, not spoofable `Host` /
+  `X-Forwarded-*`.
+- InResponseTo **presence** is enforced in the handler (the library only checks it
+  when present, so an unsolicited response would otherwise pass).
+- Replay dedup of both Assertion + Response IDs, scoped per-tenant
+  (`saml:<slug>`), via the shared webhook `SET NX` ledger.
+- All IdP XML parsed with python3-saml's DTD/entity-hardened parser (no raw lxml
+  → no XXE).
+
+Every rejection fails closed to one generic error + a PII-safe
+`auth.saml.login.failure` audit row (reason code only — the email is **omitted**,
+tighter than the OIDC `domain_blocked` precedent). The IdP owns MFA, so the app's
+MFA challenge is skipped (same as OIDC).
+
+**Provider-discriminated matching.** JIT match is `(sso_provider,
+sso_provider_id)` then `(org, email)`. SAML uses `provider="saml"`,
+`sso_provider_id=NameID`. A tenant migrating a user from OIDC to SAML won't match
+on the durable key the first time — it links by email and rebinds the provider
+deterministically. Intentional; no migration needed (config is additive JSONB).
+
+**Config (`settings.sso`, `protocol="saml"`):** `idp_entity_id`, `idp_sso_url`,
+`idp_x509_cert` (required), `sp_entity_id` (defaults per-tenant), optional
+`idp_x509_cert_multi`, `allowed_email_domains`. The optional SP signing keypair
+(only when the IdP requires signed AuthnRequests) is a real secret → `AP_SAML_SP_*`
+via sops; empty by default so local Keycloak runs with no SP keypair.
 
 ## Frontend Implementation
 
