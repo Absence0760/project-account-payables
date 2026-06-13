@@ -190,6 +190,29 @@ async def test_ubl_routes_to_einvoice_adapter_and_persists_decimals():
 
 
 @pytest.mark.asyncio
+async def test_cii_standalone_routes_to_einvoice_adapter():
+    """A standalone UN/CEFACT CII .xml file (not embedded in a PDF) must
+    auto-route through the einvoice adapter and persist Decimal amounts —
+    exercising the DetectedFormat.CII_XML branch + extract_mime_type path in
+    run_extraction, which the UBL and Factur-X tests don't cover."""
+    from app.services.extraction import run_extraction
+
+    invoice = _make_invoice()
+    invoice.file_key = "invoices/cii.xml"
+    db = _make_db()
+    statuses: list = []
+
+    with _patch_internals(_CII, captured_results=[], captured_status=statuses):
+        with patch("app.services.extraction.get_workflow_instance", AsyncMock(return_value=None)):
+            await run_extraction(db, invoice, actor_id=uuid.uuid4())
+
+    assert _extraction_method(db) == "einvoice"
+    assert invoice.amount == Decimal("1440.00")
+    assert isinstance(invoice.amount, Decimal)
+    assert invoice.currency == "EUR"
+
+
+@pytest.mark.asyncio
 async def test_facturx_pdf_routes_to_einvoice_adapter():
     from app.services.extraction import run_extraction
 

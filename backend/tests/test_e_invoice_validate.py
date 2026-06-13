@@ -15,6 +15,7 @@ from app.services.e_invoice.model import (
     EInvoiceLine,
     EInvoiceParty,
 )
+from app.services.e_invoice.parse import parse_e_invoice
 from app.services.e_invoice.validate import assert_valid
 
 
@@ -93,6 +94,16 @@ def test_small_rounding_within_tolerance_passes():
     assert "tax_inclusive_amount" not in _codes_for(doc)
 
 
+def test_total_mismatch_just_over_tolerance_fails():
+    """The other side of the rounding boundary: a 0.02 discrepancy (just over
+    the 0.01 tolerance) must fire the inconsistent error."""
+    doc = _valid_doc()
+    doc.tax_exclusive_amount = Decimal("100.00")
+    doc.tax_total = Decimal("10.00")
+    doc.tax_inclusive_amount = Decimal("110.02")  # 0.02 over — outside tolerance
+    assert _codes_for(doc).get("tax_inclusive_amount") == "inconsistent"
+
+
 def test_assert_valid_raises_with_error_list():
     doc = _valid_doc()
     doc.invoice_number = None
@@ -152,3 +163,29 @@ def test_fielderror_is_a_dataclass():
     # Stable public shape for callers building 'field: code' strings.
     errors = validate_document(EInvoiceDocument(source_format=EInvoiceFormat.UBL))
     assert all(dataclasses.is_dataclass(e) for e in errors)
+
+
+def test_parse_e_invoice_translates_syntactically_broken_xml_to_malformed():
+    """The except-XMLSyntaxError translate branch in parse.py must surface a
+    field-named 'malformed' EInvoiceValidationError — never an unhandled
+    lxml.etree.XMLSyntaxError that would 500 the worker.
+
+    detect_format itself parses the bytes to classify the root, so a raw
+    broken-XML file is caught there and returns NONE (→ ValueError, not this
+    branch). The branch is genuinely reached via the Factur-X path: the
+    embedded-file extractor matches the conventional 'factur-x.xml' attachment
+    name *without* validating its content, so a hybrid PDF can carry
+    syntactically broken CII. detect → FACTURX_PDF, then parse_cii on the
+    broken bytes raises XMLSyntaxError, which parse.py translates."""
+    import fitz
+
+    broken_cii = b'<?xml version="1.0"?><rsm:CrossIndustryInvoice><Unclosed'
+    pdf = fitz.open()
+    pdf.new_page()
+    pdf.embfile_add("factur-x.xml", broken_cii, filename="factur-x.xml")
+    pdf_bytes = pdf.tobytes()
+
+    with pytest.raises(EInvoiceValidationError) as exc_info:
+        parse_e_invoice(pdf_bytes, mime_type="application/pdf", filename="bad.pdf")
+    assert exc_info.value.errors[0].code == "malformed"
+    assert exc_info.value.errors[0].field == "document"

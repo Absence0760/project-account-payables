@@ -118,7 +118,15 @@ fall-through to vision (not an error).
   lxml is hardened explicitly: `resolve_entities=False`, `no_network=True`,
   `load_dtd=False`, `huge_tree=False` — blocking XXE / external-entity /
   billion-laughs, consistent with the existing `python3-saml` posture. The
-  parser factory is centralized in `_xml.secure_parser()`.
+  parser factory is centralized in `_xml.secure_parser()`. Regression coverage
+  for real attack payloads (file-disclosure SYSTEM entity, billion-laughs,
+  external parameter entity) lives in `tests/test_e_invoice_xxe_hardening.py`.
+- **Non-finite amounts are rejected.** `Decimal()` accepts `"NaN"` /
+  `"Infinity"` as valid, which would corrupt downstream payment math.
+  `_xml.to_decimal` returns `None` for any non-finite value (`d.is_finite()`
+  guard) and for locale-grouped values like `"1,200.00"`; exponential notation
+  (`"1.5E+3"`) is a valid finite number and is preserved. Pinned in
+  `tests/test_e_invoice_xml_helpers.py`.
 
 ## Dependencies
 

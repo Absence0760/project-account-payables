@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from app.services.e_invoice.model import (
+    EInvoiceDocument,
+    EInvoiceFormat,
+    EInvoiceLine,
+    EInvoiceParty,
+    EInvoiceTax,
+)
 from app.services.extraction import _clean_date, _clean_decimal, _normalize_payment_method
 from app.services.extraction_adapters.einvoice_adapter import EInvoiceExtractionAdapter
 
@@ -107,6 +115,57 @@ async def test_adapter_non_structured_returns_failure():
     result = await adapter.extract(file_bytes=b"not an invoice", file_key="x.txt")
     assert result.success is False
     assert "structured" in result.error
+
+
+def test_adapter_suppresses_tax_rate_for_mixed_rate_invoice():
+    """A multi-rate invoice (e.g. 10% on one line, 21% on another) has more
+    than one distinct tax rate. The adapter must suppress tax_rate (set it to
+    None) rather than pick one arbitrarily — a single header tax_rate is
+    meaningless for a mixed-rate document. This branch is dead in the
+    single-rate fixtures, so pin it directly against _to_result."""
+    doc = EInvoiceDocument(
+        source_format=EInvoiceFormat.UBL,
+        invoice_number="INV-MIX-1",
+        issue_date=date(2024, 1, 1),
+        currency="EUR",
+        seller=EInvoiceParty(name="Seller GmbH"),
+        buyer=EInvoiceParty(name="Buyer Inc"),
+        tax_total=Decimal("31.00"),
+        tax_inclusive_amount=Decimal("231.00"),
+        tax_exclusive_amount=Decimal("200.00"),
+        payable_amount=Decimal("231.00"),
+        taxes=[
+            EInvoiceTax(category="S", rate=Decimal("10.00"), tax_amount=Decimal("10.00")),
+            EInvoiceTax(category="S", rate=Decimal("21.00"), tax_amount=Decimal("21.00")),
+        ],
+        lines=[EInvoiceLine(line_id="1", description="Item", line_total=Decimal("200.00"))],
+    )
+
+    result = EInvoiceExtractionAdapter({})._to_result(doc)
+
+    assert result.tax_rate.value is None
+    # tax_amount (the summed total) is still emitted — only the single-rate
+    # header is suppressed.
+    assert _clean_decimal(result.tax_amount.value) == Decimal("31.00")
+
+
+def test_adapter_single_rate_still_emits_tax_rate():
+    """Guard the other side: exactly one distinct rate → tax_rate is emitted."""
+    doc = EInvoiceDocument(
+        source_format=EInvoiceFormat.UBL,
+        invoice_number="INV-SINGLE-1",
+        issue_date=date(2024, 1, 1),
+        currency="EUR",
+        seller=EInvoiceParty(name="Seller GmbH"),
+        buyer=EInvoiceParty(name="Buyer Inc"),
+        tax_total=Decimal("19.00"),
+        payable_amount=Decimal("119.00"),
+        taxes=[EInvoiceTax(category="S", rate=Decimal("19.00"), tax_amount=Decimal("19.00"))],
+        lines=[EInvoiceLine(line_id="1", description="Item", line_total=Decimal("100.00"))],
+    )
+
+    result = EInvoiceExtractionAdapter({})._to_result(doc)
+    assert _clean_decimal(result.tax_rate.value) == Decimal("19.00")
 
 
 @pytest.mark.asyncio

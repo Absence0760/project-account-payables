@@ -147,6 +147,38 @@ async def test_process_no_usable_attachments_returns_error():
     create_engine.assert_not_called()
 
 
+async def test_skipped_attachment_filename_is_sanitised():
+    """A crafted path-traversal filename on a *skipped* attachment must be
+    sanitised before it lands in result.skipped_attachments — that list is
+    echoed back to the email provider (and may reach a log line / response
+    body), so no path separators or '..' can survive. This exercises email
+    intake's own _safe_filename call site in _usable_attachments."""
+    org = _org(token="aaa", enabled=True)
+    create_engine = MagicMock()
+    bad = InboundAttachment(
+        filename="../../etc/passwd",
+        content_type="application/msword",  # disallowed → skipped
+        content=b"x",
+    )
+    with (
+        patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=org)),
+        patch("sqlalchemy.ext.asyncio.create_async_engine", create_engine),
+    ):
+        result = await email_intake.process_inbound_email(
+            MagicMock(),
+            InboundEmail(to="invoices+aaa@ap.co", sender="v@x.com", attachments=[bad]),
+        )
+
+    assert result.error == "No usable PDF / image / XML attachments"
+    assert len(result.skipped_attachments) == 1
+    entry = result.skipped_attachments[0]
+    assert "../" not in entry
+    assert "/etc" not in entry
+    assert "passwd" in entry  # the sanitised basename survives
+    # No tenant engine touched — the skip path short-circuits before provisioning.
+    create_engine.assert_not_called()
+
+
 async def test_xml_attachment_is_accepted_not_skipped():
     """A structured e-invoice arrives as an .xml attachment — it must pass the
     content-type gate (application/xml) and create an invoice, not be skipped."""

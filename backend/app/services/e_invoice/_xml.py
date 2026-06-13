@@ -97,16 +97,29 @@ def find_text(root: etree._Element | None, *names: str) -> str | None:
 
 
 def to_decimal(value: str | None) -> Decimal | None:
-    """Parse a string amount into ``Decimal``; never ``float``, never raises."""
+    """Parse a string amount into ``Decimal``; never ``float``, never raises.
+
+    Untrusted-input hardening: ``Decimal`` happily accepts ``"NaN"``,
+    ``"Infinity"``, and exponential notation. A non-finite value stored on
+    ``Invoice.amount`` would corrupt downstream payment math, so we reject
+    anything that is not finite. Exponential notation (``"1.5E+3"``) is a
+    valid finite number and is preserved as ``Decimal("1.5E+3") == 1500``.
+    A locale-style grouped value (``"1,200.00"``) is not a valid ``Decimal``
+    and returns ``None`` rather than silently truncating to ``1``.
+    """
     if value is None:
         return None
     s = value.strip()
     if not s:
         return None
     try:
-        return Decimal(s)
+        d = Decimal(s)
     except (InvalidOperation, ValueError):
         return None
+    # Block NaN / +Inf / -Inf — Decimal() accepts them but they are not money.
+    if not d.is_finite():
+        return None
+    return d
 
 
 def to_date(value: str | None) -> date | None:

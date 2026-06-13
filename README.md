@@ -107,6 +107,7 @@ Cross-cutting docs live in [`/docs`](docs/). Backend-specific docs live in [`/ba
 | [Redis](backend/docs/redis.md) | Token blocklist and cache |
 | [MinIO](backend/docs/minio.md) | S3-compatible object storage setup |
 | [AI Extraction](backend/docs/ai-extraction.md) | Platform vs BYOK, provider configs |
+| [Inbound E-Invoicing](backend/docs/e-invoicing.md) | UBL 2.1 / Factur-X / ZUGFeRD parsing, auto-detect on upload and email intake |
 | [ERP Integration](backend/docs/erp-integration.md) | Adapter pattern, Merge.dev, direct APIs |
 | [Workflow Design](backend/docs/workflow-design.md) | State machine, step types |
 | [Workflow Snapshots](backend/docs/workflow-snapshots.md) | Frozen definition semantics |
