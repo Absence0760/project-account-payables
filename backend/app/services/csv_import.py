@@ -130,8 +130,12 @@ async def import_vendors_csv(
     db: AsyncSession,
     organization_id: uuid.UUID,
     csv_text: str,
+    entity_id: uuid.UUID | None = None,
 ) -> ImportResult:
-    """Upsert vendors from CSV. Dedup priority: code > case-insensitive name."""
+    """Upsert vendors from CSV. Dedup priority: code > case-insensitive name.
+
+    ``entity_id`` (multi-entity Phase 2) is the entity new vendors land under —
+    the selected entity or the tenant default, resolved at the endpoint."""
     result = ImportResult()
     try:
         rows = _read_rows(csv_text)
@@ -170,6 +174,7 @@ async def import_vendors_csv(
 
         vendor = Vendor(
             organization_id=organization_id,
+            entity_id=entity_id,
             name=name,
             code=code,
             email=(row.get("email") or None) or None,
@@ -197,9 +202,14 @@ async def import_invoices_csv(
     db: AsyncSession,
     organization_id: uuid.UUID,
     csv_text: str,
+    entity_id: uuid.UUID | None = None,
 ) -> ImportResult:
     """Import historical invoices. Vendor resolution: code > name. Missing vendors
-    get an auto-created stub with status='unverified' so the row still lands."""
+    get an auto-created stub with status='unverified' so the row still lands.
+
+    ``entity_id`` (multi-entity Phase 2) is the entity imported invoices and any
+    auto-created vendor stubs land under — the selected entity or the tenant
+    default, resolved at the endpoint."""
     result = ImportResult()
     try:
         rows = _read_rows(csv_text)
@@ -232,6 +242,7 @@ async def import_invoices_csv(
             organization_id=organization_id,
             vendor_name=vendor_name,
             vendor_code=vendor_code,
+            entity_id=entity_id,
         )
 
         status_raw = (row.get("status") or "done").strip().lower()
@@ -255,6 +266,7 @@ async def import_invoices_csv(
 
         invoice = Invoice(
             organization_id=organization_id,
+            entity_id=entity_id,
             invoice_number=invoice_number,
             vendor_name=vendor.name,
             vendor_id=vendor.id,
@@ -281,6 +293,7 @@ async def _resolve_or_create_vendor(
     organization_id: uuid.UUID,
     vendor_name: str,
     vendor_code: str | None,
+    entity_id: uuid.UUID | None = None,
 ) -> Vendor:
     if vendor_code:
         q = await db.execute(
@@ -306,6 +319,7 @@ async def _resolve_or_create_vendor(
 
     vendor = Vendor(
         organization_id=organization_id,
+        entity_id=entity_id,
         name=vendor_name or (vendor_code or "Unknown Vendor"),
         code=vendor_code,
         status="unverified",

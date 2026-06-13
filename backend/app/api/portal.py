@@ -150,6 +150,9 @@ async def submit_invoice(
         currency="USD",
         status=InvoiceStatus.new,
         organization_id=vendor.organization_id,
+        # The supplier portal has no entity selector — a vendor's invoice lands
+        # under the same entity as the vendor (multi-entity Phase 2).
+        entity_id=vendor.entity_id,
     )
     db.add(invoice)
     await db.flush()
@@ -435,6 +438,9 @@ async def flip_purchase_order(
         # Stable per-PO marker — drives the idempotency guard above.
         reference_number=f"po-flip:{po.id}",
         organization_id=vendor.organization_id,
+        # Inherit the PO's entity so the flipped invoice stays in the same
+        # subsidiary as the order it came from (multi-entity Phase 2).
+        entity_id=po.entity_id,
     )
     db.add(invoice)
     try:

@@ -95,6 +95,12 @@ async def test_resolve_tenant_unknown_token_returns_none():
 class _FakeSession:
     def __init__(self) -> None:
         self.commit = AsyncMock()
+        # Multi-entity Phase 2: the process loop resolves the tenant's default
+        # entity id (one SELECT) before creating invoices. Hand back a value so
+        # that lookup succeeds.
+        _result = MagicMock()
+        _result.scalar_one_or_none = MagicMock(return_value=uuid.uuid4())
+        self.execute = AsyncMock(return_value=_result)
 
     async def __aenter__(self) -> _FakeSession:
         return self
@@ -205,9 +211,11 @@ async def test_create_invoice_is_pending_zero_decimal_and_org_prefixed_key():
     org_id = uuid.uuid4()
     att = _pdf("bill.pdf")
 
+    entity_id = uuid.uuid4()
     invoice_id = await _create_invoice_from_attachment(
         tenant_db=db,
         org_id=org_id,
+        entity_id=entity_id,
         sender="vendor@x.com",
         subject="March invoice",
         attachment=att,
@@ -221,6 +229,7 @@ async def test_create_invoice_is_pending_zero_decimal_and_org_prefixed_key():
     assert invoice.currency == "USD"
     assert invoice.uploaded_by_id is None
     assert invoice.organization_id == org_id
+    assert invoice.entity_id == entity_id  # lands under the resolved entity
 
     expected_key = f"{org_id}/{invoice_id}/bill.pdf"
     assert invoice.file_key == expected_key

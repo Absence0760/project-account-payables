@@ -44,7 +44,7 @@ from app.services.workflow_engine import (
     is_step_enabled,
     transition_invoice,
 )
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import get_tenant, get_tenant_db, get_write_entity_id
 
 router = APIRouter(prefix="/invoices", tags=["workflow"])
 
@@ -59,10 +59,11 @@ async def upload_invoice(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     """Upload an invoice file, create the invoice, and optionally trigger extraction."""
     try:
-        # Create invoice with blank fields
+        # Create invoice with blank fields, under the selected (or default) entity.
         invoice = Invoice(
             invoice_number="",
             vendor_name="",
@@ -71,6 +72,7 @@ async def upload_invoice(
             currency="USD",
             status=InvoiceStatus.new,
             organization_id=org_id,
+            entity_id=entity_id,
             uploaded_by_id=user.id,
         )
         db.add(invoice)

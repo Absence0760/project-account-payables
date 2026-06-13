@@ -54,7 +54,13 @@ from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
 from app.services.workflow_engine import create_workflow_instance, transition_invoice
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant,
+    get_tenant_db,
+    get_write_entity_id,
+)
 
 IMMUTABLE_STATUSES = {
     DBInvoiceStatus.sending_to_erp,
@@ -83,8 +89,10 @@ async def list_invoices(
     search: str | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(Invoice)
+    # Scope to the selected entity (None = consolidated, all entities).
+    query = apply_entity_scope(select(Invoice), Invoice, entity_id)
 
     # Filters
     if status:
@@ -139,15 +147,20 @@ async def list_invoices(
 async def invoice_counts(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """Per-status invoice tallies for the list-page filter chips.
 
     A single GROUP BY over the whole tenant so the "All" chip and each
     status chip stay correct regardless of how many invoices the tenant
     has — the previous client-side tally over the first page of results
-    undercounted past that window.
+    undercounted past that window. Scoped to the selected entity so the
+    chips match the entity-scoped list.
     """
-    result = await db.execute(select(Invoice.status, func.count()).group_by(Invoice.status))
+    counts_q = apply_entity_scope(
+        select(Invoice.status, func.count()).group_by(Invoice.status), Invoice, entity_id
+    )
+    result = await db.execute(counts_q)
     counts: dict[str, int] = {}
     for db_status, count in result.all():
         key = db_status.value if hasattr(db_status, "value") else str(db_status)
@@ -355,9 +368,11 @@ async def create_invoice(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     invoice = Invoice(
         organization_id=org_id,
+        entity_id=entity_id,
         invoice_number=body.invoice_number,
         vendor_name=body.vendor,
         description=body.description,
@@ -522,12 +537,14 @@ async def import_invoices_from_csv(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     """Bulk-import historical invoices from a CSV export.
 
     Use this to load a new tenant's open AP + historical invoices on Day 0.
     Unknown vendors are auto-created with ``status='unverified'`` so rows
-    always land. Duplicate detection: ``(vendor, invoice_number)``. See
+    always land. Duplicate detection: ``(vendor, invoice_number)``. Imported
+    rows land under the selected (or default) entity. See
     ``backend/docs/csv-import.md`` for the column list and template.
     """
     raw = await file.read()
@@ -536,7 +553,7 @@ async def import_invoices_from_csv(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from None
 
-    result = await import_invoices_csv(db, org_id, csv_text)
+    result = await import_invoices_csv(db, org_id, csv_text, entity_id=entity_id)
     await db.commit()
     return result.to_dict()
 

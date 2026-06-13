@@ -238,10 +238,19 @@ async def process_inbound_email(
 
     try:
         async with tenant_factory() as tenant_db:
+            # Email intake has no entity selector — land invoices under the
+            # tenant's default entity so they stay visible in entity-scoped
+            # views (multi-entity Phase 2). Resolved once per batch.
+            from app.models.entity import Entity
+
+            entity_id = (
+                await tenant_db.execute(select(Entity.id).where(Entity.is_default))
+            ).scalar_one_or_none()
             for att in attachments:
                 invoice_id = await _create_invoice_from_attachment(
                     tenant_db=tenant_db,
                     org_id=org.id,
+                    entity_id=entity_id,
                     sender=payload.sender,
                     subject=payload.subject,
                     attachment=att,
@@ -279,6 +288,7 @@ async def _create_invoice_from_attachment(
     *,
     tenant_db: AsyncSession,
     org_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
     sender: str,
     subject: str,
     attachment: InboundAttachment,
@@ -292,6 +302,7 @@ async def _create_invoice_from_attachment(
         currency="USD",
         status=InvoiceStatus.pending,  # skip 'new' — intake = trigger extraction
         organization_id=org_id,
+        entity_id=entity_id,
         uploaded_by_id=None,  # system — no human uploader
     )
     tenant_db.add(invoice)
