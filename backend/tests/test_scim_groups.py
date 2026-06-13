@@ -160,8 +160,21 @@ def _role(name, org_id=None):
     return SimpleNamespace(id=uuid.uuid4(), name=name, organization_id=org_id)
 
 
+@pytest.fixture
+def audit_calls(monkeypatch):
+    """Capture SCIM role-change audit events (dispatch_auth_audit uses its own
+    tenant session, which would otherwise reach for a real DB in these tests)."""
+    calls = []
+
+    async def _audit(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("app.services.scim_groups.dispatch_auth_audit", _audit)
+    return calls
+
+
 @pytest.mark.asyncio
-async def test_reconcile_grants_missing_role():
+async def test_reconcile_grants_missing_role(audit_calls):
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
     groups = {"g1": {"displayName": "AP Managers", "members": [str(user_id)]}}
@@ -175,10 +188,15 @@ async def test_reconcile_grants_missing_role():
     assert db.added[0].role_id == mgr.id
     assert db.added[0].user_id == user_id
     assert db.deleted == []
+    # SOX: the grant is audited (PII-safe — role name + user id, no email)
+    granted = [c for c in audit_calls if c["action"] == "auth.scim.role_granted"]
+    assert len(granted) == 1
+    assert granted[0]["details"] == {"role": "ap_manager", "source": "scim_group"}
+    assert granted[0]["entity_id"] == user_id
 
 
 @pytest.mark.asyncio
-async def test_reconcile_revokes_role_when_no_longer_in_group():
+async def test_reconcile_revokes_role_when_no_longer_in_group(audit_calls):
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
     groups = {"g1": {"displayName": "AP Managers", "members": []}}  # user removed
@@ -190,6 +208,7 @@ async def test_reconcile_revokes_role_when_no_longer_in_group():
 
     assert db.added == []
     assert len(db.deleted) == 1  # the managed role was revoked
+    assert [c["action"] for c in audit_calls] == ["auth.scim.role_revoked"]
 
 
 @pytest.mark.asyncio

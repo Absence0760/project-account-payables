@@ -29,12 +29,14 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.organization import Organization
 from app.models.user import Role, UserRole
+from app.services.audit_dispatch import dispatch_auth_audit
 
 logger = logging.getLogger(__name__)
 
@@ -189,12 +191,19 @@ async def reconcile_user_roles(
     managed = managed_role_names(role_map)
     if not managed:
         return
-    desired = desired_role_names_for_user(groups, role_map, str(user_id))
+    # Members are stored as strings in JSONB; coerce to UUID for the UUID column
+    # (and for the audit entity_id). A malformed id is skipped rather than risking
+    # a bad insert.
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError):
+        return
+    desired = desired_role_names_for_user(groups, role_map, str(uid))
 
     current = await db.execute(
         select(Role.name, Role.id)
         .join(UserRole, UserRole.role_id == Role.id)
-        .where(UserRole.user_id == user_id)
+        .where(UserRole.user_id == uid)
     )
     current_by_name = {name: rid for name, rid in current.all()}
 
@@ -204,16 +213,30 @@ async def reconcile_user_roles(
         if want and not has:
             role = await _resolve_role(db, org_id, role_name)
             if role is not None:
-                db.add(UserRole(user_id=user_id, role_id=role.id))
-                logger.info("SCIM groups: granted role %s to user %s", role_name, user_id)
+                db.add(UserRole(user_id=uid, role_id=role.id))
+                logger.info("SCIM groups: granted role %s to user %s", role_name, uid)
+                await dispatch_auth_audit(
+                    organization_id=org_id,
+                    actor_id=None,
+                    action="auth.scim.role_granted",
+                    entity_id=uid,
+                    details={"role": role_name, "source": "scim_group"},
+                )
         elif has and not want:
             await db.execute(
                 delete(UserRole).where(
-                    UserRole.user_id == user_id,
+                    UserRole.user_id == uid,
                     UserRole.role_id == current_by_name[role_name],
                 )
             )
-            logger.info("SCIM groups: revoked role %s from user %s", role_name, user_id)
+            logger.info("SCIM groups: revoked role %s from user %s", role_name, uid)
+            await dispatch_auth_audit(
+                organization_id=org_id,
+                actor_id=None,
+                action="auth.scim.role_revoked",
+                entity_id=uid,
+                details={"role": role_name, "source": "scim_group"},
+            )
 
 
 async def reconcile_members(

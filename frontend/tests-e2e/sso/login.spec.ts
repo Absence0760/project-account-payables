@@ -58,3 +58,43 @@ test.describe('SSO login via Keycloak', () => {
 		await expect(page.locator('.profile-btn')).toBeVisible();
 	});
 });
+
+/**
+ * SSO-only mode hides the password form. Ungated: stubs the /config endpoints
+ * with page.route so it needs no real IdP — it asserts a pure UI branch.
+ */
+test.describe('SSO-only mode (mocked config)', () => {
+	test('hides the password form and shows only the SSO button', async ({ page }) => {
+		await page.route('**/api/auth/sso/config**', (route) =>
+			route.fulfill({ json: { enabled: true, provider: 'okta', sso_only: true } })
+		);
+		await page.route('**/api/auth/saml/config**', (route) =>
+			route.fulfill({ json: { enabled: false } })
+		);
+
+		await page.goto('/login');
+		await page.waitForLoadState('networkidle');
+
+		// Password form is gone; the SSO button is the only way in.
+		await expect(page.locator('input[type="password"]')).toHaveCount(0);
+		await expect(page.locator('input[type="email"]')).toHaveCount(0);
+		await expect(page.locator('button.sso-btn')).toBeVisible();
+		await expect(page.locator('.sso-only-note')).toBeVisible();
+	});
+
+	test('keeps the password form when sso_only is false', async ({ page }) => {
+		await page.route('**/api/auth/sso/config**', (route) =>
+			route.fulfill({ json: { enabled: true, provider: 'okta', sso_only: false } })
+		);
+		await page.route('**/api/auth/saml/config**', (route) =>
+			route.fulfill({ json: { enabled: false } })
+		);
+
+		await page.goto('/login');
+		await page.waitForLoadState('networkidle');
+
+		// SSO available, but password login still offered.
+		await expect(page.locator('input[type="password"]')).toBeVisible();
+		await expect(page.locator('button.sso-btn')).toBeVisible();
+	});
+});

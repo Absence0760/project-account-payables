@@ -72,6 +72,12 @@ def _fake_user(email: str, *, has_password: bool = True):
 
 # ---------------------------------------------------------------------------
 # /api/auth/login enumeration parity
+#
+# NB: SSO-only mode is a DELIBERATE exception to the 401-parity below — a tenant
+# that requires SSO returns 403 + an "use your identity provider" message (so the
+# user gets an actionable hint, and the workspace's SSO requirement is already
+# public via /auth/{sso,saml}/config anyway). That 403-vs-401 break is pinned in
+# tests/test_sso_only.py; don't collapse it back to 401 to "restore parity".
 # ---------------------------------------------------------------------------
 
 
