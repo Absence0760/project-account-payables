@@ -1,6 +1,7 @@
 from app.models.base import Base
 from app.models.credit_memo import CreditMemo
 from app.models.exception import Exception as APException
+from app.models.international_tax import IntlTaxRecord, TaxKind
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice_embedding import InvoiceEmbedding
 from app.models.notification import Notification
@@ -46,4 +47,6 @@ __all__ = [
     "EmailVerification",
     "Notification",
     "Tax1099Filing",
+    "IntlTaxRecord",
+    "TaxKind",
 ]

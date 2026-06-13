@@ -29,6 +29,7 @@ from app.api import (
     scim,
     signup,
     tax,
+    tax_intl,
     vendors,
     workflow,
     workflow_definitions,
@@ -200,6 +201,7 @@ app.include_router(portal.router, prefix="/api")
 app.include_router(email_intake.public_router, prefix="/api")
 app.include_router(email_intake.admin_router, prefix="/api")
 app.include_router(tax.router, prefix="/api")
+app.include_router(tax_intl.router, prefix="/api")
 
 
 @app.get("/api/health")
