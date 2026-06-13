@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User"
+GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group"
 LIST_RESPONSE_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 PATCH_OP_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
 ERROR_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:Error"
@@ -83,3 +84,41 @@ class SCIMError(BaseModel):
     status: str
     detail: str
     scimType: str | None = None
+
+
+# --- Groups (RFC 7643 core:2.0:Group) ---------------------------------------
+
+
+class SCIMGroupMember(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    value: str  # the member User's id
+    display: str | None = None
+    ref: str | None = Field(default=None, alias="$ref")
+
+
+class SCIMGroup(BaseModel):
+    """Outbound SCIM group resource."""
+
+    schemas: list[str] = Field(default_factory=lambda: [GROUP_SCHEMA])
+    id: str
+    externalId: str | None = None
+    displayName: str
+    members: list[SCIMGroupMember] = Field(default_factory=list)
+    meta: SCIMMeta | None = None
+
+
+class SCIMGroupCreate(BaseModel):
+    """Inbound POST /Groups body from Okta / Entra."""
+
+    schemas: list[str] = Field(default_factory=lambda: [GROUP_SCHEMA])
+    displayName: str
+    externalId: str | None = None
+    members: list[SCIMGroupMember] = Field(default_factory=list)
+
+
+class SCIMGroupListResponse(BaseModel):
+    schemas: list[str] = Field(default_factory=lambda: [LIST_RESPONSE_SCHEMA])
+    totalResults: int
+    startIndex: int = 1
+    itemsPerPage: int
+    Resources: list[SCIMGroup]

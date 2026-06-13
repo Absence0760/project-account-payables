@@ -1,22 +1,25 @@
-"""SCIM 2.0 /Users endpoints for Okta + Entra provisioning.
+"""SCIM 2.0 /Users + /Groups endpoints for Okta + Entra + Authentik provisioning.
 
 Each tenant has its own SCIM base URL:
-    https://app.com/api/scim/v2/Users
+    https://app.com/api/scim/v2/{Users,Groups}
 
 and its own bearer token (hash stored in Organization.settings.sso.
 scim_bearer_hash). The IdP is configured once per tenant with that URL +
 token and pushes users here: list, get by id, create, PATCH (SCIM's
 partial-update flavor), delete (soft — sets active=false).
 
-What's NOT here: /Groups (requires RBAC-group → Role mapping design work).
-Planned for a follow-up PR.
+/Groups maps IdP groups onto RBAC roles: group state is JSONB on
+settings.sso, and membership changes drive role reconciliation against the
+per-tenant `scim_group_role_map`. See app/services/scim_groups.py.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -31,6 +34,10 @@ from app.schemas.scim import (
     USER_SCHEMA,
     SCIMEmail,
     SCIMError,
+    SCIMGroup,
+    SCIMGroupCreate,
+    SCIMGroupListResponse,
+    SCIMGroupMember,
     SCIMListResponse,
     SCIMMeta,
     SCIMName,
@@ -38,6 +45,7 @@ from app.schemas.scim import (
     SCIMUser,
     SCIMUserCreate,
 )
+from app.services import scim_groups
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +384,220 @@ async def delete_user(
         raise _scim_http_error(404, f"User {user_id} not found.")
     user.is_active = False
     await db.flush()
+
+
+# ---------------------------------------------------------------------------
+# Groups — IdP group → RBAC Role mapping (see services/scim_groups.py).
+# Group state is JSONB on settings.sso; membership drives role reconciliation.
+# ---------------------------------------------------------------------------
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+async def _emails_for(db: AsyncSession, org_id, ids) -> dict[str, str]:
+    """Batch-resolve member id → email for SCIM `display`. Skips non-UUID ids."""
+    uuids = []
+    for i in ids:
+        try:
+            uuids.append(uuid.UUID(str(i)))
+        except (ValueError, AttributeError):
+            continue
+    if not uuids:
+        return {}
+    rows = await db.execute(
+        select(User.id, User.email).where(
+            User.organization_id == org_id, User.id.in_(uuids)
+        )
+    )
+    return {str(uid): email for uid, email in rows.all()}
+
+
+async def _valid_member_ids(db: AsyncSession, org_id, ids) -> list[str]:
+    """Keep only ids that resolve to a real user in this org (order-preserving,
+    deduped). Stops phantom ids from reaching role reconciliation / FK inserts."""
+    emails = await _emails_for(db, org_id, ids)
+    seen: set[str] = set()
+    out: list[str] = []
+    for i in ids:
+        sid = str(i)
+        if sid in emails and sid not in seen:
+            seen.add(sid)
+            out.append(sid)
+    return out
+
+
+def _group_to_scim(group_id: str, data: dict, request: Request, emails: dict) -> SCIMGroup:
+    base = f"{str(request.base_url).rstrip('/')}{settings.scim_url_path}/Groups/{group_id}"
+    members = [
+        SCIMGroupMember(value=uid, display=emails.get(uid))
+        for uid in (data.get("members") or [])
+    ]
+    return SCIMGroup(
+        id=group_id,
+        displayName=data.get("displayName", ""),
+        externalId=data.get("externalId"),
+        members=members,
+        meta=SCIMMeta(
+            resourceType="Group",
+            created=data.get("created"),
+            lastModified=data.get("lastModified"),
+            location=base,
+        ),
+    )
+
+
+@router.get("/Groups", response_model=SCIMGroupListResponse)
+async def list_groups(
+    request: Request,
+    startIndex: int = Query(1, ge=1),
+    count: int = Query(100, ge=0, le=1000),
+    filter: str | None = Query(None),
+    org: Organization = Depends(get_scim_tenant),
+    db: AsyncSession = Depends(get_control_db),
+):
+    groups = scim_groups.get_groups(org.settings)
+    items = list(groups.items())
+    if filter:
+        # Only `displayName eq "X"` is supported (what Okta/Entra send to
+        # reconcile a group by name); anything else is a clear 400.
+        m = re.fullmatch(r'displayName eq "(?P<name>[^"]*)"', filter.strip(), re.IGNORECASE)
+        if not m:
+            raise _scim_http_error(400, f"Unsupported filter: {filter}", "invalidFilter")
+        wanted = m.group("name")
+        items = [(gid, d) for gid, d in items if d.get("displayName") == wanted]
+
+    total = len(items)
+    page = items[startIndex - 1 : (startIndex - 1 + count) if count else None]
+    all_member_ids = {uid for _, d in page for uid in (d.get("members") or [])}
+    emails = await _emails_for(db, org.id, all_member_ids)
+    return SCIMGroupListResponse(
+        totalResults=total,
+        startIndex=startIndex,
+        itemsPerPage=len(page),
+        Resources=[_group_to_scim(gid, d, request, emails) for gid, d in page],
+    )
+
+
+@router.get("/Groups/{group_id}", response_model=SCIMGroup)
+async def get_group(
+    group_id: str,
+    request: Request,
+    org: Organization = Depends(get_scim_tenant),
+    db: AsyncSession = Depends(get_control_db),
+):
+    data = scim_groups.get_groups(org.settings).get(group_id)
+    if data is None:
+        raise _scim_http_error(404, f"Group {group_id} not found.")
+    emails = await _emails_for(db, org.id, data.get("members") or [])
+    return _group_to_scim(group_id, data, request, emails)
+
+
+@router.post("/Groups", response_model=SCIMGroup, status_code=201)
+async def create_group(
+    body: SCIMGroupCreate,
+    request: Request,
+    org: Organization = Depends(get_scim_tenant),
+    db: AsyncSession = Depends(get_control_db),
+):
+    groups = scim_groups.get_groups(org.settings)
+    # Idempotency: a group with the same displayName already exists → 409.
+    if any(d.get("displayName") == body.displayName for d in groups.values()):
+        raise _scim_http_error(
+            409, f"Group with displayName {body.displayName} already exists.", "uniqueness"
+        )
+    members = await _valid_member_ids(db, org.id, [m.value for m in body.members])
+    group_id = str(uuid.uuid4())
+    now = _now_iso()
+    groups[group_id] = {
+        "displayName": body.displayName,
+        "externalId": body.externalId,
+        "members": members,
+        "created": now,
+        "lastModified": now,
+    }
+    scim_groups.write_groups(org, groups)
+    await db.flush()
+    await scim_groups.reconcile_members(db, org, set(members))
+    logger.info("SCIM created group %s in org %s", body.displayName, org.slug)
+    emails = await _emails_for(db, org.id, members)
+    return _group_to_scim(group_id, groups[group_id], request, emails)
+
+
+@router.put("/Groups/{group_id}", response_model=SCIMGroup)
+async def replace_group(
+    group_id: str,
+    body: SCIMGroupCreate,
+    request: Request,
+    org: Organization = Depends(get_scim_tenant),
+    db: AsyncSession = Depends(get_control_db),
+):
+    groups = scim_groups.get_groups(org.settings)
+    data = groups.get(group_id)
+    if data is None:
+        raise _scim_http_error(404, f"Group {group_id} not found.")
+    old_members = set(data.get("members") or [])
+    new_members = await _valid_member_ids(db, org.id, [m.value for m in body.members])
+    data = {
+        **data,
+        "displayName": body.displayName,
+        "externalId": body.externalId,
+        "members": new_members,
+        "lastModified": _now_iso(),
+    }
+    groups[group_id] = data
+    scim_groups.write_groups(org, groups)
+    await db.flush()
+    await scim_groups.reconcile_members(db, org, old_members | set(new_members))
+    emails = await _emails_for(db, org.id, new_members)
+    return _group_to_scim(group_id, data, request, emails)
+
+
+@router.patch("/Groups/{group_id}", response_model=SCIMGroup)
+async def patch_group(
+    group_id: str,
+    body: SCIMPatchRequest,
+    request: Request,
+    org: Organization = Depends(get_scim_tenant),
+    db: AsyncSession = Depends(get_control_db),
+):
+    groups = scim_groups.get_groups(org.settings)
+    data = groups.get(group_id)
+    if data is None:
+        raise _scim_http_error(404, f"Group {group_id} not found.")
+    old_members = list(data.get("members") or [])
+    try:
+        updated = scim_groups.apply_patch_ops(data, body.Operations)
+    except scim_groups.GroupPatchError as exc:
+        raise _scim_http_error(400, str(exc), "invalidPath") from exc
+
+    members = await _valid_member_ids(db, org.id, updated["members"])
+    data = {**updated, "members": members, "lastModified": _now_iso()}
+    groups[group_id] = data
+    scim_groups.write_groups(org, groups)
+    await db.flush()
+    await scim_groups.reconcile_members(db, org, set(old_members) | set(members))
+    emails = await _emails_for(db, org.id, members)
+    return _group_to_scim(group_id, data, request, emails)
+
+
+@router.delete("/Groups/{group_id}", status_code=204)
+async def delete_group(
+    group_id: str,
+    org: Organization = Depends(get_scim_tenant),
+    db: AsyncSession = Depends(get_control_db),
+):
+    groups = scim_groups.get_groups(org.settings)
+    data = groups.pop(group_id, None)
+    if data is None:
+        raise _scim_http_error(404, f"Group {group_id} not found.")
+    former_members = set(data.get("members") or [])
+    scim_groups.write_groups(org, groups)
+    await db.flush()
+    # The group is gone, so reconciliation revokes its mapped role from former
+    # members (unless another group still grants it).
+    await scim_groups.reconcile_members(db, org, former_members)
+    logger.info("SCIM deleted group %s in org %s", data.get("displayName"), org.slug)
 
 
 @router.get("/ServiceProviderConfig")

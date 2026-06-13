@@ -123,6 +123,14 @@ All `/api/scim/v2/*` endpoints authenticate via the **per-tenant SCIM bearer** (
 | `POST`   | `/api/scim/v2/Users`                | Create. 409 `uniqueness` on duplicate userName. |
 | `PATCH`  | `/api/scim/v2/Users/{id}`           | Partial update — supports the ops Okta + Entra send. |
 | `DELETE` | `/api/scim/v2/Users/{id}`           | **Soft delete** — sets `is_active=false`. Preserves audit trail. |
+| `GET`    | `/api/scim/v2/Groups`               | List + paginate. Filter: `displayName eq`. |
+| `GET`    | `/api/scim/v2/Groups/{id}`          | Fetch one group. |
+| `POST`   | `/api/scim/v2/Groups`               | Create. 409 `uniqueness` on duplicate displayName. |
+| `PUT`    | `/api/scim/v2/Groups/{id}`          | Full replace (displayName + members). |
+| `PATCH`  | `/api/scim/v2/Groups/{id}`          | Add/remove/replace members + rename. |
+| `DELETE` | `/api/scim/v2/Groups/{id}`          | Remove the group (revokes its mapped role from former members). |
+
+Groups map to RBAC roles via `settings.sso.scim_group_role_map` (`{displayName: role}`); membership changes reconcile `user_roles` idempotently (only mapped roles are touched). See [`docs/authentication.md`](../../docs/authentication.md) § Groups → role mapping.
 
 ## Signup (anonymous, pre-tenant)
 

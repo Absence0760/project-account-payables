@@ -97,6 +97,12 @@ NO_AUTH_REQUIRED = {
     ("PUT", "/scim/v2/Users/{user_id}"),
     ("PATCH", "/scim/v2/Users/{user_id}"),
     ("DELETE", "/scim/v2/Users/{user_id}"),
+    ("GET", "/scim/v2/Groups"),
+    ("GET", "/scim/v2/Groups/{group_id}"),
+    ("POST", "/scim/v2/Groups"),
+    ("PUT", "/scim/v2/Groups/{group_id}"),
+    ("PATCH", "/scim/v2/Groups/{group_id}"),
+    ("DELETE", "/scim/v2/Groups/{group_id}"),
     ("GET", "/scim/v2/ServiceProviderConfig"),
     ("GET", "/scim/v2/Schemas/{schema_id}"),
     # portal_auth.py — pre-login + logout (Bearer header, not as Depends)

@@ -479,6 +479,12 @@ Every SCIM request Authorization-headers a bearer token; the backend SHA-256s it
 | `PUT` | `/Users/{id}` | **Full-resource replace.** Authentik (and RFC 7644 §3.5.1) update users via PUT, not PATCH. Returns 409 `uniqueness` if the new userName collides with another user. |
 | `PATCH` | `/Users/{id}` | Partial update. Supports the ops Okta + Entra send (active toggle, userName/externalId/name replace, root-object replace). |
 | `DELETE` | `/Users/{id}` | **Soft delete** — sets `is_active=false`. Preserves audit trail. |
+| `GET` | `/Groups` | List + paginate; `displayName eq` filter. |
+| `GET` | `/Groups/{id}` | Fetch one group. |
+| `POST` | `/Groups` | Create. 409 `uniqueness` on duplicate displayName. |
+| `PUT` | `/Groups/{id}` | Full replace (displayName + members). |
+| `PATCH` | `/Groups/{id}` | Add/remove/replace members + rename — the op/path shapes Okta/Entra/Authentik send. |
+| `DELETE` | `/Groups/{id}` | Remove the group (revokes its mapped role from former members). |
 
 Both `PUT` and `PATCH` `db.refresh()` the row after the flush: the `UPDATE` fires
 `updated_at`'s server-side `onupdate`, which SQLAlchemy expires — reloading it in
@@ -518,9 +524,24 @@ deactivate → DELETE, verified in `/admin`) lives in
 without the Authentik container, which CI can't host. Full walkthrough:
 [`local-sso-keycloak.md` § Authentik](local-sso-keycloak.md#authentik--local-scim-provisioning).
 
-### Not in this pass
+### Groups → role mapping
 
-- **`/Groups` endpoints** — group sync requires mapping IdP groups to our `Role` rows. Design work pending (how is "admin group members get admin role" expressed? Per-tenant config or convention?). Tracked in the roadmap. The Authentik blueprint sets `property_mappings_group: []` so it provisions users only.
+`/Groups` maps IdP groups onto our RBAC `Role` rows. Group state (displayName,
+externalId, member ids) is stored as JSONB on `settings.sso.scim_groups` —
+groups are few per tenant and the only thing we do with one is map it to a role,
+so no dedicated table (a control-plane `scim_groups` table is the upgrade path if
+volume grows; the service boundary stays the same). The mapping lives in
+`settings.sso.scim_group_role_map` (`{displayName: role_name}`).
+
+On any membership change (create / PUT / PATCH / delete), affected users are
+**reconciled** (`services/scim_groups.py::reconcile_user_roles`): a user's
+SCIM-derived roles = the mapped role of every group they belong to. Only roles
+named in the map are added/removed — manual and JIT-default assignments to other
+roles are never touched. **Contract:** a role named in the map becomes
+IdP-managed for any user the IdP places in (or removes from) a mapped group.
+Member ids are validated against real org users before reconciliation, so a
+phantom id can't grant a role. Unmapped groups are stored and synced but grant
+nothing until an admin adds them to the map.
 
 ---
 
