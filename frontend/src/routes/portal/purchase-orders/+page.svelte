@@ -2,6 +2,7 @@
 	import { portalApi } from '$lib/portalApi';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import Money from '$lib/components/ui/Money.svelte';
 
 	interface PortalPO {
 		id: string;
@@ -97,7 +98,7 @@
 						<td>{po.po_number}</td>
 						<td>{fmtDate(po.created_at)}</td>
 						<td>{po.line_item_count}</td>
-						<td class="num">{po.total}</td>
+						<td class="num"><Money amount={po.total} currency={po.currency} /></td>
 						<td><span class="status s-{po.status}">{po.status}</span></td>
 						<td class="actions">
 							<button

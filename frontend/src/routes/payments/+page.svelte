@@ -14,6 +14,8 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { formatMoney } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 
 	const HISTORY_COLUMNS = [
@@ -254,6 +256,7 @@
 	}
 
 	$effect(() => {
+		orgCurrency.ensureLoaded();
 		loadSummary();
 		loadQueue();
 	});
@@ -394,8 +397,10 @@
 		return paymentStore.all.filter((p) => p.status === s).length;
 	}
 
-	function formatCurrency(amount: number, currency: string = 'USD'): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
+	function formatCurrency(amount: number, currency?: string | null): string {
+		// Per-row amounts pass their own currency; tenant-wide summary
+		// totals omit it and fall back to the org's configured default.
+		return formatMoney(amount, { currency: currency ?? orgCurrency.currency });
 	}
 
 	function formatDate(dateStr: string | null): string {

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { portalApi } from '$lib/portalApi';
 	import { onMount } from 'svelte';
+	import Money from '$lib/components/ui/Money.svelte';
 
 	interface PortalPayment {
 		id: string;
@@ -100,7 +101,7 @@
 						<td>{fmtDate(p.submitted_at)}</td>
 						<td>{fmtDate(p.completed_at)}</td>
 						<td>{p.method || '—'}</td>
-						<td class="num">{p.amount}</td>
+						<td class="num"><Money amount={p.amount} /></td>
 						<td><span class="status s-{p.status}">{p.status}</span></td>
 						<td>{p.reference || '—'}</td>
 						<td class="actions">

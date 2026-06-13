@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { portalApi } from '$lib/portalApi';
 	import { onMount } from 'svelte';
+	import { formatMoney } from '$lib/utils/money';
 
 	interface PortalInvoice {
 		id: string;
@@ -63,9 +64,7 @@
 	}
 
 	function fmtAmount(amount: number | string, ccy: string): string {
-		const n = typeof amount === 'string' ? parseFloat(amount) : amount;
-		if (!n) return `${ccy} 0.00`;
-		return new Intl.NumberFormat(undefined, { style: 'currency', currency: ccy }).format(n);
+		return formatMoney(amount, { currency: ccy }, formatMoney(0, { currency: ccy }));
 	}
 
 	onMount(refresh);

@@ -14,6 +14,7 @@
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
+	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import { page } from '$app/stores';
@@ -358,9 +359,6 @@
 		}
 	}
 
-	function formatCurrency(amount: number, currency: string): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-	}
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -531,7 +529,7 @@
 					</td>
 					<td class="description" title={invoice.description}>{invoice.description}</td>
 					<td class="mono">{invoice.po_number}</td>
-					<td class="right mono">{formatCurrency(invoice.amount, invoice.currency)}</td>
+					<td class="right mono"><Money amount={invoice.amount} currency={invoice.currency} /></td>
 					<td>{invoice.due_date}</td>
 					<td><StatusBadge status={invoice.status} /></td>
 					<td class="actions">

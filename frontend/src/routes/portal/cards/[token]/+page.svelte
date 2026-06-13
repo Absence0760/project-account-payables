@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { api } from '$lib/api';
+	import { formatMoney } from '$lib/utils/money';
 
 	interface RevealResponse {
 		last_four: string | null;
@@ -58,7 +59,7 @@
 	}
 
 	function formatAmount(amount: number, currency: string): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
+		return formatMoney(amount, { currency });
 	}
 </script>
 

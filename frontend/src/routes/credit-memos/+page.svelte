@@ -5,6 +5,7 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 
 	const STATUS_CHIPS = [
@@ -189,10 +190,6 @@
 		}
 	}
 
-	function formatCurrency(amount: number, currency: string = 'USD'): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-	}
-
 	function formatDate(s: string | null): string {
 		if (!s) return '—';
 		return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -222,7 +219,7 @@
 				<tr class:applied={memo.status === 'applied'} class:void={memo.status === 'void'}>
 					<td class="mono">{memo.memo_number}</td>
 					<td>{memo.vendor_name ?? '—'}</td>
-					<td class="right mono">{formatCurrency(memo.amount, memo.currency)}</td>
+					<td class="right mono"><Money amount={memo.amount} currency={memo.currency} /></td>
 					<td class="muted">{formatDate(memo.issued_date)}</td>
 					<td class="mono muted">{memo.invoice_number ?? '—'}</td>
 					<td><span class="badge {memo.status}">{memo.status}</span></td>

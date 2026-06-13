@@ -2,6 +2,8 @@
 	import { api } from '$lib/api';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import { formatMoney } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import type {
 		CashflowForecast,
 		CashflowGranularity,
@@ -21,12 +23,7 @@
 	let error = $state<string | null>(null);
 
 	function fmt(n: number): string {
-		return new Intl.NumberFormat('en-US', {
-			style: 'currency',
-			currency: 'USD',
-			minimumFractionDigits: 0,
-			maximumFractionDigits: 0
-		}).format(n);
+		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
 	}
 
 	function formatPeriod(p: string): string {
@@ -61,6 +58,7 @@
 	}
 
 	$effect(() => {
+		orgCurrency.ensureLoaded();
 		// Re-run whenever a control changes. Reading the deps registers them.
 		void granularity;
 		void horizonDays;

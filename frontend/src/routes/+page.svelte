@@ -4,6 +4,8 @@
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import { formatMoney } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 
 	interface DashboardData {
 		total_invoices: number;
@@ -32,6 +34,7 @@
 	let loading = $state(true);
 
 	$effect(() => {
+		orgCurrency.ensureLoaded();
 		api.get<DashboardData>('/api/dashboard').then((res) => {
 			data = res;
 			loading = false;
@@ -40,12 +43,14 @@
 		});
 	});
 
+	// Dashboard figures are tenant-wide roll-ups with no per-row currency,
+	// so they render in the org's configured default currency.
 	function fmt(n: number): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
+		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
 	}
 
 	function fmtFull(n: number): string {
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
+		return formatMoney(n, { currency: orgCurrency.currency });
 	}
 
 	function formatDate(iso: string | null): string {

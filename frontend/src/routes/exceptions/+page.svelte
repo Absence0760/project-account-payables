@@ -7,6 +7,8 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { formatMoney } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 
 	interface ExceptionItem {
 		id: string;
@@ -81,6 +83,7 @@
 	});
 
 	$effect(() => {
+		orgCurrency.ensureLoaded();
 		loadSummary();
 	});
 
@@ -227,8 +230,7 @@
 	}
 
 	function formatCurrency(n: number | null): string {
-		if (n === null) return '—';
-		return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
+		return formatMoney(n, { currency: orgCurrency.currency });
 	}
 
 	function timeAgo(iso: string): string {
