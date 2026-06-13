@@ -324,6 +324,18 @@ class Settings(BaseSettings):
     tin_validation_provider: str = "mock"  # "mock" (offline) | "tax1099"
     tax_filing_provider: str = "mock"  # "mock" (offline) | "tax1099"
 
+    # PEPPOL AS4 outbound (e-invoice transmission via a hosted Access Point).
+    # Local-first: the in-process `mock` adapter is the default so `pnpm dev`
+    # never needs a real PEPPOL credential. Per-org overrides live on
+    # ``Organization.settings.peppol.{provider,gateway_url,api_key,...}`` and
+    # win over these process-level defaults; deployed envs that transmit for
+    # real set the provider to `as4_gateway` there with the live gateway URL +
+    # key in the encrypted settings (sops). The gateway API key has NO
+    # hardcoded fallback — empty here, real value via sops in deployed.
+    peppol_provider: str = "mock"  # "mock" (in-process default) | "as4_gateway"
+    peppol_gateway_url: str = ""  # hosted Access Point base URL (deployed only)
+    peppol_gateway_api_key: str = ""  # secret — empty for mock; sops in deployed
+
     # App
     # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local
