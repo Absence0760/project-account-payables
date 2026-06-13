@@ -164,6 +164,11 @@ class Settings(BaseSettings):
     smtp_password: str = ""  # secret — empty for Mailpit; set via sops in deployed envs
     smtp_use_tls: bool = False
     public_url: str = "http://localhost:7777"  # where the frontend is served
+    # Externally-reachable base URL of THIS backend. Unlike OIDC (front-channel
+    # code flow that redirects to the SPA), SAML POST-binding makes the IdP post
+    # the assertion straight to the backend ACS, so the SP entityID + ACS URL we
+    # register with each IdP are built off this. Dev: the backend dev server.
+    api_public_url: str = "http://localhost:8000"
     tenant_url_template: str = "http://{slug}.localhost:7777"
 
     # Master switch for the email + in-app notification system. When false,
@@ -242,6 +247,25 @@ class Settings(BaseSettings):
     # Hash (not reversible) of the per-tenant SCIM bearer token is what gets
     # stored. The plaintext token is shown to the admin ONCE on generation.
     scim_url_path: str = "/api/scim/v2"
+
+    # SAML 2.0 SSO (Service-Provider side). Additive, separate code path from
+    # OIDC; per-tenant IdP config lives on Organization.settings.sso with
+    # protocol="saml". Master switch defaults off so a fresh clone + pnpm dev
+    # needs no IdP (local-first), mirroring AP_MFA_ENABLED.
+    saml_enabled: bool = False
+    # Frontend bridge route the SAML ACS 303-redirects to after minting a
+    # one-time handoff code. The bridge POSTs the code to /api/auth/saml/exchange
+    # and receives the JWT in the response body — the JWT never transits a URL.
+    saml_acs_path: str = "/login/saml-callback"
+    # TTL for the one-time post-ACS handoff code (Redis). Short — it's consumed
+    # by the bridge page within a single redirect hop.
+    saml_handoff_ttl_seconds: int = 120
+    # Optional SP signing keypair, used ONLY when a tenant requires SP-signed
+    # AuthnRequests. Real secret -> backend/.env.sops (KMS) in deployed envs;
+    # empty by default (local Keycloak runs with client-signature off, so no SP
+    # key is needed to run locally). NEVER given a hardcoded non-empty fallback.
+    saml_sp_private_key: str = ""
+    saml_sp_cert: str = ""
 
     # Security headers (SOC 2 — TLS + tablestakes hardening)
     # HSTS is gated off by default so local HTTP dev isn't broken. Deployed

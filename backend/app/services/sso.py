@@ -17,12 +17,14 @@ discovery document. Tenant-scoped config lives on Organization.settings.sso:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
@@ -80,13 +82,28 @@ class ResolvedSSOConfig:
     allowed_email_domains: list[str]
 
 
+# The settings.sso block is shared by both SSO protocols, discriminated by a
+# `protocol` key. Absent / "oidc" => the existing OIDC path (back-compat);
+# "saml" => the SAML SP path. resolve_sso_config and resolve_saml_config each
+# return None for the other protocol so neither can be driven by the wrong one.
+SAML_PROTOCOL = "saml"
+
+
+def _settings_protocol(sso: dict) -> str:
+    return (sso.get("protocol") or "oidc").lower()
+
+
 def resolve_sso_config(org_settings: dict | None) -> ResolvedSSOConfig | None:
-    """Pull + validate the SSO block from Organization.settings. Returns None
-    if SSO isn't configured for this tenant."""
+    """Pull + validate the OIDC SSO block from Organization.settings. Returns
+    None if OIDC SSO isn't configured for this tenant (incl. when the tenant is
+    configured for SAML instead)."""
     if not org_settings:
         return None
     sso = org_settings.get("sso") or {}
     if not sso.get("enabled"):
+        return None
+    if _settings_protocol(sso) == SAML_PROTOCOL:
+        # SAML tenant — resolved via resolve_saml_config, not the OIDC path.
         return None
     discovery = sso.get("discovery_url")
     client_id = sso.get("client_id")
@@ -116,6 +133,98 @@ def redirect_uri(tenant_slug: str) -> str:
     template = settings.tenant_url_template or "http://{slug}.localhost:7777"
     base = template.replace("{slug}", tenant_slug).rstrip("/")
     return f"{base}{settings.sso_redirect_path}"
+
+
+# ---------------------------------------------------------------------------
+# SAML 2.0 (Service-Provider) config
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ResolvedSAMLConfig:
+    provider: str
+    idp_entity_id: str
+    idp_sso_url: str
+    # Trust anchor: the IdP's signing cert(s), normalized to bare base64 (PEM
+    # armor + whitespace stripped). x509_certs[0] is primary; the rest support
+    # zero-downtime IdP cert rotation. NEVER a cert embedded in the assertion.
+    idp_x509_cert: str
+    idp_x509_cert_multi: list[str] = field(default_factory=list)
+    sp_entity_id: str = ""
+    idp_slo_url: str | None = None
+    allowed_email_domains: list[str] = field(default_factory=list)
+
+
+def saml_sp_entity_id(tenant_slug: str) -> str:
+    """Per-tenant SP EntityID (== SAML Audience the IdP must assert). Derived
+    from the backend public URL so each tenant's IdP only trusts that tenant's
+    SP. Admins may override via settings.sso.sp_entity_id."""
+    base = settings.api_public_url.rstrip("/")
+    return f"{base}/api/auth/saml/metadata?slug={tenant_slug}"
+
+
+def saml_acs_url() -> str:
+    """Static Assertion Consumer Service URL the IdP POST-binds the SAMLResponse
+    to. One ACS serves every tenant; the tenant is recovered from the
+    server-minted RelayState, never from this URL. The IdP-asserted Destination
+    is validated against this exact value."""
+    base = settings.api_public_url.rstrip("/")
+    return f"{base}/api/auth/saml/acs"
+
+
+def _normalize_x509_cert(raw: str) -> str:
+    """Strip PEM armor + whitespace and confirm the result is non-empty,
+    valid base64. Raises SSOConfigError on empty/blank/garbage so a missing or
+    malformed cert can NEVER reach python3-saml as "no cert => skip the
+    signature check" — the load-bearing trust control."""
+    if not raw or not raw.strip():
+        raise SSOConfigError("SAML idp_x509_cert is empty.")
+    lines = [ln.strip() for ln in raw.strip().splitlines() if ln.strip() and "-----" not in ln]
+    b64 = "".join(lines) if lines else raw.strip()
+    try:
+        decoded = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise SSOConfigError("SAML idp_x509_cert is not valid base64/PEM.") from exc
+    if not decoded:
+        raise SSOConfigError("SAML idp_x509_cert decoded to empty bytes.")
+    return b64
+
+
+def resolve_saml_config(org_settings: dict | None, tenant_slug: str) -> ResolvedSAMLConfig | None:
+    """Pull + validate the SAML SSO block from Organization.settings. Returns
+    None when SAML SSO isn't configured for this tenant (incl. OIDC tenants).
+    Raises SSOConfigError when SAML is enabled but the IdP trust config is
+    incomplete or the signing cert is missing/malformed."""
+    if not org_settings:
+        return None
+    sso = org_settings.get("sso") or {}
+    if not sso.get("enabled"):
+        return None
+    if _settings_protocol(sso) != SAML_PROTOCOL:
+        return None
+
+    idp_entity_id = sso.get("idp_entity_id")
+    idp_sso_url = sso.get("idp_sso_url")
+    raw_cert = sso.get("idp_x509_cert")
+    if not (idp_entity_id and idp_sso_url and raw_cert):
+        raise SSOConfigError(
+            "SAML SSO is enabled but idp_entity_id/idp_sso_url/idp_x509_cert are missing."
+        )
+
+    cert = _normalize_x509_cert(raw_cert)
+    cert_multi = [_normalize_x509_cert(c) for c in (sso.get("idp_x509_cert_multi") or [])]
+    sp_entity_id = sso.get("sp_entity_id") or saml_sp_entity_id(tenant_slug)
+
+    return ResolvedSAMLConfig(
+        provider=sso.get("provider") or "saml",
+        idp_entity_id=idp_entity_id,
+        idp_sso_url=idp_sso_url,
+        idp_x509_cert=cert,
+        idp_x509_cert_multi=cert_multi,
+        sp_entity_id=sp_entity_id,
+        idp_slo_url=sso.get("idp_slo_url") or None,
+        allowed_email_domains=list(sso.get("allowed_email_domains") or []),
+    )
 
 
 # ---------------------------------------------------------------------------
