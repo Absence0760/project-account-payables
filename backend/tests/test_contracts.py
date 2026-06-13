@@ -341,3 +341,87 @@ async def test_upload_document(realdb):
             )
         ).scalar()
         assert actions >= 1
+
+
+# ---------------------------------------------------------------------------
+# spend-to-contract linking (invoices router)
+# ---------------------------------------------------------------------------
+
+
+async def _add_invoice(mk, org_id, vendor_id, *, amount="500.00") -> str:
+    import uuid
+
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
+            vendor_name="Globex Industrial",
+            amount=Decimal(amount),
+            status=InvoiceStatus.approved,
+            vendor_id=uuid.UUID(vendor_id),
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+        return str(inv.id)
+
+
+async def test_link_and_unlink_contract(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        contract_id = (await _create_contract(c, vendor_id, spend_limit="1000.00")).json()["id"]
+        invoice_id = await _add_invoice(mk, org_id, vendor_id, amount="400.00")
+
+        linked = await c.post(
+            f"/api/invoices/{invoice_id}/link-contract", json={"contract_id": contract_id}
+        )
+        assert linked.status_code == 200, linked.text
+        assert linked.json()["contract_id"] == contract_id
+
+        # Spend rollup now reflects the linked invoice.
+        detail = (await c.get(f"/api/contracts/{contract_id}")).json()
+        assert detail["spend"]["invoiced_total"] == 400.0
+        assert detail["spend"]["invoice_count"] == 1
+
+        unlinked = await c.post(f"/api/invoices/{invoice_id}/unlink-contract")
+        assert unlinked.status_code == 200
+        assert unlinked.json()["contract_id"] is None
+
+        detail2 = (await c.get(f"/api/contracts/{contract_id}")).json()
+        assert detail2["spend"]["invoice_count"] == 0
+
+    async with mk() as s:
+        actions = (
+            (
+                await s.execute(
+                    select(AuditLog.action).where(
+                        AuditLog.action.in_(
+                            ["invoice.contract_linked", "invoice.contract_unlinked"]
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert "invoice.contract_linked" in actions
+        assert "invoice.contract_unlinked" in actions
+
+
+async def test_link_unknown_contract_404(realdb):
+    import uuid
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+    invoice_id = await _add_invoice(mk, org_id, vendor_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            f"/api/invoices/{invoice_id}/link-contract",
+            json={"contract_id": str(uuid.uuid4())},
+        )
+    assert resp.status_code == 404

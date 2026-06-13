@@ -26,6 +26,7 @@ from app.api.deps import (
 )
 from app.api.pagination import PaginationParams, pagination_params
 from app.database import get_control_db
+from app.models.contract import Contract
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice import InvoiceStatus as DBInvoiceStatus
@@ -689,6 +690,96 @@ async def update_invoice(
     # at the top of this function. Build the response directly from it —
     # re-selecting hits the session's identity map and could surface stale
     # state in some pool/connection interleavings.
+    return InvoiceResponse.from_db(invoice)
+
+
+class LinkContractRequest(BaseModel):
+    contract_id: str
+
+
+@router.post("/{invoice_id}/link-contract", response_model=InvoiceResponse)
+async def link_contract(
+    invoice_id: uuid.UUID,
+    body: LinkContractRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Attribute this invoice's spend to a contract.
+
+    Linking is allowed in any invoice status (spend attribution on a paid
+    invoice is exactly when you want it). Re-running ``refresh_warnings``
+    recomputes the contract-compliance flags for the new link.
+    """
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    try:
+        contract_uuid = uuid.UUID(body.contract_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid contract_id")
+    contract = (
+        await db.execute(select(Contract).where(Contract.id == contract_uuid))
+    ).scalar_one_or_none()
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    if invoice.contract_id != contract_uuid:
+        invoice.contract_id = contract_uuid
+        await dispatch_audit(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=invoice.organization_id,
+            actor_id=user.id,
+            action="invoice.contract_linked",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            details={
+                "contract_id": str(contract_uuid),
+                "contract_number": contract.contract_number,
+            },
+        )
+        await refresh_warnings(db, invoice, org_settings=org.settings)
+    await db.flush()
+    return InvoiceResponse.from_db(invoice)
+
+
+@router.post("/{invoice_id}/unlink-contract", response_model=InvoiceResponse)
+async def unlink_contract(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if invoice.contract_id is not None:
+        invoice.contract_id = None
+        await dispatch_audit(
+            db,
+            correlation_id=invoice.correlation_id,
+            organization_id=invoice.organization_id,
+            actor_id=user.id,
+            action="invoice.contract_unlinked",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            details=None,
+        )
+        await refresh_warnings(db, invoice, org_settings=org.settings)
+    await db.flush()
     return InvoiceResponse.from_db(invoice)
 
 
