@@ -17,16 +17,23 @@
 	let loading = $state(false);
 	let ssoEnabled = $state(false);
 	let ssoProviderLabel = $state<string>('');
+	let samlEnabled = $state(false);
+	let samlProviderLabel = $state<string>('');
 
 	const PROVIDER_LABELS: Record<string, string> = {
 		okta: 'Okta',
 		entra: 'Microsoft',
 		oidc: 'SSO',
+		saml: 'SSO',
+		adfs: 'ADFS',
+		onelogin: 'OneLogin',
 	};
 
 	onMount(async () => {
 		const slug = getTenantSlug();
 		if (!slug) return;
+		// A tenant is configured for at most one protocol; query both and render
+		// whichever is enabled. Both are non-fatal — password login still works.
 		try {
 			const cfg = await api.get<SSOConfigPublic>(
 				`/api/auth/sso/config?slug=${encodeURIComponent(slug)}`
@@ -34,7 +41,16 @@
 			ssoEnabled = cfg.enabled;
 			ssoProviderLabel = PROVIDER_LABELS[cfg.provider ?? 'oidc'] ?? 'SSO';
 		} catch {
-			// Non-fatal — password login still works
+			// Non-fatal
+		}
+		try {
+			const cfg = await api.get<SSOConfigPublic>(
+				`/api/auth/saml/config?slug=${encodeURIComponent(slug)}`
+			);
+			samlEnabled = cfg.enabled;
+			samlProviderLabel = PROVIDER_LABELS[cfg.provider ?? 'saml'] ?? 'SSO';
+		} catch {
+			// Non-fatal
 		}
 	});
 
@@ -46,6 +62,15 @@
 		// because we need the browser to follow the IdP's redirects.
 		const base = PUBLIC_API_URL.replace(/\/+$/, '');
 		window.location.href = `${base}/api/auth/sso/authorize?slug=${encodeURIComponent(slug)}`;
+	}
+
+	function signInWithSAML() {
+		const slug = getTenantSlug();
+		if (!slug) return;
+		// Full page nav to the backend SAML login endpoint — it builds the
+		// AuthnRequest and 302s onward to the IdP (same reason as OIDC).
+		const base = PUBLIC_API_URL.replace(/\/+$/, '');
+		window.location.href = `${base}/api/auth/saml/login?slug=${encodeURIComponent(slug)}`;
 	}
 
 	async function handleSubmit(e: Event) {
@@ -93,10 +118,17 @@
 			{loading ? 'Signing in...' : 'Sign in'}
 		</button>
 
-		{#if ssoEnabled}
+		{#if ssoEnabled || samlEnabled}
 			<div class="divider"><span>or</span></div>
+		{/if}
+		{#if ssoEnabled}
 			<button type="button" class="sso-btn" onclick={signInWithSSO}>
 				Sign in with {ssoProviderLabel}
+			</button>
+		{/if}
+		{#if samlEnabled}
+			<button type="button" class="sso-btn" onclick={signInWithSAML}>
+				Sign in with {samlProviderLabel}
 			</button>
 		{/if}
 	</form>
