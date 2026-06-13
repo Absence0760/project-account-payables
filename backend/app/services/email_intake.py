@@ -62,6 +62,10 @@ _ALLOWED_CONTENT_TYPES = {
     "image/jpeg",
     "image/jpg",
     "image/tiff",
+    # Structured e-invoices: UBL 2.1 / standalone CII arrive as XML
+    # attachments; Factur-X / ZUGFeRD arrive as PDF (covered above).
+    "application/xml",
+    "text/xml",
 }
 
 
@@ -220,7 +224,7 @@ async def process_inbound_email(
     result.tenant_slug = org.slug
     attachments = list(_usable_attachments(payload.attachments, result))
     if not attachments:
-        result.error = "No usable PDF / image attachments"
+        result.error = "No usable PDF / image / XML attachments"
         return result
 
     # Open a short-lived tenant session to create the invoice rows.
@@ -273,13 +277,20 @@ def _usable_attachments(
     attachments: Iterable[InboundAttachment],
     result: IntakeResult,
 ) -> Iterable[InboundAttachment]:
+    from app.services.storage import _safe_filename
+
     for att in attachments:
+        # Sanitise the reported filename: it is echoed back to the email
+        # provider in the debug skip-list, never used as an S3 key, but we
+        # strip path separators / control chars so a crafted filename can't
+        # smuggle anything into a log or response body.
+        safe_name = _safe_filename(att.filename)
         ct = (att.content_type or "").lower()
         if ct not in _ALLOWED_CONTENT_TYPES:
-            result.skipped_attachments.append(f"{att.filename} ({ct or 'unknown'})")
+            result.skipped_attachments.append(f"{safe_name} ({ct or 'unknown'})")
             continue
         if not att.content:
-            result.skipped_attachments.append(f"{att.filename} (empty)")
+            result.skipped_attachments.append(f"{safe_name} (empty)")
             continue
         yield att
 

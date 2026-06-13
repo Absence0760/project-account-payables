@@ -14,6 +14,10 @@ ALLOWED_CONTENT_TYPES = {
     "image/png",
     "image/jpeg",
     "image/tiff",
+    # Structured e-invoices (UBL 2.1 / standalone CII) arrive as raw XML;
+    # Factur-X / ZUGFeRD arrive as PDF and are covered by application/pdf.
+    "application/xml",
+    "text/xml",
 }
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -64,7 +68,9 @@ async def upload_invoice_file(
 
     content_type = file.content_type or "application/octet-stream"
     if content_type not in ALLOWED_CONTENT_TYPES:
-        raise ValueError(f"File type '{content_type}' not allowed. Accepted: PDF, PNG, JPEG, TIFF")
+        raise ValueError(
+            f"File type '{content_type}' not allowed. Accepted: PDF, PNG, JPEG, TIFF, XML"
+        )
 
     file_key = f"{org_id}/{invoice_id}/{_safe_filename(file.filename)}"
 

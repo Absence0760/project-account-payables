@@ -23,6 +23,21 @@ from app.services.workflow_engine import (
 )
 
 
+def _detect_structured_format(file_bytes: bytes, file_key: str) -> str | None:
+    """Return the detected structured e-invoice format value, or None.
+
+    Pure, no network. When a file is a UBL / CII / Factur-X document we route
+    it to the deterministic ``einvoice`` adapter instead of the org's
+    configured vision adapter. A plain scanned PDF (or anything unstructured)
+    returns None and falls through to vision/OCR unchanged.
+    """
+    from app.services.e_invoice import DetectedFormat, detect_format
+
+    # filename ext (xml) helps the XML sniff when the mime is generic.
+    fmt = detect_format(file_bytes, mime_type=None, filename=file_key)
+    return None if fmt is DetectedFormat.NONE else fmt.value
+
+
 def _resolve_extraction_config(org_settings: dict | None) -> dict:
     """Build extraction adapter config based on org settings and program type."""
     extraction = (org_settings or {}).get("extraction", {})
@@ -64,6 +79,7 @@ async def run_extraction(
         # Import adapters to trigger registration
         import app.services.extraction_adapters.aws_textract  # noqa: F401
         import app.services.extraction_adapters.claude_vision  # noqa: F401
+        import app.services.extraction_adapters.einvoice_adapter  # noqa: F401
         import app.services.extraction_adapters.mock_adapter  # noqa: F401
         import app.services.extraction_adapters.ollama  # noqa: F401
         import app.services.extraction_adapters.openai_vision  # noqa: F401
@@ -90,6 +106,22 @@ async def run_extraction(
         s3_obj = s3.get_object(Bucket=app_settings.s3_bucket, Key=file_key)
         file_bytes = s3_obj["Body"].read()
         print(f"[extraction] File fetched: {len(file_bytes)} bytes")
+
+        # Structured e-invoice auto-detect (pure, no network). A UBL / CII /
+        # Factur-X file is routed to the deterministic `einvoice` adapter,
+        # overriding the org's configured vision adapter. Everything else
+        # (incl. plain scanned PDFs) falls through unchanged. This is the one
+        # detect site every ingress (upload + email-intake) reaches.
+        structured_format = _detect_structured_format(file_bytes, file_key)
+        extract_mime_type = "application/pdf"
+        if structured_format is not None:
+            config = {"program_type": "platform", "provider": "einvoice"}
+            # CII/UBL standalone XML vs Factur-X PDF — pass the real mime so
+            # the adapter's detect runs identically on the bytes.
+            extract_mime_type = (
+                "application/pdf" if structured_format == "facturx_pdf" else "application/xml"
+            )
+            print(f"[extraction] Structured e-invoice detected: {structured_format}")
 
         # RAG: embed the invoice text and fetch similar past extractions to
         # prime the adapter. No-op when rag_enabled=False, text layer empty,
@@ -141,7 +173,7 @@ async def run_extraction(
         result = await adapter.extract(
             file_bytes=file_bytes,
             file_key=file_key,
-            mime_type="application/pdf",
+            mime_type=extract_mime_type,
         )
 
         if not result.success:
