@@ -108,10 +108,14 @@ async def test_sync_writes_audit_row(realdb):
     mk = realdb.sessionmaker("a")
     async with mk() as s:
         rows = (
-            await s.execute(
-                select(AuditLog).where(AuditLog.action == "invoice.paid_via_erp_sync")
+            (
+                await s.execute(
+                    select(AuditLog).where(AuditLog.action == "invoice.paid_via_erp_sync")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(rows) == 1
     audit = rows[0]
     assert audit.entity_type == "invoice"

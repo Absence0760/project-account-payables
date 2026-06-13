@@ -239,9 +239,7 @@ async def test_signup_start_per_email_rate_limited_returns_429(realdb, cleanup_s
         for _ in range(4):
             slug = _unique_slug()
             slugs.append(slug)
-            last_resp = await c.post(
-                "/api/signup/start", json=_start_body(slug, email=victim)
-            )
+            last_resp = await c.post("/api/signup/start", json=_start_body(slug, email=victim))
     assert last_resp is not None
     assert last_resp.status_code == 429
 
@@ -286,9 +284,7 @@ async def test_slug_check_rate_limited_returns_429(realdb, monkeypatch):
     last_resp = None
     async with realdb.client(key="a", role=None) as c:
         for _ in range(4):
-            last_resp = await c.get(
-                "/api/signup/slug-check", params={"slug": _unique_slug()}
-            )
+            last_resp = await c.get("/api/signup/slug-check", params={"slug": _unique_slug()})
     assert last_resp is not None
     assert last_resp.status_code == 429
 

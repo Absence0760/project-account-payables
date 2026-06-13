@@ -179,9 +179,7 @@ async def test_create_happy_path_persists(realdb):
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
-        row = (
-            await s.execute(select(GLAccount).where(GLAccount.id == new_id))
-        ).scalar_one()
+        row = (await s.execute(select(GLAccount).where(GLAccount.id == new_id))).scalar_one()
     assert row.account_type == "revenue"
     assert row.parent_code == "4"
     assert row.is_active is True
@@ -250,11 +248,7 @@ async def test_sync_erp_populates_from_mock_adapter(realdb, _restore_settings):
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
-        count = (
-            await s.execute(
-                select(func.count()).select_from(GLAccount)
-            )
-        ).scalar()
+        count = (await s.execute(select(func.count()).select_from(GLAccount))).scalar()
     assert count == created
 
 
@@ -274,9 +268,7 @@ async def test_sync_erp_idempotent_second_run_no_new_rows(realdb, _restore_setti
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
-        count = (
-            await s.execute(select(func.count()).select_from(GLAccount))
-        ).scalar()
+        count = (await s.execute(select(func.count()).select_from(GLAccount))).scalar()
     assert count == first.json()["created"]
 
 

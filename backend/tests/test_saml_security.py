@@ -121,8 +121,15 @@ def _config(cert_b64: str, **overrides) -> ResolvedSAMLConfig:
 
 
 def _assertion_xml(
-    *, issuer=IDP, audience=SP, recipient=ACS, in_response_to=REQUEST_ID,
-    not_before=PAST, not_on_or_after=FUTURE, nameid="user@acme.com", email="user@acme.com",
+    *,
+    issuer=IDP,
+    audience=SP,
+    recipient=ACS,
+    in_response_to=REQUEST_ID,
+    not_before=PAST,
+    not_on_or_after=FUTURE,
+    nameid="user@acme.com",
+    email="user@acme.com",
     aid="_a1",
 ) -> str:
     return (
@@ -252,16 +259,12 @@ def test_wrong_destination_rejected(idp_keypair):
 
 
 def test_expired_assertion_rejected(idp_keypair):
-    auth = _run_acs(
-        _config(idp_keypair[2]), _signed_response(idp_keypair, not_on_or_after=PAST)
-    )
+    auth = _run_acs(_config(idp_keypair[2]), _signed_response(idp_keypair, not_on_or_after=PAST))
     assert not auth.is_authenticated()
 
 
 def test_not_yet_valid_assertion_rejected(idp_keypair):
-    auth = _run_acs(
-        _config(idp_keypair[2]), _signed_response(idp_keypair, not_before=FUTURE)
-    )
+    auth = _run_acs(_config(idp_keypair[2]), _signed_response(idp_keypair, not_before=FUTURE))
     assert not auth.is_authenticated()
 
 

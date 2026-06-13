@@ -93,9 +93,10 @@ def test_parse_providers_strips_and_drops_blanks():
 
 async def test_ship_once_no_adapters_short_circuits():
     """Empty provider list → no control-DB query, no work, empty result."""
-    with patch.object(
-        audit_log_shipper, "_build_adapters", return_value=[]
-    ) as build, patch.object(audit_log_shipper, "control_session_factory") as ctrl:
+    with (
+        patch.object(audit_log_shipper, "_build_adapters", return_value=[]) as build,
+        patch.object(audit_log_shipper, "control_session_factory") as ctrl,
+    ):
         result = await ship_once()
 
     assert isinstance(result, ShipResult)
@@ -109,13 +110,14 @@ async def test_ship_once_no_adapters_short_circuits():
 
 async def test_ship_once_iterates_every_tenant():
     adapters = [_CapturingAdapter()]
-    with patch.object(
-        audit_log_shipper,
-        "control_session_factory",
-        _fake_control_session(["ap_a", "ap_b", "ap_c"]),
-    ), patch.object(
-        audit_log_shipper, "_ship_tenant", AsyncMock(return_value=2)
-    ) as ship_tenant:
+    with (
+        patch.object(
+            audit_log_shipper,
+            "control_session_factory",
+            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+        ),
+        patch.object(audit_log_shipper, "_ship_tenant", AsyncMock(return_value=2)) as ship_tenant,
+    ):
         result = await ship_once(adapters=adapters)
 
     assert result.tenants_scanned == 3
@@ -128,12 +130,13 @@ async def test_ship_once_continues_after_one_tenant_fails():
     """One tenant DB raising must not halt the sweep — log + move on."""
     adapters = [_CapturingAdapter()]
     side_effects = [3, RuntimeError("connection refused"), 1]
-    with patch.object(
-        audit_log_shipper,
-        "control_session_factory",
-        _fake_control_session(["ap_a", "ap_b", "ap_c"]),
-    ), patch.object(
-        audit_log_shipper, "_ship_tenant", AsyncMock(side_effect=side_effects)
+    with (
+        patch.object(
+            audit_log_shipper,
+            "control_session_factory",
+            _fake_control_session(["ap_a", "ap_b", "ap_c"]),
+        ),
+        patch.object(audit_log_shipper, "_ship_tenant", AsyncMock(side_effect=side_effects)),
     ):
         result = await ship_once(adapters=adapters)
 
@@ -145,15 +148,15 @@ async def test_ship_once_continues_after_one_tenant_fails():
 async def test_ship_once_builds_adapters_from_settings_when_none_passed():
     """adapters=None → _build_adapters() is consulted (settings-driven)."""
     built = [_CapturingAdapter()]
-    with patch.object(
-        audit_log_shipper, "_build_adapters", return_value=built
-    ) as build, patch.object(
-        audit_log_shipper,
-        "control_session_factory",
-        _fake_control_session(["ap_a"]),
-    ), patch.object(
-        audit_log_shipper, "_ship_tenant", AsyncMock(return_value=0)
-    ) as ship_tenant:
+    with (
+        patch.object(audit_log_shipper, "_build_adapters", return_value=built) as build,
+        patch.object(
+            audit_log_shipper,
+            "control_session_factory",
+            _fake_control_session(["ap_a"]),
+        ),
+        patch.object(audit_log_shipper, "_ship_tenant", AsyncMock(return_value=0)) as ship_tenant,
+    ):
         result = await ship_once()
 
     build.assert_called_once()
@@ -164,9 +167,7 @@ async def test_ship_once_builds_adapters_from_settings_when_none_passed():
 
 
 async def test_run_shipper_loop_cancels_cleanly():
-    with patch.object(
-        audit_log_shipper, "ship_once", AsyncMock(return_value=SimpleNamespace())
-    ):
+    with patch.object(audit_log_shipper, "ship_once", AsyncMock(return_value=SimpleNamespace())):
         task = asyncio.create_task(audit_log_shipper.run_shipper_loop())
         await asyncio.sleep(0.05)
         task.cancel()
@@ -185,8 +186,9 @@ async def test_run_shipper_loop_survives_a_failed_sweep():
             raise RuntimeError("boom")
         return SimpleNamespace()
 
-    with patch.object(audit_log_shipper, "ship_once", flaky), patch.object(
-        audit_log_shipper.settings, "audit_shipping_interval_seconds", 0.01
+    with (
+        patch.object(audit_log_shipper, "ship_once", flaky),
+        patch.object(audit_log_shipper.settings, "audit_shipping_interval_seconds", 0.01),
     ):
         task = asyncio.create_task(audit_log_shipper.run_shipper_loop())
         await asyncio.sleep(0.1)
@@ -238,9 +240,8 @@ async def _shipped_at_map(realdb, key: str, ids: list[uuid.UUID]) -> dict[uuid.U
     mk = realdb.sessionmaker(key)
     async with mk() as s:
         rows = (
-            (await s.execute(select(AuditLog.id, AuditLog.shipped_at).where(AuditLog.id.in_(ids))))
-            .all()
-        )
+            await s.execute(select(AuditLog.id, AuditLog.shipped_at).where(AuditLog.id.in_(ids)))
+        ).all()
     return {rid: shipped for rid, shipped in rows}
 
 

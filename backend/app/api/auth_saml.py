@@ -447,9 +447,7 @@ async def saml_metadata(slug: str, db: AsyncSession = Depends(get_control_db)):
     config = resolve_saml_config(org.settings, slug)
     if config is None:
         raise HTTPException(status_code=404, detail="SAML SSO is not configured for this tenant.")
-    saml_settings = OneLogin_Saml2_Settings(
-        _build_saml_settings(config), sp_validation_only=True
-    )
+    saml_settings = OneLogin_Saml2_Settings(_build_saml_settings(config), sp_validation_only=True)
     metadata = saml_settings.get_sp_metadata()
     errors = saml_settings.validate_metadata(metadata)
     if errors:

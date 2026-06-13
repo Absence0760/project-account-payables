@@ -284,9 +284,7 @@ async def test_sync_erp_no_config_returns_400(realdb):
 
 async def test_sync_erp_rbac_forbidden_roles(realdb):
     # Even with ERP configured, ap_clerk and cfo are not permitted.
-    await _set_org_erp(
-        realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"}
-    )
+    await _set_org_erp(realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"})
     for role in ("ap_clerk", "cfo"):
         async with realdb.client(key="a", role=role) as c:
             resp = await c.post("/api/purchase-orders/sync-erp")
@@ -322,16 +320,10 @@ async def test_sync_erp_creates_pos_and_is_idempotent(realdb):
 
     # The matching-name PO got its vendor_id linked.
     async with mk() as s:
-        po_count = (
-            await s.execute(select(func.count()).select_from(PurchaseOrder))
-        ).scalar_one()
+        po_count = (await s.execute(select(func.count()).select_from(PurchaseOrder))).scalar_one()
         assert po_count == created_first
         linked = (
-            await s.execute(
-                select(PurchaseOrder).where(
-                    PurchaseOrder.po_number == "PO-2024-200"
-                )
-            )
+            await s.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-200"))
         ).scalar_one_or_none()
         assert linked is not None
         assert linked.vendor_id is not None
@@ -339,9 +331,7 @@ async def test_sync_erp_creates_pos_and_is_idempotent(realdb):
 
 async def test_sync_erp_isolated_per_tenant(realdb):
     """A sync against tenant A leaves tenant B's PO table empty."""
-    await _set_org_erp(
-        realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"}
-    )
+    await _set_org_erp(realdb.info("a").org_id, {"type": "mock", "integration_method": "direct"})
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.post("/api/purchase-orders/sync-erp")
     assert resp.status_code == 200
@@ -349,7 +339,5 @@ async def test_sync_erp_isolated_per_tenant(realdb):
 
     mk_b = realdb.sessionmaker("b")
     async with mk_b() as s:
-        count_b = (
-            await s.execute(select(func.count()).select_from(PurchaseOrder))
-        ).scalar_one()
+        count_b = (await s.execute(select(func.count()).select_from(PurchaseOrder))).scalar_one()
     assert count_b == 0

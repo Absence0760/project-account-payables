@@ -97,9 +97,7 @@ async def test_approved_notifies_uploader(realdb):
 
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
-        await transition_invoice(
-            s, inv, InvoiceStatus.approved, action_name="invoice.approved"
-        )
+        await transition_invoice(s, inv, InvoiceStatus.approved, action_name="invoice.approved")
         await s.commit()
 
     rows = await _notifications_for(mk, uploader, EVENT_INVOICE_APPROVED)
@@ -136,16 +134,12 @@ async def test_in_app_false_suppresses_row(realdb):
     ctrl_mk = realdb.control_sessionmaker()
     org_id = realdb.info("a").org_id
     uploader = realdb.info("a").users["ap_clerk"]
-    await _set_prefs(
-        ctrl_mk, uploader, {"invoice_approved": {"email": True, "in_app": False}}
-    )
+    await _set_prefs(ctrl_mk, uploader, {"invoice_approved": {"email": True, "in_app": False}})
 
     inv_id = await _add_invoice(mk, org_id, uploaded_by_id=uploader)
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
-        await transition_invoice(
-            s, inv, InvoiceStatus.approved, action_name="invoice.approved"
-        )
+        await transition_invoice(s, inv, InvoiceStatus.approved, action_name="invoice.approved")
         await s.commit()
 
     assert await _notifications_for(mk, uploader, EVENT_INVOICE_APPROVED) == []
@@ -166,24 +160,18 @@ async def test_email_false_suppresses_send_but_keeps_in_app(realdb, monkeypatch)
     )
     # get_email_adapter is imported lazily inside _send_email_best_effort, so
     # patch the source module the import resolves to.
-    monkeypatch.setattr(
-        "app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter()
-    )
+    monkeypatch.setattr("app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter())
 
     mk = realdb.sessionmaker("a")
     ctrl_mk = realdb.control_sessionmaker()
     org_id = realdb.info("a").org_id
     uploader = realdb.info("a").users["ap_clerk"]
-    await _set_prefs(
-        ctrl_mk, uploader, {"invoice_approved": {"email": False, "in_app": True}}
-    )
+    await _set_prefs(ctrl_mk, uploader, {"invoice_approved": {"email": False, "in_app": True}})
 
     inv_id = await _add_invoice(mk, org_id, uploaded_by_id=uploader)
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
-        await transition_invoice(
-            s, inv, InvoiceStatus.approved, action_name="invoice.approved"
-        )
+        await transition_invoice(s, inv, InvoiceStatus.approved, action_name="invoice.approved")
         await s.commit()
 
     assert len(await _notifications_for(mk, uploader, EVENT_INVOICE_APPROVED)) == 1
@@ -196,9 +184,7 @@ async def test_failing_email_does_not_break_transition_or_audit(realdb, monkeypa
         async def send(self, message):
             raise RuntimeError("smtp down")
 
-    monkeypatch.setattr(
-        "app.services.email_adapters.get_email_adapter", lambda: _BoomAdapter()
-    )
+    monkeypatch.setattr("app.services.email_adapters.get_email_adapter", lambda: _BoomAdapter())
 
     mk = realdb.sessionmaker("a")
     ctrl_mk = realdb.control_sessionmaker()
@@ -209,9 +195,7 @@ async def test_failing_email_does_not_break_transition_or_audit(realdb, monkeypa
     inv_id = await _add_invoice(mk, org_id, uploaded_by_id=uploader)
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
-        await transition_invoice(
-            s, inv, InvoiceStatus.approved, action_name="invoice.approved"
-        )
+        await transition_invoice(s, inv, InvoiceStatus.approved, action_name="invoice.approved")
         await s.commit()
 
     # Transition committed despite the email blowing up.
@@ -245,9 +229,7 @@ async def test_kill_switch_suppresses_all(realdb, monkeypatch):
     inv_id = await _add_invoice(mk, org_id, uploaded_by_id=uploader)
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
-        await transition_invoice(
-            s, inv, InvoiceStatus.approved, action_name="invoice.approved"
-        )
+        await transition_invoice(s, inv, InvoiceStatus.approved, action_name="invoice.approved")
         await s.commit()
 
     assert await _notifications_for(mk, uploader, EVENT_INVOICE_APPROVED) == []

@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.models.vendor import Vendor
 from app.services.vendor_sync import sync_vendors_from_erp
 
-
 # ---------------------------------------------------------------------------
 # Service-layer (direct DB) cases
 # ---------------------------------------------------------------------------
@@ -96,9 +95,7 @@ async def test_sync_updates_changed_fields(realdb):
 
     assert result == {"created": 0, "updated": 1, "unchanged": 0}
     async with mk() as s:
-        v = (
-            await s.execute(select(Vendor).where(Vendor.erp_vendor_id == "ERP-7"))
-        ).scalar_one()
+        v = (await s.execute(select(Vendor).where(Vendor.erp_vendor_id == "ERP-7"))).scalar_one()
     assert v.name == "New Name"
     assert v.code == "NEW"
 
@@ -157,9 +154,7 @@ async def test_sync_does_not_null_out_existing_fields(realdb):
 
     assert result == {"created": 0, "updated": 0, "unchanged": 1}
     async with mk() as s:
-        v = (
-            await s.execute(select(Vendor).where(Vendor.erp_vendor_id == "ERP-K"))
-        ).scalar_one()
+        v = (await s.execute(select(Vendor).where(Vendor.erp_vendor_id == "ERP-K"))).scalar_one()
     assert v.email == "keep@vendor.test"
 
 
@@ -204,9 +199,7 @@ async def test_sync_tenant_isolation(realdb):
     org_a = realdb.info("a").org_id
     mk_a = realdb.sessionmaker("a")
     async with mk_a() as s:
-        await sync_vendors_from_erp(
-            s, org_a, [{"erp_vendor_id": "ERP-ISO", "name": "Isolated Co"}]
-        )
+        await sync_vendors_from_erp(s, org_a, [{"erp_vendor_id": "ERP-ISO", "name": "Isolated Co"}])
         await s.commit()
 
     mk_b = realdb.sessionmaker("b")
@@ -242,9 +235,7 @@ async def test_sync_filters_name_match_by_org(realdb):
     assert result == {"created": 1, "updated": 0, "unchanged": 0}
     async with mk() as s:
         mine = (
-            await s.execute(
-                select(Vendor).where(Vendor.organization_id == org_id)
-            )
+            await s.execute(select(Vendor).where(Vendor.organization_id == org_id))
         ).scalar_one()
     assert mine.erp_vendor_id == "ERP-X"
 

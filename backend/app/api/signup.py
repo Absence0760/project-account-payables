@@ -228,9 +228,7 @@ async def signup_complete(
     #    consumed-check and double-provision the tenant. The loser blocks until
     #    the winner commits, then sees consumed_at set below.
     result = await db.execute(
-        select(EmailVerification)
-        .where(EmailVerification.token == body.token)
-        .with_for_update()
+        select(EmailVerification).where(EmailVerification.token == body.token).with_for_update()
     )
     verification = result.scalar_one_or_none()
 

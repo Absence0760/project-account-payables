@@ -391,6 +391,7 @@ async def delete_user(
 # Group state is JSONB on settings.sso; membership drives role reconciliation.
 # ---------------------------------------------------------------------------
 
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -406,9 +407,7 @@ async def _emails_for(db: AsyncSession, org_id, ids) -> dict[str, str]:
     if not uuids:
         return {}
     rows = await db.execute(
-        select(User.id, User.email).where(
-            User.organization_id == org_id, User.id.in_(uuids)
-        )
+        select(User.id, User.email).where(User.organization_id == org_id, User.id.in_(uuids))
     )
     return {str(uid): email for uid, email in rows.all()}
 
@@ -430,8 +429,7 @@ async def _valid_member_ids(db: AsyncSession, org_id, ids) -> list[str]:
 def _group_to_scim(group_id: str, data: dict, request: Request, emails: dict) -> SCIMGroup:
     base = f"{str(request.base_url).rstrip('/')}{settings.scim_url_path}/Groups/{group_id}"
     members = [
-        SCIMGroupMember(value=uid, display=emails.get(uid))
-        for uid in (data.get("members") or [])
+        SCIMGroupMember(value=uid, display=emails.get(uid)) for uid in (data.get("members") or [])
     ]
     return SCIMGroup(
         id=group_id,

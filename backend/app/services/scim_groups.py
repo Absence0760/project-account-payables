@@ -239,9 +239,7 @@ async def reconcile_user_roles(
             )
 
 
-async def reconcile_members(
-    db: AsyncSession, org: Organization, member_ids: set[str]
-) -> None:
+async def reconcile_members(db: AsyncSession, org: Organization, member_ids: set[str]) -> None:
     """Reconcile roles for a set of affected users after a group change.
     Reads the (already-persisted) groups + map off org.settings."""
     groups = get_groups(org.settings)

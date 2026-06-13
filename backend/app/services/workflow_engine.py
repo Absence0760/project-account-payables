@@ -200,9 +200,7 @@ async def transition_invoice(
             details=details,
         )
     except Exception:  # noqa: BLE001
-        _log.exception(
-            "notification hook failed for invoice transition to %s", target_status.value
-        )
+        _log.exception("notification hook failed for invoice transition to %s", target_status.value)
     return invoice
 
 
@@ -252,9 +250,7 @@ async def _maybe_notify_transition(
         if uploaded_by_id:
             recipients.append(uploaded_by_id)
         try:
-            recipients.extend(
-                await resolve_role_user_ids(invoice.organization_id, "ap_manager")
-            )
+            recipients.extend(await resolve_role_user_ids(invoice.organization_id, "ap_manager"))
         except Exception:  # noqa: BLE001 — role lookup must not break the transition
             pass
 

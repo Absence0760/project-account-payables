@@ -180,11 +180,7 @@ async def _seed_po_mismatch(
             s.add(gr)
             await s.commit()
             await s.refresh(gr)
-            s.add(
-                GRLineItem(
-                    gr_id=gr.id, description="Widgets", quantity_received=Decimal("4")
-                )
-            )
+            s.add(GRLineItem(gr_id=gr.id, description="Widgets", quantity_received=Decimal("4")))
             await s.commit()
 
         inv = Invoice(
