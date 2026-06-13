@@ -8,6 +8,7 @@ See ``backend/docs/contracts.md``.
 """
 
 import uuid
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
@@ -30,10 +31,12 @@ from app.models.contract import (
     ContractLineItem,
     ContractStatus,
 )
+from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.schemas.contract import (
     ContractCreate,
+    ContractCreatePORequest,
     ContractListResponse,
     ContractRenew,
     ContractResponse,
@@ -527,3 +530,94 @@ async def renew_contract(
     vendor_name = await _vendor_name(db, contract.vendor_id)
     spend = await compute_spend_summary(db, contract)
     return _to_response(contract, vendor_name=vendor_name, spend=spend)
+
+
+@router.post("/{contract_id}/create-po", status_code=status.HTTP_201_CREATED)
+async def create_po_from_contract(
+    contract_id: uuid.UUID,
+    body: ContractCreatePORequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Spin a Purchase Order out of a contract, auto-populated from its terms.
+
+    Vendor, line items, and total are copied from the contract. ``po_number``
+    defaults to ``PO-<contract_number>-<short>`` and ``total`` to the sum of
+    the contract's line-item totals (falling back to ``total_value``). Only
+    draft / active contracts can spawn a PO.
+    """
+    contract = await _get_contract_or_404(db, contract_id)
+    if contract.status not in (ContractStatus.draft, ContractStatus.active):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot create a PO from a contract in '{contract.status}' status",
+        )
+
+    line_total = sum((li.total or Decimal(0)) for li in contract.line_items)
+    if body.total is not None:
+        total = body.total
+    elif line_total > 0:
+        total = line_total
+    else:
+        total = contract.total_value or Decimal(0)
+
+    po_number = body.po_number or f"PO-{contract.contract_number}-{uuid.uuid4().hex[:6]}"
+    po = PurchaseOrder(
+        po_number=po_number,
+        vendor_id=contract.vendor_id,
+        total=total,
+        status="open",
+        organization_id=org_id,
+        entity_id=contract.entity_id,
+    )
+    for li in sorted(contract.line_items, key=lambda x: x.line_number or 0):
+        po.line_items.append(
+            POLineItem(
+                description=li.description,
+                quantity=li.quantity,
+                unit_price=li.unit_price,
+                total=li.total,
+            )
+        )
+    db.add(po)
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="contract.po_created",
+        entity_type="contract",
+        entity_id=contract.id,
+        details={"po_id": str(po.id), "po_number": po_number},
+    )
+    await db.commit()
+
+    po = (
+        await db.execute(
+            select(PurchaseOrder)
+            .where(PurchaseOrder.id == po.id)
+            .options(selectinload(PurchaseOrder.line_items))
+        )
+    ).scalar_one()
+    return {
+        "id": str(po.id),
+        "po_number": po.po_number,
+        "vendor_id": str(po.vendor_id) if po.vendor_id else None,
+        "total": float(po.total),
+        "status": po.status,
+        "contract_id": str(contract.id),
+        "line_items": [
+            {
+                "id": str(li.id),
+                "description": li.description,
+                "quantity": float(li.quantity) if li.quantity is not None else None,
+                "unit_price": float(li.unit_price) if li.unit_price is not None else None,
+                "total": float(li.total) if li.total is not None else None,
+            }
+            for li in po.line_items
+        ],
+        "created_at": po.created_at.isoformat() if po.created_at else "",
+    }

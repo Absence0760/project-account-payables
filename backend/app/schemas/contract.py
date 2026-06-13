@@ -80,6 +80,17 @@ class ContractRenew(BaseModel):
     spend_limit: Decimal | None = None
 
 
+class ContractCreatePORequest(BaseModel):
+    """Optional overrides when spinning a PO out of a contract.
+
+    Both default to derived values: ``po_number`` is generated from the
+    contract number, ``total`` from the contract's line-item totals (falling
+    back to ``total_value``)."""
+
+    po_number: str | None = Field(default=None, max_length=100)
+    total: Decimal | None = None
+
+
 class ContractSpendSummary(BaseModel):
     """Spend rolled up against the contract from its linked invoices."""
 

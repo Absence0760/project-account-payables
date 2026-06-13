@@ -7,6 +7,7 @@ spend-to-contract rollup (``services.contract_spend``), RBAC, tenant
 isolation, audit rows, and exact ``Numeric`` money round-trips.
 """
 
+import uuid
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -480,3 +481,77 @@ async def test_link_unknown_contract_404(realdb):
             json={"contract_id": str(uuid.uuid4())},
         )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# contract-based PO creation
+# ---------------------------------------------------------------------------
+
+
+async def test_create_po_from_contract(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        contract_id = (
+            await _create_contract(
+                c,
+                vendor_id,
+                line_items=[
+                    {
+                        "description": "Licenses",
+                        "quantity": "10",
+                        "unit_price": "100.00",
+                        "total": "1000.00",
+                    },
+                    {
+                        "description": "Onboarding",
+                        "quantity": "1",
+                        "unit_price": "2500.00",
+                        "total": "2500.00",
+                    },
+                ],
+            )
+        ).json()["id"]
+        await c.post(f"/api/contracts/{contract_id}/activate")
+
+        resp = await c.post(f"/api/contracts/{contract_id}/create-po", json={})
+    assert resp.status_code == 201, resp.text
+    po = resp.json()
+    assert po["vendor_id"] == vendor_id
+    # Total auto-derived from line-item totals: 1000 + 2500.
+    assert po["total"] == 3500.0
+    assert len(po["line_items"]) == 2
+    assert po["contract_id"] == contract_id
+
+    # PO persisted + audit row written.
+    async with mk() as s:
+        from app.models.procurement import PurchaseOrder
+
+        stored = (
+            await s.execute(select(PurchaseOrder).where(PurchaseOrder.id == uuid.UUID(po["id"])))
+        ).scalar_one()
+        assert stored.total == Decimal("3500.00")
+        actions = (
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.action == "contract.po_created")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(actions) >= 1
+
+
+async def test_create_po_from_cancelled_contract_409(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        contract_id = (await _create_contract(c, vendor_id)).json()["id"]
+        await c.post(f"/api/contracts/{contract_id}/cancel")
+        resp = await c.post(f"/api/contracts/{contract_id}/create-po", json={})
+    assert resp.status_code == 409
