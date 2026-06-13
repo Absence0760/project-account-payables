@@ -26,12 +26,18 @@ POST /api/email-intake/inbound/{provider}
  process_inbound_email(ctrl_db, payload)
      │
      ├── Open tenant session
-     ├── For each PDF / image attachment:
+     ├── For each PDF / image / XML attachment:
      │     ├── Create Invoice(status=pending, uploaded_by_id=NULL)
      │     ├── Upload file to S3
      │     └── Commit
      └── Dispatch extraction (one job per invoice)
 ```
+
+**Accepted attachment types:** `application/pdf`, `image/png`, `image/jpeg`,
+`image/tiff`, and — for structured e-invoices — `application/xml` / `text/xml`.
+A UBL 2.1 or UN/CEFACT CII XML attachment is parsed deterministically by the
+`einvoice` adapter (Factur-X / ZUGFeRD arrive as PDF and are covered by
+`application/pdf`). See `backend/docs/e-invoicing.md`.
 
 ## Endpoints
 
@@ -198,4 +204,4 @@ flow through the normal extraction pipeline.
 | 400 Could not parse provider payload | Adapter received a shape it didn't expect. Check raw body in provider logs. |
 | 200 with `"error": "Unknown or disabled intake address"` | Token doesn't match any tenant, or tenant's `email_intake.enabled` is false. |
 | Invoice created but stays in `pending` | Extraction worker not running / tenant ERP config broken. Same as any other upload failure — check `extraction_reaper` logs. |
-| "No usable PDF / image attachments" | Vendor attached `.docx` or `.zip`. Tell the vendor to send PDF. |
+| "No usable PDF / image / XML attachments" | Vendor attached `.docx` or `.zip`. Tell the vendor to send PDF, an image, or a structured e-invoice XML. |

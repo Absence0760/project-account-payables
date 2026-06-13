@@ -605,20 +605,20 @@ Enhance the existing audit trail to meet SOX (Sarbanes-Oxley) compliance require
 ---
 
 ### Automated E-Invoicing
-**Status:** Planned
+**Status:** Inbound shipped (UBL 2.1 + Factur-X/ZUGFeRD CII, auto-detect, schema validation) — outbound + Peppol network + country formats remaining.
 
-Support structured electronic invoice formats required in the EU, Australia, and other regions.
+Support structured electronic invoice formats required in the EU, Australia, and other regions. Inbound parsing is pure/local-first (no network, no SaaS key) and on by default; see `backend/docs/e-invoicing.md`.
 
-- [ ] Peppol BIS Billing 3.0 — receive and send via Peppol network
-- [ ] Factur-X / ZUGFeRD — hybrid PDF/XML format (EU standard)
-- [ ] UBL (Universal Business Language) 2.1 — parse and generate
+- [x] Factur-X / ZUGFeRD — hybrid PDF/XML format (EU standard): embedded CII XML extracted from PDF/A-3 and parsed
+- [x] UBL (Universal Business Language) 2.1 — **parse** (PEPPOL BIS Billing 3.0 payload). Generate is the next slice (the `EInvoiceDocument` model is already bidirectional)
+- [x] Auto-detect format on upload — structured data parsed instead of OCR (`extraction.run_extraction` choke point routes to the `einvoice` adapter at confidence 1.0)
+- [x] Validate against schema — malformed e-invoices rejected with clear field-level errors (EN 16931 structural subset)
+- [ ] UBL 2.1 / CII **generate** (outbound) — reuse `EInvoiceDocument`; supplier-portal responses + PO flips
+- [ ] Peppol BIS Billing 3.0 — send via Peppol network (receive payload already parses)
 - [ ] FatturaPA — Italian e-invoicing format
 - [ ] CFDI 4.0 — Mexican e-invoicing (SAT stamping, UUID, PAC integration)
 - [ ] NFe / NFS-e — Brazilian electronic invoicing (state-level SEFAZ integration)
 - [ ] DIAN — Colombian e-invoicing
-- [ ] Auto-detect format on upload — parse structured data instead of OCR
-- [ ] Validate against schema — reject malformed e-invoices with clear errors
-- [ ] Generate compliant e-invoices for outbound (supplier portal responses)
 - [ ] Access point / PEPPOL AS4 gateway integration
 - [ ] Country-specific tax validation (VAT, GST, IVA)
 

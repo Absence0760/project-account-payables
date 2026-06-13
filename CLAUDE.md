@@ -159,7 +159,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 
 ### Adapter patterns (pluggable providers)
 
-- **Extraction** (`services/extraction_adapters/`): claude_vision, openai_vision, aws_textract, ollama, mock. Registry via `@register_extraction_adapter` decorator.
+- **Extraction** (`services/extraction_adapters/`): claude_vision, openai_vision, aws_textract, ollama, einvoice, mock. Registry via `@register_extraction_adapter` decorator. `einvoice` is auto-selected (not config-driven) when an ingested file is a structured e-invoice (UBL 2.1 / Factur-X / ZUGFeRD) — see `services/e_invoice/` + `backend/docs/e-invoicing.md`.
 - **ERP** (`services/erp_adapters/`): merge_dev (unified), dynamics_365_bc, netsuite, mock. Registry via `@register_adapter` decorator. Config `integration_method: "merge_dev"|"direct"` selects path.
 - **Cards** (`services/card_adapters/`): lithic, nium, mock. Both have sandbox modes.
 - **Payments** (`services/payment_adapters/`): modern_treasury, stripe_treasury, increase, column, dwolla (ACH only), checkeeper (check printing), mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.

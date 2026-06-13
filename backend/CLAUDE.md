@@ -11,6 +11,7 @@ Deep-dive docs live in `backend/docs/`:
 | REST API reference | `docs/api-reference.md` |
 | PostgreSQL schema + migrations | `docs/database.md` |
 | AI extraction adapters | `docs/ai-extraction.md` |
+| Inbound structured e-invoicing (UBL / Factur-X / ZUGFeRD) | `docs/e-invoicing.md` |
 | Conversational AP assistant | `docs/conversational-assistant.md` |
 | ERP adapters (Merge.dev + direct) | `docs/erp-integration.md` |
 | Workflow state machine | `docs/workflow-design.md` |
@@ -226,11 +227,13 @@ class MyAdapter(ExtractionAdapter):
     async def test_connection(self) -> bool: ...
 ```
 
-Registered: `claude_vision`, `openai_vision`, `aws_textract`, `ollama`, `mock`
+Registered: `claude_vision`, `openai_vision`, `aws_textract`, `ollama`, `einvoice`, `mock`
 
 `ExtractionResult` contains per-field `ExtractedField(value, confidence)` + `line_items` + `overall_confidence`.
 
 **Two program types**: `platform` (app-level Claude Vision key, usage tracked) vs `byok` (customer provides own API key).
+
+**Structured e-invoices** (`einvoice`): the `app/services/e_invoice/` package parses UBL 2.1 / UN-CEFACT CII / Factur-X·ZUGFeRD (embedded CII in a PDF/A-3) into a normalized `EInvoiceDocument` — pure, local, XXE-hardened lxml, no LLM/network. Routing is **not** config-driven: `extraction.run_extraction` is the single choke point both upload and email-intake reach, and it calls `_detect_structured_format(file_bytes, file_key)` right after the S3 fetch — a structured file overrides `config.provider` to `einvoice` and passes the real mime; everything else falls through to the configured vision/mock adapter. Confidence 1.0 on every present field → auto-approve; malformed → field-named `EInvoiceValidationError` (no PII). See `docs/e-invoicing.md`.
 
 ### ERP adapters (`services/erp_adapters/`)
 

@@ -17,7 +17,38 @@ When an invoice is uploaded, the system extracts all structured data (vendor, am
 | **GPT-4V** (OpenAI) | BYOK only | Text extraction + image fallback | Customers already on OpenAI |
 | **AWS Textract** | BYOK only | Native | Customers on AWS with AnalyzeExpense |
 | **Ollama** (Local) | BYOK only | Text extraction + image fallback | Development, privacy, on-premise |
+| **einvoice** | Auto (structured) | Factur-X/ZUGFeRD embedded XML | UBL 2.1 / CII machine-readable invoices — deterministic, no LLM |
 | **Mock** | Development | N/A | Testing without API calls |
+
+The `einvoice` adapter is not an AI provider — it is selected automatically (not
+via org config) when an ingested file is a structured e-invoice. See the next
+section.
+
+## Inbound structured e-invoicing (UBL / Factur-X / ZUGFeRD)
+
+When an ingested file is a **structured** e-invoice — UBL 2.1 (PEPPOL BIS
+Billing 3.0), standalone UN/CEFACT CII, or a Factur-X / ZUGFeRD hybrid PDF/A-3 —
+it is parsed deterministically instead of going through a vision model.
+
+- **Auto-detect on ingest.** `extraction.run_extraction` calls
+  `_detect_structured_format(file_bytes, file_key)` right after the S3 fetch
+  (the single choke point both upload and email intake reach). A structured file
+  overrides the org's configured adapter with the `einvoice` adapter and passes
+  the real mime (XML vs PDF) into `adapter.extract`. A plain scanned PDF (no
+  embedded XML) falls through to the configured vision/OCR adapter unchanged.
+- **Confidence 1.0 → auto-approve.** A deterministic parse emits every present
+  field at confidence 1.0, which naturally trips the extraction step's
+  `auto_approve_threshold` (default 0.95) — the desired behavior for trusted
+  machine-readable invoices, with no special-casing.
+- **Malformed → rejected with field errors**, not silently degraded to vision:
+  `parse_e_invoice` raises `EInvoiceValidationError`; the adapter returns
+  `success=False` with a field-named error string; `run_extraction`'s failure
+  path records an `extraction_failed` exception.
+- **Pure / local / no-network.** Detection + parsing are pure functions (lxml,
+  XXE-hardened; PyMuPDF for the embedded XML) — no SaaS key, on by default.
+
+Full reference (package layout, field maps, validation rules, XXE-hardening
+rationale, the outbound-generation hook): `backend/docs/e-invoicing.md`.
 
 ## PDF Handling: Smart Text vs Vision
 
