@@ -30,9 +30,32 @@ logged (PII-free) and swallowed — the transition/assignment always completes.
 | `invoice_approved` | `transition_invoice → approved` | invoice uploader (`uploaded_by_id`) |
 | `invoice_rejected` | `transition_invoice → rejected` | invoice uploader |
 | `invoice_paid` | `transition_invoice → paid` (payment webhook / ERP webhook / ERP-sync) | invoice uploader + every `ap_manager` in the org |
+| `chat_message` | supplier posts on the portal → every `ap_manager`; AP posts with @mentions → the mentioned AP users (poster excluded) | see below |
 
 `ap_manager` recipients are resolved against the control plane via
 `notification_dispatch.resolve_role_user_ids(org_id, "ap_manager")`.
+
+### `chat_message` (supplier chat)
+
+The embedded supplier-chat feature fans out via `services/supplier_chat.py`
+(not the `transition_invoice` chokepoint — chat posts don't change invoice
+status):
+
+- **Supplier posts (portal)** → `notify_supplier_post` notifies every
+  `ap_manager` so the AP team learns of the reply (`actor_id=None`).
+- **AP posts with @mentions** → `notify_ap_mentions` notifies the mentioned
+  control-plane `users.id`, **excluding the posting AP user**.
+- **AP posts (any)** → the *supplier* gets a **direct portal-link email**
+  (`notify_supplier_of_ap_message`), not an in-app/`notify_event` notification —
+  `notify_event` only ever reaches control-plane Users, never a VendorUser. The
+  email carries `{base}/portal/invoices/{id}/chat`, is best-effort, PII-free
+  (invoice number + vendor/org name only), and is gated on
+  `notifications_enabled` explicitly.
+
+The `chat_message` render branch emits only `"New message on {ref}"` plus an
+optional short author label (`InvoiceContext.note` — `"from supplier"` /
+`"you were mentioned"`). **Never** the raw message body. See
+[supplier-chat.md](supplier-chat.md).
 
 ## Two effects per recipient, each preference-gated
 
@@ -57,7 +80,8 @@ User-global, stored on the control-plane `users.notification_prefs` JSONB:
   "invoice_assigned": { "email": true, "in_app": true },
   "invoice_approved": { "email": true, "in_app": true },
   "invoice_rejected": { "email": true, "in_app": true },
-  "invoice_paid":     { "email": true, "in_app": true }
+  "invoice_paid":     { "email": true, "in_app": true },
+  "chat_message":     { "email": true, "in_app": true }
 }
 ```
 

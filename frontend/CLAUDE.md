@@ -33,7 +33,7 @@ pnpm check            # typecheck
 | `/login/sso-callback` | `routes/login/sso-callback/+page.svelte` | `POST /api/auth/sso/callback` — exchanges OIDC code+state for our JWT after IdP redirect |
 | `/profile` | `routes/profile/+page.svelte` | `POST /api/auth/mfa/enroll`, `POST /api/auth/mfa/enroll/verify`, `POST /api/auth/mfa/disable` — manage two-factor |
 | `/change-password` | `routes/change-password/+page.svelte` | `POST /api/auth/change-password` |
-| `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `GET /api/invoices/counts` (status-chip tallies), `GET /api/invoices/{id}` (`?id=` deep-link opens the detail modal), `POST /api/invoices/upload` (supports multi-file; frontend batches 5 at a time via `Promise.allSettled`), `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, `GET /api/invoices/{id}/summary` (audit-log summary; `POST .../summary/regenerate` for admins/managers), bulk ops |
+| `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `GET /api/invoices/counts` (status-chip tallies), `GET /api/invoices/{id}` (`?id=` deep-link opens the detail modal), `POST /api/invoices/upload` (supports multi-file; frontend batches 5 at a time via `Promise.allSettled`), `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, `GET /api/invoices/{id}/summary` (audit-log summary; `POST .../summary/regenerate` for admins/managers), supplier chat — `GET/POST /api/invoices/{id}/chat`, `POST .../chat/attachments`, `POST .../chat/{resolve,reopen}`, `GET /api/invoices/chat/templates`, `GET /api/invoices/{id}/chat/file/{key}` (via `$lib/api/supplierChat.ts`, surfaced in `InvoiceModal`), bulk ops |
 | `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors` |
 | `/payments` | `routes/payments/+page.svelte` | `GET /api/payments/{queue,summary,runs/}`, `GET /api/payments`, `POST /api/payments/runs` (creates draft), `GET /api/payments/runs/{id}` + `POST .../execute` (via `RunDetailModal`) |
 | `/exceptions` | `routes/exceptions/+page.svelte` | `GET /api/exceptions`, `PATCH /api/exceptions/{id}` |
@@ -119,6 +119,17 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
 - `ApprovalMatrixEditor.svelte` — approval-chain matrix builder
 - `RunDetailModal.svelte` — payment run detail; status, total, payments table; Execute button when run is `draft`
 
+**`chat/` — supplier collaboration:**
+- `SupplierChatThread.svelte` — surface-agnostic per-invoice chat thread shared
+  by the AP modal (`surface="ap"`) and the supplier portal (`surface="vendor"`).
+  Never imports `api`/`portalApi`; the caller injects `onsend`/`onresolve`/
+  `onreopen`/`ondownload`. Renders message bubbles (own-role right-aligned),
+  plain-text body (never `{@html}`), attachment chips, relative time, and on the
+  AP side @mention autocomplete + a template picker + resolve/reopen. AP calls
+  go through `$lib/api/supplierChat.ts` (over `api`); portal calls through
+  `$lib/portalChat.ts` (over `portalApi`). Types in `$lib/types/supplierChat.ts`
+  (full `Chat*` for AP, masked `PortalChat*` for the portal — no internal id).
+
 **`marketing/`** — `Landing.svelte` + `Pricing.svelte` (public no-tenant route).
 **`layout/`** — `Sidebar.svelte` (collapsed/expanded nav, profile popover).
 
@@ -129,6 +140,7 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
 - `workflow.ts` — `WorkflowDefinition`, `WorkflowStep`, step configs (extraction, approval, erp_export)
 - `admin.ts` — `AdminUser`, `Role` (admin, ap_manager, ap_clerk, cfo)
 - `tax.ts` — `Report1099`, `Vendor1099Row` (1099 reporting dashboard)
+- `supplierChat.ts` — `ChatThread`, `ChatMessage`, `ChatAttachment`, `ChatTemplate` (AP, full) + masked `PortalChatThread` / `PortalChatMessage` (portal — no `author_user_id`, no mentions)
 
 ## Multi-tenant routing
 

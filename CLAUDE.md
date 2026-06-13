@@ -114,10 +114,10 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/auth/saml` | SAML 2.0 SSO — config (public), login (302 AuthnRequest), acs (verify + JIT + mint), exchange (one-time-code → JWT), metadata. SP-initiated; reuses the OIDC JIT/session tail |
 | `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra/Authentik — list/get/create/PUT/PATCH/delete (per-tenant bearer auth) |
 | `/portal/auth` | Supplier-portal auth (VendorUser, JWT `typ=vendor`) — login, logout, me, change-password |
-| `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, PO flip, remittance download, UBL 2.1 e-invoice download (`GET /portal/invoices/{id}/einvoice`, vendor-scoped), company/bank/tax self-service (bank/tax stage for AP approval), vendor-scoped |
+| `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, PO flip, remittance download, UBL 2.1 e-invoice download (`GET /portal/invoices/{id}/einvoice`, vendor-scoped), company/bank/tax self-service (bank/tax stage for AP approval), supplier chat (`GET/POST /portal/invoices/{id}/chat`, `POST .../chat/attachments`, `GET .../chat/file/{key}` — vendor-scoped, AP author ids masked, no resolve/mention/template), vendor-scoped |
 | `/admin` | User CRUD, role assignment |
 | `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
-| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid), PEPPOL AS4 transmission (`POST {id}/peppol-send`, role-gated, idempotent), contract link (`POST {id}/link-contract` \| `/unlink-contract`, spend attribution) |
+| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid), PEPPOL AS4 transmission (`POST {id}/peppol-send`, role-gated, idempotent), contract link (`POST {id}/link-contract` \| `/unlink-contract`, spend attribution), supplier chat (`GET/POST {id}/chat`, `POST {id}/chat/attachments`, `POST {id}/chat/{resolve,reopen}` role-gated, `GET chat/templates`, `GET chat/file/{key}` cross-tenant-checked) |
 | `/vendors` | Vendor CRUD, ERP sync |
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
@@ -158,6 +158,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `audit_summary.py` | One-paragraph LLM/template summary of an invoice's audit timeline; cached on `invoices.meta`, keyed to an audit-log fingerprint. Fail-soft to a deterministic template (local-dev default). See `backend/docs/audit-summary.md`. |
 | `audit_log_shipper.py` | Background loop that ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock (SOC 2 centralized WORM store) |
 | `adaptive_workflows.py` | Deterministic per-vendor/per-approver approval stats + baseline anomaly + advisory suggestion derivation (pure, no LLM). See `backend/docs/adaptive-workflows.md`. |
+| `supplier_chat.py` | Embedded per-invoice supplier chat — lazy thread create, static `CHAT_TEMPLATES`, the org `supplier_chat.enabled` flag read, and the notification (AP managers / @mentions) + direct supplier portal-link email helpers shared by the AP (`api/invoices.py`) and portal (`api/portal.py`) routes. See `backend/docs/supplier-chat.md`. |
 
 ### Adapter patterns (pluggable providers)
 
@@ -199,7 +200,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 2 + 2b scope reads/writes (incl. the dashboard + CFO analytics) by the `X-Entity-ID` header (`app/tenant.py` → `get_entity_id` / `get_write_entity_id` / `apply_entity_scope`) with a sidebar entity switcher; per-entity workflow selection is deferred (Phase 3). See `docs/multi-entity.md`.
 
@@ -298,6 +299,7 @@ Full list in `backend/app/config.py`.
 | Troubleshooting | `docs/troubleshooting.md` — common issues |
 | Self-service signup | `docs/self-service-signup.md` — signup flow, email adapters, abuse mitigations |
 | Supplier portal | `backend/docs/supplier-portal.md` — VendorUser auth, invoice submission, phase 2 deferrals |
+| Supplier chat & collaboration | `backend/docs/supplier-chat.md` — per-invoice AP↔supplier thread, author polymorphism, attachment key scheme + cross-tenant gate, audit actions, `chat_message` notification + supplier portal-link email, `Organization.settings.supplier_chat.enabled` flag, static templates |
 | Roadmap | `docs/roadmap.md` — feature backlog with status and competitive context |
 | Competition | `docs/competitive-analysis.md` — competitor matrix, gaps, advantages |
 

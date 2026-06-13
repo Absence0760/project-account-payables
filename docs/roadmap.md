@@ -660,17 +660,17 @@ Extend PO matching to include quality inspection data — critical for manufactu
 ## Priority 12: Collaboration & Self-Service
 
 ### Embedded Supplier Chat & Collaboration
-**Status:** Planned
+**Status:** Shipped
 
 In-app communication between AP team and suppliers — no more email chains.
 
-- [ ] Per-invoice chat thread — AP team and supplier see the same conversation
-- [ ] Attach files to messages (corrected invoices, supporting docs)
-- [ ] @mention team members to loop them in
-- [ ] Supplier gets email notification with link to portal chat
-- [ ] Chat history persisted and linked to audit trail
-- [ ] Templates for common messages (missing PO, amount mismatch, payment status)
-- [ ] Resolution tracking — mark thread as resolved
+- [x] Per-invoice chat thread — AP team and supplier see the same conversation
+- [x] Attach files to messages (corrected invoices, supporting docs)
+- [x] @mention team members to loop them in
+- [x] Supplier gets email notification with link to portal chat
+- [x] Chat history persisted and linked to audit trail
+- [x] Templates for common messages (missing PO, amount mismatch, payment status)
+- [x] Resolution tracking — mark thread as resolved
 
 ---
 
