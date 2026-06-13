@@ -276,6 +276,103 @@ async def regenerate_invoice_summary(
     )
 
 
+def _buyer_identity_from_org(org: Organization, entity_name: str | None = None):
+    """Build the AccountingCustomerParty (buyer = us) identity from the org's
+    `settings["company"]` profile, with an optional entity-name override.
+
+    The company address is a single string in settings → split into lines by
+    the mapper. PII (tax id, address) lives inside the generated document by
+    design; it never enters a log line here.
+    """
+    from app.services.e_invoice import BuyerIdentity
+
+    company = (org.settings or {}).get("company") or {}
+    address = company.get("address")
+    address_lines = (
+        [line.strip() for line in address.splitlines() if line.strip()] if address else []
+    )
+    return BuyerIdentity(
+        name=entity_name or company.get("name") or org.name,
+        tax_id=company.get("tax_id"),
+        address_lines=address_lines,
+        city=company.get("city"),
+        postal_code=company.get("postal_code"),
+        country_code=company.get("country_code"),
+        email=company.get("email"),
+    )
+
+
+@router.get("/{invoice_id}/einvoice")
+async def export_einvoice(
+    invoice_id: uuid.UUID,
+    format: str = "ubl",
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*ALL_ROLES)),
+):
+    """Generate a standards-compliant UBL 2.1 e-invoice for an invoice.
+
+    Maps the invoice (+ its line items + our org/entity identity as the buyer)
+    into the normalized model, asserts it is tax-valid (422 on failure — an AP
+    user must not emit a non-compliant document), then serializes to UBL.
+
+    Returns the XML as an `application/xml` attachment. `format` must be `ubl`.
+    """
+    from app.models.entity import Entity
+    from app.services.e_invoice import (
+        EInvoiceValidationError,
+        assert_valid,
+        generate_ubl,
+        invoice_to_einvoice_document,
+    )
+
+    if format != "ubl":
+        raise HTTPException(status_code=400, detail="Unsupported e-invoice format")
+
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    ).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    line_items = list(
+        (
+            await db.execute(
+                select(InvoiceLineItem)
+                .where(InvoiceLineItem.invoice_id == invoice_id)
+                .order_by(InvoiceLineItem.line_number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    entity_name: str | None = None
+    if invoice.entity_id is not None:
+        entity = (
+            await db.execute(select(Entity).where(Entity.id == invoice.entity_id))
+        ).scalar_one_or_none()
+        if entity is not None:
+            entity_name = entity.name
+
+    buyer = _buyer_identity_from_org(org, entity_name=entity_name)
+    doc = invoice_to_einvoice_document(invoice, line_items, buyer)
+
+    try:
+        assert_valid(doc)
+    except EInvoiceValidationError as exc:
+        # str(exc) is a PII-free "field: code" join — safe in the error body.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    xml_bytes = generate_ubl(doc)
+    filename = f"einvoice-{invoice.invoice_number or invoice.id}.xml"
+    return Response(
+        content=xml_bytes,
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{invoice_id}/line-items")
 async def get_invoice_line_items(
     invoice_id: uuid.UUID,
