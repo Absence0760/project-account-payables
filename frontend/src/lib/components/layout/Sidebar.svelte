@@ -46,6 +46,7 @@
 			items: [
 				{ label: 'Invoices', href: '/invoices', icon: 'invoices' },
 				{ label: 'Credit Memos', href: '/credit-memos', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
+				{ label: 'Contracts', href: '/contracts', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 				{ label: 'Payments', href: '/payments', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 				{ label: 'Vendors', href: '/vendors', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 				{ label: 'Purchase Orders', href: '/purchase-orders', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
