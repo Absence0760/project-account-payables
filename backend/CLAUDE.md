@@ -35,6 +35,7 @@ Deep-dive docs live in `backend/docs/`:
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
 | Adaptive AI workflows | `docs/adaptive-workflows.md` |
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
+| PEPPOL AS4 outbound (e-invoice transmission) | `docs/peppol.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -168,6 +169,7 @@ backend/
    - `VendorChangeRequest` — staged supplier-portal change to a vendor's `bank_details` / `tax_id`, pending AP approval (migration 0022; fraud-prevention gate — see `docs/supplier-portal.md`)
    - `CardRevealToken` — single-use token granting vendor access to a virtual-card PAN reveal page
    - `Notification` — in-app notification center rows (recipient_user_id, event_type, entity_id, title/body, read_at). See `docs/notifications.md`
+   - `PeppolTransmission` — one row per PEPPOL outbound transmission of an invoice (direction, participant scheme/value, doc_type/process id, business_message_id, message_id, status, provider, amount `Numeric(15,2)`). Idempotency = a partial unique index `uq_peppol_one_live_per_invoice_direction` on `(invoice_id, direction) WHERE status <> 'failed'`. Inbound-ready (direction + partial-unique message_id). See `docs/peppol.md`
 
 **Connection management** (`database.py`):
 - `get_control_db()` → AsyncSession for control plane
@@ -356,6 +358,19 @@ class AmountMismatchResolver(ExceptionResolver):
 ```
 
 Registry by `exception_type` (`@register_exception_agent`). The `coordinator.run_agent` dispatches by exception type, gates auto-resolve on the org's `autonomy_level` → confidence threshold, and writes an append-only `AgentDecision` row every run; auto-resolves also write the DB-immutable `invoice.approved` audit row via `review.approve_invoice`. Registered: `amount_mismatch_v1` (real — `po_mismatch` amount variance), plus escalate-only stubs for `missing_data`, `duplicate`, `fraud_flag`. Local-first: the optional LLM rationale fails soft to a deterministic template with no key. See `docs/exception-agents.md`.
+
+### PEPPOL adapters (`services/peppol_adapters/`)
+
+```python
+@register_peppol_adapter("my_ap")
+class MyAdapter(PeppolAdapter):
+    async def resolve_participant(self, pid: ParticipantId) -> ParticipantCapability: ...
+    async def send(self, request: TransmissionRequest) -> TransmissionResult: ...
+    async def test_connection(self) -> bool: ...
+    def parse_inbound(self, headers, body): ...   # inbound-ready stub
+```
+
+Registered: `mock` (in-process, no network — the **local-first default**), `as4_gateway` (real — `httpx` to a hosted Access Point; key via sops, no hardcoded fallback). Selection via `Organization.settings.peppol.provider` → `AP_PEPPOL_PROVIDER` (default `mock`). Outbound **send** turns an invoice into UBL via the `e_invoice` package, resolves the receiver via SMP/SML (`resolve_participant`), and transmits via the gateway; SBDH wrapping lives in the adapter, never the generator. `services/peppol_send.send_invoice_over_peppol` orchestrates it (map → tax-validate → UBL → resolve → INSERT `peppol_transmissions('sending')` → send → audit), idempotent at the DB layer. Route `POST /api/invoices/{id}/peppol-send`. See `docs/peppol.md`.
 
 ## Webhook security (`services/webhook_security.py`)
 

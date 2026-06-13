@@ -117,7 +117,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/portal` | Supplier-portal endpoints — invoice submit/list + payment history, PO flip, remittance download, UBL 2.1 e-invoice download (`GET /portal/invoices/{id}/einvoice`, vendor-scoped), company/bank/tax self-service (bank/tax stage for AP approval), vendor-scoped |
 | `/admin` | User CRUD, role assignment |
 | `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
-| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid) |
+| `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid), PEPPOL AS4 transmission (`POST {id}/peppol-send`, role-gated, idempotent) |
 | `/vendors` | Vendor CRUD, ERP sync |
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
@@ -169,6 +169,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 - **Email (outbound)** (`services/email_adapters/`): console (dev default), smtp (Mailpit / any relay), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
 - **Email intake (inbound)** (`services/email_intake_adapters/`): ses, mailgun, generic. Parses provider-specific inbound webhook payloads into a normalised `InboundEmail`.
 - **Embeddings** (`services/embedding_adapters/`): mock (dev default), openai. Powers RAG + duplicate-similarity search.
+- **PEPPOL AS4 (outbound)** (`services/peppol_adapters/`): mock (in-process default — no network), as4_gateway (real — hosted Access Point HTTP API, key via sops/no fallback). Registry via `@register_peppol_adapter`. Transmits the `e_invoice` UBL onto the PEPPOL network; SMP/SML resolution + send; idempotent at the DB layer (partial unique index on `peppol_transmissions`). See `backend/docs/peppol.md`.
 
 To add a new adapter: copy `mock_adapter.py`, implement the interface, register with the decorator.
 
@@ -236,6 +237,9 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_MAX_CONCURRENT_SESSIONS` | `5` | Max concurrent sessions per user. Oldest JTI is evicted onto the blocklist when exceeded. `0` disables the cap. |
 | `AP_NOTIFICATIONS_ENABLED` | `true` | Master switch for email + in-app notifications. When `false`, the `transition_invoice` / `assign_reviewer` hooks skip dispatch. Dispatch is always best-effort regardless (a failure never breaks a transition). See `backend/docs/notifications.md`. |
 | `AP_REPORTING_CURRENCY_DEFAULT` | `USD` | Platform last-resort reporting (base) currency for multi-currency rollups when an org sets no `reporting_currency`. Per-org override on `Organization.settings.reporting_currency`. See `backend/docs/multi-currency.md`. |
+| `AP_PEPPOL_PROVIDER` | `mock` | PEPPOL Access Point adapter — `mock` (in-process, no network — local-first default) \| `as4_gateway`. Per-org override on `Organization.settings.peppol.provider`. See `backend/docs/peppol.md`. |
+| `AP_PEPPOL_GATEWAY_URL` | (empty) | Hosted Access Point base URL (deployed only). |
+| `AP_PEPPOL_GATEWAY_API_KEY` | (empty) | PEPPOL gateway API key — **no hardcoded fallback**; sops in deployed. |
 
 Full list in `backend/app/config.py`.
 
@@ -272,6 +276,7 @@ Full list in `backend/app/config.py`.
 | Founder runbooks (non-code) | `docs/founder-runbooks/` — legal, prod deploy, Stripe, payment rails, SOC 2 vendor, support + status |
 | CSV data import | `backend/docs/csv-import.md` — pilot Day-0 vendor + invoice migration |
 | Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
+| Automated E-Invoicing (PEPPOL send) | `backend/docs/peppol.md` — four-corner model, mock/as4_gateway adapters, ParticipantId, BIS Billing 3.0, transmission model + idempotency guard, send route |
 | 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
 | Notifications | `backend/docs/notifications.md` — email + in-app events, the `transition_invoice` hook, recipient matrix, preferences |
