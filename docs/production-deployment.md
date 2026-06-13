@@ -75,9 +75,11 @@ Already implemented in `backend/app/services/extraction_lambda.py`.
 - DLQ for failed extractions
 - SQS trigger with batch size of 1
 
-## Lambda: ERP Integration (to be built)
+## Lambda: ERP Integration
 
-Extract the ERP send logic from `backend/app/services/erp.py` into a Lambda handler.
+Implemented in `backend/app/services/erp_lambda.py`.
+
+**Handler:** `app.services.erp_lambda.handler`
 
 **Why Lambda:**
 - ERP calls are async and already fire-and-forget from the user's perspective
@@ -85,25 +87,25 @@ Extract the ERP send logic from `backend/app/services/erp.py` into a Lambda hand
 - SQS + DLQ gives automatic retry with exponential backoff
 - Failed sends land in a DLQ for inspection instead of silently dropping
 
-**Suggested approach:**
-- Create `backend/app/services/erp_lambda.py` following the extraction Lambda pattern
-- Trigger via SQS queue
-- Use the existing `send_to_erp` logic from `erp.py`
-- Add a dispatch function in workflow similar to `extraction_dispatch.py`
+**How it works:** SQS-triggered (`erp_mode = "lambda"`), each message carries
+`{ invoice_id, org_id, actor_id }`; the handler reuses the ERP send logic and
+writes status back to the tenant DB. Deployed by the `lambdas` job in
+`aws-deploy.yml` — see *CI/CD: gated production deploy*.
 
-## Lambda: Audit Logging (to be built)
+## Lambda: Audit Logging
 
-Extract audit log writes from `backend/app/services/audit.py` into an async Lambda.
+Implemented in `backend/app/services/audit_lambda.py`.
+
+**Handler:** `app.services.audit_lambda.handler`
 
 **Why Lambda:**
 - Audit writes should never block or slow the request path
-- EventBridge/SNS trigger allows multiple consumers (logging, analytics, compliance)
 - Scales independently from the API
 
-**Suggested approach:**
-- Create `backend/app/services/audit_lambda.py`
-- Publish audit events to EventBridge or SNS from the API
-- Lambda subscribes and writes to the tenant DB
+**How it works:** SQS-triggered (`audit_mode = "lambda"`), each message carries
+the audit event (`correlation_id`, `organization_id`, `actor_id`, `action`,
+`entity_*`, `details`, `tenant_db_name`); the handler writes the row to the
+named tenant DB. Deployed by the `lambdas` job in `aws-deploy.yml`.
 
 ## Managed Services Mapping
 
@@ -174,6 +176,7 @@ Every job in both is gated by the `production` GitHub Environment:
 |---|---|---|
 | `frontend` | S3 + CloudFront | `pnpm build` → `aws s3 sync --delete` → CloudFront invalidation |
 | `backend` | ECS / Fargate | `docker build backend` → push to ECR (commit-SHA tag) → register a new task-definition revision with that image → **run DB migrations** (one-off Fargate task) → `update-service` → wait for stable |
+| `lambdas` | Lambda (extraction / ERP / audit) | `needs: backend` → point every function in `LAMBDA_FUNCTIONS` at the **same** image the backend job just pushed (`update-function-code --image-uri`) → wait for update |
 
 `.github/workflows/mobile-release.yml` builds the mobile artifacts:
 
@@ -209,6 +212,25 @@ the revision fans out to **every tenant DB** (not just the control plane). A
 non-zero exit fails the job and the service is never rolled. This needs the
 task's network placement — `ECS_SUBNETS` + `ECS_SECURITY_GROUPS` below.
 
+### Lambda workers (extraction / ERP / audit)
+
+The three async workers — `app.services.extraction_lambda.handler`,
+`erp_lambda.handler`, `audit_lambda.handler` — run the **same container image**
+as the API. The `lambdas` job `needs: backend`, so it reuses the exact image
+the backend job already built and pushed (one build, many runtimes) and runs
+only after migrations succeed. Each function is provisioned in Terraform with
+its own `ImageConfig.Command` set to its handler; deploying is just
+`update-function-code --image-uri <image>` for every name in
+`LAMBDA_FUNCTIONS`. Add the next worker to that list and it ships gated too.
+
+> **Container-Lambda prerequisite:** for a container image to run on Lambda it
+> must carry the Lambda Runtime Interface Client (`awslambdaric`). The backend
+> `Dockerfile` ships a `uvicorn` image for ECS today; before arming, add
+> `awslambdaric` to the runtime lock and let each function's `ImageConfig`
+> override the entrypoint to the RIC + its handler. (The alternative — zip
+> packaging — runs into native-dep cross-compilation and the 250 MB unzipped
+> limit, which is why the container path is preferred here.)
+
 ### Credentials — OIDC, no static keys
 
 The jobs assume an AWS role via GitHub OIDC (`id-token: write`); there are no
@@ -217,9 +239,9 @@ scoped to this repository **and** the `production` environment
 (`token.actions.githubusercontent.com:sub` like
 `repo:<owner>/<repo>:environment:production`), with least-privilege permissions
 for ECR push, ECS register/update + `run-task`/`describe-tasks` (the migration
-task), `iam:PassRole` for the task + execution roles, S3 sync, and CloudFront
-invalidation. Store its ARN as the `AWS_DEPLOY_ROLE_ARN` **environment secret**
-on `production`.
+task), `iam:PassRole` for the task + execution roles, `lambda:UpdateFunctionCode`
+on the worker functions, S3 sync, and CloudFront invalidation. Store its ARN as
+the `AWS_DEPLOY_ROLE_ARN` **environment secret** on `production`.
 
 ### Required configuration
 
@@ -236,6 +258,7 @@ on `production`.
 | `ECS_SECURITY_GROUPS` | variable | environment | Comma-separated security-group IDs for the migration task (needs DB egress). |
 | `FRONTEND_BUCKET` | variable | environment | S3 bucket serving the SPA. |
 | `CLOUDFRONT_DISTRIBUTION_ID` | variable | environment | Distribution to invalidate. |
+| `LAMBDA_FUNCTIONS` | variable | environment | Comma/space-separated Lambda function names for the async workers (extraction / ERP / audit). Each is updated to the new image. |
 | `PUBLIC_API_URL` | variable | environment | API base URL — baked into the frontend build; also the backend job's deploy URL. |
 | `APP_URL` | variable | environment | Public site URL — the frontend job's deploy URL. |
 
@@ -245,13 +268,17 @@ on `production`.
 a release won't turn it red before the infrastructure exists. To go live:
 
 1. Build the AWS infra in `infra/` (ECR, ECS cluster/service/task family,
-   frontend S3 bucket, CloudFront distribution) — the stack today is KMS + S3
-   buckets only.
-2. Create the OIDC deploy role and store `AWS_DEPLOY_ROLE_ARN`.
-3. Set the environment variables above on the `production` environment and the
+   frontend S3 bucket, CloudFront distribution, the three worker Lambda
+   functions + their SQS triggers) — the stack today is KMS + S3 buckets only.
+2. Add `awslambdaric` to the backend image so it can run as a container Lambda,
+   and set each worker function's `ImageConfig.Command` to its handler (see
+   *Lambda workers* above).
+3. Create the OIDC deploy role and store `AWS_DEPLOY_ROLE_ARN`.
+4. Set the environment variables above on the `production` environment and the
    protection rules (reviewer / wait timer).
-4. Set the repository variable `AWS_DEPLOY_ENABLED=true`.
+5. Set the repository variable `AWS_DEPLOY_ENABLED=true`.
 
-Until step 4, the two AWS jobs skip via their `if:` guard. (The
-`mobile-release.yml` jobs have no such guard — they build on every release and
-are gated only by the `production` reviewer.)
+Until step 5, the AWS jobs (`backend`, `lambdas`, `frontend`) skip via the
+kill switch — `backend`/`frontend` on their `if:` guard, `lambdas` because it
+`needs: backend`. (The `mobile-release.yml` jobs have no such guard — they
+build on every release and are gated only by the `production` reviewer.)

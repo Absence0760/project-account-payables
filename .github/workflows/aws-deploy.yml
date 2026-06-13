@@ -56,6 +56,11 @@ jobs:
       id-token: write # OIDC: assume the AWS deploy role, no long-lived keys
       contents: read
 
+    # Expose the freshly-built image URI so the `lambdas` job can point the
+    # async workers at the exact same image (one build, many runtimes).
+    outputs:
+      image: ${{ steps.image.outputs.uri }}
+
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -158,6 +163,59 @@ jobs:
           aws ecs wait services-stable \
             --cluster "${{ vars.ECS_CLUSTER }}" \
             --services "${{ vars.ECS_SERVICE }}"
+
+  lambdas:
+    name: Deploy Lambda workers
+    runs-on: ubuntu-latest
+    # `needs: backend` gives both ordering and gating: the image is built +
+    # pushed and the schema is migrated before the workers roll, and if the
+    # backend job is skipped (kill switch off) or fails, this job is skipped
+    # too — so no separate `if:` guard is needed.
+    needs: backend
+
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_API_URL }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Update Lambda workers to the new image
+        env:
+          IMAGE: ${{ needs.backend.outputs.image }}
+          FUNCTIONS: ${{ vars.LAMBDA_FUNCTIONS }}
+        run: |
+          # The async workers (extraction / ERP / audit) run the SAME
+          # container image as the API — each Lambda function is provisioned
+          # in Terraform with its own ImageConfig.Command (the handler, e.g.
+          # app.services.extraction_lambda.handler), so deploying is just
+          # pointing every function at the freshly-pushed image. Migrations
+          # already ran in the backend job, so the workers come up against the
+          # migrated schema. FUNCTIONS is a comma- or space-separated list of
+          # function names — add the next worker here and it ships gated too.
+          if [ -z "$FUNCTIONS" ]; then
+            echo "::error::LAMBDA_FUNCTIONS is empty — set it on the production environment."
+            exit 1
+          fi
+          for fn in ${FUNCTIONS//,/ }; do
+            echo "Updating $fn -> $IMAGE"
+            aws lambda update-function-code \
+              --function-name "$fn" \
+              --image-uri "$IMAGE" \
+              --publish >/dev/null
+            # Block until the code update finishes propagating so the job
+            # status reflects the real outcome, not just the API accept.
+            aws lambda wait function-updated --function-name "$fn"
+            echo "  $fn updated."
+          done
 
   frontend:
     name: Deploy Frontend (S3 + CloudFront)
