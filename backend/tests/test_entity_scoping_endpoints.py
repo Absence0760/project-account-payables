@@ -113,3 +113,43 @@ async def test_vendor_list_scopes_by_entity(realdb):
 
         allv = await c.get("/api/vendors")
         assert {v["name"] for v in allv.json()["items"]} == {"US Vendor", "Default Vendor"}
+
+
+# ---------------------------------------------------------------------------
+# Payments
+# ---------------------------------------------------------------------------
+
+
+async def test_payment_list_and_summary_scope_by_entity(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        us = await _create_entity(c, name="US Inc", slug="us")
+
+        # An invoice + a manual payment under each entity. The payment inherits
+        # its invoice's entity.
+        async def _invoice_and_payment(headers, num, amt):
+            inv = await c.post(
+                "/api/invoices",
+                json={"invoice_number": num, "vendor": "Acme", "amount": amt},
+                headers=headers,
+            )
+            assert inv.status_code == 201, inv.text
+            pay = await c.post(
+                "/api/payments",
+                json={"invoice_id": inv.json()["id"], "amount": amt, "method": "ach"},
+            )
+            assert pay.status_code == 201, pay.text
+            return pay.json()
+
+        await _invoice_and_payment({"X-Entity-ID": us}, "US-P", "100.00")
+        await _invoice_and_payment({}, "DEF-P", "200.00")
+
+        scoped = await c.get("/api/payments", headers={"X-Entity-ID": us})
+        assert scoped.json()["total"] == 1
+        allv = await c.get("/api/payments")
+        assert allv.json()["total"] == 2
+
+        # Summary KPI count mirrors the scoping.
+        s_us = await c.get("/api/payments/summary", headers={"X-Entity-ID": us})
+        assert s_us.json()["payment_count"] == 1
+        s_all = await c.get("/api/payments/summary")
+        assert s_all.json()["payment_count"] == 2

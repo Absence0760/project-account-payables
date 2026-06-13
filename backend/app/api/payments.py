@@ -39,7 +39,13 @@ from app.services.payment_adapters import (
     get_payment_adapter,
 )
 from app.services.workflow_engine import transition_invoice
-from app.tenant import get_tenant, get_tenant_db
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant,
+    get_tenant_db,
+    get_write_entity_id,
+)
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -58,12 +64,14 @@ async def list_payments(
     amount_max: float | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     query = (
         select(Payment, Invoice, VirtualCard)
         .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
         .outerjoin(VirtualCard, VirtualCard.payment_id == Payment.id)
     )
+    query = apply_entity_scope(query, Payment, entity_id)
 
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
@@ -84,16 +92,9 @@ async def list_payments(
             | Payment.reference.ilike(pattern)
         )
 
-    # Count
-    select(func.count()).select_from(
-        select(Payment.id)
-        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .where(query.whereclause)
-        if query.whereclause is not None
-        else select(Payment.id)
-    )
-    # Simpler count approach
-    count_base = select(Payment)
+    # Count — rebuild the filter set against a plain Payment select (the list
+    # query's joins would inflate the count via fan-out).
+    count_base = apply_entity_scope(select(Payment), Payment, entity_id)
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
         count_base = count_base.where(Payment.status.in_(statuses))
@@ -139,6 +140,7 @@ async def list_payments(
 async def payment_queue(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     """List approved invoices ready for payment (no completed payment yet)."""
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
@@ -157,15 +159,17 @@ async def payment_queue(
         InvoiceStatus.payment_scheduled.value,
     ]
 
-    result = await db.execute(
+    queue_q = apply_entity_scope(
         select(Invoice, PaymentSchedule)
         .outerjoin(PaymentSchedule, PaymentSchedule.invoice_id == Invoice.id)
         .where(
             Invoice.status.in_(payable_statuses),
             Invoice.id.notin_(paid_ids),
-        )
-        .order_by(Invoice.due_date.asc().nulls_last())
-    )
+        ),
+        Invoice,
+        entity_id,
+    ).order_by(Invoice.due_date.asc().nulls_last())
+    result = await db.execute(queue_q)
     rows = result.all()
 
     today = date.today()
@@ -231,20 +235,30 @@ async def payment_summary(
     db: AsyncSession = Depends(get_tenant_db),
     control_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """KPIs for the payments page summary bar."""
-    paid_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed")
+    """KPIs for the payments page summary bar. Scoped to the selected entity."""
+    paid_q = apply_entity_scope(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "completed"),
+        Payment,
+        entity_id,
+    )
     total_paid = float((await db.execute(paid_q)).scalar() or 0)
 
-    pending_q = select(func.coalesce(func.sum(Payment.amount), 0)).where(
-        Payment.status.in_(["pending", "processing", "submitted"])
+    pending_q = apply_entity_scope(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.status.in_(["pending", "processing", "submitted"])
+        ),
+        Payment,
+        entity_id,
     )
     total_pending = float((await db.execute(pending_q)).scalar() or 0)
 
-    count_q = select(func.count()).select_from(Payment)
+    count_q = apply_entity_scope(select(func.count()).select_from(Payment), Payment, entity_id)
     payment_count = (await db.execute(count_q)).scalar() or 0
 
-    # CardRebate — table may not exist yet (virtual cards not provisioned).
+    # CardRebate lives in the control plane (cross-DB from the tenant entities),
+    # so it stays org-wide rather than entity-scoped — a known consolidated KPI.
     try:
         rebate_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
         total_rebates = float((await control_db.execute(rebate_q)).scalar() or 0)
@@ -266,14 +280,15 @@ async def payment_summary(
         InvoiceStatus.posted_in_erp.value,
         InvoiceStatus.payment_scheduled.value,
     ]
-    queue_q = select(func.count()).select_from(
-        select(Invoice.id)
-        .where(
+    queue_inner = apply_entity_scope(
+        select(Invoice.id).where(
             Invoice.status.in_(payable_statuses),
             Invoice.id.notin_(paid_ids),
-        )
-        .subquery()
+        ),
+        Invoice,
+        entity_id,
     )
+    queue_q = select(func.count()).select_from(queue_inner.subquery())
     queue_count = (await db.execute(queue_q)).scalar() or 0
 
     return {
@@ -495,6 +510,8 @@ async def create_payment(
 
     payment = Payment(
         invoice_id=uuid.UUID(body.invoice_id),
+        # Payment follows the invoice's entity (multi-entity Phase 2).
+        entity_id=invoice.entity_id,
         amount=body.amount,
         method=body.method.value if body.method else None,
         reference=body.reference,
@@ -516,8 +533,9 @@ async def list_payment_runs(
     status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    query = select(PaymentRun)
+    query = apply_entity_scope(select(PaymentRun), PaymentRun, entity_id)
 
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",")]
@@ -564,6 +582,7 @@ async def create_payment_run(
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
     """Create a payment run from selected invoices."""
     # Validate invoices exist and are payable
@@ -597,9 +616,13 @@ async def create_payment_run(
             # missing the gate, which any audit will catch.
             pass
 
-    # Create the run
+    # Create the run. The run is stamped with the selected (or default) entity;
+    # its individual payments each follow their own invoice's entity, so a run
+    # built in the consolidated view across entities still records each payment
+    # under the right subsidiary (multi-entity Phase 2).
     run = PaymentRun(
         organization_id=org_id,
+        entity_id=entity_id,
         status="draft",
         total_amount=total,
         initiated_by=user.id,
@@ -613,6 +636,7 @@ async def create_payment_run(
         inv = invoices[item.invoice_id]
         payment = Payment(
             invoice_id=inv.id,
+            entity_id=inv.entity_id,
             payment_run_id=run.id,
             amount=inv.amount,
             method=item.method,

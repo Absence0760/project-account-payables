@@ -58,6 +58,7 @@ def _invoice(*, amount=Decimal("1000.00"), currency="EUR"):
         currency=currency,
         correlation_id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),  # multi-entity P2: payment inherits invoice entity
         invoice_number="INV-99",
         vendor_name="European Vendor GmbH",
         description=None,
@@ -403,6 +404,7 @@ def _eur_invoice():
         amount=Decimal("1000.00"),
         correlation_id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),  # multi-entity P2: payment inherits invoice entity
         vendor_country="DE",
     )
 

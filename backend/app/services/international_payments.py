@@ -152,6 +152,8 @@ async def prepare_international_payment(
     payment = Payment(
         invoice_id=invoice_id or invoice.id,
         correlation_id=correlation_id or invoice.correlation_id,
+        # Payment lands in the same entity as the invoice it settles (P2).
+        entity_id=invoice.entity_id,
         amount=invoice.amount,  # paid in invoice currency
         method=corridor.method,
         status="pending",
