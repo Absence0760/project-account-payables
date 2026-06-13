@@ -118,6 +118,26 @@ class Settings(BaseSettings):
     audit_summary_enabled: bool = True
     audit_summary_model: str = ""  # falls back to extraction_model when empty
 
+    # Conversational AP Assistant (see backend/docs/conversational-assistant.md).
+    # Local-first: the default `mock` adapter routes a natural-language query to
+    # one of the five fixed tools via deterministic keyword/intent heuristics —
+    # no network, no key. The `claude` adapter (Anthropic Messages API tool-use)
+    # is selected only when an API key is configured; the dispatcher
+    # auto-downgrades `claude` → `mock` when `AP_ANTHROPIC_API_KEY` is empty, so
+    # `pnpm dev` never requires a real credential. Reuses the extraction key — no
+    # new secret.
+    assistant_provider: str = "mock"  # "mock" (local-first default) | "claude"
+    # Empty → falls back to `extraction_model` (claude-opus-4-8 family) at
+    # request time; never hardcoded in the adapter.
+    assistant_model: str = ""
+    # Per-org / per-month token budget. 0 disables the cap (matching the
+    # AP_MAX_CONCURRENT_SESSIONS=0 convention). Per-org override lives in
+    # Organization.settings.assistant.monthly_token_budget.
+    assistant_monthly_token_budget: int = 200_000
+    # Caps the claude adapter's tool-use loop so a single turn can't run away
+    # on cost. Each hop is one API round-trip.
+    assistant_max_tool_hops: int = 4
+
     # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
     lithic_api_key: str = ""  # your Lithic API key
     lithic_sandbox: bool = True

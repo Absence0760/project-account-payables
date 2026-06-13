@@ -11,6 +11,7 @@ Deep-dive docs live in `backend/docs/`:
 | REST API reference | `docs/api-reference.md` |
 | PostgreSQL schema + migrations | `docs/database.md` |
 | AI extraction adapters | `docs/ai-extraction.md` |
+| Conversational AP assistant | `docs/conversational-assistant.md` |
 | ERP adapters (Merge.dev + direct) | `docs/erp-integration.md` |
 | Workflow state machine | `docs/workflow-design.md` |
 | Workflow snapshot semantics | `docs/workflow-snapshots.md` |

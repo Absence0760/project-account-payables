@@ -140,10 +140,19 @@ async def retrieve_similar(
     *,
     k: int | None = None,
     exclude_invoice_id: uuid.UUID | None = None,
+    entity_id: uuid.UUID | None = None,
 ) -> list[Neighbor]:
     """Find the top-k most semantically similar past invoices.
 
     Uses pgvector's cosine distance (`<=>`). Empty query text → no results.
+
+    ``entity_id`` (when not ``None``) narrows the search to a single
+    subsidiary by joining each embedding back to its ``Invoice.entity_id`` —
+    the same multi-entity boundary every other read honors. ``None`` keeps the
+    consolidated (all-entities) view, which the extraction few-shot caller
+    relies on (it has no entity context and cross-entity examples are fine).
+    ``InvoiceEmbedding`` carries no ``entity_id`` of its own, so we resolve it
+    through the owning invoice rather than denormalising the column.
     """
     if not settings.rag_enabled or not query_text:
         return []
@@ -166,6 +175,12 @@ async def retrieve_similar(
         InvoiceEmbedding.corrected_fields,
         distance,
     )
+    if entity_id is not None:
+        # Scope to the selected subsidiary via the owning invoice. The join key
+        # is the embedding's unique invoice_id FK, so it can't widen results.
+        stmt = stmt.join(Invoice, Invoice.id == InvoiceEmbedding.invoice_id).where(
+            Invoice.entity_id == entity_id
+        )
     if exclude_invoice_id is not None:
         stmt = stmt.where(InvoiceEmbedding.invoice_id != exclude_invoice_id)
     stmt = stmt.order_by(distance).limit(k)

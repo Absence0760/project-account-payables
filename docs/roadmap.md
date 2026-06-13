@@ -523,16 +523,16 @@ Auto-populate and validate invoice fields using historical data from the same su
 ---
 
 ### Conversational AP Assistant
-**Status:** Planned — **Differentiator for CFO / AP Manager persona**
+**Status:** First slice shipped — **Differentiator for CFO / AP Manager persona**
 
-Chat sidebar over the tenant's data. Replaces ad-hoc SQL and spreadsheet exports for common operational questions.
+Chat over the tenant's data. Replaces ad-hoc SQL and spreadsheet exports for common operational questions. Backend `/api/assistant/*`; see `backend/docs/conversational-assistant.md`.
 
-- [ ] Tool-calling LLM with a fixed toolset: `list_invoices(filters)`, `get_vendor_spend(period)`, `list_pending_approvals(assignee)`, `get_payment_forecast(horizon)`, `find_invoices_by_text(query)` — no raw SQL exposure, each tool is a typed endpoint.
-- [ ] Tenant-scoped context — conversation history per user, org-level cap on tokens/cost.
-- [ ] Streaming responses via server-sent events; charts rendered from structured tool output.
-- [ ] Example prompts built into the empty state: *"which approvals have I been sitting on > 5 days?"*, *"which vendors are we paying the most this quarter?"*, *"show me invoices with PO mismatches over $10k"*.
-- [ ] Cost controls — token budget per org per month, clear usage meter in the UI.
-- [ ] Audit trail — log every tool call for compliance / debugging.
+- [x] Tool-calling assistant with a fixed toolset: `list_invoices(filters)`, `get_vendor_spend(period)`, `list_pending_approvals(assignee)`, `get_payment_forecast(horizon)`, `find_invoices_by_text(query)` — no raw SQL exposure, each tool is a typed endpoint over the current tenant. Local-first: deterministic `mock` adapter default, `claude` adapter (Anthropic tool-use) when keyed.
+- [x] Tenant-scoped context — conversation history per `(tenant, user)`, org-level cap on tokens/cost.
+- [ ] Streaming responses via server-sent events; charts rendered from structured tool output. *(API already returns chartable structured `result`; SSE + chart UI deferred.)*
+- [ ] Example prompts built into the empty state: *"which approvals have I been sitting on > 5 days?"*, *"which vendors are we paying the most this quarter?"*, *"show me invoices with PO mismatches over $10k"*. *(frontend, deferred.)*
+- [x] Cost controls — token budget per org per month with a usage meter (`/api/assistant/usage`); graceful 429 refusal on exceed. *(UI surfacing deferred.)*
+- [x] Audit trail — every tool call logs a PII-safe `assistant.tool_invoked` row via the append-only audit infra.
 
 Highest-leverage "sticky feature" work once the product has real usage. Cold-start is fine because it's retrieval over existing data, not learned patterns.
 

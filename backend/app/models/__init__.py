@@ -1,5 +1,6 @@
 from app.models.adaptive_suggestion import WorkflowSuggestion
 from app.models.agent_decision import AgentDecision
+from app.models.assistant import AssistantUsage, Conversation, ConversationMessage
 from app.models.base import Base
 from app.models.credit_memo import CreditMemo
 from app.models.entity import Entity
@@ -55,4 +56,7 @@ __all__ = [
     "Tax1099Filing",
     "IntlTaxRecord",
     "TaxKind",
+    "Conversation",
+    "ConversationMessage",
+    "AssistantUsage",
 ]

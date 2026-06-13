@@ -1,0 +1,710 @@
+"""Conversational AP Assistant — coverage for the first slice.
+
+Two layers:
+
+  - **Pure unit** (`route`): the deterministic mock router maps representative
+    natural-language prompts to the correct tool + clamped args. No DB.
+  - **Real-Postgres** (`realdb`): the full ``run_turn`` orchestrator + HTTP
+    surface against two live tenant DBs, proving the load-bearing invariants:
+    tenant isolation (a tenant-A user can never reach tenant-B rows through any
+    tool), the budget gate + its 429 contract, an audited + PII-safe tool-call
+    row per chat turn, auth on every endpoint, and `(tenant, user)`-scoped
+    history.
+
+The realdb harness (see ``conftest.py``) seeds ``ap_pytesta`` / ``ap_pytestb``
+and truncates business tables per test; it skips locally when Postgres is down.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+
+from app.services.assistant.mock_adapter import route
+
+# ===========================================================================
+# Layer 1 — mock router (pure, no DB)
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "prompt,expected_tool",
+    [
+        # approvals queue — "sitting on" / pending-mine phrasing
+        ("which approvals have I been sitting on > 5 days?", "list_pending_approvals"),
+        ("what's awaiting my approval?", "list_pending_approvals"),
+        ("show my approval queue", "list_pending_approvals"),
+        # vendor spend
+        ("which vendors are we paying the most this quarter?", "get_vendor_spend"),
+        ("top 5 vendors by spend ytd", "get_vendor_spend"),
+        ("who do we spend the most with?", "get_vendor_spend"),
+        # forecast / cash
+        ("what's my payment forecast next 30 days?", "get_payment_forecast"),
+        ("how much cash is due in the next 14 days?", "get_payment_forecast"),
+        ("what do we owe this month?", "get_payment_forecast"),
+        # free-text / similarity search
+        ("find invoices about cloud hosting", "find_invoices_by_text"),
+        ("search for invoices like AWS January", "find_invoices_by_text"),
+        # list_invoices (status / amount fallbacks)
+        ("show invoices with PO mismatches over 10k", "list_invoices"),
+        ("list rejected invoices", "list_invoices"),
+    ],
+)
+def test_mock_router_maps_prompt_to_tool(prompt, expected_tool):
+    tool, _args = route(prompt)
+    assert tool == expected_tool, f"{prompt!r} routed to {tool}, expected {expected_tool}"
+
+
+def test_router_approvals_assignee_me_by_default():
+    tool, args = route("which approvals have I been sitting on > 5 days?")
+    assert tool == "list_pending_approvals"
+    assert args["assignee"] == "me"
+
+
+def test_router_approvals_anyone_when_explicit():
+    tool, args = route("show all pending approvals for everyone")
+    assert tool == "list_pending_approvals"
+    assert args["assignee"] == "anyone"
+
+
+def test_router_vendor_spend_parses_period_and_topn():
+    tool, args = route("top 5 vendors we are paying the most this quarter")
+    assert tool == "get_vendor_spend"
+    assert args["period"] == "qtd"
+    assert args["top_n"] == 5
+
+
+def test_router_forecast_parses_horizon():
+    tool, args = route("what's my payment forecast next 30 days?")
+    assert tool == "get_payment_forecast"
+    assert args["horizon"] == "30d"
+
+
+def test_router_list_invoices_parses_amount_over():
+    tool, args = route("show invoices over 10000")
+    assert tool == "list_invoices"
+    assert args["amount_min"] == Decimal("10000")
+
+
+def test_router_approved_status_is_list_not_queue():
+    # "approved invoices" is a list_invoices status filter, NOT the approval
+    # queue — the documented precedence fix.
+    tool, args = route("show me approved invoices")
+    assert tool == "list_invoices"
+    assert args.get("status") == ["approved"]
+
+
+# ===========================================================================
+# Layer 2 — realdb helpers
+# ===========================================================================
+
+
+async def _seed_invoice(
+    session,
+    org_id,
+    entity_id,
+    *,
+    number,
+    vendor_name,
+    amount,
+    status="approved",
+    invoice_date=None,
+    due_date=None,
+    vendor_id=None,
+):
+    from app.models.invoice import Invoice
+
+    inv = Invoice(
+        id=uuid.uuid4(),
+        organization_id=org_id,
+        entity_id=entity_id,
+        invoice_number=number,
+        vendor_name=vendor_name,
+        vendor_id=vendor_id,
+        amount=Decimal(str(amount)),
+        currency="USD",
+        status=status,
+        invoice_date=invoice_date or date.today(),
+        due_date=due_date,
+    )
+    session.add(inv)
+    return inv
+
+
+async def _default_entity_id(session, org_id):
+    from sqlalchemy import text
+
+    row = (
+        await session.execute(
+            text("SELECT id FROM entities WHERE organization_id = :o AND is_default"),
+            {"o": org_id},
+        )
+    ).first()
+    return row[0]
+
+
+# ===========================================================================
+# Layer 2 — cross-tenant isolation (the highest-risk invariant)
+# ===========================================================================
+
+
+async def test_list_invoices_tool_never_reads_other_tenant(realdb):
+    """A tenant-A user listing invoices sees ONLY tenant-A rows, even though
+    tenant B holds a same-numbered invoice."""
+    from app.services.assistant.tools.invoices import list_invoices
+    from app.services.assistant.tools.schemas import ListInvoicesParams
+
+    a, b = realdb.info("a"), realdb.info("b")
+
+    mk_a, mk_b = realdb.sessionmaker("a"), realdb.sessionmaker("b")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa, a.org_id, ent_a, number="SHARED-1", vendor_name="A-Vendor", amount="111.00"
+        )
+        await sa.commit()
+    async with mk_b() as sb:
+        ent_b = await _default_entity_id(sb, b.org_id)
+        await _seed_invoice(
+            sb, b.org_id, ent_b, number="SHARED-1", vendor_name="B-Vendor", amount="999.00"
+        )
+        await sb.commit()
+
+    # Tool bound to tenant A only ever sees A's rows.
+    async with mk_a() as sa:
+        res = await list_invoices(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            params=ListInvoicesParams(),
+        )
+    vendors = {i.vendor_name for i in res.items}
+    assert vendors == {"A-Vendor"}
+    assert res.total == 1
+    assert all(i.amount == Decimal("111.00") for i in res.items)
+
+
+async def test_vendor_spend_tool_never_aggregates_other_tenant(realdb):
+    from app.services.assistant.tools.schemas import VendorSpendParams
+    from app.services.assistant.tools.vendor_spend import get_vendor_spend
+
+    a, b = realdb.info("a"), realdb.info("b")
+    mk_a, mk_b = realdb.sessionmaker("a"), realdb.sessionmaker("b")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(sa, a.org_id, ent_a, number="A-1", vendor_name="OnlyA", amount="500.00")
+        await sa.commit()
+    async with mk_b() as sb:
+        ent_b = await _default_entity_id(sb, b.org_id)
+        await _seed_invoice(
+            sb, b.org_id, ent_b, number="B-1", vendor_name="OnlyB", amount="9000.00"
+        )
+        await sb.commit()
+
+    async with mk_a() as sa:
+        res = await get_vendor_spend(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            params=VendorSpendParams(period="ytd"),
+        )
+    names = {v.vendor_name for v in res.vendors}
+    assert names == {"OnlyA"}
+    assert res.total_spend == Decimal("500.00")
+
+
+async def test_chat_endpoint_cross_tenant_probe(realdb):
+    """Full HTTP path: a tenant-A chat that lists invoices can never surface a
+    tenant-B invoice — neither in the answer nor the structured result."""
+    a, b = realdb.info("a"), realdb.info("b")
+    mk_a, mk_b = realdb.sessionmaker("a"), realdb.sessionmaker("b")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa, a.org_id, ent_a, number="A-ONLY", vendor_name="AcmeA", amount="100.00"
+        )
+        await sa.commit()
+    async with mk_b() as sb:
+        ent_b = await _default_entity_id(sb, b.org_id)
+        await _seed_invoice(
+            sb, b.org_id, ent_b, number="B-SECRET", vendor_name="SecretB", amount="777.00"
+        )
+        await sb.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post("/api/assistant/chat", json={"message": "list all invoices"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    inv = body["tool_invocations"][0]
+    assert inv["tool"] == "list_invoices"
+    items = inv["result"]["items"]
+    numbers = {i["invoice_number"] for i in items}
+    assert numbers == {"A-ONLY"}
+    assert "B-SECRET" not in resp.text
+    assert "SecretB" not in resp.text
+
+
+# ===========================================================================
+# Layer 2 — representative prompts route + return tenant-scoped data (HTTP)
+# ===========================================================================
+
+
+async def test_chat_pending_approvals_returns_scoped_queue(realdb):
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowStep
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        inv = await _seed_invoice(
+            sa,
+            a.org_id,
+            ent_a,
+            number="APP-1",
+            vendor_name="NeedsMe",
+            amount="50.00",
+            status="ready_for_review",
+        )
+        await sa.flush()
+        wd = WorkflowDefinition(
+            id=uuid.uuid4(),
+            organization_id=a.org_id,
+            name="def",
+            steps_config={},
+            is_default=True,
+        )
+        sa.add(wd)
+        await sa.flush()
+        wi = WorkflowInstance(id=uuid.uuid4(), definition_id=wd.id, invoice_id=inv.id)
+        sa.add(wi)
+        await sa.flush()
+        # Approval step assigned to the admin caller, not completed, >5 days old.
+        sa.add(
+            WorkflowStep(
+                id=uuid.uuid4(),
+                instance_id=wi.id,
+                step_number=1,
+                step_type="approval",
+                assigned_to=a.users["admin"],
+                completed_at=None,
+                created_at=datetime.now(UTC) - timedelta(days=6),
+            )
+        )
+        await sa.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/assistant/chat",
+            json={"message": "which approvals have I been sitting on > 5 days?"},
+        )
+    assert resp.status_code == 200, resp.text
+    inv_call = resp.json()["tool_invocations"][0]
+    assert inv_call["tool"] == "list_pending_approvals"
+    assert inv_call["result"]["total"] == 1
+    assert inv_call["result"]["items"][0]["invoice_number"] == "APP-1"
+
+
+async def test_chat_vendor_spend_prompt(realdb):
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(sa, a.org_id, ent_a, number="V-1", vendor_name="BigCo", amount="800.00")
+        await _seed_invoice(
+            sa, a.org_id, ent_a, number="V-2", vendor_name="SmallCo", amount="200.00"
+        )
+        await sa.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/assistant/chat",
+            json={"message": "which vendors are we paying the most this quarter?"},
+        )
+    assert resp.status_code == 200, resp.text
+    call = resp.json()["tool_invocations"][0]
+    assert call["tool"] == "get_vendor_spend"
+    # Decimal money serialised as string, never float.
+    assert call["result"]["total_spend"] == "1000.00"
+    top = call["result"]["vendors"][0]
+    assert top["vendor_name"] == "BigCo"
+
+
+async def test_chat_forecast_prompt(realdb):
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa,
+            a.org_id,
+            ent_a,
+            number="F-1",
+            vendor_name="Due",
+            amount="300.00",
+            status="approved",
+            due_date=date.today() + timedelta(days=10),
+        )
+        await sa.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/assistant/chat",
+            json={"message": "what's my payment forecast next 30 days?"},
+        )
+    assert resp.status_code == 200, resp.text
+    call = resp.json()["tool_invocations"][0]
+    assert call["tool"] == "get_payment_forecast"
+    assert call["result"]["total"] == "300.00"
+
+
+async def test_chat_free_text_search_prompt(realdb):
+    """A free-text search routes to find_invoices_by_text and returns only
+    tenant-scoped matches (mock embeddings, local-first)."""
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa, a.org_id, ent_a, number="S-1", vendor_name="CloudCorp", amount="42.00"
+        )
+        await sa.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/assistant/chat",
+            json={"message": "find invoices about cloud hosting"},
+        )
+    assert resp.status_code == 200, resp.text
+    call = resp.json()["tool_invocations"][0]
+    assert call["tool"] == "find_invoices_by_text"
+    assert "matches" in call["result"]
+
+
+# ===========================================================================
+# Layer 2 — budget gate (429 contract)
+# ===========================================================================
+
+
+async def _set_org_budget(realdb, key, budget):
+    from sqlalchemy import update
+
+    from app.models.organization import Organization
+
+    info = realdb.info(key)
+    ctrl_mk = realdb.control_sessionmaker()
+    async with ctrl_mk() as s:
+        org = await s.get(Organization, info.org_id)
+        settings = dict(org.settings or {})
+        settings["assistant"] = {"monthly_token_budget": budget}
+        await s.execute(
+            update(Organization).where(Organization.id == info.org_id).values(settings=settings)
+        )
+        await s.commit()
+
+
+async def _clear_org_budget(realdb, key):
+    from sqlalchemy import update
+
+    from app.models.organization import Organization
+
+    info = realdb.info(key)
+    ctrl_mk = realdb.control_sessionmaker()
+    async with ctrl_mk() as s:
+        org = await s.get(Organization, info.org_id)
+        settings = dict(org.settings or {})
+        settings.pop("assistant", None)
+        await s.execute(
+            update(Organization).where(Organization.id == info.org_id).values(settings=settings)
+        )
+        await s.commit()
+
+
+async def _clear_usage(realdb, key):
+    from sqlalchemy import delete
+
+    from app.models.assistant import AssistantUsage
+
+    info = realdb.info(key)
+    ctrl_mk = realdb.control_sessionmaker()
+    async with ctrl_mk() as s:
+        await s.execute(delete(AssistantUsage).where(AssistantUsage.organization_id == info.org_id))
+        await s.commit()
+
+
+async def test_budget_exceeded_returns_429(realdb):
+    """With a tiny budget, the first turn records usage; once usage >= budget
+    the next turn refuses with 429 + the documented error code."""
+    await _clear_usage(realdb, "a")
+    # Budget of 1 token: the first turn spends >1 token, so the SECOND turn
+    # finds usage >= budget and is refused.
+    await _set_org_budget(realdb, "a", 1)
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            first = await c.post("/api/assistant/chat", json={"message": "list invoices"})
+            assert first.status_code == 200, first.text
+            second = await c.post("/api/assistant/chat", json={"message": "list invoices"})
+        assert second.status_code == 429, second.text
+        detail = second.json()["detail"]
+        assert detail["code"] == "assistant_budget_exceeded"
+        assert detail["budget"] == 1
+        assert detail["used"] >= 1
+    finally:
+        await _clear_org_budget(realdb, "a")
+        await _clear_usage(realdb, "a")
+
+
+async def test_usage_endpoint_reflects_recorded_tokens(realdb):
+    await _clear_usage(realdb, "a")
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            await c.post("/api/assistant/chat", json={"message": "list invoices"})
+            usage = await c.get("/api/assistant/usage")
+        assert usage.status_code == 200, usage.text
+        body = usage.json()
+        assert body["total_tokens"] > 0
+        assert body["request_count"] == 1
+    finally:
+        await _clear_usage(realdb, "a")
+
+
+# ===========================================================================
+# Layer 2 — audit: every tool call logs a PII-safe row
+# ===========================================================================
+
+
+async def test_chat_writes_pii_safe_tool_audit_row(realdb):
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        # Seed a vendor with a real tax id so we can prove it never lands in audit.
+        await _seed_invoice(
+            sa, a.org_id, ent_a, number="AUD-1", vendor_name="SensitiveVendor", amount="123456.78"
+        )
+        await sa.commit()
+
+    secret_tax_id = "98-7654321"
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/assistant/chat",
+            json={
+                "message": (
+                    f"show invoices from SensitiveVendor with tax id {secret_tax_id} over 1000"
+                )
+            },
+        )
+    assert resp.status_code == 200, resp.text
+
+    async with mk_a() as sa:
+        rows = (
+            (await sa.execute(select(AuditLog).where(AuditLog.action == "assistant.tool_invoked")))
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1, "exactly one tool-call audit row per chat turn"
+    row = rows[0]
+    assert row.organization_id == a.org_id
+    assert row.actor_id == a.users["admin"]
+    assert row.entity_type == "assistant_conversation"
+    # PII-safe: the arg SHAPE only — no amounts, no tax id, no raw query text.
+    details_str = str(row.details)
+    assert secret_tax_id not in details_str
+    assert "123456" not in details_str
+    assert "SensitiveVendor" not in details_str
+    # The shape flags ARE present.
+    assert row.details["tool"] == "list_invoices"
+    assert "has_amount_filter" in row.details["args"]
+
+
+# ===========================================================================
+# Layer 2 — auth on every endpoint
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "method,path,json_body",
+    [
+        ("post", "/api/assistant/chat", {"message": "hi"}),
+        ("get", "/api/assistant/conversations", None),
+        ("get", "/api/assistant/conversations/" + str(uuid.uuid4()), None),
+        ("get", "/api/assistant/usage", None),
+    ],
+)
+async def test_assistant_endpoints_require_auth(realdb, method, path, json_body):
+    # role=None → no Authorization header.
+    async with realdb.client(key="a", role=None) as c:
+        resp = (
+            await getattr(c, method)(path, json=json_body)
+            if json_body
+            else await getattr(c, method)(path)
+        )
+    assert resp.status_code in (401, 403), f"{method} {path} -> {resp.status_code}"
+
+
+# ===========================================================================
+# Layer 2 — conversation history scoped to (tenant, user)
+# ===========================================================================
+
+
+async def test_conversation_history_scoped_to_user(realdb):
+    """A conversation created by user X is invisible to user Y in the same
+    tenant — list omits it and a direct GET 404s (not 403, no enumeration)."""
+    async with realdb.client(key="a", role="admin") as c_admin:
+        created = await c_admin.post("/api/assistant/chat", json={"message": "list invoices"})
+        assert created.status_code == 200, created.text
+        conv_id = created.json()["conversation_id"]
+
+        # Admin sees it.
+        listed = await c_admin.get("/api/assistant/conversations")
+        assert any(item["id"] == conv_id for item in listed.json()["items"])
+        detail = await c_admin.get(f"/api/assistant/conversations/{conv_id}")
+        assert detail.status_code == 200
+
+    # A different user (cfo) in the same tenant cannot see it.
+    async with realdb.client(key="a", role="cfo") as c_cfo:
+        listed = await c_cfo.get("/api/assistant/conversations")
+        assert all(item["id"] != conv_id for item in listed.json()["items"])
+        detail = await c_cfo.get(f"/api/assistant/conversations/{conv_id}")
+        assert detail.status_code == 404
+
+
+async def test_conversation_history_scoped_to_tenant(realdb):
+    """A conversation in tenant A is invisible from tenant B even for a
+    same-id probe."""
+    async with realdb.client(key="a", role="admin") as c_a:
+        created = await c_a.post("/api/assistant/chat", json={"message": "list invoices"})
+        conv_id = created.json()["conversation_id"]
+
+    async with realdb.client(key="b", role="admin") as c_b:
+        detail = await c_b.get(f"/api/assistant/conversations/{conv_id}")
+        assert detail.status_code == 404
+        listed = await c_b.get("/api/assistant/conversations")
+        assert all(item["id"] != conv_id for item in listed.json()["items"])
+
+
+async def test_conversation_persists_user_and_assistant_messages(realdb):
+    async with realdb.client(key="a", role="admin") as c:
+        created = await c.post("/api/assistant/chat", json={"message": "list invoices"})
+        conv_id = created.json()["conversation_id"]
+        detail = await c.get(f"/api/assistant/conversations/{conv_id}")
+    body = detail.json()
+    roles = [m["role"] for m in body["messages"]]
+    assert roles == ["user", "assistant"]
+    assert body["messages"][0]["content"] == "list invoices"
+
+
+async def test_persisted_tool_calls_replay_with_result(realdb):
+    """The stored assistant turn keeps each tool's structured ``result`` — so a
+    history replay (GET /conversations/{id}) returns the same chartable result
+    the live ChatResponse carried, not ``null``. Regression for the
+    ``_persist_turn`` drop-the-result bug."""
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    async with mk_a() as sa:
+        ent_a = await _default_entity_id(sa, a.org_id)
+        await _seed_invoice(
+            sa, a.org_id, ent_a, number="REPLAY-1", vendor_name="ReplayCo", amount="250.00"
+        )
+        await sa.commit()
+
+    async with realdb.client(key="a", role="admin") as c:
+        live = await c.post("/api/assistant/chat", json={"message": "list invoices"})
+        assert live.status_code == 200, live.text
+        conv_id = live.json()["conversation_id"]
+        live_result = live.json()["tool_invocations"][0]["result"]
+        assert live_result is not None
+
+        detail = await c.get(f"/api/assistant/conversations/{conv_id}")
+    assistant_msg = detail.json()["messages"][1]
+    assert assistant_msg["role"] == "assistant"
+    replayed = assistant_msg["tool_calls"][0]
+    assert replayed["tool"] == "list_invoices"
+    # The replayed result is present and matches the live one (not null).
+    assert replayed["result"] is not None
+    assert replayed["result"] == live_result
+
+
+async def test_text_search_tool_is_entity_scoped(realdb):
+    """find_invoices_by_text honors the selected subsidiary like every other
+    tool: with an entity selected, it returns only that entity's invoices —
+    never another entity's, even within the same tenant. Regression for the
+    embedding query missing an entity filter."""
+    from app.models.entity import Entity
+    from app.models.invoice_embedding import InvoiceEmbedding
+    from app.services.assistant.tools.schemas import TextSearchParams
+    from app.services.assistant.tools.text_search import find_invoices_by_text
+    from app.services.embedding_adapters import get_embedding_adapter
+
+    a = realdb.info("a")
+    mk_a = realdb.sessionmaker("a")
+    adapter = get_embedding_adapter()
+    shared_text = "cloud hosting services invoice"
+
+    async with mk_a() as sa:
+        ent_default = await _default_entity_id(sa, a.org_id)
+        # A second, non-default subsidiary.
+        ent_other = Entity(
+            id=uuid.uuid4(),
+            organization_id=a.org_id,
+            name="Subsidiary Two",
+            slug="sub-two",
+            is_default=False,
+        )
+        sa.add(ent_other)
+        await sa.flush()
+
+        inv_default = await _seed_invoice(
+            sa, a.org_id, ent_default, number="ENT-DEFAULT", vendor_name="DefaultCo", amount="10.00"
+        )
+        inv_other = await _seed_invoice(
+            sa, a.org_id, ent_other.id, number="ENT-OTHER", vendor_name="OtherCo", amount="20.00"
+        )
+        await sa.flush()
+
+        # Identical text → identical mock embeddings → both are equally "similar"
+        # to the query, so only an entity filter can separate them.
+        vec = (await adapter.embed(shared_text)).vector
+        for inv in (inv_default, inv_other):
+            sa.add(
+                InvoiceEmbedding(
+                    invoice_id=inv.id,
+                    embedding=vec,
+                    corrected_fields={"invoice_number": inv.invoice_number},
+                    model="mock",
+                )
+            )
+        await sa.commit()
+
+    # Scoped to the default entity → only its invoice comes back.
+    async with mk_a() as sa:
+        res = await find_invoices_by_text(
+            sa,
+            org_id=a.org_id,
+            entity_id=ent_default,
+            current_user_id=a.users["admin"],
+            params=TextSearchParams(query=shared_text, k=10),
+        )
+    returned = {m.invoice_id for m in res.matches}
+    assert str(inv_default.id) in returned
+    assert str(inv_other.id) not in returned, "text search leaked another entity's invoice"
+
+    # Consolidated view (entity_id=None) → both are visible.
+    async with mk_a() as sa:
+        res_all = await find_invoices_by_text(
+            sa,
+            org_id=a.org_id,
+            entity_id=None,
+            current_user_id=a.users["admin"],
+            params=TextSearchParams(query=shared_text, k=10),
+        )
+    all_returned = {m.invoice_id for m in res_all.matches}
+    assert {str(inv_default.id), str(inv_other.id)} <= all_returned

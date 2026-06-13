@@ -127,6 +127,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/credit-memos` | Credit-memo CRUD, vendor application |
 | `/tax` | 1099 tracking (W-9 upload, YTD totals, Tax1099 export) |
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
+| `/assistant` | Conversational AP assistant — chat over 5 fixed read-only tools (current tenant only), conversation history, token-usage meter. Mock adapter default (local-first); claude adapter when keyed |
 | `/workflows` | Workflow definition CRUD, active steps |
 | `/adaptive` | Approval-pattern learning, baseline anomalies, advisory workflow suggestions (read-only + dismiss) |
 | `/audit` | SOX auditor export — per-invoice / date-range trail (JSON+CSV, admin/CFO, GET-only); itself audited |
@@ -246,6 +247,7 @@ Full list in `backend/app/config.py`.
 | Backend details | `backend/CLAUDE.md` + `backend/docs/` — models, services, adapters, migrations |
 | Mobile app | `mobile/CLAUDE.md` — Flutter iOS app, screens, stores, API client |
 | AI extraction | `backend/docs/ai-extraction.md` — platform vs BYOK, provider configs |
+| Conversational assistant | `backend/docs/conversational-assistant.md` — fixed toolset, mock/claude adapters, token budget, audit |
 | ERP integration | `backend/docs/erp-integration.md` — adapter pattern, Merge.dev, direct APIs |
 | Workflow design | `backend/docs/workflow-design.md` — state machine, step types, snapshots |
 | Payments | `backend/docs/payments.md` — payment runs, schedules, ERP sync |

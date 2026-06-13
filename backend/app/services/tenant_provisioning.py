@@ -28,7 +28,17 @@ logger = logging.getLogger(__name__)
 # Tables that live in the CONTROL plane DB and must NOT be created inside a
 # tenant DB. Anything not in this set belongs to the tenant schema.
 CONTROL_TABLES: frozenset[str] = frozenset(
-    {"organizations", "users", "roles", "user_roles", "email_verifications"}
+    {
+        "organizations",
+        "users",
+        "roles",
+        "user_roles",
+        "email_verifications",
+        # Assistant token meter is a control-plane billing table (see
+        # app/models/assistant.py). Excluded here so tenant DBs don't get it;
+        # the conversation/message tables ARE tenant-scoped and stay in.
+        "assistant_usage",
+    }
 )
 
 
