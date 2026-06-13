@@ -274,6 +274,7 @@ Full list in `backend/app/config.py`.
 | Notifications | `backend/docs/notifications.md` — email + in-app events, the `transition_invoice` hook, recipient matrix, preferences |
 | Exception agents | `backend/docs/exception-agents.md` — autonomous exception resolution, autonomy thresholds, `AgentDecision` log, amount-mismatch resolver |
 | Adaptive AI workflows | `backend/docs/adaptive-workflows.md` — approval-pattern learning, baseline anomaly read, advisory suggestions (advisory-only, no LLM) |
+| Data enrichment | `backend/docs/data-enrichment.md` — auto-fill (GL/cost-center/terms), line-item price variance, vendor performance scoring from supplier history (advisory / compute-on-read, no external calls) |
 | Backup + DR | `docs/backup-disaster-recovery.md` — RTO/RPO, restore procedures, test cadence |
 | Secrets rotation | `docs/secrets-rotation.md` — what to rotate, when, and how |
 | Getting started | `docs/getting-started.md` — first-run setup |

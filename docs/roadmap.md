@@ -513,12 +513,12 @@ Workflows that learn from team behavior and adapt over time — routing, approva
 
 Auto-populate and validate invoice fields using historical data from the same supplier.
 
-- [ ] Auto-fill GL account, cost center, payment terms from vendor history
-- [ ] Flag deviations — "This vendor usually invoices ~$5K, this one is $50K"
-- [ ] Vendor performance scoring — on-time delivery, invoice accuracy, dispute rate
+- [x] Auto-fill GL account, cost center, payment terms from vendor history — GL/cost-center/terms suggested from the vendor's approved-invoice history (dominant value + confidence + evidence); suggestion-only, never overwrites. `GET /api/enrichment/invoices/{id}/suggestions`. See backend/docs/data-enrichment.md.
+- [ ] Flag deviations — "This vendor usually invoices ~$5K, this one is $50K" — already shipped via `adaptive_workflows.detect_invoice_anomaly` (`GET /api/adaptive/anomalies`); not duplicated here.
+- [ ] Vendor performance scoring — on-time delivery, invoice accuracy, dispute rate — accuracy + dispute sub-scores shipped (`GET /api/enrichment/vendors/{id}/score`); on-time delivery deferred pending a PO expected-date column.
 - [ ] Suggest vendor consolidation — identify duplicate/similar vendors
 - [ ] Enrich vendor data from external sources (D&B, Clearbit)
-- [ ] Price variance detection — same item, different price across invoices
+- [x] Price variance detection — same item, different price across invoices — per-vendor line-item median baseline + tolerance; returned inline on the suggestions endpoint with baseline+delta. Persisting as a warning/exception is a tracked follow-up.
 
 ---
 

@@ -16,6 +16,7 @@ from app.api import (
     credit_memos,
     dashboard,
     email_intake,
+    enrichment,
     entities,
     erp_webhook,
     exception_agents,
@@ -182,6 +183,7 @@ app.include_router(audit.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
+app.include_router(enrichment.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")
 # Registered BEFORE exceptions.router so the literal /exceptions/agent-* collection

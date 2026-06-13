@@ -32,6 +32,7 @@ Deep-dive docs live in `backend/docs/`:
 | Email + in-app notifications | `docs/notifications.md` |
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
 | Adaptive AI workflows | `docs/adaptive-workflows.md` |
+| Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
