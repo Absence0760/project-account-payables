@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -183,6 +184,39 @@ def test_check_tax_false_preserves_structural_only_behaviour():
     assert all(e.field != "seller.tax_id" for e in errors)
     # A structurally-valid doc is still clean without tax checks.
     assert validate_document(_valid_doc(), check_tax=False) == []
+
+
+_UBL_FIXTURE = Path(__file__).parent / "fixtures" / "e_invoice" / "ubl_invoice.xml"
+
+
+def test_parse_e_invoice_ignores_country_malformed_tax_id():
+    """Inbound regression guard (the actual entry point, not validate_document
+    in isolation): a vendor UBL whose seller VAT id is malformed *for its
+    country* (DE12 against the DE regex) must still PARSE — country tax-id
+    format is an outbound pre-emission guard, never an inbound ingestion gate.
+    A strict-by-default parse here would silently fail a legitimate vendor
+    invoice in the einvoice extraction adapter."""
+    xml = _UBL_FIXTURE.read_bytes().replace(
+        b"<cbc:CompanyID>DE123456789</cbc:CompanyID>",
+        b"<cbc:CompanyID>DE12</cbc:CompanyID>",
+    )
+    # Must NOT raise — structural shape is intact; only the country tax-id is off.
+    doc = parse_e_invoice(xml, mime_type="application/xml", filename="vendor.xml")
+    assert doc.seller.tax_id == "DE12"
+    assert doc.invoice_number == "INV-2024-0042"
+
+
+def test_parse_e_invoice_ignores_unenumerated_but_plausible_rate():
+    """An inbound doc carrying a rate outside our enumerated sanity band (the
+    band is explicitly 'not a full rate schedule') must still parse — country
+    rate plausibility is advisory inbound, never a hard reject."""
+    # 17.5% is a historically-real DE-adjacent rate not in our enumerated set.
+    xml = _UBL_FIXTURE.read_bytes().replace(
+        b"<cbc:Percent>19.00</cbc:Percent>",
+        b"<cbc:Percent>17.50</cbc:Percent>",
+    )
+    doc = parse_e_invoice(xml, mime_type="application/xml", filename="vendor.xml")
+    assert doc.invoice_number == "INV-2024-0042"
 
 
 def test_parse_e_invoice_translates_syntactically_broken_xml_to_malformed():

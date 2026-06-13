@@ -152,3 +152,35 @@ def test_empty_vendor_address_yields_no_lines():
     inv.vendor_address = None
     doc = invoice_to_einvoice_document(inv, [_line()], _buyer())
     assert doc.seller.address_lines == []
+
+
+def test_seller_country_derived_from_vat_prefix():
+    """The Invoice row has no vendor-country column, so the mapper derives the
+    seller country from the VAT-id prefix (FR40123456789 → FR). This is what
+    makes the outbound export guard validate the supplier's tax id + rate,
+    not just the buyer side."""
+    doc = invoice_to_einvoice_document(_invoice(), [_line()], _buyer())
+    assert doc.seller.country_code == "FR"
+
+
+def test_seller_country_greece_el_prefix_maps_to_gr():
+    """Greece is the one EU member whose VAT prefix (EL) differs from its ISO-2
+    code (GR) — the mapper must translate it."""
+    inv = _invoice()
+    inv.vendor_tax_id = "EL123456789"
+    doc = invoice_to_einvoice_document(inv, [_line()], _buyer())
+    assert doc.seller.country_code == "GR"
+
+
+def test_seller_country_none_for_unrecognised_prefix():
+    """A non-VAT-prefixed scheme (US EIN, AU ABN, bare number) leaves the seller
+    country None — the tax-rule validators skip a None country, so this is safe
+    (same behaviour as before the country derivation)."""
+    inv = _invoice()
+    inv.vendor_tax_id = "12-3456789"  # US EIN — no recognised prefix
+    doc = invoice_to_einvoice_document(inv, [_line()], _buyer())
+    assert doc.seller.country_code is None
+
+    inv.vendor_tax_id = None
+    doc = invoice_to_einvoice_document(inv, [_line()], _buyer())
+    assert doc.seller.country_code is None

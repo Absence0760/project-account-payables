@@ -12,6 +12,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+from app.models.entity import Entity
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.organization import Organization
 from app.services.e_invoice import parse_ubl
@@ -122,6 +123,113 @@ async def test_export_forbidden_role_403(realdb):
     async with realdb.client(key="a", role=None) as c:
         resp = await c.get(f"/api/invoices/{inv_id}/einvoice")
     assert resp.status_code in (401, 403)
+
+
+async def test_export_entity_name_as_buyer_name(realdb):
+    """When the invoice carries an entity_id, the export resolves the Entity row
+    and uses its name as the buyer (AccountingCustomerParty) name — exercising
+    the otherwise-untested entity-lookup branch in the route."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with mk() as s:
+        entity = Entity(
+            organization_id=org_id,
+            name="Acme Subsidiary GmbH",
+            slug="acme-sub",
+        )
+        s.add(entity)
+        await s.flush()
+        entity_id = entity.id
+        inv = Invoice(
+            organization_id=org_id,
+            entity_id=entity_id,
+            invoice_number="INV-ENT-1",
+            vendor_name="Vendor SARL",
+            vendor_tax_id="FR40123456789",
+            vendor_address="12 Rue de Paris\n75001 Paris",
+            invoice_date=date(2024, 6, 1),
+            due_date=date(2024, 7, 1),
+            amount=Decimal("1200.00"),
+            subtotal=Decimal("1000.00"),
+            tax_amount=Decimal("200.00"),
+            tax_rate=Decimal("20.00"),
+            discount_amount=Decimal("0.00"),
+            shipping_amount=Decimal("0.00"),
+            currency="EUR",
+            status=InvoiceStatus.approved,
+        )
+        s.add(inv)
+        await s.flush()
+        s.add(
+            InvoiceLineItem(
+                invoice_id=inv.id,
+                line_number=1,
+                description="Service",
+                quantity=Decimal("2.0000"),
+                unit_price=Decimal("500.00"),
+                total=Decimal("1000.00"),
+                tax=Decimal("200.00"),
+            )
+        )
+        await s.commit()
+        inv_id = str(inv.id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice")
+    assert resp.status_code == 200, resp.text
+    doc = parse_ubl(resp.content)
+    assert doc.buyer.name == "Acme Subsidiary GmbH"
+
+
+async def test_export_invalid_vendor_tax_id_422_for_known_country(realdb):
+    """The outbound guard validates the SELLER (vendor) tax id too, not just the
+    buyer. A malformed-for-its-country vendor VAT id (FR12, derived country FR
+    from the FR prefix) must 422 with a PII-free seller.tax_id:malformed body —
+    proving the supplier-side check is live, not inert."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number="INV-VTAX",
+            vendor_name="Vendor SARL",
+            vendor_tax_id="FR12",  # FR prefix → country FR, but malformed for FR
+            vendor_address="12 Rue de Paris\n75001 Paris",
+            invoice_date=date(2024, 6, 1),
+            due_date=date(2024, 7, 1),
+            amount=Decimal("1200.00"),
+            subtotal=Decimal("1000.00"),
+            tax_amount=Decimal("200.00"),
+            tax_rate=Decimal("20.00"),
+            discount_amount=Decimal("0.00"),
+            shipping_amount=Decimal("0.00"),
+            currency="EUR",
+            status=InvoiceStatus.approved,
+        )
+        s.add(inv)
+        await s.flush()
+        s.add(
+            InvoiceLineItem(
+                invoice_id=inv.id,
+                line_number=1,
+                description="Service",
+                quantity=Decimal("2.0000"),
+                unit_price=Decimal("500.00"),
+                total=Decimal("1000.00"),
+                tax=Decimal("200.00"),
+            )
+        )
+        await s.commit()
+        inv_id = str(inv.id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice")
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "seller.tax_id" in detail
+    assert "malformed" in detail
+    assert "FR12" not in detail  # PII-free
 
 
 async def test_export_tax_invalid_422_pii_free(realdb):

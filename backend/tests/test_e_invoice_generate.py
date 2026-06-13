@@ -123,6 +123,27 @@ def test_roundtrip_parties():
     assert back.buyer.country_code == "GB"
 
 
+def test_roundtrip_multiline_address():
+    """The generator maps address_lines[0]→StreetName, [1]→AdditionalStreetName,
+    [2]→BuildingNumber, and the parser reads them back in that order. A 3-line
+    address must survive intact — a dropped tag or swapped order would corrupt
+    a real supplier address. (Every other test uses a single-line address.)"""
+    doc = _full_doc()
+    doc.seller.address_lines = ["Line 1", "Suite 2", "Building 3"]
+    back = parse_ubl(generate_ubl(doc))
+    assert back.seller.address_lines == ["Line 1", "Suite 2", "Building 3"]
+
+
+def test_roundtrip_registration_id():
+    """party.registration_id → cac:PartyLegalEntity/cbc:CompanyID and back. A
+    regression that dropped CompanyID or moved it to the wrong parent would go
+    unnoticed without this."""
+    doc = _full_doc()
+    doc.seller.registration_id = "HRB-12345"
+    back = parse_ubl(generate_ubl(doc))
+    assert back.seller.registration_id == "HRB-12345"
+
+
 def test_roundtrip_monetary_totals_are_decimal():
     doc = _full_doc()
     back = parse_ubl(generate_ubl(doc))
