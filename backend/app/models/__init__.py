@@ -6,6 +6,18 @@ from app.models.contract import Contract, ContractLineItem, ContractStatus, Cont
 from app.models.credit_memo import CreditMemo
 from app.models.entity import Entity
 from app.models.exception import Exception as APException
+from app.models.expense import (
+    CorporateCardTransaction,
+    Expense,
+    ExpensePaymentMethod,
+    ExpensePolicy,
+    ExpensePreapproval,
+    ExpenseReport,
+    ExpenseReportStatus,
+    ExpenseStatus,
+    PreapprovalStatus,
+    ReconciliationStatus,
+)
 from app.models.international_tax import IntlTaxRecord, TaxKind
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice_embedding import InvoiceEmbedding
@@ -66,6 +78,16 @@ __all__ = [
     "ContractLineItem",
     "ContractStatus",
     "ContractType",
+    "ExpenseReport",
+    "Expense",
+    "ExpensePolicy",
+    "CorporateCardTransaction",
+    "ExpensePreapproval",
+    "ExpenseReportStatus",
+    "ExpenseStatus",
+    "ExpensePaymentMethod",
+    "ReconciliationStatus",
+    "PreapprovalStatus",
     "SupplierChatThread",
     "SupplierChatMessage",
     "ChatThreadStatus",

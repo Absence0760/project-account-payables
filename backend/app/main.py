@@ -23,6 +23,7 @@ from app.api import (
     erp_webhook,
     exception_agents,
     exceptions,
+    expenses,
     gl_accounts,
     goods_receipts,
     inspections,
@@ -206,6 +207,8 @@ app.include_router(erp_webhook.router, prefix="/api")
 # routes win over exceptions.py's parameterised /{exception_id}/... matcher.
 app.include_router(exception_agents.router, prefix="/api")
 app.include_router(exceptions.router, prefix="/api")
+app.include_router(expenses.router, prefix="/api")
+app.include_router(expenses.reports_router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")
 app.include_router(goods_receipts.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")

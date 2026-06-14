@@ -133,6 +133,46 @@ async def upload_contract_file(
     return file_key, file_url
 
 
+async def upload_expense_receipt(
+    org_id: uuid.UUID,
+    expense_id: uuid.UUID,
+    file: UploadFile,
+) -> tuple[str, str]:
+    """Upload an expense receipt to S3 and return (file_key, file_url).
+
+    The key is ``<org_id>/expenses/<expense_id>/<safe-filename>`` — the
+    leading ``org_id`` segment is the cross-tenant download gate (the
+    expense receipt endpoint refuses keys whose first segment isn't the
+    caller's org), mirroring the invoice / contract file paths. Receipts are
+    photographed, so the invoice-grade ``ALLOWED_CONTENT_TYPES`` (PDF / PNG /
+    JPEG / TIFF / XML) applies — no Word documents.
+    """
+    content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError(f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB")
+
+    content_type = file.content_type or "application/octet-stream"
+    if content_type not in ALLOWED_CONTENT_TYPES:
+        raise ValueError(
+            f"File type '{content_type}' not allowed. Accepted: PDF, PNG, JPEG, TIFF, XML"
+        )
+
+    file_key = f"{org_id}/expenses/{expense_id}/{_safe_filename(file.filename)}"
+
+    client = _get_client()
+    _ensure_bucket(client)
+    client.put_object(
+        Bucket=settings.s3_bucket,
+        Key=file_key,
+        Body=content,
+        ContentType=content_type,
+    )
+
+    file_url = f"/api/expenses/receipt/{file_key}"
+    return file_key, file_url
+
+
 async def upload_chat_file(
     org_id: uuid.UUID,
     invoice_id: uuid.UUID,
