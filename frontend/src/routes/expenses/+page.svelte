@@ -5,14 +5,18 @@
 		ExpenseReportSummary,
 		ExpensePolicy,
 		ExpensePreapproval,
-		PolicyViolation
+		PolicyViolation,
+		CorporateCardTransaction,
+		CardMatchSuggestion
 	} from '$lib/types/expense';
 	import {
 		EXPENSE_STATUSES,
 		EXPENSE_STATUS_LABELS,
 		EXPENSE_REPORT_STATUS_LABELS,
 		EXPENSE_PREAPPROVAL_STATUSES,
-		EXPENSE_PREAPPROVAL_STATUS_LABELS
+		EXPENSE_PREAPPROVAL_STATUS_LABELS,
+		RECONCILIATION_STATUSES,
+		RECONCILIATION_STATUS_LABELS
 	} from '$lib/types/expense';
 	import { expenseStore } from '$lib/stores/expenses.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -36,6 +40,14 @@
 		submitReport as apiSubmitReport,
 		approveReport,
 		rejectReport,
+		listCardTransactions,
+		importCardCsv,
+		syncVirtualCards,
+		cardMatchSuggestions,
+		matchCardTxn,
+		unmatchCardTxn,
+		ignoreCardTxn,
+		createExpenseFromCard,
 		type GlAccountOption
 	} from '$lib/api/expenses';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -61,7 +73,7 @@
 	const canManagePolicies = $derived(auth.isManager);
 
 	// --- Tabs ---
-	type Tab = 'expenses' | 'reports' | 'policies' | 'preapprovals';
+	type Tab = 'expenses' | 'reports' | 'policies' | 'preapprovals' | 'cards';
 	let tab = $state<Tab>(($page.url.searchParams.get('tab') as Tab) ?? 'expenses');
 
 	// --- Expenses tab filter state (URL-backed) ---
@@ -133,6 +145,9 @@
 		if (tab === 'preapprovals' && preapprovalStatus !== 'all')
 			url.searchParams.set('pa_status', preapprovalStatus);
 		else url.searchParams.delete('pa_status');
+		// Reconciliation status filter only belongs in the URL while on the cards tab.
+		if (tab === 'cards' && reconFilter !== 'all') url.searchParams.set('recon', reconFilter);
+		else url.searchParams.delete('recon');
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
@@ -432,6 +447,7 @@
 	function switchTab(next: Tab) {
 		tab = next;
 		closeReport();
+		closeMatchPicker();
 		showReject = false;
 		submitViolations = [];
 		syncUrl();
@@ -577,6 +593,167 @@
 			paRejectArmedId = null;
 		}
 	}
+
+	// ============================ Cards tab (WF4) ============================
+	let cardTxns = $state<CorporateCardTransaction[]>([]);
+	let cardsLoading = $state(false);
+	let cardsTotal = $state(0);
+	let reconFilter = $state<string>($page.url.searchParams.get('recon') ?? 'all');
+	let cardBusy = $state(false);
+	let cardFileInput = $state<HTMLInputElement>();
+
+	// Match-suggestion picker modal state.
+	let matchTxn = $state<CorporateCardTransaction | null>(null);
+	let matchSuggestions = $state<CardMatchSuggestion[]>([]);
+	let matchLoading = $state(false);
+
+	const RECON_CHIPS = [
+		{ key: 'all', label: 'All' },
+		...RECONCILIATION_STATUSES.map((s) => ({ key: s, label: RECONCILIATION_STATUS_LABELS[s] }))
+	];
+
+	const unmatchedCount = $derived(
+		cardTxns.filter((t) => t.reconciliation_status === 'unmatched').length
+	);
+	const matchedCount = $derived(
+		cardTxns.filter((t) => t.reconciliation_status === 'matched').length
+	);
+
+	async function loadCardTxns() {
+		cardsLoading = true;
+		try {
+			const params = reconFilter !== 'all' ? { reconciliation_status: reconFilter } : {};
+			const res = await listCardTransactions({ ...params, page_size: 50 });
+			cardTxns = res.items;
+			cardsTotal = res.total;
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load card transactions', 'error');
+		} finally {
+			cardsLoading = false;
+		}
+	}
+
+	// Load whenever the Cards tab is active or the recon filter changes (mirrors
+	// the Reports / Pre-approvals tab effects).
+	$effect(() => {
+		if (tab === 'cards') {
+			reconFilter;
+			loadCardTxns();
+			syncUrl();
+		}
+	});
+
+	async function handleCardCsv(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		cardBusy = true;
+		try {
+			const result = await importCardCsv(file);
+			toast(
+				`Imported ${result.imported} transaction${result.imported === 1 ? '' : 's'}` +
+					(result.skipped
+						? ` (${result.skipped} duplicate${result.skipped === 1 ? '' : 's'} skipped)`
+						: ''),
+				result.imported > 0 ? 'success' : 'info'
+			);
+			await loadCardTxns();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Import failed', 'error');
+		} finally {
+			cardBusy = false;
+			input.value = ''; // allow re-pick of the same file
+		}
+	}
+
+	async function handleSyncVirtualCards() {
+		cardBusy = true;
+		try {
+			const res = await syncVirtualCards();
+			toast(
+				`Synced ${res.created} virtual-card transaction${res.created === 1 ? '' : 's'}` +
+					(res.skipped ? ` (${res.skipped} already imported)` : ''),
+				'success'
+			);
+			await loadCardTxns();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Sync failed', 'error');
+		} finally {
+			cardBusy = false;
+		}
+	}
+
+	async function openMatchPicker(txn: CorporateCardTransaction) {
+		matchTxn = txn;
+		matchSuggestions = [];
+		matchLoading = true;
+		try {
+			matchSuggestions = await cardMatchSuggestions(txn.id);
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load suggestions', 'error');
+		} finally {
+			matchLoading = false;
+		}
+	}
+
+	function closeMatchPicker() {
+		matchTxn = null;
+		matchSuggestions = [];
+	}
+
+	async function confirmMatch(expenseId: string) {
+		if (!matchTxn) return;
+		cardBusy = true;
+		try {
+			await matchCardTxn(matchTxn.id, expenseId);
+			toast('Transaction matched', 'success');
+			closeMatchPicker();
+			await loadCardTxns();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Match failed', 'error');
+		} finally {
+			cardBusy = false;
+		}
+	}
+
+	async function createExpenseForCard(txn: CorporateCardTransaction) {
+		cardBusy = true;
+		try {
+			await createExpenseFromCard(txn.id);
+			toast('Expense created and matched', 'success');
+			await loadCardTxns();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Create expense failed', 'error');
+		} finally {
+			cardBusy = false;
+		}
+	}
+
+	async function ignoreCard(txn: CorporateCardTransaction) {
+		cardBusy = true;
+		try {
+			await ignoreCardTxn(txn.id);
+			toast('Transaction ignored', 'success');
+			await loadCardTxns();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Ignore failed', 'error');
+		} finally {
+			cardBusy = false;
+		}
+	}
+
+	async function unmatchCard(txn: CorporateCardTransaction) {
+		cardBusy = true;
+		try {
+			await unmatchCardTxn(txn.id);
+			toast('Transaction unmatched', 'success');
+			await loadCardTxns();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Unmatch failed', 'error');
+		} finally {
+			cardBusy = false;
+		}
+	}
 </script>
 
 <svelte:window onclick={onWindowClick} />
@@ -600,6 +777,12 @@
 			{#if canCreate}
 				<button class="btn-primary" onclick={() => (showNewPreapproval = true)}>+ New Request</button>
 			{/if}
+		{:else if tab === 'cards'}
+			{#if canManagePolicies}
+				<input type="file" accept=".csv" bind:this={cardFileInput} onchange={handleCardCsv} hidden />
+				<button class="btn-secondary" disabled={cardBusy} onclick={() => cardFileInput?.click()}>Import CSV</button>
+				<button class="btn-secondary" disabled={cardBusy} onclick={handleSyncVirtualCards}>Sync virtual cards</button>
+			{/if}
 		{/if}
 	{/snippet}
 
@@ -610,6 +793,7 @@
 			<button class="tab" class:active={tab === 'policies'} onclick={() => switchTab('policies')}>Policies</button>
 		{/if}
 		<button class="tab" class:active={tab === 'preapprovals'} onclick={() => switchTab('preapprovals')}>Pre-approvals</button>
+		<button class="tab" class:active={tab === 'cards'} onclick={() => switchTab('cards')}>Cards</button>
 	</div>
 
 	{#if tab === 'expenses'}
@@ -891,7 +1075,7 @@
 				{/each}
 			{/snippet}
 		</DataTable>
-	{:else}
+	{:else if tab === 'preapprovals'}
 		<!-- ==================== Pre-approvals tab ==================== -->
 		<div class="filter-row">
 			<FilterChips chips={PREAPPROVAL_CHIPS} bind:active={preapprovalStatus} />
@@ -934,6 +1118,72 @@
 				{/each}
 			{/snippet}
 		</DataTable>
+	{:else if tab === 'cards'}
+		<!-- ===================== Cards tab (WF4) ===================== -->
+		<div class="kpi-row">
+			<KpiCard value={unmatchedCount} label="Unmatched" highlight={unmatchedCount ? 'red' : null} />
+			<KpiCard value={matchedCount} label="Matched" highlight={matchedCount ? 'green' : null} />
+			<KpiCard value={cardsTotal} label="Transactions" />
+		</div>
+
+		<div class="filter-row">
+			<FilterChips chips={RECON_CHIPS} bind:active={reconFilter} />
+		</div>
+
+		<DataTable
+			columns={[
+				{ label: 'Date' },
+				{ label: 'Merchant' },
+				{ label: 'Card' },
+				{ label: 'Amount', class: 'right' },
+				{ label: 'Status' },
+				{ label: '', class: 'actions-col' }
+			]}
+			isEmpty={cardTxns.length === 0}
+			empty={cardsLoading ? 'Loading…' : 'No card transactions. Import a CSV or sync virtual cards.'}
+		>
+			{#snippet body()}
+				{#each cardTxns as txn (txn.id)}
+					<tr>
+						<td class="muted">{formatDate(txn.txn_date)}</td>
+						<td>{txn.merchant ?? '—'}</td>
+						<td class="muted">
+							{#if txn.virtual_card_id}
+								<span class="badge approved">Virtual</span>
+							{/if}
+							{txn.card_last_four ? `•••• ${txn.card_last_four}` : '—'}
+						</td>
+						<td class="right mono"><Money amount={txn.amount} currency={txn.currency} /></td>
+						<td>
+							<span class="badge {txn.reconciliation_status}">
+								{RECONCILIATION_STATUS_LABELS[
+									txn.reconciliation_status as keyof typeof RECONCILIATION_STATUS_LABELS
+								] ?? txn.reconciliation_status}
+							</span>
+						</td>
+						<td class="actions">
+							{#if canManagePolicies && txn.reconciliation_status === 'unmatched'}
+								<RowAction variant="default" onclick={() => openMatchPicker(txn)}>Match</RowAction>
+							{/if}
+							{#if canCreate && txn.reconciliation_status === 'unmatched'}
+								<RowAction variant="default" onclick={() => createExpenseForCard(txn)}>Create expense</RowAction>
+							{/if}
+							{#if canManagePolicies && txn.reconciliation_status === 'matched'}
+								<RowAction variant="default" onclick={() => unmatchCard(txn)}>Unmatch</RowAction>
+							{/if}
+							{#if canManagePolicies && txn.reconciliation_status === 'unmatched'}
+								<RowAction variant="default" onclick={() => ignoreCard(txn)}>Ignore</RowAction>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			{/snippet}
+		</DataTable>
+		{#if cardsTotal > 0}
+			<div class="load-more-row">
+				<span class="load-more-end">Showing all {cardsTotal} transaction{cardsTotal === 1 ? '' : 's'}</span>
+			</div>
+		{/if}
 	{/if}
 </PageHeader>
 
@@ -1030,6 +1280,37 @@
 	</Modal>
 {/if}
 
+{#if matchTxn}
+	<Modal open ariaLabel="Match transaction" title="Match to an expense" width="sm" onclose={closeMatchPicker}>
+		<div class="match-picker">
+			{#if matchLoading}
+				<p class="muted">Loading suggestions…</p>
+			{:else if matchSuggestions.length === 0}
+				<p class="muted">No candidate expenses (amount + date window). Try Create expense instead.</p>
+			{:else}
+				<ul class="match-list">
+					{#each matchSuggestions as suggestion (suggestion.expense.id)}
+						<li>
+							<button
+								type="button"
+								class="match-row"
+								disabled={cardBusy}
+								onclick={() => confirmMatch(suggestion.expense.id)}
+							>
+								<span>{suggestion.expense.merchant ?? '—'} · {formatDate(suggestion.expense.expense_date)}</span>
+								<span class="mono"><Money amount={suggestion.expense.amount} currency={suggestion.expense.currency} /></span>
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={closeMatchPicker}>Cancel</button>
+		</div>
+	</Modal>
+{/if}
+
 <style>
 	.tab-row {
 		display: flex;
@@ -1094,6 +1375,10 @@
 	.badge.reimbursed { background: rgba(140, 100, 240, 0.12); color: #8c64f0; }
 	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
 	.badge.pending { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
+	/* Card reconciliation statuses (WF4). */
+	.badge.matched { background: rgba(31, 168, 106, 0.12); color: #1fa86a; }
+	.badge.unmatched { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
+	.badge.ignored { background: var(--bg); color: var(--text-muted); }
 	.badge.violation {
 		margin-left: 6px;
 		background: rgba(224, 64, 64, 0.12);
@@ -1215,5 +1500,41 @@
 		color: var(--text);
 		font-family: inherit;
 		font-size: 0.88rem;
+	}
+
+	/* --- Card match-suggestion picker (WF4) --- */
+	.match-picker {
+		margin: 12px 0;
+	}
+	.match-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.match-row {
+		width: 100%;
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 10px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--bg);
+		color: var(--text);
+		font-family: inherit;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.match-row:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.match-row:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 </style>

@@ -234,3 +234,68 @@ export interface ExpensePreapprovalCreate {
 	category: string | null;
 	justification: string | null;
 }
+
+// ===================== WF4: Corporate-card transactions =====================
+
+export type ReconciliationStatus = 'unmatched' | 'matched' | 'ignored';
+
+export const RECONCILIATION_STATUSES: ReconciliationStatus[] = [
+	'unmatched',
+	'matched',
+	'ignored'
+];
+
+export const RECONCILIATION_STATUS_LABELS: Record<ReconciliationStatus, string> = {
+	unmatched: 'Unmatched',
+	matched: 'Matched',
+	ignored: 'Ignored'
+};
+
+// Mirrors the backend `CorporateCardTransactionResponse`. Money fields arrive as
+// numbers (backend `float(...)` on the `Numeric(15,2)` column); date fields are
+// ISO date strings. PII: only `card_last_four` is ever surfaced — never a PAN.
+export interface CorporateCardTransaction {
+	id: string;
+	card_ref: string | null;
+	card_last_four: string | null;
+	virtual_card_id: string | null;
+	txn_date: string;
+	posted_date: string | null;
+	merchant: string | null;
+	amount: number;
+	currency: string;
+	external_txn_id: string | null;
+	matched_expense_id: string | null;
+	reconciliation_status: string;
+	import_batch: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CardTransactionListResponse {
+	items: CorporateCardTransaction[];
+	total: number;
+	page: number;
+	page_size: number;
+}
+
+// A ranked candidate expense for reconciliation (from
+// GET /{id}/match-suggestions) — the Expense plus a match score.
+export interface CardMatchSuggestion {
+	expense: Expense;
+	score: number;
+}
+
+// POST /import-csv returns the shared `ImportResult.to_dict()` — `imported` /
+// `skipped` / `errors`.
+export interface CardImportResult {
+	imported: number;
+	skipped: number;
+	errors: { row: number; message: string }[];
+}
+
+// POST /sync-virtual-cards return shape — created vs already-imported.
+export interface SyncVirtualCardsResult {
+	created: number;
+	skipped: number;
+}

@@ -17,7 +17,12 @@ import type {
 	ExpensePolicyCreate,
 	ExpensePreapproval,
 	ExpensePreapprovalCreate,
-	PolicyViolation
+	PolicyViolation,
+	CorporateCardTransaction,
+	CardTransactionListResponse,
+	CardMatchSuggestion,
+	CardImportResult,
+	SyncVirtualCardsResult
 } from '$lib/types/expense';
 
 export interface ExpenseListParams {
@@ -303,4 +308,72 @@ export function approveReport(id: string): Promise<ExpenseReport> {
 
 export function rejectReport(id: string, reason: string): Promise<ExpenseReport> {
 	return api.post<ExpenseReport>(`/api/expense-reports/${id}/reject`, { reason });
+}
+
+// ================= WF4: Corporate-card transactions =================
+
+export interface CardTxnListParams {
+	reconciliation_status?: string;
+	virtual_card_id?: string;
+	date_from?: string;
+	date_to?: string;
+	page?: number;
+	page_size?: number;
+}
+
+export function listCardTransactions(
+	params: CardTxnListParams = {}
+): Promise<CardTransactionListResponse> {
+	const qs = new URLSearchParams();
+	if (params.reconciliation_status) qs.set('reconciliation_status', params.reconciliation_status);
+	if (params.virtual_card_id) qs.set('virtual_card_id', params.virtual_card_id);
+	if (params.date_from) qs.set('date_from', params.date_from);
+	if (params.date_to) qs.set('date_to', params.date_to);
+	qs.set('page', String(params.page ?? 1));
+	qs.set('page_size', String(params.page_size ?? 20));
+	return api.get<CardTransactionListResponse>(`/api/corporate-card-transactions?${qs}`);
+}
+
+/** Multipart CSV import. Returns the shared `ImportResult` (`imported` +
+ *  `skipped` dedupe count) so the page can Toast it. Uses `api.upload` (the
+ *  FormData idiom — browser sets the multipart boundary). */
+export function importCardCsv(file: File): Promise<CardImportResult> {
+	return api.upload<CardImportResult>('/api/corporate-card-transactions/import-csv', file);
+}
+
+/** Pull this tenant's charged virtual cards into card-transaction rows.
+ *  Idempotent — re-syncs skip already-imported cards (external_txn_id dedupe). */
+export function syncVirtualCards(): Promise<SyncVirtualCardsResult> {
+	return api.post<SyncVirtualCardsResult>(
+		'/api/corporate-card-transactions/sync-virtual-cards',
+		{}
+	);
+}
+
+export function cardMatchSuggestions(id: string): Promise<CardMatchSuggestion[]> {
+	return api.get<CardMatchSuggestion[]>(
+		`/api/corporate-card-transactions/${id}/match-suggestions`
+	);
+}
+
+export function matchCardTxn(id: string, expenseId: string): Promise<CorporateCardTransaction> {
+	return api.post<CorporateCardTransaction>(`/api/corporate-card-transactions/${id}/match`, {
+		expense_id: expenseId
+	});
+}
+
+export function unmatchCardTxn(id: string): Promise<CorporateCardTransaction> {
+	return api.post<CorporateCardTransaction>(`/api/corporate-card-transactions/${id}/unmatch`, {});
+}
+
+export function ignoreCardTxn(id: string): Promise<CorporateCardTransaction> {
+	return api.post<CorporateCardTransaction>(`/api/corporate-card-transactions/${id}/ignore`, {});
+}
+
+/** Create a new Expense from the txn and match it (both sides linked). */
+export function createExpenseFromCard(id: string): Promise<CorporateCardTransaction> {
+	return api.post<CorporateCardTransaction>(
+		`/api/corporate-card-transactions/${id}/create-expense`,
+		{}
+	);
 }
