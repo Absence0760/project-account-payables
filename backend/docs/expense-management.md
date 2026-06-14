@@ -4,10 +4,13 @@ Corporate expense tracking and reimbursement — out-of-pocket and card-funded
 expenses, the reports that group them for approval, reimbursement policies,
 spend pre-approvals, and corporate-card-transaction reconciliation.
 
-This module is delivered in workflows. **WF1 (this document's scope) is the
-foundation**: the full data model plus the `/expenses` and `/expense-reports`
-HTTP API. Policy enforcement, card import/reconciliation, pre-approval gating,
-and the frontend UX land in later workflows (see the roadmap at the bottom).
+This module is delivered in workflows. **WF1 is the foundation**: the full data
+model plus the `/expenses` and `/expense-reports` HTTP API. **WF2 (Submission UX
++ Reporting)** adds the report-summary rollup, the expense-register CSV export,
+the bulk GL re-code endpoint, and the full SvelteKit `/expenses` workspace
+(two-tab Expenses/Reports page + `ExpenseModal`). Policy enforcement, card
+import/reconciliation, and pre-approval gating land in later workflows (see the
+roadmap at the bottom).
 
 ## Data model
 
@@ -79,9 +82,10 @@ Two routers in `backend/app/api/expenses.py`, both mounted under `/api`:
 
 Every mutation writes an audit row via `dispatch_audit` (before `commit`):
 `expense.created` / `expense.updated` / `expense.deleted` /
-`expense.receipt_uploaded`, `expense_report.created` /
-`expense_report.updated` / `expense_report.expenses_attached`. Audit `details`
-carry field-names and string-Decimal amounts — never PII.
+`expense.receipt_uploaded` / `expense.bulk_gl_coded` (one row per re-coded
+expense), `expense_report.created` / `expense_report.updated` /
+`expense_report.expenses_attached`. Audit `details` carry field-names and
+string-Decimal amounts — never PII.
 
 ### Routes
 
@@ -91,12 +95,15 @@ carry field-names and string-Decimal amounts — never PII.
 | POST | `/api/expenses` | Create an expense. Lands under the selected entity (or the tenant default). If `report_id` is supplied, the report's `total_amount` is recomputed. |
 | GET | `/api/expenses/receipt/{file_key:path}` | Download proxy for a stored receipt. Cross-tenant-checked (first key segment must equal the caller's org); same 404 for wrong-org and missing-file. Declared before `/{expense_id}` so `receipt` isn't captured as an id. |
 | POST | `/api/expenses/{id}/receipt` | Upload a receipt to S3 (`upload_expense_receipt`) and stamp `receipt_file_key`. |
+| GET | `/api/expenses/export` | **(WF2)** Stream the filtered expense register as `text/csv` (`expenses_<today>.csv` via Content-Disposition). `?status=&category=&date_from=&date_to=&report_id=`; entity-scoped, no pagination (full filtered set). Outer-joins `GLAccount` (gl code) + `ExpenseReport` (report number) so an uncoded/unattached expense still emits a row. Serialised by `report_export.export_expense_register` (the `expense_register` exporter). Read RBAC (incl. CFO). Declared before `/{expense_id}`. |
+| POST | `/api/expenses/bulk-gl-code` | **(WF2)** Set `gl_account_id` on many expenses at once (`null` clears it). Body `{ expense_ids: [uuid], gl_account_id: uuid\|null }`. Each id resolved within the entity scope (out-of-scope/cross-tenant id → 404); a non-`null` GL is validated against the org's chart. One `expense.bulk_gl_coded` audit row per expense; returns `{ updated }`. Mutation RBAC (`admin`/`ap_manager`/`ap_clerk`). Declared before `/{expense_id}`. |
 | GET | `/api/expenses/{id}` | Get one expense. |
 | PATCH | `/api/expenses/{id}` | Update mutable fields. Audits only when a field actually changed. An `amount` change or a `report_id` move recomputes the affected report total(s). |
 | DELETE | `/api/expenses/{id}` | Delete an expense; recomputes the owning report total if it was attached. |
 | GET | `/api/expense-reports` | List, paginated, entity-scoped; `?status=` filter. |
 | POST | `/api/expense-reports` | Create a report. `employee_user_id` defaults to the caller. |
 | GET | `/api/expense-reports/{id}` | Get one report (with its expenses). |
+| GET | `/api/expense-reports/{id}/summary` | **(WF2)** Aggregate the report's attached expenses: `{ total, count, by_category: [{category, total, count}], by_status: [{status, total, count}] }`. SUMs run in Postgres over the `Numeric` column (exact); serialised as float to match `ExpenseResponse.amount` (read-only display rollup). Read RBAC (incl. CFO). |
 | PATCH | `/api/expense-reports/{id}` | Update mutable report fields. |
 | POST | `/api/expense-reports/{id}/expenses` | Attach (or `detach: true`) expense ids; recomputes `total_amount`. Each id is looked up in this tenant's `expenses` table, so a cross-tenant/unknown id is a 404. Detaching nulls `report_id` (the expense outlives the report). |
 
@@ -126,12 +133,27 @@ round-trips, and an explicit five-table existence check (create_all parity for
 the circular FK). The RBAC coverage gate (`tests/test_rbac.py`) confirms every
 expense route carries an auth dependency.
 
+`backend/tests/test_expense_reporting.py` (WF2) — the report-summary math
+(grand total + per-category/per-status rollups, the empty-report and 404 cases,
+CFO read access), the CSV export (header + a data row, the `?status=` filter,
+CFO can export), and the bulk GL re-code (sets + one audit row per expense,
+the `null`-clears case, unknown-GL/unknown-expense 404s, and the CFO-denied
+RBAC case).
+
+The frontend `/expenses` workspace is covered by the Playwright spec
+`frontend/tests-e2e/expenses/expenses.spec.ts` (create an expense with a
+receipt, KPIs update, GL-code it, build + attach + submit a report, export the
+CSV).
+
 ## Roadmap (WF2–WF4)
 
-- **WF2 — Submission UX + report lifecycle.** Frontend expense/report screens
-  (Svelte 5 runes, shared components), mobile receipt capture, and the report
-  approval flow (submit → pending_approval → approved/rejected → reimbursed)
-  reusing the AP approval infrastructure.
+- **WF2 — Submission UX + Reporting.** *(Shipped — see the API + Tests sections
+  above.)* The report-summary rollup, expense-register CSV export, and bulk GL
+  re-code endpoints, plus the SvelteKit `/expenses` workspace (two-tab
+  Expenses/Reports page, `ExpenseModal`, KPIs, bulk GL coding, CSV export, and
+  the draft→submitted report action). Mobile receipt capture and the deeper
+  report approval lifecycle (pending_approval → approved/rejected → reimbursed,
+  reusing the AP approval infrastructure) remain follow-on work.
 - **WF3 — Policies + pre-approvals.** Enforce `ExpensePolicy` (per-diem,
   mileage rate × `mileage_miles`, category limits, receipt-required
   thresholds) writing into `Expense.policy_violations`; gate high-value
