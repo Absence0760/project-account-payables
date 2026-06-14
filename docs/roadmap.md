@@ -709,10 +709,10 @@ Policy enforcement, card import/reconciliation, pre-approval gating, and the
 frontend UX land in WF2-4.
 
 - [x] Out-of-pocket expense submission with receipt capture *(backend foundation done — WF1; UX lands in WF2)*
-- [ ] Corporate card transaction import and reconciliation *(model shipped WF1; import/reconcile in WF4)*
+- [x] Corporate card transaction import and reconciliation *(WF4 — `/api/corporate-card-transactions` CSV import (idempotent on `external_txn_id`) + amount/date+merchant match-suggestions + match/unmatch/ignore/create-expense both-sides linkage; `/expenses` Cards tab)*
 - [x] Expense policies — per diem, mileage rates, category limits *(WF3 — `services/expense_policy.py` engine + `/api/expense-policies` CRUD; violations on `Expense.policy_violations`)*
 - [x] Pre-approval workflows for high-value expenses *(WF3 — `/api/expense-preapprovals` request + approve/reject with segregation; pre-approval-required policy rule)*
-- [ ] Integration with existing virtual card program
+- [x] Integration with existing virtual card program *(WF4 — `POST /api/corporate-card-transactions/sync-virtual-cards` pulls charged `VirtualCard` spend into the reconciliation feed via the synthetic `vc:<provider_card_id>` external id; matched expenses get `payment_method=virtual_card`)*
 - [x] Expense reporting with GL coding *(WF2 — report summary + CSV export (`/api/expenses/export`) + per-expense and bulk GL coding)*
 - [x] Manager approval flow (reuse AP approval infrastructure) *(WF3 — report submit/approve/reject reusing `approval_chain.check_segregation` + a CFO-threshold gate)*
 

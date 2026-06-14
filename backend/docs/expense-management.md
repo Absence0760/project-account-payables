@@ -12,7 +12,11 @@ the bulk GL re-code endpoint, and the full SvelteKit `/expenses` workspace
 + Manager Approval)** adds the policy engine (`services/expense_policy.py`),
 policy + pre-approval CRUD routers, and the real report submit → approve →
 reject lifecycle (reusing the AP approval infrastructure's `check_segregation`).
-Card import/reconciliation lands in WF4 (see the roadmap at the bottom).
+**WF4 (Corporate-card import + reconciliation + virtual-card integration)** adds
+the `/api/corporate-card-transactions` router: card-feed CSV import, charged
+virtual-card sync, and the expense reconciliation surface (match-suggestions,
+match/unmatch, ignore, create-expense-from-card). See the Corporate-card
+reconciliation routes section below.
 
 ## Data model
 
@@ -112,6 +116,27 @@ string-Decimal amounts — never PII.
 | POST | `/api/expense-reports/{id}/approve` | **(WF3)** `submitted → approved`. Segregation of duties: the approver must differ from the report's `employee_user_id` (reuses `approval_chain.check_segregation` → **403**). CFO gate: when `total_amount` exceeds `Organization.settings.expense_approval.cfo_threshold` (default `5000`, Decimal math), only `cfo`/`admin` may approve (else 403). Stamps `approved_at` + `approved_by` (the approver's user id) and moves child expenses to `approved`. Invalid source status → 422. RBAC `admin`/`ap_manager`/`cfo`. Audited `expense_report.approved`. |
 | POST | `/api/expense-reports/{id}/reject` | **(WF3)** `submitted → rejected`. Body `{ reason? }`. Returns each child expense to `draft` so they can be corrected and re-reported (`rejected` is terminal for the report row). Invalid source status → 422. RBAC `admin`/`ap_manager`. Audited `expense_report.rejected`. |
 
+### Corporate-card reconciliation routes (WF4)
+
+Router `app/api/expense_cards.py`, prefix `/api/corporate-card-transactions`. Read = all roles; mutate = `admin`/`ap_manager` (create-expense also allows `ap_clerk`). Every mutation is audited and entity-scoped; PII is `card_last_four` only.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/corporate-card-transactions` | List, paginated, entity-scoped; `?reconciliation_status=&virtual_card_id=&date_from=&date_to=` filters. Ordered by `txn_date` desc. |
+| POST | `/api/corporate-card-transactions/import-csv` | Import a card-feed CSV (`import_corporate_card_csv`). Columns: `external_txn_id,date,posted_date,merchant,amount,currency,card_last_four,card_ref`. Dedupes on `(org, external_txn_id)` — already-imported and in-file duplicate rows are skipped (counted). All rows in one upload share an `import_batch`. Returns `ImportResult.to_dict()` (`{imported, skipped, errors}`). Audited `card_txn.imported`. Mutate `admin`/`ap_manager`. Declared before `/{txn_id}`. |
+| POST | `/api/corporate-card-transactions/sync-virtual-cards` | **(item 5)** Create card-transaction rows from this tenant's charged `VirtualCard` rows (`status in (charged, completed)` with `amount_charged`). Idempotent via the synthetic `external_txn_id = vc:<provider_card_id>`; already-synced cards are skipped. `virtual_card_id`/`amount`/`merchant`/`entity_id` carried over. Returns `{created, skipped}`. Audited `card_txn.virtual_cards_synced`. Mutate `admin`/`ap_manager`. Declared before `/{txn_id}`. |
+| GET | `/api/corporate-card-transactions/{id}/match-suggestions` | Ranked candidate expenses: `amount` exact (`Decimal ==`) + `card_transaction_id IS NULL` + `expense_date` within ±5d of `txn_date`, ranked by fuzzy merchant similarity (token Jaccard) then date proximity. Returns `[{expense, score}]`. Read all roles. |
+| POST | `/api/corporate-card-transactions/{id}/match` | Body `{ expense_id }`. Reconcile: sets `txn.matched_expense_id` + `reconciliation_status=matched` AND `expense.card_transaction_id` + `expense.payment_method` (`virtual_card` when `txn.virtual_card_id` set, else `corporate_card`). **409** if either side already matched. Audited both sides (`card_txn.matched` + `expense.card_matched`). Mutate `admin`/`ap_manager`. |
+| POST | `/api/corporate-card-transactions/{id}/unmatch` | Clear both sides; `reconciliation_status=unmatched`. Audited both sides. Mutate `admin`/`ap_manager`. |
+| POST | `/api/corporate-card-transactions/{id}/ignore` | `reconciliation_status=ignored` (deliberately not reconciled — refunds/fees). Audited `card_txn.ignored`. Mutate `admin`/`ap_manager`. |
+| POST | `/api/corporate-card-transactions/{id}/create-expense` | Mint an `Expense` from the txn (`expense_date=txn_date`, merchant, amount, currency, `payment_method` per `virtual_card_id`, entity carried over), then match it both sides. **409** if the txn is already matched. Audited `expense.created` + the match pair. Mutate `admin`/`ap_manager`/`ap_clerk`. |
+
+#### Reconciliation strategy
+
+Match-suggestion mirrors `services/bank_reconciliation.py`'s amount-exact + date-window approach (the window const `_CARD_MATCH_WINDOW_DAYS = 5` lives locally in `services/expense_card_reconciliation.py`). Candidates are pulled by exact `Decimal` amount equality + the unmatched filter in SQL; the ±N-day date window is applied in Python; results are ranked by fuzzy merchant similarity (`vendor_matching._normalize`/`_similarity`) descending, then by smallest date gap. All money math is `Decimal`; only the response serialiser does `float(...)`.
+
+Virtual-card sync (`sync_virtual_cards`) carries charged virtual-card spend into the same feed so virtual cards reconcile through one surface. Dedupe is the synthetic `external_txn_id = vc:<provider_card_id>` backed by the `uq_corporate_card_txn_external` partial-unique index (no new webhook — the card-charge webhook already exists). Each synced txn keeps the card's own `entity_id`.
+
 ### Policy engine (WF3)
 
 `app/services/expense_policy.py` is pure — no LLM, no DB, no network. The
@@ -208,12 +233,23 @@ self-blocked by segregation; a different manager approving; the CFO threshold
 (default 5000 + a custom org override); the reject path returning children to
 `draft`; invalid-state 422 guards; and exact `Numeric` policy money round-trips.
 
+`backend/tests/test_expense_cards.py` (WF4, `realdb`) — CSV import (rows land,
+exact `Numeric` round-trip, shared `import_batch`) + dedupe-skip (re-import and
+in-file duplicates), virtual-card sync (charged-only, `vc:` external id) +
+idempotent re-run, match-suggestion amount + ±5d date windowing, match/unmatch
+round-trip asserting both-sides linkage + `payment_method` (corporate vs
+virtual), create-expense-from-card, ignore, already-matched 409, list status
+filter, CFO mutation denial (read still allowed), tenant isolation, and audit
+rows on the trail.
+
 The frontend `/expenses` workspace is covered by the Playwright specs
 `frontend/tests-e2e/expenses/expenses.spec.ts` (create an expense with a
 receipt, KPIs update, GL-code it, build + attach + submit a report, export the
-CSV) and `frontend/tests-e2e/expenses/expense-approval.spec.ts` (WF3 — create a
+CSV), `frontend/tests-e2e/expenses/expense-approval.spec.ts` (WF3 — create a
 policy, an expense that violates it shows a badge, build + submit a report, a
-different manager approves → `approved`).
+different manager approves → `approved`), and
+`frontend/tests-e2e/expenses/expense-cards.spec.ts` (WF4 — import a card CSV,
+re-import dedupes, sync virtual cards, match a txn to an expense, ignore one).
 
 ## Roadmap (WF2–WF4)
 
@@ -232,6 +268,15 @@ different manager approves → `approved`).
   blocking violations, segregation of duties, and the
   `expense_approval.cfo_threshold`. The frontend adds Policies + Pre-approvals
   tabs and the real report submit/approve/reject actions.
-- **WF4 — Corporate card import + reconciliation.** Import card feeds into
-  `corporate_card_transactions` (idempotent on `external_txn_id`), auto-match
-  to expenses, and link to the existing virtual-card program.
+- **WF4 — Corporate card import + reconciliation + virtual-card integration.**
+  *(Shipped — see the corporate-card reconciliation routes + reconciliation
+  strategy above.)* The `/api/corporate-card-transactions` router imports card
+  feeds into `corporate_card_transactions` (idempotent on `external_txn_id`),
+  syncs charged virtual-card spend into the same feed (`vc:<provider_card_id>`),
+  suggests + applies amount/date+merchant matches to expenses (both-sides FK +
+  `payment_method`), and supports unmatch / ignore / create-expense-from-card.
+  The frontend adds a Cards tab (KPIs, status filter chips, import-CSV +
+  sync-virtual-cards actions, per-row Match/Create-expense/Ignore/Unmatch).
+  Deferred: live card-network feed connectors (Stripe Issuing / direct bank
+  feeds beyond the existing virtual-card program), auto-apply of high-confidence
+  matches, and multi-currency reconciliation.
