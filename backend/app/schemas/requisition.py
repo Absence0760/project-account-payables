@@ -1,0 +1,169 @@
+"""Pydantic request/response schemas for the purchase-requisitions router.
+
+Money convention (mirrors ``schemas/expense.py`` / ``schemas/contract.py``):
+request fields are typed ``Decimal | None`` for exactness on the way in;
+response/list fields serialise money as ``float | None`` (the router does
+``float(...)``). Never ``float`` on a column or in-memory total.
+
+The requisition ``total`` is always recomputed server-side from the line items
+(``sum(quantity * unit_price)``) — a client-sent total is ignored, so the header
+total can never drift from its lines.
+"""
+
+from datetime import date
+from decimal import Decimal
+
+from pydantic import BaseModel, Field
+
+from app.api.pagination import PageMeta
+from app.models.procurement import RequisitionStatus
+
+# ---------------------------------------------------------------------------
+# Line items
+# ---------------------------------------------------------------------------
+
+
+class RequisitionLineItemBase(BaseModel):
+    line_number: int | None = None
+    catalog_item_id: str | None = None
+    item_code: str | None = Field(default=None, max_length=100)
+    description: str | None = None
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    gl_account_id: str | None = None
+    uom: str | None = Field(default=None, max_length=20)
+
+
+class RequisitionLineItemCreate(RequisitionLineItemBase):
+    pass
+
+
+class RequisitionLineItemResponse(BaseModel):
+    id: str
+    line_number: int | None
+    catalog_item_id: str | None
+    item_code: str | None
+    description: str | None
+    quantity: float | None
+    unit_price: float | None
+    total: float | None
+    gl_account_id: str | None
+    uom: str | None
+
+
+# ---------------------------------------------------------------------------
+# Requisitions
+# ---------------------------------------------------------------------------
+
+
+class RequisitionBase(BaseModel):
+    requisition_number: str = Field(..., max_length=50)
+    title: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=120)
+    needed_by: date | None = None
+    justification: str | None = None
+    vendor_id: str | None = None
+    contract_id: str | None = None
+    budget_id: str | None = None
+    currency: str = Field(default="USD", max_length=3)
+    notes: str | None = None
+
+
+class RequisitionCreate(RequisitionBase):
+    line_items: list[RequisitionLineItemCreate] = Field(default_factory=list)
+
+
+class RequisitionUpdate(BaseModel):
+    """PATCH — every field optional. Allowed on ``draft`` requisitions only.
+
+    ``line_items`` is a full replacement of the requisition's lines (None leaves
+    them untouched). ``status`` moves through the dedicated transition routes
+    (submit / approve / reject / cancel / convert), never here."""
+
+    requisition_number: str | None = Field(default=None, max_length=50)
+    title: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=120)
+    needed_by: date | None = None
+    justification: str | None = None
+    vendor_id: str | None = None
+    contract_id: str | None = None
+    budget_id: str | None = None
+    currency: str | None = Field(default=None, max_length=3)
+    notes: str | None = None
+    line_items: list[RequisitionLineItemCreate] | None = None
+
+
+class RequisitionResponse(BaseModel):
+    id: str
+    requisition_number: str
+    title: str | None
+    requester_user_id: str
+    department: str | None
+    status: str
+    needed_by: str | None
+    justification: str | None
+    vendor_id: str | None
+    contract_id: str | None
+    budget_id: str | None
+    total: float
+    currency: str
+    notes: str | None
+    submitted_at: str | None
+    approved_at: str | None
+    approved_by: str | None
+    rejection_reason: str | None
+    converted_po_id: str | None
+    line_items: list[RequisitionLineItemResponse] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class RequisitionListResponse(PageMeta):
+    items: list[RequisitionResponse]
+    total: int
+
+
+# ---------------------------------------------------------------------------
+# Transition bodies
+# ---------------------------------------------------------------------------
+
+
+class RequisitionDecision(BaseModel):
+    """Optional body for a requisition approve / reject / cancel — carries a
+    free-text reason (required-ish for reject; surfaced on the row)."""
+
+    reason: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Convert-to-PO
+# ---------------------------------------------------------------------------
+
+
+class ConvertToPoResponse(BaseModel):
+    """Result of ``POST /requisitions/{id}/convert-to-po``.
+
+    ``created`` is ``False`` on the idempotent replay path (the requisition was
+    already converted) so the caller can tell a fresh conversion from a no-op.
+    Money serialises as ``float`` to match the rest of the surface."""
+
+    requisition_id: str
+    po_id: str
+    po_number: str
+    total: float
+    created: bool
+
+
+__all__ = [
+    "RequisitionLineItemBase",
+    "RequisitionLineItemCreate",
+    "RequisitionLineItemResponse",
+    "RequisitionBase",
+    "RequisitionCreate",
+    "RequisitionUpdate",
+    "RequisitionResponse",
+    "RequisitionListResponse",
+    "RequisitionDecision",
+    "ConvertToPoResponse",
+    "RequisitionStatus",
+]
