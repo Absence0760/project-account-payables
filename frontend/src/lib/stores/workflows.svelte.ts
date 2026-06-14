@@ -1,4 +1,13 @@
-import type { WorkflowDefinition, WorkflowStep } from '$lib/types/workflow';
+import type {
+	WorkflowDefinition,
+	WorkflowStep,
+	WorkflowTemplate,
+	WorkflowVersion,
+	WorkflowDiff,
+	SimInvoice,
+	SimulationResult,
+	WorkflowExport,
+} from '$lib/types/workflow';
 import { api } from '$lib/api';
 
 export interface ApprovalConfig {
@@ -109,6 +118,72 @@ function createWorkflowStore() {
 		return result;
 	}
 
+	// ── No-code builder: templates, versioning, simulation, import/export ──
+
+	async function listTemplates(): Promise<WorkflowTemplate[]> {
+		const res = await api.get<{ items: WorkflowTemplate[] }>('/api/workflows/templates');
+		return res.items;
+	}
+
+	async function createFromTemplate(key: string, name: string): Promise<WorkflowDefinition> {
+		const created = await api.post<WorkflowDefinition>('/api/workflows/from-template', {
+			template_key: key,
+			name,
+		});
+		workflows = [...workflows, created];
+		total += 1;
+		return created;
+	}
+
+	async function listVersions(id: string): Promise<WorkflowVersion[]> {
+		const res = await api.get<{ items: WorkflowVersion[] }>(`/api/workflows/${id}/versions`);
+		return res.items;
+	}
+
+	async function createVersion(id: string, note: string | null): Promise<WorkflowVersion> {
+		return api.post<WorkflowVersion>(`/api/workflows/${id}/versions`, { note });
+	}
+
+	async function restoreVersion(id: string, versionId: string): Promise<WorkflowDefinition> {
+		const updated = await api.post<WorkflowDefinition>(
+			`/api/workflows/${id}/restore/${versionId}`,
+			{}
+		);
+		workflows = workflows.map((w) => (w.id === id ? updated : w));
+		return updated;
+	}
+
+	async function diffVersions(
+		id: string,
+		fromId: string,
+		toId: string
+	): Promise<WorkflowDiff> {
+		return api.get<WorkflowDiff>(
+			`/api/workflows/${id}/versions/diff?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`
+		);
+	}
+
+	async function simulate(
+		id: string,
+		payload: { invoice: SimInvoice } | { invoice_id: string }
+	): Promise<SimulationResult> {
+		return api.post<SimulationResult>(`/api/workflows/${id}/simulate`, payload);
+	}
+
+	async function exportDefinition(id: string): Promise<WorkflowExport> {
+		return api.get<WorkflowExport>(`/api/workflows/${id}/export`);
+	}
+
+	async function importDefinition(payload: {
+		name?: string | null;
+		definition: WorkflowExport;
+	}): Promise<WorkflowDefinition> {
+		const created = await api.post<WorkflowDefinition>('/api/workflows/import', payload);
+		workflows = [...workflows, created];
+		total += 1;
+		return created;
+	}
+
 	async function fetchActiveSteps() {
 		try {
 			const data = await api.get<Record<string, unknown>>('/api/workflows/active/steps');
@@ -147,6 +222,15 @@ function createWorkflowStore() {
 		update,
 		remove,
 		bulkRemove,
+		listTemplates,
+		createFromTemplate,
+		listVersions,
+		createVersion,
+		restoreVersion,
+		diffVersions,
+		simulate,
+		exportDefinition,
+		importDefinition,
 	};
 }
 

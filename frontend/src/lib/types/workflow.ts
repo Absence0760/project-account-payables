@@ -1,15 +1,33 @@
-export type WorkflowStepType = 'extraction' | 'approval' | 'erp_export';
+export type WorkflowStepType =
+	| 'extraction'
+	| 'approval'
+	| 'erp_export'
+	| 'condition'
+	| 'parallel'
+	| 'webhook'
+	| 'email'
+	| 'delay';
 
 export const STEP_TYPE_LABELS: Record<WorkflowStepType, string> = {
 	extraction: 'Data Extraction',
 	approval: 'Approval',
 	erp_export: 'ERP Export',
+	condition: 'Condition',
+	parallel: 'Parallel Approval',
+	webhook: 'Webhook',
+	email: 'Send Email',
+	delay: 'Delay',
 };
 
 export const STEP_TYPE_DESCRIPTIONS: Record<WorkflowStepType, string> = {
 	extraction: 'AI-powered data extraction from uploaded invoices',
 	approval: 'Human review and approval of invoice data',
 	erp_export: 'Export approved invoices to your ERP system',
+	condition: 'Branch the workflow based on invoice attributes',
+	parallel: 'Fan out to several approver groups and join the results',
+	webhook: 'Call an external HTTP endpoint',
+	email: 'Send a notification email',
+	delay: 'Pause the workflow for a fixed duration',
 };
 
 export interface ExtractionStepConfig {
@@ -82,7 +100,105 @@ export interface ErpExportStepConfig {
 	include_attachments: boolean;
 }
 
-export type StepConfig = ExtractionStepConfig | ApprovalStepConfig | ErpExportStepConfig;
+// ── Builder step types (stored in steps_config JSONB, no enum migration) ──
+
+export type ConditionField =
+	| 'amount'
+	| 'currency'
+	| 'vendor_id'
+	| 'gl_account'
+	| 'cost_center'
+	| 'department';
+
+export type ConditionOperator =
+	| 'gt'
+	| 'gte'
+	| 'lt'
+	| 'lte'
+	| 'eq'
+	| 'ne'
+	| 'in'
+	| 'not_in'
+	| 'starts_with';
+
+export const CONDITION_FIELD_LABELS: Record<ConditionField, string> = {
+	amount: 'Amount',
+	currency: 'Currency',
+	vendor_id: 'Vendor',
+	gl_account: 'GL account',
+	cost_center: 'Cost center',
+	department: 'Department',
+};
+
+export const CONDITION_OPERATOR_LABELS: Record<ConditionOperator, string> = {
+	gt: 'greater than',
+	gte: 'greater than or equal',
+	lt: 'less than',
+	lte: 'less than or equal',
+	eq: 'equals',
+	ne: 'does not equal',
+	in: 'is one of',
+	not_in: 'is not one of',
+	starts_with: 'starts with',
+};
+
+export interface ConditionRule {
+	field: ConditionField;
+	operator: ConditionOperator;
+	value: number | string | string[];
+}
+
+export interface ConditionStepConfig {
+	rules: ConditionRule[];
+	match: 'all' | 'any';
+	on_true_goto: number | null;
+	on_false_goto: number | null;
+}
+
+export interface ParallelBranchConfig {
+	name: string;
+	approver_ids: string[];
+}
+
+export interface ParallelStepConfig {
+	branches: ParallelBranchConfig[];
+	join: 'all' | 'any';
+	min_approvals: number | null;
+}
+
+export type WebhookMethod = 'POST' | 'GET' | 'PUT';
+
+export interface WebhookStepConfig {
+	url: string;
+	method: WebhookMethod;
+	headers: Record<string, string>;
+	body_template: string | null;
+	timeout_seconds: number;
+}
+
+export type EmailRecipientKind = 'approver' | 'vendor' | 'custom';
+
+export interface EmailStepConfig {
+	to: EmailRecipientKind;
+	to_addresses: string[];
+	subject: string;
+	body_template: string;
+}
+
+export interface DelayStepConfig {
+	duration_seconds: number;
+	until_field: string | null;
+}
+
+export type StepConfig =
+	| ExtractionStepConfig
+	| ApprovalStepConfig
+	| ErpExportStepConfig
+	| ConditionStepConfig
+	| ParallelStepConfig
+	| WebhookStepConfig
+	| EmailStepConfig
+	| DelayStepConfig;
 
 export interface WorkflowStep {
 	number: number;
@@ -126,3 +242,111 @@ export const DEFAULT_ERP_CONFIG: ErpExportStepConfig = {
 	include_line_items: true,
 	include_attachments: false,
 };
+
+export const DEFAULT_CONDITION_CONFIG: ConditionStepConfig = {
+	rules: [{ field: 'amount', operator: 'gt', value: 0 }],
+	match: 'all',
+	on_true_goto: null,
+	on_false_goto: null,
+};
+
+export const DEFAULT_PARALLEL_CONFIG: ParallelStepConfig = {
+	branches: [{ name: 'Branch 1', approver_ids: [] }],
+	join: 'all',
+	min_approvals: null,
+};
+
+export const DEFAULT_WEBHOOK_CONFIG: WebhookStepConfig = {
+	url: '',
+	method: 'POST',
+	headers: {},
+	body_template: null,
+	timeout_seconds: 30,
+};
+
+export const DEFAULT_EMAIL_CONFIG: EmailStepConfig = {
+	to: 'approver',
+	to_addresses: [],
+	subject: '',
+	body_template: '',
+};
+
+export const DEFAULT_DELAY_CONFIG: DelayStepConfig = {
+	duration_seconds: 3600,
+	until_field: null,
+};
+
+export const DEFAULT_STEP_CONFIGS: Record<WorkflowStepType, () => StepConfig> = {
+	extraction: () => ({ ...DEFAULT_EXTRACTION_CONFIG }),
+	approval: () => ({ ...DEFAULT_APPROVAL_CONFIG, approver_ids: [], approval_chain: [] }),
+	erp_export: () => ({ ...DEFAULT_ERP_CONFIG }),
+	condition: () => structuredClone(DEFAULT_CONDITION_CONFIG),
+	parallel: () => structuredClone(DEFAULT_PARALLEL_CONFIG),
+	webhook: () => structuredClone(DEFAULT_WEBHOOK_CONFIG),
+	email: () => structuredClone(DEFAULT_EMAIL_CONFIG),
+	delay: () => structuredClone(DEFAULT_DELAY_CONFIG),
+};
+
+// ── Management interfaces (templates, versioning, simulation, import/export) ──
+
+export interface WorkflowTemplate {
+	key: string;
+	name: string;
+	description: string;
+	category: string;
+	steps_config: { steps: WorkflowStep[] };
+}
+
+export interface WorkflowVersion {
+	id: string;
+	version_number: number;
+	note: string | null;
+	created_at: string;
+	created_by: string | null;
+	steps_config: { steps: WorkflowStep[] };
+}
+
+export interface WorkflowDiffChange {
+	kind: 'added' | 'removed' | 'changed';
+	step_number: number;
+	field: string | null;
+	before: unknown;
+	after: unknown;
+	summary: string;
+}
+
+export interface WorkflowDiff {
+	from_version: number | string;
+	to_version: number | string;
+	changes: WorkflowDiffChange[];
+}
+
+export interface SimInvoice {
+	amount: number | string;
+	currency: string;
+	vendor_id: string | null;
+	gl_account: string | null;
+	cost_center: string | null;
+	department: string | null;
+}
+
+export interface SimulationPathEntry {
+	step_number: number;
+	type: string;
+	name: string;
+	outcome: string;
+	detail: string;
+}
+
+export interface SimulationResult {
+	path: SimulationPathEntry[];
+	terminal_state: string;
+	warnings: string[];
+}
+
+export interface WorkflowExport {
+	schema_version: number;
+	name: string;
+	description: string | null;
+	steps_config: { steps: WorkflowStep[] };
+}

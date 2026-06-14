@@ -5,23 +5,31 @@
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import ApprovalMatrixEditor from '$lib/components/modals/ApprovalMatrixEditor.svelte';
+	import WorkflowCanvas from '$lib/components/workflow-builder/WorkflowCanvas.svelte';
+	import StepPalette from '$lib/components/workflow-builder/StepPalette.svelte';
+	import ConditionBuilder from '$lib/components/workflow-builder/ConditionBuilder.svelte';
+	import ParallelBranchEditor from '$lib/components/workflow-builder/ParallelBranchEditor.svelte';
+	import CustomStepConfig from '$lib/components/workflow-builder/CustomStepConfig.svelte';
 	import type {
 		WorkflowDefinition,
 		WorkflowStep,
 		WorkflowStepType,
+		StepConfig,
 		ExtractionStepConfig,
 		ApprovalStepConfig,
 		ApprovalLevelConfig,
 		ErpExportStepConfig,
-		ErpExportFormat,
+		ConditionStepConfig,
+		ParallelStepConfig,
+		WebhookStepConfig,
+		EmailStepConfig,
+		DelayStepConfig,
 	} from '$lib/types/workflow';
 	import {
 		STEP_TYPE_LABELS,
 		STEP_TYPE_DESCRIPTIONS,
 		ERP_FORMAT_LABELS,
-		DEFAULT_EXTRACTION_CONFIG,
-		DEFAULT_APPROVAL_CONFIG,
-		DEFAULT_ERP_CONFIG,
+		DEFAULT_STEP_CONFIGS,
 	} from '$lib/types/workflow';
 
 	let workflow = $state<WorkflowDefinition | null>(null);
@@ -35,6 +43,8 @@
 	let approverSearch = $state('');
 	let approverDropdownOpen = $state(false);
 	let erpMethod = $state<string>('merge_dev');
+	// Set while a palette item is being dragged, so the canvas can show drop slots.
+	let paletteDragType = $state<WorkflowStepType | null>(null);
 
 	const id = $derived($page.params.id ?? '');
 
@@ -46,7 +56,9 @@
 
 	async function loadErpMethod() {
 		try {
-			const org = await api.get<{ settings: { erp?: { integration_method?: string } } }>('/api/organization');
+			const org = await api.get<{ settings: { erp?: { integration_method?: string } } }>(
+				'/api/organization'
+			);
 			erpMethod = org.settings?.erp?.integration_method ?? 'merge_dev';
 		} catch {
 			// default to merge_dev
@@ -68,43 +80,59 @@
 
 	let selectedStep = $derived(steps[selectedIndex] ?? null);
 
-	function addStep(type: WorkflowStepType) {
-		const defaults: Record<WorkflowStepType, { name: string; config: object }> = {
-			extraction: { name: 'Data Extraction', config: { ...DEFAULT_EXTRACTION_CONFIG } },
-			approval: { name: 'Approval', config: { ...DEFAULT_APPROVAL_CONFIG } },
-			erp_export: { name: 'ERP Export', config: { ...DEFAULT_ERP_CONFIG } },
-		};
-		const d = defaults[type];
-		const newStep: WorkflowStep = {
+	function renumber(arr: WorkflowStep[]): WorkflowStep[] {
+		return arr.map((s, i) => ({ ...s, number: i + 1 }));
+	}
+
+	function makeStep(type: WorkflowStepType): WorkflowStep {
+		return {
 			number: steps.length + 1,
 			type,
-			name: d.name,
+			name: STEP_TYPE_LABELS[type],
 			enabled: true,
-			config: d.config as ExtractionStepConfig | ApprovalStepConfig | ErpExportStepConfig,
+			config: DEFAULT_STEP_CONFIGS[type](),
 		};
-		steps = [...steps, newStep];
-		selectedIndex = steps.length - 1;
+	}
+
+	function addStep(type: WorkflowStepType) {
+		const next = renumber([...steps, makeStep(type)]);
+		steps = next;
+		selectedIndex = next.length - 1;
+		dirty = true;
+	}
+
+	function addStepAt(type: WorkflowStepType, index: number) {
+		const clamped = Math.max(0, Math.min(index, steps.length));
+		const arr = [...steps];
+		arr.splice(clamped, 0, makeStep(type));
+		steps = renumber(arr);
+		selectedIndex = clamped;
+		dirty = true;
+	}
+
+	function reorderStep(from: number, to: number) {
+		if (from === to) return;
+		const arr = [...steps];
+		const [moved] = arr.splice(from, 1);
+		arr.splice(to, 0, moved);
+		steps = renumber(arr);
+		selectedIndex = to;
 		dirty = true;
 	}
 
 	function removeStep(index: number) {
 		if (steps.length <= 1) return;
-		steps = steps.filter((_, i) => i !== index).map((s, i) => ({ ...s, number: i + 1 }));
+		steps = renumber(steps.filter((_, i) => i !== index));
 		if (selectedIndex >= steps.length) selectedIndex = steps.length - 1;
 		dirty = true;
 	}
 
-	function moveStep(index: number, direction: -1 | 1) {
-		const target = index + direction;
-		if (target < 0 || target >= steps.length) return;
-		const arr = [...steps];
-		[arr[index], arr[target]] = [arr[target], arr[index]];
-		steps = arr.map((s, i) => ({ ...s, number: i + 1 }));
-		selectedIndex = target;
+	function toggleStep(index: number) {
+		steps = steps.map((s, i) => (i === index ? { ...s, enabled: !s.enabled } : s));
 		dirty = true;
 	}
 
-	function updateStepField(index: number, field: string, value: unknown) {
+	function updateStepField(index: number, field: 'name' | 'enabled', value: unknown) {
 		steps = steps.map((s, i) => (i === index ? { ...s, [field]: value } : s));
 		dirty = true;
 	}
@@ -113,6 +141,11 @@
 		steps = steps.map((s, i) =>
 			i === index ? { ...s, config: { ...s.config, [key]: value } } : s
 		);
+		dirty = true;
+	}
+
+	function replaceStepConfig(index: number, config: StepConfig) {
+		steps = steps.map((s, i) => (i === index ? { ...s, config } : s));
 		dirty = true;
 	}
 
@@ -152,15 +185,6 @@
 			toast(e instanceof Error ? e.message : 'Failed to update', 'error');
 		}
 	}
-
-	function stepIcon(type: WorkflowStepType): string {
-		const icons: Record<WorkflowStepType, string> = {
-			extraction: 'M9 2L4.5 6.5 9 11M15 2l4.5 4.5L15 11M12 2v9',
-			approval: 'M9 12l2 2 4-4m5 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
-			erp_export: 'M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2M7 10l5 5 5-5M12 15V3',
-		};
-		return icons[type];
-	}
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -171,13 +195,14 @@
 	{:else}
 		<header class="toolbar">
 			<div class="toolbar-left">
-				<a href="/workflows" class="back-link">
+				<a href="/workflows" class="back-link" aria-label="Back to workflows">
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
 				</a>
 				{#if editingName}
 					<input
 						class="name-input"
 						type="text"
+						aria-label="Workflow name"
 						bind:value={nameInput}
 						onblur={() => { editingName = false; dirty = true; }}
 						onkeydown={(e) => { if (e.key === 'Enter') { editingName = false; dirty = true; } }}
@@ -213,51 +238,28 @@
 		</div>
 
 		<div class="editor">
-			<!-- Left: step list / pipeline -->
-			<div class="pipeline">
-				<div class="pipeline-header">
-					<span class="pipeline-label">Pipeline</span>
-				</div>
+			<!-- Left: draggable step library -->
+			<StepPalette
+				ondragtype={(type) => (paletteDragType = type)}
+				ondragend={() => (paletteDragType = null)}
+				onadd={addStep}
+			/>
 
-				<div class="step-list">
-					{#each steps as step, i (i)}
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div
-							class="step-card"
-							class:selected={selectedIndex === i}
-							class:disabled={!step.enabled}
-							onclick={() => (selectedIndex = i)}
-							onkeydown={() => {}}
-						>
-							<div class="step-header">
-								<svg class="step-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-									<path d={stepIcon(step.type)} />
-								</svg>
-								<div class="step-info">
-									<div class="step-name">{step.name}</div>
-									<div class="step-type">{STEP_TYPE_LABELS[step.type]}</div>
-								</div>
-								<div class="step-number">{step.number}</div>
-							</div>
-						</div>
-						{#if i < steps.length - 1}
-							<div class="connector">
-								<svg width="2" height="20" viewBox="0 0 2 20">
-									<line x1="1" y1="0" x2="1" y2="20" stroke="var(--border)" stroke-width="2" stroke-dasharray="4 3" />
-								</svg>
-							</div>
-						{/if}
-					{/each}
+			<!-- Centre: flow canvas -->
+			<div class="canvas-pane">
+				<div class="pane-header">
+					<span class="pane-label">Flow</span>
 				</div>
-
-				<div class="add-step">
-					<span class="add-label">Add step</span>
-					<div class="add-buttons">
-						<button class="add-btn" onclick={() => addStep('extraction')}>Extraction</button>
-						<button class="add-btn" onclick={() => addStep('approval')}>Approval</button>
-						<button class="add-btn" onclick={() => addStep('erp_export')}>ERP Export</button>
-					</div>
-				</div>
+				<WorkflowCanvas
+					{steps}
+					{selectedIndex}
+					paletteType={paletteDragType}
+					onselect={(i) => (selectedIndex = i)}
+					onreorder={reorderStep}
+					onaddat={addStepAt}
+					ontoggle={toggleStep}
+					ondelete={removeStep}
+				/>
 			</div>
 
 			<!-- Right: step config panel -->
@@ -362,7 +364,7 @@
 
 							{#if cfg.approver_strategy === 'specific'}
 								{@const ids = cfg.approver_ids ?? []}
-								{@const selectedUsers = ids.map((id: string) => adminStore.users.find(u => u.id === id)).filter(Boolean)}
+								{@const selectedUsers = ids.map((uid: string) => adminStore.users.find(u => u.id === uid)).filter(Boolean)}
 								{@const availableUsers = adminStore.users.filter(u => u.is_active && !ids.includes(u.id))}
 								{@const query = approverSearch.toLowerCase().trim()}
 								{@const filteredUsers = query
@@ -372,7 +374,7 @@
 									)
 									: availableUsers}
 								<div class="field">
-									<label>Approvers</label>
+									<label for="approver-search-input">Approvers</label>
 
 									{#if selectedUsers.length > 0}
 										<div class="approver-chips">
@@ -384,7 +386,7 @@
 														class="chip-remove"
 														onclick={(e) => {
 															e.stopPropagation();
-															updateStepConfig(selectedIndex, 'approver_ids', ids.filter((id: string) => id !== user?.id));
+															updateStepConfig(selectedIndex, 'approver_ids', ids.filter((uid: string) => uid !== user?.id));
 														}}
 													>&times;</button>
 												</span>
@@ -395,6 +397,7 @@
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div class="approver-search-wrap" onclick={() => (approverDropdownOpen = true)}>
 										<input
+											id="approver-search-input"
 											type="text"
 											class="approver-search"
 											placeholder="Search users to add..."
@@ -439,7 +442,7 @@
 
 							{#if cfg.approver_strategy === 'chain'}
 								<div class="field">
-									<label>Approval matrix</label>
+									<label for="approval-matrix">Approval matrix</label>
 									<p class="field-hint">
 										Define one or more approval levels. Each level can filter by amount or
 										invoice attributes (department, GL, vendor) and supports parallel approvers
@@ -578,19 +581,47 @@
 								</button>
 							</div>
 						{/if}
+
+						<!-- Condition config -->
+						{#if selectedStep.type === 'condition'}
+							<ConditionBuilder
+								config={selectedStep.config as ConditionStepConfig}
+								{steps}
+								selfNumber={selectedStep.number}
+								onchange={(next) => replaceStepConfig(selectedIndex, next)}
+							/>
+						{/if}
+
+						<!-- Parallel config -->
+						{#if selectedStep.type === 'parallel'}
+							<ParallelBranchEditor
+								config={selectedStep.config as ParallelStepConfig}
+								users={adminStore.users}
+								onchange={(next) => replaceStepConfig(selectedIndex, next)}
+							/>
+						{/if}
+
+						<!-- Webhook / Email / Delay config -->
+						{#if selectedStep.type === 'webhook' || selectedStep.type === 'email' || selectedStep.type === 'delay'}
+							<CustomStepConfig
+								type={selectedStep.type}
+								config={selectedStep.config as WebhookStepConfig | EmailStepConfig | DelayStepConfig}
+								onchange={(next) => replaceStepConfig(selectedIndex, next)}
+							/>
+						{/if}
 					</div>
 
 					<div class="config-footer">
 						<div class="move-btns">
-							<button class="move-btn" disabled={selectedIndex === 0} onclick={() => moveStep(selectedIndex, -1)}>Move Up</button>
-							<button class="move-btn" disabled={selectedIndex === steps.length - 1} onclick={() => moveStep(selectedIndex, 1)}>Move Down</button>
+							<button class="move-btn" disabled={selectedIndex === 0} onclick={() => reorderStep(selectedIndex, selectedIndex - 1)}>Move Up</button>
+							<button class="move-btn" disabled={selectedIndex === steps.length - 1} onclick={() => reorderStep(selectedIndex, selectedIndex + 1)}>Move Down</button>
 						</div>
 						{#if steps.length > 1}
 							<button class="remove-btn" onclick={() => removeStep(selectedIndex)}>Remove Step</button>
 						{/if}
 					</div>
 				{:else}
-					<div class="no-selection">Select a step to configure.</div>
+					<div class="no-selection">Add a step from the library, then select it to configure.</div>
 				{/if}
 			</div>
 		</div>
@@ -725,33 +756,16 @@
 		color: var(--text);
 	}
 
-	/* Messages */
-	.error-bar {
-		padding: 10px 14px;
-		border-radius: 6px;
-		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
-		font-size: 0.85rem;
-	}
-
-	.success-bar {
-		padding: 10px 14px;
-		border-radius: 6px;
-		background: rgba(31, 168, 106, 0.12);
-		color: #1fa86a;
-		font-size: 0.85rem;
-	}
-
-	/* Editor layout */
+	/* Editor layout: palette | canvas | config */
 	.editor {
 		display: grid;
-		grid-template-columns: 300px 1fr;
+		grid-template-columns: 240px 1fr 360px;
 		gap: 16px;
 		min-height: 500px;
+		align-items: start;
 	}
 
-	/* Pipeline (left) */
-	.pipeline {
+	.canvas-pane {
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 8px;
@@ -759,137 +773,17 @@
 		flex-direction: column;
 	}
 
-	.pipeline-header {
+	.pane-header {
 		padding: 12px 14px;
 		border-bottom: 1px solid var(--border);
 	}
 
-	.pipeline-label {
+	.pane-label {
 		font-size: 0.75rem;
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
-	}
-
-	.step-list {
-		padding: 14px;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		flex: 1;
-	}
-
-	.step-card {
-		width: 100%;
-		padding: 10px 12px;
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		cursor: pointer;
-		transition: all 0.15s;
-		background: var(--bg);
-	}
-
-	.step-card:hover {
-		border-color: var(--accent);
-	}
-
-	.step-card.selected {
-		border-color: var(--accent);
-		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.2);
-	}
-
-	.step-card.disabled {
-		opacity: 0.45;
-	}
-
-	.step-header {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-	}
-
-	.step-icon {
-		color: var(--accent);
-		flex-shrink: 0;
-	}
-
-	.step-info {
-		flex: 1;
-		min-width: 0;
-	}
-
-	.step-name {
-		font-size: 0.88rem;
-		font-weight: 500;
-		color: var(--text);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.step-type {
-		font-size: 0.74rem;
-		color: var(--text-muted);
-	}
-
-	.step-number {
-		width: 22px;
-		height: 22px;
-		border-radius: 50%;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		font-size: 0.72rem;
-		font-weight: 600;
-		color: var(--text-muted);
-		display: grid;
-		place-items: center;
-		flex-shrink: 0;
-	}
-
-	.connector {
-		display: flex;
-		justify-content: center;
-		padding: 2px 0;
-	}
-
-	.add-step {
-		padding: 14px;
-		border-top: 1px solid var(--border);
-	}
-
-	.add-label {
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		display: block;
-		margin-bottom: 8px;
-	}
-
-	.add-buttons {
-		display: flex;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-
-	.add-btn {
-		padding: 5px 12px;
-		border-radius: 5px;
-		border: 1px dashed var(--border);
-		background: none;
-		color: var(--text-muted);
-		font-size: 0.78rem;
-		cursor: pointer;
-		font-family: inherit;
-		transition: all 0.15s;
-	}
-
-	.add-btn:hover {
-		border-color: var(--accent);
-		color: var(--accent);
-		border-style: solid;
 	}
 
 	/* Config panel (right) */
@@ -1212,5 +1106,11 @@
 		padding: 40px 20px;
 		text-align: center;
 		color: var(--text-muted);
+	}
+
+	@media (max-width: 1100px) {
+		.editor {
+			grid-template-columns: 1fr;
+		}
 	}
 </style>

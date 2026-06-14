@@ -1,0 +1,163 @@
+<script lang="ts">
+	import type { WorkflowStepType } from '$lib/types/workflow';
+	import { STEP_TYPE_LABELS, STEP_TYPE_DESCRIPTIONS } from '$lib/types/workflow';
+
+	type Props = {
+		ondragtype: (type: WorkflowStepType) => void;
+		ondragend: () => void;
+		onadd: (type: WorkflowStepType) => void;
+	};
+
+	let { ondragtype, ondragend, onadd }: Props = $props();
+
+	const PALETTE: WorkflowStepType[] = [
+		'extraction',
+		'approval',
+		'erp_export',
+		'condition',
+		'parallel',
+		'webhook',
+		'email',
+		'delay',
+	];
+
+	const ICONS: Record<WorkflowStepType, string> = {
+		extraction: 'M9 2L4.5 6.5 9 11M15 2l4.5 4.5L15 11M12 2v9',
+		approval: 'M9 12l2 2 4-4m5 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
+		erp_export: 'M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2M7 10l5 5 5-5M12 15V3',
+		condition: 'M12 2v6m0 0L7 13m5-5l5 5M4 17a3 3 0 1 0 6 0 3 3 0 0 0-6 0zm10 0a3 3 0 1 0 6 0 3 3 0 0 0-6 0z',
+		parallel: 'M4 6h4M4 12h4M4 18h4M14 6h6M14 12h6M14 18h6M8 12h6',
+		webhook: 'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1',
+		email: 'M4 4h16v16H4zM4 6l8 6 8-6',
+		delay: 'M12 6v6l4 2m5-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
+	};
+
+	function handleDragStart(e: DragEvent, type: WorkflowStepType) {
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'copy';
+			e.dataTransfer.setData('text/plain', `palette:${type}`);
+		}
+		ondragtype(type);
+	}
+</script>
+
+<div class="palette">
+	<div class="palette-header">
+		<span class="palette-label">Step Library</span>
+		<p class="palette-hint">Drag a step onto the canvas, or click to append.</p>
+	</div>
+	<div class="palette-list">
+		{#each PALETTE as type (type)}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="palette-item"
+				draggable="true"
+				ondragstart={(e) => handleDragStart(e, type)}
+				ondragend={ondragend}
+				onclick={() => onadd(type)}
+				onkeydown={(e) => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						onadd(type);
+					}
+				}}
+				role="button"
+				tabindex="0"
+				data-palette-type={type}
+				title={STEP_TYPE_DESCRIPTIONS[type]}
+			>
+				<svg class="palette-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d={ICONS[type]} />
+				</svg>
+				<div class="palette-text">
+					<span class="palette-name">{STEP_TYPE_LABELS[type]}</span>
+					<span class="palette-desc">{STEP_TYPE_DESCRIPTIONS[type]}</span>
+				</div>
+			</div>
+		{/each}
+	</div>
+</div>
+
+<style>
+	.palette {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.palette-header {
+		padding: 12px 14px;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.palette-label {
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+
+	.palette-hint {
+		margin: 4px 0 0;
+		font-size: 0.74rem;
+		color: var(--text-muted);
+		line-height: 1.3;
+	}
+
+	.palette-list {
+		padding: 10px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.palette-item {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 9px 10px;
+		border: 1px dashed var(--border);
+		border-radius: 6px;
+		background: var(--bg);
+		cursor: grab;
+		transition:
+			border-color 0.15s,
+			background 0.15s;
+	}
+
+	.palette-item:hover {
+		border-color: var(--accent);
+		border-style: solid;
+	}
+
+	.palette-item:active {
+		cursor: grabbing;
+	}
+
+	.palette-icon {
+		color: var(--accent);
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.palette-text {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+
+	.palette-name {
+		font-size: 0.84rem;
+		font-weight: 500;
+		color: var(--text);
+	}
+
+	.palette-desc {
+		font-size: 0.72rem;
+		color: var(--text-muted);
+		line-height: 1.3;
+	}
+</style>
