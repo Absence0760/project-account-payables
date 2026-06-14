@@ -48,11 +48,33 @@ VALID_TRANSITIONS: dict[InvoiceStatus, set[InvoiceStatus]] = {
     InvoiceStatus.failed: {InvoiceStatus.pending, InvoiceStatus.sending_to_erp},
 }
 
-# Map step index → step type
+# Map step index → step type. This ordered list models the *canonical* linear
+# pipeline that drives the invoice state machine; its order is load-bearing
+# (`STEP_TYPES.index(...)` resolves a step number), so NEW builder step types are
+# deliberately NOT appended here.
 STEP_TYPES = ["extraction", "approval", "erp_export", "done"]
+
+# NEW no-code builder step types (config-only, stored in steps_config JSONB).
+# They orchestrate/branch but don't drive VALID_TRANSITIONS — see
+# services/workflow_builder.py. Registered here only so the engine recognises a
+# definition that contains them as valid rather than rejecting it.
+BUILDER_STEP_TYPES = ["condition", "parallel", "webhook", "email", "delay"]
+
+# The full set of step types the engine accepts in a steps_config definition:
+# the canonical pipeline types plus the builder types.
+KNOWN_STEP_TYPES = set(STEP_TYPES) | set(BUILDER_STEP_TYPES)
 
 # Backwards-compatible aliases for old step type names
 _STEP_TYPE_ALIASES = {"upload": "extraction", "review": "approval", "erp_push": "erp_export"}
+
+
+def is_known_step_type(step_type: str) -> bool:
+    """True if ``step_type`` is a canonical pipeline step, a legacy alias, or a
+    no-code builder step type. The orchestration uses this to accept a workflow
+    definition containing builder steps instead of rejecting it."""
+    resolved = _STEP_TYPE_ALIASES.get(step_type, step_type)
+    return resolved in KNOWN_STEP_TYPES
+
 
 DEFAULT_STEPS_CONFIG = {
     "steps": [

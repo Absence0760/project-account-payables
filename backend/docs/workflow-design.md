@@ -246,6 +246,119 @@ Step types `extraction`, `approval`, `erp_export`, `done` are canonical. Legacy 
 
 Seeded per tenant at organization creation. Configurable for custom approval chains.
 
+## No-Code Builder step types
+
+The visual **No-Code Workflow Builder** lets an admin compose a workflow out of
+the four canonical pipeline steps above plus five NEW builder step types. They are
+stored in the **same** `steps_config` JSONB (`{ "steps": [ <step>, ... ] }`) — no
+enum migration is needed. Each step keeps the standard shape:
+
+```json
+{ "number": 1, "type": "<type>", "name": "...", "enabled": true, "config": { ... } }
+```
+
+The builder types **orchestrate and branch**; they do **not** alter the invoice
+state machine (`VALID_TRANSITIONS` is unchanged). The engine recognises them via
+`workflow_engine.KNOWN_STEP_TYPES` / `is_known_step_type()` so a definition that
+contains them is accepted rather than rejected. All builder logic lives in
+`services/workflow_builder.py` and is consumed by the simulation service and the
+import/create validation path.
+
+| Type | What it does |
+|------|--------------|
+| `condition` | Branch the path on invoice field rules — jump (`goto`) to another step or fall through. |
+| `parallel` | Fan an approval out to multiple branches; join on all / any / N approvals. |
+| `webhook` | Call an external URL. **Recorded-not-sent by default** (local-first). |
+| `email` | Send a notification through the existing email adapter (`console` default). |
+| `delay` | Wait for a duration / until an invoice date field. **Never sleeps** — records intent. |
+
+### Config shapes
+
+- **condition**
+  ```json
+  { "rules": [ {"field": "amount", "operator": "gt", "value": 1000} ],
+    "match": "all" | "any",
+    "on_true_goto": <int|null>, "on_false_goto": <int|null> }
+  ```
+  - `field` ∈ `amount`, `currency`, `vendor_id`, `gl_account`, `cost_center`, `department`
+  - `operator` ∈ `gt`, `gte`, `lt`, `lte`, `eq`, `ne`, `in`, `not_in`, `starts_with`
+  - `*_goto` is a target step **`number`** (null = fall through to the next step)
+- **parallel**
+  ```json
+  { "branches": [ {"name": "Finance", "approver_ids": ["..."]} ],
+    "join": "all" | "any", "min_approvals": <int|null> }
+  ```
+- **webhook**
+  ```json
+  { "url": "https://...", "method": "POST"|"GET"|"PUT",
+    "headers": {"X-Key": "..."}, "body_template": "...|null",
+    "timeout_seconds": 10 }
+  ```
+- **email**
+  ```json
+  { "to": "approver"|"vendor"|"custom", "to_addresses": ["a@b.com"],
+    "subject": "...", "body_template": "..." }
+  ```
+- **delay**
+  ```json
+  { "duration_seconds": 3600, "until_field": "due_date|null" }
+  ```
+
+### Condition goto / branching semantics
+
+`evaluate_condition(config, ctx)` evaluates every rule against the invoice
+context, then combines them with `match`:
+
+- `match: "all"` (default) — every rule must pass (a rule-less condition is
+  vacuously **true**).
+- `match: "any"` — at least one rule must pass (a rule-less condition is
+  vacuously **false**).
+
+`amount` rules compare on `Decimal` (so `"100"` equals `100.00`); every other
+field compares as a string. Numeric operators (`gt`/`gte`/`lt`/`lte`) always
+coerce both sides to `Decimal`. The result carries the resolved branch target:
+`goto = on_true_goto` when matched, else `on_false_goto`. A `null` goto means
+"fall through to the next step." `validate_builder_steps` rejects a `goto` that
+points at a step number not present in the workflow.
+
+### Parallel join semantics
+
+`resolve_parallel(config)` turns the join rule into a concrete `required`
+approval count:
+
+- `join: "all"` → every branch must approve (`required == len(branches)`).
+- `join: "any"` → one approval clears the join (`required == 1`).
+- `min_approvals` (when set) overrides the join, clamped to `[1, len(branches)]`.
+
+The returned dict — `{branches, join, min_approvals, required}` — is what the
+simulation/runtime uses to decide whether the parallel gate is satisfied.
+
+### Local-first executor behavior
+
+`execute_custom_step(step, ctx, *, dry_run=False)` runs the `webhook` / `email` /
+`delay` steps and returns `{"type", "status": "ok"|"skipped"|"error", "detail"}`.
+**`dry_run=True` (simulation) has zero side effects.** Per rail 7 (local-first),
+every executor runs on a dev laptop with no cloud and no network:
+
+- **webhook** — defaults to a no-network **recorded** result; the actual HTTP
+  send belongs to deployed orchestration. Even when `config.enabled` is set, the
+  engine records intent rather than calling out from the dev/simulation path. A
+  missing `url` returns `status: "error"`.
+- **email** — sends via the existing email adapter (`console` by default).
+  `to: "custom"` with no addresses returns `skipped`; `approver`/`vendor`
+  recipients are resolved by the caller at runtime (the engine records the kind
+  only, never an address — PII-free). Adapter failures degrade to `error`,
+  never raise.
+- **delay** — **never sleeps**; it records the intended wait (`duration_seconds`
+  or `until_field`). A deployed scheduler consumes the intent; dev + simulation
+  proceed immediately.
+
+`condition` and `parallel` are **not** executed through `execute_custom_step` —
+they branch the path, so they're resolved via `evaluate_condition` /
+`resolve_parallel` instead. `build_invoice_context(invoice)` maps an Invoice ORM
+object (or a plain dict / SimInvoice) to the evaluation context, keeping `amount`
+as a `Decimal` (never float).
+
 ### WorkflowInstance
 
 One per invoice. Tracks progress through the definition's steps.
