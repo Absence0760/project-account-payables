@@ -26,7 +26,7 @@ import type { Page } from '@playwright/test';
 import { API_BASE, authedTenantHeaders } from './fixtures/helpers';
 
 async function deleteWorkflowByName(page: Page, name: string) {
-	const resp = await page.request.get(`${API_BASE}/api/workflows?page_size=200`, {
+	const resp = await page.request.get(`${API_BASE}/api/workflows?page_size=100`, {
 		headers: await authedTenantHeaders(page),
 	});
 	const body = (await resp.json()) as { items: Array<{ id: string; name: string }> };
@@ -68,10 +68,10 @@ test.describe('no-code workflow builder management', () => {
 
 		try {
 			// The editor (Worker C) renders the template's steps.
-			await expect(page.locator('.step-list .step-card').first()).toBeVisible({
+			await expect(page.locator('.canvas .node').first()).toBeVisible({
 				timeout: 10_000,
 			});
-			expect(await page.locator('.step-list .step-card').count()).toBeGreaterThan(0);
+			expect(await page.locator('.canvas .node').count()).toBeGreaterThan(0);
 		} finally {
 			await deleteWorkflowByName(page, name);
 		}
@@ -197,7 +197,7 @@ test.describe('no-code workflow builder management', () => {
 
 			// Import navigates to the new workflow editor.
 			await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
-			await expect(page.locator('.step-list .step-card').first()).toBeVisible({
+			await expect(page.locator('.canvas .node').first()).toBeVisible({
 				timeout: 10_000,
 			});
 		} finally {
