@@ -8,9 +8,11 @@ This module is delivered in workflows. **WF1 is the foundation**: the full data
 model plus the `/expenses` and `/expense-reports` HTTP API. **WF2 (Submission UX
 + Reporting)** adds the report-summary rollup, the expense-register CSV export,
 the bulk GL re-code endpoint, and the full SvelteKit `/expenses` workspace
-(two-tab Expenses/Reports page + `ExpenseModal`). Policy enforcement, card
-import/reconciliation, and pre-approval gating land in later workflows (see the
-roadmap at the bottom).
+(two-tab Expenses/Reports page + `ExpenseModal`). **WF3 (Policies + Pre-approval
++ Manager Approval)** adds the policy engine (`services/expense_policy.py`),
+policy + pre-approval CRUD routers, and the real report submit → approve →
+reject lifecycle (reusing the AP approval infrastructure's `check_segregation`).
+Card import/reconciliation lands in WF4 (see the roadmap at the bottom).
 
 ## Data model
 
@@ -106,6 +108,54 @@ string-Decimal amounts — never PII.
 | GET | `/api/expense-reports/{id}/summary` | **(WF2)** Aggregate the report's attached expenses: `{ total, count, by_category: [{category, total, count}], by_status: [{status, total, count}] }`. SUMs run in Postgres over the `Numeric` column (exact); serialised as float to match `ExpenseResponse.amount` (read-only display rollup). Read RBAC (incl. CFO). |
 | PATCH | `/api/expense-reports/{id}` | Update mutable report fields. |
 | POST | `/api/expense-reports/{id}/expenses` | Attach (or `detach: true`) expense ids; recomputes `total_amount`. Each id is looked up in this tenant's `expenses` table, so a cross-tenant/unknown id is a 404. Detaching nulls `report_id` (the expense outlives the report). |
+| POST | `/api/expense-reports/{id}/submit` | **(WF3)** `draft → submitted`. Runs the policy engine over the report's expenses; if any BLOCKING violation (missing required receipt, or required pre-approval absent) is present, returns **422** with `{ detail: { message, violations: [...] } }` and does NOT transition. On success stamps `submitted_at` and moves every child expense to `submitted`. Invalid source status → 422. RBAC `admin`/`ap_manager`/`ap_clerk` (the owner submits). Audited `expense_report.submitted`. |
+| POST | `/api/expense-reports/{id}/approve` | **(WF3)** `submitted → approved`. Segregation of duties: the approver must differ from the report's `employee_user_id` (reuses `approval_chain.check_segregation` → **403**). CFO gate: when `total_amount` exceeds `Organization.settings.expense_approval.cfo_threshold` (default `5000`, Decimal math), only `cfo`/`admin` may approve (else 403). Stamps `approved_at` + `approved_by` (the approver's user id) and moves child expenses to `approved`. Invalid source status → 422. RBAC `admin`/`ap_manager`/`cfo`. Audited `expense_report.approved`. |
+| POST | `/api/expense-reports/{id}/reject` | **(WF3)** `submitted → rejected`. Body `{ reason? }`. Returns each child expense to `draft` so they can be corrected and re-reported (`rejected` is terminal for the report row). Invalid source status → 422. RBAC `admin`/`ap_manager`. Audited `expense_report.rejected`. |
+
+### Policy engine (WF3)
+
+`app/services/expense_policy.py` is pure — no LLM, no DB, no network. The
+caller (`api/expenses.py`) loads the active `ExpensePolicy` rows (and any
+approved `ExpensePreapproval` coverage) from the tenant DB and hands them in:
+
+- `evaluate_expense(expense, policies, approved_preapproval_amount=None)` →
+  `list[dict]`. A policy applies when it is `active` and its `category` is NULL
+  (all) or matches the expense category. Rules: `category_limit` exceeded;
+  `receipt_required` (amount > `requires_receipt_above` and no
+  `receipt_file_key` — **blocking**); `preapproval_required` (amount >
+  `requires_preapproval_above` with no approved pre-approval covering it —
+  **blocking**); `per_diem_exceeded`. All comparisons are `Decimal`.
+- `mileage_reimbursement(expense, policies)` → `Decimal`
+  (`mileage_miles * mileage_rate` from the first applicable policy with a rate).
+- `evaluate_report(report, expenses, policies, preapproval_amount_by_expense=…)`
+  → aggregate violations, each tagged with its source `expense_id`.
+- `blocking_violations(violations)` filters to the `BLOCKING_CODES` subset
+  (`receipt_required`, `preapproval_required`) — the ones that block submission.
+
+Each violation dict is `{code, message, policy_id?, limit?, actual?,
+expense_id?}` (advisory, PII-free). `evaluate_expense` is wired into expense
+**create**, **PATCH**, and **receipt upload** as a best-effort refresh of
+`Expense.policy_violations` (a policy-engine error never breaks the write).
+
+### Policy + pre-approval CRUD (WF3)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/expense-policies` | List policies; `?active=&category=` filters. Read RBAC (all four roles). |
+| POST | `/api/expense-policies` | Create a policy. Mutation RBAC (`admin`/`ap_manager`). Audited `expense_policy.created`. |
+| GET/PATCH/DELETE | `/api/expense-policies/{id}` | Get / update / delete. Mutations `admin`/`ap_manager`, audited. |
+| GET | `/api/expense-preapprovals` | List requests; `?status=&requester_user_id=` filters. Read RBAC (all four). |
+| POST | `/api/expense-preapprovals` | Raise a request — `requester_user_id` is always the authenticated user (the body field is ignored so SoD on the decision side stays meaningful); status `pending`. RBAC `admin`/`ap_manager`/`ap_clerk`. Audited. |
+| GET | `/api/expense-preapprovals/{id}` | Get one. Read RBAC. |
+| POST | `/api/expense-preapprovals/{id}/approve` \| `/reject` | Decide. `check_segregation` blocks the requester from deciding their own request (403). Stamps `decided_by` + `decided_at` + status; invalid source status → 422. RBAC `admin`/`ap_manager`. Audited `expense_preapproval.{approved,rejected}`. |
+
+### CFO approval threshold
+
+`Organization.settings.expense_approval.cfo_threshold` (a Decimal-as-string,
+default `5000`) gates report approval: a report whose `total_amount` exceeds it
+requires the `cfo` (or `admin`) role. It's read off the injected `Organization`
+row in the approve handler; writing it (if a settings UI is added) uses the
+`flag_modified(org, 'settings')` idiom against the control DB.
 
 ### Storage
 
@@ -140,10 +190,30 @@ CFO can export), and the bulk GL re-code (sets + one audit row per expense,
 the `null`-clears case, unknown-GL/unknown-expense 404s, and the CFO-denied
 RBAC case).
 
-The frontend `/expenses` workspace is covered by the Playwright spec
+`backend/tests/test_expense_policy.py` (WF3, pure/DB-free) — the policy engine:
+category limits, receipt-required, pre-approval-required (+ coverage), per-diem,
+category matching (NULL = all), the active flag, mileage reimbursement (Decimal),
+report aggregation, and the blocking-subset filter.
+
+`backend/tests/test_expense_preapprovals.py` (WF3, `realdb`) — pre-approval
+create (requester stamped from the caller), list + status filter, manager
+approve/reject, self-decision blocked by segregation, double-decision 422, RBAC
+(clerk can't approve), tenant isolation, and audit rows.
+
+`backend/tests/test_expense_approval.py` (WF3, `realdb`) — policy CRUD + RBAC +
+audit; a violation surfaced on expense create and cleared on receipt upload;
+report submit blocked on a missing required receipt (422 + violation list, no
+transition); submit success (child statuses + `submitted_at`); approve
+self-blocked by segregation; a different manager approving; the CFO threshold
+(default 5000 + a custom org override); the reject path returning children to
+`draft`; invalid-state 422 guards; and exact `Numeric` policy money round-trips.
+
+The frontend `/expenses` workspace is covered by the Playwright specs
 `frontend/tests-e2e/expenses/expenses.spec.ts` (create an expense with a
 receipt, KPIs update, GL-code it, build + attach + submit a report, export the
-CSV).
+CSV) and `frontend/tests-e2e/expenses/expense-approval.spec.ts` (WF3 — create a
+policy, an expense that violates it shows a badge, build + submit a report, a
+different manager approves → `approved`).
 
 ## Roadmap (WF2–WF4)
 
@@ -154,10 +224,14 @@ CSV).
   the draft→submitted report action). Mobile receipt capture and the deeper
   report approval lifecycle (pending_approval → approved/rejected → reimbursed,
   reusing the AP approval infrastructure) remain follow-on work.
-- **WF3 — Policies + pre-approvals.** Enforce `ExpensePolicy` (per-diem,
-  mileage rate × `mileage_miles`, category limits, receipt-required
-  thresholds) writing into `Expense.policy_violations`; gate high-value
-  expenses on an approved `ExpensePreapproval`.
+- **WF3 — Policies + Pre-approval + Manager Approval.** *(Shipped — see the
+  policy-engine, CRUD, and report-approval sections above.)* The
+  `services/expense_policy.py` engine writes `Expense.policy_violations` on
+  every expense write; the `/api/expense-policies` + `/api/expense-preapprovals`
+  CRUD routers; the report `submit`/`approve`/`reject` lifecycle gating on
+  blocking violations, segregation of duties, and the
+  `expense_approval.cfo_threshold`. The frontend adds Policies + Pre-approvals
+  tabs and the real report submit/approve/reject actions.
 - **WF4 — Corporate card import + reconciliation.** Import card feeds into
   `corporate_card_transactions` (idempotent on `external_txn_id`), auto-match
   to expenses, and link to the existing virtual-card program.
