@@ -172,8 +172,6 @@
 		{/each}
 	</nav>
 
-	<div class="nav-spacer"></div>
-
 	<div class="profile-wrapper">
 		{#if showProfile}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -255,6 +253,15 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
+		/* Absorb the free vertical space and scroll internally when the nav
+		 * list is taller than the viewport (many groups + a long-tail of
+		 * role-gated items). Keeps the profile + collapse footer pinned and
+		 * always reachable — without this the list overflows and pushes the
+		 * Log Out button off-screen on short viewports. `min-height: 0` lets
+		 * a flex child shrink below its content height so overflow engages. */
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
 	}
 
 	.profile-wrapper {
@@ -399,10 +406,6 @@
 
 	.nav-group-divider:first-child {
 		display: none;
-	}
-
-	.nav-spacer {
-		flex: 1;
 	}
 
 	.nav-item {
