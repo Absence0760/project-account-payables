@@ -11,23 +11,33 @@ test.use({ storageState: { cookies: [], origins: [] } });
  * a regression that loosens any cell could expose admin-only surfaces
  * to a non-admin user.
  *
- * | Item         | clerk | manager | cfo | admin |
- * |--------------|-------|---------|-----|-------|
- * | Dashboard    |  ✓    |   ✓    |  ✓  |  ✓    |
- * | Notifications|  ✓    |   ✓    |  ✓  |  ✓    |
- * | Invoices     |  ✓    |   ✓    |  ✓  |  ✓    |
- * | Credit Memos |       |   ✓    |  ✓  |  ✓    |
- * | Payments     |       |   ✓    |  ✓  |  ✓    |
- * | Vendors      |       |   ✓    |  ✓  |  ✓    |
- * | Purchase Orders |    |   ✓    |  ✓  |  ✓    |
- * | Goods Receipts |     |   ✓    |  ✓  |  ✓    |
- * | Cash Flow    |       |        |  ✓  |  ✓    |
- * | Exceptions   |       |   ✓    |     |  ✓    |
- * | Workflows    |       |        |     |  ✓    |
- * | Audit Trail  |       |        |  ✓  |  ✓    |
- * | Organization |       |        |     |  ✓    |
- * | Users        |       |        |     |  ✓    |
+ * | Item            | clerk | manager | cfo | admin |
+ * |-----------------|-------|---------|-----|-------|
+ * | Dashboard       |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Notifications   |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Invoices        |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Credit Memos    |       |   ✓    |  ✓  |  ✓    |
+ * | Contracts       |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Expenses        |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Payments        |       |   ✓    |  ✓  |  ✓    |
+ * | Vendors         |       |   ✓    |  ✓  |  ✓    |
+ * | Purchase Orders |       |   ✓    |  ✓  |  ✓    |
+ * | Goods Receipts  |       |   ✓    |  ✓  |  ✓    |
+ * | Requisitions    |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Intake          |  ✓    |   ✓    |  ✓  |  ✓    |
+ * | Catalogs        |       |   ✓    |  ✓  |  ✓    |
+ * | Budgets         |       |   ✓    |  ✓  |  ✓    |
+ * | Cash Flow       |       |        |  ✓  |  ✓    |
+ * | 1099 Reporting  |       |   ✓    |  ✓  |  ✓    |
+ * | Exceptions      |       |   ✓    |     |  ✓    |
+ * | Workflows       |       |        |     |  ✓    |
+ * | Audit Trail     |       |        |  ✓  |  ✓    |
+ * | Organization    |       |        |     |  ✓    |
+ * | Users           |       |        |     |  ✓    |
+ * | Roles           |       |        |     |  ✓    |
  *
+ * Each row mirrors the matching backend read-RBAC gate (clerk-visible
+ * Contracts/Expenses/Requisitions/Intake all allow ap_clerk to read).
  * Admin coverage is implicit in nav.spec.ts (admin reaches every
  * route). Here we focus on the non-admin gates.
  */
@@ -45,12 +55,23 @@ async function assertSidebarLinks(page: import('@playwright/test').Page, expecte
 }
 
 test.describe('RBAC — sidebar visibility', () => {
-	test('clerk: only Dashboard + Notifications + Invoices', async ({ page, tenantClerk }) => {
+	test('clerk: Dashboard, Notifications, Invoices, Contracts, Expenses, Requisitions, Intake', async ({
+		page,
+		tenantClerk
+	}) => {
 		await signInAndWait(page, tenantClerk);
-		await assertSidebarLinks(page, ['/', '/notifications', '/invoices']);
+		await assertSidebarLinks(page, [
+			'/',
+			'/notifications',
+			'/invoices',
+			'/contracts',
+			'/expenses',
+			'/requisitions',
+			'/intake'
+		]);
 	});
 
-	test('manager: Dashboard, Notifications, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Exceptions', async ({
+	test('manager: + Credit Memos, Payments, Vendors, POs, GRs, Catalogs, Budgets, 1099, Exceptions', async ({
 		page,
 		tenantManager
 	}) => {
@@ -60,15 +81,22 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/notifications',
 			'/invoices',
 			'/credit-memos',
+			'/contracts',
+			'/expenses',
 			'/payments',
 			'/vendors',
 			'/purchase-orders',
 			'/goods-receipts',
+			'/requisitions',
+			'/intake',
+			'/catalogs',
+			'/budgets',
+			'/tax',
 			'/exceptions'
 		]);
 	});
 
-	test('cfo: Dashboard, Notifications, Invoices, Credit Memos, Payments, Vendors, POs, GRs, Cash Flow, Audit Trail (no Exceptions, no Users)', async ({
+	test('cfo: manager set minus Exceptions, plus Cash Flow + Audit Trail (no Exceptions, no Users)', async ({
 		page,
 		tenantCfo
 	}) => {
@@ -78,11 +106,18 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/notifications',
 			'/invoices',
 			'/credit-memos',
+			'/contracts',
+			'/expenses',
 			'/payments',
 			'/vendors',
 			'/purchase-orders',
 			'/goods-receipts',
+			'/requisitions',
+			'/intake',
+			'/catalogs',
+			'/budgets',
 			'/cfo',
+			'/tax',
 			'/audit'
 		]);
 	});
