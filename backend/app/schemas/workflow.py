@@ -76,14 +76,93 @@ class ErpExportStepConfig(BaseModel):
     include_attachments: bool = False  # include PDF file URL in the payload
 
 
+# ---------- no-code builder step config shapes ----------
+#
+# These mirror the canonical config keys in reviews/workflow-builder-spec.md
+# (§ "config shapes per NEW type"). Worker A's workflow_builder consumes the
+# exact same keys; do not rename. Stored inside the `steps_config` JSONB — no
+# enum migration: the new types live alongside the canonical
+# extraction/approval/erp_export/done types.
+
+ConditionField = Literal[
+    "amount", "currency", "vendor_id", "gl_account", "cost_center", "department"
+]
+ConditionOperator = Literal["gt", "gte", "lt", "lte", "eq", "ne", "in", "not_in", "starts_with"]
+
+
+class ConditionRule(BaseModel):
+    field: ConditionField
+    operator: ConditionOperator
+    # number / string for scalar operators; list for in / not_in.
+    value: float | str | list[str | float]
+
+
+class ConditionStepConfig(BaseModel):
+    rules: list[ConditionRule] = []
+    match: Literal["all", "any"] = "all"
+    on_true_goto: int | None = None
+    on_false_goto: int | None = None
+
+
+class ParallelBranch(BaseModel):
+    name: str = ""
+    approver_ids: list[str] = []
+
+
+class ParallelStepConfig(BaseModel):
+    branches: list[ParallelBranch] = []
+    join: Literal["all", "any"] = "all"
+    min_approvals: int | None = None
+
+
+class WebhookStepConfig(BaseModel):
+    url: str = ""
+    method: Literal["POST", "GET", "PUT"] = "POST"
+    headers: dict[str, str] = Field(default_factory=dict)
+    body_template: str | None = None
+    timeout_seconds: int = 10
+
+
+class EmailStepConfig(BaseModel):
+    to: Literal["approver", "vendor", "custom"] = "approver"
+    to_addresses: list[str] = []
+    subject: str = ""
+    body_template: str = ""
+
+
+class DelayStepConfig(BaseModel):
+    duration_seconds: int = 0
+    until_field: str | None = None
+
+
 class WorkflowStepConfig(BaseModel):
     number: int
-    type: str  # "extraction", "approval", "erp_export"
+    # extraction | approval | erp_export | done (canonical) +
+    # condition | parallel | webhook | email | delay (builder)
+    type: Literal[
+        "extraction",
+        "approval",
+        "erp_export",
+        "done",
+        "condition",
+        "parallel",
+        "webhook",
+        "email",
+        "delay",
+    ]
     name: str
     enabled: bool = True
-    config: ExtractionStepConfig | ApprovalStepConfig | ErpExportStepConfig | dict = Field(
-        default_factory=dict
-    )
+    config: (
+        ExtractionStepConfig
+        | ApprovalStepConfig
+        | ErpExportStepConfig
+        | ConditionStepConfig
+        | ParallelStepConfig
+        | WebhookStepConfig
+        | EmailStepConfig
+        | DelayStepConfig
+        | dict
+    ) = Field(default_factory=dict)
 
 
 class WorkflowDefinitionCreate(BaseModel):
@@ -126,6 +205,111 @@ class WorkflowDefinitionResponse(BaseModel):
 class WorkflowDefinitionListResponse(PageMeta):
     items: list[WorkflowDefinitionResponse]
     total: int
+
+
+# ---------- no-code builder: templates / versions / diff / simulation / I-O ----------
+
+
+class WorkflowTemplate(BaseModel):
+    key: str
+    name: str
+    description: str
+    category: str
+    steps_config: dict
+
+
+class WorkflowTemplateListResponse(BaseModel):
+    items: list[WorkflowTemplate]
+
+
+class WorkflowVersion(BaseModel):
+    id: str
+    version_number: int
+    note: str | None
+    created_at: str
+    created_by: str | None
+    steps_config: dict
+
+    @classmethod
+    def from_db(cls, ver) -> "WorkflowVersion":
+        return cls(
+            id=str(ver.id),
+            version_number=ver.version_number,
+            note=ver.note,
+            created_at=ver.created_at.isoformat() if ver.created_at else "",
+            created_by=str(ver.created_by) if ver.created_by else None,
+            steps_config=ver.steps_config,
+        )
+
+
+class WorkflowVersionListResponse(BaseModel):
+    items: list[WorkflowVersion]
+
+
+class WorkflowDiffChange(BaseModel):
+    kind: Literal["added", "removed", "changed"]
+    step_number: int
+    field: str | None = None
+    before: object | None = None
+    after: object | None = None
+    summary: str
+
+
+class WorkflowDiff(BaseModel):
+    from_version: int | str
+    to_version: int | str
+    changes: list[WorkflowDiffChange]
+
+
+class SimInvoice(BaseModel):
+    # amount accepts a string-decimal so the caller never has to send a float;
+    # money stays Decimal end-to-end.
+    amount: Decimal = Field(default=Decimal("0"))
+    currency: str = "USD"
+    vendor_id: str | None = None
+    gl_account: str | None = None
+    cost_center: str | None = None
+    department: str | None = None
+
+
+class SimulateRequest(BaseModel):
+    invoice: SimInvoice | None = None
+    invoice_id: str | None = None
+
+
+class SimulationStep(BaseModel):
+    step_number: int
+    type: str
+    name: str
+    outcome: str
+    detail: str
+
+
+class SimulationResult(BaseModel):
+    path: list[SimulationStep]
+    terminal_state: str
+    warnings: list[str] = []
+
+
+class WorkflowExport(BaseModel):
+    schema_version: int = 1
+    name: str
+    description: str | None = None
+    steps_config: dict
+
+
+class ImportWorkflowRequest(BaseModel):
+    name: str | None = None
+    definition: WorkflowExport
+
+
+class CreateFromTemplateRequest(BaseModel):
+    template_key: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class CreateVersionRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
 
 
 # ---------- request schemas ----------

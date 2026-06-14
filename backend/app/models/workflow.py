@@ -25,6 +25,35 @@ class WorkflowDefinition(Base, EntityMixin, TimestampMixin):
     instances: Mapped[list["WorkflowInstance"]] = relationship(back_populates="definition")
 
 
+class WorkflowVersion(Base):
+    """Immutable snapshot of a WorkflowDefinition's ``steps_config``.
+
+    Tenant-scoped history for the no-code builder. A new row is written
+    on every manual "save version" and automatically before a PATCH that
+    changes the live ``steps_config`` (so edit history is captured without
+    a manual call), and on restore (the current state is snapshotted before
+    the chosen version's steps are applied). Append-only by convention —
+    the builder never mutates an existing row.
+    """
+
+    __tablename__ = "workflow_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workflow_definitions.id"), nullable=False, index=True
+    )
+    version_number: Mapped[int] = mapped_column(nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    steps_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class WorkflowInstance(Base, TimestampMixin):
     __tablename__ = "workflow_instances"
 
