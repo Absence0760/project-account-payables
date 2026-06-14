@@ -187,6 +187,21 @@ class ExpensePolicyCreate(ExpensePolicyBase):
     pass
 
 
+class ExpensePolicyUpdate(BaseModel):
+    """PATCH — every field optional."""
+
+    name: str | None = Field(default=None, max_length=255)
+    active: bool | None = None
+    category: str | None = Field(default=None, max_length=100)
+    per_diem_amount: Decimal | None = None
+    per_diem_currency: str | None = Field(default=None, max_length=3)
+    mileage_rate: Decimal | None = None
+    category_limit: Decimal | None = None
+    requires_preapproval_above: Decimal | None = None
+    requires_receipt_above: Decimal | None = None
+    rules: dict | None = None
+
+
 class ExpensePolicyResponse(BaseModel):
     id: str
     name: str
@@ -292,6 +307,34 @@ class ExpensePreapprovalListResponse(PageMeta):
     total: int
 
 
+class ExpensePreapprovalDecision(BaseModel):
+    """Optional body for a pre-approval approve/reject — carries a reason."""
+
+    reason: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Report approval (WF3) — submit / approve / reject bodies + responses
+# ---------------------------------------------------------------------------
+
+
+class ExpenseReportDecision(BaseModel):
+    """Optional body for a report approve/reject — carries a reason."""
+
+    reason: str | None = None
+
+
+class PolicyViolation(BaseModel):
+    """One policy violation surfaced when a report submission is blocked."""
+
+    code: str
+    message: str
+    policy_id: str | None = None
+    limit: str | None = None
+    actual: str | None = None
+    expense_id: str | None = None
+
+
 # Re-exported enums so callers can import status types from the schema module.
 __all__ = [
     "ExpenseStatus",
@@ -314,6 +357,7 @@ __all__ = [
     "ExpenseReportListResponse",
     "ExpensePolicyBase",
     "ExpensePolicyCreate",
+    "ExpensePolicyUpdate",
     "ExpensePolicyResponse",
     "ExpensePolicyListResponse",
     "CorporateCardTransactionBase",
@@ -324,4 +368,7 @@ __all__ = [
     "ExpensePreapprovalCreate",
     "ExpensePreapprovalResponse",
     "ExpensePreapprovalListResponse",
+    "ExpensePreapprovalDecision",
+    "ExpenseReportDecision",
+    "PolicyViolation",
 ]

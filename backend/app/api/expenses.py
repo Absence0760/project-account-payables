@@ -9,12 +9,13 @@ exist. See ``backend/docs/expense-management.md``.
 """
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,8 +29,17 @@ from app.api.deps import (
     require_roles,
 )
 from app.api.pagination import PaginationParams, pagination_params
-from app.models.expense import Expense, ExpenseReport
+from app.models.expense import (
+    Expense,
+    ExpensePolicy,
+    ExpensePreapproval,
+    ExpenseReport,
+    ExpenseReportStatus,
+    ExpenseStatus,
+    PreapprovalStatus,
+)
 from app.models.gl_account import GLAccount
+from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.expense import (
     ExpenseBulkGlCode,
@@ -37,6 +47,7 @@ from app.schemas.expense import (
     ExpenseListResponse,
     ExpenseReportAttach,
     ExpenseReportCreate,
+    ExpenseReportDecision,
     ExpenseReportListResponse,
     ExpenseReportResponse,
     ExpenseReportSummary,
@@ -44,11 +55,18 @@ from app.schemas.expense import (
     ExpenseResponse,
     ExpenseUpdate,
 )
+from app.services.approval_chain import check_segregation
 from app.services.audit_dispatch import dispatch_audit
+from app.services.expense_policy import (
+    blocking_violations,
+    evaluate_expense,
+    evaluate_report,
+)
 from app.services.storage import get_file, upload_expense_receipt
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
+    get_tenant,
     get_tenant_db,
     get_write_entity_id,
 )
@@ -168,6 +186,62 @@ async def _recompute_report_total(db: AsyncSession, report: ExpenseReport) -> No
     report.total_amount = Decimal(total)
 
 
+async def _active_policies(db: AsyncSession) -> list[ExpensePolicy]:
+    return list(
+        (
+            await db.execute(select(ExpensePolicy).where(ExpensePolicy.active.is_(True)))
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _approved_preapproval_amount(
+    db: AsyncSession, expense: Expense
+) -> Decimal | None:
+    """Largest approved pre-approval estimate covering this expense.
+
+    A pre-approval covers an expense when it's approved and either linked to the
+    expense's report or (loosely) matches its category. Returns the largest
+    matching estimate so the policy engine can compare it against the amount."""
+    if expense.report_id is None and expense.category is None:
+        return None
+    conditions = []
+    if expense.report_id is not None:
+        conditions.append(ExpensePreapproval.expense_report_id == expense.report_id)
+    if expense.category is not None:
+        conditions.append(ExpensePreapproval.category == expense.category)
+    if not conditions:
+        return None
+    rows = (
+        await db.execute(
+            select(ExpensePreapproval.estimated_amount).where(
+                ExpensePreapproval.status == PreapprovalStatus.approved,
+                or_(*conditions),
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return None
+    return max(Decimal(r) for r in rows)
+
+
+async def _refresh_policy_violations(db: AsyncSession, expense: Expense) -> None:
+    """Recompute ``expense.policy_violations`` from the active policies.
+
+    Best-effort: any failure leaves the stored value untouched and never breaks
+    the surrounding write (the violations are advisory)."""
+    try:
+        policies = await _active_policies(db)
+        covered = await _approved_preapproval_amount(db, expense)
+        violations = evaluate_expense(
+            expense, policies, approved_preapproval_amount=covered
+        )
+        expense.policy_violations = violations or None
+    except Exception:  # pragma: no cover — advisory, never break the write
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Expenses — list + create
 # ---------------------------------------------------------------------------
@@ -247,6 +321,8 @@ async def create_expense(
     if report is not None:
         await _recompute_report_total(db, report)
 
+    await _refresh_policy_violations(db, expense)
+
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -304,6 +380,8 @@ async def upload_receipt(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     expense.receipt_file_key = file_key
+    # A newly-attached receipt can clear a receipt_required violation.
+    await _refresh_policy_violations(db, expense)
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -504,6 +582,9 @@ async def update_expense(
     for rid in affected_reports:
         report = await _get_report_or_404(db, rid)
         await _recompute_report_total(db, report)
+
+    # Amount / category / receipt may have changed — recompute violations.
+    await _refresh_policy_violations(db, expense)
 
     if changed or affected_reports:
         await dispatch_audit(
@@ -774,6 +855,186 @@ async def attach_expenses(
         entity_type="expense_report",
         entity_id=report.id,
         details={"count": len(expense_uuids), "detach": body.detach},
+    )
+    await db.commit()
+    fresh = await _get_report_or_404(db, report.id)
+    return _report_to_response(fresh)
+
+
+# ---------------------------------------------------------------------------
+# Report approval workflow (WF3) — submit / approve / reject
+#
+# Allowed source→target transitions are declared explicitly; an invalid source
+# status is a 422 (never a silent no-op). Submit gates on BLOCKING policy
+# violations (missing required receipt, absent required pre-approval). Approve
+# enforces segregation of duties (approver ≠ submitting employee) and a
+# CFO-threshold role gate. Every transition is audited.
+# ---------------------------------------------------------------------------
+
+# Platform default CFO threshold; per-org override in
+# Organization.settings.expense_approval.cfo_threshold.
+_DEFAULT_CFO_THRESHOLD = Decimal("5000")
+
+
+@reports_router.post("/{report_id}/submit", response_model=ExpenseReportResponse)
+async def submit_report(
+    report_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Submit a draft report for approval: ``draft → submitted``.
+
+    Runs the policy engine over the report's expenses first; if any BLOCKING
+    violation is present (missing required receipt, or a required pre-approval
+    that is absent) the submission is rejected with 422 and the violation list,
+    and the report does NOT transition. On success the report is stamped
+    ``submitted_at`` and every child expense moves to ``submitted``."""
+    report = await _get_report_or_404(db, report_id)
+    if report.status != ExpenseReportStatus.draft:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Cannot submit a report in '{report.status}' state",
+        )
+
+    policies = await _active_policies(db)
+    cover: dict[str, Decimal] = {}
+    for child in report.expenses:
+        amount = await _approved_preapproval_amount(db, child)
+        if amount is not None:
+            cover[str(child.id)] = amount
+    violations = evaluate_report(
+        report, list(report.expenses), policies, preapproval_amount_by_expense=cover
+    )
+    blocking = blocking_violations(violations)
+    if blocking:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": "Report has blocking policy violations and cannot be submitted.",
+                "violations": blocking,
+            },
+        )
+
+    report.status = ExpenseReportStatus.submitted
+    report.submitted_at = datetime.now(UTC)
+    for child in report.expenses:
+        child.status = ExpenseStatus.submitted
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="expense_report.submitted",
+        entity_type="expense_report",
+        entity_id=report.id,
+        details={"total": str(report.total_amount), "expense_count": len(report.expenses)},
+    )
+    await db.commit()
+    fresh = await _get_report_or_404(db, report.id)
+    return _report_to_response(fresh)
+
+
+@reports_router.post("/{report_id}/approve", response_model=ExpenseReportResponse)
+async def approve_report(
+    report_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
+):
+    """Approve a submitted report: ``submitted → approved``.
+
+    Segregation of duties: the approver must differ from the report's submitting
+    employee (reuses ``check_segregation`` → 403). CFO gate: when the report
+    total exceeds ``Organization.settings.expense_approval.cfo_threshold``
+    (default ``5000``), only ``cfo`` / ``admin`` may approve. On success the
+    report is stamped ``approved_at`` / ``approved_by`` and every child expense
+    moves to ``approved``."""
+    report = await _get_report_or_404(db, report_id)
+    if report.status != ExpenseReportStatus.submitted:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Cannot approve a report in '{report.status}' state",
+        )
+
+    # SoD — approver ≠ submitting employee. Reuse the invoice helper via a tiny
+    # attribute shim so the rule + 403 detail stay shared with the invoice path.
+    check_segregation(
+        SimpleNamespace(uploaded_by_id=report.employee_user_id),
+        user.id,
+        {"require_segregation": True},
+    )
+
+    # CFO-threshold role gate (Decimal math, never float).
+    expense_cfg = (org.settings or {}).get("expense_approval") or {}
+    cfo_threshold = Decimal(str(expense_cfg.get("cfo_threshold", _DEFAULT_CFO_THRESHOLD)))
+    report_total = Decimal(str(report.total_amount or 0))
+    if report_total > cfo_threshold:
+        held = {r.name for r in user.roles} if user.roles else set()
+        if ROLE_CFO not in held and ROLE_ADMIN not in held:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Report total {report_total} exceeds {cfo_threshold}. "
+                    "CFO approval required."
+                ),
+            )
+
+    report.status = ExpenseReportStatus.approved
+    report.approved_at = datetime.now(UTC)
+    report.approved_by = user.id
+    for child in report.expenses:
+        child.status = ExpenseStatus.approved
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="expense_report.approved",
+        entity_type="expense_report",
+        entity_id=report.id,
+        details={"total": str(report.total_amount)},
+    )
+    await db.commit()
+    fresh = await _get_report_or_404(db, report.id)
+    return _report_to_response(fresh)
+
+
+@reports_router.post("/{report_id}/reject", response_model=ExpenseReportResponse)
+async def reject_report(
+    report_id: uuid.UUID,
+    body: ExpenseReportDecision | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Reject a submitted report: ``submitted → rejected``.
+
+    The child expenses are returned to ``draft`` so they can be corrected and
+    re-reported. ``rejected`` is terminal for this report row."""
+    report = await _get_report_or_404(db, report_id)
+    if report.status != ExpenseReportStatus.submitted:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Cannot reject a report in '{report.status}' state",
+        )
+
+    report.status = ExpenseReportStatus.rejected
+    for child in report.expenses:
+        child.status = ExpenseStatus.draft
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="expense_report.rejected",
+        entity_type="expense_report",
+        entity_id=report.id,
+        details={"reason": body.reason} if body and body.reason else None,
     )
     await db.commit()
     fresh = await _get_report_or_404(db, report.id)
