@@ -1,9 +1,18 @@
 <script lang="ts">
-	import type { Expense, ExpenseReport, ExpenseReportSummary } from '$lib/types/expense';
+	import type {
+		Expense,
+		ExpenseReport,
+		ExpenseReportSummary,
+		ExpensePolicy,
+		ExpensePreapproval,
+		PolicyViolation
+	} from '$lib/types/expense';
 	import {
 		EXPENSE_STATUSES,
 		EXPENSE_STATUS_LABELS,
-		EXPENSE_REPORT_STATUS_LABELS
+		EXPENSE_REPORT_STATUS_LABELS,
+		EXPENSE_PREAPPROVAL_STATUSES,
+		EXPENSE_PREAPPROVAL_STATUS_LABELS
 	} from '$lib/types/expense';
 	import { expenseStore } from '$lib/stores/expenses.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -18,10 +27,19 @@
 		attachExpenses,
 		expenseReportSummary,
 		deleteExpense as apiDeleteExpense,
+		listPolicies,
+		deletePolicy as apiDeletePolicy,
+		listPreapprovals,
+		createPreapproval,
+		approvePreapproval,
+		rejectPreapproval,
+		submitReport as apiSubmitReport,
+		approveReport,
+		rejectReport,
 		type GlAccountOption
 	} from '$lib/api/expenses';
-	import { api } from '$lib/api';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import PolicyModal from '$lib/components/modals/PolicyModal.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -39,9 +57,11 @@
 	import { replaceState } from '$app/navigation';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
+	// Policy CRUD + report/pre-approval approve/reject = admin | ap_manager.
+	const canManagePolicies = $derived(auth.isManager);
 
 	// --- Tabs ---
-	type Tab = 'expenses' | 'reports';
+	type Tab = 'expenses' | 'reports' | 'policies' | 'preapprovals';
 	let tab = $state<Tab>(($page.url.searchParams.get('tab') as Tab) ?? 'expenses');
 
 	// --- Expenses tab filter state (URL-backed) ---
@@ -109,6 +129,10 @@
 		else url.searchParams.delete('status');
 		if (search.trim()) url.searchParams.set('search', search.trim());
 		else url.searchParams.delete('search');
+		// Pre-approval status filter only belongs in the URL while on that tab.
+		if (tab === 'preapprovals' && preapprovalStatus !== 'all')
+			url.searchParams.set('pa_status', preapprovalStatus);
+		else url.searchParams.delete('pa_status');
 		replaceState(`${url.pathname}${url.search}`, {});
 	}
 
@@ -196,10 +220,15 @@
 		if (editing && editing.id === e.id) editing = e;
 	}
 
-	// Outside-click un-arms a pending delete confirm.
+	// Outside-click un-arms any pending armed-confirm (expense delete, policy
+	// delete, pre-approval reject) when the click lands outside a row action.
 	function onWindowClick(e: MouseEvent) {
 		const target = e.target as Element | null;
-		if (confirmDeleteId && !target?.closest('.row-action')) confirmDeleteId = null;
+		if (!target?.closest('.row-action')) {
+			if (confirmDeleteId) confirmDeleteId = null;
+			if (confirmDeletePolicyId) confirmDeletePolicyId = null;
+			if (paRejectArmedId) paRejectArmedId = null;
+		}
 	}
 
 	function formatDate(s: string | null): string {
@@ -318,26 +347,28 @@
 		}
 	}
 
+	// Blocking policy violations returned by the WF3 submit route (422). Rendered
+	// as an inline panel above the report detail; cleared on a clean submit.
+	let submitViolations = $state<PolicyViolation[]>([]);
+
 	async function submitReport() {
 		if (!activeReport) return;
 		reportBusy = true;
+		submitViolations = [];
 		try {
-			// draft → submitted. We send the status on the report PATCH and then
-			// VERIFY the server actually applied it: the WF2 report-update schema
-			// may ignore an out-of-scope field, so trusting the request alone could
-			// surface a false "submitted" on a still-draft report. We confirm
-			// against the persisted record before claiming success.
-			await api.patch<ExpenseReport>(`/api/expense-reports/${activeReport.id}`, {
-				status: 'submitted'
-			});
-			const fresh = await getExpenseReport(activeReport.id);
-			activeReport = fresh;
-			if (fresh.status === 'submitted') {
+			// draft → submitted via the real WF3 transition. A 422 returns the
+			// blocking policy-violation list (missing required receipt, absent
+			// pre-approval) without transitioning — surfaced inline + as a toast.
+			const result = await apiSubmitReport(activeReport.id);
+			if (result.ok) {
+				activeReport = result.report;
 				toast('Report submitted', 'success');
+				await refreshSummary();
+				await loadReports();
 			} else {
-				toast('Submitting reports is not available yet.', 'warning');
+				submitViolations = result.violations;
+				toast(result.message || 'Submit blocked by policy.', 'warning');
 			}
-			await loadReports();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Submit failed', 'error');
 		} finally {
@@ -345,15 +376,206 @@
 		}
 	}
 
+	async function approveActiveReport() {
+		if (!activeReport) return;
+		reportBusy = true;
+		try {
+			const updated = await approveReport(activeReport.id);
+			activeReport = updated;
+			toast('Report approved', 'success');
+			await refreshSummary();
+			await loadReports();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
+		} finally {
+			reportBusy = false;
+		}
+	}
+
+	let rejectReason = $state('');
+	let showReject = $state(false);
+
+	async function rejectActiveReport() {
+		if (!activeReport) return;
+		reportBusy = true;
+		try {
+			const updated = await rejectReport(activeReport.id, rejectReason.trim());
+			activeReport = updated;
+			showReject = false;
+			rejectReason = '';
+			toast('Report rejected', 'success');
+			await refreshSummary();
+			await loadReports();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
+		} finally {
+			reportBusy = false;
+		}
+	}
+
+	// True when the signed-in user can approve/reject this report: a manager who
+	// is NOT the report owner (segregation of duties — approver != submitter).
+	function canDecideReport(r: ExpenseReport): boolean {
+		return canManagePolicies && r.status === 'submitted' && auth.user?.id !== r.employee_user_id;
+	}
+
 	function exportReportCsv() {
 		if (!activeReport) return;
 		exportExpensesCsv({ report_id: activeReport.id });
 	}
 
+	// --- Violation badge helpers (shared by expenses + report-detail rows) ---
+	function violationTitle(list: PolicyViolation[]): string {
+		return list.map((v) => v.message).join('; ');
+	}
+
 	function switchTab(next: Tab) {
 		tab = next;
 		closeReport();
+		showReject = false;
+		submitViolations = [];
 		syncUrl();
+	}
+
+	// ========================== Policies tab ==========================
+	let policies = $state<ExpensePolicy[]>([]);
+	let policiesLoading = $state(false);
+	let showPolicyCreate = $state(false);
+	let editingPolicy = $state<ExpensePolicy | null>(null);
+	let confirmDeletePolicyId = $state<string | null>(null);
+
+	async function loadPolicies() {
+		policiesLoading = true;
+		try {
+			policies = await listPolicies();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load policies', 'error');
+		} finally {
+			policiesLoading = false;
+		}
+	}
+
+	$effect(() => {
+		if (tab === 'policies') loadPolicies();
+	});
+
+	function onPolicySaved(p: ExpensePolicy) {
+		const idx = policies.findIndex((x) => x.id === p.id);
+		if (idx >= 0) policies = policies.map((x) => (x.id === p.id ? p : x));
+		else policies = [p, ...policies];
+	}
+
+	async function deletePolicy(id: string) {
+		try {
+			await apiDeletePolicy(id);
+			policies = policies.filter((p) => p.id !== id);
+			toast('Policy deleted', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+		} finally {
+			confirmDeletePolicyId = null;
+		}
+	}
+
+	// ======================== Pre-approvals tab ========================
+	let preapprovals = $state<ExpensePreapproval[]>([]);
+	let preapprovalsLoading = $state(false);
+	let preapprovalStatus = $state<string>($page.url.searchParams.get('pa_status') ?? 'all');
+	let showNewPreapproval = $state(false);
+	let paBusy = $state(false);
+	let paTitle = $state('');
+	let paAmount = $state<number | null>(null);
+	let paCategory = $state('');
+	let paJustification = $state('');
+	let paRejectArmedId = $state<string | null>(null);
+
+	const PREAPPROVAL_CHIPS = [
+		{ key: 'all', label: 'All' },
+		...EXPENSE_PREAPPROVAL_STATUSES.map((s) => ({
+			key: s,
+			label: EXPENSE_PREAPPROVAL_STATUS_LABELS[s]
+		}))
+	];
+
+	async function loadPreapprovals() {
+		preapprovalsLoading = true;
+		try {
+			const params = preapprovalStatus !== 'all' ? { status: preapprovalStatus } : {};
+			preapprovals = await listPreapprovals(params);
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to load pre-approvals', 'error');
+		} finally {
+			preapprovalsLoading = false;
+		}
+	}
+
+	$effect(() => {
+		if (tab === 'preapprovals') {
+			preapprovalStatus;
+			loadPreapprovals();
+			syncUrl();
+		}
+	});
+
+	function paNumOrNull(v: unknown): number | null {
+		if (v === '' || v === null || v === undefined) return null;
+		const n = parseFloat(String(v));
+		return Number.isFinite(n) ? n : null;
+	}
+
+	async function handleNewPreapproval() {
+		if (!paTitle.trim() || paAmount == null) return;
+		paBusy = true;
+		try {
+			await createPreapproval({
+				title: paTitle.trim(),
+				estimated_amount: paAmount,
+				currency: orgCurrency.currency,
+				category: paCategory.trim() || null,
+				justification: paJustification.trim() || null
+			});
+			toast('Pre-approval request created', 'success');
+			showNewPreapproval = false;
+			paTitle = '';
+			paAmount = null;
+			paCategory = '';
+			paJustification = '';
+			await loadPreapprovals();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Create failed', 'error');
+		} finally {
+			paBusy = false;
+		}
+	}
+
+	function canDecidePreapproval(pa: ExpensePreapproval): boolean {
+		return (
+			canManagePolicies &&
+			pa.status === 'pending' &&
+			auth.user?.id !== pa.requester_user_id
+		);
+	}
+
+	async function approvePa(pa: ExpensePreapproval) {
+		try {
+			const updated = await approvePreapproval(pa.id);
+			preapprovals = preapprovals.map((p) => (p.id === pa.id ? updated : p));
+			toast('Pre-approval approved', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
+		}
+	}
+
+	async function rejectPa(pa: ExpensePreapproval) {
+		try {
+			const updated = await rejectPreapproval(pa.id);
+			preapprovals = preapprovals.map((p) => (p.id === pa.id ? updated : p));
+			toast('Pre-approval rejected', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
+		} finally {
+			paRejectArmedId = null;
+		}
 	}
 </script>
 
@@ -366,14 +588,28 @@
 			{#if canCreate}
 				<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Expense</button>
 			{/if}
-		{:else if canCreate}
-			<button class="btn-primary" onclick={() => (showNewReport = true)}>+ New Report</button>
+		{:else if tab === 'reports'}
+			{#if canCreate}
+				<button class="btn-primary" onclick={() => (showNewReport = true)}>+ New Report</button>
+			{/if}
+		{:else if tab === 'policies'}
+			{#if canManagePolicies}
+				<button class="btn-primary" onclick={() => (showPolicyCreate = true)}>+ New Policy</button>
+			{/if}
+		{:else if tab === 'preapprovals'}
+			{#if canCreate}
+				<button class="btn-primary" onclick={() => (showNewPreapproval = true)}>+ New Request</button>
+			{/if}
 		{/if}
 	{/snippet}
 
 	<div class="tab-row">
 		<button class="tab" class:active={tab === 'expenses'} onclick={() => switchTab('expenses')}>Expenses</button>
 		<button class="tab" class:active={tab === 'reports'} onclick={() => switchTab('reports')}>Reports</button>
+		{#if canManagePolicies}
+			<button class="tab" class:active={tab === 'policies'} onclick={() => switchTab('policies')}>Policies</button>
+		{/if}
+		<button class="tab" class:active={tab === 'preapprovals'} onclick={() => switchTab('preapprovals')}>Pre-approvals</button>
 	</div>
 
 	{#if tab === 'expenses'}
@@ -438,7 +674,12 @@
 						<td>{exp.category ?? '—'}</td>
 						<td class="muted">{glLabel(exp.gl_account_id)}</td>
 						<td class="right mono"><Money amount={exp.amount} currency={exp.currency} /></td>
-						<td><span class="badge {exp.status}">{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</span></td>
+						<td>
+							<span class="badge {exp.status}">{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</span>
+							{#if exp.policy_violations && exp.policy_violations.length}
+								<span class="badge violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</span>
+							{/if}
+						</td>
 						<td class="actions">
 							{#if canCreate}
 								<RowAction
@@ -470,7 +711,7 @@
 				<span class="load-more-end">Showing all {expenseStore.total} expense{expenseStore.total === 1 ? '' : 's'}</span>
 			</div>
 		{/if}
-	{:else}
+	{:else if tab === 'reports'}
 		<!-- ===================== Reports tab ===================== -->
 		{#if activeReport}
 			<div class="report-detail">
@@ -485,8 +726,36 @@
 						{#if canCreate && activeReport.status === 'draft'}
 							<button class="btn-primary" disabled={reportBusy} onclick={submitReport}>Submit</button>
 						{/if}
+						{#if canDecideReport(activeReport)}
+							<button class="btn-primary" disabled={reportBusy} onclick={approveActiveReport}>Approve</button>
+							<button class="btn-secondary danger" disabled={reportBusy} onclick={() => (showReject = true)}>Reject</button>
+						{/if}
 					</div>
 				</div>
+
+				{#if submitViolations.length}
+					<div class="violation-panel">
+						<strong>Submit blocked — resolve these policy violations:</strong>
+						<ul>
+							{#each submitViolations as v (v.code + (v.policy_id ?? ''))}
+								<li>{v.message}</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
+
+				{#if showReject && activeReport}
+					<div class="reject-row">
+						<input
+							type="text"
+							placeholder="Reason for rejection (optional)"
+							bind:value={rejectReason}
+							aria-label="Rejection reason"
+						/>
+						<button class="btn-secondary danger" disabled={reportBusy} onclick={rejectActiveReport}>Confirm reject</button>
+						<button class="btn-secondary" disabled={reportBusy} onclick={() => { showReject = false; rejectReason = ''; }}>Cancel</button>
+					</div>
+				{/if}
 
 				{#if activeSummary}
 					<div class="kpi-row">
@@ -527,7 +796,12 @@
 								<td>{exp.merchant ?? '—'}</td>
 								<td>{exp.category ?? '—'}</td>
 								<td class="right mono"><Money amount={exp.amount} currency={exp.currency} /></td>
-								<td><span class="badge {exp.status}">{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</span></td>
+								<td>
+									<span class="badge {exp.status}">{EXPENSE_STATUS_LABELS[exp.status as keyof typeof EXPENSE_STATUS_LABELS] ?? exp.status}</span>
+									{#if exp.policy_violations && exp.policy_violations.length}
+										<span class="badge violation" title={violationTitle(exp.policy_violations)}>⚠ {exp.policy_violations.length}</span>
+									{/if}
+								</td>
 								<td class="actions">
 									{#if canCreate && activeReport?.status === 'draft'}
 										<RowAction variant="default" onclick={() => detachFromReport(exp.id)}>Detach</RowAction>
@@ -570,6 +844,96 @@
 				</div>
 			{/if}
 		{/if}
+	{:else if tab === 'policies'}
+		<!-- ===================== Policies tab ===================== -->
+		<DataTable
+			columns={[
+				{ label: 'Name' },
+				{ label: 'Category' },
+				{ label: 'Limit', class: 'right' },
+				{ label: 'Receipt >', class: 'right' },
+				{ label: 'Pre-appr >', class: 'right' },
+				{ label: 'Active' },
+				{ label: '', class: 'actions-col' }
+			]}
+			isEmpty={policies.length === 0}
+			empty={policiesLoading ? 'Loading…' : 'No expense policies yet.'}
+		>
+			{#snippet body()}
+				{#each policies as p (p.id)}
+					<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editingPolicy = p; }}>
+						<td>
+							<RowLink onclick={() => (editingPolicy = p)} ariaLabel={`Edit policy ${p.name}`}>
+								{p.name}
+							</RowLink>
+						</td>
+						<td>{p.category ?? 'All'}</td>
+						<td class="right mono">{p.category_limit != null ? formatMoney(p.category_limit, { currency: orgCurrency.currency }) : '—'}</td>
+						<td class="right mono">{p.requires_receipt_above != null ? formatMoney(p.requires_receipt_above, { currency: orgCurrency.currency }) : '—'}</td>
+						<td class="right mono">{p.requires_preapproval_above != null ? formatMoney(p.requires_preapproval_above, { currency: orgCurrency.currency }) : '—'}</td>
+						<td><span class="badge {p.active ? 'approved' : 'cancelled'}">{p.active ? 'Active' : 'Inactive'}</span></td>
+						<td class="actions">
+							{#if canManagePolicies}
+								<RowAction
+									variant="danger"
+									armed={confirmDeletePolicyId === p.id}
+									onclick={(e) => {
+										e.stopPropagation();
+										if (confirmDeletePolicyId === p.id) deletePolicy(p.id);
+										else confirmDeletePolicyId = p.id;
+									}}
+								>
+									{confirmDeletePolicyId === p.id ? 'Confirm' : 'Delete'}
+								</RowAction>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			{/snippet}
+		</DataTable>
+	{:else}
+		<!-- ==================== Pre-approvals tab ==================== -->
+		<div class="filter-row">
+			<FilterChips chips={PREAPPROVAL_CHIPS} bind:active={preapprovalStatus} />
+		</div>
+
+		<DataTable
+			columns={[
+				{ label: 'Title' },
+				{ label: 'Category' },
+				{ label: 'Estimated', class: 'right' },
+				{ label: 'Status' },
+				{ label: '', class: 'actions-col' }
+			]}
+			isEmpty={preapprovals.length === 0}
+			empty={preapprovalsLoading ? 'Loading…' : 'No pre-approval requests.'}
+		>
+			{#snippet body()}
+				{#each preapprovals as pa (pa.id)}
+					<tr>
+						<td>{pa.title}</td>
+						<td>{pa.category ?? '—'}</td>
+						<td class="right mono"><Money amount={pa.estimated_amount} currency={pa.currency} /></td>
+						<td><span class="badge {pa.status}">{EXPENSE_PREAPPROVAL_STATUS_LABELS[pa.status as keyof typeof EXPENSE_PREAPPROVAL_STATUS_LABELS] ?? pa.status}</span></td>
+						<td class="actions">
+							{#if canDecidePreapproval(pa)}
+								<RowAction variant="success" onclick={() => approvePa(pa)}>Approve</RowAction>
+								<RowAction
+									variant="danger"
+									armed={paRejectArmedId === pa.id}
+									onclick={() => {
+										if (paRejectArmedId === pa.id) rejectPa(pa);
+										else paRejectArmedId = pa.id;
+									}}
+								>
+									{paRejectArmedId === pa.id ? 'Confirm reject' : 'Reject'}
+								</RowAction>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			{/snippet}
+		</DataTable>
 	{/if}
 </PageHeader>
 
@@ -615,6 +979,51 @@
 				<button type="button" class="btn-cancel" onclick={() => (showNewReport = false)}>Cancel</button>
 				<button type="submit" class="btn-primary" disabled={reportBusy || !newReportNumber.trim()}>
 					{reportBusy ? 'Creating…' : 'Create'}
+				</button>
+			</div>
+		</form>
+	</Modal>
+{/if}
+
+{#if showPolicyCreate}
+	<PolicyModal policy={null} onclose={() => (showPolicyCreate = false)} onsaved={onPolicySaved} />
+{/if}
+
+{#if editingPolicy}
+	<PolicyModal policy={editingPolicy} onclose={() => (editingPolicy = null)} onsaved={onPolicySaved} />
+{/if}
+
+{#if showNewPreapproval}
+	<Modal open ariaLabel="New pre-approval" title="New Pre-approval Request" width="sm" onclose={() => (showNewPreapproval = false)}>
+		<form onsubmit={(e) => { e.preventDefault(); handleNewPreapproval(); }}>
+			<div class="report-form">
+				<label>
+					<span>Title <em class="required">*</em></span>
+					<input type="text" bind:value={paTitle} required />
+				</label>
+				<label>
+					<span>Estimated Amount <em class="required">*</em></span>
+					<input
+						type="number"
+						step="0.01"
+						min="0"
+						value={paAmount ?? ''}
+						oninput={(e) => (paAmount = paNumOrNull(e.currentTarget.value))}
+					/>
+				</label>
+				<label>
+					<span>Category</span>
+					<input type="text" bind:value={paCategory} placeholder="e.g. travel" />
+				</label>
+				<label>
+					<span>Justification</span>
+					<textarea bind:value={paJustification} rows="2"></textarea>
+				</label>
+			</div>
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={() => (showNewPreapproval = false)}>Cancel</button>
+				<button type="submit" class="btn-primary" disabled={paBusy || !paTitle.trim() || paAmount == null}>
+					{paBusy ? 'Creating…' : 'Create'}
 				</button>
 			</div>
 		</form>
@@ -684,6 +1093,13 @@
 	.badge.rejected { background: rgba(224, 64, 64, 0.12); color: #e04040; }
 	.badge.reimbursed { background: rgba(140, 100, 240, 0.12); color: #8c64f0; }
 	.badge.cancelled { background: var(--bg); color: var(--text-muted); }
+	.badge.pending { background: rgba(212, 148, 10, 0.12); color: #d4940a; }
+	.badge.violation {
+		margin-left: 6px;
+		background: rgba(224, 64, 64, 0.12);
+		color: #e04040;
+		cursor: help;
+	}
 
 	.bulk-gl-select {
 		padding: 6px 10px;
@@ -733,12 +1149,15 @@
 	.btn-back:hover {
 		color: var(--accent);
 	}
-	.attach-row {
+	.attach-row,
+	.reject-row {
 		display: flex;
 		gap: 8px;
 		align-items: center;
+		flex-wrap: wrap;
 	}
-	.attach-row input {
+	.attach-row input,
+	.reject-row input {
 		padding: 7px 9px;
 		border-radius: 5px;
 		border: 1px solid var(--border);
@@ -747,6 +1166,30 @@
 		font-family: inherit;
 		font-size: 0.85rem;
 		min-width: 280px;
+	}
+
+	/* Danger variant of the secondary button (report reject). */
+	.btn-secondary.danger:hover {
+		border-color: #e04040;
+		color: #e04040;
+	}
+
+	/* Inline blocking-violation panel above the report detail. */
+	.violation-panel {
+		border: 1px solid #e04040;
+		background: rgba(224, 64, 64, 0.06);
+		border-radius: 8px;
+		padding: 12px 14px;
+		color: var(--text);
+		font-size: 0.85rem;
+	}
+	.violation-panel ul {
+		margin: 8px 0 0;
+		padding-left: 18px;
+	}
+	.violation-panel li {
+		margin: 2px 0;
+		color: #e04040;
 	}
 
 	/* --- New-report mini modal --- */
@@ -763,7 +1206,8 @@
 		font-size: 0.82rem;
 		color: var(--text-muted);
 	}
-	.report-form input {
+	.report-form input,
+	.report-form textarea {
 		padding: 7px 9px;
 		border-radius: 5px;
 		border: 1px solid var(--border);

@@ -1,0 +1,203 @@
+<script lang="ts">
+	import type { ExpensePolicy, ExpensePolicyCreate } from '$lib/types/expense';
+	import { auth } from '$lib/stores/auth.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
+	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { createPolicy, updatePolicy } from '$lib/api/expenses';
+
+	let {
+		policy,
+		onclose,
+		onsaved
+	}: {
+		// null → create mode; an ExpensePolicy → edit mode.
+		policy: ExpensePolicy | null;
+		onclose: () => void;
+		onsaved: (p: ExpensePolicy) => void;
+	} = $props();
+
+	const isCreate = $derived(policy === null);
+	// Policy CRUD = admin / ap_manager (mirrors the backend mutate gate).
+	const canEdit = $derived(auth.isManager);
+
+	/* eslint-disable svelte/state-referenced-locally -- modal receives a snapshot */
+	let name = $state(policy?.name ?? '');
+	let active = $state(policy?.active ?? true);
+	let category = $state(policy?.category ?? '');
+	let category_limit = $state<number | null>(policy?.category_limit ?? null);
+	let requires_receipt_above = $state<number | null>(policy?.requires_receipt_above ?? null);
+	let requires_preapproval_above = $state<number | null>(
+		policy?.requires_preapproval_above ?? null
+	);
+	let per_diem_amount = $state<number | null>(policy?.per_diem_amount ?? null);
+	let mileage_rate = $state<number | null>(policy?.mileage_rate ?? null);
+	/* eslint-enable svelte/state-referenced-locally */
+
+	let saving = $state(false);
+
+	// Money / rate inputs use value={x ?? ''} + oninput numOrNull (NOT bind:value)
+	// so an empty field stays null — the Decimal-safe pattern (ExpenseModal:58-62).
+	// A null limit means "no limit", which the backend engine must not read as 0.
+	function numOrNull(v: unknown): number | null {
+		if (v === '' || v === null || v === undefined) return null;
+		const n = parseFloat(String(v));
+		return Number.isFinite(n) ? n : null;
+	}
+
+	async function handleSave() {
+		if (!name.trim()) return;
+		saving = true;
+		try {
+			const payload: ExpensePolicyCreate = {
+				name: name.trim(),
+				active,
+				category: category.trim() || null,
+				category_limit,
+				requires_receipt_above,
+				requires_preapproval_above,
+				per_diem_amount,
+				mileage_rate
+			};
+			const saved = isCreate
+				? await createPolicy(payload)
+				: await updatePolicy(policy!.id, payload);
+			toast(isCreate ? 'Policy created' : 'Policy saved', 'success');
+			onsaved(saved);
+			onclose();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			saving = false;
+		}
+	}
+
+	const modalTitle = $derived(
+		isCreate ? 'New Expense Policy' : `Edit Policy — ${policy!.name}`
+	);
+	const ariaLabel = $derived(isCreate ? 'New policy' : 'Policy detail');
+</script>
+
+<Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
+	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
+		<div class="form-grid">
+			<label>
+				<span>Name <em class="required">*</em></span>
+				<input type="text" bind:value={name} required disabled={!canEdit} />
+			</label>
+			<label>
+				<span>Category</span>
+				<input
+					type="text"
+					bind:value={category}
+					placeholder="blank = all categories"
+					disabled={!canEdit}
+				/>
+			</label>
+			<label>
+				<span>Category Limit</span>
+				<input
+					type="number"
+					step="0.01"
+					min="0"
+					value={category_limit ?? ''}
+					oninput={(e) => (category_limit = numOrNull(e.currentTarget.value))}
+					disabled={!canEdit}
+				/>
+			</label>
+			<label>
+				<span>Receipt Required Above</span>
+				<input
+					type="number"
+					step="0.01"
+					min="0"
+					value={requires_receipt_above ?? ''}
+					oninput={(e) => (requires_receipt_above = numOrNull(e.currentTarget.value))}
+					disabled={!canEdit}
+				/>
+			</label>
+			<label>
+				<span>Pre-approval Required Above</span>
+				<input
+					type="number"
+					step="0.01"
+					min="0"
+					value={requires_preapproval_above ?? ''}
+					oninput={(e) => (requires_preapproval_above = numOrNull(e.currentTarget.value))}
+					disabled={!canEdit}
+				/>
+			</label>
+			<label>
+				<span>Per-diem Amount</span>
+				<input
+					type="number"
+					step="0.01"
+					min="0"
+					value={per_diem_amount ?? ''}
+					oninput={(e) => (per_diem_amount = numOrNull(e.currentTarget.value))}
+					disabled={!canEdit}
+				/>
+			</label>
+			<label>
+				<span>Mileage Rate</span>
+				<input
+					type="number"
+					step="0.001"
+					min="0"
+					value={mileage_rate ?? ''}
+					oninput={(e) => (mileage_rate = numOrNull(e.currentTarget.value))}
+					disabled={!canEdit}
+				/>
+			</label>
+			<label class="checkbox-label">
+				<input type="checkbox" bind:checked={active} disabled={!canEdit} />
+				<span>Active</span>
+			</label>
+		</div>
+
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			{#if canEdit}
+				<button type="submit" class="btn-primary" disabled={saving || !name.trim()}>
+					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+				</button>
+			{/if}
+		</div>
+	</form>
+</Modal>
+
+<style>
+	.form-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 12px;
+	}
+
+	.form-grid label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		font-size: 0.82rem;
+		color: var(--text-muted);
+	}
+
+	.form-grid label.checkbox-label {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.form-grid input {
+		padding: 7px 9px;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--bg);
+		color: var(--text);
+		font-family: inherit;
+		font-size: 0.88rem;
+	}
+
+	.form-grid input:disabled {
+		opacity: 0.7;
+		cursor: not-allowed;
+	}
+</style>

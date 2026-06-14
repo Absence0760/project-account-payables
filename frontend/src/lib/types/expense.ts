@@ -64,6 +64,18 @@ export const EXPENSE_REPORT_STATUS_LABELS: Record<ExpenseReportStatus, string> =
 	cancelled: 'Cancelled'
 };
 
+// A single policy-engine finding stamped onto `Expense.policy_violations` by the
+// WF3 backend engine (`evaluate_expense`). `code` is a stable machine key
+// (`category_limit`, `receipt_required`, `preapproval_required`, `per_diem`),
+// `message` is the human string the badge tooltip renders.
+export interface PolicyViolation {
+	code: string;
+	message: string;
+	policy_id?: string;
+	limit?: number;
+	actual?: number;
+}
+
 export interface Expense {
 	id: string;
 	report_id: string | null;
@@ -78,7 +90,7 @@ export interface Expense {
 	receipt_url: string | null;
 	payment_method: string;
 	card_transaction_id: string | null;
-	policy_violations: unknown[] | null;
+	policy_violations: PolicyViolation[] | null;
 	status: string;
 	reimbursable: boolean;
 	mileage_miles: number | null;
@@ -152,4 +164,73 @@ export interface ExpenseReportCreate {
 	title: string | null;
 	currency: string;
 	notes: string | null;
+}
+
+// ============================ WF3: Policies ============================
+
+export interface ExpensePolicy {
+	id: string;
+	name: string;
+	active: boolean;
+	category: string | null;
+	per_diem_amount: number | null;
+	per_diem_currency: string | null;
+	mileage_rate: number | null;
+	category_limit: number | null;
+	requires_preapproval_above: number | null;
+	requires_receipt_above: number | null;
+	rules: unknown | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ExpensePolicyCreate {
+	name: string;
+	active: boolean;
+	category: string | null;
+	category_limit: number | null;
+	requires_receipt_above: number | null;
+	requires_preapproval_above: number | null;
+	per_diem_amount: number | null;
+	mileage_rate: number | null;
+}
+
+// ========================= WF3: Pre-approvals =========================
+
+export type ExpensePreapprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export const EXPENSE_PREAPPROVAL_STATUSES: ExpensePreapprovalStatus[] = [
+	'pending',
+	'approved',
+	'rejected'
+];
+
+export const EXPENSE_PREAPPROVAL_STATUS_LABELS: Record<ExpensePreapprovalStatus, string> = {
+	pending: 'Pending',
+	approved: 'Approved',
+	rejected: 'Rejected'
+};
+
+export interface ExpensePreapproval {
+	id: string;
+	requester_user_id: string;
+	title: string;
+	estimated_amount: number;
+	currency: string;
+	category: string | null;
+	justification: string | null;
+	status: string;
+	decided_by: string | null;
+	decided_at: string | null;
+	expense_report_id: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ExpensePreapprovalCreate {
+	title: string;
+	estimated_amount: number;
+	currency: string;
+	category: string | null;
+	justification: string | null;
 }
