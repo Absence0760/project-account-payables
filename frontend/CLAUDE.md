@@ -37,8 +37,8 @@ pnpm check            # typecheck
 | `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors` |
 | `/payments` | `routes/payments/+page.svelte` | `GET /api/payments/{queue,summary,runs/}`, `GET /api/payments`, `POST /api/payments/runs` (creates draft), `GET /api/payments/runs/{id}` + `POST .../execute` (via `RunDetailModal`) |
 | `/exceptions` | `routes/exceptions/+page.svelte` | `GET /api/exceptions`, `PATCH /api/exceptions/{id}` |
-| `/workflows` | `routes/workflows/+page.svelte` | `GET /api/workflows`, `POST /api/workflows` |
-| `/workflows/[id]` | `routes/workflows/[id]/+page.svelte` | `GET/PATCH /api/workflows/{id}`, `GET /api/organization` |
+| `/workflows` | `routes/workflows/+page.svelte` | `GET /api/workflows`, `POST /api/workflows`; no-code builder management — `GET /api/workflows/templates`, `POST /api/workflows/from-template`, `GET/POST /api/workflows/{id}/versions`, `POST /api/workflows/{id}/restore/{versionId}`, `GET /api/workflows/{id}/versions/diff`, `POST /api/workflows/{id}/simulate`, `GET /api/workflows/{id}/export`, `POST /api/workflows/import` (via the `workflow-mgmt` modals) |
+| `/workflows/[id]` | `routes/workflows/[id]/+page.svelte` | `GET/PATCH /api/workflows/{id}`, `GET /api/organization` — drag-and-drop builder canvas (`workflow-builder` components) |
 | `/audit` | `routes/audit/+page.svelte` | `GET /api/audit/export` (JSON + CSV) — SOX auditor console, admin/CFO only (content-gated on `auth.isCfo`; backend 403s otherwise). Date-range or by-invoice query + CSV download. |
 | `/organization` | `routes/organization/+page.svelte` | `GET/PATCH /api/organization` |
 | `/admin` | `routes/admin/+page.svelte` | `GET/POST/PATCH/DELETE /api/admin/users`, `GET /api/admin/roles` |
@@ -129,6 +129,18 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
   go through `$lib/api/supplierChat.ts` (over `api`); portal calls through
   `$lib/portalChat.ts` (over `portalApi`). Types in `$lib/types/supplierChat.ts`
   (full `Chat*` for AP, masked `PortalChat*` for the portal — no internal id).
+
+**`workflow-builder/`** — drag-and-drop no-code builder canvas for the
+`/workflows/[id]` editor (step palette, canvas nodes, SVG connectors;
+native HTML5 drag-and-drop, no svelte-flow).
+
+**`workflow-mgmt/`** — no-code builder management dialogs mounted on the
+`/workflows` list page: `TemplateLibraryModal` (start from a template),
+`VersionHistoryModal` (diff + restore versions), `SimulationModal` (dry-run a
+sample invoice through the pipeline), and `ImportExportControls` (import a
+pasted/uploaded definition; the `exportWorkflowToFile` module helper downloads
+a definition as JSON). All wrap the shared `ui/Modal.svelte` and call the
+`workflowStore` builder methods.
 
 **`marketing/`** — `Landing.svelte` + `Pricing.svelte` (public no-tenant route).
 **`layout/`** — `Sidebar.svelte` (collapsed/expanded nav, profile popover).

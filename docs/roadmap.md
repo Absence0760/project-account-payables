@@ -675,18 +675,18 @@ In-app communication between AP team and suppliers — no more email chains.
 ---
 
 ### No-Code Workflow Builder
-**Status:** Partial (configurable steps exist, not drag-and-drop)
+**Status:** Shipped
 
 Visual drag-and-drop workflow builder for non-technical users.
 
-- [ ] Canvas UI — drag steps onto a flowchart
-- [ ] Conditional branching — "if amount > $10K, route to CFO"
-- [ ] Parallel paths — multiple approvers in parallel
-- [ ] Custom step types — webhook, email notification, delay/wait
-- [ ] Template library — pre-built workflows for common scenarios
-- [ ] Version history — compare and rollback workflow changes
-- [ ] Simulation mode — test a workflow with sample invoices before activating
-- [ ] Import/export workflow definitions as JSON
+- [x] Canvas UI — drag steps onto a flowchart
+- [x] Conditional branching — "if amount > $10K, route to CFO"
+- [x] Parallel paths — multiple approvers in parallel
+- [x] Custom step types — webhook, email notification, delay/wait
+- [x] Template library — pre-built workflows for common scenarios
+- [x] Version history — compare and rollback workflow changes
+- [x] Simulation mode — test a workflow with sample invoices before activating
+- [x] Import/export workflow definitions as JSON
 
 ---
 

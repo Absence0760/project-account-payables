@@ -18,11 +18,23 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { goto } from '$app/navigation';
+	import TemplateLibraryModal from '$lib/components/workflow-mgmt/TemplateLibraryModal.svelte';
+	import VersionHistoryModal from '$lib/components/workflow-mgmt/VersionHistoryModal.svelte';
+	import SimulationModal from '$lib/components/workflow-mgmt/SimulationModal.svelte';
+	import ImportExportControls, {
+		exportWorkflowToFile,
+	} from '$lib/components/workflow-mgmt/ImportExportControls.svelte';
 
 	let showCreate = $state(false);
 	let newName = $state('');
 	let newDescription = $state('');
 	let creating = $state(false);
+
+	// No-code builder management modals (Worker D).
+	let showTemplates = $state(false);
+	let showImport = $state(false);
+	let versionsFor = $state<WorkflowDefinition | null>(null);
+	let simulateFor = $state<WorkflowDefinition | null>(null);
 
 	let selectedIds = $state<Set<string>>(new Set());
 	let bulkDeleting = $state(false);
@@ -159,6 +171,8 @@
 
 <PageHeader title="Workflows">
 	{#snippet actions()}
+		<button class="btn-toolbar" onclick={() => (showTemplates = true)}>New from template</button>
+		<button class="btn-toolbar" onclick={() => (showImport = true)}>Import</button>
 		<button class="btn-create" onclick={() => (showCreate = true)}>+ New Workflow</button>
 	{/snippet}
 
@@ -232,6 +246,9 @@
 					</td>
 					<td class="date-cell">{formatDate(wf.created_at)}</td>
 					<td class="actions">
+						<RowAction onclick={() => (versionsFor = wf)}>Versions</RowAction>
+						<RowAction onclick={() => (simulateFor = wf)}>Simulate</RowAction>
+						<RowAction onclick={() => exportWorkflowToFile(wf.id, wf.name)}>Export</RowAction>
 						{#if !wf.is_default}
 							<RowAction variant="danger" onclick={() => handleDelete(wf)}>Delete</RowAction>
 						{/if}
@@ -283,6 +300,29 @@
 	</div>
 </Modal>
 
+<TemplateLibraryModal open={showTemplates} onclose={() => (showTemplates = false)} />
+
+<ImportExportControls open={showImport} onclose={() => (showImport = false)} />
+
+{#if versionsFor}
+	<VersionHistoryModal
+		open={true}
+		workflowId={versionsFor.id}
+		workflowName={versionsFor.name}
+		onclose={() => (versionsFor = null)}
+		onrestored={() => workflowStore.fetch()}
+	/>
+{/if}
+
+{#if simulateFor}
+	<SimulationModal
+		open={true}
+		workflowId={simulateFor.id}
+		workflowName={simulateFor.name}
+		onclose={() => (simulateFor = null)}
+	/>
+{/if}
+
 <style>
 	/* Page-specific styling; shared design-system CSS lives in app.css. */
 	.btn-create {
@@ -300,6 +340,24 @@
 
 	.btn-create:hover {
 		opacity: 0.85;
+	}
+
+	.btn-toolbar {
+		padding: 8px 16px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		font-family: inherit;
+		transition: border-color 0.15s;
+	}
+
+	.btn-toolbar:hover {
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 
 	.checkbox-col {

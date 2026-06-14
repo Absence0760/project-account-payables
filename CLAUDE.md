@@ -129,7 +129,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/tax` | 1099 tracking (W-9 upload, YTD totals, Tax1099 export) |
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
 | `/assistant` | Conversational AP assistant — chat over 5 fixed read-only tools (current tenant only), conversation history, token-usage meter. Mock adapter default (local-first); claude adapter when keyed |
-| `/workflows` | Workflow definition CRUD, active steps |
+| `/workflows` | Workflow definition CRUD, active steps; no-code builder — templates (`GET /templates`, `POST /from-template`), version history (`GET/POST {id}/versions`, `POST {id}/restore/{version_id}`, `GET {id}/versions/diff`), simulation (`POST {id}/simulate`), import/export (`GET {id}/export`, `POST /import`). Builder step types (`condition`, `parallel`, `webhook`, `email`, `delay`) live in `steps_config` JSONB; PATCH auto-snapshots prior steps into a `WorkflowVersion` |
 | `/adaptive` | Approval-pattern learning, baseline anomalies, advisory workflow suggestions (read-only + dismiss) |
 | `/audit` | SOX auditor export — per-invoice / date-range trail (JSON+CSV, admin/CFO, GET-only); itself audited |
 | `/exceptions` | Exception queue, resolution; autonomous AI agents — `agent-resolve` (run an agent on one exception), `agent-decisions` (decision log), `agent-stats` (resolution/escalation rates) |
