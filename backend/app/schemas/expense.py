@@ -246,6 +246,20 @@ class CorporateCardTransactionCreate(CorporateCardTransactionBase):
     pass
 
 
+class CorporateCardMatchRequest(BaseModel):
+    """Body for ``POST /corporate-card-transactions/{id}/match`` — the expense
+    to reconcile the transaction against."""
+
+    expense_id: str
+
+
+class CorporateCardMatchSuggestion(BaseModel):
+    """One ranked expense candidate for a card transaction."""
+
+    expense: "ExpenseResponse"
+    score: float
+
+
 class CorporateCardTransactionResponse(BaseModel):
     id: str
     card_ref: str | None
@@ -364,6 +378,8 @@ __all__ = [
     "CorporateCardTransactionCreate",
     "CorporateCardTransactionResponse",
     "CorporateCardTransactionListResponse",
+    "CorporateCardMatchRequest",
+    "CorporateCardMatchSuggestion",
     "ExpensePreapprovalBase",
     "ExpensePreapprovalCreate",
     "ExpensePreapprovalResponse",

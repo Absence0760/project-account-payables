@@ -25,6 +25,7 @@ from app.api import (
     erp_webhook,
     exception_agents,
     exceptions,
+    expense_cards,
     expense_policies,
     expense_preapprovals,
     expenses,
@@ -215,6 +216,7 @@ app.include_router(exception_agents.router, prefix="/api")
 app.include_router(exceptions.router, prefix="/api")
 app.include_router(expenses.router, prefix="/api")
 app.include_router(expenses.reports_router, prefix="/api")
+app.include_router(expense_cards.router, prefix="/api")
 app.include_router(expense_policies.router, prefix="/api")
 app.include_router(expense_preapprovals.router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")

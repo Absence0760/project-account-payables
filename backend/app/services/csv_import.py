@@ -8,6 +8,7 @@ use on Day 0 before those integrations are wired up.
 Public API:
     - ``import_vendors_csv(db, organization_id, csv_text)``
     - ``import_invoices_csv(db, organization_id, csv_text)``
+    - ``import_corporate_card_csv(db, organization_id, csv_text)``
 
 Both return :class:`ImportResult`. Each row is processed independently
 — one bad row does not abort the import. Callers are expected to
@@ -55,6 +56,17 @@ _INVOICE_COLUMNS = {
     "gl_account",
     "cost_center",
     "status",
+}
+
+_CORPORATE_CARD_COLUMNS = {
+    "external_txn_id",
+    "date",
+    "posted_date",
+    "merchant",
+    "amount",
+    "currency",
+    "card_last_four",
+    "card_ref",
 }
 
 
@@ -328,3 +340,98 @@ async def _resolve_or_create_vendor(
     db.add(vendor)
     await db.flush()
     return vendor
+
+
+# ---------------------------------------------------------------------------
+# Corporate-card transaction import (Expense Management WF4)
+# ---------------------------------------------------------------------------
+
+
+async def import_corporate_card_csv(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    csv_text: str,
+    entity_id: uuid.UUID | None = None,
+    import_batch: str | None = None,
+) -> ImportResult:
+    """Import a corporate-card transaction feed from CSV into
+    ``CorporateCardTransaction`` rows.
+
+    Columns: ``external_txn_id``, ``date``, ``posted_date``, ``merchant``,
+    ``amount``, ``currency``, ``card_last_four``, ``card_ref``. Column order
+    does not matter; unknown columns are ignored.
+
+    Idempotency: a row whose ``external_txn_id`` already exists for the org is
+    skipped (counted in ``skipped``). The partial-unique index
+    ``uq_corporate_card_txn_external`` backs this; the in-Python precheck (plus a
+    per-file ``seen`` set, since the batch flushes once at the end) avoids the
+    IntegrityError on the common path. ``import_batch`` stamps every imported row
+    so a single upload can be reviewed / rolled back as a unit.
+
+    PII: only ``card_last_four`` is stored (truncated to 4) — never a full PAN.
+    Callers commit the session themselves after inspecting the result."""
+    from app.models.expense import CorporateCardTransaction, ReconciliationStatus
+
+    result = ImportResult()
+    try:
+        rows = _read_rows(csv_text)
+    except csv.Error as exc:
+        result.errors.append(ImportRowError(row=0, message=f"Malformed CSV: {exc}"))
+        return result
+
+    seen: set[str] = set()
+    for i, row in enumerate(rows, start=2):  # +1 header, +1 for 1-indexing
+        external_txn_id = (row.get("external_txn_id") or "").strip() or None
+        amount = _parse_decimal(row.get("amount"))
+        txn_date = _parse_date(row.get("date"))
+
+        if amount is None or amount < 0:
+            result.errors.append(
+                ImportRowError(row=i, message=f"amount invalid: {row.get('amount')!r}")
+            )
+            continue
+        if txn_date is None:
+            result.errors.append(
+                ImportRowError(row=i, message=f"date invalid: {row.get('date')!r}")
+            )
+            continue
+
+        # Dedupe (idempotency guard) — in-file first, then against the DB.
+        if external_txn_id is not None:
+            if external_txn_id in seen:
+                result.skipped += 1
+                continue
+            existing = (
+                await db.execute(
+                    select(CorporateCardTransaction).where(
+                        CorporateCardTransaction.organization_id == organization_id,
+                        CorporateCardTransaction.external_txn_id == external_txn_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                result.skipped += 1
+                continue
+            seen.add(external_txn_id)
+
+        last_four = (row.get("card_last_four") or "").strip()[:4] or None
+        txn = CorporateCardTransaction(
+            organization_id=organization_id,
+            entity_id=entity_id,
+            external_txn_id=external_txn_id,
+            txn_date=txn_date,
+            posted_date=_parse_date(row.get("posted_date")),
+            merchant=(row.get("merchant") or None) or None,
+            amount=amount,
+            currency=(row.get("currency") or "USD").upper()[:3],
+            card_last_four=last_four,
+            card_ref=(row.get("card_ref") or None) or None,
+            import_batch=import_batch,
+            reconciliation_status=ReconciliationStatus.unmatched,
+            raw=row,
+        )
+        db.add(txn)
+        result.imported += 1
+
+    await db.flush()
+    return result
