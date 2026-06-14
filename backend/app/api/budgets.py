@@ -1,9 +1,299 @@
-"""Procurement / Requisitions — budgets router.
+"""Procurement / Requisitions — budgets router (Budget tracking vertical).
 
-Foundation stub: the data model (app/models/procurement.py) + migration
-0041_procurement are shipped; this router is implemented by the budgets vertical.
+Budgets are financial config: a spend allocation for a department / project /
+cost-center / GL account over a period. Spend is **computed on read** from
+requisitions / POs / invoices (no stored running total) — see
+``services/budget_service.py`` for the exact allocated/committed/actual model.
+
+RBAC: read = admin / ap_manager / cfo; mutate = admin / cfo (the CFO owns
+budgets). Every mutation writes a ``dispatch_audit`` row; every list/read is
+entity-scoped (``X-Entity-ID``) and tenant-isolated (per-tenant DB session).
 """
 
-from fastapi import APIRouter
+import uuid
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    get_org_id,
+    require_roles,
+)
+from app.api.pagination import PaginationParams, pagination_params
+from app.models.procurement import Budget
+from app.models.user import User
+from app.schemas.budget import (
+    BudgetCheckResponse,
+    BudgetCreate,
+    BudgetListResponse,
+    BudgetResponse,
+    BudgetSpendResponse,
+    BudgetUpdate,
+)
+from app.services.audit_dispatch import dispatch_audit
+from app.services.budget_service import compute_budget_spend
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant_db,
+    get_write_entity_id,
+)
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
+
+# Fields a PATCH on a budget may touch.
+_BUDGET_UPDATABLE_FIELDS = (
+    "name",
+    "dimension",
+    "dimension_value",
+    "period",
+    "period_start",
+    "period_end",
+    "amount",
+    "currency",
+    "notes",
+)
+
+
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
+
+
+def _to_response(b: Budget) -> BudgetResponse:
+    return BudgetResponse(
+        id=str(b.id),
+        name=b.name,
+        dimension=str(b.dimension),
+        dimension_value=b.dimension_value,
+        period=b.period,
+        period_start=b.period_start.isoformat() if b.period_start else None,
+        period_end=b.period_end.isoformat() if b.period_end else None,
+        amount=float(b.amount),
+        currency=b.currency,
+        notes=b.notes,
+        created_at=b.created_at.isoformat() if b.created_at else "",
+        updated_at=b.updated_at.isoformat() if b.updated_at else "",
+    )
+
+
+async def _get_budget_or_404(db: AsyncSession, budget_id: uuid.UUID) -> Budget:
+    budget = (await db.execute(select(Budget).where(Budget.id == budget_id))).scalar_one_or_none()
+    if not budget:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    return budget
+
+
+# ---------------------------------------------------------------------------
+# List + create
+# ---------------------------------------------------------------------------
+
+
+@router.get("", response_model=BudgetListResponse)
+async def list_budgets(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    dimension: str | None = Query(None),
+    period: str | None = Query(None),
+    search: str | None = Query(None),
+    pagination: PaginationParams = Depends(pagination_params),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    base = apply_entity_scope(select(Budget), Budget, entity_id)
+    if dimension:
+        base = base.where(Budget.dimension == dimension)
+    if period:
+        base = base.where(Budget.period == period)
+    if search:
+        like = f"%{search}%"
+        base = base.where(or_(Budget.name.ilike(like), Budget.dimension_value.ilike(like)))
+
+    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
+    paged = (
+        base.order_by(Budget.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
+    )
+    rows = (await db.execute(paged)).scalars().all()
+    return BudgetListResponse(
+        items=[_to_response(b) for b in rows],
+        total=total,
+        page=pagination.page,
+        page_size=pagination.page_size,
+    )
+
+
+@router.post("", response_model=BudgetResponse, status_code=status.HTTP_201_CREATED)
+async def create_budget(
+    body: BudgetCreate,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
+):
+    budget = Budget(
+        name=body.name,
+        dimension=body.dimension,
+        dimension_value=body.dimension_value,
+        period=body.period,
+        period_start=body.period_start,
+        period_end=body.period_end,
+        amount=body.amount,
+        currency=body.currency,
+        notes=body.notes,
+        organization_id=org_id,
+        entity_id=entity_id,
+    )
+    db.add(budget)
+    await db.flush()
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="budget.created",
+        entity_type="budget",
+        entity_id=budget.id,
+        details={
+            "name": budget.name,
+            "dimension": str(budget.dimension),
+            "dimension_value": budget.dimension_value,
+            "amount": str(budget.amount),
+        },
+    )
+    await db.commit()
+    fresh = await _get_budget_or_404(db, budget.id)
+    return _to_response(fresh)
+
+
+# ---------------------------------------------------------------------------
+# Spend check — literal `check` segment declared BEFORE /{budget_id} so it
+# isn't captured as a {budget_id} UUID (mirrors the expenses /receipt ordering).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/check", response_model=BudgetCheckResponse)
+async def check_budget(
+    budget_id: uuid.UUID = Query(...),
+    amount: Decimal = Query(..., ge=0),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Would committing ``amount`` against this budget overspend it?
+
+    The requisition flow calls this before submit. ``remaining`` is the current
+    headroom (``allocated - committed - actual``); ``remaining_after`` is what
+    would be left once ``amount`` is committed; ``would_overspend`` is
+    ``remaining_after < 0``. All Decimal math — never float."""
+    budget = await _get_budget_or_404(db, budget_id)
+    spend = await compute_budget_spend(db, budget)
+    remaining_after = spend.remaining - amount
+    return BudgetCheckResponse(
+        budget_id=str(budget.id),
+        amount=float(amount),
+        allocated=float(spend.allocated),
+        committed=float(spend.committed),
+        actual=float(spend.actual),
+        remaining=float(spend.remaining),
+        remaining_after=float(remaining_after),
+        would_overspend=remaining_after < 0,
+        currency=spend.currency,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Get / patch / delete / spend
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{budget_id}", response_model=BudgetResponse)
+async def get_budget(
+    budget_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    return _to_response(await _get_budget_or_404(db, budget_id))
+
+
+@router.get("/{budget_id}/spend", response_model=BudgetSpendResponse)
+async def get_budget_spend(
+    budget_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Computed allocated vs committed vs actual vs remaining for this budget.
+
+    Read-only display rollup: the SUMs run in Postgres over ``Numeric`` columns
+    (exact); the response serialises money as ``float``."""
+    budget = await _get_budget_or_404(db, budget_id)
+    spend = await compute_budget_spend(db, budget)
+    return BudgetSpendResponse(
+        budget_id=str(budget.id),
+        name=budget.name,
+        dimension=str(budget.dimension),
+        dimension_value=budget.dimension_value,
+        currency=spend.currency,
+        allocated=float(spend.allocated),
+        committed=float(spend.committed),
+        actual=float(spend.actual),
+        remaining=float(spend.remaining),
+        utilization_pct=float(spend.utilization_pct),
+    )
+
+
+@router.patch("/{budget_id}", response_model=BudgetResponse)
+async def update_budget(
+    budget_id: uuid.UUID,
+    body: BudgetUpdate,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    budget = await _get_budget_or_404(db, budget_id)
+    payload = body.model_dump(exclude_unset=True)
+    changed: list[str] = []
+    for field in _BUDGET_UPDATABLE_FIELDS:
+        if field in payload and getattr(budget, field) != payload[field]:
+            setattr(budget, field, payload[field])
+            changed.append(field)
+    if changed:
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
+            organization_id=org_id,
+            actor_id=user.id,
+            action="budget.updated",
+            entity_type="budget",
+            entity_id=budget.id,
+            details={"fields": changed},
+        )
+    await db.commit()
+    fresh = await _get_budget_or_404(db, budget.id)
+    return _to_response(fresh)
+
+
+@router.delete("/{budget_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_budget(
+    budget_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    budget = await _get_budget_or_404(db, budget_id)
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="budget.deleted",
+        entity_type="budget",
+        entity_id=budget.id,
+        details={"name": budget.name, "amount": str(budget.amount)},
+    )
+    await db.delete(budget)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
