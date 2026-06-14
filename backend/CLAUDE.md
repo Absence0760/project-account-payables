@@ -37,6 +37,7 @@ Deep-dive docs live in `backend/docs/`:
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
 | PEPPOL AS4 outbound (e-invoice transmission) | `docs/peppol.md` |
 | Contract management (CLM) | `docs/contracts.md` |
+| Expense management | `docs/expense-management.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 

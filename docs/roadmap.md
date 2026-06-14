@@ -695,16 +695,25 @@ Visual drag-and-drop workflow builder for non-technical users.
 These features expand beyond core AP automation into broader spend management. Airbase and Coupa win mid-market deals by offering all-in-one spend platforms. Consider these only after core AP gaps are closed.
 
 ### Expense Management
-**Status:** Planned
+**Status:** In progress (foundation shipped — WF1)
 
 Corporate expense tracking and reimbursement. Airbase, Coupa, SAP Concur, and Bill.com (Divvy) all offer this. Increasingly expected as part of a "spend management" platform.
 
-- [ ] Out-of-pocket expense submission with receipt capture
-- [ ] Corporate card transaction import and reconciliation
-- [ ] Expense policies — per diem, mileage rates, category limits
-- [ ] Pre-approval workflows for high-value expenses
+WF1 (foundation) shipped the data model — five tenant-scoped tables
+(`expenses`, `expense_reports`, `expense_policies`,
+`corporate_card_transactions`, `expense_preapprovals`; migration
+`0039_expense_management`) — plus the `/expenses` + `/expense-reports` API
+(CRUD, receipt upload + cross-tenant-checked download, report attach/detach
+with total recompute, RBAC, audit). See `backend/docs/expense-management.md`.
+Policy enforcement, card import/reconciliation, pre-approval gating, and the
+frontend UX land in WF2-4.
+
+- [x] Out-of-pocket expense submission with receipt capture *(backend foundation done — WF1; UX lands in WF2)*
+- [ ] Corporate card transaction import and reconciliation *(model shipped WF1; import/reconcile in WF4)*
+- [ ] Expense policies — per diem, mileage rates, category limits *(model shipped WF1; enforcement in WF3)*
+- [ ] Pre-approval workflows for high-value expenses *(model shipped WF1; gating in WF3)*
 - [ ] Integration with existing virtual card program
-- [ ] Expense reporting with GL coding
+- [ ] Expense reporting with GL coding *(GL coding field shipped WF1)*
 - [ ] Manager approval flow (reuse AP approval infrastructure)
 
 **Competitors:** Airbase (core offering), Coupa (full module), SAP Concur (industry leader), Bill.com/Divvy (corporate cards + expenses)

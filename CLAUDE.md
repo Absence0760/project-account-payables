@@ -122,6 +122,8 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
 | `/contracts` | Contract lifecycle (CLM) — CRUD + search/filter, document upload (`POST {id}/upload`) + proxy (`GET /file/{file_key}`, cross-tenant-checked), lifecycle (`POST {id}/activate\|terminate\|cancel\|renew`), spend summary on detail, contract-based PO creation (`POST {id}/create-po`). Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager; every mutation audited |
+| `/expenses` | Expense Management (foundation) — expense CRUD (list paginated + entity-scoped, status/report filters), receipt upload (`POST {id}/receipt` → `upload_expense_receipt`) + cross-tenant-checked download proxy (`GET /receipt/{file_key}`). Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager/ap_clerk; every mutation audited |
+| `/expense-reports` | Expense report CRUD + attach/detach expenses (`POST {id}/expenses`, recomputes `total_amount`). Same RBAC as `/expenses` |
 | `/purchase-orders` | PO listing, ERP sync |
 | `/goods-receipts` | Goods-receipt list / detail (3-way match feeder) |
 | `/gl-accounts` | GL account CRUD, ERP sync |
@@ -200,7 +202,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage, ExpenseReport, Expense, ExpensePolicy, CorporateCardTransaction, ExpensePreapproval
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 2 + 2b scope reads/writes (incl. the dashboard + CFO analytics) by the `X-Entity-ID` header (`app/tenant.py` → `get_entity_id` / `get_write_entity_id` / `apply_entity_scope`) with a sidebar entity switcher; per-entity workflow selection is deferred (Phase 3). See `docs/multi-entity.md`.
 
@@ -286,6 +288,7 @@ Full list in `backend/app/config.py`.
 | CSV data import | `backend/docs/csv-import.md` — pilot Day-0 vendor + invoice migration |
 | Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
 | Contract Management (CLM) | `backend/docs/contracts.md` — lifecycle, Contract/ContractLineItem model, repository + upload, spend-to-contract tracking, renewal sweep + env vars, compliance (`contract_noncompliant`), contract-based PO creation, migrations 0036/0037 |
+| Expense Management | `backend/docs/expense-management.md` — five-table model (expenses/reports/policies/card-transactions/preapprovals, migration 0039), circular FK via `use_alter`, `/expenses` + `/expense-reports` API, receipt upload + cross-tenant download, total recompute, WF2-4 roadmap |
 | Automated E-Invoicing (PEPPOL send + receive) | `backend/docs/peppol.md` — four-corner model, mock/as4_gateway adapters, ParticipantId, BIS Billing 3.0, transmission model + idempotency guard, send route, inbound AS4 receive webhook (C4 corner), HMAC-gated, MessageId dedupe, routes to einvoice extractor |
 | 1099 tracking | `backend/docs/tax-1099.md` — W-9 collection, YTD reporting, Tax1099 integration sketch |
 | Audit-log shipping | `backend/docs/audit-log-shipping.md` — centralized WORM sink, adapters, S3 Object Lock caveats |
