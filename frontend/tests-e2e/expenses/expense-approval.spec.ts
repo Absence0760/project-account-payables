@@ -109,7 +109,10 @@ test.describe('/expenses — WF3 approval', () => {
 			const list = await page.request.get(`${API_BASE}/api/expense-policies`, {
 				headers: await authedTenantHeaders(page)
 			});
-			const policies = (await list.json()) as { id: string; name: string }[];
+			// List endpoints return the paginated envelope {items,total,page,page_size}.
+			const { items: policies } = (await list.json()) as {
+				items: { id: string; name: string }[];
+			};
 			policyId = policies.find((p) => p.name === name)?.id ?? null;
 			expect(policyId).not.toBeNull();
 		} finally {
@@ -235,7 +238,9 @@ test.describe('/expenses — WF3 approval', () => {
 			await page.goto('/expenses?tab=preapprovals');
 			await page.waitForLoadState('networkidle');
 			await expect(page.getByText(title)).toBeVisible();
-			await page.getByRole('button', { name: 'Approve' }).click();
+			// exact: the row action is "Approve"; the status filter chip is
+			// "Approved" — a non-exact match would resolve to both.
+			await page.getByRole('button', { name: 'Approve', exact: true }).click();
 			await expect(page.locator('.badge.approved').first()).toBeVisible();
 		} finally {
 			if (paId) deletePreapproval(paId);

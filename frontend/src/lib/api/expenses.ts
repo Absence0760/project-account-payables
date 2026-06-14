@@ -36,6 +36,17 @@ export interface ExpenseListParams {
 	page_size?: number;
 }
 
+/** Paginated list envelope returned by every list endpoint
+ *  (`{items, total, page, page_size}` — see frontend/CLAUDE.md § Pagination).
+ *  The policy + pre-approval tabs don't paginate, so their helpers unwrap to
+ *  `.items`; expenses/reports/cards keep the full envelope for Load-More. */
+interface Paginated<T> {
+	items: T[];
+	total: number;
+	page: number;
+	page_size: number;
+}
+
 /** GL account option from `GET /api/gl-accounts` — the picker value is the uuid
  *  `id` (matches `Expense.gl_account_id` + the `bulk-gl-code` body). */
 export interface GlAccountOption {
@@ -173,8 +184,9 @@ export async function exportExpensesCsv(params: ExpenseListParams = {}): Promise
 
 // =========================== WF3: Policies ===========================
 
-export function listPolicies(): Promise<ExpensePolicy[]> {
-	return api.get<ExpensePolicy[]>('/api/expense-policies');
+export async function listPolicies(): Promise<ExpensePolicy[]> {
+	const res = await api.get<Paginated<ExpensePolicy>>('/api/expense-policies');
+	return res.items;
 }
 
 export function createPolicy(body: ExpensePolicyCreate): Promise<ExpensePolicy> {
@@ -194,13 +206,14 @@ export function deletePolicy(id: string): Promise<void> {
 
 // ========================= WF3: Pre-approvals =========================
 
-export function listPreapprovals(
+export async function listPreapprovals(
 	params: { status?: string; requester_user_id?: string } = {}
 ): Promise<ExpensePreapproval[]> {
 	const qs = new URLSearchParams();
 	if (params.status) qs.set('status', params.status);
 	if (params.requester_user_id) qs.set('requester_user_id', params.requester_user_id);
-	return api.get<ExpensePreapproval[]>(`/api/expense-preapprovals?${qs}`);
+	const res = await api.get<Paginated<ExpensePreapproval>>(`/api/expense-preapprovals?${qs}`);
+	return res.items;
 }
 
 export function createPreapproval(body: ExpensePreapprovalCreate): Promise<ExpensePreapproval> {
