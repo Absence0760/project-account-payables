@@ -13,7 +13,9 @@ from app.api import (
     auth,
     auth_saml,
     auth_sso,
+    budgets,
     cards,
+    catalogs,
     contracts,
     credit_memos,
     dashboard,
@@ -23,10 +25,13 @@ from app.api import (
     erp_webhook,
     exception_agents,
     exceptions,
+    expense_policies,
+    expense_preapprovals,
     expenses,
     gl_accounts,
     goods_receipts,
     inspections,
+    intake,
     invoices,
     notifications,
     organization,
@@ -35,6 +40,7 @@ from app.api import (
     portal,
     portal_auth,
     purchase_orders,
+    requisitions,
     scim,
     signup,
     tax,
@@ -209,12 +215,18 @@ app.include_router(exception_agents.router, prefix="/api")
 app.include_router(exceptions.router, prefix="/api")
 app.include_router(expenses.router, prefix="/api")
 app.include_router(expenses.reports_router, prefix="/api")
+app.include_router(expense_policies.router, prefix="/api")
+app.include_router(expense_preapprovals.router, prefix="/api")
 app.include_router(gl_accounts.router, prefix="/api")
 app.include_router(goods_receipts.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
 app.include_router(invoices.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(purchase_orders.router, prefix="/api")
+app.include_router(requisitions.router, prefix="/api")
+app.include_router(catalogs.router, prefix="/api")
+app.include_router(budgets.router, prefix="/api")
+app.include_router(intake.router, prefix="/api")
 app.include_router(vendors.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")

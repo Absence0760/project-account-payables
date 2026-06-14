@@ -25,7 +25,23 @@ from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.peppol_transmission import PeppolTransmission
-from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
+from app.models.procurement import (
+    Budget,
+    BudgetDimension,
+    Catalog,
+    CatalogItem,
+    CatalogType,
+    GoodsReceipt,
+    GRLineItem,
+    IntakeRequest,
+    IntakeStatus,
+    IntakeType,
+    POLineItem,
+    PurchaseOrder,
+    PurchaseRequisition,
+    RequisitionLineItem,
+    RequisitionStatus,
+)
 from app.models.quality_inspection import QualityInspection
 from app.models.signup import EmailVerification
 from app.models.supplier_chat import (
@@ -57,6 +73,17 @@ __all__ = [
     "POLineItem",
     "GoodsReceipt",
     "GRLineItem",
+    "Catalog",
+    "CatalogItem",
+    "CatalogType",
+    "Budget",
+    "BudgetDimension",
+    "PurchaseRequisition",
+    "RequisitionLineItem",
+    "RequisitionStatus",
+    "IntakeRequest",
+    "IntakeType",
+    "IntakeStatus",
     "QualityInspection",
     "WorkflowDefinition",
     "WorkflowInstance",
