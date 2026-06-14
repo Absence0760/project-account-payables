@@ -85,9 +85,7 @@ class PeppolTransmission(Base, EntityMixin, TimestampMixin):
         # Constrain the enumerated columns at the DB level so a typo (e.g.
         # 'failure') can't slip past the partial-index predicate (WHERE
         # status <> 'failed') and strand a live row that never matches.
-        CheckConstraint(
-            "direction IN ('outbound','inbound')", name="ck_peppol_direction"
-        ),
+        CheckConstraint("direction IN ('outbound','inbound')", name="ck_peppol_direction"),
         CheckConstraint(
             "status IN ('sending','sent','delivered','failed')", name="ck_peppol_status"
         ),

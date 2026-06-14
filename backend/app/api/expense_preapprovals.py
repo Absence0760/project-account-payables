@@ -70,9 +70,7 @@ async def _get_preapproval_or_404(
     db: AsyncSession, preapproval_id: uuid.UUID
 ) -> ExpensePreapproval:
     row = (
-        await db.execute(
-            select(ExpensePreapproval).where(ExpensePreapproval.id == preapproval_id)
-        )
+        await db.execute(select(ExpensePreapproval).where(ExpensePreapproval.id == preapproval_id))
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Pre-approval not found")

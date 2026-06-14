@@ -19,8 +19,11 @@ async def test_create_preapproval_stamps_requester(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         resp = await c.post(
             "/api/expense-preapprovals",
-            json={"title": "Conference travel", "estimated_amount": "1200.00",
-                  "category": "travel"},
+            json={
+                "title": "Conference travel",
+                "estimated_amount": "1200.00",
+                "category": "travel",
+            },
         )
     assert resp.status_code == 201, resp.text
     body = resp.json()
@@ -32,12 +35,14 @@ async def test_create_preapproval_stamps_requester(realdb):
         row = (await s.execute(select(ExpensePreapproval))).scalar_one()
         assert row.requester_user_id == realdb.info("a").users["ap_clerk"]
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(
-                    AuditLog.entity_type == "expense_preapproval"
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.entity_type == "expense_preapproval")
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert "expense_preapproval.created" in actions
 
 
@@ -73,12 +78,14 @@ async def test_manager_approves_clerk_request(realdb):
 
     async with mk() as s:
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(
-                    AuditLog.entity_type == "expense_preapproval"
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.entity_type == "expense_preapproval")
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert "expense_preapproval.approved" in actions
 
 

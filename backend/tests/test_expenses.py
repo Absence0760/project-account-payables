@@ -97,9 +97,7 @@ async def test_update_expense(realdb):
         eid = (
             await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "10.00"})
         ).json()["id"]
-        resp = await c.patch(
-            f"/api/expenses/{eid}", json={"amount": "55.00", "merchant": "Lyft"}
-        )
+        resp = await c.patch(f"/api/expenses/{eid}", json={"amount": "55.00", "merchant": "Lyft"})
     assert resp.status_code == 200
     assert resp.json()["amount"] == 55.0
     assert resp.json()["merchant"] == "Lyft"
@@ -241,12 +239,8 @@ async def test_attach_moves_expense_recomputes_source_report(realdb):
             await c.post("/api/expenses", json={"expense_date": "2026-06-02", "amount": "40.00"})
         ).json()["id"]
 
-        ra = (
-            await c.post("/api/expense-reports", json={"report_number": "MOVE-A"})
-        ).json()["id"]
-        rb = (
-            await c.post("/api/expense-reports", json={"report_number": "MOVE-B"})
-        ).json()["id"]
+        ra = (await c.post("/api/expense-reports", json={"report_number": "MOVE-A"})).json()["id"]
+        rb = (await c.post("/api/expense-reports", json={"report_number": "MOVE-B"})).json()["id"]
 
         # Both expenses start on report A → total 140.00.
         attached = await c.post(
@@ -272,11 +266,9 @@ async def test_attach_moves_expense_recomputes_source_report(realdb):
 
 async def test_create_expense_under_report_updates_total(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
-        rid = (
-            await c.post(
-                "/api/expense-reports", json={"report_number": "EXP-2026-002"}
-            )
-        ).json()["id"]
+        rid = (await c.post("/api/expense-reports", json={"report_number": "EXP-2026-002"})).json()[
+            "id"
+        ]
         # Creating an expense already pointed at the report bumps the total.
         await c.post(
             "/api/expenses",
@@ -294,9 +286,7 @@ async def test_create_expense_under_report_updates_total(realdb):
 async def test_cfo_cannot_create_expense(realdb):
     # CFO is read-only on mutations.
     async with realdb.client(key="a", role="cfo") as c:
-        resp = await c.post(
-            "/api/expenses", json={"expense_date": "2026-06-01", "amount": "5.00"}
-        )
+        resp = await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "5.00"})
     assert resp.status_code == 403
 
 

@@ -51,9 +51,7 @@ async def test_policy_crud(realdb):
         assert listing.status_code == 200
         assert listing.json()["total"] >= 1
 
-        patched = await c.patch(
-            f"/api/expense-policies/{pid}", json={"category_limit": "200.00"}
-        )
+        patched = await c.patch(f"/api/expense-policies/{pid}", json={"category_limit": "200.00"})
         assert patched.status_code == 200
         assert patched.json()["category_limit"] == 200.0
 
@@ -62,10 +60,14 @@ async def test_policy_crud(realdb):
 
     async with mk() as s:
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(AuditLog.entity_type == "expense_policy")
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.entity_type == "expense_policy")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert "expense_policy.created" in actions
         assert "expense_policy.updated" in actions
         assert "expense_policy.deleted" in actions
@@ -73,9 +75,7 @@ async def test_policy_crud(realdb):
 
 async def test_policy_clerk_cannot_mutate(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
-        resp = await c.post(
-            "/api/expense-policies", json={"name": "x", "category_limit": "10.00"}
-        )
+        resp = await c.post("/api/expense-policies", json={"name": "x", "category_limit": "10.00"})
     assert resp.status_code == 403
 
 
@@ -147,9 +147,7 @@ async def _make_report_with_expense(c, amount="100.00", category="travel", recei
 async def test_submit_blocks_on_missing_receipt(realdb):
     # Manager creates the receipt-required policy; clerk builds + submits.
     async with realdb.client(key="a", role="ap_manager") as c:
-        await _make_policy(
-            c, name="ReceiptReq", category="travel", requires_receipt_above="10.00"
-        )
+        await _make_policy(c, name="ReceiptReq", category="travel", requires_receipt_above="10.00")
     async with realdb.client(key="a", role="ap_clerk") as c:
         rid, eid = await _make_report_with_expense(c, amount="50.00", receipt=False)
         resp = await c.post(f"/api/expense-reports/{rid}/submit")
@@ -177,10 +175,14 @@ async def test_submit_succeeds_when_clean(realdb):
 
     async with mk() as s:
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(AuditLog.entity_type == "expense_report")
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.entity_type == "expense_report")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert "expense_report.submitted" in actions
 
 
@@ -225,10 +227,14 @@ async def test_different_manager_approves(realdb):
 
     async with mk() as s:
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(AuditLog.entity_type == "expense_report")
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.entity_type == "expense_report")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert "expense_report.approved" in actions
 
 
@@ -257,9 +263,7 @@ async def test_cfo_threshold_custom_override(realdb):
     from sqlalchemy.orm.attributes import flag_modified
 
     async with ctrl() as s:
-        org = (
-            await s.execute(select(Organization).where(Organization.id == org_id))
-        ).scalar_one()
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
         settings_dict = dict(org.settings or {})
         settings_dict["expense_approval"] = {"cfo_threshold": "100"}
         org.settings = settings_dict
@@ -297,26 +301,24 @@ async def test_reject_returns_children_to_draft(realdb):
         rid, eid = await _make_report_with_expense(c, amount="100.00", receipt=True)
         await c.post(f"/api/expense-reports/{rid}/submit")
     async with realdb.client(key="a", role="ap_manager") as c:
-        resp = await c.post(
-            f"/api/expense-reports/{rid}/reject", json={"reason": "wrong GL"}
-        )
+        resp = await c.post(f"/api/expense-reports/{rid}/reject", json={"reason": "wrong GL"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "rejected"
     assert body["expenses"][0]["status"] == "draft"
 
     async with mk() as s:
-        e = (
-            await s.execute(select(Expense).where(Expense.id == uuid.UUID(eid)))
-        ).scalar_one()
+        e = (await s.execute(select(Expense).where(Expense.id == uuid.UUID(eid)))).scalar_one()
         assert str(e.status) == "draft"
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(
-                    AuditLog.action == "expense_report.rejected"
+            (
+                await s.execute(
+                    select(AuditLog.action).where(AuditLog.action == "expense_report.rejected")
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(actions) >= 1
 
 
@@ -332,11 +334,9 @@ async def test_approve_invalid_state_422(realdb):
 async def test_policy_money_exact_numeric(realdb):
     mk = realdb.sessionmaker("a")
     async with realdb.client(key="a", role="ap_manager") as c:
-        pid = (
-            await _make_policy(
-                c, name="Exact", category_limit="123.45", mileage_rate="0.6750"
-            )
-        )["id"]
+        pid = (await _make_policy(c, name="Exact", category_limit="123.45", mileage_rate="0.6750"))[
+            "id"
+        ]
     async with mk() as s:
         p = (
             await s.execute(select(ExpensePolicy).where(ExpensePolicy.id == uuid.UUID(pid)))

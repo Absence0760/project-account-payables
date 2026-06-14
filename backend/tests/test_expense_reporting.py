@@ -43,9 +43,7 @@ async def test_report_summary_math(realdb):
             )
         ).json()["id"]
 
-        rid = (
-            await c.post("/api/expense-reports", json={"report_number": "SUM-001"})
-        ).json()["id"]
+        rid = (await c.post("/api/expense-reports", json={"report_number": "SUM-001"})).json()["id"]
         attached = await c.post(
             f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [e1, e2, e3]}
         )
@@ -71,9 +69,9 @@ async def test_report_summary_math(realdb):
 
 async def test_report_summary_empty(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
-        rid = (
-            await c.post("/api/expense-reports", json={"report_number": "SUM-EMPTY"})
-        ).json()["id"]
+        rid = (await c.post("/api/expense-reports", json={"report_number": "SUM-EMPTY"})).json()[
+            "id"
+        ]
         resp = await c.get(f"/api/expense-reports/{rid}/summary")
     assert resp.status_code == 200
     body = resp.json()
@@ -91,9 +89,7 @@ async def test_report_summary_missing_404(realdb):
 
 async def test_cfo_can_read_summary(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
-        rid = (
-            await c.post("/api/expense-reports", json={"report_number": "SUM-CFO"})
-        ).json()["id"]
+        rid = (await c.post("/api/expense-reports", json={"report_number": "SUM-CFO"})).json()["id"]
     async with realdb.client(key="a", role="cfo") as c:
         resp = await c.get(f"/api/expense-reports/{rid}/summary")
     assert resp.status_code == 200
@@ -203,9 +199,7 @@ async def test_bulk_gl_code_sets_and_audits(realdb):
 
     async with mk() as s:
         for raw in ids:
-            e = (
-                await s.execute(select(Expense).where(Expense.id == uuid.UUID(raw)))
-            ).scalar_one()
+            e = (await s.execute(select(Expense).where(Expense.id == uuid.UUID(raw)))).scalar_one()
             assert e.gl_account_id == gl_id
         rows = (
             (
@@ -226,8 +220,7 @@ async def test_bulk_gl_code_clear(realdb):
         eid = (
             await c.post(
                 "/api/expenses",
-                json={"expense_date": "2026-06-01", "amount": "10.00",
-                      "gl_account_id": str(gl_id)},
+                json={"expense_date": "2026-06-01", "amount": "10.00", "gl_account_id": str(gl_id)},
             )
         ).json()["id"]
         # Now clear it.

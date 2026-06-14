@@ -64,9 +64,7 @@ from app.tenant import (
     get_write_entity_id,
 )
 
-router = APIRouter(
-    prefix="/corporate-card-transactions", tags=["corporate-card-transactions"]
-)
+router = APIRouter(prefix="/corporate-card-transactions", tags=["corporate-card-transactions"])
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +114,7 @@ async def _get_expense_or_404(
 ) -> Expense:
     expense = (
         await db.execute(
-            apply_entity_scope(select(Expense), Expense, entity_id).where(
-                Expense.id == expense_id
-            )
+            apply_entity_scope(select(Expense), Expense, entity_id).where(Expense.id == expense_id)
         )
     ).scalar_one_or_none()
     if not expense:
@@ -187,13 +183,9 @@ async def list_card_transactions(
     pagination: PaginationParams = Depends(pagination_params),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    base = apply_entity_scope(
-        select(CorporateCardTransaction), CorporateCardTransaction, entity_id
-    )
+    base = apply_entity_scope(select(CorporateCardTransaction), CorporateCardTransaction, entity_id)
     if reconciliation_status:
-        base = base.where(
-            CorporateCardTransaction.reconciliation_status == reconciliation_status
-        )
+        base = base.where(CorporateCardTransaction.reconciliation_status == reconciliation_status)
     if virtual_card_id:
         base = base.where(CorporateCardTransaction.virtual_card_id == virtual_card_id)
     if date_from:
@@ -201,9 +193,7 @@ async def list_card_transactions(
     if date_to:
         base = base.where(CorporateCardTransaction.txn_date <= date_to)
 
-    total = int(
-        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
-    )
+    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
         base.order_by(CorporateCardTransaction.txn_date.desc())
         .offset(pagination.offset)
@@ -295,9 +285,7 @@ async def sync_virtual_cards_endpoint(
 # ---------------------------------------------------------------------------
 
 
-@router.get(
-    "/{txn_id}/match-suggestions", response_model=list[CorporateCardMatchSuggestion]
-)
+@router.get("/{txn_id}/match-suggestions", response_model=list[CorporateCardMatchSuggestion])
 async def match_suggestions(
     txn_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
@@ -309,9 +297,7 @@ async def match_suggestions(
     txn = await _get_txn_or_404(db, txn_id, entity_id)
     candidates = await suggest_matches(db, txn, entity_id)
     return [
-        CorporateCardMatchSuggestion(
-            expense=_expense_to_response(c.expense), score=c.score
-        )
+        CorporateCardMatchSuggestion(expense=_expense_to_response(c.expense), score=c.score)
         for c in candidates
     ]
 
@@ -343,9 +329,7 @@ async def match_card_transaction(
     if expense.card_transaction_id is not None:
         raise HTTPException(status_code=409, detail="Expense is already matched")
 
-    await _link_both_sides(
-        db, txn=txn, expense=expense, org_id=org_id, actor_id=user.id
-    )
+    await _link_both_sides(db, txn=txn, expense=expense, org_id=org_id, actor_id=user.id)
     await db.commit()
     fresh = await _get_txn_or_404(db, txn.id, entity_id)
     return _to_response(fresh)
@@ -464,9 +448,7 @@ async def create_expense_from_card(
         entity_id=expense.id,
         details={"amount": str(expense.amount), "from_card_transaction": str(txn.id)},
     )
-    await _link_both_sides(
-        db, txn=txn, expense=expense, org_id=org_id, actor_id=user.id
-    )
+    await _link_both_sides(db, txn=txn, expense=expense, org_id=org_id, actor_id=user.id)
     await db.commit()
     fresh = await _get_txn_or_404(db, txn.id, entity_id)
     return _to_response(fresh)

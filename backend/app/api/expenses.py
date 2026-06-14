@@ -188,17 +188,13 @@ async def _recompute_report_total(db: AsyncSession, report: ExpenseReport) -> No
 
 async def _active_policies(db: AsyncSession) -> list[ExpensePolicy]:
     return list(
-        (
-            await db.execute(select(ExpensePolicy).where(ExpensePolicy.active.is_(True)))
-        )
+        (await db.execute(select(ExpensePolicy).where(ExpensePolicy.active.is_(True))))
         .scalars()
         .all()
     )
 
 
-async def _approved_preapproval_amount(
-    db: AsyncSession, expense: Expense
-) -> Decimal | None:
+async def _approved_preapproval_amount(db: AsyncSession, expense: Expense) -> Decimal | None:
     """Largest approved pre-approval estimate covering this expense.
 
     A pre-approval covers an expense when it's approved and either linked to the
@@ -214,13 +210,17 @@ async def _approved_preapproval_amount(
     if not conditions:
         return None
     rows = (
-        await db.execute(
-            select(ExpensePreapproval.estimated_amount).where(
-                ExpensePreapproval.status == PreapprovalStatus.approved,
-                or_(*conditions),
+        (
+            await db.execute(
+                select(ExpensePreapproval.estimated_amount).where(
+                    ExpensePreapproval.status == PreapprovalStatus.approved,
+                    or_(*conditions),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not rows:
         return None
     return max(Decimal(r) for r in rows)
@@ -234,9 +234,7 @@ async def _refresh_policy_violations(db: AsyncSession, expense: Expense) -> None
     try:
         policies = await _active_policies(db)
         covered = await _approved_preapproval_amount(db, expense)
-        violations = evaluate_expense(
-            expense, policies, approved_preapproval_amount=covered
-        )
+        violations = evaluate_expense(expense, policies, approved_preapproval_amount=covered)
         expense.policy_violations = violations or None
     except Exception:  # pragma: no cover — advisory, never break the write
         pass
@@ -977,8 +975,7 @@ async def approve_report(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
-                    f"Report total {report_total} exceeds {cfo_threshold}. "
-                    "CFO approval required."
+                    f"Report total {report_total} exceeds {cfo_threshold}. CFO approval required."
                 ),
             )
 

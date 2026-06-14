@@ -272,12 +272,16 @@ async def test_match_unmatch_roundtrip(realdb):
         assert str(exp.card_transaction_id) == txn_id
         assert exp.payment_method == "corporate_card"  # no virtual_card_id on txn
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(
-                    AuditLog.entity_type == "corporate_card_transaction"
+            (
+                await s.execute(
+                    select(AuditLog.action).where(
+                        AuditLog.entity_type == "corporate_card_transaction"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert "card_txn.matched" in actions
 
     # Unmatch — both sides cleared.
@@ -357,12 +361,16 @@ async def test_unmatch_on_unmatched_rejected(realdb):
 
     async with mk() as s:
         actions = (
-            await s.execute(
-                select(AuditLog.action).where(
-                    AuditLog.entity_type == "corporate_card_transaction"
+            (
+                await s.execute(
+                    select(AuditLog.action).where(
+                        AuditLog.entity_type == "corporate_card_transaction"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert "card_txn.unmatched" not in actions
 
 

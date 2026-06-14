@@ -301,10 +301,14 @@ async def seed_control_plane():
         # index and would have broken provision_tenant's role lookup.
         async def _get_or_create_system_role(name: str) -> Role:
             existing = (
-                await session.execute(
-                    select(Role).where(Role.name == name, Role.organization_id.is_(None))
+                (
+                    await session.execute(
+                        select(Role).where(Role.name == name, Role.organization_id.is_(None))
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if existing is not None:
                 return existing
             role = Role(name=name, description=ROLE_DEFINITIONS[name])

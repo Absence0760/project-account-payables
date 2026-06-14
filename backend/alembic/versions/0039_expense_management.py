@@ -68,8 +68,7 @@ _STATEMENTS = [
     "ON expense_reports (employee_user_id)",
     "CREATE INDEX IF NOT EXISTS ix_expense_reports_organization_id "
     "ON expense_reports (organization_id)",
-    "CREATE INDEX IF NOT EXISTS ix_expense_reports_entity_id "
-    "ON expense_reports (entity_id)",
+    "CREATE INDEX IF NOT EXISTS ix_expense_reports_entity_id ON expense_reports (entity_id)",
     # 2. corporate_card_transactions (created before expenses; its self-side
     #    of the cycle, matched_expense_id, is added by ALTER below) ----------
     """
@@ -134,8 +133,7 @@ _STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_expenses_report_id ON expenses (report_id)",
     "CREATE INDEX IF NOT EXISTS ix_expenses_gl_account_id ON expenses (gl_account_id)",
-    "CREATE INDEX IF NOT EXISTS ix_expenses_card_transaction_id "
-    "ON expenses (card_transaction_id)",
+    "CREATE INDEX IF NOT EXISTS ix_expenses_card_transaction_id ON expenses (card_transaction_id)",
     "CREATE INDEX IF NOT EXISTS ix_expenses_organization_id ON expenses (organization_id)",
     "CREATE INDEX IF NOT EXISTS ix_expenses_entity_id ON expenses (entity_id)",
     # --- Cross-FKs that close the cycle (idempotent guards via DO blocks) ---
@@ -177,8 +175,7 @@ _STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_expense_policies_organization_id "
     "ON expense_policies (organization_id)",
-    "CREATE INDEX IF NOT EXISTS ix_expense_policies_entity_id "
-    "ON expense_policies (entity_id)",
+    "CREATE INDEX IF NOT EXISTS ix_expense_policies_entity_id ON expense_policies (entity_id)",
     # 5. expense_preapprovals ------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS expense_preapprovals (
@@ -227,8 +224,7 @@ def downgrade() -> None:
         "DROP CONSTRAINT IF EXISTS fk_corporate_card_transactions_matched_expense_id"
     )
     op.execute(
-        "ALTER TABLE IF EXISTS expenses "
-        "DROP CONSTRAINT IF EXISTS fk_expenses_card_transaction_id"
+        "ALTER TABLE IF EXISTS expenses DROP CONSTRAINT IF EXISTS fk_expenses_card_transaction_id"
     )
     op.execute("DROP TABLE IF EXISTS expense_preapprovals")
     op.execute("DROP TABLE IF EXISTS expense_policies")

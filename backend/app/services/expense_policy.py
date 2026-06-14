@@ -136,9 +136,7 @@ def evaluate_expense(
             violations.append(
                 {
                     "code": VIOLATION_RECEIPT_REQUIRED,
-                    "message": (
-                        f"A receipt is required for amounts above {receipt_above}."
-                    ),
+                    "message": (f"A receipt is required for amounts above {receipt_above}."),
                     "policy_id": policy_id,
                     "limit": str(receipt_above),
                     "actual": str(amount),
@@ -153,8 +151,7 @@ def evaluate_expense(
                     {
                         "code": VIOLATION_PREAPPROVAL_REQUIRED,
                         "message": (
-                            f"Pre-approval is required for amounts above "
-                            f"{preapproval_above}."
+                            f"Pre-approval is required for amounts above {preapproval_above}."
                         ),
                         "policy_id": policy_id,
                         "limit": str(preapproval_above),
@@ -167,9 +164,7 @@ def evaluate_expense(
             violations.append(
                 {
                     "code": VIOLATION_PER_DIEM_EXCEEDED,
-                    "message": (
-                        f"Amount {amount} exceeds the per-diem cap of {per_diem}."
-                    ),
+                    "message": (f"Amount {amount} exceeds the per-diem cap of {per_diem}."),
                     "policy_id": policy_id,
                     "limit": str(per_diem),
                     "actual": str(amount),
