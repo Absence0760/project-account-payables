@@ -209,6 +209,61 @@ def export_cashflow_forecast(period_rows: Iterable) -> str:
     return buf.getvalue()
 
 
+def export_expense_register(rows: Iterable) -> str:
+    """One row per Expense — the expense register a finance team reconciles or
+    re-imports. Each row is a ``(Expense, report_number, gl_code)`` tuple: the
+    route does the joins (``GLAccount`` for the code, ``ExpenseReport`` for the
+    number) so this stays a pure serializer (mirrors ``export_payment_register``
+    pairing). ``status`` / ``payment_method`` are ``StrEnum`` so ``str(...)``
+    already yields the plain value; the ``.value`` guard is belt-and-suspenders."""
+    buf, w = _writer(
+        [
+            "date",
+            "merchant",
+            "category",
+            "amount",
+            "currency",
+            "gl_code",
+            "payment_method",
+            "status",
+            "report_number",
+        ]
+    )
+    for row in rows:
+        # `row` is a (Expense, report_number, gl_code) sequence — a SQLAlchemy
+        # `Row`, a plain tuple/list, or (test convenience) a bare Expense-like
+        # object carrying its own `expense_date` plus the two extras as attrs.
+        if hasattr(row, "expense_date"):
+            e = row
+            report_number = getattr(row, "report_number", None)
+            gl_code = getattr(row, "gl_code", None)
+        else:
+            seq = list(row)
+            e = seq[0]
+            report_number = seq[1] if len(seq) > 1 else None
+            gl_code = seq[2] if len(seq) > 2 else None
+        status = getattr(e, "status", None)
+        if hasattr(status, "value"):
+            status = status.value
+        payment_method = getattr(e, "payment_method", None)
+        if hasattr(payment_method, "value"):
+            payment_method = payment_method.value
+        w.writerow(
+            [
+                _fmt_date(getattr(e, "expense_date", None)),
+                getattr(e, "merchant", "") or "",
+                getattr(e, "category", "") or "",
+                _fmt_money(getattr(e, "amount", None)),
+                getattr(e, "currency", "") or "USD",
+                gl_code or "",
+                payment_method or "",
+                status or "",
+                report_number or "",
+            ]
+        )
+    return buf.getvalue()
+
+
 # Registry — keep one in-process so the API layer can do
 # `EXPORTERS["invoice_register"]` and not hand-route per name.
 EXPORTERS: dict[str, Callable] = {
@@ -217,4 +272,5 @@ EXPORTERS: dict[str, Callable] = {
     "payment_register": export_payment_register,
     "aging_snapshot": export_aging_snapshot,
     "cashflow_forecast": export_cashflow_forecast,
+    "expense_register": export_expense_register,
 }

@@ -9,6 +9,7 @@ exist. See ``backend/docs/expense-management.md``.
 """
 
 import uuid
+from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -28,14 +29,17 @@ from app.api.deps import (
 )
 from app.api.pagination import PaginationParams, pagination_params
 from app.models.expense import Expense, ExpenseReport
+from app.models.gl_account import GLAccount
 from app.models.user import User
 from app.schemas.expense import (
+    ExpenseBulkGlCode,
     ExpenseCreate,
     ExpenseListResponse,
     ExpenseReportAttach,
     ExpenseReportCreate,
     ExpenseReportListResponse,
     ExpenseReportResponse,
+    ExpenseReportSummary,
     ExpenseReportUpdate,
     ExpenseResponse,
     ExpenseUpdate,
@@ -158,9 +162,7 @@ async def _recompute_report_total(db: AsyncSession, report: ExpenseReport) -> No
     result is coerced to ``Decimal`` (never float)."""
     total = (
         await db.execute(
-            select(func.coalesce(func.sum(Expense.amount), 0)).where(
-                Expense.report_id == report.id
-            )
+            select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.report_id == report.id)
         )
     ).scalar_one()
     report.total_amount = Decimal(total)
@@ -186,13 +188,9 @@ async def list_expenses(
     if report_id:
         base = base.where(Expense.report_id == report_id)
 
-    total = int(
-        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
-    )
+    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
-        base.order_by(Expense.created_at.desc())
-        .offset(pagination.offset)
-        .limit(pagination.limit)
+        base.order_by(Expense.created_at.desc()).offset(pagination.offset).limit(pagination.limit)
     )
     rows = (await db.execute(paged)).scalars().all()
     return ExpenseListResponse(
@@ -319,6 +317,124 @@ async def upload_receipt(
     await db.commit()
     fresh = await _get_expense_or_404(db, expense.id)
     return _to_response(fresh)
+
+
+# ---------------------------------------------------------------------------
+# Expense register CSV export + bulk GL re-code — both literal-prefixed
+# segments declared BEFORE /{expense_id} so they aren't captured as a UUID
+# (mirrors the /receipt route ordering above).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/export")
+async def export_expenses(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    status_filter: str | None = Query(None, alias="status"),
+    category: str | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    report_id: uuid.UUID | None = Query(None),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Stream the filtered expense register as ``text/csv``.
+
+    Joins ``GLAccount`` (for the GL code) and ``ExpenseReport`` (for the report
+    number) with outer joins so an uncoded / unattached expense still emits a
+    row. Entity-scoped; no pagination (dumps the full filtered set, mirroring
+    the analytics export)."""
+    from app.services.report_export import EXPORTERS
+
+    base = apply_entity_scope(
+        select(Expense, ExpenseReport.report_number, GLAccount.code)
+        .outerjoin(GLAccount, GLAccount.id == Expense.gl_account_id)
+        .outerjoin(ExpenseReport, ExpenseReport.id == Expense.report_id),
+        Expense,
+        entity_id,
+    )
+    if status_filter:
+        base = base.where(Expense.status == status_filter)
+    if category:
+        base = base.where(Expense.category == category)
+    if date_from:
+        base = base.where(Expense.expense_date >= date_from)
+    if date_to:
+        base = base.where(Expense.expense_date <= date_to)
+    if report_id:
+        base = base.where(Expense.report_id == report_id)
+    base = base.order_by(Expense.expense_date.desc())
+
+    rows = (await db.execute(base)).all()
+    payload = EXPORTERS["expense_register"](rows)
+    filename = f"expenses_{date.today().isoformat()}.csv"
+    return Response(
+        content=payload,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/bulk-gl-code")
+async def bulk_gl_code(
+    body: ExpenseBulkGlCode,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Set ``gl_account_id`` on many expenses at once (``None`` clears it).
+
+    Each id is resolved within the entity scope (an out-of-scope / cross-tenant
+    id is a 404), then one ``dispatch_audit`` row is written per expense so the
+    SOX trail records every coded row. Returns the updated count."""
+    gl_uuid: uuid.UUID | None = None
+    if body.gl_account_id is not None:
+        try:
+            gl_uuid = uuid.UUID(body.gl_account_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid gl_account_id")
+        gl = (
+            await db.execute(
+                select(GLAccount).where(
+                    GLAccount.id == gl_uuid,
+                    GLAccount.organization_id == org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if gl is None:
+            raise HTTPException(status_code=404, detail="GL account not found")
+
+    expense_uuids: list[uuid.UUID] = []
+    for raw in body.expense_ids:
+        try:
+            expense_uuids.append(uuid.UUID(raw))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid expense id: {raw}")
+
+    updated = 0
+    for eid in expense_uuids:
+        expense = (
+            await db.execute(
+                apply_entity_scope(select(Expense), Expense, entity_id).where(Expense.id == eid)
+            )
+        ).scalar_one_or_none()
+        if expense is None:
+            raise HTTPException(status_code=404, detail=f"Expense not found: {eid}")
+        expense.gl_account_id = gl_uuid
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
+            organization_id=org_id,
+            actor_id=user.id,
+            action="expense.bulk_gl_coded",
+            entity_type="expense",
+            entity_id=expense.id,
+            details={"gl_account_id": str(gl_uuid) if gl_uuid else None},
+        )
+        updated += 1
+
+    await db.commit()
+    return {"updated": updated}
 
 
 # ---------------------------------------------------------------------------
@@ -450,9 +566,7 @@ async def list_reports(
     if status_filter:
         base = base.where(ExpenseReport.status == status_filter)
 
-    total = int(
-        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
-    )
+    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
     paged = (
         base.options(selectinload(ExpenseReport.expenses))
         .order_by(ExpenseReport.created_at.desc())
@@ -517,6 +631,64 @@ async def get_report(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
 ):
     return _report_to_response(await _get_report_or_404(db, report_id))
+
+
+@reports_router.get("/{report_id}/summary", response_model=ExpenseReportSummary)
+async def report_summary(
+    report_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+):
+    """Aggregate the report's attached expenses: grand total + count plus
+    per-category and per-status rollups. The SUMs run in Postgres over the
+    ``Numeric`` column (exact); the response serialises money as ``float`` to
+    match ``ExpenseResponse.amount`` (read-only display rollup)."""
+    report = await _get_report_or_404(db, report_id)
+
+    total = (
+        await db.execute(
+            select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.report_id == report.id)
+        )
+    ).scalar_one()
+    count = (
+        await db.execute(select(func.count(Expense.id)).where(Expense.report_id == report.id))
+    ).scalar_one()
+
+    by_category_rows = (
+        await db.execute(
+            select(
+                Expense.category,
+                func.count(Expense.id).label("count"),
+                func.coalesce(func.sum(Expense.amount), 0).label("total"),
+            )
+            .where(Expense.report_id == report.id)
+            .group_by(Expense.category)
+        )
+    ).all()
+    by_status_rows = (
+        await db.execute(
+            select(
+                Expense.status,
+                func.count(Expense.id).label("count"),
+                func.coalesce(func.sum(Expense.amount), 0).label("total"),
+            )
+            .where(Expense.report_id == report.id)
+            .group_by(Expense.status)
+        )
+    ).all()
+
+    return ExpenseReportSummary(
+        total=float(Decimal(total)),
+        count=int(count or 0),
+        by_category=[
+            {"category": cat, "count": int(cnt or 0), "total": float(Decimal(tot))}
+            for cat, cnt, tot in by_category_rows
+        ],
+        by_status=[
+            {"status": str(st), "count": int(cnt or 0), "total": float(Decimal(tot))}
+            for st, cnt, tot in by_status_rows
+        ],
+    )
 
 
 @reports_router.patch("/{report_id}", response_model=ExpenseReportResponse)

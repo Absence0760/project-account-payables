@@ -124,6 +124,25 @@ class ExpenseReportAttach(BaseModel):
     detach: bool = False
 
 
+class ExpenseBulkGlCode(BaseModel):
+    """Re-code many expenses onto a single GL account in one call. ``None``
+    clears the coding (mirrors the PATCH ``gl_account_id`` null-clearing case)."""
+
+    expense_ids: list[str] = Field(default_factory=list)
+    gl_account_id: str | None = None
+
+
+class ExpenseReportSummary(BaseModel):
+    """Aggregate rollup of a report's attached expenses. Money is serialised as
+    ``float`` to match ``ExpenseResponse.amount`` — the exact value stays in the
+    DB ``Numeric``; this is a read-only display rollup."""
+
+    total: float
+    count: int
+    by_category: list[dict]
+    by_status: list[dict]
+
+
 class ExpenseReportResponse(BaseModel):
     id: str
     report_number: str
@@ -289,6 +308,8 @@ __all__ = [
     "ExpenseReportCreate",
     "ExpenseReportUpdate",
     "ExpenseReportAttach",
+    "ExpenseBulkGlCode",
+    "ExpenseReportSummary",
     "ExpenseReportResponse",
     "ExpenseReportListResponse",
     "ExpensePolicyBase",
