@@ -221,4 +221,21 @@ test.describe('RBAC at the API layer', () => {
 			expect(r.status(), `${label} GET /dashboard`).toBe(200);
 		}
 	});
+
+	// A clerk browses Catalogs (+ guided buying) to raise a requisition, so
+	// the catalogs read endpoint grants ap_clerk and the sidebar surfaces it
+	// (see rbac.spec.ts). Pin the backend side here so the two can't drift:
+	// if this 403s, the gate silently dropped clerk and the nav item lies.
+	test('clerk CAN GET /api/catalogs (sidebar/backend RBAC parity)', async ({
+		page,
+		request,
+		tenantClerk
+	}) => {
+		const token = await tokenAfterLogin(page, tenantClerk);
+		const r = await request.get(`${API_BASE}/api/catalogs`, {
+			headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() }
+		});
+		expect(r.status(), 'clerk GET /catalogs must not be RBAC-denied').not.toBe(403);
+		expect(r.status(), 'clerk GET /catalogs').toBe(200);
+	});
 });

@@ -59,7 +59,7 @@
 			items: [
 				{ label: 'Requisitions', href: '/requisitions', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 				{ label: 'Intake', href: '/intake', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-				{ label: 'Catalogs', href: '/catalogs', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
+				{ label: 'Catalogs', href: '/catalogs', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 				{ label: 'Budgets', href: '/budgets', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 			],
 		},

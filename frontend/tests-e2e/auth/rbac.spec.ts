@@ -25,7 +25,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
  * | Goods Receipts  |       |   ✓    |  ✓  |  ✓    |
  * | Requisitions    |  ✓    |   ✓    |  ✓  |  ✓    |
  * | Intake          |  ✓    |   ✓    |  ✓  |  ✓    |
- * | Catalogs        |       |   ✓    |  ✓  |  ✓    |
+ * | Catalogs        |  ✓    |   ✓    |  ✓  |  ✓    |
  * | Budgets         |       |   ✓    |  ✓  |  ✓    |
  * | Cash Flow       |       |        |  ✓  |  ✓    |
  * | 1099 Reporting  |       |   ✓    |  ✓  |  ✓    |
@@ -36,8 +36,11 @@ test.use({ storageState: { cookies: [], origins: [] } });
  * | Users           |       |        |     |  ✓    |
  * | Roles           |       |        |     |  ✓    |
  *
- * Each row mirrors the matching backend read-RBAC gate (clerk-visible
- * Contracts/Expenses/Requisitions/Intake all allow ap_clerk to read).
+ * Each row mirrors the matching backend read-RBAC gate. Every
+ * clerk-visible item (Contracts/Expenses/Requisitions/Intake/Catalogs)
+ * has a list endpoint that allows ap_clerk to read — a clerk browses
+ * Catalogs + guided buying to raise a requisition, whose line items
+ * carry a catalog_item_id.
  * Admin coverage is implicit in nav.spec.ts (admin reaches every
  * route). Here we focus on the non-admin gates.
  */
@@ -55,7 +58,7 @@ async function assertSidebarLinks(page: import('@playwright/test').Page, expecte
 }
 
 test.describe('RBAC — sidebar visibility', () => {
-	test('clerk: Dashboard, Notifications, Invoices, Contracts, Expenses, Requisitions, Intake', async ({
+	test('clerk: Dashboard, Notifications, Invoices, Contracts, Expenses, Requisitions, Intake, Catalogs', async ({
 		page,
 		tenantClerk
 	}) => {
@@ -67,7 +70,8 @@ test.describe('RBAC — sidebar visibility', () => {
 			'/contracts',
 			'/expenses',
 			'/requisitions',
-			'/intake'
+			'/intake',
+			'/catalogs'
 		]);
 	});
 
