@@ -79,6 +79,22 @@ class Settings(BaseSettings):
     vendor_rescreen_enabled: bool = False
     vendor_rescreen_interval_seconds: int = 86400
     vendor_rescreen_after_days: int = 7
+
+    # Dynamic discounting & early-payment optimization (see
+    # backend/docs/dynamic-discounting.md). The ROI calculator and the
+    # accept/decline offer surface run unconditionally; only the *auto-capture
+    # sweep* is gated. `discount_optimization_enabled` is the master switch for
+    # that background loop — OFF by default so local dev / tests don't
+    # auto-pay. `discount_auto_capture_roi_threshold` is the annualized return
+    # (APR %) an offer must clear for the sweep to capture it automatically;
+    # `discount_cost_of_capital_pct` is the platform-default annual cost of
+    # capital the ROI calculator compares against (per-org override:
+    # `Organization.settings.discounting.cost_of_capital_pct`). Percentages,
+    # not currency, so float is fine.
+    discount_optimization_enabled: bool = False
+    discount_optimization_interval_seconds: int = 3600
+    discount_auto_capture_roi_threshold: float = 12.0
+    discount_cost_of_capital_pct: float = 8.0
     approval_escalation_interval_seconds: int = 600
     # Payment-status reconciler: backstop polling for processors whose
     # webhooks have gone missing. Disabled by default in local dev (the
