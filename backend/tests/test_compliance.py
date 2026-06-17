@@ -420,6 +420,7 @@ async def test_execute_payment_run_refuses_sanctions_matched_vendor_without_call
         amount=Decimal("1000.00"),
         correlation_id=uuid.uuid4(),
         organization_id=run.organization_id,
+        entity_id=None,
         vendor_country="DE",
     )
     pay = SimpleNamespace(
