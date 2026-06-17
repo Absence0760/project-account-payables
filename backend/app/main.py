@@ -87,6 +87,7 @@ async def lifespan(app: FastAPI):
     from app.services.discount_auto_trigger import run_discount_optimization_loop
     from app.services.extraction_reaper import run_reaper_loop
     from app.services.payment_reconciler import run_reconciler_loop
+    from app.services.qms_sync import run_qms_sync_loop
     from app.services.vendor_rescreen import run_vendor_rescreen_loop
 
     reaper_task: asyncio.Task | None = None
@@ -96,6 +97,7 @@ async def lifespan(app: FastAPI):
     renewal_task: asyncio.Task | None = None
     rescreen_task: asyncio.Task | None = None
     discount_task: asyncio.Task | None = None
+    qms_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -122,6 +124,11 @@ async def lifespan(app: FastAPI):
         discount_task = asyncio.create_task(
             run_discount_optimization_loop(), name="discount-auto-trigger"
         )
+    # QMS inspection sync. Disabled by default; flip AP_QMS_SYNC_ENABLED on in
+    # deployed envs once a real QMS is configured per-org. Pulls inspection
+    # records into the quality_inspections table (4-way-match leg).
+    if settings.qms_sync_enabled:
+        qms_task = asyncio.create_task(run_qms_sync_loop(), name="qms-sync")
 
     try:
         yield
@@ -134,6 +141,7 @@ async def lifespan(app: FastAPI):
             renewal_task,
             rescreen_task,
             discount_task,
+            qms_task,
         ):
             if task is not None:
                 task.cancel()

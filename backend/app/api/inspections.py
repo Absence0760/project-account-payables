@@ -20,9 +20,12 @@ from app.api.deps import (
     get_org_id,
     require_roles,
 )
+from app.database import get_control_db
+from app.models.organization import Organization
 from app.models.quality_inspection import QualityInspection
 from app.models.user import User
 from app.schemas.inspection import VALID_RESULTS, InspectionCreate
+from app.services.qms_sync import sync_tenant_inspections
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -111,6 +114,36 @@ async def create_inspection(
     db.add(inspection)
     await db.flush()
     return _serialize(inspection)
+
+
+@router.post("/sync")
+async def sync_inspections(
+    db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Pull quality inspections from the org's configured QMS into
+    ``quality_inspections``. Idempotent (upsert keyed on
+    ``(organization_id, inspection_number)``). Reads the QMS config from
+    ``Organization.settings.qms`` on the control plane; falls back to the
+    platform-default provider when unset. Returns ``{fetched, created,
+    updated}``."""
+    settings_blob = (
+        await control_db.execute(select(Organization.settings).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    qms_config = None
+    if isinstance(settings_blob, dict) and isinstance(settings_blob.get("qms"), dict):
+        qms_config = settings_blob["qms"]
+
+    return await sync_tenant_inspections(
+        db,
+        org_id=org_id,
+        qms_config=qms_config,
+        entity_id=entity_id,
+        actor_id=user.id,
+    )
 
 
 @router.get("/{inspection_id}")

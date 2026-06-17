@@ -66,6 +66,20 @@ class Settings(BaseSettings):
     contract_renewal_interval_seconds: int = 3600
     contract_renewal_default_notice_days: int = 30
 
+    # QMS (Quality Management System) inspection sync. A background loop that
+    # pulls quality-inspection records from an external QMS / LIMS into the
+    # local `quality_inspections` table (the 4-way-match leg). Disabled by
+    # default so local dev / tests don't run a background sweep; flip on in
+    # deployed envs once a real QMS is configured per-org in
+    # `Organization.settings.qms`. `qms_provider` is the platform-default
+    # adapter (`mock` = deterministic, no network/credential — the local-first
+    # default); a per-org `settings.qms.provider` overrides it. No secret here:
+    # the `generic` adapter reads its base_url + api_key from per-org settings,
+    # never from env.
+    qms_sync_enabled: bool = False
+    qms_sync_interval_seconds: int = 3600
+    qms_provider: str = "mock"
+
     # Sanctions & vendor-risk screening. `vendor_screening_enabled` is the
     # master switch for synchronous screening on vendor create / update
     # (default on — the `mock` adapter is safe and local-first, returning
