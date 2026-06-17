@@ -19,6 +19,7 @@ from app.api import (
     contracts,
     credit_memos,
     dashboard,
+    discounts,
     email_intake,
     enrichment,
     entities,
@@ -83,6 +84,7 @@ async def lifespan(app: FastAPI):
     from app.services.approval_escalation import run_escalation_loop
     from app.services.audit_log_shipper import run_shipper_loop
     from app.services.contract_renewal import run_renewal_loop
+    from app.services.discount_auto_trigger import run_discount_optimization_loop
     from app.services.extraction_reaper import run_reaper_loop
     from app.services.payment_reconciler import run_reconciler_loop
     from app.services.vendor_rescreen import run_vendor_rescreen_loop
@@ -93,6 +95,7 @@ async def lifespan(app: FastAPI):
     reconciler_task: asyncio.Task | None = None
     renewal_task: asyncio.Task | None = None
     rescreen_task: asyncio.Task | None = None
+    discount_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -112,6 +115,13 @@ async def lifespan(app: FastAPI):
     # flip AP_VENDOR_RESCREEN_ENABLED on in deployed envs.
     if settings.vendor_rescreen_enabled:
         rescreen_task = asyncio.create_task(run_vendor_rescreen_loop(), name="vendor-rescreen")
+    # Dynamic-discounting auto-capture sweep. Disabled by default; flip
+    # AP_DISCOUNT_OPTIMIZATION_ENABLED on in deployed envs. Only accepts
+    # high-ROI offers — never moves money (see discount_auto_trigger).
+    if settings.discount_optimization_enabled:
+        discount_task = asyncio.create_task(
+            run_discount_optimization_loop(), name="discount-auto-trigger"
+        )
 
     try:
         yield
@@ -123,6 +133,7 @@ async def lifespan(app: FastAPI):
             reconciler_task,
             renewal_task,
             rescreen_task,
+            discount_task,
         ):
             if task is not None:
                 task.cancel()
@@ -221,6 +232,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
+app.include_router(discounts.router, prefix="/api")
 app.include_router(enrichment.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")

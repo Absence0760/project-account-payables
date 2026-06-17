@@ -1,0 +1,723 @@
+"""Dynamic discounting & early-payment optimization endpoints.
+
+Surfaces the supplier-offered discount lifecycle (create / accept / decline),
+the per-invoice ROI calculator, the cash-constrained optimizer, bulk vendor
+negotiations, and the captured/missed/projected-savings dashboard.
+
+All money is ``Decimal`` end-to-end; every mutation is RBAC-gated and writes an
+audit row. Reads are entity-scoped (multi-entity). The ROI economics (days
+accelerated = tier deadline → net due date) are shared verbatim with the
+auto-capture sweep via ``discount_auto_trigger._tier_deadline`` /
+``_resolve_due_date``. See ``backend/docs/dynamic-discounting.md``.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, date, datetime
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import (
+    ROLE_ADMIN,
+    ROLE_AP_CLERK,
+    ROLE_AP_MANAGER,
+    ROLE_CFO,
+    get_org_id,
+    require_roles,
+)
+from app.api.pagination import PaginationParams, paginated, pagination_params
+from app.models.discount import (
+    OFFER_SCOPE_INVOICE,
+    OFFER_SCOPE_VENDOR,
+    OFFER_STATUS_CAPTURED,
+    OFFER_STATUS_DECLINED,
+    OFFER_STATUS_EXPIRED,
+    OFFER_STATUS_OFFERED,
+    DiscountOffer,
+)
+from app.models.invoice import Invoice
+from app.models.organization import Organization
+from app.models.payment import PaymentSchedule
+from app.models.user import User
+from app.models.vendor import Vendor
+from app.schemas.discount import (
+    AcceptOfferRequest,
+    BulkNegotiationRequest,
+    DiscountDashboard,
+    DiscountOfferCreate,
+    DiscountOfferResponse,
+    DiscountROIResponse,
+    OptimizerRecommendation,
+    OptimizerResponse,
+)
+from app.services import discount_offers as offers_svc
+from app.services.audit_dispatch import dispatch_audit
+from app.services.discount_auto_trigger import _resolve_due_date, _tier_deadline
+from app.services.discount_optimizer import OfferOpportunity, optimize
+from app.services.discount_roi import compute_roi, days_between
+from app.tenant import (
+    apply_entity_scope,
+    get_entity_id,
+    get_tenant,
+    get_tenant_db,
+    get_write_entity_id,
+)
+
+router = APIRouter(prefix="/discounts", tags=["discounts"])
+
+_READ_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)
+_WRITE_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER)
+_ACCEPT_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
+
+# Invoice statuses where payment is still pending — the set a vendor-wide bulk
+# discount can still be captured against.
+_OPEN_FOR_DISCOUNT = (
+    "approved",
+    "sending_to_erp",
+    "sent_to_erp",
+    "posted_in_erp",
+    "payment_scheduled",
+)
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+
+def _org_currency(org: Organization) -> str:
+    return ((org.settings or {}).get("reporting_currency") or "USD").upper()
+
+
+def _cost_of_capital(org: Organization) -> Decimal:
+    from app.config import settings
+
+    raw = ((org.settings or {}).get("discounting") or {}).get("cost_of_capital_pct")
+    if raw is None:
+        raw = settings.discount_cost_of_capital_pct
+    return Decimal(str(raw))
+
+
+async def _name_maps(
+    db: AsyncSession, offers: list[DiscountOffer]
+) -> tuple[dict[uuid.UUID, str], dict[uuid.UUID, tuple[str, str | None]]]:
+    """Batch-resolve vendor names + invoice (number, vendor_name) for a page."""
+    vendor_ids = {o.vendor_id for o in offers if o.vendor_id}
+    invoice_ids = {o.invoice_id for o in offers if o.invoice_id}
+    vmap: dict[uuid.UUID, str] = {}
+    imap: dict[uuid.UUID, tuple[str, str | None]] = {}
+    if vendor_ids:
+        rows = await db.execute(select(Vendor.id, Vendor.name).where(Vendor.id.in_(vendor_ids)))
+        vmap = {vid: name for vid, name in rows.all()}
+    if invoice_ids:
+        rows = await db.execute(
+            select(Invoice.id, Invoice.invoice_number, Invoice.vendor_name).where(
+                Invoice.id.in_(invoice_ids)
+            )
+        )
+        imap = {iid: (num, vname) for iid, num, vname in rows.all()}
+    return vmap, imap
+
+
+def _response(
+    offer: DiscountOffer,
+    vmap: dict[uuid.UUID, str],
+    imap: dict[uuid.UUID, tuple[str, str | None]],
+) -> DiscountOfferResponse:
+    vendor_name = vmap.get(offer.vendor_id) if offer.vendor_id else None
+    invoice_number = None
+    if offer.invoice_id and offer.invoice_id in imap:
+        invoice_number, inv_vendor = imap[offer.invoice_id]
+        vendor_name = vendor_name or inv_vendor
+    return DiscountOfferResponse.from_db(
+        offer, vendor_name=vendor_name, invoice_number=invoice_number
+    )
+
+
+async def _build_opportunity(
+    db: AsyncSession, offer: DiscountOffer, *, today: date
+) -> OfferOpportunity | None:
+    """Turn an open offer into a ranked optimizer opportunity (best tier today).
+
+    Returns ``None`` when no tier is still achievable. Reuses the sweep's
+    deadline / due-date economics so router and background sweep agree.
+    """
+    tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+    if tier is None:
+        return None
+    pay_by = _tier_deadline(offer, tier, today)
+    due_date = await _resolve_due_date(db, offer) or offer.valid_until or pay_by
+    return OfferOpportunity(
+        offer_id=str(offer.id),
+        invoice_id=str(offer.invoice_id) if offer.invoice_id else None,
+        vendor_id=str(offer.vendor_id) if offer.vendor_id else None,
+        vendor_name=None,
+        invoice_number=None,
+        base_amount=offer.base_amount,
+        tier_days=int(tier["days"]),
+        discount_percent=offers_svc.tier_percent(tier),
+        pay_by=pay_by,
+        due_date=due_date,
+    )
+
+
+def _roi_response(roi) -> DiscountROIResponse:
+    return DiscountROIResponse(
+        base_amount=roi.base_amount,
+        discount_percent=roi.discount_percent,
+        days_accelerated=roi.days_accelerated,
+        savings=roi.savings,
+        annualized_return_pct=roi.annualized_return_pct,
+        cost_of_capital_pct=roi.cost_of_capital_pct,
+        opportunity_cost=roi.opportunity_cost,
+        net_benefit=roi.net_benefit,
+        worthwhile=roi.worthwhile,
+    )
+
+
+async def _get_offer_scoped(
+    db: AsyncSession, offer_id: uuid.UUID, entity_id: uuid.UUID | None
+) -> DiscountOffer:
+    q = apply_entity_scope(
+        select(DiscountOffer).where(DiscountOffer.id == offer_id), DiscountOffer, entity_id
+    )
+    offer = (await db.execute(q)).scalar_one_or_none()
+    if offer is None:
+        raise HTTPException(status_code=404, detail="Discount offer not found")
+    return offer
+
+
+# --------------------------------------------------------------------------- #
+# Offers — list / create / detail / accept / decline
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/offers")
+async def list_offers(
+    pagination: PaginationParams = Depends(pagination_params),
+    status_filter: str | None = Query(None, alias="status"),
+    scope: str | None = None,
+    vendor_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    query = apply_entity_scope(select(DiscountOffer), DiscountOffer, entity_id)
+    if status_filter:
+        # UI "missed" bucket = declined + expired.
+        wanted: list[str] = []
+        for s in status_filter.split(","):
+            s = s.strip()
+            if s == "missed":
+                wanted.extend([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED])
+            elif s:
+                wanted.append(s)
+        if wanted:
+            query = query.where(DiscountOffer.status.in_(wanted))
+    if scope:
+        query = query.where(DiscountOffer.scope == scope)
+    if vendor_id:
+        query = query.where(DiscountOffer.vendor_id == vendor_id)
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = query.order_by(DiscountOffer.created_at.desc()).offset(pagination.offset).limit(
+        pagination.limit
+    )
+    rows = list((await db.execute(query)).scalars().all())
+    vmap, imap = await _name_maps(db, rows)
+    items = [_response(o, vmap, imap) for o in rows]
+    return paginated(items, total, pagination)
+
+
+@router.post("/offers", response_model=DiscountOfferResponse, status_code=status.HTTP_201_CREATED)
+async def create_offer(
+    body: DiscountOfferCreate,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_WRITE_ROLES)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
+):
+    tiers = offers_svc.parse_tiers([t.model_dump() for t in body.tiers])
+
+    invoice: Invoice | None = None
+    base_amount = body.base_amount
+    currency = body.currency
+    if body.scope == OFFER_SCOPE_INVOICE:
+        if not body.invoice_id:
+            raise HTTPException(status_code=422, detail="invoice_id required for invoice scope")
+        invoice = (
+            await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)))
+        ).scalar_one_or_none()
+        if invoice is None:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        base_amount = base_amount if base_amount is not None else invoice.amount
+        currency = currency or invoice.currency
+    elif body.scope == OFFER_SCOPE_VENDOR:
+        if not body.vendor_id:
+            raise HTTPException(status_code=422, detail="vendor_id required for vendor scope")
+        if base_amount is None:
+            raise HTTPException(
+                status_code=422, detail="base_amount required for a vendor-scoped offer"
+            )
+
+    if base_amount is None:
+        raise HTTPException(status_code=422, detail="base_amount could not be resolved")
+
+    offer = DiscountOffer(
+        organization_id=org_id,
+        entity_id=entity_id,
+        scope=body.scope,
+        invoice_id=uuid.UUID(body.invoice_id) if body.invoice_id else None,
+        vendor_id=uuid.UUID(body.vendor_id) if body.vendor_id else None,
+        source=body.source,
+        status=OFFER_STATUS_OFFERED,
+        tiers=tiers,
+        base_amount=base_amount,
+        currency=(currency or _org_currency(org)).upper(),
+        valid_from=body.valid_from,
+        valid_until=body.valid_until,
+        notes=body.notes,
+    )
+    db.add(offer)
+    await db.flush()
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="discount_offer.created",
+        entity_type="discount_offer",
+        entity_id=offer.id,
+        details={"scope": offer.scope, "source": offer.source, "tiers": tiers},
+    )
+    await db.commit()
+    await db.refresh(offer)
+    vmap, imap = await _name_maps(db, [offer])
+    return _response(offer, vmap, imap)
+
+
+@router.get("/offers/{offer_id}", response_model=DiscountOfferResponse)
+async def get_offer(
+    offer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    offer = await _get_offer_scoped(db, offer_id, entity_id)
+    vmap, imap = await _name_maps(db, [offer])
+    return _response(offer, vmap, imap)
+
+
+@router.post("/offers/{offer_id}/accept", response_model=DiscountOfferResponse)
+async def accept_offer(
+    offer_id: uuid.UUID,
+    body: AcceptOfferRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org_id: uuid.UUID = Depends(get_org_id),
+    user: User = Depends(require_roles(*_ACCEPT_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    offer = await _get_offer_scoped(db, offer_id, entity_id)
+    today = date.today()
+    if body.tier_days is not None:
+        tier = offers_svc.select_tier(offer.tiers or [], body.tier_days)
+        if tier is None:
+            raise HTTPException(status_code=422, detail="No tier matches the requested days")
+    else:
+        tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        if tier is None:
+            raise HTTPException(status_code=409, detail="Offer has no capturable tier today")
+    try:
+        offers_svc.accept_offer(offer, tier=tier, actor_id=user.id, now=datetime.now(UTC))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="discount_offer.accepted",
+        entity_type="discount_offer",
+        entity_id=offer.id,
+        details={"tier": offer.accepted_tier},
+    )
+    await db.commit()
+    await db.refresh(offer)
+    vmap, imap = await _name_maps(db, [offer])
+    return _response(offer, vmap, imap)
+
+
+@router.post("/offers/{offer_id}/decline", response_model=DiscountOfferResponse)
+async def decline_offer(
+    offer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org_id: uuid.UUID = Depends(get_org_id),
+    user: User = Depends(require_roles(*_WRITE_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    offer = await _get_offer_scoped(db, offer_id, entity_id)
+    try:
+        offers_svc.decline_offer(offer, now=datetime.now(UTC))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="discount_offer.declined",
+        entity_type="discount_offer",
+        entity_id=offer.id,
+        details={},
+    )
+    await db.commit()
+    await db.refresh(offer)
+    vmap, imap = await _name_maps(db, [offer])
+    return _response(offer, vmap, imap)
+
+
+# --------------------------------------------------------------------------- #
+# ROI calculator (per invoice)
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/invoices/{invoice_id}/roi", response_model=DiscountROIResponse)
+async def invoice_roi(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    invoice = (
+        await db.execute(
+            apply_entity_scope(
+                select(Invoice).where(Invoice.id == invoice_id), Invoice, entity_id
+            )
+        )
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Net due date: payment schedule wins, else the invoice's own due_date.
+    sched = (
+        await db.execute(
+            select(PaymentSchedule)
+            .where(PaymentSchedule.invoice_id == invoice_id)
+            .order_by(PaymentSchedule.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    due_date = (sched.due_date if sched else None) or invoice.due_date
+    if due_date is None:
+        raise HTTPException(
+            status_code=422, detail="Invoice has no due date — cannot compute early-pay ROI"
+        )
+
+    today = date.today()
+    cost_of_capital = _cost_of_capital(org)
+
+    # Prefer an open dynamic offer; fall back to the static payment-schedule term.
+    offer = (
+        await db.execute(
+            select(DiscountOffer)
+            .where(
+                DiscountOffer.invoice_id == invoice_id,
+                DiscountOffer.status == OFFER_STATUS_OFFERED,
+            )
+            .order_by(DiscountOffer.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if offer is not None:
+        tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        if tier is not None:
+            pay_by = _tier_deadline(offer, tier, today)
+            roi = compute_roi(
+                base_amount=offer.base_amount,
+                discount_percent=offers_svc.tier_percent(tier),
+                days_accelerated=days_between(pay_by, due_date),
+                cost_of_capital_pct=cost_of_capital,
+            )
+            return _roi_response(roi)
+
+    # Static early-pay term.
+    if sched and sched.discount_percent and sched.discount_date:
+        roi = compute_roi(
+            base_amount=invoice.amount,
+            discount_percent=sched.discount_percent,
+            days_accelerated=days_between(sched.discount_date, due_date),
+            cost_of_capital_pct=cost_of_capital,
+        )
+        return _roi_response(roi)
+
+    # No discount available — return a zeroed, not-worthwhile result.
+    roi = compute_roi(
+        base_amount=invoice.amount,
+        discount_percent=Decimal("0"),
+        days_accelerated=0,
+        cost_of_capital_pct=cost_of_capital,
+    )
+    return _roi_response(roi)
+
+
+# --------------------------------------------------------------------------- #
+# Optimizer
+# --------------------------------------------------------------------------- #
+
+
+@router.post("/optimize", response_model=OptimizerResponse)
+async def optimize_discounts(
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    cash_budget = None
+    if body and body.get("cash_budget") is not None:
+        cash_budget = Decimal(str(body["cash_budget"]))
+
+    today = date.today()
+    cost_of_capital = _cost_of_capital(org)
+
+    rows = list(
+        (
+            await db.execute(
+                apply_entity_scope(
+                    select(DiscountOffer).where(DiscountOffer.status == OFFER_STATUS_OFFERED),
+                    DiscountOffer,
+                    entity_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    offer_by_id = {str(o.id): o for o in rows}
+    opportunities = []
+    for offer in rows:
+        opp = await _build_opportunity(db, offer, today=today)
+        if opp is not None:
+            opportunities.append(opp)
+
+    vmap, imap = await _name_maps(db, rows)
+    result = optimize(
+        opportunities, cash_budget=cash_budget, cost_of_capital_pct=cost_of_capital, today=today
+    )
+
+    recs: list[OptimizerRecommendation] = []
+    for r in result.recommendations:
+        offer = offer_by_id.get(r.opportunity.offer_id)
+        vendor_name = None
+        invoice_number = None
+        if offer is not None:
+            if offer.vendor_id:
+                vendor_name = vmap.get(offer.vendor_id)
+            if offer.invoice_id and offer.invoice_id in imap:
+                invoice_number, inv_vendor = imap[offer.invoice_id]
+                vendor_name = vendor_name or inv_vendor
+        recs.append(
+            OptimizerRecommendation(
+                offer_id=r.opportunity.offer_id,
+                invoice_id=r.opportunity.invoice_id,
+                vendor_id=r.opportunity.vendor_id,
+                vendor_name=vendor_name,
+                invoice_number=invoice_number,
+                tier_days=r.opportunity.tier_days,
+                discount_percent=r.opportunity.discount_percent,
+                pay_by=r.opportunity.pay_by.isoformat(),
+                roi=_roi_response(r.roi),
+                selected=r.selected,
+                cumulative_outlay=r.cumulative_outlay,
+            )
+        )
+
+    return OptimizerResponse(
+        cash_budget=cash_budget,
+        cost_of_capital_pct=result.cost_of_capital_pct,
+        total_savings_available=result.total_savings_available,
+        total_savings_selected=result.total_savings_selected,
+        total_outlay_selected=result.total_outlay_selected,
+        recommendations=recs,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Bulk vendor negotiation
+# --------------------------------------------------------------------------- #
+
+
+@router.post(
+    "/bulk-negotiate", response_model=DiscountOfferResponse, status_code=status.HTTP_201_CREATED
+)
+async def bulk_negotiate(
+    body: BulkNegotiationRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_WRITE_ROLES)),
+    org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID = Depends(get_write_entity_id),
+):
+    vendor_id = uuid.UUID(body.vendor_id)
+    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    amounts = list(
+        (
+            await db.execute(
+                apply_entity_scope(
+                    select(Invoice.amount).where(
+                        Invoice.vendor_id == vendor_id,
+                        Invoice.status.in_(_OPEN_FOR_DISCOUNT),
+                    ),
+                    Invoice,
+                    entity_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not amounts:
+        raise HTTPException(
+            status_code=409, detail="Vendor has no open invoices to negotiate against"
+        )
+
+    negotiation = offers_svc.build_bulk_offer(
+        vendor_id=vendor_id,
+        open_amounts=amounts,
+        tiers=[t.model_dump() for t in body.tiers],
+        valid_until=body.valid_until,
+        notes=body.notes,
+    )
+    # as_offer_kwargs() already supplies scope, source, vendor_id, base_amount,
+    # tiers, valid_until, notes.
+    offer = DiscountOffer(
+        organization_id=org_id,
+        entity_id=entity_id,
+        status=OFFER_STATUS_OFFERED,
+        currency=_org_currency(org),
+        **negotiation.as_offer_kwargs(),
+    )
+    db.add(offer)
+    await db.flush()
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="discount_offer.bulk_created",
+        entity_type="discount_offer",
+        entity_id=offer.id,
+        details={
+            "vendor_id": str(vendor_id),
+            "invoice_count": negotiation.invoice_count,
+            "tiers": negotiation.tiers,
+        },
+    )
+    await db.commit()
+    await db.refresh(offer)
+    vmap, imap = await _name_maps(db, [offer])
+    return _response(offer, vmap, imap)
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard — captured / missed / projected savings
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/dashboard", response_model=DiscountDashboard)
+async def dashboard(
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    today = date.today()
+
+    def _scope(q):
+        return apply_entity_scope(q, DiscountOffer, entity_id)
+
+    # Captured.
+    captured_count, captured_amount = (
+        await db.execute(
+            _scope(
+                select(
+                    func.count(),
+                    func.coalesce(func.sum(DiscountOffer.captured_amount), 0),
+                ).where(DiscountOffer.status == OFFER_STATUS_CAPTURED)
+            )
+        )
+    ).one()
+
+    # Missed (declined + expired) — count + the discount that *would* have been
+    # captured at each offer's best tier.
+    missed_rows = list(
+        (
+            await db.execute(
+                _scope(
+                    select(DiscountOffer.base_amount, DiscountOffer.tiers).where(
+                        DiscountOffer.status.in_([OFFER_STATUS_DECLINED, OFFER_STATUS_EXPIRED])
+                    )
+                )
+            )
+        ).all()
+    )
+    missed_count = len(missed_rows)
+    missed_amount = Decimal("0")
+    for base_amount, tiers in missed_rows:
+        best = None
+        for t in tiers or []:
+            pct = offers_svc.tier_percent(t)
+            if best is None or pct > best:
+                best = pct
+        if best is not None:
+            missed_amount += offers_svc.discount_savings(base_amount, {"days": 0, "percent": best})
+
+    # Open offers + projected savings (optimizer, unconstrained cash).
+    open_offers = list(
+        (
+            await db.execute(
+                _scope(select(DiscountOffer).where(DiscountOffer.status == OFFER_STATUS_OFFERED))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    opportunities = []
+    for offer in open_offers:
+        opp = await _build_opportunity(db, offer, today=today)
+        if opp is not None:
+            opportunities.append(opp)
+    result = optimize(
+        opportunities,
+        cash_budget=None,
+        cost_of_capital_pct=_cost_of_capital(org),
+        today=today,
+    )
+
+    total = (captured_count or 0) + missed_count
+    capture_rate = (
+        (Decimal(captured_count) / Decimal(total) * 100).quantize(Decimal("0.01"))
+        if total
+        else Decimal("0.00")
+    )
+
+    return DiscountDashboard(
+        captured_count=captured_count or 0,
+        captured_amount=Decimal(str(captured_amount or 0)),
+        missed_count=missed_count,
+        missed_amount=missed_amount,
+        capture_rate_pct=capture_rate,
+        open_offer_count=len(open_offers),
+        projected_savings=result.total_savings_selected,
+        currency=_org_currency(org),
+    )
