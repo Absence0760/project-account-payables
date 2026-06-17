@@ -1531,6 +1531,15 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
         # must stay invisible (tenant + vendor isolation).
         session.add(_make_portal_user(v_tech))
 
+        # Feature-page demo data — contracts, credit memos, discount offers,
+        # and expenses. Kept in scripts/seed_extras.py so it can also be run
+        # standalone against an already-seeded tenant (sys.path[0] is the
+        # scripts/ dir when seed.py runs as a script, so the bare import
+        # resolves). Reads the vendors/invoices/GL accounts just flushed above.
+        from seed_extras import seed_extras
+
+        await seed_extras(session, org_id)
+
         await session.commit()
         total_invoices = len(invoices) + len(filler_invoices)
         total_vendors = len(all_vendors) + len(filler_vendors_list)
@@ -2046,6 +2055,12 @@ async def finalize_entities(db_name: str, org_id: uuid.UUID):
         "exceptions",
         "workflow_definitions",
         "virtual_cards",
+        # Feature-page demo rows seeded by seed_extras (all EntityMixin tables).
+        "contracts",
+        "discount_offers",
+        "expenses",
+        "expense_reports",
+        "expense_policies",
     ]
     engine = create_async_engine(_make_tenant_url(db_name))
     try:

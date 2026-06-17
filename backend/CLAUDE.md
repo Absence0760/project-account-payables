@@ -562,7 +562,9 @@ Severity: `error`, `warning`, `info`. Auto-detected by `invoice_warnings.py`.
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/seed.py` | Creates 2 tenants (acme, techflow) with full sample data (vendors, invoices, POs, payments, exceptions) |
+| `scripts/seed.py` | Creates 2 tenants (acme, techflow) with full sample data (vendors, invoices, POs, payments, exceptions) + calls `seed_extras` so contracts / credit memos / discount offers / expenses are populated too |
+| `scripts/seed_extras.py` | Additive, idempotent per-tenant seed for the contract (`/contracts`), credit-memo (`/credit-memos`), discounting (`/discounts`) and expense (`/expenses`) pages. `seed_extras(session, org_id)` is reused in-line by `seed_tenant`; the CLI (`--tenant ap_acme`) tops up an already-seeded tenant without a wipe. Skips if the tenant already has contracts. |
+| `scripts/seed_payable_invoices.py` | Tops up a tenant's payment queue with N approved invoices (`--tenant`, `--count`) — re-run after executing a payment run drains the queue. |
 | `scripts/create_tenant.py` | CLI wrapper around `services.tenant_provisioning.provision_tenant` — provisions a single tenant (org + admin user + DB + tables) |
 | `scripts/migrate_all_tenants.py` | Runs `alembic upgrade head` on every tenant DB |
 
