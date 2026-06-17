@@ -11,10 +11,23 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PlainSerializer
 
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+
+
+def _decimal_to_number(value: Decimal | None) -> float | None:
+    return None if value is None else float(value)
+
+
+# A non-money Decimal (a percentage / rate) that serialises to a JSON *number*,
+# matching the frontend's `number`-typed contract while staying exact in Python.
+PercentNumber = Annotated[
+    Decimal,
+    PlainSerializer(_decimal_to_number, return_type=float, when_used="json"),
+]
 
 
 class OfferScope(StrEnum):
@@ -40,7 +53,7 @@ class DiscountTier(BaseModel):
     """One rung of a sliding-scale offer: pay within `days` for `percent` off."""
 
     days: int = Field(..., ge=0, le=365)
-    percent: Decimal = Field(..., gt=0, lt=100, decimal_places=2)
+    percent: PercentNumber = Field(..., gt=0, lt=100)
 
 
 class DiscountOfferCreate(BaseModel):
@@ -134,11 +147,11 @@ class DiscountROIResponse(BaseModel):
     """Annualized-return analysis for one early-payment opportunity."""
 
     base_amount: MoneyAmount
-    discount_percent: Decimal
+    discount_percent: PercentNumber
     days_accelerated: int
     savings: MoneyAmount
-    annualized_return_pct: Decimal
-    cost_of_capital_pct: Decimal
+    annualized_return_pct: PercentNumber
+    cost_of_capital_pct: PercentNumber
     opportunity_cost: MoneyAmount
     net_benefit: MoneyAmount
     worthwhile: bool
@@ -153,7 +166,7 @@ class OptimizerRecommendation(BaseModel):
     vendor_name: str | None = None
     invoice_number: str | None = None
     tier_days: int
-    discount_percent: Decimal
+    discount_percent: PercentNumber
     pay_by: str  # ISO date — capture deadline
     roi: DiscountROIResponse
     selected: bool  # True if it fits within the cash budget
@@ -162,7 +175,7 @@ class OptimizerRecommendation(BaseModel):
 
 class OptimizerResponse(BaseModel):
     cash_budget: OptionalMoneyAmount = None
-    cost_of_capital_pct: Decimal
+    cost_of_capital_pct: PercentNumber
     total_savings_available: MoneyAmount
     total_savings_selected: MoneyAmount
     total_outlay_selected: MoneyAmount
@@ -185,7 +198,7 @@ class DiscountDashboard(BaseModel):
     captured_amount: MoneyAmount
     missed_count: int
     missed_amount: MoneyAmount
-    capture_rate_pct: Decimal
+    capture_rate_pct: PercentNumber
     open_offer_count: int
     projected_savings: MoneyAmount  # net benefit of accepting all worthwhile open offers
     currency: str
