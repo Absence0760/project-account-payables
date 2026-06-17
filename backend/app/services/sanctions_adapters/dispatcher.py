@@ -36,7 +36,9 @@ def get_sanctions_adapter(compliance_config: dict | None) -> SanctionsAdapter:
     """
     # Trigger registration of the built-in adapters.
     import app.services.sanctions_adapters.complyadvantage  # noqa: F401
+    import app.services.sanctions_adapters.dowjones  # noqa: F401
     import app.services.sanctions_adapters.mock_adapter  # noqa: F401
+    import app.services.sanctions_adapters.refinitiv  # noqa: F401
 
     cfg = compliance_config or {}
     provider = (cfg.get("provider") or "mock").lower()

@@ -22,6 +22,16 @@ class ScreeningResult:
     cite the source. `risk_score` is 0–100 from the provider when
     available; the orchestrator's threshold is per-org.
 
+    `categories` enumerates the *kinds* of hit so downstream surfaces
+    can distinguish a hard sanctions list match from a PEP flag or an
+    **adverse-media** hit (negative-news screening — e.g. press
+    coverage of fraud / corruption that hasn't yet reached a formal
+    list). Values are PII-free taxonomy labels, e.g.
+    `("sanctions",)`, `("pep",)`, `("adverse_media",)`, or a
+    combination. Empty tuple = no categorisation (back-compat: every
+    existing constructor omits it and keeps working). `adverse_media`
+    is a convenience flag derived from `categories`.
+
     The raw response is preserved so an auditor can replay the call.
     PII concern: sanctions providers return free-form match details
     that may include date-of-birth, passport numbers, addresses. We
@@ -34,6 +44,15 @@ class ScreeningResult:
     matched_list: str | None = None
     risk_score: Decimal | None = None
     raw_response: dict = field(default_factory=dict)
+    # Backward-compatible additions — defaults so every existing
+    # `ScreeningResult(provider=..., result=..., matched_list=...,
+    # risk_score=..., raw_response=...)` constructor keeps working.
+    categories: tuple[str, ...] = ()
+
+    @property
+    def adverse_media(self) -> bool:
+        """True when this hit includes adverse-media (negative news)."""
+        return "adverse_media" in self.categories
 
 
 class SanctionsAdapter(Protocol):
