@@ -118,7 +118,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/admin` | User CRUD, role assignment |
 | `/organization` | Org settings, ERP/extraction connection tests, SCIM token mint |
 | `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid), PEPPOL AS4 transmission (`POST {id}/peppol-send`, role-gated, idempotent), contract link (`POST {id}/link-contract` \| `/unlink-contract`, spend attribution), supplier chat (`GET/POST {id}/chat`, `POST {id}/chat/attachments`, `POST {id}/chat/{resolve,reopen}` role-gated, `GET chat/templates`, `GET chat/file/{key}` cross-tenant-checked) |
-| `/vendors` | Vendor CRUD, ERP sync |
+| `/vendors` | Vendor CRUD, ERP sync; sanctions screening (`POST {id}/screen`, `GET {id}/screening-history`, `GET screening/review-queue`, `POST {id}/block`\|`/unblock` — screen also runs on create/update), vendor risk (`GET {id}/risk`, `POST {id}/risk/recompute`, `GET risk/summary`). See `backend/docs/vendor-risk-screening.md` |
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
 | `/contracts` | Contract lifecycle (CLM) — CRUD + search/filter, document upload (`POST {id}/upload`) + proxy (`GET /file/{file_key}`, cross-tenant-checked), lifecycle (`POST {id}/activate\|terminate\|cancel\|renew`), spend summary on detail, contract-based PO creation (`POST {id}/create-po`). Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager; every mutation audited |
@@ -174,7 +174,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 - **Payments** (`services/payment_adapters/`): modern_treasury, stripe_treasury, increase, column, dwolla (ACH only), checkeeper (check printing), mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
 - **Audit shipping** (`services/audit_shipping/`): mock, cloudwatch, s3_objectlock. Registry via `@register_audit_shipping_adapter` decorator. Sinks for the centralized SOC 2 audit trail; list configured via `AP_AUDIT_SHIPPING_PROVIDERS`.
 - **FX rates** (`services/fx_adapters/`): mock, openexchangerates. Locked once per international payment at submission and persisted on the row. See `backend/docs/international-payments.md`.
-- **Sanctions / KYC** (`services/sanctions_adapters/`): mock, complyadvantage. Called by `services/compliance.check_payment_compliance` before every payment-adapter call.
+- **Sanctions / KYC** (`services/sanctions_adapters/`): mock, complyadvantage, dowjones, refinitiv (the last three are skeletons — live key required, fail-closed without one). Called by `services/compliance.check_payment_compliance` before every payment-adapter call, and by `services/vendor_screening.screen_vendor_record` on vendor create/update, the `vendor_rescreen` periodic sweep, and manual re-screens. Adverse-media hits surface via `ScreeningResult.categories`. See `backend/docs/vendor-risk-screening.md`.
 - **Email (outbound)** (`services/email_adapters/`): console (dev default), smtp (Mailpit / any relay), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
 - **Email intake (inbound)** (`services/email_intake_adapters/`): ses, mailgun, generic. Parses provider-specific inbound webhook payloads into a normalised `InboundEmail`.
 - **Embeddings** (`services/embedding_adapters/`): mock (dev default), openai. Powers RAG + duplicate-similarity search.
@@ -255,6 +255,10 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_CONTRACT_RENEWAL_ENABLED` | `false` | Master switch for the contract renewal-alert background sweep — keep `false` in local dev, flip on in deployed envs. See `backend/docs/contracts.md`. |
 | `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` | `3600` | Renewal sweep interval. |
 | `AP_CONTRACT_RENEWAL_DEFAULT_NOTICE_DAYS` | `30` | Platform default renewal lead window; per-contract `renewal_notice_days` overrides it. |
+| `AP_VENDOR_SCREENING_ENABLED` | `true` | Synchronous sanctions screening on vendor create/update (mock-safe local-first; best-effort, never blocks the write). See `backend/docs/vendor-risk-screening.md`. |
+| `AP_VENDOR_RESCREEN_ENABLED` | `false` | Master switch for the periodic vendor re-screening sweep — keep `false` in local dev, flip on in deployed envs. |
+| `AP_VENDOR_RESCREEN_INTERVAL_SECONDS` | `86400` | Re-screen sweep interval. |
+| `AP_VENDOR_RESCREEN_AFTER_DAYS` | `7` | Re-screen active vendors whose last screen is older than this (or never screened). |
 
 Full list in `backend/app/config.py`.
 

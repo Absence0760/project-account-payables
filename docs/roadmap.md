@@ -571,17 +571,17 @@ Use AP data to forecast cash outflows and optimize payment timing.
 ## Priority 10: Compliance & E-Invoicing
 
 ### Sanctions & Vendor Risk Screening
-**Status:** Planned — **Competitive gap for regulated industries**
+**Status:** Shipped (first slice) — screening on vendor create/update, periodic re-screen sweep, payment-block gate, adverse-media support, composite risk scoring, Dow Jones/Refinitiv/ComplyAdvantage adapter skeletons, and the append-only screening trail all landed. Real-provider wiring (live keys) + a dedicated review-queue page are the remaining deployment work.
 
-Tipalti, Coupa, Medius, and Basware all screen vendors against sanctions lists. Required for financial services, government contractors, and regulated industries.
+Tipalti, Coupa, Medius, and Basware all screen vendors against sanctions lists. Required for financial services, government contractors, and regulated industries. See `backend/docs/vendor-risk-screening.md`.
 
-- [ ] OFAC/SDN sanctions screening on vendor creation and update
-- [ ] Ongoing monitoring — re-screen vendors periodically (daily/weekly)
-- [ ] Flag and block payments to sanctioned entities
-- [ ] Adverse media screening
-- [ ] Vendor risk scoring (sanctions + fraud signals + payment history)
-- [ ] Integration with screening providers (Dow Jones, Refinitiv, ComplyAdvantage)
-- [ ] Screening audit trail — log all checks and results
+- [x] OFAC/SDN sanctions screening on vendor creation and update — `services/vendor_screening.screen_vendor_record` runs on `POST`/`PATCH /api/vendors` (best-effort, savepoint-isolated so a provider failure never blocks the vendor write) + manual `POST /api/vendors/{id}/screen`. Gated by `AP_VENDOR_SCREENING_ENABLED` (default on; mock-safe local-first).
+- [x] Ongoing monitoring — re-screen vendors periodically (daily/weekly) — `services/vendor_rescreen.py` background sweep (mirrors `contract_renewal`): re-screens active vendors whose `last_screened_at` is stale per `AP_VENDOR_RESCREEN_AFTER_DAYS`. Disabled by default (`AP_VENDOR_RESCREEN_ENABLED`).
+- [x] Flag and block payments to sanctioned entities — a `match` sets `vendors.payments_blocked`; `check_payment_compliance` refuses a blocked vendor up front (before FX lock / any adapter call). Manual `POST /api/vendors/{id}/block` \| `/unblock`.
+- [x] Adverse media screening — `ScreeningResult.categories` (`("adverse_media",)`); mock fixtures + provider adapters surface adverse-media hits via the same path (list NAME `ADVERSE_MEDIA`).
+- [x] Vendor risk scoring (sanctions + fraud signals + payment history) — `services/vendor_risk_scoring.py` blends latest sanctions check + open `fraud_flag` exceptions + trailing-12m payment history into a 0–100 composite + bucket (PII-free factors). `GET /api/vendors/{id}/risk`, `POST .../risk/recompute`, `GET /api/vendors/risk/summary`.
+- [x] Integration with screening providers (Dow Jones, Refinitiv, ComplyAdvantage) — `sanctions_adapters/`: `mock` (default), `complyadvantage`, `dowjones`, `refinitiv` (skeletons — live key required, fail-closed without one). Selected per-org via `Organization.settings.compliance.sanctions.provider`.
+- [x] Screening audit trail — log all checks and results — append-only `sanctions_checks` (every screen: initial/periodic/manual/pre_payment) + PII-free `vendor.screened` audit rows; `GET /api/vendors/{id}/screening-history` + `GET /api/vendors/screening/review-queue`.
 
 **Competitors:** Tipalti (OFAC/SDN built-in), Coupa (community risk), Basware (sanctions + fraud module), Medius (fraud intelligence)
 
