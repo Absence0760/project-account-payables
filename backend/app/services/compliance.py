@@ -163,6 +163,19 @@ async def check_payment_compliance(
     patch the dispatcher. Production callers leave it None and the
     adapter is resolved from org_settings.
     """
+    # ---------- 0. Hard payment block (sticky) -------------------------------
+    # A vendor flagged with `payments_blocked` (by a sanctions match in a prior
+    # screen, or a manual AP block) is refused before any adapter call or FX
+    # lock — the roadmap "flag and block payments to sanctioned entities" gate.
+    # Unlike the per-payment screen below, the block is sticky across future
+    # payments until an AP user explicitly unblocks the vendor.
+    if getattr(vendor, "payments_blocked", False):
+        reason = getattr(vendor, "payments_blocked_reason", None) or "sanctions/compliance block"
+        return ComplianceDecision(
+            verdict="refuse",
+            reasons=[f"vendor is blocked from payment: {reason}"],
+        )
+
     reasons: list[str] = []
     adapter = sanctions_adapter or _sanctions_adapter_from_settings(org_settings)
 

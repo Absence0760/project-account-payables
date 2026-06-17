@@ -10,14 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     ROLE_ADMIN,
+    ROLE_AP_CLERK,
     ROLE_AP_MANAGER,
     ROLE_CFO,
     get_org_id,
     require_roles,
 )
 from app.api.pagination import PaginationParams, paginated, pagination_params
+from app.config import settings
 from app.models.invoice import Invoice
 from app.models.organization import Organization
+from app.models.sanctions_check import SanctionsCheck
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
@@ -26,6 +29,11 @@ from app.schemas.portal import (
     PortalInviteRequest,
     PortalInviteResponse,
     PortalUserResponse,
+)
+from app.schemas.sanctions import (
+    SanctionsCheckResponse,
+    ScreeningReviewItem,
+    VendorBlockRequest,
 )
 from app.schemas.vendor import (
     VendorChangeRequestResponse,
@@ -38,6 +46,7 @@ from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.vendor_screening import screen_vendor_record
 from app.services.vendor_sync import sync_vendors_from_erp
 from app.tenant import (
     apply_entity_scope,
@@ -70,6 +79,48 @@ def _merge_bank_details(existing: dict | None, incoming: dict | None) -> dict | 
         else:
             merged[k] = v
     return merged or None
+
+
+_IDENTITY_FIELDS = frozenset({"name", "tax_id", "bank_details", "beneficial_owner_data"})
+
+
+async def _screen_best_effort(
+    db: AsyncSession,
+    *,
+    vendor: Vendor,
+    org: Organization,
+    org_id: uuid.UUID,
+    check_type: str,
+    actor_id: uuid.UUID | None,
+) -> None:
+    """Run a sanctions screen for `vendor` without ever jeopardising the
+    surrounding vendor write.
+
+    Screening is a best-effort side effect: if the configured provider is
+    down or raises, the vendor create/update must still succeed. The screen
+    therefore runs inside a SAVEPOINT (`begin_nested`) so a mid-screen
+    failure rolls back only the screen's partial mutations, leaving the
+    vendor row intact, and the exception is logged + swallowed.
+    """
+    if not settings.vendor_screening_enabled:
+        return
+    try:
+        async with db.begin_nested():
+            await screen_vendor_record(
+                db,
+                vendor=vendor,
+                organization_id=org_id,
+                org_settings=org.settings,
+                check_type=check_type,
+                actor_id=actor_id,
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Sanctions screen failed for vendor=%s (check_type=%s) — vendor write preserved",
+            vendor.id,
+            check_type,
+            exc_info=True,
+        )
 
 
 @router.get("")
@@ -152,6 +203,59 @@ async def list_change_requests(
     return paginated(items, total, pagination)
 
 
+# ---------- Sanctions / risk screening ----------
+#
+# The literal `/screening/review-queue` route is declared BEFORE the parametric
+# `/{vendor_id}` routes so "screening" isn't captured as a `vendor_id`. (The
+# `{vendor_id}` converter is `uuid.UUID`, so "screening" would 422 rather than
+# mismatch anyway — but declaration order makes the intent explicit and safe.)
+
+
+@router.get("/screening/review-queue", response_model=list[ScreeningReviewItem])
+async def screening_review_queue(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Vendors needing screening attention — `match` or `review` status —
+    newest screen first. Each row carries the matched-list NAME + provider
+    from its most recent `sanctions_checks` row (never raw match details)."""
+    query = apply_entity_scope(
+        select(Vendor).where(Vendor.screening_status.in_(("match", "review"))),
+        Vendor,
+        entity_id,
+    )
+    query = query.order_by(Vendor.last_screened_at.desc().nulls_last())
+    vendors = (await db.execute(query)).scalars().all()
+
+    items: list[ScreeningReviewItem] = []
+    for v in vendors:
+        latest = (
+            await db.execute(
+                select(SanctionsCheck)
+                .where(SanctionsCheck.vendor_id == v.id)
+                .order_by(SanctionsCheck.checked_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        items.append(
+            ScreeningReviewItem(
+                vendor_id=str(v.id),
+                vendor_name=v.name,
+                screening_status=v.screening_status,
+                last_screened_at=v.last_screened_at.isoformat() if v.last_screened_at else None,
+                payments_blocked=bool(v.payments_blocked),
+                risk_level=getattr(v, "risk_level", "unknown") or "unknown",
+                risk_score=(
+                    str(v.risk_score) if getattr(v, "risk_score", None) is not None else None
+                ),
+                latest_matched_list=latest.matched_list if latest else None,
+                latest_provider=latest.provider if latest else None,
+            )
+        )
+    return items
+
+
 @router.get("/{vendor_id}", response_model=VendorResponse)
 async def get_vendor(
     vendor_id: uuid.UUID,
@@ -187,6 +291,7 @@ async def get_vendor(
 async def create_vendor(
     body: VendorCreate,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
@@ -203,6 +308,16 @@ async def create_vendor(
     db.add(vendor)
     await db.flush()
     await db.refresh(vendor)
+
+    # Initial sanctions / PEP screen. Best-effort: a provider failure must
+    # never roll back or 500 the vendor write, so the screen runs inside a
+    # SAVEPOINT and its failure is swallowed (the vendor row survives).
+    await _screen_best_effort(
+        db, vendor=vendor, org=org, org_id=org_id, check_type="initial", actor_id=user.id
+    )
+
+    # Build the response AFTER screening so it reflects screening_status /
+    # payments_blocked set by the screen.
     return VendorResponse.from_db(vendor)
 
 
@@ -211,7 +326,9 @@ async def update_vendor(
     vendor_id: uuid.UUID,
     body: VendorUpdate,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
@@ -219,6 +336,11 @@ async def update_vendor(
         raise HTTPException(status_code=404, detail="Vendor not found")
 
     payload = body.model_dump(exclude_unset=True)
+
+    # Re-screen only when an identity-relevant field actually changed — a
+    # name / tax_id / bank-country / beneficial-owner edit can flip a vendor
+    # onto (or off of) a sanctions list. Cosmetic edits (phone, terms) don't.
+    identity_changed = bool(_IDENTITY_FIELDS & payload.keys())
 
     if "bank_details" in payload:
         vendor.bank_details = _merge_bank_details(vendor.bank_details, payload.pop("bank_details"))
@@ -228,6 +350,12 @@ async def update_vendor(
 
     await db.flush()
     await db.refresh(vendor)
+
+    if identity_changed:
+        await _screen_best_effort(
+            db, vendor=vendor, org=org, org_id=org_id, check_type="initial", actor_id=user.id
+        )
+
     return VendorResponse.from_db(vendor)
 
 
@@ -243,6 +371,145 @@ async def delete_vendor(
         raise HTTPException(status_code=404, detail="Vendor not found")
     await db.delete(vendor)
     await db.commit()
+
+
+@router.post("/{vendor_id}/screen", response_model=VendorResponse)
+async def screen_vendor(
+    vendor_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Manually re-screen one vendor against the configured sanctions provider.
+
+    Unlike the create/update screen, a manual re-screen is foreground: a
+    provider failure surfaces as a 502 so the operator knows the screen did
+    not run (rather than silently appearing 'clear')."""
+    result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
+    vendor = result.scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    try:
+        await screen_vendor_record(
+            db,
+            vendor=vendor,
+            organization_id=org_id,
+            org_settings=org.settings,
+            check_type="manual",
+            actor_id=user.id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Manual sanctions screen failed for vendor=%s", vendor.id, exc_info=True)
+        raise HTTPException(status_code=502, detail="Sanctions provider screening failed") from exc
+
+    await db.commit()
+    await db.refresh(vendor)
+    return VendorResponse.from_db(vendor)
+
+
+@router.get("/{vendor_id}/screening-history", response_model=list[SanctionsCheckResponse])
+async def vendor_screening_history(
+    vendor_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """The append-only screening trail for one vendor, newest first (cap 100)."""
+    await _get_vendor_or_404(db, vendor_id)
+
+    rows = (
+        (
+            await db.execute(
+                select(SanctionsCheck)
+                .where(SanctionsCheck.vendor_id == vendor_id)
+                .order_by(SanctionsCheck.checked_at.desc())
+                .limit(100)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # SOX access auditing: record who VIEWED the screening trail (field-name
+    # only, never the underlying match details).
+    await log_access(
+        db,
+        user=user,
+        organization_id=org_id,
+        entity_type="vendor",
+        entity_id=vendor_id,
+        fields=["sanctions_checks"],
+    )
+    await db.commit()
+
+    return [SanctionsCheckResponse.from_db(c) for c in rows]
+
+
+@router.post("/{vendor_id}/block", response_model=VendorResponse)
+async def block_vendor_payments(
+    vendor_id: uuid.UUID,
+    body: VendorBlockRequest | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Manually block all payments to a vendor. The block is sticky —
+    `check_payment_compliance` refuses every payment until an unblock."""
+    vendor = await _get_vendor_or_404(db, vendor_id)
+    reason = (body.reason if body else None) or "manually blocked by AP"
+
+    vendor.payments_blocked = True
+    vendor.payments_blocked_reason = reason
+    vendor.payments_blocked_at = datetime.now(UTC)
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.payment_blocked",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"reason": reason},
+    )
+    await db.commit()
+    await db.refresh(vendor)
+    return VendorResponse.from_db(vendor)
+
+
+@router.post("/{vendor_id}/unblock", response_model=VendorResponse)
+async def unblock_vendor_payments(
+    vendor_id: uuid.UUID,
+    body: VendorBlockRequest | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Lift a payment block. Clears the block flag, reason, and timestamp."""
+    vendor = await _get_vendor_or_404(db, vendor_id)
+    reason = (body.reason if body else None) or "manually unblocked by AP"
+
+    vendor.payments_blocked = False
+    vendor.payments_blocked_reason = None
+    vendor.payments_blocked_at = None
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.payment_unblocked",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"reason": reason},
+    )
+    await db.commit()
+    await db.refresh(vendor)
+    return VendorResponse.from_db(vendor)
 
 
 @router.post("/{vendor_id}/verify", response_model=VendorResponse)
