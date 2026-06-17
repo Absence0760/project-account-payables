@@ -34,7 +34,7 @@ pnpm check            # typecheck
 | `/profile` | `routes/profile/+page.svelte` | `POST /api/auth/mfa/enroll`, `POST /api/auth/mfa/enroll/verify`, `POST /api/auth/mfa/disable` — manage two-factor |
 | `/change-password` | `routes/change-password/+page.svelte` | `POST /api/auth/change-password` |
 | `/invoices` | `routes/invoices/+page.svelte` | `GET /api/invoices` (returns `priors_summary`), `GET /api/invoices/counts` (status-chip tallies), `GET /api/invoices/{id}` (`?id=` deep-link opens the detail modal), `POST /api/invoices/upload` (supports multi-file; frontend batches 5 at a time via `Promise.allSettled`), `PATCH /api/invoices/{id}`, `GET /api/invoices/{id}/priors`, `GET /api/invoices/{id}/summary` (audit-log summary; `POST .../summary/regenerate` for admins/managers), supplier chat — `GET/POST /api/invoices/{id}/chat`, `POST .../chat/attachments`, `POST .../chat/{resolve,reopen}`, `GET /api/invoices/chat/templates`, `GET /api/invoices/{id}/chat/file/{key}` (via `$lib/api/supplierChat.ts`, surfaced in `InvoiceModal`), bulk ops |
-| `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors` |
+| `/vendors` | `routes/vendors/+page.svelte` | `GET /api/vendors`; sanctions screening + risk (via `$lib/api/vendors.ts`) — `POST /api/vendors/{id}/screen`, `GET /api/vendors/{id}/screening-history`, `POST /api/vendors/{id}/{block,unblock}`, `GET /api/vendors/{id}/risk` + `POST .../risk/recompute`, `GET /api/vendors/risk/summary`, `GET /api/vendors/screening/review-queue`. Row screening/risk pill (`ui/ScreeningBadge.svelte`); clickable rows open `modals/VendorModal.svelte` (Screening & Risk panel + history timeline; re-screen / recompute / block-unblock gated to admin + ap_manager via `auth.isManager`) |
 | `/payments` | `routes/payments/+page.svelte` | `GET /api/payments/{queue,summary,runs/}`, `GET /api/payments`, `POST /api/payments/runs` (creates draft), `GET /api/payments/runs/{id}` + `POST .../execute` (via `RunDetailModal`) |
 | `/exceptions` | `routes/exceptions/+page.svelte` | `GET /api/exceptions`, `PATCH /api/exceptions/{id}` |
 | `/workflows` | `routes/workflows/+page.svelte` | `GET /api/workflows`, `POST /api/workflows`; no-code builder management — `GET /api/workflows/templates`, `POST /api/workflows/from-template`, `GET/POST /api/workflows/{id}/versions`, `POST /api/workflows/{id}/restore/{versionId}`, `GET /api/workflows/{id}/versions/diff`, `POST /api/workflows/{id}/simulate`, `GET /api/workflows/{id}/export`, `POST /api/workflows/import` (via the `workflow-mgmt` modals) |
@@ -108,6 +108,7 @@ Grouped into subfolders by role. Import with the full path, e.g.
 - `Modal.svelte` — `.backdrop` + `div.modal[role="dialog"]`. `<Modal open ariaLabel="EXACT" title? width="sm|md|lg" onclose>`; keep the page's own `<form>` + `.modal-footer` inside `children` (preserves submit). Custom heading → `{#snippet header()}`. Handles backdrop-click + Esc.
 - `KpiCard.svelte` — `.kpi` card. `<KpiCard value label highlight={'green'|'red'|null} />`; wrap a row in `<div class="kpi-row">`.
 - `SearchBox`, `StatusBadge`, `RowAction`, `BulkBar`, `BulkDeleteButton`, `Toast` — see the pattern sections below.
+- `ScreeningBadge.svelte` — sanctions-screening + vendor-risk pill. `<ScreeningBadge screening={v.screening_status} risk={v.risk_level} blocked={v.payments_blocked} />`. Tone map: clear=green, review/medium=amber, match/high/critical/blocked=red, unscreened/low=grey. Shared by the vendor list cell + `VendorModal`.
 - `Money.svelte` — locale-aware currency display. `<Money amount={row.amount} currency={row.currency} />`. Opt-in `whole` (no decimals), `accounting` (parenthesised negatives), `mono` (tabular-nums). Over `utils/money.ts::formatMoney`; see *Money formatting* above. Use this (or `formatMoney` in script) for every currency value — don't write `Intl.NumberFormat` inline.
 
 The visual styling for all of the above lives **globally in `src/app.css`** (class-scoped: `.workspace`, `.grid-container td`, `.filter-chip`, `.modal`, `.kpi`, …) so route pages carry no duplicated `<style>`. Feature components below keep their own scoped CSS (Svelte's `.svelte-<hash>` outranks the bare-class globals).
@@ -118,6 +119,7 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
 - `BulkRecodeGLModal.svelte` — admin bulk GL re-code preview/apply
 - `ApprovalMatrixEditor.svelte` — approval-chain matrix builder
 - `RunDetailModal.svelte` — payment run detail; status, total, payments table; Execute button when run is `draft`
+- `VendorModal.svelte` — vendor detail modal; the "Screening & Risk" panel (status, last-screened, payment-block + reason, risk level/score), re-screen / recompute-risk / block-unblock actions (gated to admin + ap_manager), and the screening-history timeline. Over `$lib/api/vendors.ts`
 
 **`chat/` — supplier collaboration:**
 - `SupplierChatThread.svelte` — surface-agnostic per-invoice chat thread shared
@@ -153,6 +155,7 @@ a definition as JSON). All wrap the shared `ui/Modal.svelte` and call the
 - `admin.ts` — `AdminUser`, `Role` (admin, ap_manager, ap_clerk, cfo)
 - `tax.ts` — `Report1099`, `Vendor1099Row` (1099 reporting dashboard)
 - `supplierChat.ts` — `ChatThread`, `ChatMessage`, `ChatAttachment`, `ChatTemplate` (AP, full) + masked `PortalChatThread` / `PortalChatMessage` (portal — no `author_user_id`, no mentions)
+- `vendor.ts` — `Vendor` (incl. `screening_status` / `last_screened_at` / `payments_blocked(+_reason)` / `risk_score` / `risk_level`), `SanctionsCheck`, `ScreeningReviewItem`, `VendorRisk`, `RiskSummaryBucket`, the `ScreeningStatus` / `RiskLevel` unions + label maps
 
 ## Multi-tenant routing
 

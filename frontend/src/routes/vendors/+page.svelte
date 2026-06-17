@@ -1,52 +1,34 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import ScreeningBadge from '$lib/components/ui/ScreeningBadge.svelte';
+	import VendorModal from '$lib/components/modals/VendorModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 
 	const COLUMNS = [
 		{ label: 'Vendor' },
 		{ label: 'Code' },
 		{ label: 'Email' },
 		{ label: 'Status' },
+		{ label: 'Screening' },
 		{ label: 'Source' },
 		{ label: 'Invoices' },
 		{ label: 'ERP' },
 		{ class: 'actions-col' }
 	];
 
-	interface BankDetails {
-		counterparty_id: string | null;
-		account_last4: string | null;
-		routing_last4: string | null;
-		bank_name: string | null;
-	}
-
-	interface Vendor {
-		id: string;
-		name: string;
-		code: string | null;
-		email: string | null;
-		phone: string | null;
-		address: string | null;
-		tax_id: string | null;
-		payment_terms: string | null;
-		accepts_virtual_cards: boolean;
-		status: string;
-		source: string;
-		verified_by: string | null;
-		erp_vendor_id: string | null;
-		erp_synced_at: string | null;
-		invoice_count: number;
-		created_at: string;
-		bank_details: BankDetails | null;
-	}
+	type BankDetails = VendorBankDetails;
 
 	let vendors = $state<Vendor[]>([]);
+	let detailVendor = $state<Vendor | null>(null);
 	let bankEditing = $state<Vendor | null>(null);
 	let bankForm = $state<BankDetails>({
 		counterparty_id: '',
@@ -73,7 +55,7 @@
 			const updated = await api.patch<Vendor>(`/api/vendors/${bankEditing.id}`, {
 				bank_details: bankForm
 			});
-			vendors = vendors.map((v) => (v.id === updated.id ? updated : v));
+			applyVendorUpdate(updated);
 			toast('Counterparty saved', 'success');
 			bankEditing = null;
 		} catch (err) {
@@ -82,6 +64,13 @@
 		} finally {
 			savingBank = false;
 		}
+	}
+
+	// Replace a vendor in the list (and keep the open detail modal in sync) after
+	// any mutation — bank edit, screening, risk recompute, block/unblock.
+	function applyVendorUpdate(updated: Vendor) {
+		vendors = vendors.map((v) => (v.id === updated.id ? updated : v));
+		if (detailVendor && detailVendor.id === updated.id) detailVendor = updated;
 	}
 	let search = $state('');
 	let statusFilter = $state('all');
@@ -208,12 +197,30 @@
 	<DataTable columns={COLUMNS} isEmpty={vendors.length === 0} empty="No vendors found.">
 		{#snippet body()}
 			{#each vendors as v (v.id)}
-				<tr class:unverified={v.status === 'unverified'} class:rejected={v.status === 'rejected'}>
-					<td class="vendor-name">{v.name}</td>
+				<tr
+						class="clickable"
+						class:unverified={v.status === 'unverified'}
+						class:rejected={v.status === 'rejected'}
+						onclick={(e) => {
+							if (isRowOpenClick(e)) detailVendor = v;
+						}}
+					>
+						<td class="vendor-name">
+							<RowLink onclick={() => (detailVendor = v)} ariaLabel={`Open vendor ${v.name}`}>
+								{v.name}
+							</RowLink>
+						</td>
 					<td class="mono muted">{v.code ?? '—'}</td>
 					<td class="muted">{v.email ?? '—'}</td>
 					<td>
 						<span class="status-badge {v.status}">{STATUS_LABELS[v.status] ?? v.status}</span>
+					</td>
+					<td>
+						<ScreeningBadge
+							screening={v.screening_status}
+							risk={v.risk_level}
+							blocked={v.payments_blocked}
+						/>
 					</td>
 					<td>
 						<span class="source-badge">{SOURCE_LABELS[v.source] ?? v.source}</span>
@@ -254,6 +261,14 @@
 		</div>
 	{/if}
 </PageHeader>
+
+{#if detailVendor}
+	<VendorModal
+		vendor={detailVendor}
+		onclose={() => (detailVendor = null)}
+		onupdated={applyVendorUpdate}
+	/>
+{/if}
 
 <Modal
 	open={bankEditing !== null}
