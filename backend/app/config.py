@@ -407,6 +407,26 @@ class Settings(BaseSettings):
     # memory-exhaustion attempt (204, no parse) without truncating real invoices.
     peppol_inbound_max_bytes: int = 4 * 1024 * 1024
 
+    # Punch-out catalogs (live cXML/OCI round-trips). Local-first: the in-process
+    # `mock` adapter is the default so `pnpm dev` runs the whole punch-out flow
+    # (setup → start URL → returned cart → convert-to-requisition) without an
+    # external supplier or credential. Per-org overrides live on
+    # ``Organization.settings.punchout.{provider,shared_secret,buyer_identity,...}``
+    # and win over these process-level defaults. The cXML supplier shared secret
+    # has NO hardcoded fallback — empty here, real value via sops in deployed.
+    punchout_provider: str = "mock"  # "mock" (in-process default) | "cxml"
+    punchout_shared_secret: str = ""  # cXML supplier credential — sops in deployed
+    # HMAC-SHA256 key the supplier signs the PunchOutOrderMessage cart-return POST
+    # with. The public return endpoint verifies it (the cart return is
+    # public-by-design — no JWT). NO hardcoded secret fallback; the committed
+    # .env.development sets a NON-secret dev value so the return is locally
+    # testable. In local debug with an empty secret the BuyerCookie match is the
+    # sole gate (mirrors peppol_inbound's debug carve-out).
+    punchout_return_signing_secret: str = ""
+    # Hard cap on the cart-return webhook body the route buffers before parsing
+    # (memory-exhaustion guard on the public route; cXML carts are tens of KB).
+    punchout_return_max_bytes: int = 4 * 1024 * 1024
+
     # App
     # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local

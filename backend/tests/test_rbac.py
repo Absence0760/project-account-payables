@@ -124,6 +124,10 @@ NO_AUTH_REQUIRED = {
     # peppol_inbound.py — inbound AS4 receive webhook; HMAC-verified, tenant in
     # URL path, public-by-design (an external Access Point calls it).
     ("POST", "/peppol/inbound/{tenant_slug}"),
+    # catalogs.py public_router — punch-out cart return (PunchOutOrderMessage);
+    # shared-secret HMAC-verified + BuyerCookie-correlated, tenant in URL path,
+    # public-by-design (the supplier / buyer browser POSTs it).
+    ("POST", "/catalogs/punchout/return/{tenant_slug}"),
 }
 
 # Routers wired into the app at /api — same set as app/main.py.
@@ -137,6 +141,7 @@ ROUTERS = [
     budgets.router,
     cards.router,
     catalogs.router,
+    catalogs.public_router,
     contracts.router,
     credit_memos.router,
     dashboard.router,

@@ -82,8 +82,10 @@ class CatalogBase(BaseModel):
     name: str = Field(..., max_length=255)
     catalog_type: CatalogType = CatalogType.internal
     vendor_id: str | None = None
-    # Punch-out site URL — stored config only; live cXML/OCI round-trips are a
-    # future extension (see backend/docs/procurement-catalogs.md).
+    # Punch-out site URL — the supplier's hosted-catalog endpoint a buyer punches
+    # out to. Live cXML/OCI round-trips are implemented (see
+    # backend/docs/procurement-catalogs.md): a `punchout` catalog starts a
+    # PunchoutSession against this URL.
     punchout_url: str | None = Field(default=None, max_length=500)
     is_active: bool = True
     is_preferred: bool = False
@@ -175,6 +177,69 @@ class GuidedBuyingSuggestion(BaseModel):
     items: list[GuidedBuyingItem] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Punch-out sessions — live cXML/OCI round-trip
+# ---------------------------------------------------------------------------
+
+
+class PunchoutStartResponse(BaseModel):
+    """Result of ``POST /catalogs/{id}/punchout/start``.
+
+    ``start_url`` is the supplier start page the buyer's browser visits;
+    ``session_id`` + ``buyer_cookie`` correlate the eventual returned cart.
+    """
+
+    session_id: str
+    buyer_cookie: str
+    start_url: str
+    status: str
+    provider: str
+
+
+class PunchoutCartItemResponse(BaseModel):
+    """One returned cart line. Money serialises as ``float`` (out) per the file
+    convention; the persisted value is exact ``Numeric``/``Decimal``."""
+
+    description: str
+    sku: str | None = None
+    quantity: float | None = None
+    unit_price: float | None = None
+    uom: str | None = None
+    currency: str = "USD"
+
+
+class PunchoutSessionResponse(BaseModel):
+    """A punch-out session view (start state and, once returned, the cart)."""
+
+    id: str
+    catalog_id: str
+    buyer_cookie: str
+    status: str
+    requested_by_user_id: str
+    start_url: str | None
+    provider: str | None
+    cart_items: list[PunchoutCartItemResponse] = Field(default_factory=list)
+    cart_total: float | None
+    currency: str
+    returned_at: str | None
+    converted_requisition_id: str | None
+    created_at: str
+    updated_at: str
+
+
+class PunchoutConvertResponse(BaseModel):
+    """Result of converting a returned session's cart into a requisition.
+
+    ``created`` is ``False`` on the idempotent replay path (the session was
+    already converted) so the caller can tell a fresh conversion from a no-op."""
+
+    session_id: str
+    requisition_id: str
+    requisition_number: str
+    total: float
+    created: bool
+
+
 __all__ = [
     "CatalogType",
     "CatalogItemBase",
@@ -189,4 +254,8 @@ __all__ = [
     "GuidedBuyingVendor",
     "GuidedBuyingItem",
     "GuidedBuyingSuggestion",
+    "PunchoutStartResponse",
+    "PunchoutCartItemResponse",
+    "PunchoutSessionResponse",
+    "PunchoutConvertResponse",
 ]

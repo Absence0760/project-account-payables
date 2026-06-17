@@ -19,10 +19,14 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import CatalogModal from '$lib/components/modals/CatalogModal.svelte';
+	import PunchoutModal from '$lib/components/modals/PunchoutModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { goto } from '$app/navigation';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 
 	const canCreate = $derived(auth.isManager); // admin | ap_manager
+	// Buyers (admin / ap_manager / ap_clerk) may start a punch-out session.
+	const canPunchout = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 
 	// --- List state ---
 	let catalogs = $state<Catalog[]>([]);
@@ -35,6 +39,7 @@
 	let showCreate = $state(false);
 	let editing = $state<Catalog | null>(null);
 	let confirmDeleteId = $state<string | null>(null);
+	let punchoutCatalog = $state<Catalog | null>(null);
 
 	// --- Lookups (shared with the modal) ---
 	let vendors = $state<VendorOption[]>([]);
@@ -248,6 +253,9 @@
 					<td class="right">{c.item_count}</td>
 					<td>{c.is_active ? 'Active' : 'Inactive'}</td>
 					<td class="actions">
+						{#if canPunchout && c.catalog_type === 'punchout'}
+							<RowAction onclick={() => (punchoutCatalog = c)}>Punch out</RowAction>
+						{/if}
 						{#if canCreate}
 							<RowAction
 								variant="danger"
@@ -287,6 +295,18 @@
 		{glAccounts}
 		onclose={() => (editing = null)}
 		onsaved={onSaved}
+	/>
+{/if}
+
+{#if punchoutCatalog}
+	<PunchoutModal
+		catalog={punchoutCatalog}
+		onclose={() => (punchoutCatalog = null)}
+		onconverted={() => {
+			punchoutCatalog = null;
+			// The new draft requisition lands in the requisitions list.
+			goto('/requisitions');
+		}}
 	/>
 {/if}
 

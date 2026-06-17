@@ -396,6 +396,39 @@ Registered: `mock` (in-process, no network — the **local-first default**), `as
 
 **Inbound receive** (the C4 corner) is now implemented: `parse_inbound` is real on both adapters (mock parses a dev JSON/header envelope; `as4_gateway` maps the hosted AP's inbound-delivery envelope). `api/peppol_inbound.public_router` mounts `POST /api/peppol/inbound/{tenant_slug}` (public-by-design, HMAC-gated, tenant in path, always 204). `services/peppol_receive.receive_peppol_message` mirrors `email_intake.process_inbound_email`: dedupe-precheck → `e_invoice.parse_e_invoice` (structural validate) → create `Invoice(status=new)` → claim the `uq_peppol_message_id` slot with a `PeppolTransmission(direction="inbound", status="delivered")` flushed **before** the S3 upload (so a concurrent-redelivery loser's `IntegrityError` rolls back the whole tenant txn — no second invoice, no orphaned S3 object) → upload payload → `invoice.peppol_received` audit → commit → `dispatch_extraction` (auto-routes to the `einvoice` adapter). Dedupe is the DB unique index only (deliberately **not** Redis — a 24h TTL would let a later redelivery slip through). See `docs/peppol.md`.
 
+### Punch-out adapters (`services/punchout_adapters/`)
+
+```python
+@register_punchout_adapter("my_provider")
+class MyAdapter(PunchoutAdapter):
+    def build_setup_request(self, ctx: PunchoutSetupContext) -> PunchoutStartResult: ...
+    def parse_order_message(self, headers, body: bytes) -> PunchoutCart | None: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock` (in-process, no supplier/network — the **local-first
+default**), `cxml` (real cXML build/parse; supplier shared secret via sops, **no
+hardcoded fallback** → fails closed `punchout_not_configured`; OCI shape behind
+the same interface via `protocol="oci"`). Selection via
+`Organization.settings.punchout.provider` → `AP_PUNCHOUT_PROVIDER` (default
+`mock`). Live cXML/OCI catalog punch-out: a `punchout` `Catalog` starts a
+`PunchoutSession` (migration `0045`) → adapter builds a PunchOutSetupRequest +
+returns a supplier start URL → the supplier POSTs a PunchOutOrderMessage cart to
+the **public** secret-gated return endpoint (`POST
+/api/catalogs/punchout/return/{tenant_slug}`, HMAC + BuyerCookie gated, always
+204 on rejection — mirrors PEPPOL inbound) → the buyer converts the returned
+cart into a `PurchaseRequisition` (idempotent + row-locked, reusing
+`requisition_service` primitives). `services/catalog_service.py` orchestrates;
+cXML build/parse lives in `services/punchout_adapters/cxml.py` (XXE-hardened
+parse reused from `e_invoice/_xml`). See `docs/procurement-catalogs.md`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AP_PUNCHOUT_PROVIDER` | `mock` | Adapter — `mock` \| `cxml`. Per-org override `Organization.settings.punchout.provider`. |
+| `AP_PUNCHOUT_SHARED_SECRET` | (empty) | cXML supplier credential — no hardcoded fallback; sops in deployed. |
+| `AP_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; committed `.env.development` sets a NON-secret dev value. |
+| `AP_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Cart-return body cap (memory-exhaustion guard). |
+
 ## Webhook security (`services/webhook_security.py`)
 
 Every inbound webhook handler — payments, cards, ERP, email-intake, PEPPOL inbound — verifies the provider's HMAC over the raw request body and dedupes (by event id, or — for PEPPOL inbound — by the AS4 MessageId at the DB layer) before mutating state (project invariant #9). Shared helpers:
@@ -412,6 +445,7 @@ Per-tenant secrets:
 | `/api/cards/webhook/{provider}` | `Organization.settings.cards.webhook_signing_secret` |
 | `/api/erp/webhook/{erp_type}` | `Organization.settings.erp.webhook_signing_secret` |
 | `/api/peppol/inbound/{tenant_slug}` | `AP_PEPPOL_INBOUND_SIGNING_SECRET` (process-level HMAC key; verified by `peppol_receive.verify_inbound_signature`). Dedupe is the DB `uq_peppol_message_id` index, not Redis. |
+| `/api/catalogs/punchout/return/{tenant_slug}` | `AP_PUNCHOUT_RETURN_SIGNING_SECRET` (process-level HMAC key; verified in `catalogs._verify_return_signature`). Correlation is the BuyerCookie matched to a pending `PunchoutSession`. |
 
 Every webhook handler returns **204 silently** on every rejection path (bad signature, unknown tenant, missing event id, unknown card / invoice / payment, disabled master switch, unparseable / malformed inbound document). Distinct 4xx responses would enumerate tenant slugs or card tokens. Tests: `backend/tests/test_webhook_security.py`, `tests/test_payment_webhook_security.py`, `tests/test_peppol_inbound.py`.
 

@@ -321,6 +321,67 @@ class RequisitionLineItem(Base, TimestampMixin):
     requisition: Mapped[PurchaseRequisition] = relationship(back_populates="line_items")
 
 
+class PunchoutSessionStatus(enum.StrEnum):
+    pending = "pending"  # setup request handed to the supplier; cart not yet returned
+    returned = "returned"  # supplier POSTed a PunchOutOrderMessage (cart) back
+    converted = "converted"  # the returned cart was turned into a requisition
+    expired = "expired"  # the session timed out before a cart came back
+    cancelled = "cancelled"
+
+
+class PunchoutSession(Base, EntityMixin, TimestampMixin):
+    """A live cXML/OCI punch-out session against a ``punchout`` :class:`Catalog`.
+
+    The buyer starts a session (we build a PunchOutSetupRequest, the adapter
+    returns a supplier start-page URL, and we persist this row keyed by a
+    ``buyer_cookie`` token). The supplier returns a PunchOutOrderMessage (the
+    cart) to the public secret-gated return endpoint, which matches the cookie
+    and stores ``cart_items`` + ``cart_total`` on the row. The buyer then
+    converts a ``returned`` session into a :class:`PurchaseRequisition`
+    (``converted_requisition_id`` links the result, idempotency guard).
+
+    Money is ``Numeric(15, 2)`` (never float); the cart line detail rides in the
+    ``cart_items`` JSONB blob (advisory shape — qty / unit_price / description /
+    sku / uom — no PII). See ``backend/docs/procurement-catalogs.md``."""
+
+    __tablename__ = "punchout_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    catalog_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalogs.id"), nullable=False, index=True
+    )
+    # Opaque correlation token the supplier echoes back in the cart. Unique per
+    # tenant DB so the return endpoint can match a cart to exactly one session.
+    buyer_cookie: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
+    status: Mapped[PunchoutSessionStatus] = mapped_column(
+        Enum(PunchoutSessionStatus, native_enum=False, length=20),
+        default=PunchoutSessionStatus.pending,
+        nullable=False,
+    )
+    # Which buyer started the session (the requisition is raised on their behalf).
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    # The supplier start-page URL the buyer's browser visits (from the adapter).
+    start_url: Mapped[str | None] = mapped_column(String(1000))
+    provider: Mapped[str | None] = mapped_column(String(40))
+
+    # --- Returned cart -----------------------------------------------------
+    # Normalized cart lines (list of dicts: description / sku / quantity /
+    # unit_price (string-Decimal) / uom / currency). Advisory; no PII.
+    cart_items: Mapped[list | None] = mapped_column(JSONB)
+    # --- Money (Numeric, never float) -------------------------------------
+    cart_total: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    converted_requisition_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("purchase_requisitions.id"), index=True
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+
+
 class IntakeRequest(Base, EntityMixin, TimestampMixin):
     """An intake form for non-PO spend (software, services, etc.). Captures the
     ask before a vendor/PO exists; can be converted into a requisition or PO."""

@@ -8,7 +8,10 @@ import type {
 	CatalogItem,
 	CatalogItemCreate,
 	CatalogListResponse,
-	GuidedBuyingSuggestion
+	GuidedBuyingSuggestion,
+	PunchoutConvertResponse,
+	PunchoutSession,
+	PunchoutStartResponse
 } from '$lib/types/catalog';
 
 export interface CatalogListParams {
@@ -97,6 +100,26 @@ export function guidedBuying(params: GuidedBuyingParams = {}): Promise<GuidedBuy
 	if (params.vendor_id) qs.set('vendor_id', params.vendor_id);
 	if (params.q) qs.set('q', params.q);
 	return api.get<GuidedBuyingSuggestion>(`/api/catalogs/guided-buying?${qs}`);
+}
+
+// --- Punch-out (live cXML/OCI round-trip) ---
+
+/** Start a punch-out session against a `punchout` catalog → supplier start URL. */
+export function startPunchout(catalogId: string): Promise<PunchoutStartResponse> {
+	return api.post<PunchoutStartResponse>(`/api/catalogs/${catalogId}/punchout/start`, {});
+}
+
+/** Fetch a punch-out session (start state, and the returned cart once posted). */
+export function getPunchoutSession(sessionId: string): Promise<PunchoutSession> {
+	return api.get<PunchoutSession>(`/api/catalogs/punchout/sessions/${sessionId}`);
+}
+
+/** Convert a returned session's cart into a purchase requisition (idempotent). */
+export function convertPunchoutSession(sessionId: string): Promise<PunchoutConvertResponse> {
+	return api.post<PunchoutConvertResponse>(
+		`/api/catalogs/punchout/sessions/${sessionId}/convert`,
+		{}
+	);
 }
 
 // --- Lookups reused from existing endpoints ---

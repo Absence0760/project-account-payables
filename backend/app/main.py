@@ -281,6 +281,7 @@ app.include_router(portal.router, prefix="/api")
 app.include_router(email_intake.public_router, prefix="/api")
 app.include_router(email_intake.admin_router, prefix="/api")
 app.include_router(peppol_inbound.public_router, prefix="/api")
+app.include_router(catalogs.public_router, prefix="/api")
 app.include_router(tax.router, prefix="/api")
 app.include_router(tax_intl.router, prefix="/api")
 

@@ -23,7 +23,7 @@ Two tables (already shipped in migration `0041_procurement`):
 | `name` | Display name |
 | `catalog_type` | `internal` (holds `catalog_items`) or `punchout` (external supplier site) |
 | `vendor_id` | FK → `vendors` (nullable) — the owning supplier |
-| `punchout_url` | Punch-out site URL — **config only** (see Punch-out below) |
+| `punchout_url` | Punch-out site URL — the supplier hosted-catalog endpoint a buyer punches out to (see Punch-out below) |
 | `is_active` | Inactive catalogs are excluded from guided buying |
 | `is_preferred` | **Drives guided buying** — a preferred catalog's vendor is a preferred source |
 | `description` | Free-form |
@@ -118,15 +118,106 @@ Response (`GuidedBuyingSuggestion`):
 Filters are all optional and AND-combined; with no filters the result is the
 org's preferred / in-contract vendors plus a sample of catalog items.
 
-## Punch-out (config-only — future extension)
+## Punch-out — live cXML / OCI round-trip
 
-A `punchout` catalog stores its supplier site URL in `punchout_url` and is
-**not** populated with `catalog_items`. The live cXML / OCI punch-out
-round-trip (PunchOutSetupRequest → supplier session → returned cart) is a
-**future extension** — this slice persists the URL and surfaces it in the UI
-only. When implemented, the round-trip would live in a new punch-out adapter
-(mirroring the other pluggable-provider patterns), keeping a `mock` local-first
-default.
+A `punchout` catalog points at a supplier's hosted catalog site (`punchout_url`)
+and is **not** populated with `catalog_items`. The live punch-out round-trip is
+implemented behind a pluggable adapter family, local-first with a `mock` default
+so the whole flow runs under `pnpm dev` with no external supplier or credential.
+
+### Flow
+
+```
+buyer  ─ POST /catalogs/{id}/punchout/start ─►  adapter.build_setup_request
+                                                  (PunchOutSetupRequest → start URL)
+       ◄─ start_url + buyer_cookie ──────────  persist PunchoutSession(pending)
+buyer's browser visits start_url at the supplier's site, shops, checks out
+supplier ─ POST /catalogs/punchout/return/{slug} ─► adapter.parse_order_message
+            (PunchOutOrderMessage cart, HMAC-signed)   (cart → normalized items)
+                                                  match BuyerCookie → store cart,
+                                                  PunchoutSession(pending→returned)
+buyer  ─ POST /catalogs/punchout/sessions/{id}/convert ─► PurchaseRequisition
+                                                  (returned → converted, idempotent)
+```
+
+### Adapters (`services/punchout_adapters/`)
+
+Registry decorator `@register_punchout_adapter`; selection via
+`Organization.settings.punchout.provider` → `AP_PUNCHOUT_PROVIDER` (default
+`mock`). Interface (`base.py`):
+
+- `build_setup_request(ctx: PunchoutSetupContext) -> PunchoutStartResult` — build
+  the outbound PunchOutSetupRequest and return the supplier **start URL**.
+- `parse_order_message(headers, body) -> PunchoutCart | None` — parse a returned
+  cart into normalized `PunchoutCartItem`s (money is `Decimal`); `None` on an
+  unparseable body or a missing BuyerCookie (refuse a cart we can't correlate).
+- `test_connection() -> bool`.
+
+Registered:
+
+- **`mock`** (in-process, local-first default) — synthesises a start URL off the
+  catalog's `punchout_url` + the buyer cookie, and parses either a dev JSON cart
+  envelope (`{buyer_cookie, currency, items[]}`) **or** a real cXML
+  PunchOutOrderMessage. No supplier, no network.
+- **`cxml`** (real) — builds a real cXML PunchOutSetupRequest and parses a real
+  PunchOutOrderMessage (`services/punchout_adapters/cxml.py`, reusing the
+  e_invoice XXE-hardened parser). The supplier shared secret comes from
+  `Organization.settings.punchout.shared_secret` → `AP_PUNCHOUT_SHARED_SECRET`
+  with **no hardcoded fallback** — an unconfigured adapter **fails closed**
+  (`punchout_not_configured`), mirroring the PEPPOL `as4_gateway` posture. The
+  OCI shape slots in behind the same interface (`protocol="oci"`).
+
+### Session lifecycle
+
+`PunchoutSession` (tenant-scoped, migration `0045_punchout_sessions`) carries
+`buyer_cookie` (unique correlation token), `status`
+(`pending → returned → converted`, plus `expired` / `cancelled`),
+`requested_by_user_id`, `start_url`, the returned `cart_items` (JSONB — money as
+string-Decimal, no PII), `cart_total` (`Numeric(15,2)`), and
+`converted_requisition_id`. `org_id` + `entity_id` scope it like every other
+procurement row.
+
+### Endpoints
+
+| Endpoint | Auth | Notes |
+|----------|------|-------|
+| `POST /catalogs/{id}/punchout/start` | admin / ap_manager / **ap_clerk** | Buyers shop, so a clerk may start. 422 (`catalog_not_punchout` / `no_punchout_url` / `punchout_not_configured`) fails closed. |
+| `GET /catalogs/punchout/sessions/{id}` | admin / ap_manager / ap_clerk / cfo | Read the session + (once returned) the cart. |
+| `POST /catalogs/punchout/sessions/{id}/convert` | admin / ap_manager / ap_clerk | Returned cart → requisition. **Idempotent + row-locked** (`SELECT … FOR UPDATE` on the session; a session already carrying `converted_requisition_id` returns its existing requisition with `created=false`). Reuses `requisition_service` primitives (`line_total` / `recompute_total` / `next_requisition_number`) — never duplicated. |
+| `POST /catalogs/punchout/return/{slug}` | **PUBLIC-by-design** | The supplier cart return. No JWT. |
+
+Every state-changing op writes a `dispatch_audit` row
+(`punchout.session_started` / `punchout.cart_returned` /
+`punchout.session_converted`).
+
+### The public cart-return endpoint (security)
+
+`POST /api/catalogs/punchout/return/{tenant_slug}` is public-by-design — the
+supplier (or the buyer's browser POSTing on its behalf) returns the cart there.
+It mirrors the PEPPOL inbound webhook posture exactly:
+
+- a body-size cap before buffering (memory-exhaustion guard,
+  `AP_PUNCHOUT_RETURN_MAX_BYTES`),
+- a **shared-secret HMAC-SHA256** over the raw body is the gate
+  (`AP_PUNCHOUT_RETURN_SIGNING_SECRET`; verified via the shared
+  `webhook_security.verify_hmac_sha256`). An empty secret falls back to
+  `AP_DEBUG` (local-dev convenience — the BuyerCookie match is then the sole
+  gate); deployed envs set the real secret via sops,
+- the tenant is in the **URL path** (never a spoofable header),
+- the **BuyerCookie** (in the body, cross-checked against the query string)
+  correlates the cart to exactly one **pending** session — a redelivery onto an
+  already-returned session is dropped,
+- **every rejection path returns 204 silently** (a 4xx would enumerate tenants /
+  cookies / probe the secret); no supplier secret or cart value is ever logged.
+
+### Env vars
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AP_PUNCHOUT_PROVIDER` | `mock` | Adapter — `mock` (in-process default) \| `cxml`. Per-org override `Organization.settings.punchout.provider`. |
+| `AP_PUNCHOUT_SHARED_SECRET` | (empty) | cXML supplier credential — **no hardcoded fallback**; sops in deployed. Per-org override `…punchout.shared_secret`. |
+| `AP_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; the committed `.env.development` sets a NON-secret dev value. |
+| `AP_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Hard cap on the cart-return body before parsing. |
 
 ## Frontend
 
@@ -145,3 +236,11 @@ default.
 punch-out flag persistence, cascade-on-delete, guided-buying (preferred +
 in-contract + item search), RBAC (clerk read-only / can't mutate; CFO can read
 guided buying), tenant isolation, and audit rows.
+
+`backend/tests/test_punchout.py` (realdb) — the punch-out round-trip: start
+(mock → start URL + pending session; non-punch-out / no-URL 422), the public
+secret-gated cart return (BuyerCookie + HMAC match stores the exact-`Decimal`
+cart; bad signature / unknown cookie / cookie mismatch → silent 204, no state
+change), convert (returned cart → requisition, exact total, idempotent + row-
+locked replay; pending session 422), RBAC (CFO read-only can't start/convert but
+can read), and tenant isolation.

@@ -21,18 +21,34 @@ selects in via the model + entity_id), so a suggestion never leaks rows from a
 sibling subsidiary.
 """
 
+import secrets
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.contract import Contract, ContractStatus
-from app.models.procurement import Catalog, CatalogItem
+from app.models.procurement import (
+    Catalog,
+    CatalogItem,
+    CatalogType,
+    PunchoutSession,
+    PunchoutSessionStatus,
+    RequisitionLineItem,
+)
 from app.models.vendor import Vendor
 from app.schemas.catalog import (
     GuidedBuyingItem,
     GuidedBuyingSuggestion,
     GuidedBuyingVendor,
+)
+from app.services.punchout_adapters import (
+    PunchoutCart,
+    PunchoutError,
+    PunchoutSetupContext,
+    get_punchout_adapter,
 )
 from app.tenant import apply_entity_scope
 
@@ -215,6 +231,150 @@ async def _matching_items(
         )
         for item, catalog_name, is_preferred in rows
     ]
+
+
+# ===========================================================================
+# Punch-out session orchestration (live cXML/OCI round-trip)
+# ---------------------------------------------------------------------------
+# Adapter is selected from ``Organization.settings.punchout.provider`` (falls
+# back to ``AP_PUNCHOUT_PROVIDER``, default ``mock``). These helpers are pure
+# orchestration — they build/flush rows on the passed session but NEVER commit
+# (the router owns the transaction + audit, mirroring the requisition flow).
+# ===========================================================================
+
+
+def resolve_punchout_adapter(org_settings: dict | None):
+    """Select the punch-out adapter for the org (per-org → process default)."""
+    return get_punchout_adapter((org_settings or {}).get("punchout"))
+
+
+def generate_buyer_cookie() -> str:
+    """Opaque, unguessable correlation token the supplier echoes in the cart."""
+    return f"poc_{secrets.token_urlsafe(32)}"
+
+
+def build_return_url(*, tenant_slug: str, buyer_cookie: str) -> str:
+    """The public cart-return endpoint the supplier POSTs the cart back to.
+
+    Tenant + buyer cookie are encoded in the path/query so a returned cart
+    self-identifies (the route is public-by-design — no JWT)."""
+    base = settings.api_public_url.rstrip("/")
+    return f"{base}/api/catalogs/punchout/return/{tenant_slug}?buyer_cookie={buyer_cookie}"
+
+
+def start_punchout_session(
+    db: AsyncSession,
+    *,
+    catalog: Catalog,
+    tenant_slug: str,
+    org_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    user_id: uuid.UUID,
+    org_settings: dict | None,
+) -> PunchoutSession:
+    """Build a PunchOutSetupRequest via the adapter and persist a pending session.
+
+    Pure orchestration: adds + flushes the :class:`PunchoutSession` row on ``db``
+    (so it gets an id) but does NOT commit — the router commits with the audit
+    row. Raises :class:`PunchoutError` (PII-free code) when the catalog is not a
+    punch-out catalog, has no URL, or the adapter is not configured.
+    """
+    if catalog.catalog_type != CatalogType.punchout:
+        raise PunchoutError("catalog_not_punchout")
+    if not catalog.punchout_url:
+        raise PunchoutError("no_punchout_url")
+
+    adapter = resolve_punchout_adapter(org_settings)
+    buyer_cookie = generate_buyer_cookie()
+    ctx = PunchoutSetupContext(
+        catalog_name=catalog.name,
+        punchout_url=catalog.punchout_url,
+        buyer_cookie=buyer_cookie,
+        return_url=build_return_url(tenant_slug=tenant_slug, buyer_cookie=buyer_cookie),
+        buyer_identity=((org_settings or {}).get("punchout") or {}).get("buyer_identity"),
+    )
+    # May raise PunchoutError (fail-closed real adapter) — surfaced by the route.
+    start = adapter.build_setup_request(ctx)
+
+    session = PunchoutSession(
+        catalog_id=catalog.id,
+        buyer_cookie=buyer_cookie,
+        status=PunchoutSessionStatus.pending,
+        requested_by_user_id=user_id,
+        start_url=start.start_url,
+        provider=adapter.provider_name,
+        organization_id=org_id,
+        entity_id=entity_id,
+    )
+    db.add(session)
+    return session
+
+
+def apply_returned_cart(session: PunchoutSession, cart: PunchoutCart) -> Decimal:
+    """Store a returned supplier cart on a pending session.
+
+    Normalizes cart lines into the JSONB blob (money as string-``Decimal``),
+    sets the exact ``cart_total`` (recomputed from the lines, never trusted from
+    the wire), and flips status ``pending → returned``. Returns the total.
+    """
+    from datetime import UTC, datetime
+
+    items: list[dict] = []
+    for it in cart.items:
+        items.append(
+            {
+                "description": it.description,
+                "sku": it.sku,
+                # Money as string-Decimal in the JSON blob (never float).
+                "quantity": str(it.quantity),
+                "unit_price": str(it.unit_price),
+                "uom": it.uom,
+                "currency": it.currency,
+            }
+        )
+    total = cart.total  # exact Decimal, recomputed from the lines
+    session.cart_items = items
+    session.cart_total = total
+    session.currency = cart.currency
+    session.status = PunchoutSessionStatus.returned
+    session.returned_at = datetime.now(UTC)
+    return total
+
+
+def build_requisition_lines_from_cart(session: PunchoutSession) -> list[RequisitionLineItem]:
+    """Build ``RequisitionLineItem`` rows from a returned session's cart blob.
+
+    Money stays exact ``Decimal`` (parsed from the string-Decimal JSON values);
+    each line's ``total`` is stamped ``quantity * unit_price`` so the requisition
+    header total can never drift from its lines.
+    """
+    from app.services.requisition_service import line_total
+
+    lines: list[RequisitionLineItem] = []
+    for idx, raw in enumerate(session.cart_items or [], start=1):
+        qty = _opt_decimal(raw.get("quantity"))
+        unit_price = _opt_decimal(raw.get("unit_price"))
+        lines.append(
+            RequisitionLineItem(
+                line_number=idx,
+                item_code=raw.get("sku"),
+                description=raw.get("description"),
+                quantity=qty,
+                unit_price=unit_price,
+                total=line_total(qty, unit_price),
+                uom=raw.get("uom"),
+            )
+        )
+    return lines
+
+
+def _opt_decimal(raw) -> Decimal | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        return Decimal(str(raw))
+    except (ArithmeticError, ValueError):
+        return None
 
 
 async def _active_contract_for_vendor(

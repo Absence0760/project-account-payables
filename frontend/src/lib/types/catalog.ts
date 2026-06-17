@@ -111,3 +111,62 @@ export const GUIDED_BUYING_REASON_LABELS: Record<string, string> = {
 	preferred_catalog: 'Preferred catalog',
 	active_contract: 'Active contract'
 };
+
+// ===================== Punch-out (live cXML/OCI round-trip) =====================
+
+export type PunchoutSessionStatus =
+	| 'pending'
+	| 'returned'
+	| 'converted'
+	| 'expired'
+	| 'cancelled';
+
+export const PUNCHOUT_STATUS_LABELS: Record<string, string> = {
+	pending: 'Awaiting cart',
+	returned: 'Cart returned',
+	converted: 'Converted',
+	expired: 'Expired',
+	cancelled: 'Cancelled'
+};
+
+export interface PunchoutStartResponse {
+	session_id: string;
+	buyer_cookie: string;
+	start_url: string;
+	status: string;
+	provider: string;
+}
+
+export interface PunchoutCartItem {
+	description: string;
+	sku: string | null;
+	quantity: number | null;
+	unit_price: number | null;
+	uom: string | null;
+	currency: string;
+}
+
+export interface PunchoutSession {
+	id: string;
+	catalog_id: string;
+	buyer_cookie: string;
+	status: string;
+	requested_by_user_id: string;
+	start_url: string | null;
+	provider: string | null;
+	cart_items: PunchoutCartItem[];
+	cart_total: number | null;
+	currency: string;
+	returned_at: string | null;
+	converted_requisition_id: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface PunchoutConvertResponse {
+	session_id: string;
+	requisition_id: string;
+	requisition_number: string;
+	total: number;
+	created: boolean;
+}
