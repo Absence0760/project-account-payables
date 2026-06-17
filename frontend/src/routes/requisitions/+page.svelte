@@ -5,6 +5,7 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import {
 		listRequisitions,
+		getRequisition,
 		deleteRequisition as apiDelete,
 		submitRequisition,
 		approveRequisition,
@@ -27,6 +28,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
+	import { onMount } from 'svelte';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	// approve / reject / convert = admin | ap_manager (convert is the money step).
@@ -79,6 +81,10 @@
 
 	function syncUrl() {
 		const url = new URL($page.url);
+		// `id` is a transient deep-link param (see deepLinkId below) — it is
+		// consumed once at load and never persisted, so the filter-state sync
+		// always drops it rather than resurrecting it from a stale URL read.
+		url.searchParams.delete('id');
 		if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
 		else url.searchParams.delete('status');
 		if (search.trim()) url.searchParams.set('search', search.trim());
@@ -117,6 +123,18 @@
 	$effect(() => {
 		orgCurrency.ensureLoaded();
 		loadGlAccounts();
+	});
+
+	// Deep-link: `?id=<uuid>` opens that requisition's detail modal (e.g. after a
+	// punch-out cart is converted into a draft). Captured once at init — before
+	// syncUrl() normalizes the URL and strips the transient param — then resolved
+	// straight from the API (the target may live past the 100 rows we fetch).
+	const deepLinkId = $page.url.searchParams.get('id');
+	onMount(() => {
+		if (!deepLinkId) return;
+		getRequisition(deepLinkId)
+			.then((r) => (editing = r))
+			.catch(() => toast('Requisition not found', 'error'));
 	});
 
 	async function loadGlAccounts() {

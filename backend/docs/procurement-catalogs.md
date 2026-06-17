@@ -140,6 +140,11 @@ buyer  ─ POST /catalogs/punchout/sessions/{id}/convert ─► PurchaseRequisit
                                                   (returned → converted, idempotent)
 ```
 
+On the frontend, a successful convert routes the buyer to
+`/requisitions?id=<new_requisition_id>`, which deep-links straight into that
+draft requisition's detail modal (the `id` param is transient — consumed once
+and scrubbed from the URL).
+
 ### Adapters (`services/punchout_adapters/`)
 
 Registry decorator `@register_punchout_adapter`; selection via

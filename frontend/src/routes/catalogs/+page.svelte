@@ -302,10 +302,10 @@
 	<PunchoutModal
 		catalog={punchoutCatalog}
 		onclose={() => (punchoutCatalog = null)}
-		onconverted={() => {
+		onconverted={(requisitionId) => {
 			punchoutCatalog = null;
-			// The new draft requisition lands in the requisitions list.
-			goto('/requisitions');
+			// Deep-link straight to the new draft requisition's detail modal.
+			goto(`/requisitions?id=${requisitionId}`);
 		}}
 	/>
 {/if}
