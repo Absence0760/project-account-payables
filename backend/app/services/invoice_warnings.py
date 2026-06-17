@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
+from app.services.matching_rules import resolve_match_rule
 from app.services.po_matching import match_invoice_to_po
 
 logger = logging.getLogger(__name__)
@@ -438,10 +439,15 @@ async def _refresh_po_match(
     Stores the structured result on `invoice.po_match` for UI rendering.
     Mutates `warnings` in place.
     """
-    require_inspection = bool(
-        (org_settings or {}).get("matching", {}).get("require_inspection", False)
+    rule = resolve_match_rule(
+        org_settings, vendor_id=invoice.vendor_id, gl_account=invoice.gl_account
     )
-    match = await match_invoice_to_po(db, invoice, require_inspection=require_inspection)
+    match = await match_invoice_to_po(
+        db,
+        invoice,
+        require_inspection=rule.require_inspection,
+        tolerance_pct=rule.tolerance_pct,
+    )
     invoice.po_match = asdict(match)
 
     if match.status == "no_po":
