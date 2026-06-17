@@ -33,6 +33,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.services.analytics import (
+    ReceivedPO,
     apply_payment_timing_scenario,
     bucket_outflows,
     compute_accruals,
@@ -49,6 +50,7 @@ from app.services.analytics import (
     compute_supplier_concentration,
     compute_working_capital_impact,
     detect_threshold_breaches,
+    value_received_goods,
 )
 
 # ---------------------------------------------------------------------------
@@ -254,6 +256,61 @@ def test_accruals_subtracts_unposted_invoices():
         unposted_invoice_amount=Decimal("8000"),
     )
     assert a.total_accrual == Decimal("52000.00")
+
+
+def test_value_received_goods_partial_and_full_receipt():
+    """Mirrors the seed: po4 = 4 of 5 laptops ($12k → $9.6k) + po5 =
+    fully-received freight ($6.3k) → $15,900 received accrual."""
+    received = value_received_goods(
+        [
+            ReceivedPO(
+                po_total=Decimal("12000"),
+                po_qty_total=Decimal("5"),
+                gr_qty_total=Decimal("4"),
+            ),
+            ReceivedPO(
+                po_total=Decimal("6300"),
+                po_qty_total=Decimal("1"),
+                gr_qty_total=Decimal("1"),
+            ),
+        ]
+    )
+    assert received == Decimal("15900.00")
+
+
+def test_value_received_goods_no_line_quantities_treated_as_fully_received():
+    """A receipted PO with no quantified lines (po_qty_total 0) values at
+    the full PO total — the only signal is that goods arrived."""
+    received = value_received_goods(
+        [ReceivedPO(po_total=Decimal("2000"), po_qty_total=Decimal("0"), gr_qty_total=Decimal("0"))]
+    )
+    assert received == Decimal("2000.00")
+
+
+def test_value_received_goods_over_receipt_caps_at_po_total():
+    """Receiving more than ordered never inflates the accrual past the
+    PO's value — the fraction is capped at 1.0."""
+    received = value_received_goods(
+        [
+            ReceivedPO(
+                po_total=Decimal("1000"), po_qty_total=Decimal("10"), gr_qty_total=Decimal("15")
+            )
+        ]
+    )
+    assert received == Decimal("1000.00")
+
+
+def test_value_received_goods_empty_returns_zero():
+    assert value_received_goods([]) == Decimal("0")
+
+
+def test_value_received_goods_returns_decimal_not_float():
+    received = value_received_goods(
+        [ReceivedPO(po_total=Decimal("100"), po_qty_total=Decimal("3"), gr_qty_total=Decimal("1"))]
+    )
+    assert isinstance(received, Decimal)
+    # 100 × 1/3 = 33.333... quantized to cents (ROUND_HALF_UP)
+    assert received == Decimal("33.33")
 
 
 # ---------------------------------------------------------------------------

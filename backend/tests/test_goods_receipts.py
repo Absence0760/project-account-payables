@@ -16,10 +16,10 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from app.models.procurement import GoodsReceipt, GRLineItem, PurchaseOrder
+from app.models.procurement import GoodsReceipt, GRLineItem, POLineItem, PurchaseOrder
 
 
-async def _add_po(realdb, key: str, **kwargs) -> uuid.UUID:
+async def _add_po(realdb, key: str, *, lines=(), **kwargs) -> uuid.UUID:
     from decimal import Decimal
 
     mk = realdb.sessionmaker(key)
@@ -27,6 +27,9 @@ async def _add_po(realdb, key: str, **kwargs) -> uuid.UUID:
     async with mk() as s:
         po = PurchaseOrder(organization_id=realdb.info(key).org_id, **kwargs)
         s.add(po)
+        await s.flush()
+        for ln in lines:
+            s.add(POLineItem(po_id=po.id, **ln))
         await s.commit()
         return po.id
 
@@ -241,3 +244,84 @@ async def test_tenant_isolation_detail_404(realdb):
     async with realdb.client(key="b", role="ap_manager") as c:
         resp = await c.get(f"/api/goods-receipts/{gr_id}")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# CFO accrual valuation (received_amount) — the 3-way-match fan-out that
+# values goods received but not yet invoiced. Exercised through the CFO
+# analytics endpoint, not just the pure `value_received_goods` unit tests.
+# ---------------------------------------------------------------------------
+
+
+async def test_cfo_accruals_received_amount_values_partial_and_full_receipts(realdb):
+    from decimal import Decimal
+
+    # PO with 5 laptops @ $2,400 ($12k); receive 4 → 80% → $9,600.
+    po_partial = await _add_po(
+        realdb,
+        "a",
+        po_number="ACC-PO-1",
+        total=Decimal("12000.00"),
+        lines=[
+            {"description": "Laptop", "quantity": Decimal("5"), "unit_price": Decimal("2400.00")}
+        ],
+    )
+    await _add_gr(
+        realdb,
+        "a",
+        gr_number="ACC-GR-1",
+        po_id=po_partial,
+        status="received",
+        lines=[{"description": "Laptop", "quantity_received": Decimal("4")}],
+    )
+    # PO fully received ($6,300) → $6,300.
+    po_full = await _add_po(
+        realdb,
+        "a",
+        po_number="ACC-PO-2",
+        total=Decimal("6300.00"),
+        lines=[
+            {"description": "Freight", "quantity": Decimal("1"), "unit_price": Decimal("6300.00")}
+        ],
+    )
+    await _add_gr(
+        realdb,
+        "a",
+        gr_number="ACC-GR-2",
+        po_id=po_full,
+        status="received",
+        lines=[{"description": "Freight", "quantity_received": Decimal("1")}],
+    )
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get("/api/analytics/cfo")).json()
+
+    # $9,600 (80% of the $12k PO) + $6,300 (fully received) = $15,900.
+    assert body["accruals"]["received_amount"] == 15900.0
+
+
+async def test_cfo_accruals_received_amount_excludes_other_tenant(realdb):
+    """Goods received under tenant `a` never leak into tenant `b`'s accrual."""
+    from decimal import Decimal
+
+    po = await _add_po(
+        realdb,
+        "a",
+        po_number="ACC-ISO-PO",
+        total=Decimal("5000.00"),
+        lines=[
+            {"description": "Widget", "quantity": Decimal("1"), "unit_price": Decimal("5000.00")}
+        ],
+    )
+    await _add_gr(
+        realdb,
+        "a",
+        gr_number="ACC-ISO-GR",
+        po_id=po,
+        status="received",
+        lines=[{"description": "Widget", "quantity_received": Decimal("1")}],
+    )
+
+    async with realdb.client(key="b", role="cfo") as c:
+        body = (await c.get("/api/analytics/cfo")).json()
+    assert body["accruals"]["received_amount"] == 0.0

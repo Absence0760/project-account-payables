@@ -30,6 +30,7 @@ from app.models.payment import Payment, PaymentSchedule
 from app.models.user import User
 from app.models.virtual_card import CardRebate
 from app.services.analytics import (
+    ReceivedPO,
     apply_payment_timing_scenario,
     bucket_outflows,
     compute_accruals,
@@ -42,6 +43,7 @@ from app.services.analytics import (
     compute_supplier_concentration,
     compute_working_capital_impact,
     detect_threshold_breaches,
+    value_received_goods,
 )
 from app.services.currency_conversion import (
     compute_unrealized_fx_gain_loss,
@@ -510,13 +512,13 @@ async def get_cfo_analytics(
         )
     )
     unposted_invoice_amount = Decimal(str(unposted_q.scalar() or 0))
-    # GR-received-but-not-invoiced is a multi-table join — we
-    # approximate as 0 today and document on the response; SOC 2
-    # auditors flagged this as a known gap. Real number requires
-    # the 3-way match layer (po_matching) to fan out per-line.
+    # GR-received-but-not-invoiced: fan the 3-way match out per-PO and
+    # value the received fraction of each receipted PO. `_received_amount`
+    # fails soft to 0 on tenants without procurement tables.
+    received_amount = await _received_amount(db, entity_id)
     accruals = compute_accruals(
         open_po_amount=open_po_amount,
-        received_amount=Decimal("0"),
+        received_amount=received_amount,
         unposted_invoice_amount=unposted_invoice_amount,
     )
 
@@ -744,6 +746,80 @@ def _open_po_sum_query(entity_id: uuid.UUID | None):
         from sqlalchemy import literal
 
         return select(func.coalesce(func.sum(literal(0)), 0))
+
+
+async def _received_amount(db: AsyncSession, entity_id: uuid.UUID | None) -> Decimal:
+    """Value goods received but not yet invoiced (the GR/IR accrual leg).
+
+    Loads every `received` goods receipt (entity-scoped) with its line
+    items, aggregates received quantity per PO, then values the received
+    fraction of each PO via `value_received_goods`. Lazily imports the
+    procurement models so a tenant without those tables falls back to 0
+    rather than 500-ing (mirrors `_open_po_sum_query`). Receipts with no
+    PO link can't be priced and are excluded.
+    """
+    try:
+        from collections import defaultdict
+
+        from sqlalchemy.orm import selectinload
+
+        from app.models.procurement import GoodsReceipt, PurchaseOrder
+
+        gr_rows = (
+            (
+                await db.execute(
+                    apply_entity_scope(
+                        select(GoodsReceipt)
+                        .where(GoodsReceipt.status == "received")
+                        .options(selectinload(GoodsReceipt.line_items)),
+                        GoodsReceipt,
+                        entity_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        gr_qty_by_po: dict[uuid.UUID, Decimal] = defaultdict(lambda: Decimal("0"))
+        for gr in gr_rows:
+            if not gr.po_id:
+                continue
+            gr_qty_by_po[gr.po_id] += sum(
+                (li.quantity_received or Decimal("0") for li in gr.line_items), Decimal("0")
+            )
+        if not gr_qty_by_po:
+            return Decimal("0")
+
+        # Entity scope is carried transitively: the PO ids come only from the
+        # entity-scoped GR query above, so this fetch is already confined to the
+        # selected subsidiary. Keep the GR query's `apply_entity_scope` if you
+        # touch this — dropping it would silently widen this fetch too.
+        po_rows = (
+            (
+                await db.execute(
+                    select(PurchaseOrder)
+                    .where(PurchaseOrder.id.in_(gr_qty_by_po.keys()))
+                    .options(selectinload(PurchaseOrder.line_items))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        receipts = [
+            ReceivedPO(
+                po_total=po.total or Decimal("0"),
+                po_qty_total=sum(
+                    (li.quantity or Decimal("0") for li in po.line_items), Decimal("0")
+                ),
+                gr_qty_total=gr_qty_by_po[po.id],
+            )
+            for po in po_rows
+        ]
+        return value_received_goods(receipts)
+    except Exception:  # noqa: BLE001
+        return Decimal("0")
 
 
 # ---------------------------------------------------------------------------

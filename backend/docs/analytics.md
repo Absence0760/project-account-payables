@@ -51,7 +51,14 @@ Response:
 - `cash_conversion_cycle` (NULL when DSO/DIO not available — the
   AP-only product can't compute it)
 - `accruals.{open_po_amount, received_amount, unposted_invoice_amount, total_accrual}`
-  (received_amount is approximated 0 today — see "Known gaps")
+  (`received_amount` values goods physically received but not yet
+  invoiced — the GR/IR accrual leg. The 3-way match is fanned out per
+  PO: each receipted PO contributes `po_total × min(1, gr_qty/po_qty)`,
+  the same received-fraction the PO matcher computes. POs with no
+  quantified lines but a booked receipt count as fully received;
+  receipts with no PO link can't be priced and are excluded. Pure math
+  in `analytics.value_received_goods`; SQL fan-out in
+  `api/analytics._received_amount`.)
 - `working_capital_impact_5_days` — `avg_daily_outflow × 5`
 - `supplier_concentration.{top_10_share_pct, top_50_share_pct, largest_vendor, largest_vendor_share_pct, flagged}` — `flagged=true` iff the largest vendor exceeds 25% (configurable)
 - `fraud_rate_trend` — exceptions / invoices × 100 per month
@@ -161,9 +168,6 @@ is stored.
 
 ## Known gaps
 
-- **Received_amount in accruals**: requires a 3-way-match fan-out
-  (PO line × GR line). Today returns 0 — flagged in the CFO doc
-  and on the dashboard tile. SOC 2 audit ticket open.
 - **Cash conversion cycle**: AP-only; DSO + DIO need data we
   don't carry. Returns NULL; the UI renders "needs receivables
   data" rather than a misleading 0.

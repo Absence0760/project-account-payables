@@ -314,7 +314,7 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 
 - [x] Days Payable Outstanding (DPO) trend — `dpo_current` + `dpo_trend` (last 6 months). Computed AP/COGS×period_days; benchmark overlay deferred until we ship industry-benchmark data.
 - [x] Cash conversion cycle — `cash_conversion_cycle`, returns NULL when DSO/DIO unavailable (we're AP-only) so the UI shows "needs receivables data" rather than a misleading 0.
-- [x] Accruals view — `accruals.{open_po_amount, received_amount, unposted_invoice_amount, total_accrual}`. `received_amount` is approximated 0 today pending a 3-way-match fan-out — flagged on the response.
+- [x] Accruals view — `accruals.{open_po_amount, received_amount, unposted_invoice_amount, total_accrual}`. `received_amount` values goods received but not yet invoiced (the GR/IR leg): the 3-way match is fanned out per PO, each receipted PO contributing `po_total × min(1, gr_qty/po_qty)` — the same received-fraction the PO matcher computes. Pure math in `analytics.value_received_goods`, SQL fan-out in `api/analytics._received_amount` (entity-scoped, fails soft to 0 on tenants without procurement tables).
 - [x] Working capital impact — `working_capital_impact_5_days` (avg_daily_outflow × 5; configurable via days-extended param when called via drill-through).
 - [x] Supplier concentration — `supplier_concentration` (top-10 / top-50 share, largest vendor, `flagged` when largest exceeds 25%).
 - [x] Fraud rate trend — `fraud_rate_trend` (exceptions per invoice per month, last 6 months).

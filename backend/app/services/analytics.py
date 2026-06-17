@@ -318,19 +318,63 @@ def compute_cash_conversion_cycle(
 
 
 @dataclass(frozen=True)
+class ReceivedPO:
+    """One PO's goods-receipt position, for valuing received goods.
+
+    `po_total`: the PO's monetary total.
+    `po_qty_total`: sum of ordered line quantities (0 when the PO has
+                    no quantified line items).
+    `gr_qty_total`: sum of received quantities across every goods
+                    receipt booked against the PO.
+    """
+
+    po_total: Decimal
+    po_qty_total: Decimal
+    gr_qty_total: Decimal
+
+
+def value_received_goods(receipts: list[ReceivedPO]) -> Decimal:
+    """Value goods physically received against their POs (the GR/IR
+    accrual leg — goods received, not yet invoiced).
+
+    For each PO carrying a goods receipt, value the *received fraction*
+    of the PO total: ``po_total × min(1, gr_qty / po_qty)``. This reuses
+    the exact received-fraction `po_matching.match_invoice_to_po`
+    computes for the 3-way match, fanned out across every receipted PO.
+
+    A PO with no quantified line items (`po_qty_total == 0`) but a booked
+    receipt is treated as fully received (fraction 1.0) — the only signal
+    we have is that goods arrived. The fraction is capped at 1.0 so an
+    over-receipt never inflates the accrual above the PO's value.
+    """
+    total = Decimal("0")
+    for r in receipts:
+        if r.po_qty_total > 0:
+            fraction = min(Decimal("1"), r.gr_qty_total / r.po_qty_total)
+        else:
+            fraction = Decimal("1")
+        total += r.po_total * fraction
+    # ROUND_HALF_UP to match the rest of this module's money rounding.
+    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+@dataclass(frozen=True)
 class AccrualsSnapshot:
     """Open commitments awaiting invoice + posting.
 
-    `open_po_amount`: total of POs whose status isn't `closed`
-                       and which have outstanding line items.
-    `received_amount`: total of GR rows that have been received
-                       but for which the matching invoice isn't
-                       yet posted to ERP.
+    `open_po_amount`: total of non-closed POs (open purchase
+                       commitments).
+    `received_amount`: value of goods physically received against
+                       their POs — the received fraction of each
+                       receipted PO's total (GR/IR accrual). See
+                       `value_received_goods`. Receipts on a PO we
+                       can't price (no PO link) are excluded.
     `unposted_invoice_amount`: invoices in approved/sent_to_erp
                        states — accrued liability not yet on the
                        ledger.
     `total_accrual`: open_po_amount + received_amount −
-                       unposted_invoice_amount.
+                       unposted_invoice_amount. The invoiced side is
+                       netted here at the aggregate level, not per-PO.
     """
 
     open_po_amount: Decimal
