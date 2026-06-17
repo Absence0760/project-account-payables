@@ -725,16 +725,16 @@ frontend UX land in WF2-4.
 ---
 
 ### Procurement / Requisitions
-**Status:** Planned
+**Status:** Done — full procure-to-pay: requisitions + approval, requisition→PO conversion, catalog management + guided buying, budget tracking, and non-PO intake forms. Six tenant-scoped tables (migration `0041_procurement`), four routers (`/api/requisitions`, `/api/catalogs`, `/api/budgets`, `/api/intake`), and frontend routes (`/requisitions`, `/catalogs`, `/budgets`, `/intake`). See [procurement.md](../backend/docs/procurement.md) + the four vertical docs.
 
 Procure-to-pay: requisitioning, PO creation, catalog management. Coupa and Basware are leaders here. Airbase offers "intake-to-procure" for software purchases.
 
-- [ ] Purchase requisition creation and approval
-- [ ] Requisition-to-PO conversion
-- [ ] Catalog management (supplier catalogs, punch-out)
-- [ ] Guided buying — direct users to preferred vendors/contracts
-- [ ] Budget tracking — spend against department/project budgets
-- [ ] Intake forms for non-PO spend (software, services)
+- [x] Purchase requisition creation and approval *(`/api/requisitions` — create/submit/approve/reject/cancel state machine, RBAC + segregation-of-duties on approval, every transition audited; `services/requisition_service.py`)*
+- [x] Requisition-to-PO conversion *(`POST /api/requisitions/{id}/convert-to-po` — approved-only, idempotent + `SELECT … FOR UPDATE` row-locked so a replay returns the existing PO, audited)*
+- [x] Catalog management (supplier catalogs, punch-out) *(`/api/catalogs` — Catalog/CatalogItem CRUD, vendor-linked, punch-out catalog type + URL persisted; live cXML/OCI round-trips are a documented future extension — see [procurement-catalogs.md](../backend/docs/procurement-catalogs.md))*
+- [x] Guided buying — direct users to preferred vendors/contracts *(`GET /api/catalogs/guided-buying` — deterministic, no LLM: preferred catalogs → preferred vendors, active contracts → in-contract vendors, active catalog items by category/vendor/text)*
+- [x] Budget tracking — spend against department/project budgets *(`/api/budgets` — dimension/period budgets with compute-on-read committed (open reqs + converted POs, no double-count) + actual (matched invoices); department/project actuals read 0 until invoices carry those columns, documented in [procurement-budgets.md](../backend/docs/procurement-budgets.md))*
+- [x] Intake forms for non-PO spend (software, services) *(`/api/intake` — free-form `form_data` requests, open→in_review→approved/rejected lifecycle, idempotent + row-locked intake→requisition conversion; PO created via the existing req→PO flow)*
 
 **Competitors:** Coupa (full source-to-pay), Basware (procurement suite), Airbase (intake-to-procure), Medius (basic procurement)
 
