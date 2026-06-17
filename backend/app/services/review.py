@@ -186,13 +186,39 @@ async def approve_invoice(
     invoice.approval_date = date.today()
     invoice.approved_by = actor_name
 
+    # Digital signature on the approval (SOX non-repudiation): an HMAC-SHA256
+    # "timestamp + user hash" over the canonical approval facts (invoice id +
+    # exact Decimal amount + actor + decision + timestamp), stamped into THIS
+    # approval audit row's immutable `details`. Re-verifiable later via
+    # GET /api/audit/invoice/{id}/verify-signatures. No-op (None) when no signing
+    # key is configured. The same `signed_at` timestamp feeds both the digest and
+    # the stored block so a re-derivation reproduces identical canonical bytes.
+    from datetime import UTC, datetime
+
+    from app.services.approval_signature import build_signature_detail
+
+    signed_at = datetime.now(UTC)
+    audit_details: dict = {}
+    if field_diff:
+        audit_details["changes"] = field_diff
+    signature = build_signature_detail(
+        invoice_id=invoice.id,
+        amount=Decimal(str(invoice.amount or 0)),
+        actor_id=actor_id,
+        decision="approved",
+        timestamp=signed_at,
+        signing_key=settings.approval_signing_key,
+    )
+    if signature:
+        audit_details["signature"] = signature
+
     await transition_invoice(
         db,
         invoice,
         InvoiceStatus.approved,
         actor_id=actor_id,
         action_name="invoice.approved",
-        details={"changes": field_diff} if field_diff else None,
+        details=audit_details or None,
     )
 
     if instance:
