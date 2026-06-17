@@ -95,6 +95,142 @@ async function downloadBlob(path: string): Promise<Blob> {
 	return res.blob();
 }
 
+/** Compose the auth + tenant + entity headers shared by `request`, the blob
+ *  helpers, and the SSE stream helper. Single source of truth so the streaming
+ *  path can't drift from the JSON path (EventSource can't set these headers,
+ *  which is why streaming uses `fetch` + a body reader instead). */
+function authHeaders(): Record<string, string> {
+	const headers: Record<string, string> = {};
+	const token = getToken();
+	if (token) headers['Authorization'] = `Bearer ${token}`;
+	const tenant = getTenantSlug();
+	if (tenant) headers['X-Tenant-Slug'] = tenant;
+	const entity = getSelectedEntityId();
+	if (entity) headers['X-Entity-ID'] = entity;
+	return headers;
+}
+
+/** Raised by `streamAssistantChat` (and surfaced to callers) when the backend
+ *  rejects the turn for exceeding the monthly AI token budget — HTTP 429 with
+ *  `code: "assistant_budget_exceeded"`. Carries the budget figures so the page
+ *  can render a friendly notice. */
+export class AssistantBudgetError extends Error {
+	used: number;
+	budget: number;
+	period: string;
+	constructor(detail: string, used: number, budget: number, period: string) {
+		super(detail);
+		this.name = 'AssistantBudgetError';
+		this.used = used;
+		this.budget = budget;
+		this.period = period;
+	}
+}
+
+export interface StreamCallbacks {
+	onTool?: (frame: { tool: string; args: Record<string, unknown>; result: Record<string, unknown> | null; error: string | null }) => void;
+	onDelta?: (text: string) => void;
+	onDone?: (payload: { conversation_id: string; answer: string; tool_invocations: unknown[]; usage: { input_tokens: number; output_tokens: number } }) => void;
+	onError?: (frame: { code?: string; detail?: string; [k: string]: unknown }) => void;
+}
+
+/**
+ * Stream a turn from `POST /api/assistant/chat/stream` (`text/event-stream`).
+ *
+ * Uses `fetch` + a `ReadableStream` reader (NOT `EventSource`, which can't set
+ * the Authorization / tenant / entity headers). Parses SSE frames
+ * (`event: <name>\ndata: <json>\n\n`) and dispatches to the callbacks.
+ *
+ * Throws `AssistantBudgetError` on a pre-stream HTTP 429, or a plain `Error`
+ * on any other non-OK status / network failure / missing-body — the caller is
+ * expected to fall back to the non-streaming `/chat` endpoint in that case.
+ * Resolves once the stream ends (after a `done` or `error` frame).
+ */
+export async function streamAssistantChat(
+	body: { message: string; conversation_id?: string },
+	cb: StreamCallbacks,
+	signal?: AbortSignal
+): Promise<void> {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeaders() };
+	const res = await fetch(`${BASE}/api/assistant/chat/stream`, {
+		method: 'POST',
+		headers,
+		body: JSON.stringify(body),
+		signal
+	});
+
+	if (res.status === 401) {
+		clearToken();
+		window.location.href = '/login';
+		throw new Error('Unauthorized');
+	}
+	if (res.status === 429) {
+		const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+		throw new AssistantBudgetError(
+			(j.detail as string) || 'Monthly AI budget reached',
+			Number(j.used ?? 0),
+			Number(j.budget ?? 0),
+			String(j.period ?? '')
+		);
+	}
+	if (!res.ok || !res.body) {
+		throw new Error(`Stream error ${res.status}`);
+	}
+
+	const reader = res.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = '';
+
+	const dispatch = (raw: string) => {
+		// One SSE event block: lines of `event:` / `data:`. Multiple `data:`
+		// lines concatenate with a newline (SSE spec); we expect single-line
+		// JSON but handle the multi-line case defensively.
+		let event = 'message';
+		const dataLines: string[] = [];
+		for (const line of raw.split('\n')) {
+			if (line.startsWith('event:')) event = line.slice(6).trim();
+			else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+		}
+		if (dataLines.length === 0) return;
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(dataLines.join('\n'));
+		} catch {
+			return; // ignore unparseable frame (e.g. a stray keep-alive comment)
+		}
+		switch (event) {
+			case 'tool':
+				cb.onTool?.(parsed as Parameters<NonNullable<StreamCallbacks['onTool']>>[0]);
+				break;
+			case 'delta':
+				cb.onDelta?.(String(parsed.text ?? ''));
+				break;
+			case 'done':
+				cb.onDone?.(parsed as Parameters<NonNullable<StreamCallbacks['onDone']>>[0]);
+				break;
+			case 'error':
+				cb.onError?.(parsed);
+				break;
+		}
+	};
+
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		buffer += decoder.decode(value, { stream: true });
+		// SSE frames are separated by a blank line. Process every complete
+		// frame in the buffer; keep the trailing partial for the next read.
+		let sep: number;
+		while ((sep = buffer.indexOf('\n\n')) !== -1) {
+			const frame = buffer.slice(0, sep);
+			buffer = buffer.slice(sep + 2);
+			if (frame.trim()) dispatch(frame);
+		}
+	}
+	// Flush any trailing frame not terminated by a blank line.
+	if (buffer.trim()) dispatch(buffer);
+}
+
 export const api = {
 	get: <T>(path: string) => request<T>(path),
 	post: <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) }),

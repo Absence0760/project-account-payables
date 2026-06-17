@@ -46,6 +46,7 @@ pnpm check            # typecheck
 | `/cfo` | `routes/cfo/+page.svelte` | `GET /api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`, `GET /api/analytics/export/cashflow_forecast` (admin + cfo) — predictive cash-flow dashboard |
 | `/tax` | `routes/tax/+page.svelte` | `GET /api/tax/1099-report?year=` (via `lib/api/tax.ts`) — 1099 vendor reporting dashboard. KPI summary, year selector, per-vendor 1099-eligible / W-9-on-file / TIN-verified chips, >$600 threshold flags, vendor search + filter chips (all / reportable / missing W-9 / over threshold). admin/ap_manager/cfo. The report outer-joins vendors→payments, so the row set is the tenant's vendor list and the year only re-aggregates each vendor's YTD; the table is empty only when there are no vendors. |
 | `/notifications` | `routes/notifications/+page.svelte` | `GET /api/notifications` (list, `?unread_only=`), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` — clickable rows open the related invoice (`/invoices?id=`) |
+| `/assistant` | `routes/assistant/+page.svelte` | Conversational AP Assistant. Streams a turn via `streamAssistantChat()` over `POST /api/assistant/chat/stream` (SSE) and falls back to `POST /api/assistant/chat` when the stream endpoint is unavailable / fails before any content. `GET /api/assistant/usage` (usage meter, refreshed after each turn), `GET /api/assistant/conversations` (recent-chats rail), `GET /api/assistant/conversations/{id}` (open a thread). Empty state offers the three built-in example prompts; tool results render as charts/tables. Open to all four employee roles. |
 | `/profile` (notifications prefs) | `routes/profile/+page.svelte` | `GET/PATCH /api/notifications/preferences` — per-event in-app/email toggles |
 
 Root layout (`+layout.svelte`) routing logic:
@@ -70,6 +71,7 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 - 401 responses clear token and redirect to `/login`
 - Methods: `api.get<T>()`, `api.post<T>()`, `api.patch<T>()`, `api.put<T>()`, `api.delete()`, `api.upload<T>()`
 - Token helpers: `setToken()`, `clearToken()`, `hasToken()`
+- **Streaming** — `streamAssistantChat(body, { onTool, onDelta, onDone, onError }, signal?)` streams the AP assistant turn from `POST /api/assistant/chat/stream` (`text/event-stream`). It uses `fetch` + `response.body.getReader()` (NOT `EventSource`, which can't set the Authorization / tenant / entity headers) and a small SSE parser (split on `\n\n`, read `event:`/`data:` lines), reusing the shared `authHeaders()` helper so the header logic can't drift from `request()`. SSE frames: `tool` (one per tool invocation; `result` carries the structured output for charts), `delta` (incremental answer text), `done` (authoritative payload), `error` (mid-stream failure). A pre-stream HTTP 429 throws `AssistantBudgetError` (carries `used`/`budget`/`period`); any other non-OK / network failure throws a plain `Error` — the `/assistant` page catches both and falls back to the non-streaming `POST /api/assistant/chat`.
 - Typed feature helpers wrap `api` per domain — e.g. `src/lib/api/audit.ts` (`getInvoiceAuditLog`, `getAuditExport`, `downloadAuditExportCsv`) over the SOX audit endpoints, with `AuditEntry` / `AuditFieldChange` types in `src/lib/types/audit.ts`. The invoice-modal Activity timeline renders `details.changes` (per-field before/after) from these. `src/lib/api/tax.ts` (`get1099Report`) wraps the 1099 endpoint, with `Report1099` / `Vendor1099Row` types in `src/lib/types/tax.ts`.
 
 ### Money formatting — `src/lib/utils/money.ts` + `ui/Money.svelte`
@@ -133,6 +135,27 @@ The visual styling for all of the above lives **globally in `src/app.css`** (cla
   `$lib/portalChat.ts` (over `portalApi`). Types in `$lib/types/supplierChat.ts`
   (full `Chat*` for AP, masked `PortalChat*` for the portal — no internal id).
 
+**`assistant/` — Conversational AP Assistant (`/assistant`):**
+- `ChatMessage.svelte` — one chat bubble (own-role right-aligned). Renders the
+  message's tool results (via `ToolResultView`) before the prose, the prose as
+  plain text (never `{@html}`), an inline error, or a typing indicator while a
+  streamed reply is still arriving.
+- `ToolResultView.svelte` — dispatches a `ToolInvocation` to the right view per
+  tool name: `get_vendor_spend` / `get_payment_forecast` → `SpendBarChart`;
+  `list_invoices` / `list_pending_approvals` → a compact table (reuses
+  `StatusBadge` + `Money`); `find_invoices_by_text` → snippet cards. Any
+  unrecognised tool falls back to a formatted-JSON view. Each card carries
+  `data-tool="<name>"` (e2e selector).
+- `SpendBarChart.svelte` — horizontal CSS bar chart (mirrors the CFO dashboard's
+  `.cf-bar*` recipe; no charting dependency). Takes `bars=[{label, value,
+  amountLabel, sub?}]`; the parent formats money via `formatMoney` and passes
+  the numeric `value` only to drive bar width.
+- `ExamplePrompts.svelte` — empty-state with the three built-in roadmap prompts;
+  `onpick(prompt)` fills + sends.
+- `UsageMeter.svelte` — AI token usage bar over `GET /api/assistant/usage`
+  (`data-testid="usage-meter"`). Budget `0` = unlimited (running total, no bar);
+  amber ≥80%, red at/over budget.
+
 **`workflow-builder/`** — drag-and-drop no-code builder canvas for the
 `/workflows/[id]` editor (step palette, canvas nodes, SVG connectors;
 native HTML5 drag-and-drop, no svelte-flow).
@@ -156,6 +179,7 @@ a definition as JSON). All wrap the shared `ui/Modal.svelte` and call the
 - `admin.ts` — `AdminUser`, `Role` (admin, ap_manager, ap_clerk, cfo)
 - `tax.ts` — `Report1099`, `Vendor1099Row` (1099 reporting dashboard)
 - `supplierChat.ts` — `ChatThread`, `ChatMessage`, `ChatAttachment`, `ChatTemplate` (AP, full) + masked `PortalChatThread` / `PortalChatMessage` (portal — no `author_user_id`, no mentions)
+- `assistant.ts` — `ToolInvocation`, `ChatResponse`, `ConversationSummary` / `ConversationDetail` / `ConversationListResponse`, `UsageResponse`, the five structured tool-result shapes (`VendorSpendResult`, `ForecastResult`, `InvoiceListResult`, `PendingApprovalsResult`, `TextSearchResult`), the UI-side `UiMessage`, and `EXAMPLE_PROMPTS` (the three built-in empty-state prompts). Money fields are string-Decimal — pass to `formatMoney`, never `parseFloat` for display.
 - `vendor.ts` — `Vendor` (incl. `screening_status` / `last_screened_at` / `payments_blocked(+_reason)` / `risk_score` / `risk_level`), `SanctionsCheck`, `ScreeningReviewItem`, `VendorRisk`, `RiskSummaryBucket`, the `ScreeningStatus` / `RiskLevel` unions + label maps
 
 ## Multi-tenant routing
