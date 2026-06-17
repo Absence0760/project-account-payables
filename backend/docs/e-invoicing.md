@@ -31,7 +31,8 @@ for the hybrid format.
 | `parse.py` | `parse_e_invoice(file_bytes, mime_type, filename)` orchestrator: detect → embedded-extract → parse → assert_valid. |
 | `generate.py` | `generate_ubl(doc) -> bytes`. Outbound UBL 2.1 serializer — the exact inverse of `ubl.py`. lxml etree, money via `Decimal.quantize`, `currencyID` on amounts. |
 | `mapper.py` | `BuyerIdentity` dataclass + `invoice_to_einvoice_document(invoice, line_items, buyer_identity) -> EInvoiceDocument`. Pure ORM `Invoice` → normalized model. |
-| `tax_rules.py` | Country tax validation: `validate_tax_id` / `validate_tax_rate` / `validate_tax_document(doc) -> list[FieldError]`. VAT/GST/IVA id formats + rate plausibility + zero-rate/reverse-charge. Shared by inbound (`validate.py`) and outbound (export route). |
+| `tax_rules.py` | Country tax validation: `validate_tax_id` / `validate_tax_rate` / `validate_tax_document(doc) -> list[FieldError]`. VAT/GST/IVA/CNPJ/NIT id formats + rate plausibility + zero-rate/reverse-charge. Shared by inbound (`validate.py`) and outbound (export route + national formats). |
+| `country_formats/` | National outbound dialects — `base.py` (`CountryEInvoiceFormat` interface), `dispatcher.py` (registry), and `fatturapa.py` (IT) / `cfdi.py` (MX) / `nfe.py` (BR) / `dian.py` (CO). Generation + national validation only; live clearance deferred. See § National e-invoice formats. |
 
 ## Auto-detect-on-ingest routing
 
@@ -187,7 +188,7 @@ Decimal is preserved end to end.
 
 | Route | Auth | Behaviour |
 |-------|------|-----------|
-| `GET /api/invoices/{id}/einvoice?format=ubl` | employee JWT + `require_roles(admin, ap_manager, cfo, ap_clerk)`, `get_tenant_db` + `get_tenant` | Maps the tenant invoice → doc, resolves `BuyerIdentity` from `org.settings["company"]` (+ `Entity.name` override when `invoice.entity_id` is set), **asserts tax-valid (422 on failure** — an AP user must not emit a non-compliant invoice; body is the PII-free `field: code` join), then returns the UBL as an `application/xml` attachment. `format != "ubl"` → 400; unknown invoice → 404. |
+| `GET /api/invoices/{id}/einvoice?format=ubl` | employee JWT + `require_roles(admin, ap_manager, cfo, ap_clerk)`, `get_tenant_db` + `get_tenant` | Maps the tenant invoice → doc, resolves `BuyerIdentity` from `org.settings["company"]` (+ `Entity.name` override when `invoice.entity_id` is set), **asserts tax-valid (422 on failure** — an AP user must not emit a non-compliant invoice; body is the PII-free `field: code` join), then returns the UBL as an `application/xml` attachment. Unknown invoice → 404. The `format` parameter also selects a **national format** — `fatturapa` (IT), `cfdi` (MX), `nfe` (BR), `dian` (CO) — via the country-format registry (see below); an unregistered token (e.g. `cii`) → 400. National exports validate via the format's own `validate(doc)` (422 PII-free on failure) and the download filename is format-tagged (`einvoice-<n>-<format>.xml`). |
 | `GET /portal/invoices/{id}/einvoice` | vendor JWT (`get_current_vendor_user`) | **Vendor-scoped**: the query is `WHERE Invoice.id == id AND Invoice.vendor_id == vu.vendor_id` — a foreign or unknown invoice returns 404 (never a foreign document). Resolves the buyer `Organization` via the injected control session (`get_control_db`) by `invoice.organization_id` (same pattern as the remittance route). Does **not** 422 the supplier on a tax soft-warning — the UBL is always returned and any validation issue is logged field-only, never surfaced to the vendor. |
 
 ### Country tax validation (`tax_rules.py`)
@@ -221,3 +222,47 @@ a code, never the value):
 | VAT (UK) | GB | `GB123456789` |
 | GST / ABN | AU NZ IN CA | `12345678901` (ABN), `29ABCDE1234F1Z5` (GSTIN) |
 | IVA | ES IT MX | `ESA12345674`, `IT12345678901`, `ABCD901231XYZ` (RFC) |
+| CNPJ / NIT | BR CO | `12345678000195` (CNPJ, 14 digits), `900123456` (NIT, 9–10 digits) |
+
+## National e-invoice formats (`country_formats/`)
+
+Beyond UBL 2.1, several jurisdictions mandate their **own** national XML dialect
+for the cleared / fiscalized invoice. Each is a small, **pure, local-first**
+`CountryEInvoiceFormat` (generation + national validation only) registered under
+a `format_code` and resolved by the export route's `?format=` parameter.
+
+| `format_code` | Country | Dialect emitted | Validation |
+|---------------|---------|-----------------|------------|
+| `fatturapa` | IT | `FatturaElettronica` v1.2 (`FPR12`) — `…Header` (DatiTrasmissione + CedentePrestatore/CessionarioCommittente) + `…Body` (DatiGeneraliDocumento, DatiBeniServizi, DatiRiepilogo) | seller **and** buyer Partita IVA required + IT-format; `payable_amount` |
+| `cfdi` | MX | `cfdi:Comprobante` v4.0 — Emisor / Receptor (RFC) + Conceptos + Impuestos | emisor **and** receptor RFC required + MX-format; `payable_amount`, `tax_exclusive_amount` |
+| `nfe` | BR | `NFe/infNFe` v4.00 — ide / emit / dest / det·prod / total·ICMSTot | emit CNPJ required + BR-format; `payable_amount` |
+| `dian` | CO | DIAN-profiled UBL 2.1 (`CustomizationID=10`, `ProfileID="DIAN 2.1…"`, `UBLExtensions` placeholder) | supplier NIT required + CO-format; `payable_amount` |
+
+**Architecture** — `country_formats/base.py` defines the `CountryEInvoiceFormat`
+interface (`format_code` / `country` / `display_name` / `file_extension` /
+`media_type` + `validate(doc)` + `generate(doc)`); `dispatcher.py` is the
+registry (`@register_country_format(code)` / `get_country_format(code)` /
+`list_country_formats()`), mirroring the PEPPOL / payment adapter dispatchers.
+Importing `country_formats` self-registers all four. The generators reuse the
+shared structural validation (`validate_document(doc, check_tax=False)`) and the
+`tax_rules.validate_tax_id` country regexes (BR/CO added alongside the existing
+EU/UK/MX set), build XML with `lxml.etree` (auto-escaping), and keep money as
+`Decimal.quantize` → `str` (never `float`).
+
+**Scope — what ships vs. deferred.** This slice is everything that needs **no
+cloud account**: the pre-clearance national document + its structural/tax
+validation, wired into the authenticated export route. **Live government
+clearance is deliberately out of this slice** and tracked in
+`../../docs/roadmap.md` → Automated E-Invoicing — it slots in behind the same
+registry as a future adapter (exactly as PEPPOL's `as4_gateway` followed the
+`mock` default):
+
+- **FatturaPA** — SdI transmission + the `.p7m` (CAdES) digital signature.
+- **CFDI 4.0** — SAT-PAC stamping → `Sello` / `Certificado` / the
+  `tfd:TimbreFiscalDigital` UUID (folio fiscal).
+- **NF-e** — SEFAZ authorization → the 44-digit *chave de acesso* + *protocolo*
+  + digital signature (a deterministic placeholder `Id` is emitted meanwhile).
+  Municipal **NFS-e** is a separate per-municipality schema, also future scope.
+- **DIAN** — the CUFE (código único de factura electrónica) + XAdES signature +
+  the `dian:DianExtensions` block, injected into the emitted `UBLExtensions`
+  placeholder at clearance.

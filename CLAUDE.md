@@ -286,7 +286,7 @@ Full list in `backend/app/config.py`.
 | Backend details | `backend/CLAUDE.md` + `backend/docs/` — models, services, adapters, migrations |
 | Mobile app | `mobile/CLAUDE.md` — Flutter iOS app, screens, stores, API client |
 | AI extraction | `backend/docs/ai-extraction.md` — platform vs BYOK, provider configs |
-| Inbound structured e-invoicing | `backend/docs/e-invoicing.md` — UBL 2.1 / Factur-X / ZUGFeRD parsing, auto-detect routing, field map |
+| Structured e-invoicing (in + outbound) | `backend/docs/e-invoicing.md` — UBL 2.1 / Factur-X / ZUGFeRD parsing, auto-detect routing, field map; outbound UBL generate + national formats (`country_formats/`: FatturaPA·CFDI·NF-e·DIAN) via `GET /api/invoices/{id}/einvoice?format=` |
 | Conversational assistant | `backend/docs/conversational-assistant.md` — fixed toolset, mock/claude adapters, token budget, audit |
 | ERP integration | `backend/docs/erp-integration.md` — adapter pattern, Merge.dev, direct APIs |
 | Workflow design | `backend/docs/workflow-design.md` — state machine, step types, snapshots |
