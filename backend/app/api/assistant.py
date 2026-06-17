@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,7 +40,7 @@ from app.schemas.assistant import (
     UsageResponse,
 )
 from app.services.assistant import usage as usage_service
-from app.services.assistant.orchestrator import run_turn
+from app.services.assistant.orchestrator import run_turn, run_turn_streaming
 from app.services.assistant.usage import AssistantBudgetExceeded
 from app.tenant import get_entity_id, get_tenant, get_tenant_db
 
@@ -48,6 +49,21 @@ router = APIRouter(prefix="/assistant", tags=["assistant"])
 # Any authenticated employee role — the assistant only reads what the
 # tenant-scoped tools expose.
 _ASSISTANT_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)
+
+
+def _budget_exceeded_http(exc: AssistantBudgetExceeded) -> HTTPException:
+    """The shared 429 mapping — identical body for ``/chat`` and ``/chat/stream``
+    so the frontend handles an over-budget org the same way on both."""
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={
+            "detail": "Monthly AI assistant token budget exceeded.",
+            "code": "assistant_budget_exceeded",
+            "used": exc.used,
+            "budget": exc.budget,
+            "period": exc.period,
+        },
+    )
 
 
 def _invocations_out(tool_calls: dict) -> list[ToolInvocationOut]:
@@ -82,16 +98,7 @@ async def chat(
             message=body.message,
         )
     except AssistantBudgetExceeded as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "detail": "Monthly AI assistant token budget exceeded.",
-                "code": "assistant_budget_exceeded",
-                "used": exc.used,
-                "budget": exc.budget,
-                "period": exc.period,
-            },
-        )
+        raise _budget_exceeded_http(exc)
 
     return ChatResponse(
         conversation_id=conversation_id,
@@ -101,6 +108,51 @@ async def chat(
             for inv in reply.tool_invocations
         ],
         usage=UsageDelta(input_tokens=reply.input_tokens, output_tokens=reply.output_tokens),
+    )
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    body: ChatRequest,
+    tenant_db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
+    org: Organization = Depends(get_tenant),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_ASSISTANT_ROLES)),
+) -> StreamingResponse:
+    """Streaming counterpart of ``POST /chat`` — same body + auth + RBAC.
+
+    Emits Server-Sent Events: ``tool`` (one per invocation, before the prose),
+    ``delta`` (incremental answer text), ``done`` (final authoritative payload),
+    and ``error`` (only for failures AFTER the stream started). See
+    ``app/services/assistant/sse.py`` for the wire contract.
+
+    The budget gate runs HERE, before the ``StreamingResponse`` is constructed,
+    so an over-budget org gets a real HTTP 429 (same body as ``/chat``) instead
+    of an in-stream error the frontend would have to special-case.
+    """
+    try:
+        await usage_service.assert_within_budget(control_db, org)
+    except AssistantBudgetExceeded as exc:
+        raise _budget_exceeded_http(exc)
+
+    generator = run_turn_streaming(
+        control_db=control_db,
+        tenant_db=tenant_db,
+        org=org,
+        user=user,
+        entity_id=entity_id,
+        conversation_id=body.conversation_id,
+        message=body.message,
+    )
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

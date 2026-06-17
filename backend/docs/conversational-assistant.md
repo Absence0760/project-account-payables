@@ -33,6 +33,12 @@ a turn that unwinds after the tool work rolls back the conversation rows, the
 audit rows, **and** the token debit together: usage is never charged for a turn
 whose conversation/audit rows never landed.
 
+`run_turn_streaming` (the SSE path, `POST /chat/stream`) reuses steps 1–6 via
+the shared `_prepare_turn` + `_build_run_tool` helpers, then yields the answer
+as SSE events. Because a streamed body defers the request commit boundary, it
+commits steps 5–6 **explicitly inside the generator** to preserve the same
+all-or-nothing coupling — see [Streaming (SSE)](#streaming-sse--post-apiassistantchatstream).
+
 Tenant isolation **and** audit logging live in the orchestrator's `run_tool`
 closure — not in the adapters. Both adapters call `run_tool`; neither touches
 the DB or the audit infra directly. A leaked/spoofed `X-Tenant-Slug` can't widen
@@ -156,13 +162,75 @@ are rejected by `get_current_user`.
 | Method | Path | Body / Query | Response |
 |--------|------|--------------|----------|
 | POST | `/api/assistant/chat` | `{message, conversation_id?}` | `ChatResponse` |
+| POST | `/api/assistant/chat/stream` | `{message, conversation_id?}` | `text/event-stream` (SSE — see below) |
 | GET | `/api/assistant/conversations` | `?limit&offset` | `{items, total}` |
 | GET | `/api/assistant/conversations/{id}` | — | `{conversation, messages}` |
 | GET | `/api/assistant/usage` | — | `UsageResponse` |
 
 `ChatResponse.tool_invocations[*].result` is the verbatim tool ReturnModel dump
-— already chartable (e.g. `get_vendor_spend.vendors[]` → bar chart). The future
-chart UI reads the structured `result`; the top-level `answer` is the prose.
+— already chartable (e.g. `get_vendor_spend.vendors[]` → bar chart). The chart
+UI reads the structured `result`; the top-level `answer` is the prose.
+
+## Streaming (SSE) — `POST /api/assistant/chat/stream`
+
+Streaming counterpart of `/chat`: **identical** request body (`{message,
+conversation_id?}`), auth, tenant resolution, RBAC (`_ASSISTANT_ROLES`), and
+entity scoping. The response is a `StreamingResponse(media_type=
+"text/event-stream")` with `Cache-Control: no-cache`, `X-Accel-Buffering: no`,
+and `Connection: keep-alive`. The frontend treats the terminal `done` event as
+the source of truth and falls back to the same handling as `/chat` on a 429.
+
+### Event protocol
+
+Standard SSE framing — `event: <name>`, then `data: <single-line JSON>`, then a
+blank line. The framing lives in `app/services/assistant/sse.py` (pure, DB-free,
+unit-tested) so the event shapes can't drift between the orchestrator and the
+route. Event names + data shapes:
+
+| Event | Data | When |
+|-------|------|------|
+| `tool` | `{"tool", "args", "result"\|null, "error"\|null}` (same shape as `ToolInvocationOut`) | one per tool invocation, emitted **before** the prose so the UI can render a chart while text streams |
+| `delta` | `{"text": "<chunk>"}` | incremental answer text; concatenating every `delta.text` reconstructs `done.answer` exactly (lossless word-chunking) |
+| `done` | `{"conversation_id", "answer", "tool_invocations": [...], "usage": {"input_tokens", "output_tokens"}}` | terminal, authoritative payload |
+| `error` | `{"code", "detail"}` | only for failures **after** the 200/stream has started |
+
+The `delta` chunking IS the genuine transport here, not a mask over a
+non-streaming model: the assistant is **server-orchestrated** through the fixed
+tool-use loop (`adapter.respond` runs the loop and the audited `run_tool` still
+fires), and chunking the assembled answer is how that orchestrated answer is
+delivered incrementally. For the local-first `mock` adapter this streams the
+deterministic answer. Deeper **per-token claude passthrough** (forwarding the
+Anthropic SSE deltas as they arrive, rather than chunking the assembled answer)
+remains a tracked follow-up — see [Deferred](#deferred).
+
+### Budget refusal is a real HTTP 429, before the stream
+
+`usage.assert_within_budget` runs in the **endpoint**, before the
+`StreamingResponse` is constructed — so an over-budget org gets a real HTTP 429
+with the **same body shape** as `/chat` (`{"detail", "code":
+"assistant_budget_exceeded", "used", "budget", "period"}`), never an in-stream
+`error` event. The `error` event is reserved for failures that happen *after*
+the 200 has been sent.
+
+### Transactional invariant under StreamingResponse
+
+With a streamed body the request-scoped session teardown (`get_tenant_db` /
+`get_control_db`) fires only after the body is fully drained, so the streaming
+generator (`run_turn_streaming`) commits **explicitly inside itself** rather
+than relying on that teardown: after `_persist_turn` + `usage.record` it calls
+`await tenant_db.commit()` then `await control_db.commit()`. Any failure rolls
+**both** back and emits an `error` event — so the conversation + audit rows and
+the token debit still land or unwind **together**, and usage is never charged
+for a turn whose rows didn't land (the same coupling `/chat` gets from the
+shared request commit boundary). The dependency teardown's later `commit()` is a
+no-op on the already-committed (or already-rolled-back) sessions. Covered by
+`tests/test_assistant_stream.py` (success-path coupling + a forced
+`_persist_turn` failure asserting no usage debit).
+
+The streaming and non-streaming paths share their setup (budget gate →
+conversation load/create → history → adapter → audited `run_tool` closure) via
+`orchestrator._prepare_turn` + `_build_run_tool`, so the two can never diverge
+on the security-critical isolation/audit bits.
 
 ## Configuration (`AP_` prefix)
 
@@ -187,11 +255,18 @@ a tenant DB.
 
 ## Deferred (tracked follow-ups)
 
-1. **SSE streaming** — `POST /api/assistant/chat/stream` (`StreamingResponse`,
-   claude SSE passthrough). Trigger: the frontend chat UI needs token-by-token
-   rendering.
+1. **Per-token claude SSE passthrough** — `/chat/stream` ships today, streaming
+   the server-orchestrated answer as `delta` chunks (the genuine transport for a
+   tool-loop-orchestrated reply). The remaining refinement is forwarding the
+   Anthropic Messages SSE deltas verbatim as they arrive from the `claude`
+   adapter (rather than chunking the assembled answer), which needs the adapter
+   to expose a streaming `respond` variant. Trigger: a claude-keyed deployment
+   wants true token-by-token latency rather than per-word chunking of the
+   finished answer. The wire contract (`tool`/`delta`/`done`/`error`) does not
+   change — only how finely `delta`s are produced on the claude path.
 2. **Chart-rendering UI / example-prompt empty state** — frontend only; the API
-   already returns chartable structured `result`.
+   already returns chartable structured `result` (and `tool` SSE events stream
+   it before the prose).
 3. **BYO-LLM beyond claude** (openai/etc.) — add adapters under the same
    registry; the registry is already open for it.
 4. **Shared `invoice_queries.py`** — `list_invoices` re-builds the filtered

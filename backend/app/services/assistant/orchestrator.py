@@ -9,6 +9,7 @@ so a leaked/spoofed header can't widen access and every tool call is logged.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,8 +19,14 @@ from app.models.assistant import Conversation, ConversationMessage
 from app.models.organization import Organization
 from app.models.user import User
 from app.services.assistant import usage
-from app.services.assistant.base import AssistantReply, ToolInvocation
+from app.services.assistant.base import AssistantReply, RunTool, ToolInvocation
 from app.services.assistant.dispatcher import get_assistant_adapter
+from app.services.assistant.sse import (
+    sse_done,
+    sse_error,
+    sse_text_deltas,
+    sse_tool_event,
+)
 from app.services.assistant.tools import TOOL_SPECS, TOOLS
 from app.services.audit_dispatch import dispatch_audit
 
@@ -147,29 +154,25 @@ async def _persist_turn(
     await tenant_db.flush()
 
 
-async def run_turn(
+def _build_run_tool(
     *,
     control_db: AsyncSession,
     tenant_db: AsyncSession,
     org: Organization,
     user: User,
     entity_id: uuid.UUID | None,
-    conversation_id: uuid.UUID | None,
-    message: str,
-) -> tuple[AssistantReply, uuid.UUID]:
-    """Execute one chat turn. Raises ``AssistantBudgetExceeded`` (→ 429) when the
-    org is over its monthly token budget."""
-    # 1. Budget gate — before any adapter/model/tool work.
-    await usage.assert_within_budget(control_db, org)
+    conv: Conversation,
+) -> RunTool:
+    """Construct the tenant-bound, audited tool executor for one turn.
 
-    # 2. Load / create the conversation (scoped to org + user); load history.
-    conv = await _get_or_create_conversation(tenant_db, org.id, user.id, conversation_id)
-    history = await _load_history(tenant_db, conv.id)
+    Tenant isolation + audit logging live HERE (not in the adapters): every
+    tool call writes a PII-safe ``assistant.tool_invoked`` audit row BEFORE
+    returning data, and the tool's read runs inside a SAVEPOINT so a failing
+    query rolls back just the tool, not the whole turn. Shared by both
+    ``run_turn`` (non-streaming) and ``run_turn_streaming`` (SSE) so the two
+    paths can never diverge on the security-critical bits.
+    """
 
-    # 3. Build the adapter (mock by default; claude only when keyed).
-    adapter = get_assistant_adapter(_assistant_config(org))
-
-    # 4. Tenant-bound, audited tool executor.
     async def run_tool(tool_name: str, raw_args: dict) -> ToolInvocation:
         spec = TOOLS.get(tool_name)
         if spec is None:
@@ -247,7 +250,68 @@ async def run_turn(
             error=None,
         )
 
-    # 5. Run the adapter (0..N tool calls via run_tool).
+    return run_tool
+
+
+async def _prepare_turn(
+    *,
+    control_db: AsyncSession,
+    tenant_db: AsyncSession,
+    org: Organization,
+    user: User,
+    entity_id: uuid.UUID | None,
+    conversation_id: uuid.UUID | None,
+) -> tuple[Conversation, list[dict], RunTool, object]:
+    """Shared turn setup: budget gate → conversation load/create → history →
+    adapter → audited ``run_tool`` closure. Used by both the streaming and
+    non-streaming paths so they share one budget/isolation/audit story.
+
+    Raises ``AssistantBudgetExceeded`` (→ 429) when the org is over budget.
+    """
+    # 1. Budget gate — before any adapter/model/tool work.
+    await usage.assert_within_budget(control_db, org)
+
+    # 2. Load / create the conversation (scoped to org + user); load history.
+    conv = await _get_or_create_conversation(tenant_db, org.id, user.id, conversation_id)
+    history = await _load_history(tenant_db, conv.id)
+
+    # 3. Build the adapter (mock by default; claude only when keyed).
+    adapter = get_assistant_adapter(_assistant_config(org))
+
+    # 4. Tenant-bound, audited tool executor.
+    run_tool = _build_run_tool(
+        control_db=control_db,
+        tenant_db=tenant_db,
+        org=org,
+        user=user,
+        entity_id=entity_id,
+        conv=conv,
+    )
+    return conv, history, run_tool, adapter
+
+
+async def run_turn(
+    *,
+    control_db: AsyncSession,
+    tenant_db: AsyncSession,
+    org: Organization,
+    user: User,
+    entity_id: uuid.UUID | None,
+    conversation_id: uuid.UUID | None,
+    message: str,
+) -> tuple[AssistantReply, uuid.UUID]:
+    """Execute one chat turn. Raises ``AssistantBudgetExceeded`` (→ 429) when the
+    org is over its monthly token budget."""
+    conv, history, run_tool, adapter = await _prepare_turn(
+        control_db=control_db,
+        tenant_db=tenant_db,
+        org=org,
+        user=user,
+        entity_id=entity_id,
+        conversation_id=conversation_id,
+    )
+
+    # Run the adapter (0..N tool calls via run_tool).
     reply = await adapter.respond(
         message=message,
         history=history,
@@ -255,13 +319,95 @@ async def run_turn(
         run_tool=run_tool,
     )
 
-    # 6. Persist the user + assistant messages (tenant DB) FIRST, so a
-    #    persistence failure aborts the turn before any token debit.
+    # Persist the user + assistant messages (tenant DB) FIRST, so a
+    # persistence failure aborts the turn before any token debit.
     await _persist_turn(tenant_db, conv, message, reply)
 
-    # 7. Record usage (control-plane upsert). No standalone commit — it shares
-    #    the request's commit boundary with the conversation + audit rows, so a
-    #    later failure rolls all three back together (no orphaned token debit).
+    # Record usage (control-plane upsert). No standalone commit — it shares
+    # the request's commit boundary with the conversation + audit rows, so a
+    # later failure rolls all three back together (no orphaned token debit).
     await usage.record(control_db, org, reply.input_tokens, reply.output_tokens)
 
     return reply, conv.id
+
+
+async def run_turn_streaming(
+    *,
+    control_db: AsyncSession,
+    tenant_db: AsyncSession,
+    org: Organization,
+    user: User,
+    entity_id: uuid.UUID | None,
+    conversation_id: uuid.UUID | None,
+    message: str,
+) -> AsyncIterator[str]:
+    """Execute one chat turn, yielding SSE frames as the answer is produced.
+
+    Emits (in order): one ``tool`` event per tool invocation, then ``delta``
+    events chunking ``reply.answer``, then a terminal ``done`` event. The
+    adapter still runs the full server-orchestrated tool-use loop and the
+    audited ``run_tool`` still fires — chunking the assembled answer is the
+    real transport here (the model is server-orchestrated, not a raw token
+    pass-through), not a mask over a non-streaming model.
+
+    **Transactional invariant.** Under ``StreamingResponse`` the request-scoped
+    session teardown fires only after the body is fully drained, so we commit
+    explicitly INSIDE the generator instead of relying on it: the conversation +
+    audit rows (tenant) and the usage debit (control) are committed together,
+    tenant first. Any failure rolls BOTH back and emits an ``error`` event, so
+    usage is never charged for a turn whose rows didn't land. The dependency
+    teardown's later ``commit()`` is then a no-op on the already-committed
+    (or already-rolled-back) sessions.
+
+    The budget gate must be applied by the CALLER (the endpoint) before this
+    generator is iterated, so an over-budget org gets a real HTTP 429 rather
+    than an in-stream error.
+    """
+    try:
+        conv, history, run_tool, adapter = await _prepare_turn(
+            control_db=control_db,
+            tenant_db=tenant_db,
+            org=org,
+            user=user,
+            entity_id=entity_id,
+            conversation_id=conversation_id,
+        )
+
+        # The adapter runs the full tool-use loop (audited via run_tool).
+        reply = await adapter.respond(
+            message=message,
+            history=history,
+            tool_specs=TOOL_SPECS,
+            run_tool=run_tool,
+        )
+
+        # Emit one `tool` event per invocation BEFORE the prose, so the UI can
+        # render a chart while the answer text streams in.
+        for inv in reply.tool_invocations:
+            yield sse_tool_event(inv)
+
+        # Stream the assembled answer as incremental `delta` chunks.
+        for frame in sse_text_deltas(reply.answer):
+            yield frame
+
+        # Persist + record, then commit BOTH together (tenant first). This is
+        # the single point where the turn's rows become durable.
+        await _persist_turn(tenant_db, conv, message, reply)
+        await usage.record(control_db, org, reply.input_tokens, reply.output_tokens)
+        await tenant_db.commit()
+        await control_db.commit()
+    except Exception as exc:  # noqa: BLE001
+        # Roll BOTH back so the dependency teardown can't re-commit a half turn,
+        # and so usage is never debited for rows that didn't land.
+        await tenant_db.rollback()
+        await control_db.rollback()
+        yield sse_error(code="stream_failed", detail=f"{exc.__class__.__name__}")
+        return
+
+    yield sse_done(
+        conversation_id=conv.id,
+        answer=reply.answer,
+        tool_invocations=reply.tool_invocations,
+        usage_in=reply.input_tokens,
+        usage_out=reply.output_tokens,
+    )

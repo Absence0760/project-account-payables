@@ -293,6 +293,22 @@ async def _ensure_test_tenants() -> dict:
         await ctrl_engine.dispose()
 
 
+# Every per-test harness engine uses NullPool: a connection is closed on
+# release instead of parked `idle` in a pool. The realdb fixture's setup runs
+# `pg_terminate_backend` on every OTHER backend on the test DB before each test
+# (see that fixture) to defeat a lingering-snapshot race — but with a real pool
+# that reaping can kill a connection a still-checked-in (or, under a streaming
+# response, still-tearing-down) session left idle, and SQLAlchemy then hands the
+# dead socket to the next operation → "connection was closed in the middle of
+# operation". NullPool removes the idle-pooled connection entirely, so there is
+# nothing for the reaper to kill out from under a later test. (`pool_pre_ping`
+# only helps at checkout, not for a connection killed while checked in, so it
+# was insufficient here.)
+from sqlalchemy.pool import NullPool  # noqa: E402
+
+_HARNESS_ENGINE_KW = {"poolclass": NullPool}
+
+
 class RealDB:
     """Handle yielded by the ``realdb`` fixture.
 
@@ -319,7 +335,9 @@ class RealDB:
 
         from app.database import _make_tenant_url
 
-        engine = create_async_engine(_make_tenant_url(self.tenants[key].db_name))
+        engine = create_async_engine(
+            _make_tenant_url(self.tenants[key].db_name), **_HARNESS_ENGINE_KW
+        )
         self._engines.append(engine)
         return async_sessionmaker(engine, expire_on_commit=False)
 
@@ -331,7 +349,7 @@ class RealDB:
 
         from app.config import settings as cfg
 
-        engine = create_async_engine(cfg.database_url)
+        engine = create_async_engine(cfg.database_url, **_HARNESS_ENGINE_KW)
         self._engines.append(engine)
         return async_sessionmaker(engine, expire_on_commit=False)
 
@@ -345,8 +363,8 @@ class RealDB:
         from app.tenant import get_tenant_db
 
         info = self.tenants[key]
-        ctrl_engine = create_async_engine(cfg.database_url)
-        tenant_engine = create_async_engine(_make_tenant_url(info.db_name))
+        ctrl_engine = create_async_engine(cfg.database_url, **_HARNESS_ENGINE_KW)
+        tenant_engine = create_async_engine(_make_tenant_url(info.db_name), **_HARNESS_ENGINE_KW)
         self._engines += [ctrl_engine, tenant_engine]
         ctrl_mk = async_sessionmaker(ctrl_engine, expire_on_commit=False)
         tenant_mk = async_sessionmaker(tenant_engine, expire_on_commit=False)
