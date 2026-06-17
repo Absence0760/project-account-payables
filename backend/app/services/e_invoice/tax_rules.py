@@ -79,6 +79,8 @@ _TAX_ID_PATTERNS: dict[str, re.Pattern[str]] = {
     "CA": re.compile(r"^\d{9}(RT\d{4})?$"),  # Business Number / GST/HST
     # --- IVA (LATAM) ---
     "MX": re.compile(r"^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$"),  # RFC
+    "BR": re.compile(r"^\d{14}$"),  # CNPJ — 14 digits (company tax id)
+    "CO": re.compile(r"^\d{9,10}$"),  # NIT — 9–10 digits (excludes the check digit)
 }
 
 # ---------------------------------------------------------------------------
@@ -129,6 +131,10 @@ _TAX_RATES: dict[str, set[Decimal]] = {
     },
     "CA": {Decimal("5"), Decimal("13"), Decimal("15"), Decimal("12")},  # GST + HST/combined
     "MX": {Decimal("16"), Decimal("8")},
+    # Colombia IVA: standard 19%, reduced 5% (0% handled by zero-rate categories).
+    # Brazil's indirect taxes (ICMS/IPI/PIS/COFINS) are not a single VAT rate, so
+    # no "BR" set is added — validate_tax_rate then correctly skips Brazil.
+    "CO": {Decimal("19"), Decimal("5")},
 }
 
 # Categories that express a zero / reverse-charge / exempt supply — always

@@ -15,6 +15,11 @@ UBL from the same model.
 from __future__ import annotations
 
 from app.services.e_invoice.cii import parse_cii
+from app.services.e_invoice.country_formats import (
+    CountryEInvoiceFormat,
+    get_country_format,
+    list_country_formats,
+)
 from app.services.e_invoice.detect import DetectedFormat, detect_format
 from app.services.e_invoice.facturx import extract_embedded_cii_xml
 from app.services.e_invoice.generate import generate_ubl
@@ -62,4 +67,7 @@ __all__ = [
     "validate_tax_document",
     "validate_tax_id",
     "validate_tax_rate",
+    "CountryEInvoiceFormat",
+    "get_country_format",
+    "list_country_formats",
 ]

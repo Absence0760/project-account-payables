@@ -232,6 +232,187 @@ async def test_export_invalid_vendor_tax_id_422_for_known_country(realdb):
     assert "FR12" not in detail  # PII-free
 
 
+async def test_export_national_format_fatturapa(realdb):
+    """`?format=fatturapa` dispatches through the country-format registry and
+    returns the Italian FatturaPA dialect (not UBL). FatturaPA mandates both
+    seller + buyer Partita IVA, so set an IT vendor + IT company identity."""
+    from lxml import etree
+
+    await _set_company(
+        realdb,
+        "a",
+        {"name": "Nostra SRL", "tax_id": "IT12345678901", "country_code": "IT"},
+    )
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number="INV-IT-1",
+            vendor_name="Fornitore SPA",
+            vendor_tax_id="IT98765432109",
+            vendor_address="Via Roma 1\n00100 Roma",
+            invoice_date=date(2024, 6, 1),
+            due_date=date(2024, 7, 1),
+            amount=Decimal("1220.00"),
+            subtotal=Decimal("1000.00"),
+            tax_amount=Decimal("220.00"),
+            tax_rate=Decimal("22.00"),
+            discount_amount=Decimal("0.00"),
+            shipping_amount=Decimal("0.00"),
+            currency="EUR",
+            status=InvoiceStatus.approved,
+        )
+        s.add(inv)
+        await s.flush()
+        s.add(
+            InvoiceLineItem(
+                invoice_id=inv.id,
+                line_number=1,
+                description="Servizio",
+                quantity=Decimal("2.0000"),
+                unit_price=Decimal("500.00"),
+                total=Decimal("1000.00"),
+                tax=Decimal("220.00"),
+            )
+        )
+        await s.commit()
+        inv_id = str(inv.id)
+
+    try:
+        async with realdb.client(key="a", role="ap_manager") as c:
+            resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=fatturapa")
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"].startswith("application/xml")
+        # Filename is format-tagged so the UBL and national exports don't collide.
+        assert "fatturapa" in resp.headers["content-disposition"]
+        root = etree.fromstring(resp.content)
+        assert root.tag.endswith("FatturaElettronica")
+    finally:
+        await _set_company(realdb, "a", {})
+
+
+async def _add_national_invoice(
+    mk, org_id, *, number, vendor_tax_id, currency="USD", vendor_name="Proveedor"
+) -> str:
+    """Add a minimal valid invoice with a chosen vendor tax id + currency, for
+    the national-format route tests."""
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number=number,
+            vendor_name=vendor_name,
+            vendor_tax_id=vendor_tax_id,
+            vendor_address="Calle 1\nCiudad",
+            invoice_date=date(2024, 6, 1),
+            due_date=date(2024, 7, 1),
+            amount=Decimal("1190.00"),
+            subtotal=Decimal("1000.00"),
+            tax_amount=Decimal("190.00"),
+            tax_rate=Decimal("19.00"),
+            discount_amount=Decimal("0.00"),
+            shipping_amount=Decimal("0.00"),
+            currency=currency,
+            status=InvoiceStatus.approved,
+        )
+        s.add(inv)
+        await s.flush()
+        s.add(
+            InvoiceLineItem(
+                invoice_id=inv.id,
+                line_number=1,
+                description="Item",
+                quantity=Decimal("2.0000"),
+                unit_price=Decimal("500.00"),
+                total=Decimal("1000.00"),
+                tax=Decimal("190.00"),
+            )
+        )
+        await s.commit()
+        return str(inv.id)
+
+
+async def test_export_national_format_cfdi(realdb):
+    """`?format=cfdi` returns the Mexican CFDI 4.0 dialect. CFDI mandates both
+    emisor + receptor RFC, so set an MX vendor + MX company identity."""
+    from lxml import etree
+
+    await _set_company(
+        realdb, "a", {"name": "Nuestra SA", "tax_id": "XAXX010101000", "country_code": "MX"}
+    )
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_national_invoice(
+        mk, org_id, number="INV-MX-1", vendor_tax_id="AAA010101AAA", currency="MXN"
+    )
+    try:
+        async with realdb.client(key="a", role="ap_manager") as c:
+            resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=cfdi")
+        assert resp.status_code == 200, resp.text
+        assert "cfdi" in resp.headers["content-disposition"]
+        root = etree.fromstring(resp.content)
+        assert root.tag.endswith("Comprobante")
+        assert root.get("Version") == "4.0"
+    finally:
+        await _set_company(realdb, "a", {})
+
+
+async def test_export_national_format_nfe(realdb):
+    """`?format=nfe` returns the Brazilian NF-e dialect (emit CNPJ required;
+    buyer name falls back to the org name)."""
+    from lxml import etree
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_national_invoice(
+        mk, org_id, number="INV-BR-1", vendor_tax_id="12345678000195", currency="BRL"
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=nfe")
+    assert resp.status_code == 200, resp.text
+    assert "nfe" in resp.headers["content-disposition"]
+    root = etree.fromstring(resp.content)
+    assert root.tag.endswith("NFe")
+
+
+async def test_export_national_format_dian(realdb):
+    """`?format=dian` returns the Colombian DIAN-profiled UBL (supplier NIT
+    required)."""
+    from lxml import etree
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_national_invoice(
+        mk, org_id, number="INV-CO-1", vendor_tax_id="900123456", currency="COP"
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=dian")
+    assert resp.status_code == 200, resp.text
+    assert "dian" in resp.headers["content-disposition"]
+    root = etree.fromstring(resp.content)
+    assert root.tag.endswith("Invoice")
+    # DIAN profiling marker present.
+    assert b"DIAN 2.1" in resp.content
+
+
+async def test_export_national_format_422_pii_free(realdb):
+    """The national-format route propagates the format's own validation as a
+    422 with a PII-free body. An NF-e with a malformed CNPJ → seller.tax_id:
+    malformed, and the malformed value never appears in the body."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_national_invoice(
+        mk, org_id, number="INV-BR-BAD", vendor_tax_id="123", currency="BRL"
+    )
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=nfe")
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "seller.tax_id" in detail
+    assert "malformed" in detail
+    assert "123" not in detail  # PII-free
+
+
 async def test_export_tax_invalid_422_pii_free(realdb):
     """When the mapped doc is tax-invalid (buyer tax id malformed for its
     country), the AP export 422s with a PII-free 'field: code' body."""
