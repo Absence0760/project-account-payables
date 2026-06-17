@@ -17,6 +17,7 @@ Deep-dive docs live in `backend/docs/`:
 | Workflow state machine | `docs/workflow-design.md` |
 | Workflow snapshot semantics | `docs/workflow-snapshots.md` |
 | Payment runs + ERP sync | `docs/payments.md` |
+| Dynamic discounting & early-payment optimization | `docs/dynamic-discounting.md` |
 | International payments (FX + SEPA + SWIFT) | `docs/international-payments.md` |
 | Multi-currency reporting (reporting currency + unrealized FX) | `docs/multi-currency.md` |
 | International tax (VAT / GST / withholding) | `docs/international-tax.md` |
@@ -221,8 +222,9 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 | `services/approval_escalation.py` | Sweeps every tenant's active workflow instances and appends `escalation_to_user_ids` onto any approval chain level waiting longer than its configured `escalation_hours`. Disabled by default (`AP_APPROVAL_ESCALATION_ENABLED`); flip on in deployed envs. |
 | `services/payment_reconciler.py` | Backstop polling for payments whose processor webhook went missing. Re-fetches status from the payment adapter when a `submitted`/`processing` payment sits longer than `AP_PAYMENT_RECONCILE_AFTER_MINUTES`. Disabled by default (`AP_PAYMENT_RECONCILE_ENABLED`); flip on in deployed envs alongside Modern Treasury. |
 | `services/contract_renewal.py` | Contract renewal-alert sweep. Sweeps every tenant DB; finds `active` contracts within their own `renewal_notice_days` of `end_date` with no alert sent, notifies the owner + AP managers once (`contract_renewal_due` event), then stamps `renewal_alert_sent_at` for idempotency (cleared on `POST /api/contracts/{id}/renew`). Disabled by default (`AP_CONTRACT_RENEWAL_ENABLED`); `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` / `_DEFAULT_NOTICE_DAYS`. See `docs/contracts.md`. |
+| `services/discount_auto_trigger.py` | Dynamic-discounting auto-capture sweep. Sweeps every tenant DB; auto-accepts `offered` `DiscountOffer`s whose annualized ROI clears `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`, writing a `discount_offer.auto_accepted` audit row. **Only flags `offered → accepted` — never creates a Payment/PaymentRun**; the status guard is the dedupe. Disabled by default (`AP_DISCOUNT_OPTIMIZATION_ENABLED`). See `docs/dynamic-discounting.md`. |
 
-All five are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
+All six are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
 
 ## Adapter patterns
 
@@ -295,6 +297,21 @@ class MyAdapter:
 Registered: `mock`, `openexchangerates`. Wise / Tipalti slot in via the same pattern.
 
 `services/international_payments.prepare_international_payment` calls `get_rate` exactly once at payment-submission time, persists the locked rate + `fx_locked_at` on the Payment row, and never re-fetches even if the market moves before settlement. The corridor selector decides whether an FX leg is needed (`requires_fx` on `CorridorChoice`); same-currency payments skip the lookup entirely. Per-org config in `Organization.settings.fx`. See `docs/international-payments.md`.
+
+### Supplier-financing adapters (`services/financing_adapters/`)
+
+```python
+@register_financing_adapter("my_provider")
+class MyAdapter:
+    provider_name = "my_provider"
+    def __init__(self, config: dict | None = None): ...
+    async def quote(self, *, invoice_amount, currency, due_date, vendor_name,
+                    vendor_country=None) -> FinancingQuote: ...
+    async def request_funding(self, *, quote, idempotency_key) -> FinancingFundingResult: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock` (local-first default — deterministic, no network/credential), `c2fo` (skeleton — live key required, fail-closed). A supply-chain-finance marketplace funds a supplier's early invoice payment (advance = face − fee); the buyer repays at the net due date. Selected per-org via `Organization.settings.financing.provider`. See `docs/dynamic-discounting.md`.
 
 ### Sanctions / KYC adapters (`services/sanctions_adapters/`)
 

@@ -120,6 +120,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/invoices` | Invoice CRUD, bulk ops, upload, extraction, approve/reject, ERP send, audit-log summary (`GET/POST {id}/summary`), UBL 2.1 e-invoice export (`GET {id}/einvoice?format=ubl`, role-gated, 422 on tax-invalid), PEPPOL AS4 transmission (`POST {id}/peppol-send`, role-gated, idempotent), contract link (`POST {id}/link-contract` \| `/unlink-contract`, spend attribution), supplier chat (`GET/POST {id}/chat`, `POST {id}/chat/attachments`, `POST {id}/chat/{resolve,reopen}` role-gated, `GET chat/templates`, `GET chat/file/{key}` cross-tenant-checked) |
 | `/vendors` | Vendor CRUD, ERP sync; sanctions screening (`POST {id}/screen`, `GET {id}/screening-history`, `GET screening/review-queue`, `POST {id}/block`\|`/unblock` — screen also runs on create/update), vendor risk (`GET {id}/risk`, `POST {id}/risk/recompute`, `GET risk/summary`). See `backend/docs/vendor-risk-screening.md` |
 | `/payments` | Payment listing, payment runs (create/execute) |
+| `/discounts` | Dynamic discounting — supplier-offered sliding-scale early-pay offers (`GET/POST /offers`, `POST {id}/accept`\|`/decline`), per-invoice ROI (`GET /invoices/{id}/roi`), cash-constrained optimizer (`POST /optimize`), bulk vendor negotiation (`POST /bulk-negotiate`), captured/missed/projected-savings dashboard (`GET /dashboard`). Read all four roles; mutate admin/ap_manager (accept also cfo); every mutation audited; entity-scoped. See `backend/docs/dynamic-discounting.md` |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
 | `/contracts` | Contract lifecycle (CLM) — CRUD + search/filter, document upload (`POST {id}/upload`) + proxy (`GET /file/{file_key}`, cross-tenant-checked), lifecycle (`POST {id}/activate\|terminate\|cancel\|renew`), spend summary on detail, contract-based PO creation (`POST {id}/create-po`). Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager; every mutation audited |
 | `/expenses` | Expense Management — expense CRUD (list paginated + entity-scoped, status/report filters), receipt upload (`POST {id}/receipt` → `upload_expense_receipt`) + cross-tenant-checked download proxy (`GET /receipt/{file_key}`), CSV export, bulk GL re-code. WF3 refreshes `Expense.policy_violations` (best-effort) on every create/PATCH/receipt write via `services/expense_policy.evaluate_expense`. Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager/ap_clerk; every mutation audited |
@@ -165,6 +166,10 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `audit_log_shipper.py` | Background loop that ships tenant `audit_log` rows to CloudWatch Logs + S3 Object Lock (SOC 2 centralized WORM store) |
 | `adaptive_workflows.py` | Deterministic per-vendor/per-approver approval stats + baseline anomaly + advisory suggestion derivation (pure, no LLM). See `backend/docs/adaptive-workflows.md`. |
 | `supplier_chat.py` | Embedded per-invoice supplier chat — lazy thread create, static `CHAT_TEMPLATES`, the org `supplier_chat.enabled` flag read, and the notification (AP managers / @mentions) + direct supplier portal-link email helpers shared by the AP (`api/invoices.py`) and portal (`api/portal.py`) routes. See `backend/docs/supplier-chat.md`. |
+| `discount_roi.py` | Pure annualized-return ROI primitive for early-pay discounts (cost-of-forgoing-discount APR; days accelerated = net due − discount deadline). Shared by the optimizer, the auto-capture sweep, and the per-invoice ROI endpoint. See `backend/docs/dynamic-discounting.md`. |
+| `discount_offers.py` | `DiscountOffer` tier selection + savings math + lifecycle mutators (accept/decline/capture/expire) + bulk-vendor offer builder. Pure; never commits. |
+| `discount_optimizer.py` | Ranks open offers by APR and greedily selects the highest-yield worthwhile ones within a cash budget (capture vs. cash preservation). Pure. |
+| `discount_auto_trigger.py` | Background sweep that auto-accepts open offers clearing `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal`; **only flags `offered → accepted`, never moves money** (CFO-gated payment run still funds). |
 
 ### Adapter patterns (pluggable providers)
 
@@ -174,6 +179,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 - **Payments** (`services/payment_adapters/`): modern_treasury, stripe_treasury, increase, column, dwolla (ACH only), checkeeper (check printing), mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
 - **Audit shipping** (`services/audit_shipping/`): mock, cloudwatch, s3_objectlock. Registry via `@register_audit_shipping_adapter` decorator. Sinks for the centralized SOC 2 audit trail; list configured via `AP_AUDIT_SHIPPING_PROVIDERS`.
 - **FX rates** (`services/fx_adapters/`): mock, openexchangerates. Locked once per international payment at submission and persisted on the row. See `backend/docs/international-payments.md`.
+- **Supplier financing** (`services/financing_adapters/`): mock (local-first default — deterministic, no network), c2fo (skeleton — live key required, fail-closed). Registry via `@register_financing_adapter`. A supply-chain-finance marketplace funds a supplier's early payment (advance = face − fee); the buyer repays at the net due date. Selected per-org via `Organization.settings.financing.provider`. See `backend/docs/dynamic-discounting.md`.
 - **Sanctions / KYC** (`services/sanctions_adapters/`): mock, complyadvantage, dowjones, refinitiv (the last three are skeletons — live key required, fail-closed without one). Called by `services/compliance.check_payment_compliance` before every payment-adapter call, and by `services/vendor_screening.screen_vendor_record` on vendor create/update, the `vendor_rescreen` periodic sweep, and manual re-screens. Adverse-media hits surface via `ScreeningResult.categories`. See `backend/docs/vendor-risk-screening.md`.
 - **Email (outbound)** (`services/email_adapters/`): console (dev default), smtp (Mailpit / any relay), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
 - **Email intake (inbound)** (`services/email_intake_adapters/`): ses, mailgun, generic. Parses provider-specific inbound webhook payloads into a normalised `InboundEmail`.
@@ -206,7 +212,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage, ExpenseReport, Expense, ExpensePolicy, CorporateCardTransaction, ExpensePreapproval
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage, ExpenseReport, Expense, ExpensePolicy, CorporateCardTransaction, ExpensePreapproval, DiscountOffer
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 2 + 2b scope reads/writes (incl. the dashboard + CFO analytics) by the `X-Entity-ID` header (`app/tenant.py` → `get_entity_id` / `get_write_entity_id` / `apply_entity_scope`) with a sidebar entity switcher; per-entity workflow selection is deferred (Phase 3). See `docs/multi-entity.md`.
 
@@ -259,6 +265,10 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_VENDOR_RESCREEN_ENABLED` | `false` | Master switch for the periodic vendor re-screening sweep — keep `false` in local dev, flip on in deployed envs. |
 | `AP_VENDOR_RESCREEN_INTERVAL_SECONDS` | `86400` | Re-screen sweep interval. |
 | `AP_VENDOR_RESCREEN_AFTER_DAYS` | `7` | Re-screen active vendors whose last screen is older than this (or never screened). |
+| `AP_DISCOUNT_OPTIMIZATION_ENABLED` | `false` | Master switch for the dynamic-discounting auto-capture background sweep — keep `false` in local dev, flip on in deployed envs. The sweep only flags high-ROI offers as accepted; it never moves money. See `backend/docs/dynamic-discounting.md`. |
+| `AP_DISCOUNT_OPTIMIZATION_INTERVAL_SECONDS` | `3600` | Auto-capture sweep interval. |
+| `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD` | `12.0` | Annualized return (APR %) an early-pay offer must clear for the sweep to auto-accept it. |
+| `AP_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | Platform-default annual cost of capital used by the ROI calculator; per-org override `Organization.settings.discounting.cost_of_capital_pct`. |
 
 Full list in `backend/app/config.py`.
 
@@ -276,6 +286,7 @@ Full list in `backend/app/config.py`.
 | Workflow design | `backend/docs/workflow-design.md` — state machine, step types, snapshots |
 | Payments | `backend/docs/payments.md` — payment runs, schedules, ERP sync |
 | Virtual cards | `backend/docs/virtual-cards.md` — Lithic/Nium, rebates, webhooks |
+| Dynamic discounting | `backend/docs/dynamic-discounting.md` — DiscountOffer model + migration 0043, ROI primitive, optimizer, auto-capture sweep, financing adapters, `/api/discounts` + `/discounts` dashboard |
 | PO matching | `backend/docs/po-matching.md` — 2-way/3-way matching logic |
 | Vendor mgmt | `backend/docs/vendor-management.md` — sources, sync, matching |
 | Local AI testing | `backend/docs/local-ai-testing.md` — Ollama setup |

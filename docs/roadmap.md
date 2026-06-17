@@ -627,17 +627,21 @@ Support structured electronic invoice formats required in the EU, Australia, and
 ## Priority 11: Dynamic Payments & Matching
 
 ### Dynamic Discounting & Early Payment Optimization
-**Status:** Planned
+**Status:** Shipped (first slice)
 
 Go beyond static early-pay discounts — dynamically negotiate and optimize payment timing.
+`DiscountOffer` model + migration 0043, `/api/discounts` router, the
+`discount_roi` / `discount_offers` / `discount_optimizer` / `discount_auto_trigger`
+services, the `financing_adapters` package, and the `/discounts` web dashboard.
+See `backend/docs/dynamic-discounting.md`.
 
-- [ ] Supplier-offered dynamic discounts — "Pay in 5 days for 3% off" (sliding scale)
-- [ ] AI-optimized payment timing — maximize discount capture vs. cash preservation
-- [ ] ROI calculator per invoice — annualized return of paying early
-- [ ] Bulk discount negotiations — "Pay all 10 invoices from Vendor X early for 2%"
-- [ ] Supplier financing marketplace — connect to supply chain finance platforms
-- [ ] Dashboard: total discounts captured, missed, and projected savings
-- [ ] Auto-trigger early payment when ROI exceeds configurable threshold
+- [x] Supplier-offered dynamic discounts — "Pay in 5 days for 3% off" (sliding scale) — `DiscountOffer.tiers` JSONB sliding scale, `source=supplier`
+- [x] AI-optimized payment timing — maximize discount capture vs. cash preservation — `discount_optimizer.optimize` (greedy APR-ranked, cash-budget constrained)
+- [x] ROI calculator per invoice — annualized return of paying early — `discount_roi` (cost-of-forgoing-discount APR) + `GET /api/discounts/invoices/{id}/roi`
+- [x] Bulk discount negotiations — "Pay all 10 invoices from Vendor X early for 2%" — `POST /api/discounts/bulk-negotiate` (vendor-scoped offer over open invoices)
+- [x] Supplier financing marketplace — connect to supply chain finance platforms — `services/financing_adapters/` (mock default + c2fo skeleton)
+- [x] Dashboard: total discounts captured, missed, and projected savings — `GET /api/discounts/dashboard` + `/discounts` web page
+- [x] Auto-trigger early payment when ROI exceeds configurable threshold — `discount_auto_trigger` sweep (`AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`); accepts only — never moves money (CFO-gated payment run still funds)
 
 ---
 
