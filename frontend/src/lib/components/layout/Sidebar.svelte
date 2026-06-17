@@ -49,6 +49,7 @@
 				{ label: 'Contracts', href: '/contracts', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 				{ label: 'Expenses', href: '/expenses', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 				{ label: 'Payments', href: '/payments', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
+				{ label: 'Discounts', href: '/discounts', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 				{ label: 'Vendors', href: '/vendors', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 				{ label: 'Purchase Orders', href: '/purchase-orders', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
 				{ label: 'Goods Receipts', href: '/goods-receipts', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
