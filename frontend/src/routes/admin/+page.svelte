@@ -1,640 +1,75 @@
 <script lang="ts">
-	import type { AdminUser } from '$lib/types/admin';
-	import { ROLE_LABELS } from '$lib/types/admin';
-	import { adminStore } from '$lib/stores/admin.svelte';
-	import { auth } from '$lib/stores/auth.svelte';
-	import BulkBar from '$lib/components/ui/BulkBar.svelte';
-	import BulkDeleteButton from '$lib/components/ui/BulkDeleteButton.svelte';
-	import RowAction from '$lib/components/ui/RowAction.svelte';
-	import RowLink from '$lib/components/ui/RowLink.svelte';
-	import { isRowOpenClick } from '$lib/utils/rowNav';
-	import SearchBox from '$lib/components/ui/SearchBox.svelte';
+	import { page } from '$app/stores';
+	import { replaceState } from '$app/navigation';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
-	import DataTable from '$lib/components/ui/DataTable.svelte';
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { toast } from '$lib/components/ui/Toast.svelte';
+	import Tabs from '$lib/components/ui/Tabs.svelte';
+	import UsersPanel from '$lib/components/admin/UsersPanel.svelte';
+	import RolesPanel from '$lib/components/admin/RolesPanel.svelte';
 
-	let showCreateModal = $state(false);
-	let editingUser = $state<AdminUser | null>(null);
-	let createdCredentials = $state<{ email: string; password: string } | null>(null);
-	let confirmDeleteId = $state<string | null>(null);
+	type Tab = 'users' | 'roles';
+	// Seed from the URL once on mount (deep links / the /admin/roles redirect /
+	// refresh all land on the right tab). We deliberately do NOT derive from or
+	// reconcile against `$page.url` afterwards: `replaceState` here does not
+	// re-flow into `$page.url` reactively, so a URL-driven reconciler would
+	// immediately revert a click back to the stale URL's tab. SvelteKit remounts
+	// this page on real navigation (re-reading the URL below), and tab switches
+	// use `replaceState` (no new history entry), so there's no back-nav desync to
+	// reconcile — the local state is the source of truth within a mount.
+	let tab = $state<Tab>($page.url.searchParams.get('tab') === 'roles' ? 'roles' : 'users');
 
-	// Bulk-select state
-	let selectedIds = $state<Set<string>>(new Set());
-	let bulkDeleting = $state(false);
+	// Panel instance handles — the per-tab primary action lives in the shared
+	// PageHeader toolbar (outside the panels), so it reaches into the active
+	// panel to open its create modal.
+	let usersPanel = $state<UsersPanel>();
+	let rolesPanel = $state<RolesPanel>();
 
-	// Create form
-	let newName = $state('');
-	let newEmail = $state('');
-	let newRoles = $state<string[]>([]);
-
-	// Edit form
-	let editName = $state('');
-	let editEmail = $state('');
-	let editRoles = $state<string[]>([]);
-	let editPassword = $state('');
-
-	let saving = $state(false);
-
-	let search = $state('');
-	let searchTimer: ReturnType<typeof setTimeout> | null = null;
-
-	$effect(() => {
-		adminStore.fetchUsers();
-		adminStore.fetchRoles();
-	});
-
-	$effect(() => {
-		// React to search changes; debounce to avoid hammering the API.
-		const q = search;
-		if (searchTimer) clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => {
-			adminStore.fetchUsers({ search: q });
-		}, 250);
-	});
-
-	async function loadMore() {
-		await adminStore.loadMoreUsers({ search });
+	function switchTab(next: Tab) {
+		tab = next;
+		const url = new URL($page.url);
+		// `users` is the default — keep its URL clean (no ?tab). The URL is for
+		// deep-link/refresh/bookmark fidelity; `tab` above drives the render.
+		if (next === 'roles') url.searchParams.set('tab', 'roles');
+		else url.searchParams.delete('tab');
+		replaceState(`${url.pathname}${url.search}`, {});
 	}
-
-	let selectableIds = $derived(
-		adminStore.users.filter((u) => u.id !== auth.user?.id).map((u) => u.id)
-	);
-	let allSelected = $derived(
-		selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
-	);
-
-	function toggleSelect(id: string) {
-		const next = new Set(selectedIds);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
-		selectedIds = next;
-	}
-
-	function toggleSelectAll() {
-		if (allSelected) {
-			selectedIds = new Set();
-		} else {
-			selectedIds = new Set(selectableIds);
-		}
-	}
-
-	async function handleBulkDelete() {
-		if (selectedIds.size === 0) return;
-		bulkDeleting = true;
-		try {
-			const result = await adminStore.bulkDeleteUsers([...selectedIds]);
-			selectedIds = new Set();
-			if (result.failed.length === 0) {
-				toast(`Deleted ${result.deleted.length} user${result.deleted.length === 1 ? '' : 's'}`, 'success');
-			} else if (result.deleted.length === 0) {
-				const reason = describeBulkFailure(result.failed[0]);
-				toast(`No users deleted — ${reason}`, 'error');
-			} else {
-				toast(
-					`Deleted ${result.deleted.length}; ${result.failed.length} blocked (in-flight references)`,
-					'success',
-				);
-			}
-		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Bulk delete failed', 'error');
-		} finally {
-			bulkDeleting = false;
-		}
-	}
-
-	function describeBulkFailure(f: { reason: string; references: { open_invoice_assignments: number; pending_approval_steps: number; active_workflow_approver_in: number } | null }): string {
-		if (f.reason === 'self') return 'cannot delete yourself';
-		if (f.reason === 'not_found') return 'user not found';
-		if (f.reason === 'blocked' && f.references) {
-			const parts: string[] = [];
-			if (f.references.open_invoice_assignments) parts.push(`${f.references.open_invoice_assignments} open invoice${f.references.open_invoice_assignments === 1 ? '' : 's'}`);
-			if (f.references.pending_approval_steps) parts.push(`${f.references.pending_approval_steps} pending approval${f.references.pending_approval_steps === 1 ? '' : 's'}`);
-			if (f.references.active_workflow_approver_in) parts.push(`${f.references.active_workflow_approver_in} active workflow${f.references.active_workflow_approver_in === 1 ? '' : 's'}`);
-			return `still referenced by ${parts.join(', ')}`;
-		}
-		return 'blocked';
-	}
-
-	function openCreate() {
-		newName = '';
-		newEmail = '';
-		newRoles = [];
-		showCreateModal = true;
-	}
-
-	function openEdit(user: AdminUser) {
-		editingUser = user;
-		editName = user.full_name;
-		editEmail = user.email;
-		editRoles = user.roles.map((r) => r.name);
-		editPassword = '';
-	}
-
-	async function handleCreate() {
-		if (!newName.trim() || !newEmail.trim()) return;
-		saving = true;
-		try {
-			const result = await adminStore.createUser({
-				full_name: newName.trim(),
-				email: newEmail.trim(),
-				role_names: newRoles,
-			});
-			showCreateModal = false;
-			createdCredentials = {
-				email: result.email,
-				password: (result as unknown as { temporary_password: string }).temporary_password,
-			};
-		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to create user', 'error');
-		} finally {
-			saving = false;
-		}
-	}
-
-	async function handleUpdate() {
-		if (!editingUser) return;
-		saving = true;
-		try {
-			const changes: Record<string, unknown> = {
-				full_name: editName.trim(),
-				email: editEmail.trim(),
-				role_names: editRoles,
-			};
-			if (editPassword.trim()) {
-				changes.password = editPassword;
-			}
-			await adminStore.updateUser(editingUser.id, changes);
-			toast('User updated', 'success');
-			editingUser = null;
-		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to update user', 'error');
-		} finally {
-			saving = false;
-		}
-	}
-
-	async function toggleActive(user: AdminUser) {
-		try {
-			await adminStore.updateUser(user.id, { is_active: !user.is_active });
-			toast(user.is_active ? 'User deactivated' : 'User activated', 'success');
-		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to update user', 'error');
-		}
-	}
-
-	async function handleDelete(id: string) {
-		try {
-			await adminStore.deleteUser(id);
-			toast('User deleted', 'success');
-			confirmDeleteId = null;
-		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to delete user', 'error');
-		}
-	}
-
-	function toggleRole(role: string, list: string[]): string[] {
-		return list.includes(role) ? list.filter((r) => r !== role) : [...list, role];
-	}
-
-	function formatDate(iso: string): string {
-		if (!iso) return '—';
-		return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
-
-	function handleWindowClick(e: MouseEvent) {
-		if (confirmDeleteId && !(e.target as HTMLElement).closest('.row-action')) {
-			confirmDeleteId = null;
-		}
-	}
-
-	let isSelf = (id: string) => id === auth.user?.id;
 </script>
 
-<svelte:window onclick={handleWindowClick} />
-
-<PageHeader title="Users">
+<PageHeader title="Users & Roles">
 	{#snippet actions()}
-		<button class="btn-primary" onclick={openCreate}>+ Invite User</button>
+		{#if tab === 'users'}
+			<button class="btn-primary" onclick={() => usersPanel?.openCreate()}>+ Invite User</button>
+		{:else}
+			<button class="btn-primary" onclick={() => rolesPanel?.openCreate()}>+ Create Role</button>
+		{/if}
 	{/snippet}
 
-	<div class="filter-row">
-		<SearchBox
-			bind:value={search}
-			placeholder="Search name or email..."
-			ariaLabel="Search users"
-		/>
+	<Tabs
+		tabs={[
+			{ key: 'users', label: 'Users' },
+			{ key: 'roles', label: 'Roles' },
+		]}
+		active={tab}
+		onchange={(k) => switchTab(k as Tab)}
+		ariaLabel="Users and roles"
+		idPrefix="admin"
+	/>
+
+	<div class="tabpanel" role="tabpanel" id={`admin-panel-${tab}`} aria-labelledby={`admin-tab-${tab}`}>
+		{#if tab === 'users'}
+			<UsersPanel bind:this={usersPanel} />
+		{:else}
+			<RolesPanel bind:this={rolesPanel} />
+		{/if}
 	</div>
-
-	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
-		{#snippet actions()}
-			<BulkDeleteButton
-				onconfirm={handleBulkDelete}
-				disabled={bulkDeleting}
-				label={`Delete ${selectedIds.size}`}
-			/>
-		{/snippet}
-	</BulkBar>
-
-	<DataTable isEmpty={adminStore.users.length === 0} empty="No users found." colspan={7}>
-		{#snippet header()}
-			<tr>
-				<th class="checkbox-col">
-					<input
-						type="checkbox"
-						checked={allSelected}
-						onchange={toggleSelectAll}
-						aria-label="Select all users"
-					/>
-				</th>
-				<th>Name</th>
-				<th>Email</th>
-				<th>Roles</th>
-				<th>Status</th>
-				<th>Created</th>
-				<th></th>
-			</tr>
-		{/snippet}
-		{#snippet body()}
-			{#each adminStore.users as user (user.id)}
-				<tr
-					class="clickable"
-					class:inactive={!user.is_active}
-					class:row-selected={selectedIds.has(user.id)}
-					onclick={(e) => {
-						if (isRowOpenClick(e)) openEdit(user);
-					}}
-				>
-					<td class="checkbox-col">
-						{#if !isSelf(user.id)}
-							<input
-								type="checkbox"
-								checked={selectedIds.has(user.id)}
-								onchange={() => toggleSelect(user.id)}
-								aria-label="Select {user.full_name}"
-							/>
-						{/if}
-					</td>
-					<td class="name-cell">
-						<RowLink onclick={() => openEdit(user)} ariaLabel={`Edit user ${user.full_name}`}>
-							{user.full_name}
-						</RowLink>
-						{#if isSelf(user.id)}
-							<span class="you-badge">You</span>
-						{/if}
-					</td>
-					<td class="email-cell">{user.email}</td>
-					<td>
-						<div class="role-badges">
-							{#each user.roles as role}
-								<span class="role-badge">{ROLE_LABELS[role.name] ?? role.name}</span>
-							{:else}
-								<span class="no-roles">No roles</span>
-							{/each}
-						</div>
-					</td>
-					<td>
-						<span class="status-dot" class:active={user.is_active} class:deactivated={!user.is_active}>
-							{user.is_active ? 'Active' : 'Inactive'}
-						</span>
-					</td>
-					<td class="date-cell">{formatDate(user.created_at)}</td>
-					<td class="actions">
-						<RowAction onclick={() => toggleActive(user)}>
-							{user.is_active ? 'Deactivate' : 'Activate'}
-						</RowAction>
-						{#if !isSelf(user.id)}
-							<RowAction
-								variant="danger"
-								armed={confirmDeleteId === user.id}
-								onclick={(e) => {
-									e.stopPropagation();
-									if (confirmDeleteId === user.id) {
-										handleDelete(user.id);
-									} else {
-										confirmDeleteId = user.id;
-									}
-								}}
-							>
-								{confirmDeleteId === user.id ? 'Confirm' : 'Delete'}
-							</RowAction>
-						{/if}
-					</td>
-				</tr>
-			{/each}
-		{/snippet}
-	</DataTable>
-
-	{#if adminStore.hasMore}
-		<div class="load-more-row">
-			<button class="btn-load-more" onclick={loadMore} disabled={adminStore.loading}>
-				{adminStore.loading ? 'Loading…' : `Load more (${adminStore.users.length} of ${adminStore.total})`}
-			</button>
-		</div>
-	{:else if adminStore.total > 0}
-		<div class="load-more-row">
-			<span class="load-more-end">Showing all {adminStore.total} user{adminStore.total === 1 ? '' : 's'}</span>
-		</div>
-	{/if}
 </PageHeader>
 
-<!-- Invite User Modal -->
-<Modal open={showCreateModal} ariaLabel="Invite user" width="sm" onclose={() => (showCreateModal = false)}>
-	<h2>Invite User</h2>
-	<p class="modal-hint">A temporary password will be generated automatically.</p>
-	<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
-		<label>
-			<span>Full Name <em class="required">*</em></span>
-			<input type="text" bind:value={newName} required />
-		</label>
-		<label>
-			<span>Email <em class="required">*</em></span>
-			<input type="email" bind:value={newEmail} required />
-		</label>
-		<fieldset>
-			<legend>Roles</legend>
-			<p class="modal-hint">Only the four system roles grant access. Custom roles are labels and confer no permissions.</p>
-			<div class="role-checks">
-				{#each adminStore.roles as role}
-					<label class="check-label">
-						<input
-							type="checkbox"
-							checked={newRoles.includes(role.name)}
-							onchange={() => (newRoles = toggleRole(role.name, newRoles))}
-						/>
-						{ROLE_LABELS[role.name] ?? role.name}
-					</label>
-				{/each}
-			</div>
-		</fieldset>
-		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (showCreateModal = false)}>Cancel</button>
-			<button type="submit" class="btn-primary" disabled={saving}>
-				{saving ? 'Creating...' : 'Create User'}
-			</button>
-		</div>
-	</form>
-</Modal>
-
-<!-- Created Credentials Modal -->
-<Modal open={createdCredentials !== null} ariaLabel="User created" width="sm" onclose={() => (createdCredentials = null)}>
-	{#if createdCredentials}
-		<h2>User Created</h2>
-		<p class="modal-hint">Share these credentials with the new user. The password is shown only once.</p>
-		<div class="credentials-box">
-			<div class="credential-row">
-				<span class="credential-label">Email</span>
-				<code class="credential-value">{createdCredentials.email}</code>
-			</div>
-			<div class="credential-row">
-				<span class="credential-label">Temporary Password</span>
-				<code class="credential-value password">{createdCredentials.password}</code>
-			</div>
-		</div>
-		<div class="modal-footer">
-			<button class="btn-primary" onclick={() => {
-				navigator.clipboard.writeText(`Email: ${createdCredentials?.email}\nPassword: ${createdCredentials?.password}`);
-				toast('Copied to clipboard', 'success');
-			}}>Copy to Clipboard</button>
-			<button class="btn-cancel" onclick={() => (createdCredentials = null)}>Done</button>
-		</div>
-	{/if}
-</Modal>
-
-<!-- Edit User Modal -->
-<Modal open={editingUser !== null} ariaLabel="Edit user" width="sm" onclose={() => (editingUser = null)}>
-	{#if editingUser}
-		<h2>Edit User</h2>
-		<form onsubmit={(e) => { e.preventDefault(); handleUpdate(); }}>
-			<label>
-				<span>Full Name</span>
-				<input type="text" bind:value={editName} required />
-			</label>
-			<label>
-				<span>Email</span>
-				<input type="email" bind:value={editEmail} required />
-			</label>
-			<label>
-				<span>Reset Password <em class="hint">(leave blank to keep current)</em></span>
-				<input type="password" bind:value={editPassword} minlength="6" />
-			</label>
-			<fieldset>
-				<legend>Roles</legend>
-				<p class="modal-hint">Only the four system roles grant access. Custom roles are labels and confer no permissions.</p>
-				<div class="role-checks">
-					{#each adminStore.roles as role}
-						<label class="check-label">
-							<input
-								type="checkbox"
-								checked={editRoles.includes(role.name)}
-								onchange={() => (editRoles = toggleRole(role.name, editRoles))}
-							/>
-							{ROLE_LABELS[role.name] ?? role.name}
-						</label>
-					{/each}
-				</div>
-			</fieldset>
-			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (editingUser = null)}>Cancel</button>
-				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving...' : 'Save Changes'}
-				</button>
-			</div>
-		</form>
-	{/if}
-</Modal>
-
 <style>
-	/* Page-specific styling; shared design-system CSS lives in app.css. */
-
-	/* --- Bulk-row checkbox column (BulkBar / BulkDeleteButton come from $lib/components) --- */
-
-	.checkbox-col {
-		width: 36px;
-		text-align: center;
-		padding-left: 10px;
-		padding-right: 4px;
-	}
-
-	.checkbox-col input[type='checkbox'] {
-		cursor: pointer;
-		accent-color: var(--accent);
-	}
-
-	/* --- Table cells --- */
-
-	.inactive td {
-		opacity: 0.5;
-	}
-
-	.name-cell {
-		font-weight: 500;
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.you-badge {
-		font-size: 0.68rem;
-		font-weight: 600;
-		padding: 1px 6px;
-		border-radius: 8px;
-		background: rgba(99, 140, 255, 0.12);
-		color: var(--accent);
-	}
-
-	.email-cell {
-		color: var(--text-muted);
-	}
-
-	.date-cell {
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		white-space: nowrap;
-	}
-
-	/* --- Roles --- */
-
-	.role-badges {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
-	}
-
-	.role-badge {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 10px;
-		background: rgba(99, 140, 255, 0.1);
-		color: var(--accent);
-		font-size: 0.75rem;
-		font-weight: 500;
-		white-space: nowrap;
-	}
-
-	.no-roles {
-		font-size: 0.78rem;
-		color: var(--text-muted);
-		font-style: italic;
-	}
-
-	/* --- Status --- */
-
-	.status-dot {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 0.82rem;
-		font-weight: 500;
-	}
-
-	.status-dot::before {
-		content: '';
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-	}
-
-	.status-dot.active::before {
-		background: #1fa86a;
-	}
-
-	.status-dot.deactivated::before {
-		background: #e04040;
-	}
-
-	/* --- Modal extras --- */
-
-	.modal input:focus {
-		outline: none;
-		border-color: var(--accent);
-		box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
-	}
-
-	fieldset {
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 10px 12px;
-		margin: 0;
-	}
-
-	legend {
-		font-size: 0.78rem;
-		font-weight: 500;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		padding: 0 4px;
-	}
-
-	.role-checks {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 10px;
-	}
-
-	.check-label {
-		display: flex;
-		flex-direction: row;
-		align-items: center;
-		gap: 6px;
-		font-size: 0.85rem;
-		color: var(--text);
-		cursor: pointer;
-	}
-
-	.check-label input[type='checkbox'] {
-		accent-color: var(--accent);
-		cursor: pointer;
-	}
-
-	.hint {
-		font-style: italic;
-		text-transform: none;
-		letter-spacing: normal;
-		font-weight: 400;
-	}
-
-	/* --- Credentials display --- */
-
-	.credentials-box {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 14px;
-		margin-bottom: 16px;
+	/* The panel content (search row, table, load-more / role sections) relied on
+	   the PageHeader `.workspace` flex-column gap when it was a direct child.
+	   The tabpanel wrapper re-establishes that vertical rhythm. */
+	.tabpanel {
 		display: flex;
 		flex-direction: column;
-		gap: 10px;
-	}
-
-	.credential-row {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-
-	.credential-label {
-		font-size: 0.72rem;
-		font-weight: 500;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
-	.credential-value {
-		font-size: 0.9rem;
-		color: var(--text);
-		font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-		background: var(--surface);
-		padding: 4px 8px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		user-select: all;
-	}
-
-	.credential-value.password {
-		color: var(--accent);
-		font-weight: 600;
+		gap: 16px;
 	}
 </style>

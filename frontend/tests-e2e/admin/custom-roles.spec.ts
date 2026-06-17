@@ -199,7 +199,9 @@ test.describe('/api/admin/roles — per-org custom roles', () => {
 		const seeded = (await seedResp.json()) as RoleResponse;
 		cleanup.push(seeded.id);
 
-		await page.goto('/admin/roles');
+		// Roles now live on the Users & Roles page's Roles tab. (`/admin/roles`
+		// still redirects here — that back-compat path is covered in admin.spec.ts.)
+		await page.goto('/admin?tab=roles');
 
 		await expect(page.getByRole('heading', { name: 'System roles' })).toBeVisible();
 		await expect(page.getByRole('heading', { name: 'Custom roles' })).toBeVisible();

@@ -42,7 +42,7 @@ pnpm check            # typecheck
 | `/workflows/[id]` | `routes/workflows/[id]/+page.svelte` | `GET/PATCH /api/workflows/{id}`, `GET /api/organization` — drag-and-drop builder canvas (`workflow-builder` components) |
 | `/audit` | `routes/audit/+page.svelte` | `GET /api/audit/export` (JSON + CSV) — SOX auditor console, admin/CFO only (content-gated on `auth.isCfo`; backend 403s otherwise). Date-range or by-invoice query + CSV download. |
 | `/organization` | `routes/organization/+page.svelte` | `GET/PATCH /api/organization` |
-| `/admin` | `routes/admin/+page.svelte` | `GET/POST/PATCH/DELETE /api/admin/users`, `GET /api/admin/roles` |
+| `/admin` | `routes/admin/+page.svelte` | Tabbed **Users & Roles** page (`?tab=users` default \| `?tab=roles`). Users tab → `GET/POST/PATCH/DELETE /api/admin/users`; Roles tab → `GET/POST/PATCH/DELETE /api/admin/roles`. Bodies live in `$lib/components/admin/{UsersPanel,RolesPanel}.svelte`; the host owns the `<Tabs>` + the per-tab PageHeader action (calls the active panel's exported `openCreate()`). `/admin/roles` is a redirect to `/admin?tab=roles` (back-compat for old links). |
 | `/cfo` | `routes/cfo/+page.svelte` | `GET /api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`, `GET /api/analytics/export/cashflow_forecast` (admin + cfo) — predictive cash-flow dashboard |
 | `/tax` | `routes/tax/+page.svelte` | `GET /api/tax/1099-report?year=` (via `lib/api/tax.ts`) — 1099 vendor reporting dashboard. KPI summary, year selector, per-vendor 1099-eligible / W-9-on-file / TIN-verified chips, >$600 threshold flags, vendor search + filter chips (all / reportable / missing W-9 / over threshold). admin/ap_manager/cfo. The report outer-joins vendors→payments, so the row set is the tenant's vendor list and the year only re-aggregates each vendor's YTD; the table is empty only when there are no vendors. |
 | `/notifications` | `routes/notifications/+page.svelte` | `GET /api/notifications` (list, `?unread_only=`), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` — clickable rows open the related invoice (`/invoices?id=`) |
@@ -111,6 +111,7 @@ Grouped into subfolders by role. Import with the full path, e.g.
 - `Modal.svelte` — `.backdrop` + `div.modal[role="dialog"]`. `<Modal open ariaLabel="EXACT" title? width="sm|md|lg" onclose>`; keep the page's own `<form>` + `.modal-footer` inside `children` (preserves submit). Custom heading → `{#snippet header()}`. Handles backdrop-click + Esc.
 - `KpiCard.svelte` — `.kpi` card. `<KpiCard value label highlight={'green'|'red'|null} />`; wrap a row in `<div class="kpi-row">`.
 - `SearchBox`, `StatusBadge`, `RowAction`, `BulkBar`, `BulkDeleteButton`, `Toast` — see the pattern sections below.
+- `Tabs.svelte` — underline tab bar. `<Tabs tabs={[{key,label,count?}]} bind:active ariaLabel? onchange? />`. Owns the `.tab-row` / `.tab` markup + `role="tablist"`/`role="tab"` a11y. Used by `/admin` (Users & Roles). The older per-route tab copies in `/expenses`, `/payments`, `/audit` predate it and can migrate onto it opportunistically.
 - `ScreeningBadge.svelte` — sanctions-screening + vendor-risk pill. `<ScreeningBadge screening={v.screening_status} risk={v.risk_level} blocked={v.payments_blocked} />`. Tone map: clear=green, review/medium=amber, match/high/critical/blocked=red, unscreened/low=grey. Shared by the vendor list cell + `VendorModal`.
 - `Money.svelte` — locale-aware currency display. `<Money amount={row.amount} currency={row.currency} />`. Opt-in `whole` (no decimals), `accounting` (parenthesised negatives), `mono` (tabular-nums). Over `utils/money.ts::formatMoney`; see *Money formatting* above. Use this (or `formatMoney` in script) for every currency value — don't write `Intl.NumberFormat` inline.
 
@@ -529,6 +530,7 @@ the `ui/` primitive in the Source column.
 | Per-row action | `<RowAction>` (variant + armed) | `ui/RowAction.svelte` |
 | Clickable-row open control | `<RowLink>` + `.clickable` row + `isRowOpenClick` | `ui/RowLink.svelte` / `utils/rowNav.ts` |
 | Filter pill | `.filter-chip` (+ `.active`, `.count`) | `ui/FilterChips.svelte` |
+| Tab bar | `.tab-row` / `.tab` (+ `.active`) | `ui/Tabs.svelte` |
 | Load more | `.btn-load-more` / `.load-more-row` / `.load-more-end` | per-route, copy /admin |
 | Modal dialog | `.modal[role="dialog"]` + `.backdrop` | `ui/Modal.svelte` |
 | KPI card | `.kpi` / `.kpi-value` / `.kpi-label` | `ui/KpiCard.svelte` |

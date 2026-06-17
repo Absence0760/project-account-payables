@@ -84,8 +84,7 @@
 			items: [
 				{ label: 'Audit Trail', href: '/audit', icon: 'audit', requiredRoles: ['admin', 'cfo'] },
 				{ label: 'Organization', href: '/organization', icon: 'organization', requiredRoles: ['admin'] },
-				{ label: 'Users', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
-				{ label: 'Roles', href: '/admin/roles', icon: 'admin', requiredRoles: ['admin'] },
+				{ label: 'Users & Roles', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
 			],
 		},
 	];
