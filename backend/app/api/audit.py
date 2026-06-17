@@ -17,6 +17,7 @@ import csv
 import io
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -29,12 +30,14 @@ from app.api.deps import (
     ROLE_CFO,
     require_roles,
 )
+from app.config import settings
 from app.database import get_control_db
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.user import User
 from app.models.workflow import AuditLog
 from app.schemas.audit import AuditExportEntry
+from app.services.approval_signature import verify_approval
 from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.audit_report_pdf import AuditReportContext, render_audit_report_pdf
@@ -253,3 +256,120 @@ async def get_invoice_audit_trail(
     await db.commit()
 
     return export
+
+
+@router.get("/invoice/{invoice_id}/verify-signatures")
+async def verify_invoice_signatures(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    control_db: AsyncSession = Depends(get_control_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+):
+    """Cryptographic non-repudiation check on an invoice's approval signatures.
+
+    Loads every ``invoice.approved`` audit row carrying a ``details.signature``
+    block and re-derives the HMAC-SHA256 over the approval facts — invoice id +
+    the invoice's CURRENT exact ``amount`` + the row's ``actor_id`` + decision +
+    the signed timestamp — comparing it (constant-time) to the stored digest. A
+    tampered amount, a swapped actor, or an altered timestamp flips ``valid`` to
+    ``False``, proving the approval record wasn't silently changed after the
+    fact.
+
+    Admin/CFO only (the auditor privilege). This is a sensitive read, so it
+    writes its own ``audit.viewed`` access row.
+    """
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    ).scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    rows = (
+        (
+            await db.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.correlation_id == invoice.correlation_id,
+                    AuditLog.action == "invoice.approved",
+                )
+                .order_by(AuditLog.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # Recompute against the invoice's CURRENT amount — the whole point is that a
+    # post-approval tamper of the amount breaks verification. Money stays
+    # Decimal (never float).
+    current_amount = Decimal(str(invoice.amount or 0))
+
+    names, _emails = await _resolve_actors(control_db, rows)
+
+    results: list[dict] = []
+    for row in rows:
+        sig = (row.details or {}).get("signature") if row.details else None
+        if not sig or not isinstance(sig, dict):
+            # An approval row written before signing was enabled has no block —
+            # report it as unsigned rather than invalid (nothing to verify).
+            results.append(
+                {
+                    "audit_row_id": str(row.id),
+                    "signed_at": None,
+                    "actor": names.get(str(row.actor_id)) if row.actor_id else None,
+                    "signed": False,
+                    "valid": False,
+                }
+            )
+            continue
+
+        signed_at_raw = sig.get("signed_at")
+        signed_at = None
+        if signed_at_raw:
+            try:
+                signed_at = datetime.fromisoformat(signed_at_raw)
+            except (ValueError, TypeError):
+                signed_at = None
+
+        valid = False
+        if signed_at is not None and row.actor_id is not None:
+            try:
+                valid = verify_approval(
+                    invoice_id=invoice.id,
+                    amount=current_amount,
+                    actor_id=row.actor_id,
+                    decision="approved",
+                    timestamp=signed_at,
+                    signature=sig.get("value"),
+                    signing_key=settings.approval_signing_key,
+                )
+            except (InvalidOperation, ValueError):
+                valid = False
+
+        results.append(
+            {
+                "audit_row_id": str(row.id),
+                "signed_at": signed_at_raw,
+                "actor": names.get(str(row.actor_id)) if row.actor_id else None,
+                "signed": True,
+                "valid": valid,
+            }
+        )
+
+    # Sensitive read → access audit. No PII in the details (counts only).
+    await log_access(
+        db,
+        user=user,
+        organization_id=user.organization_id,
+        entity_type="audit",
+        entity_id=invoice_id,
+        correlation_id=invoice.correlation_id,
+        extra={"verify_signatures": len(results)},
+    )
+    await db.commit()
+
+    return {
+        "invoice_id": str(invoice_id),
+        "signing_configured": bool(settings.approval_signing_key),
+        "approvals": results,
+    }

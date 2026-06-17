@@ -44,6 +44,7 @@ from app.api import (
     portal_auth,
     purchase_orders,
     requisitions,
+    retention,
     scim,
     signup,
     tax,
@@ -89,6 +90,7 @@ async def lifespan(app: FastAPI):
     from app.services.extraction_reaper import run_reaper_loop
     from app.services.payment_reconciler import run_reconciler_loop
     from app.services.qms_sync import run_qms_sync_loop
+    from app.services.retention_sweep import run_retention_loop
     from app.services.vendor_rescreen import run_vendor_rescreen_loop
 
     reaper_task: asyncio.Task | None = None
@@ -99,6 +101,7 @@ async def lifespan(app: FastAPI):
     rescreen_task: asyncio.Task | None = None
     discount_task: asyncio.Task | None = None
     qms_task: asyncio.Task | None = None
+    retention_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -130,6 +133,12 @@ async def lifespan(app: FastAPI):
     # records into the quality_inspections table (4-way-match leg).
     if settings.qms_sync_enabled:
         qms_task = asyncio.create_task(run_qms_sync_loop(), name="qms-sync")
+    # Retention-policy enforcement sweep (SOX records management). Disabled by
+    # default; flip AP_RETENTION_ENABLED on in deployed envs. Soft-archives
+    # overdue terminal invoices + verifies audit-log WORM shipment; NEVER
+    # deletes audit_log rows (composes with the immutability trigger).
+    if settings.retention_enabled:
+        retention_task = asyncio.create_task(run_retention_loop(), name="retention-sweep")
 
     try:
         yield
@@ -143,6 +152,7 @@ async def lifespan(app: FastAPI):
             rescreen_task,
             discount_task,
             qms_task,
+            retention_task,
         ):
             if task is not None:
                 task.cancel()
@@ -262,6 +272,7 @@ app.include_router(invoices.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(purchase_orders.router, prefix="/api")
 app.include_router(requisitions.router, prefix="/api")
+app.include_router(retention.router, prefix="/api")
 app.include_router(catalogs.router, prefix="/api")
 app.include_router(budgets.router, prefix="/api")
 app.include_router(intake.router, prefix="/api")

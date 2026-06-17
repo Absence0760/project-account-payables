@@ -212,6 +212,18 @@ surface.
 |--------|-----------------------------------|-------|-------------|
 | `GET`  | `/api/audit/export`               | admin/cfo | Auditor export. Query: `invoice_id` **or** (`start`,`end`) — mutually exclusive; optional `entity_type`; `format=json\|csv\|pdf` (default `json`). Ordered by `created_at`. Writes an `audit.exported` row (`details.format` records the chosen format). Invalid range / missing args → generic `400`; unknown invoice → `404`. `format=pdf` returns a formatted SOX audit-trail report (`application/pdf` attachment) — cover (org, scope, generated-at/-by), event-count summary grouped by action, chronological trail table; renders exactly the same already-sanitised entries as JSON/CSV (PII kept out of `details` at audit-write time — no broader exposure). See [`access-reviews.md`](access-reviews.md) for the related access-review surface. |
 | `GET`  | `/api/audit/invoice/{id}`         | admin/manager/cfo | Per-invoice trail (auditor-facing alias of the operational endpoint), ordered by `created_at`. |
+| `GET`  | `/api/audit/invoice/{id}/verify-signatures` | admin/cfo | Cryptographic non-repudiation check on the invoice's approval signatures. Re-derives the HMAC-SHA256 on each `invoice.approved` audit row (against the invoice's current amount, the row's actor, and the signed timestamp) and returns per-approval `{audit_row_id, signed_at, actor, signed, valid}`. A post-approval amount/actor/timestamp tamper → `valid: false`. Writes an `audit.viewed` access row. See `approval-signatures.md`. |
+
+## Retention Policy (SOX records management)
+
+Per-record-class retention windows on `Organization.settings.retention`
+(configurable, not hardcoded). The enforcement sweep is `services/retention_sweep.py`
+(disabled by default behind `AP_RETENTION_ENABLED`). See `retention.md`.
+
+| Method | Path                       | Roles | Description |
+|--------|----------------------------|-------|-------------|
+| `GET`  | `/api/retention-policy`    | admin | Effective policy per record class (`invoices`, `audit_log`) + platform default + whether the sweep is enabled. |
+| `PUT`  | `/api/retention-policy`    | admin | Update one or more `<class>` windows (months, `> 0`). Unknown class / non-positive → `422`. Writes a `retention_policy.updated` audit row. |
 
 ## Access Reviews (periodic — SOX)
 

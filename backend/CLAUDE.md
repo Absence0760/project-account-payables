@@ -40,6 +40,8 @@ Deep-dive docs live in `backend/docs/`:
 | PEPPOL AS4 outbound (e-invoice transmission) | `docs/peppol.md` |
 | Contract management (CLM) | `docs/contracts.md` |
 | Expense management | `docs/expense-management.md` |
+| Digital signatures on approvals (SOX) | `docs/approval-signatures.md` |
+| Retention policies (SOX records management) | `docs/retention.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -224,8 +226,9 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 | `services/payment_reconciler.py` | Backstop polling for payments whose processor webhook went missing. Re-fetches status from the payment adapter when a `submitted`/`processing` payment sits longer than `AP_PAYMENT_RECONCILE_AFTER_MINUTES`. Disabled by default (`AP_PAYMENT_RECONCILE_ENABLED`); flip on in deployed envs alongside Modern Treasury. |
 | `services/contract_renewal.py` | Contract renewal-alert sweep. Sweeps every tenant DB; finds `active` contracts within their own `renewal_notice_days` of `end_date` with no alert sent, notifies the owner + AP managers once (`contract_renewal_due` event), then stamps `renewal_alert_sent_at` for idempotency (cleared on `POST /api/contracts/{id}/renew`). Disabled by default (`AP_CONTRACT_RENEWAL_ENABLED`); `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` / `_DEFAULT_NOTICE_DAYS`. See `docs/contracts.md`. |
 | `services/discount_auto_trigger.py` | Dynamic-discounting auto-capture sweep. Sweeps every tenant DB; auto-accepts `offered` `DiscountOffer`s whose annualized ROI clears `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`, writing a `discount_offer.auto_accepted` audit row. **Only flags `offered → accepted` — never creates a Payment/PaymentRun**; the status guard is the dedupe. Disabled by default (`AP_DISCOUNT_OPTIMIZATION_ENABLED`). See `docs/dynamic-discounting.md`. |
+| `services/retention_sweep.py` | Retention-policy enforcement sweep (SOX records management). Sweeps every tenant DB; soft-archives overdue terminal (`done`/`paid`) invoices via a `meta.archived_at` marker (idempotent — re-run never double-archives) and writes a `retention.archived` manifest. **Composes with the audit-immutability trigger — NEVER deletes `audit_log` rows**; for the audit class "retention" verifies WORM shipment (`shipped_at`) + records overdue/unshipped counts only. Windows are per-class on `Organization.settings.retention` (`resolve_retention_months`); `GET/PUT /api/retention-policy` reads/updates them. Disabled by default (`AP_RETENTION_ENABLED`); `AP_RETENTION_INTERVAL_SECONDS` / `_DEFAULT_MONTHS`. See `docs/retention.md`. |
 
-All six are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
+All seven are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
 
 ## Adapter patterns
 
@@ -467,6 +470,10 @@ Two request-path helpers in `app/services/audit_access.py` (thin wrappers over `
 The auditor-export surface is `app/api/audit.py` (`/api/audit/export`, `/api/audit/invoice/{id}` — GET-only, admin/CFO). `/api/audit/export` also serves a formatted **PDF** SOX audit-trail report via `?format=pdf` (cover + event-count summary + chronological table; `app/services/audit_report_pdf.py`, pure-function modelled on `remittance_pdf.py`; renders only the field-NAME-sanitised entries). See `docs/api-reference.md` § Audit Trail.
 
 **Periodic access reviews (SOX)** — `app/api/access_reviews.py` (`GET /api/access-reviews` + `POST /api/access-reviews/acknowledge`, admin/CFO). Compute-on-read (no migration): `app/services/access_review.py` flags users holding an elevated role (`admin`/`ap_manager`/`cfo`) whose last *mutating* audit action is older than `AP_ACCESS_REVIEW_DORMANT_DAYS` (default 90), or who never acted, as DORMANT. The review list is itself a sensitive read (`access_review.viewed`); acknowledge writes `access_review.completed` + stamps `Organization.settings.access_review`. See `docs/access-reviews.md`.
+
+**Digital signatures on approvals (non-repudiation):** every `invoice.approved` audit row carries an HMAC-SHA256 "timestamp + user hash" in `details.signature` over the canonical approval facts (invoice id + exact Decimal amount + actor + decision + timestamp). Signed in `services/review.approve_invoice` (`services/approval_signature.py` — pure); re-verifiable at `GET /api/audit/invoice/{id}/verify-signatures` (admin/CFO), where a post-approval tamper of the amount/actor/timestamp → `valid: false`. Key `AP_APPROVAL_SIGNING_KEY` — empty → signing skipped, NON-secret committed dev value, real key via sops (no hardcoded fallback). See `docs/approval-signatures.md`.
+
+**Retention policies (records management):** per-record-class windows on `Organization.settings.retention` (`GET/PUT /api/retention-policy`, admin); the `retention_sweep` background loop archives overdue terminal invoices via a `meta.archived_at` marker and, for the WORM `audit_log` class, verifies shipment instead of deleting — it never deletes audit rows (composes with the immutability trigger). See `docs/retention.md`.
 
 ## Dispatch modes
 
