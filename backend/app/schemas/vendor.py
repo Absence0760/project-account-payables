@@ -80,6 +80,15 @@ class VendorResponse(BaseModel):
     created_at: str
     bank_details: VendorBankDetails | None = None
 
+    # Sanctions & risk screening (migration 0042). Denormalised current
+    # state; the full trail is GET /api/vendors/{id}/screening-history.
+    screening_status: str = "unscreened"
+    last_screened_at: str | None = None
+    payments_blocked: bool = False
+    payments_blocked_reason: str | None = None
+    risk_score: str | None = None
+    risk_level: str = "unknown"
+
     model_config = {"from_attributes": True}
 
     @classmethod
@@ -119,6 +128,14 @@ class VendorResponse(BaseModel):
             invoice_count=invoice_count,
             created_at=v.created_at.isoformat() if v.created_at else "",
             bank_details=bank_details,
+            screening_status=getattr(v, "screening_status", "unscreened"),
+            last_screened_at=(
+                v.last_screened_at.isoformat() if getattr(v, "last_screened_at", None) else None
+            ),
+            payments_blocked=bool(getattr(v, "payments_blocked", False)),
+            payments_blocked_reason=getattr(v, "payments_blocked_reason", None),
+            risk_score=(str(v.risk_score) if getattr(v, "risk_score", None) is not None else None),
+            risk_level=getattr(v, "risk_level", "unknown"),
         )
 
 

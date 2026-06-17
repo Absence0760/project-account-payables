@@ -1,7 +1,8 @@
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, String
+from sqlalchemy import Date, DateTime, Numeric, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -58,6 +59,37 @@ class Vendor(Base, EntityMixin, TimestampMixin):
     kyc_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     kyc_verified_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     beneficial_owner_data: Mapped[dict | None] = mapped_column(JSONB)
+
+    # Sanctions & vendor-risk screening. Populated by
+    # `services.vendor_screening.screen_vendor_record` on vendor
+    # create / update, the periodic re-screen sweep
+    # (`services.vendor_rescreen`), and manual re-screens. The full
+    # screening trail lives in `sanctions_checks`; these columns are the
+    # denormalised "current state" the UI and the payment-block gate
+    # read. See migration 0042 and `docs/vendor-risk-screening.md`.
+    #
+    # screening_status: unscreened | clear | review | match — mirrors the
+    # most recent SanctionsCheck.result ('review_required' → 'review').
+    screening_status: Mapped[str] = mapped_column(String(20), default="unscreened", nullable=False)
+    last_screened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Hard payment block. Set True on a sanctions `match` (or a manual
+    # block); `services.compliance.check_payment_compliance` refuses any
+    # payment to a blocked vendor before it ever reaches a payment
+    # adapter. Cleared only by an explicit unblock.
+    payments_blocked: Mapped[bool] = mapped_column(default=False, nullable=False)
+    payments_blocked_reason: Mapped[str | None] = mapped_column(String(255))
+    payments_blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Composite vendor-risk score (0–100) + bucket. Derived by
+    # `services.vendor_risk_scoring` from sanctions signals + fraud
+    # signals + payment history. `risk_factors` holds the per-signal
+    # breakdown (no PII — counts / scores / list NAMES only).
+    risk_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    risk_level: Mapped[str] = mapped_column(
+        String(20), default="unknown", nullable=False
+    )  # low | medium | high | critical | unknown
+    risk_factors: Mapped[dict | None] = mapped_column(JSONB)
+    risk_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True

@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     contract_renewal_enabled: bool = False
     contract_renewal_interval_seconds: int = 3600
     contract_renewal_default_notice_days: int = 30
+
+    # Sanctions & vendor-risk screening. `vendor_screening_enabled` is the
+    # master switch for synchronous screening on vendor create / update
+    # (default on — the `mock` adapter is safe and local-first, returning
+    # `clear` for everything that isn't an obvious fixture). The re-screen
+    # sweep is a background loop (like contract renewal) and is OFF by
+    # default so local dev / tests don't run it; deployed envs flip it on.
+    # `vendor_rescreen_after_days` is the staleness window — a vendor whose
+    # last screen is older than this (or never screened) is re-screened on
+    # the next sweep. See `docs/vendor-risk-screening.md`.
+    vendor_screening_enabled: bool = True
+    vendor_rescreen_enabled: bool = False
+    vendor_rescreen_interval_seconds: int = 86400
+    vendor_rescreen_after_days: int = 7
     approval_escalation_interval_seconds: int = 600
     # Payment-status reconciler: backstop polling for processors whose
     # webhooks have gone missing. Disabled by default in local dev (the
