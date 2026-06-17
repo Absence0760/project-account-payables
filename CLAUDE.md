@@ -135,7 +135,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/credit-memos` | Credit-memo CRUD, vendor application |
 | `/tax` | 1099 tracking (W-9 upload, YTD totals, Tax1099 export) |
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
-| `/assistant` | Conversational AP assistant — chat over 5 fixed read-only tools (current tenant only), conversation history, token-usage meter. Mock adapter default (local-first); claude adapter when keyed |
+| `/assistant` | Conversational AP assistant — chat (`POST /chat`) + SSE streaming (`POST /chat/stream`, `tool`/`delta`/`done`/`error` events; 429 before the stream) over 5 fixed read-only tools (current tenant only), conversation history, token-usage meter. Mock adapter default (local-first); claude adapter when keyed |
 | `/workflows` | Workflow definition CRUD, active steps; no-code builder — templates (`GET /templates`, `POST /from-template`), version history (`GET/POST {id}/versions`, `POST {id}/restore/{version_id}`, `GET {id}/versions/diff`), simulation (`POST {id}/simulate`), import/export (`GET {id}/export`, `POST /import`). Builder step types (`condition`, `parallel`, `webhook`, `email`, `delay`) live in `steps_config` JSONB; PATCH auto-snapshots prior steps into a `WorkflowVersion` |
 | `/adaptive` | Approval-pattern learning, baseline anomalies, advisory workflow suggestions (read-only + dismiss) |
 | `/audit` | SOX auditor export — per-invoice / date-range trail (JSON+CSV, admin/CFO, GET-only); itself audited |
@@ -275,6 +275,11 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_QMS_SYNC_ENABLED` | `false` | Master switch for the QMS inspection-sync background sweep — keep `false` in local dev, flip on in deployed envs once a real QMS is configured per-org. Only upserts inspection rows; never moves money. See `backend/docs/po-matching.md` § QMS integration. |
 | `AP_QMS_SYNC_INTERVAL_SECONDS` | `3600` | QMS sync sweep interval. |
 | `AP_QMS_PROVIDER` | `mock` | Platform-default QMS adapter — `mock` (deterministic, no network/credential — local-first default) \| `generic` (httpx skeleton, fails closed without a key). Per-org override `Organization.settings.qms.provider`. |
+| `AP_ACCESS_REVIEW_DORMANT_DAYS` | `90` | Dormancy window for the periodic SOX access review. A user holding an elevated role (`admin`/`ap_manager`/`cfo`) whose last *mutating* audit action is older than this — or who has never acted — is flagged DORMANT in `GET /api/access-reviews`. Compute-on-read (no column/migration). See `backend/docs/access-reviews.md`. |
+| `AP_APPROVAL_SIGNING_KEY` | (empty) | HMAC-SHA256 key for digital signatures on invoice approvals (SOX non-repudiation). Signs the canonical approval payload (invoice id + exact amount + actor + decision + timestamp) onto each immutable `invoice.approved` audit row; re-verified at `GET /api/audit/invoice/{id}/verify-signatures`. Empty → signing skipped (no hardcoded fallback). NON-secret dev value committed in `.env.development`; real key via sops. See `backend/docs/approval-signatures.md`. |
+| `AP_RETENTION_ENABLED` | `false` | Master switch for the retention-policy enforcement sweep (SOX records management) — keep `false` in local dev, flip on in deployed envs. The sweep soft-archives overdue terminal invoices and verifies audit-log WORM shipment via a privileged, audited path; it NEVER deletes audit rows (composes with the immutability trigger). See `backend/docs/retention.md`. |
+| `AP_RETENTION_INTERVAL_SECONDS` | `86400` | Retention sweep interval. |
+| `AP_RETENTION_DEFAULT_MONTHS` | `84` | Platform-default retention window (months) when an org sets no per-class override on `Organization.settings.retention`. |
 
 Full list in `backend/app/config.py`.
 
