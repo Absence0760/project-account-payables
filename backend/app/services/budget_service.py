@@ -31,12 +31,11 @@ Spend definitions (the contract the ``/spend`` + ``/check`` endpoints expose):
   actual     — money already invoiced against this budget's dimension. Invoices
                do not carry a ``budget_id``, so they are attributed by matching
                the budget's ``dimension`` to the corresponding ``Invoice``
-               column:
+               column — one column per dimension, all four covered:
                  - ``cost_center``  → ``Invoice.cost_center == dimension_value``
                  - ``gl_account``   → ``Invoice.gl_account  == dimension_value``
-                 - ``department`` / ``project`` — no direct Invoice column today,
-                   so actual is 0 for those dimensions (committed still tracks
-                   them via the requisition link). Documented as a known gap.
+                 - ``department``   → ``Invoice.department  == dimension_value``
+                 - ``project``      → ``Invoice.project     == dimension_value``
                Only invoices in a REALISED-SPEND status count — ``approved``,
                ``payment_scheduled``, ``paid``, ``posted_in_erp``, ``sent_to_erp``,
                ``done`` — so a brand-new / rejected invoice never inflates actual.
@@ -74,6 +73,16 @@ OPEN_COMMITMENT_REQ_STATUSES: tuple[RequisitionStatus, ...] = (
 # PO statuses that no longer represent a live commitment (excluded from the PO
 # leg of committed). Everything else (e.g. ``open``, ``received``) counts.
 _DEAD_PO_STATUSES: tuple[str, ...] = ("cancelled", "closed", "voided")
+
+# Maps each budget dimension to the ``Invoice`` column that carries that
+# dimension's value. Realised invoice spend is attributed by ``column ==
+# budget.dimension_value`` (invoices carry no ``budget_id``).
+_DIMENSION_MATCH_COLUMN = {
+    BudgetDimension.cost_center: Invoice.cost_center,
+    BudgetDimension.gl_account: Invoice.gl_account,
+    BudgetDimension.department: Invoice.department,
+    BudgetDimension.project: Invoice.project,
+}
 
 # Invoice statuses that represent realised spend against a budget dimension.
 REALISED_INVOICE_STATUSES: tuple[str, ...] = (
@@ -136,13 +145,11 @@ async def _committed_po_total(db: AsyncSession, budget: Budget) -> Decimal:
 async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> Decimal:
     """Realised invoice spend matched to this budget's dimension.
 
-    Only ``cost_center`` and ``gl_account`` budgets have a matching Invoice
-    column; ``department`` / ``project`` return 0 (see module docstring)."""
-    if budget.dimension == BudgetDimension.cost_center:
-        match_col = Invoice.cost_center
-    elif budget.dimension == BudgetDimension.gl_account:
-        match_col = Invoice.gl_account
-    else:
+    Every budget dimension maps to a matching ``Invoice`` column (see module
+    docstring), so all four — ``cost_center`` / ``gl_account`` / ``department``
+    / ``project`` — contribute actual spend."""
+    match_col = _DIMENSION_MATCH_COLUMN.get(budget.dimension)
+    if match_col is None:
         return Decimal(0)
 
     total = (

@@ -89,6 +89,10 @@ class Invoice(Base, EntityMixin, TimestampMixin):
     assigned_to: Mapped[str | None] = mapped_column(String(255))
     gl_account: Mapped[str | None] = mapped_column(String(100))
     cost_center: Mapped[str | None] = mapped_column(String(100))
+    # Budget-dimension attributes (procurement budgets match realised invoice
+    # spend by these columns — see services.budget_service._actual_invoice_total).
+    department: Mapped[str | None] = mapped_column(String(100), index=True)
+    project: Mapped[str | None] = mapped_column(String(100), index=True)
     file_url: Mapped[str | None] = mapped_column(String(1024))
     file_key: Mapped[str | None] = mapped_column(String(512))
     warnings: Mapped[list | None] = mapped_column(JSONB)

@@ -37,17 +37,19 @@ only (mirrors `api/expenses.py::report_summary`).
 |------|-----------|
 | **allocated** | `budget.amount` — the cap for this dimension/period. |
 | **committed** | Earmarked but not yet invoiced. Two legs, summed: (1) `PurchaseRequisition.total` for requisitions linked to the budget (`budget_id == budget.id`) in an **open-commitment** status — `submitted`, `pending_approval`, `approved` (live demand not yet a PO); (2) `PurchaseOrder.total` for the POs those budget-linked requisitions converted into (`converted` reqs joined via `converted_po_id`), excluding cancelled/closed/voided POs. A converted req is counted via its PO (leg 2), **not** the req (leg 1) — `converted` is deliberately omitted from leg 1 so the two never double-count. |
-| **actual** | Realised invoice spend matched to the dimension. Invoices have no `budget_id`, so they're attributed by column: `cost_center` → `Invoice.cost_center`, `gl_account` → `Invoice.gl_account`. Only invoices in a realised status count — `approved`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled`, `paid`, `done` — so a new/rejected invoice never inflates actual. |
+| **actual** | Realised invoice spend matched to the dimension. Invoices have no `budget_id`, so they're attributed by column — one per dimension, all four covered: `cost_center` → `Invoice.cost_center`, `gl_account` → `Invoice.gl_account`, `department` → `Invoice.department`, `project` → `Invoice.project`. Only invoices in a realised status count — `approved`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled`, `paid`, `done` — so a new/rejected invoice never inflates actual. |
 | **remaining** | `allocated - committed - actual` (negative = overspend). |
 | **utilization_pct** | `(committed + actual) / allocated * 100`, 2 dp. `0` when allocated is 0. |
 
-### Known gap — `department` / `project` actuals
+### `department` / `project` actuals — resolved
 
-Invoices carry `cost_center` and `gl_account` columns but **no** department or
-project column today, so `actual` is `0` for `department` / `project` budgets
-(committed still tracks them via the requisition link). Closing this needs
-either an `Invoice.department` / `project` column or a requisition→invoice link;
-deferred until the requisition→PO→invoice chain lands its invoice leg.
+Previously `actual` read `0` for `department` / `project` budgets because
+invoices carried no matching column. Invoices now carry indexed
+`Invoice.department` and `Invoice.project` columns (migration
+`0044_invoice_department_project`), set on invoice create/update like
+`cost_center`. `actual` therefore sums realised invoices for **all four**
+dimensions — `cost_center`, `gl_account`, `department`, `project` — via the
+`_DIMENSION_MATCH_COLUMN` map in `services/budget_service.py`.
 
 ## Endpoints
 

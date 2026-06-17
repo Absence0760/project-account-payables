@@ -161,6 +161,8 @@ export interface Invoice {
 	assigned_to: string | null;
 	gl_account: string | null;
 	cost_center: string | null;
+	department: string | null;
+	project: string | null;
 	contract_id: string | null;
 	created_at: string;
 	file_url: string | null;

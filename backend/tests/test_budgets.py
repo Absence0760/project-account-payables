@@ -107,7 +107,15 @@ async def _mk_po(realdb, key, *, total, status="open") -> uuid.UUID:
 
 
 async def _mk_invoice(
-    realdb, key, *, amount, status, cost_center=None, gl_account=None
+    realdb,
+    key,
+    *,
+    amount,
+    status,
+    cost_center=None,
+    gl_account=None,
+    department=None,
+    project=None,
 ) -> uuid.UUID:
     mk = realdb.sessionmaker(key)
     org_id = realdb.info(key).org_id
@@ -122,6 +130,8 @@ async def _mk_invoice(
                 status=status,
                 cost_center=cost_center,
                 gl_account=gl_account,
+                department=department,
+                project=project,
                 organization_id=org_id,
             )
         )
@@ -389,6 +399,42 @@ async def test_spend_actual_cost_center_invoices(realdb):
     async with realdb.client(key="a", role="cfo") as c:
         body = (await c.get(f"/api/budgets/{bid}/spend")).json()
     assert body["actual"] == 500.0  # 300 + 200
+    assert body["committed"] == 0.0
+    assert body["remaining"] == 9500.0
+
+
+async def test_spend_actual_department_invoices(realdb):
+    """Department budgets now sum realised invoices matched on Invoice.department
+    (previously actual read 0 — see budget_service module docstring)."""
+    bid = await _mk_budget_row(
+        realdb, dimension="department", dimension_value="Engineering", amount="10000.00"
+    )
+    # Realised statuses count; new does not; wrong department doesn't.
+    await _mk_invoice(realdb, "a", amount="300.00", status="paid", department="Engineering")
+    await _mk_invoice(realdb, "a", amount="200.00", status="approved", department="Engineering")
+    await _mk_invoice(realdb, "a", amount="9999.00", status="new", department="Engineering")
+    await _mk_invoice(realdb, "a", amount="8888.00", status="paid", department="Marketing")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get(f"/api/budgets/{bid}/spend")).json()
+    assert body["actual"] == 500.0  # 300 + 200
+    assert body["committed"] == 0.0
+    assert body["remaining"] == 9500.0
+
+
+async def test_spend_actual_project_invoices(realdb):
+    """Project budgets now sum realised invoices matched on Invoice.project."""
+    bid = await _mk_budget_row(
+        realdb, dimension="project", dimension_value="Project X", amount="10000.00"
+    )
+    await _mk_invoice(realdb, "a", amount="450.00", status="posted_in_erp", project="Project X")
+    await _mk_invoice(realdb, "a", amount="50.00", status="done", project="Project X")
+    await _mk_invoice(realdb, "a", amount="7777.00", status="rejected", project="Project X")
+    await _mk_invoice(realdb, "a", amount="6666.00", status="paid", project="Project Y")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get(f"/api/budgets/{bid}/spend")).json()
+    assert body["actual"] == 500.0  # 450 + 50
     assert body["committed"] == 0.0
     assert body["remaining"] == 9500.0
 

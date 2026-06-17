@@ -49,6 +49,8 @@ class InvoiceBase(BaseModel):
     notes: str | None = None
     gl_account: str | None = Field(default=None, max_length=100)
     cost_center: str | None = Field(default=None, max_length=100)
+    department: str | None = Field(default=None, max_length=100)
+    project: str | None = Field(default=None, max_length=100)
 
 
 class InvoiceCreate(InvoiceBase):
@@ -82,6 +84,8 @@ class InvoiceUpdate(BaseModel):
     notes: str | None = None
     gl_account: str | None = Field(default=None, max_length=100)
     cost_center: str | None = Field(default=None, max_length=100)
+    department: str | None = Field(default=None, max_length=100)
+    project: str | None = Field(default=None, max_length=100)
 
 
 class InvoiceResponse(BaseModel):
@@ -120,6 +124,8 @@ class InvoiceResponse(BaseModel):
     assigned_to: str | None
     gl_account: str | None
     cost_center: str | None
+    department: str | None = None
+    project: str | None = None
     # Spend-to-contract link (services.contract_spend / contract_compliance).
     # Null = off-contract spend. Set via POST /api/invoices/{id}/link-contract.
     contract_id: str | None = None
@@ -173,6 +179,8 @@ class InvoiceResponse(BaseModel):
             assigned_to=inv.assigned_to,
             gl_account=inv.gl_account,
             cost_center=inv.cost_center,
+            department=inv.department,
+            project=inv.project,
             contract_id=str(inv.contract_id) if inv.contract_id else None,
             created_at=inv.created_at.isoformat() if inv.created_at else "",
             file_url=inv.file_url,

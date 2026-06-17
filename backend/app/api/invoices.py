@@ -637,6 +637,8 @@ async def create_invoice(
         notes=body.notes,
         gl_account=body.gl_account,
         cost_center=body.cost_center,
+        department=body.department,
+        project=body.project,
     )
     db.add(invoice)
     await db.flush()

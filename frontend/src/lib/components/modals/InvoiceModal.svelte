@@ -86,6 +86,8 @@
 	let payment_method = $state(invoice.payment_method ?? '');
 	let gl_account = $state(invoice.gl_account ?? '');
 	let cost_center = $state(invoice.cost_center ?? '');
+	let department = $state(invoice.department ?? '');
+	let project = $state(invoice.project ?? '');
 
 	interface GLAccountOption { code: string; name: string; }
 	let glAccounts = $state<GLAccountOption[]>([]);
@@ -244,6 +246,8 @@
 				reference_number: reference_number || null,
 				gl_account: gl_account || null,
 				cost_center: cost_center || null,
+				department: department || null,
+				project: project || null,
 			});
 			toast('Invoice saved', 'success');
 			onclose();
@@ -273,6 +277,8 @@
 				reference_number: reference_number || null,
 				gl_account: gl_account || null,
 				cost_center: cost_center || null,
+				department: department || null,
+				project: project || null,
 			});
 			const result = await api.post<{ id: string; status: string }>(`/api/invoices/${invoice.id}/complete`, {});
 			// If manually assigning an approver and invoice moved to ready_for_review
@@ -379,6 +385,8 @@
 					reference_number = updated.reference_number ?? reference_number;
 					gl_account = updated.gl_account ?? gl_account;
 					cost_center = updated.cost_center ?? cost_center;
+					department = updated.department ?? department;
+					project = updated.project ?? project;
 
 					// Refresh the invoice list, audit log, and line items
 					await invoiceStore.fetch();
@@ -1034,6 +1042,14 @@
 						<label>
 							<span>Cost Center {#if dot('suggested_cost_center', cost_center)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_cost_center)}" data-tip="{Math.round(fieldConfidence.suggested_cost_center * 100)}% — {confidenceLabel(fieldConfidence.suggested_cost_center)}"></span>{/if}</span>
 							<input type="text" bind:value={cost_center} placeholder="e.g. ADMIN" />
+						</label>
+						<label>
+							<span>Department</span>
+							<input type="text" bind:value={department} placeholder="e.g. Engineering" />
+						</label>
+						<label>
+							<span>Project</span>
+							<input type="text" bind:value={project} placeholder="e.g. Project X" />
 						</label>
 					</div>
 
