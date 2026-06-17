@@ -129,8 +129,10 @@
 		<div class="section-header">
 			<h2>Custom roles</h2>
 			<p class="section-hint">
-				Mint additional role names for this organization. Custom roles can be assigned to
-				users and referenced in approval-chain configuration.
+				Organizational labels you can assign to users for grouping. <strong>Custom roles do
+				not grant access</strong> — page and API permissions are controlled only by the four
+				system roles above. A user holding only custom roles can sign in but cannot reach any
+				restricted screen or action.
 			</p>
 		</div>
 		<DataTable columns={CUSTOM_COLUMNS} isEmpty={customRoles.length === 0} empty="No custom roles yet.">
@@ -173,8 +175,8 @@
 >
 	<h2>Create role</h2>
 	<p class="modal-hint">
-		The name is referenced by approval-chain configs once it's been created — pick
-		something stable.
+		A custom role is an organizational label only — it does not grant any permissions.
+		Access is controlled by the system roles (Admin / AP Manager / AP Clerk / CFO).
 	</p>
 	<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 		<label>
@@ -203,8 +205,8 @@
 	{#if editing}
 		<h2>Edit "{editing.name}"</h2>
 		<p class="modal-hint">
-			Role names are immutable — they're referenced by approval-chain configs. Edit the
-			description only.
+			Role names are immutable once created — edit the description only. Remember a custom
+			role grants no access; permissions come from the system roles.
 		</p>
 		<form onsubmit={(e) => { e.preventDefault(); handleEdit(); }}>
 			<label>

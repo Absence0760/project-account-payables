@@ -114,7 +114,13 @@ async def create_role(
 ):
     """Mint a custom role for this org. The name must not collide with a
     system role, since the route-level RBAC gates would silently treat the
-    custom role as the built-in one."""
+    custom role as the built-in one.
+
+    NOTE: a custom role confers NO permissions today — `require_roles(...)`
+    only ever matches the four system-role names, so a user holding only
+    custom roles passes no gate. Custom roles are organizational labels until
+    the planned permission layer lands (see roadmap "Granular permissions /
+    segregation of duties" + docs/authentication.md § RBAC)."""
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Role name cannot be empty")

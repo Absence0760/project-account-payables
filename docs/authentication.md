@@ -231,6 +231,18 @@ Roles are returned by `GET /api/auth/me` in the `roles` array. The frontend uses
 
 Backend API-level role enforcement is in place via `Depends(require_roles(...))` on every protected endpoint. The full permission matrix is in the **RBAC** section below. Frontend gates exist for UX (hiding buttons, sidebar items) but are not the security boundary — the backend is.
 
+> **Custom roles are inert for access control.** Admins can mint per-org
+> custom roles (`POST /api/admin/roles`, surfaced at `/admin/roles`) and
+> assign them to users, but `require_roles(...)` only ever matches the four
+> system-role names above, and the frontend gates (`isManager` / `isCfo` /
+> `hasAnyRole(...)`) are likewise hardcoded to them. A user holding *only*
+> custom roles can authenticate but passes no gate — so a custom role today
+> is an organizational label, not a permission. Nothing reads custom role
+> names for approval routing either (the approval chain routes by explicit
+> `approver_ids`; `resolve_role_user_ids` is only ever called with
+> `"ap_manager"`). Making custom roles functional is scoped under
+> *Granular permissions / segregation of duties* in the roadmap.
+
 ## Testing Auth via curl
 
 ```bash
@@ -616,5 +628,5 @@ A companion test catches the inverse: if `NO_AUTH_REQUIRED` references an endpoi
 ### Not in this pass
 
 - **Segregation of duties (SoD)** — users currently can approve invoices they themselves created. The classic AP SoD invariant ("approver != creator") is a sensible follow-up but not part of basic RBAC. Tracked in the roadmap.
-- **Per-org custom roles** — the four roles (admin, ap_manager, ap_clerk, cfo) are hard-coded. Custom-role configuration would need a tenant-scoped permission table and policy engine.
+- **Per-org custom roles with teeth** — the CRUD exists (`/api/admin/roles`, `/admin/roles` UI), but custom roles confer no permissions: `require_roles(...)` and the frontend gates only recognize the four hardcoded system roles (see the callout in the RBAC intro above). Making a custom role actually grant access needs finer-grained permissions than whole-role bundling can express — the conflation is *within* `ap_manager` (e.g. approving vendor bank-detail changes and executing payment runs share one role), so the durable fix is a permission layer, scoped under *Granular permissions / segregation of duties* in the roadmap.
 - **Audit log of denied requests** — denials are logged via Python `logging.warning` for now, not persisted to the `audit_log` table. If oncall wants to query historical denials, surface them via centralized log shipping (planned under SOC 2 readiness).

@@ -353,6 +353,7 @@
 		</label>
 		<fieldset>
 			<legend>Roles</legend>
+			<p class="modal-hint">Only the four system roles grant access. Custom roles are labels and confer no permissions.</p>
 			<div class="role-checks">
 				{#each adminStore.roles as role}
 					<label class="check-label">
@@ -419,6 +420,7 @@
 			</label>
 			<fieldset>
 				<legend>Roles</legend>
+				<p class="modal-hint">Only the four system roles grant access. Custom roles are labels and confer no permissions.</p>
 				<div class="role-checks">
 					{#each adminStore.roles as role}
 						<label class="check-label">
