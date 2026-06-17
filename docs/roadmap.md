@@ -646,7 +646,7 @@ See `backend/docs/dynamic-discounting.md`.
 ---
 
 ### 4-Way Matching (with Quality Inspection)
-**Status:** Shipped (first slice)
+**Status:** Shipped
 
 Extend PO matching to include quality inspection data — critical for manufacturing.
 
@@ -656,8 +656,8 @@ Extend PO matching to include quality inspection data — critical for manufactu
 - [x] Partial payment — pay only for accepted quantity (`accepted_quantity`)
 - [x] Configurable `require_inspection` per org (`Organization.settings.matching.require_inspection`)
 - [x] Exception routing when quality data is missing or mismatched (`quality_hold`)
-- [ ] Configurable match rules per vendor or commodity type
-- [ ] Integration with QMS (Quality Management Systems)
+- [x] Configurable match rules per vendor or commodity type — `services/matching_rules.resolve_match_rule` resolves `require_inspection` + amount `tolerance_pct` per-field from `settings.matching.vendor_rules[<vendor_id>]` → `commodity_rules[<gl_account>]` → org default
+- [x] Integration with QMS (Quality Management Systems) — `services/qms_adapters/` (mock default + generic skeleton) + `qms_sync` background sweep + `POST /api/inspections/sync`; pulls inspection records into `quality_inspections`, idempotent on `(org, inspection_number)`
 
 ---
 

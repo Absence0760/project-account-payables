@@ -88,8 +88,9 @@ MatchResult:
 ```
 
 `match_invoice_to_po(db, invoice, tolerance_pct=5.0, require_inspection=False)`
-takes the `require_inspection` flag; `invoice_warnings._refresh_po_match` reads
-it from `Organization.settings.matching.require_inspection`.
+takes both knobs; `invoice_warnings._refresh_po_match` resolves them per-invoice
+via `services/matching_rules.resolve_match_rule` (see § Per-vendor / per-commodity
+rules) rather than reading the org flag directly.
 
 ## Integration Points
 
@@ -126,13 +127,74 @@ The existing `po_mismatch` handling is unchanged; `quality_hold` is additive.
 Per-org, in `Organization.settings.matching`:
 
 ```json
-{ "matching": { "require_inspection": true } }
+{
+  "matching": {
+    "require_inspection": false,
+    "tolerance_pct": 5.0,
+    "vendor_rules":    { "<vendor_id>":        { "require_inspection": true, "tolerance_pct": 2.0 } },
+    "commodity_rules": { "<gl_account_code>":  { "require_inspection": true, "tolerance_pct": 1.0 } }
+  }
+}
 ```
 
 When `require_inspection` is `true`, an invoice that matches a PO but has **no**
 quality inspection on file raises a `quality_hold` warning/exception (the
 inspection is mandatory before payment). Default `false` — 4-way only kicks in
 when an inspection actually exists.
+
+#### Per-vendor / per-commodity rules
+
+Both knobs — `require_inspection` and the amount `tolerance_pct` — are
+configurable per **vendor** and per **commodity type**, not just org-wide.
+"Commodity type" is the invoice's header GL account (`invoice.gl_account`); no
+new columns. `services/matching_rules.resolve_match_rule(org_settings, vendor_id,
+gl_account)` resolves an `EffectiveMatchRule` and `_refresh_po_match` passes the
+result into `match_invoice_to_po`.
+
+Precedence is **per-field** (the two knobs resolve independently): for each
+field take the first present value walking
+
+```
+vendor_rules[str(vendor_id)]  →  commodity_rules[gl_account]  →
+matching.<field>  →  hardcoded default (require_inspection=False, tolerance_pct=5.0)
+```
+
+So a vendor rule that only sets `require_inspection` still lets `tolerance_pct`
+fall through to the commodity / org / default layers. The resolver is pure (no
+DB / I/O) and never raises — malformed config (non-dict rules, missing keys,
+`None` vendor/GL, non-numeric tolerance) silently falls to the next layer. The
+returned `source` ("vendor" | "commodity" | "org" | "default") records where
+`require_inspection` resolved from, for logging.
+
+### QMS integration (inspection sync)
+
+Quality-inspection rows can be pulled from an external QMS / LIMS rather than
+only entered by hand. Same pluggable-adapter shape as the other provider
+families (`financing_adapters`, `fx_adapters`, …):
+
+- **Adapters** (`services/qms_adapters/`): `mock` (deterministic pass/fail/partial
+  fixtures, no network/credential — the local-first default) and `generic` (an
+  httpx skeleton that **fails closed** without a per-org `base_url` + `api_key`;
+  no hardcoded secret). Registry via `@register_qms_adapter`; selected per-org via
+  `Organization.settings.qms.provider`, falling back to `AP_QMS_PROVIDER`
+  (default `mock`). Contract: `async fetch_inspections(*, since=None) ->
+  list[QMSInspectionRecord]` + `async test_connection() -> bool`.
+- **Sync** (`services/qms_sync.py`): `sync_tenant_inspections` fetches records,
+  resolves each record's `po_number` / `gr_number` to local `PurchaseOrder` /
+  `GoodsReceipt` ids, then **upserts** a `QualityInspection` idempotently keyed on
+  `(organization_id, inspection_number)` (re-run updates in place, never
+  duplicates). Each landed record writes an append-only `quality_inspection.synced`
+  audit row (PII-free: inspection number + resolution outcome only). After the
+  upsert it best-effort re-runs `invoice_warnings.refresh_warnings` (inside a
+  SAVEPOINT) for invoices referencing the affected POs so a fresh quality verdict
+  re-gates the 4-way match — never fails the sync.
+- **Sweep** (`run_qms_sync_loop`): a long-lived asyncio task (mirrors
+  `contract_renewal`) that sweeps every tenant DB on `AP_QMS_SYNC_INTERVAL_SECONDS`.
+  Disabled by default (`AP_QMS_SYNC_ENABLED=false`); orgs without a `settings.qms`
+  block are skipped while the platform provider is `mock`.
+- **Manual trigger**: `POST /api/inspections/sync` (admin / ap_manager) runs one
+  sync for the current tenant from `Organization.settings.qms`, returning
+  `{fetched, created, updated}`.
 
 ## Data Models
 
@@ -165,8 +227,8 @@ The procurement models already exist:
 | Configurable `require_inspection` per org (`Organization.settings.matching.require_inspection`) | Done |
 | Inspections API (`/api/inspections` list/create/detail) | Done |
 | Inspection display in invoice modal (Quality Inspection sub-panel) | Done |
-| QMS integration (real inspection-system sync) | Planned |
-| Per-vendor / per-commodity inspection rules | Planned |
+| QMS integration (`qms_adapters` mock + generic skeleton, `qms_sync` sweep, `POST /api/inspections/sync`) | Done |
+| Per-vendor / per-commodity match rules (`services/matching_rules.py`, vendor/GL `require_inspection` + `tolerance_pct` overrides) | Done |
 | Tolerance configuration | Done (5% default) |
 | Vendor-aware matching (match PO by vendor_id) | Done |
 | Goods receipt quantity comparison | Done |

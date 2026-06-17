@@ -157,7 +157,9 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `extraction.py` | Dispatches AI extraction (platform Claude Vision or BYOK provider) |
 | `erp.py` | Pushes approved invoices to ERP with retry logic |
 | `review.py` | Approve/reject with field corrections |
-| `po_matching.py` | 2-way/3-way/4-way invoice-to-PO matching — invoked by `invoice_warnings.refresh_warnings` after every extraction and on every invoice mutation; result persisted on `Invoice.po_match`. The 4-way leg adds a Quality Inspection gate (pass/fail/partial acceptance), gated per-org by `Organization.settings.matching.require_inspection` |
+| `po_matching.py` | 2-way/3-way/4-way invoice-to-PO matching — invoked by `invoice_warnings.refresh_warnings` after every extraction and on every invoice mutation; result persisted on `Invoice.po_match`. The 4-way leg adds a Quality Inspection gate (pass/fail/partial acceptance). `require_inspection` + amount `tolerance_pct` are resolved per-invoice by `matching_rules` |
+| `matching_rules.py` | Pure resolver for the effective PO-match rule — `require_inspection` + `tolerance_pct` per-field from `settings.matching.vendor_rules[<vendor_id>]` → `commodity_rules[<gl_account>]` → org default → hardcoded default. Never raises. See `backend/docs/po-matching.md` § Per-vendor / per-commodity rules |
+| `qms_sync.py` | QMS inspection sync — pulls `QMSInspectionRecord`s from the configured `qms_adapters` provider into `quality_inspections`, idempotent upsert on `(org, inspection_number)`, PII-free `quality_inspection.synced` audit. `run_qms_sync_loop` background sweep (mirrors `contract_renewal`); `POST /api/inspections/sync` for manual runs |
 | `vendor_matching.py` | Fuzzy vendor matching by name/code/tax_id |
 | `invoice_warnings.py` | Generates warnings and exceptions (duplicates, fraud, etc.) |
 | `payment_erp_sync.py` | Syncs payment status back to ERP |
@@ -180,6 +182,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 - **Audit shipping** (`services/audit_shipping/`): mock, cloudwatch, s3_objectlock. Registry via `@register_audit_shipping_adapter` decorator. Sinks for the centralized SOC 2 audit trail; list configured via `AP_AUDIT_SHIPPING_PROVIDERS`.
 - **FX rates** (`services/fx_adapters/`): mock, openexchangerates. Locked once per international payment at submission and persisted on the row. See `backend/docs/international-payments.md`.
 - **Supplier financing** (`services/financing_adapters/`): mock (local-first default — deterministic, no network), c2fo (skeleton — live key required, fail-closed). Registry via `@register_financing_adapter`. A supply-chain-finance marketplace funds a supplier's early payment (advance = face − fee); the buyer repays at the net due date. Selected per-org via `Organization.settings.financing.provider`. See `backend/docs/dynamic-discounting.md`.
+- **QMS / quality inspections** (`services/qms_adapters/`): mock (local-first default — deterministic pass/fail/partial fixtures, no network/credential), generic (httpx skeleton — fails closed without a per-org `base_url` + `api_key`). Registry via `@register_qms_adapter`. `services/qms_sync` pulls inspection records into `quality_inspections` (idempotent upsert on `(org, inspection_number)`); selected per-org via `Organization.settings.qms.provider` → `AP_QMS_PROVIDER`. See `backend/docs/po-matching.md` § QMS integration.
 - **Sanctions / KYC** (`services/sanctions_adapters/`): mock, complyadvantage, dowjones, refinitiv (the last three are skeletons — live key required, fail-closed without one). Called by `services/compliance.check_payment_compliance` before every payment-adapter call, and by `services/vendor_screening.screen_vendor_record` on vendor create/update, the `vendor_rescreen` periodic sweep, and manual re-screens. Adverse-media hits surface via `ScreeningResult.categories`. See `backend/docs/vendor-risk-screening.md`.
 - **Email (outbound)** (`services/email_adapters/`): console (dev default), smtp (Mailpit / any relay), ses. Selects via `AP_EMAIL_PROVIDER`. Used by signup + welcome flows.
 - **Email intake (inbound)** (`services/email_intake_adapters/`): ses, mailgun, generic. Parses provider-specific inbound webhook payloads into a normalised `InboundEmail`.
@@ -269,6 +272,9 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_DISCOUNT_OPTIMIZATION_INTERVAL_SECONDS` | `3600` | Auto-capture sweep interval. |
 | `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD` | `12.0` | Annualized return (APR %) an early-pay offer must clear for the sweep to auto-accept it. |
 | `AP_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | Platform-default annual cost of capital used by the ROI calculator; per-org override `Organization.settings.discounting.cost_of_capital_pct`. |
+| `AP_QMS_SYNC_ENABLED` | `false` | Master switch for the QMS inspection-sync background sweep — keep `false` in local dev, flip on in deployed envs once a real QMS is configured per-org. Only upserts inspection rows; never moves money. See `backend/docs/po-matching.md` § QMS integration. |
+| `AP_QMS_SYNC_INTERVAL_SECONDS` | `3600` | QMS sync sweep interval. |
+| `AP_QMS_PROVIDER` | `mock` | Platform-default QMS adapter — `mock` (deterministic, no network/credential — local-first default) \| `generic` (httpx skeleton, fails closed without a key). Per-org override `Organization.settings.qms.provider`. |
 
 Full list in `backend/app/config.py`.
 
