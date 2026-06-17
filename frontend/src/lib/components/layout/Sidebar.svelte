@@ -14,6 +14,17 @@
 		entityStore.ensureLoaded();
 	});
 	let showProfile = $state(false);
+	let profileBtn = $state<HTMLButtonElement | null>(null);
+
+	// Esc closes the profile popover and returns focus to its trigger, matching
+	// the backdrop-click dismissal. Without this the only way out is a click —
+	// a keyboard user who opened the menu was stranded in it.
+	function onWindowKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && showProfile) {
+			showProfile = false;
+			profileBtn?.focus();
+		}
+	}
 
 	let unread = $derived(notificationStore.unread);
 	let badgeLabel = $derived(unread > 99 ? '99+' : String(unread));
@@ -112,6 +123,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 <aside class="sidebar" class:collapsed>
 	<div class="logo">
 		{#if collapsed}
@@ -190,7 +203,7 @@
 				<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
 			</div>
 		{/if}
-		<button class="profile-btn" class:collapsed title={collapsed ? 'Profile' : ''} onclick={() => (showProfile = !showProfile)}>
+		<button bind:this={profileBtn} class="profile-btn" class:collapsed title={collapsed ? 'Profile' : ''} onclick={() => (showProfile = !showProfile)}>
 			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
 			{#if !collapsed}
 				<span class="profile-label">{auth.user?.full_name ?? 'Profile'}</span>

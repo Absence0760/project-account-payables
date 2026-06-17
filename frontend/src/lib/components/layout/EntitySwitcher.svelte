@@ -4,6 +4,7 @@
 	let { collapsed = false }: { collapsed?: boolean } = $props();
 
 	let open = $state(false);
+	let triggerBtn = $state<HTMLButtonElement | null>(null);
 
 	// Default entity first, then the rest alphabetically (matches the backend
 	// list order); "All entities" is rendered as a fixed first option.
@@ -15,7 +16,18 @@
 		open = false;
 		entityStore.select(id); // persists + reloads when changed
 	}
+
+	// Esc closes the entity menu and restores focus to its trigger, matching the
+	// backdrop-click dismissal — so a keyboard user isn't trapped in the open menu.
+	function onWindowKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && open) {
+			open = false;
+			triggerBtn?.focus();
+		}
+	}
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 {#if entityStore.multiEntity}
 	<div class="entity-switcher">
@@ -48,6 +60,7 @@
 			</div>
 		{/if}
 		<button
+			bind:this={triggerBtn}
 			class="entity-btn"
 			class:collapsed
 			title={collapsed ? `Entity: ${label}` : ''}
