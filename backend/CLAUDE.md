@@ -31,6 +31,7 @@ Deep-dive docs live in `backend/docs/`:
 | Redis | `docs/redis.md` |
 | MinIO / S3 | `docs/minio.md` |
 | Audit-log shipping (SOC 2) | `docs/audit-log-shipping.md` |
+| Periodic access reviews (SOX) | `docs/access-reviews.md` |
 | Audit-log summarization (invoice modal) | `docs/audit-summary.md` |
 | Email + in-app notifications | `docs/notifications.md` |
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
@@ -463,7 +464,9 @@ Two request-path helpers in `app/services/audit_access.py` (thin wrappers over `
 - `log_access(...)` — writes a `<entity_type>.viewed` row for SOX access-control auditing. Instrumented reads: vendor detail (`vendor.viewed`), payment detail (`payment.viewed`), card PAN reveal (`card.details_viewed`), the audit-trail view (`audit.viewed`), and every auditor export (`audit.exported`). The `details` payload records the field-**names** accessed, never the values — no tax id / bank number / PAN ever enters the audit trail (PII-out-of-logs).
 - `build_field_diff(before, after, fields)` — produces `{field: {old, new}}` for SOX change history on invoice edits + approve-with-corrections. Money serialises as **string-Decimal**, never float.
 
-The auditor-export surface is `app/api/audit.py` (`/api/audit/export`, `/api/audit/invoice/{id}` — GET-only, admin/CFO). See `docs/api-reference.md` § Audit Trail.
+The auditor-export surface is `app/api/audit.py` (`/api/audit/export`, `/api/audit/invoice/{id}` — GET-only, admin/CFO). `/api/audit/export` also serves a formatted **PDF** SOX audit-trail report via `?format=pdf` (cover + event-count summary + chronological table; `app/services/audit_report_pdf.py`, pure-function modelled on `remittance_pdf.py`; renders only the field-NAME-sanitised entries). See `docs/api-reference.md` § Audit Trail.
+
+**Periodic access reviews (SOX)** — `app/api/access_reviews.py` (`GET /api/access-reviews` + `POST /api/access-reviews/acknowledge`, admin/CFO). Compute-on-read (no migration): `app/services/access_review.py` flags users holding an elevated role (`admin`/`ap_manager`/`cfo`) whose last *mutating* audit action is older than `AP_ACCESS_REVIEW_DORMANT_DAYS` (default 90), or who never acted, as DORMANT. The review list is itself a sensitive read (`access_review.viewed`); acknowledge writes `access_review.completed` + stamps `Organization.settings.access_review`. See `docs/access-reviews.md`.
 
 ## Dispatch modes
 

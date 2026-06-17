@@ -31,11 +31,13 @@ from app.api.deps import (
 )
 from app.database import get_control_db
 from app.models.invoice import Invoice
+from app.models.organization import Organization
 from app.models.user import User
 from app.models.workflow import AuditLog
 from app.schemas.audit import AuditExportEntry
 from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
+from app.services.audit_report_pdf import AuditReportContext, render_audit_report_pdf
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -99,18 +101,23 @@ async def export_audit_trail(
     start: date | None = Query(None),
     end: date | None = Query(None),
     entity_type: str | None = Query(None),
-    export_format: str = Query("json", alias="format", pattern="^(json|csv)$"),
+    export_format: str = Query("json", alias="format", pattern="^(json|csv|pdf)$"),
     db: AsyncSession = Depends(get_tenant_db),
     control_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
 ):
-    """Auditor export — per-invoice OR date-range, JSON or CSV.
+    """Auditor export — per-invoice OR date-range, JSON / CSV / PDF.
 
     Provide either ``invoice_id`` (the invoice's whole correlation trail) or a
     ``start``/``end`` date range. The two are mutually exclusive. Validation
     errors are generic ("invalid range") and never echo entity values; a
     missing invoice returns 404 with no leaked data. The export itself is
     audited (``audit.exported``).
+
+    ``format=pdf`` returns a formatted SOX audit-trail report (cover + summary +
+    chronological table) for external auditors. It renders exactly the same
+    already-sanitised export entries the JSON/CSV dialects do (PII is kept out of
+    ``details`` at audit-write time) — no broader, no regulated value added.
     """
     if invoice_id is not None and (start is not None or end is not None):
         raise HTTPException(status_code=400, detail="Provide invoice_id or a date range, not both")
@@ -120,13 +127,19 @@ async def export_audit_trail(
     query = select(AuditLog)
 
     if invoice_id is not None:
-        correlation_id = (
-            await db.execute(select(Invoice.correlation_id).where(Invoice.id == invoice_id))
-        ).scalar_one_or_none()
-        if not correlation_id:
+        row = (
+            await db.execute(
+                select(Invoice.correlation_id, Invoice.invoice_number).where(
+                    Invoice.id == invoice_id
+                )
+            )
+        ).first()
+        if not row or not row[0]:
             raise HTTPException(status_code=404, detail="Invoice not found")
+        correlation_id, invoice_number = row
         query = query.where(AuditLog.correlation_id == correlation_id)
         scope = "invoice"
+        scope_label = f"Invoice {invoice_number}" if invoice_number else "Invoice"
     else:
         if start is not None and end is not None and start > end:
             raise HTTPException(status_code=400, detail="Invalid range")
@@ -140,6 +153,9 @@ async def export_audit_trail(
             next_day_start = datetime.combine(end + timedelta(days=1), time.min, tzinfo=UTC)
             query = query.where(AuditLog.created_at < next_day_start)
         scope = "range"
+        scope_label = (
+            f"{start.isoformat() if start else 'beginning'} to {end.isoformat() if end else 'now'}"
+        )
 
     if entity_type:
         query = query.where(AuditLog.entity_type == entity_type)
@@ -170,6 +186,26 @@ async def export_audit_trail(
             media_type="text/csv",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    if export_format == "pdf":
+        org = await control_db.get(Organization, user.organization_id)
+        ctx = AuditReportContext(
+            org_name=(org.name if org else "Organization"),
+            scope=scope,
+            scope_label=scope_label,
+            generated_at=datetime.now(UTC),
+            generated_by_name=user.full_name,
+            generated_by_email=user.email,
+            entries=export,
+        )
+        pdf_bytes = render_audit_report_pdf(ctx)
+        filename = f"audit_report_{date.today().isoformat()}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     return export
 
 
