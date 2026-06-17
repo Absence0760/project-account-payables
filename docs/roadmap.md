@@ -83,6 +83,19 @@ Conflict resolution: the per-vendor cache (see above) runs AFTER the AI output a
 - [x] Bulk re-code capability — `POST /api/invoices/bulk-recode-gl` (admin-only). Date / vendor scoped; priors-first then optional AI fallback. Defaults to `dry_run=true` and returns a `{matched, would_change, by_source, skipped, changes}` report. Admin UI: "Bulk Re-code GL" button on `/invoices` opens a preview-then-apply modal. Audit-logs each persisted change as `invoice.gl_recoded`.
 - [x] GL code validation against chart of accounts — post-extraction guard in `run_extraction` rejects any AI-suggested code (or cached vendor prior that's gone stale) that isn't in the org's active chart, drops it from the invoice header and line items, and emits a structured `gl_account_invalid` warning. No-ops when the org hasn't synced a chart yet.
 
+### Recurring / Subscription Invoices
+**Status:** Planned
+
+Predictable, fixed-cadence spend (rent, SaaS seats, utilities, insurance) shouldn't need a fresh upload + extraction every period. A recurring template auto-generates the next invoice on schedule, pre-coded and pre-matched, so it lands straight in the approval queue. Common in Bill.com, Tipalti, and Stampli; absent here today.
+
+- [ ] `RecurringInvoiceTemplate` tenant-scoped model — vendor, amount (or amount source), GL coding, entity, cadence (RRULE-ish: monthly / quarterly / annual + day-of-period), start/end, next-run-at; new Alembic migration that fans out to every tenant
+- [ ] Background generation sweep — mirror the existing `contract_renewal` / `discount_auto_trigger` loop pattern (`AP_RECURRING_INVOICES_ENABLED` master switch, off in local dev); generates the next `Invoice` in `new`/`pending` and advances `next_run_at`. **Idempotent** on `(template_id, period_key)` so a double-fire never double-creates
+- [ ] Variance handling — flag when an arrived invoice for a recurring vendor deviates from the template amount beyond a tolerance (reuse the price-variance signal from data enrichment) rather than blindly trusting the schedule
+- [ ] Link generated invoices back to their template + a "skip / pause / end" control on the template; every generation + lifecycle change audited
+- [ ] Frontend `/recurring` route — template CRUD, upcoming-schedule preview, generated-invoice history
+
+**Competitors:** Bill.com (recurring bills), Tipalti (subscription spend), Stampli, Airbase (SaaS spend management)
+
 ---
 
 ## Priority 2: Workflow, Approvals & Exceptions
@@ -245,6 +258,35 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 - [x] Check printing service — Checkeeper adapter (`method=check`): prints + mails physical checks. Mailing-address validation refuses checks without a valid US address before submitting.
 - [x] Payment status webhooks from processor — every adapter implements `parse_webhook` with HMAC signature verification + Redis-based event dedup (`services/webhook_security.py`). Stripe + Increase use timestamped signatures with 5-min replay protection.
 - [x] Bank reconciliation — import statements, auto-match. CSV importer (`services/bank_reconciliation.py::parse_csv_statement`) handles the common bank export formats; the matcher runs three strategies (provider_id → amount+date → fuzzy vendor) with confidence scores 100 / 80 / 50–70. Unmatched debits surface as exceptions. See `backend/docs/bank-reconciliation.md`.
+
+---
+
+### Vendor Statement Reconciliation
+**Status:** Planned
+
+Distinct from bank reconciliation (cleared payments ↔ bank lines): this reconciles a **supplier's statement of open items** against our AP ledger to catch missing invoices, double-posted bills, mis-applied credits, and stale balances before month-end close. A core AP-clerk task that's entirely manual today.
+
+- [ ] Statement intake — CSV/PDF upload (reuse the extraction pipeline for PDF statements) parsed into a normalized list of `{invoice_number, date, amount, status}` line items, vendor-scoped
+- [ ] Reconciliation engine (`services/vendor_statement_recon.py`, pure) — match statement lines to our `Invoice` rows by invoice number → amount+date fallback; classify each as *matched* / *missing on our side* (supplier billed, we never received) / *missing on their side* (we have it, they don't) / *amount mismatch*
+- [ ] Persist a `VendorStatementReconciliation` run + line results (tenant migration, fans out); surface "missing on our side" rows as actionable exceptions feeding invoice intake
+- [ ] Frontend reconciliation view — upload, side-by-side diff, per-line resolve; every resolution audited
+- [ ] Period close tie-in — block/flag close when a vendor with a material balance has an unreconciled statement
+
+**Competitors:** Tipalti, Basware, Medius (statement reconciliation in close workflows); most SMB tools lack it — a differentiator down-market
+
+---
+
+### Positive Pay / Payment Fraud File
+**Status:** Planned
+
+Bank-side fraud control: export an issued-items file so the bank only honors checks/ACH debits we actually originated. A natural extension of the existing `checkeeper` check-printing + payment-rail adapters, and a frequent enterprise-AP procurement requirement.
+
+- [ ] Positive Pay file export (check issue file) — per-bank format (BAI2-ish / fixed-width / CSV) of `{check_number, payee, amount, issue_date, account}` for every check in an executed payment run; pluggable per-bank formatter like the existing payment adapters
+- [ ] ACH Positive Pay / debit-block authorization list — export approved originators for ACH debit filtering
+- [ ] Exception return handling — ingest the bank's "items presented not on file" report and surface mismatches as fraud exceptions
+- [ ] Generation is idempotent per run + audited; account/routing numbers stay out of logs and error bodies (PII invariant)
+
+**Competitors:** Coupa Pay, Tipalti, AvidXchange (positive pay as a treasury-controls feature)
 
 ---
 
@@ -656,6 +698,35 @@ Support structured electronic invoice formats required in the EU, Australia, and
 
 ---
 
+### Data Privacy & Residency (GDPR / CCPA)
+**Status:** Planned
+
+Selling internationally means handling vendor + employee PII and banking data under GDPR (EU/UK), CCPA/CPRA (California), and similar regimes. The app stores this across tenant DBs today but has **no** data-subject-request path, retention policy, or residency story — a hard blocker for EU/enterprise deals and a real legal exposure. Pairs with the [Multi-Language UI](#multi-language-ui-internationalization--i18n) work as the "go international" track.
+
+- [ ] DSAR export — assemble everything held about a data subject (a `VendorUser`, contact, or `User`) into a portable bundle. New `/api/privacy` router, RBAC-gated (admin/DPO), the request itself audited
+- [ ] Right-to-erasure / anonymization — delete or irreversibly anonymize a subject's PII while preserving the **immutable financial + audit record** (legally-required retention wins over erasure for transactional rows — redact PII fields, keep the money trail). Must respect the `audit_log` immutability triggers
+- [ ] Configurable data-retention policies — per-tenant retention windows with a background purge sweep (mirror the `contract_renewal` loop pattern); document the legal-hold carve-out
+- [ ] Data residency — pin a tenant's DB + object storage (MinIO/S3) to a region (`eu`, `us`, …); the database-per-tenant architecture already makes per-region placement tractable. Document the model even before multi-region infra ships
+- [ ] Consent + processing records — cookie/consent banner on the marketing + portal surfaces, and a Record of Processing Activities (RoPA) doc; DPA template in `docs/founder-runbooks/`
+- [ ] Sub-processor register + breach-notification runbook (72-hour GDPR clock) under `docs/`
+
+**Competitors:** every EU-serving competitor (Basware, Medius, SAP Ariba, Coupa) has GDPR DSAR + residency; it's table stakes for enterprise procurement reviews
+
+### Accessibility (WCAG 2.2 AA / EU EAA / ADA)
+**Status:** Planned
+
+Legally required, not optional: the **EU Accessibility Act** is in force (June 2025), and US ADA Title III + Section 508 apply to enterprise buyers. Components already carry some `aria-*` usage, but there's no systematic conformance target, audit, or regression guard. An `audit:accessibility` skill + `compliance-auditor` agent already exist to drive this.
+
+- [ ] Adopt **WCAG 2.2 AA** as the conformance target across web (SvelteKit), mobile (Flutter), and the supplier portal; publish a VPAT/ACR
+- [ ] Web baseline — keyboard navigability (no traps — there's a `ux-hunt` check for this), visible focus rings, semantic landmarks/roles, form-label + error association, `aria-live` on async/toast surfaces, AA contrast on `StatusBadge`/charts
+- [ ] Audit-and-fix pass via the existing `audit:accessibility` skill, route by route (shared `lib/components/` first so fixes propagate); track findings to closure (no dangling deferrals)
+- [ ] Automated regression guard — `axe-core` assertions wired into the Playwright e2e suite so a regression fails CI; mirror with Flutter's accessibility guidelines / `flutter test` semantics checks on mobile
+- [ ] Screen-reader pass (VoiceOver / NVDA / TalkBack) on the core invoice → approve → pay flow and the supplier portal; respect `prefers-reduced-motion`
+
+**Competitors:** enterprise suites (Coupa, SAP Ariba, Basware) ship VPATs; a clean ACR is increasingly a procurement gate, especially for public-sector + EU buyers
+
+---
+
 ## Priority 11: Dynamic Payments & Matching
 
 ### Dynamic Discounting & Early Payment Optimization
@@ -784,6 +855,50 @@ Contract lifecycle management. Only enterprise tools (Coupa, Basware) have this 
 - [x] Contract-based PO creation — auto-populate PO from contract terms
 
 **Competitors:** Coupa (full CLM), Basware (moderate), Airbase (basic repository)
+
+---
+
+### Public Developer API & Webhooks
+**Status:** Planned
+
+The backend is a rich REST surface, but it's framed as an internal contract — CLAUDE.md notes "no OpenAPI published as the contract," and the `endpoint-inventory` skill exists precisely because integrators have no published spec. A first-class public API turns the platform into something customers and partners build on (ERP middleware, custom dashboards, RPA bots).
+
+- [ ] API-key auth for programmatic access — per-tenant, scoped, revocable keys (hashed at rest like the supplier-portal card tokens), separate from the user-JWT path; rate-limited
+- [ ] Published, versioned OpenAPI spec + a stable `/api/v1` contract surface (the `endpoint-inventory` output is the seed) with deprecation policy
+- [ ] **Outbound** webhooks — let customers subscribe to events (invoice approved, payment settled, exception raised); signed payloads (reuse `webhook_security.py` HMAC), delivery retries + dead-letter, a redelivery UI. Mirror of the inbound webhook discipline (sign + dedupe)
+- [ ] Developer docs + sandbox keys against the local-first stack; key-management UI in org settings
+- [ ] Per-key usage metering (feeds the billing track below)
+
+**Competitors:** Bill.com (public API + dev portal), Tipalti (API + webhooks), Coupa (open API platform)
+
+---
+
+### Platform Billing & Metering
+**Status:** Planned
+
+The product meters extraction usage (`ExtractionUsage`, `CardRebate`) but has no way to **bill** for the SaaS itself — plans, subscription state, usage rollups, invoices to customers. Needed before commercial launch beyond hand-managed contracts.
+
+- [ ] Plan / subscription model (control-plane) — tiers, per-seat + usage components, trial state; tie to org provisioning
+- [ ] Usage rollup — aggregate the existing `ExtractionUsage` (+ card rebates, payment volume, API calls) into billable meters per period
+- [ ] Stripe Billing integration via an adapter (mock default — local-first; live key via sops, fail-closed) for subscriptions + metered usage + dunning; webhook-driven state, HMAC-verified + deduped
+- [ ] Customer-facing billing surface — current plan, usage-to-date, invoices/receipts, payment method, plan changes
+- [ ] Entitlement gating — feature flags per plan enforced in `deps.py` alongside RBAC
+
+**Competitors:** standard SaaS monetization; the metering primitives (`ExtractionUsage`) already exist — this productizes them
+
+---
+
+### White-Label / Partner Branding
+**Status:** Planned
+
+Per-tenant theming so resellers, banks, and ERP partners can offer the platform under their own brand — a common mid-market distribution channel and an enterprise procurement ask.
+
+- [ ] Per-tenant brand config — logo, color palette/theme tokens, product name, support + legal links (org settings + control-plane fields); the frontend already centralizes UI in `lib/components/` so theming threads through CSS custom properties
+- [ ] Custom domain / subdomain support beyond `*.localhost` tenant routing (TLS + the existing `X-Tenant-Slug` resolution)
+- [ ] Branded outbound surfaces — emails (ties to the localized email-catalogue work), remittance/check PDFs, the supplier portal, and PDF/CSV exports carry the tenant's brand, not the platform's
+- [ ] Partner/reseller admin — a parent that manages multiple branded child tenants (relates to the deferred multi-entity / org-hierarchy work)
+
+**Competitors:** AvidXchange + several bank-channel AP products ship white-label; a distribution lever more than a feature
 
 ---
 
