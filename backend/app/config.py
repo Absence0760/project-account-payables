@@ -427,6 +427,35 @@ class Settings(BaseSettings):
     # (memory-exhaustion guard on the public route; cXML carts are tens of KB).
     punchout_return_max_bytes: int = 4 * 1024 * 1024
 
+    # Digital signatures on approvals (SOX non-repudiation). The HMAC-SHA256
+    # signing key over the canonical approval payload (invoice id + exact amount
+    # + actor + decision + timestamp), persisted on the approval audit row's
+    # `details.signature` block and re-verifiable via
+    # GET /api/audit/invoice/{id}/verify-signatures. Empty by default → signing
+    # is skipped (no hardcoded production fallback, mirroring the other HMAC
+    # secrets); the committed .env.development sets a NON-secret dev value so the
+    # feature is exercisable under `pnpm dev`; deployed envs set the real key via
+    # sops. See backend/docs/approval-signatures.md.
+    approval_signing_key: str = ""
+
+    # Retention policies (SOX records management). The enforcement sweep is a
+    # long-lived loop (like contract renewal / qms sync) that finds records past
+    # their configured retention window and archives them via a privileged,
+    # audited path. Per-record-class retention periods live on
+    # `Organization.settings.retention` (configurable, not hardcoded), read +
+    # updated via GET/PUT /api/retention-policy. Disabled by default so local
+    # dev / tests don't run a background sweep; flip AP_RETENTION_ENABLED on in
+    # deployed envs. CRITICAL: the sweep composes with the audit-immutability
+    # trigger — `audit_log` rows are NEVER deleted; "retention" for the audit
+    # class means verifying WORM-shipment and recording a manifest. See
+    # backend/docs/retention.md.
+    retention_enabled: bool = False
+    retention_interval_seconds: int = 86400
+    # Platform-default retention windows (months) when an org sets no per-class
+    # override in `Organization.settings.retention`. 84 months = 7 years, the
+    # common SOX / IRS records-retention baseline.
+    retention_default_months: int = 84
+
     # App
     # Default is `False` so a deploy that forgets to set `AP_DEBUG` does not
     # ship FastAPI tracebacks (internal paths, env names) to clients. Local
