@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
+    access_reviews,
     adaptive_workflows,
     admin,
     analytics,
@@ -233,6 +234,7 @@ app.add_middleware(
 )
 
 # Routers
+app.include_router(access_reviews.router, prefix="/api")
 app.include_router(adaptive_workflows.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")

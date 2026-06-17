@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from fastapi.routing import APIRoute
 
 from app.api import (
+    access_reviews,
     admin,
     analytics,
     audit,
@@ -132,6 +133,7 @@ NO_AUTH_REQUIRED = {
 
 # Routers wired into the app at /api — same set as app/main.py.
 ROUTERS = [
+    access_reviews.router,
     admin.router,
     analytics.router,
     audit.router,

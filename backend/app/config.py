@@ -160,6 +160,13 @@ class Settings(BaseSettings):
     # Lock itself — that's a bucket-provisioning concern (Terraform).
     audit_shipping_s3_bucket: str | None = None
 
+    # Periodic access reviews (SOX). The dormancy window for the elevated-access
+    # review: a user holding an elevated role (admin / ap_manager / cfo) whose
+    # last *mutating* audit action is older than this many days — or who has
+    # never acted — is flagged DORMANT in `GET /api/access-reviews`. Compute-on-
+    # read (no column, no migration); see backend/docs/access-reviews.md.
+    access_review_dormant_days: int = 90
+
     # AI Extraction (platform-level key — used when customers choose "Platform" extraction)
     anthropic_api_key: str = ""  # your Anthropic API key for Claude Vision
     extraction_model: str = "claude-sonnet-4-20250514"
