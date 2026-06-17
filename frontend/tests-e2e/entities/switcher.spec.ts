@@ -76,4 +76,26 @@ test.describe('sidebar entity switcher', () => {
 		await page.waitForLoadState('networkidle');
 		await expect(page.locator('.entity-name')).toHaveText('All entities');
 	});
+
+	test('Escape closes the open menu and restores focus to the trigger', async ({ page }) => {
+		// The menu only renders with >1 entity, so provision a second one first.
+		const suffix = `${Date.now().toString(36)}`;
+		const name = `E2E Esc ${suffix}`;
+		const slug = `e2e-esc-${suffix}`;
+
+		await page.goto('/');
+		await page.waitForLoadState('networkidle');
+		await createEntity(page, name, slug);
+		await page.reload();
+		await page.waitForLoadState('networkidle');
+
+		await page.locator('.entity-btn').click();
+		await expect(page.locator('.entity-menu')).toBeVisible();
+
+		// Old behaviour: backdrop `onkeydown` was a no-op, so Escape did nothing
+		// and the menu stayed open with no keyboard way out.
+		await page.keyboard.press('Escape');
+		await expect(page.locator('.entity-menu')).toBeHidden();
+		await expect(page.locator('.entity-btn')).toBeFocused();
+	});
 });
