@@ -210,8 +210,22 @@ surface.
 
 | Method | Path                              | Roles | Description |
 |--------|-----------------------------------|-------|-------------|
-| `GET`  | `/api/audit/export`               | admin/cfo | Auditor export. Query: `invoice_id` **or** (`start`,`end`) — mutually exclusive; optional `entity_type`; `format=json\|csv` (default `json`). Ordered by `created_at`. Writes an `audit.exported` row. Invalid range / missing args → generic `400`; unknown invoice → `404`. |
+| `GET`  | `/api/audit/export`               | admin/cfo | Auditor export. Query: `invoice_id` **or** (`start`,`end`) — mutually exclusive; optional `entity_type`; `format=json\|csv\|pdf` (default `json`). Ordered by `created_at`. Writes an `audit.exported` row (`details.format` records the chosen format). Invalid range / missing args → generic `400`; unknown invoice → `404`. `format=pdf` returns a formatted SOX audit-trail report (`application/pdf` attachment) — cover (org, scope, generated-at/-by), event-count summary grouped by action, chronological trail table; renders exactly the same already-sanitised entries as JSON/CSV (PII kept out of `details` at audit-write time — no broader exposure). See [`access-reviews.md`](access-reviews.md) for the related access-review surface. |
 | `GET`  | `/api/audit/invoice/{id}`         | admin/manager/cfo | Per-invoice trail (auditor-facing alias of the operational endpoint), ordered by `created_at`. |
+
+## Access Reviews (periodic — SOX)
+
+Periodic review of users holding **elevated** roles (`admin` / `ap_manager` /
+`cfo`). Compute-on-read: a user's "last privileged action" is derived live from
+`MAX(audit_log.created_at)` over their **mutating** rows (read verbs `*.viewed` /
+`*.exported` are excluded). No `last_elevated_use` column, no migration. The
+review-list GET is itself a sensitive read (writes `access_review.viewed`).
+See [`access-reviews.md`](access-reviews.md).
+
+| Method | Path                              | Roles | Description |
+|--------|-----------------------------------|-------|-------------|
+| `GET`  | `/api/access-reviews`             | admin/cfo | Computed review list. Each user: `user_id`, `full_name`, `email`, `roles`, `last_privileged_action_at`, `dormant`, `days_since`. DORMANT when last mutating action is older than `AP_ACCESS_REVIEW_DORMANT_DAYS` (default 90) or never acted. Sorted dormant-first. Inactive users excluded. Writes an `access_review.viewed` row. |
+| `POST` | `/api/access-reviews/acknowledge` | admin/cfo | Records review completion for the period: writes an `access_review.completed` audit row + stamps `Organization.settings.access_review.{last_completed_at,last_completed_by}` (control plane). Idempotent-friendly (re-stamps). |
 
 ## Workflow Definitions
 
