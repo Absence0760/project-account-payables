@@ -78,12 +78,19 @@ Every route is behind the auth dependency + `require_roles`; the four routers ar
 in `tests/test_rbac.py::ROUTERS` so the no-auth-endpoint coverage gate scans
 them. Every mutation writes a `dispatch_audit` row.
 
+## Shipped extensions (formerly deferred)
+
+- Live cXML / OCI punch-out round-trips are implemented — the `punchout_adapters`
+  family (mock in-process default + real `cxml`, fail-closed without a supplier
+  secret), `PunchoutSession` (migration `0045`), a secret-gated supplier
+  cart-return endpoint, and convert-to-requisition. See
+  [procurement-catalogs.md](procurement-catalogs.md).
+- Budget `actual` now matches all four dimensions: invoices carry
+  `department` / `project` columns (migration `0044`), so realised-invoice
+  actuals cover department/project, not just `cost_center` / `gl_account`. See
+  [procurement-budgets.md](procurement-budgets.md).
+
 ## Deferred / future extensions
 
-- Punch-out catalogs persist their URL only; live cXML / OCI round-trips are not
-  implemented.
-- Budget `actual` for `department` / `project` dimensions reads 0 until invoices
-  carry a department/project column (committed still tracks them via the
-  requisition link). See [procurement-budgets.md](procurement-budgets.md).
 - Per-entity requisition approval chains reuse the lightweight status machine
   (not the full invoice `WorkflowInstance` engine).
