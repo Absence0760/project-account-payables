@@ -235,7 +235,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_ANTHROPIC_API_KEY` | (empty) | Claude Vision for platform extraction |
 | `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514` | AI model for extraction |
 | `AP_ASSISTANT_PROVIDER` | `mock` (code) / `ollama` (`.env.development`) | Conversational assistant adapter — `mock` \| `claude` \| `ollama`. Committed dev default is `ollama` (local model); `claude`/`ollama` fail soft to `mock`. See `backend/docs/conversational-assistant.md`. |
-| `AP_ASSISTANT_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local **tool-capable** Ollama text model for the assistant (NOT the vision model used for extraction). Base URL reuses `AP_OLLAMA_BASE_URL`. |
+| `AP_ASSISTANT_OLLAMA_MODEL` | `qwen2.5:7b` | Local **tool-capable** Ollama text model for the assistant (NOT the vision model used for extraction). Base URL reuses `AP_OLLAMA_BASE_URL`. |
 | `AP_EXTRACTION_AUTO_ROTATE` | `true` | Run Tesseract OSD on rendered PDF pages before sending to vision adapters. No-ops if `pytesseract` / `tesseract` missing. |
 | `AP_AUDIT_SUMMARY_ENABLED` | `true` | Master switch for the invoice audit-log summary. When `false`, `GET /api/invoices/{id}/summary` returns the deterministic template summary with no LLM call. Reuses the extraction key/model — no new secret. |
 | `AP_AUDIT_SUMMARY_MODEL` | (empty) | Model for the audit summary; falls back to `AP_EXTRACTION_MODEL` when empty. |

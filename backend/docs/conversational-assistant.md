@@ -9,7 +9,7 @@ clamped parameters.
 **Local-AI default.** `pnpm dev` ships with `AP_ASSISTANT_PROVIDER=ollama`
 (in `backend/.env.development`): the `ollama` adapter drives the assistant
 against a **local, tool-capable** Ollama text model (`AP_ASSISTANT_OLLAMA_MODEL`,
-default `qwen2.5-coder:7b`) — no key, no cloud. A real `claude` adapter
+default `qwen2.5:7b`) — no key, no cloud. A real `claude` adapter
 (Anthropic Messages API tool-use) is selected with `AP_ASSISTANT_PROVIDER=claude`
 + a key.
 
@@ -92,7 +92,8 @@ inside the adapter instead.
   rather than a structured `tool_calls` field — `_parse_text_tool_calls`
   recovers those so the tool still runs. Any failure (Ollama down, model not
   pulled, non-200, no prose answer) **fails soft to `mock`**. Pull a model once
-  with e.g. `ollama pull qwen2.5-coder:7b`; see
+  with e.g. `ollama pull qwen2.5:7b` (a tool-capable instruct model; coder /
+  vision variants either reject `tools` or format answers poorly); see
   [Local AI testing](local-ai-testing.md). Note that not every Ollama model
   supports tool-calling (`deepseek-r1`, vision-only models reject `tools` with a
   400) — pick one that does (`qwen2.5*`, `llama3.1`, `mistral-nemo`, …); the

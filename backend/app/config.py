@@ -203,7 +203,7 @@ class Settings(BaseSettings):
     # Ollama tool-use. Base URL reuses `ollama_base_url`. When `ollama` is the
     # selected provider but Ollama is unreachable or the model isn't pulled, the
     # adapter fails soft to `mock`, so a fresh clone still runs (local-first).
-    assistant_ollama_model: str = "qwen2.5-coder:7b"
+    assistant_ollama_model: str = "qwen2.5:7b"
 
     # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
     lithic_api_key: str = ""  # your Lithic API key

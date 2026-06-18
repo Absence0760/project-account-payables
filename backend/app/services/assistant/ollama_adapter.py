@@ -84,6 +84,19 @@ def _parse_text_tool_calls(content: str, valid_names: set[str]) -> list[dict]:
     return calls
 
 
+def _looks_like_tool_directive(answer: str, valid_names: set[str]) -> bool:
+    """True when an assembled answer still embeds a tool-call directive.
+
+    Weak local models sometimes return prose like "let me try again" followed
+    by another ``{"name": ..., "arguments": {...}}`` blob instead of a finished
+    answer. Such an answer is degenerate — the caller should fall back to the
+    deterministic templater rather than show it. Heuristic but safe: a real
+    prose answer won't contain the literal ``"arguments"`` key next to a known
+    tool name.
+    """
+    return '"arguments"' in answer and any(name in answer for name in valid_names)
+
+
 def _to_ollama_tools(tool_specs: list[dict]) -> list[dict]:
     """Convert the Anthropic-shaped specs (``{name, description, input_schema}``)
     to Ollama's OpenAI-style function schema (``{type, function:{...}}``)."""
@@ -236,11 +249,12 @@ class OllamaAssistantAdapter(AssistantAdapter):
             )
 
         answer = "\n".join(p for p in answer_parts if p).strip()
-        if not answer:
-            # The model produced no prose (e.g. it only emitted tool-call JSON,
-            # or nothing at all). Rather than ship raw JSON or a stub, hand off
-            # to the deterministic templater for a clean answer — it re-runs the
-            # same read-only tool and formats it.
+        if not answer or _looks_like_tool_directive(answer, valid_names):
+            # The model produced no prose, or a degenerate answer that still
+            # embeds a tool-call directive (weak local models sometimes apologize
+            # and re-emit the call instead of formatting the result). Rather than
+            # ship raw JSON or a stub, hand off to the deterministic templater —
+            # it re-runs the same read-only tool and formats it cleanly.
             return await self._fallback_to_mock(
                 message=message, history=history, tool_specs=tool_specs, run_tool=run_tool
             )

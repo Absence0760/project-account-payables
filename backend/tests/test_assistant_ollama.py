@@ -234,6 +234,51 @@ async def test_empty_model_output_fails_soft_to_mock(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_degenerate_answer_with_embedded_tool_call_falls_back_to_mock(monkeypatch):
+    # Hop 1: a real (text) tool call. Hop 2: the model apologizes and re-emits a
+    # tool-call directive instead of formatting the result — a degenerate answer.
+    client = _FakeClient(
+        post_responses=[
+            _FakeResp(
+                200,
+                {
+                    "message": {
+                        "content": (
+                            '{"name": "list_pending_approvals", '
+                            '"arguments": {"assignee": "me"}}'
+                        )
+                    }
+                },
+            ),
+            _FakeResp(
+                200,
+                {
+                    "message": {
+                        "content": (
+                            "I apologize. Let me try again with the correct call.\n\n"
+                            '{"name": "list_pending_approvals", "arguments": {"assignee": "me"}}'
+                        )
+                    }
+                },
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, client)
+
+    calls: list = []
+    adapter = OllamaAssistantAdapter({})
+    reply = await adapter.respond(
+        message="which approvals have I been sitting on?",
+        history=[],
+        tool_specs=TOOL_SPECS,
+        run_tool=_make_run_tool(calls),
+    )
+    # The raw-JSON/apology answer never reaches the user — deterministic templater wins.
+    assert reply.provider == "mock"
+    assert '"arguments"' not in reply.answer
+
+
+@pytest.mark.asyncio
 async def test_test_connection_checks_model_present(monkeypatch):
     client = _FakeClient(get_response=_FakeResp(200, {"models": [{"name": "qwen2.5-coder:7b"}]}))
     _patch_client(monkeypatch, client)
