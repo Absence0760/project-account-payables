@@ -26,7 +26,7 @@ import type { Page } from '@playwright/test';
  *                Requisitions·Intake·Catalogs(all)
  *   Billing: Contracts·Expenses(all); CreditMemos·Discounts(adm/mgr/cfo)
  *   Insights: AIAssistant(all); CashFlow(adm/cfo); 1099(adm/mgr/cfo)
- *   Settings: Organization·Users&Roles·Workflows(admin); AuditTrail(adm/cfo)
+ *   Settings: Organization·Users·Roles·Workflows(admin); AuditTrail(adm/cfo)
  */
 
 async function sidebarHrefs(page: Page): Promise<string[]> {
@@ -105,7 +105,7 @@ test.describe('RBAC — admin (cached session, no extra login)', () => {
 			['/', '/invoices', '/payments', '/vendors', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/organization'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/organization')).toEqual(
-			['/organization', '/admin', '/audit', '/workflows'].sort()
+			['/organization', '/admin?tab=users', '/admin?tab=roles', '/audit', '/workflows'].sort()
 		);
 		// Direct (non-grouped) routes have no section bar.
 		await page.goto('/invoices');

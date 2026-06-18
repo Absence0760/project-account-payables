@@ -35,8 +35,10 @@ test.describe('/admin', () => {
 		await expect(modal.getByRole('heading', { name: 'Invite User' })).toBeVisible();
 	});
 
-	test('Roles tab switches content and updates the URL', async ({ page }) => {
-		await page.getByRole('tab', { name: 'Roles' }).click();
+	test('Roles section tab switches content and updates the URL', async ({ page }) => {
+		// Users + Roles are peer tabs in the sidebar's Settings section bar now,
+		// not a second tab row inside the page.
+		await page.locator('.section-tabs a.section-tab', { hasText: 'Roles' }).click();
 		await expect(page).toHaveURL(/\/admin\?tab=roles$/);
 		await expect(page.getByRole('heading', { name: 'System roles' })).toBeVisible();
 		await expect(page.getByRole('button', { name: '+ Create Role' })).toBeVisible();
