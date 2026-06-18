@@ -400,12 +400,9 @@
 	}
 	.add-item input,
 	.add-item select {
-		padding: 6px 8px;
+		/* base look (border/colour/font/chevron) from the global select recipe */
+		padding: 6px 30px 6px 8px;
 		border-radius: 5px;
-		border: 1px solid var(--border);
-		background: var(--bg);
-		color: var(--text);
-		font-family: inherit;
 		font-size: 0.82rem;
 		width: 110px;
 	}

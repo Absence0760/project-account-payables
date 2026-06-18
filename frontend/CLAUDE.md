@@ -563,13 +563,16 @@ bare `<input>` fits the theme without per-route CSS:
   `:indeterminate` (checkbox) / `:focus-visible` / `:disabled`.
 - **File input** — `::file-selector-button` restyled to match the
   secondary (`.btn-cancel`) button.
-- **Select** — `appearance: none` + a drawn chevron. The chevron's
-  `background-*` + `padding-right` carry `!important` because the ~16
-  scoped `select` rules set `background:`/`padding:` shorthands (which
-  reset those longhands) and outrank a plain global rule via Svelte's
-  `.svelte-<hash>`; `background-color` is left un-forced so a component
-  can still pick its own surface. *(Long-term these scoped rules should
-  collapse onto the shared recipe so the `!important` can drop.)*
+- **Select** — `appearance: none` + a drawn chevron, and the single
+  source of truth for the whole select look (border / radius / surface /
+  padding / type). Per-component scoped rules override only what differs
+  per context (padding, `border-radius`, `font-size`, `width`,
+  `--surface` background) and **must not** re-declare the shared
+  border/colour/font or use a `background:` shorthand — the shorthand
+  resets the chevron's `background-image`. Scoped rules keep ~30px of
+  right padding so text clears the chevron. (Because no rule competes on
+  `background-image`, the chevron needs **no `!important`** — earlier it
+  did, before the scoped rules were collapsed onto this recipe.)
 - **Range** — `accent-color: var(--accent)` (the modern cross-browser
   approach; no pseudo-element rebuild).
 - `:root { color-scheme: dark }` puts the remaining native controls

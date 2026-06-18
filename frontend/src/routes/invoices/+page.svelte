@@ -150,6 +150,14 @@
 			// Allow re-opening the same invoice from a fresh deep-link click.
 			deepLinkLoaded = null;
 		}
+		// Re-apply this page's active filters. The modal's mutation handlers
+		// (approve / reject / save / …) call the store's UNFILTERED
+		// `invoiceStore.fetch()`, which would otherwise leave the list
+		// showing every status — so a just-approved invoice reappears under
+		// an active "Ready for Review" chip. Refetching with buildParams()
+		// on close restores the filtered view and keeps the chip counts honest.
+		invoiceStore.fetch(buildParams());
+		invoiceStore.fetchCounts();
 	}
 
 	let hasAdvancedFilters = $derived(
@@ -884,13 +892,9 @@
 	}
 
 	.bulk-status-dropdown select {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 5px 8px;
+		/* base look (border/radius/colour/font/chevron) from the global recipe */
+		padding: 5px 30px 5px 8px;
 		font-size: 0.82rem;
-		color: var(--text);
-		font-family: inherit;
 	}
 
 	.bulk-apply-btn {

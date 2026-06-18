@@ -419,13 +419,9 @@
 	}
 	.lines-table input,
 	.lines-table select {
+		/* base look (border/radius/colour/font/chevron) from the global recipe */
 		width: 100%;
-		padding: 5px 6px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--bg);
-		color: var(--text);
-		font-family: inherit;
+		padding: 5px 30px 5px 6px;
 		font-size: 0.82rem;
 	}
 	.lines-table input.num {

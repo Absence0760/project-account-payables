@@ -202,13 +202,10 @@
 	.rule-row input,
 	.match-row select,
 	.branch-field select {
-		padding: 7px 9px;
-		border: 1px solid var(--border);
+		/* base look (border/colour/font/chevron) from the global select recipe */
+		padding: 7px 30px 7px 9px;
 		border-radius: 5px;
 		font-size: 0.85rem;
-		background: var(--bg);
-		color: var(--text);
-		font-family: inherit;
 		box-sizing: border-box;
 		width: 100%;
 	}

@@ -226,13 +226,10 @@
 	}
 
 	.year-select select {
-		padding: 6px 10px;
+		/* base look (border/colour/font/chevron) from the global select recipe */
+		padding: 6px 30px 6px 10px;
 		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		font-family: inherit;
-		font-size: 0.88rem;
+		background-color: var(--surface);
 	}
 
 	.state-card {

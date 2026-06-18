@@ -156,27 +156,34 @@ input[type='file']::file-selector-button:hover {
 }
 
 /* ===================================================================
-   Select dropdowns (global base)
+   Select dropdowns (global base / shared recipe)
    -------------------------------------------------------------------
-   appearance:none + a drawn chevron replaces the tiny native UA arrow.
-   The chevron is painted via background-image; because ~16 scoped
-   `select` rules across the app set `background: var(--bg)` and
-   `padding:` shorthands (which reset background-image + padding-right)
-   AND outrank a plain global rule via Svelte's `.svelte-<hash>`, the
-   chevron's background-* and its right-side gutter are forced with
-   !important so the arrow survives those shorthands. background-COLOR
-   is deliberately NOT forced, so a component can still choose its own
-   surface (e.g. `.method-select` uses --surface). [multiple]/[size]
+   appearance:none + a drawn chevron replaces the tiny native UA arrow,
+   and this is the single source of truth for the select look (border,
+   radius, surface, padding, type). The per-component scoped rules only
+   override what genuinely differs per context (sizing: padding,
+   border-radius, font-size, width, --surface backgrounds). They no
+   longer re-declare the shared border/colour/font or use a `background:`
+   shorthand — so nothing resets the chevron's background-image and no
+   `!important` is needed. The one cross-cutting rule scoped rules must
+   honour: keep ~30px of right padding so text clears the chevron (the
+   chevron sits 10px from the right, 14px wide). [multiple]/[size]
    list-boxes are excluded — they have no single collapsed arrow.
    =================================================================== */
 select:not([multiple]):not([size]) {
 	appearance: none;
 	-webkit-appearance: none;
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%238a8fa0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") !important;
-	background-repeat: no-repeat !important;
-	background-position: right 10px center !important;
-	background-size: 14px !important;
-	padding-right: 30px !important;
+	background-color: var(--bg);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%238a8fa0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 10px center;
+	background-size: 14px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 8px 30px 8px 10px;
+	font-size: 0.88rem;
+	color: var(--text);
+	font-family: inherit;
 	cursor: pointer;
 }
 
@@ -516,13 +523,20 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 .modal input,
 .modal select,
 .modal textarea {
-	background: var(--bg);
+	/* background-COLOR (longhand), not the `background` shorthand — the
+	   shorthand would reset the global select chevron's background-image. */
+	background-color: var(--bg);
 	border: 1px solid var(--border);
 	border-radius: 4px;
 	padding: 8px 10px;
 	font-size: 0.88rem;
 	color: var(--text);
 	font-family: inherit;
+}
+/* Reserve the chevron gutter on modal selects (the shared `padding: 8px 10px`
+   above only leaves 10px on the right). */
+.modal select {
+	padding-right: 30px;
 }
 .modal input:focus,
 .modal select:focus,

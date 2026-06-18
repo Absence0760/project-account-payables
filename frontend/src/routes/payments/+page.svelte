@@ -1181,13 +1181,10 @@
 	}
 
 	.method-select {
-		padding: 4px 8px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
+		/* base look (border/radius/colour/font/chevron) from the global recipe */
+		padding: 4px 30px 4px 8px;
+		background-color: var(--surface);
 		font-size: 0.82rem;
-		font-family: inherit;
 	}
 
 	.review-footer {

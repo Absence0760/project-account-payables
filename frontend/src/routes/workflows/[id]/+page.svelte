@@ -840,14 +840,10 @@
 	.field input[type='url'],
 	.field input[type='number'],
 	.field select {
+		/* base look (border/colour/font/chevron) from the global select recipe */
 		width: 100%;
-		padding: 8px 10px;
+		padding: 8px 30px 8px 10px;
 		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--bg);
-		color: var(--text);
-		font-family: inherit;
-		font-size: 0.88rem;
 		outline: none;
 		box-sizing: border-box;
 	}

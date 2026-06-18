@@ -1686,15 +1686,11 @@
 		letter-spacing: 0.03em;
 	}
 
+	/* Only the layout bits here; the visual recipe (border/radius/colour/
+	   font/padding, + the select chevron + its 30px gutter) comes from the
+	   global `.modal input` / `.modal select` rules in app.css. */
 	input,
 	select {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 8px 10px;
-		font-size: 0.88rem;
-		color: var(--text);
-		font-family: inherit;
 		min-width: 0;
 		width: 100%;
 		box-sizing: border-box;
@@ -2018,12 +2014,9 @@
 		color: var(--text-muted);
 	}
 	.contract-select {
-		padding: 6px 8px;
+		/* base look (border/colour/font/chevron) from the global select recipe */
+		padding: 6px 30px 6px 8px;
 		border-radius: 5px;
-		border: 1px solid var(--border);
-		background: var(--bg);
-		color: var(--text);
-		font-family: inherit;
 		font-size: 0.85rem;
 		max-width: 280px;
 	}
@@ -2201,13 +2194,9 @@
 	}
 
 	.approver-select {
-		padding: 8px 10px;
-		border-radius: 4px;
-		border: 1px solid var(--border);
-		background: var(--bg);
-		color: var(--text);
+		/* base look (border/radius/colour/font/chevron) from the global recipe */
+		padding: 8px 30px 8px 10px;
 		font-size: 0.82rem;
-		font-family: inherit;
 		max-width: 140px;
 	}
 

@@ -224,12 +224,10 @@
 	}
 
 	.vh-diff-controls select {
-		padding: 6px 8px;
+		/* base look (border/colour/font/chevron) from the global select recipe */
+		padding: 6px 30px 6px 8px;
 		border-radius: 6px;
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--text);
-		font-family: inherit;
+		background-color: var(--surface);
 		font-size: 0.82rem;
 	}
 

@@ -443,13 +443,10 @@
 
 	.field input,
 	.field select {
-		padding: 8px 10px;
-		border: 1px solid var(--border);
-		border-radius: 4px;
+		/* base look (border/radius/colour/font/chevron) from the global recipe */
+		padding: 8px 30px 8px 10px;
 		font-size: 0.85rem;
-		background: var(--surface);
-		color: var(--text);
-		font-family: inherit;
+		background-color: var(--surface);
 	}
 
 	.field input:focus,
