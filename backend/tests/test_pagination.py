@@ -8,6 +8,7 @@ exception: ``/gl-accounts`` is a bounded reference collection (its only
 consumer is the invoice GL dropdown) and stays unpaginated.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.api.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
@@ -15,7 +16,7 @@ from app.models.gl_account import GLAccount
 from app.models.invoice import Invoice, InvoiceStatus
 
 
-async def _add_invoices(mk, org_id, n: int, *, prefix: str) -> None:
+async def _add_invoices(mk, org_id, n: int, *, prefix: str, created_at=None) -> None:
     async with mk() as s:
         s.add_all(
             [
@@ -25,6 +26,7 @@ async def _add_invoices(mk, org_id, n: int, *, prefix: str) -> None:
                     vendor_name="Pagey Vendor",
                     amount=Decimal("100.00"),
                     status=InvoiceStatus.new,
+                    **({"created_at": created_at} if created_at is not None else {}),
                 )
                 for i in range(n)
             ]
@@ -79,6 +81,32 @@ async def test_second_page_returns_remainder(realdb):
     ids2 = {it["id"] for it in second["items"]}
     assert ids1.isdisjoint(ids2)
     assert len(ids1) == DEFAULT_PAGE_SIZE
+
+
+async def test_pages_disjoint_when_created_at_is_tied(realdb):
+    """Regression: rows sharing an identical ``created_at`` (bulk/seed inserts)
+    must still paginate deterministically. With ``created_at`` as the sole sort
+    key Postgres gave no stable order across OFFSET/LIMIT pages, so page 2 could
+    re-return a page-1 row — which crashed the frontend's keyed list on "Load
+    more". The PK tie-break makes every page disjoint and the sweep complete."""
+    org_id = realdb.info("a").org_id
+    tied = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    n = DEFAULT_PAGE_SIZE * 3 + 4
+    await _add_invoices(realdb.sessionmaker("a"), org_id, n, prefix="TIED", created_at=tied)
+
+    seen: set[str] = set()
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        total = (await c.get("/api/invoices?page=1")).json()["total"]
+        pages = (total + DEFAULT_PAGE_SIZE - 1) // DEFAULT_PAGE_SIZE
+        for p in range(1, pages + 1):
+            items = (await c.get(f"/api/invoices?page={p}")).json()["items"]
+            ids = [it["id"] for it in items]
+            assert len(ids) == len(set(ids)), f"duplicate id within page {p}"
+            assert seen.isdisjoint(ids), f"page {p} re-returned a row from an earlier page"
+            seen.update(ids)
+
+    # The full sweep covered every row exactly once — no row skipped, none repeated.
+    assert len(seen) == total
 
 
 async def test_page_size_is_capped(realdb):
