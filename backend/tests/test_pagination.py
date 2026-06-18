@@ -8,7 +8,7 @@ exception: ``/gl-accounts`` is a bounded reference collection (its only
 consumer is the invoice GL dropdown) and stays unpaginated.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.api.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
@@ -83,30 +83,35 @@ async def test_second_page_returns_remainder(realdb):
     assert len(ids1) == DEFAULT_PAGE_SIZE
 
 
-async def test_pages_disjoint_when_created_at_is_tied(realdb):
+async def test_tied_created_at_paginates_by_unique_tiebreak(realdb):
     """Regression: rows sharing an identical ``created_at`` (bulk/seed inserts)
-    must still paginate deterministically. With ``created_at`` as the sole sort
-    key Postgres gave no stable order across OFFSET/LIMIT pages, so page 2 could
-    re-return a page-1 row — which crashed the frontend's keyed list on "Load
-    more". The PK tie-break makes every page disjoint and the sweep complete."""
+    must paginate in a deterministic *total* order. With ``created_at`` as the
+    sole ORDER BY key Postgres returns ties in arbitrary heap order, so OFFSET
+    pages could overlap — page 2 re-returning a page-1 row, which crashed the
+    frontend's keyed ``{#each}`` on "Load more".
+
+    The endpoint tie-breaks on the unique PK (``id DESC``). Because the PKs are
+    random UUIDs, heap order is unrelated to id order — so asserting the swept
+    sequence is exactly id-descending fails on the un-tiebroken query and only
+    passes with the deterministic ordering in place. As a corollary the pages
+    are disjoint and the sweep is complete (no row repeated or skipped)."""
     org_id = realdb.info("a").org_id
-    tied = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    n = DEFAULT_PAGE_SIZE * 3 + 4
+    tied = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    n = DEFAULT_PAGE_SIZE * 2 + 7
     await _add_invoices(realdb.sessionmaker("a"), org_id, n, prefix="TIED", created_at=tied)
 
-    seen: set[str] = set()
+    swept: list[str] = []
     async with realdb.client(key="a", role="ap_clerk") as c:
         total = (await c.get("/api/invoices?page=1")).json()["total"]
         pages = (total + DEFAULT_PAGE_SIZE - 1) // DEFAULT_PAGE_SIZE
         for p in range(1, pages + 1):
             items = (await c.get(f"/api/invoices?page={p}")).json()["items"]
-            ids = [it["id"] for it in items]
-            assert len(ids) == len(set(ids)), f"duplicate id within page {p}"
-            assert seen.isdisjoint(ids), f"page {p} re-returned a row from an earlier page"
-            seen.update(ids)
+            swept.extend(it["id"] for it in items)
 
-    # The full sweep covered every row exactly once — no row skipped, none repeated.
-    assert len(seen) == total
+    # All ties → the entire sweep must be ordered by the unique PK tie-break.
+    assert swept == sorted(swept, reverse=True)
+    # Corollary: every row appears exactly once (no overlap, no gap).
+    assert len(swept) == len(set(swept)) == total
 
 
 async def test_page_size_is_capped(realdb):
