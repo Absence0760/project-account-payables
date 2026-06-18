@@ -256,3 +256,20 @@ disabled by default (`AP_CONTRACT_RENEWAL_ENABLED=false`), so `pnpm dev` runs
 the whole contract feature — repository, spend tracking, compliance, PO
 creation — with no background loop and no cloud credential. Flip the switch on
 in deployed envs to enable renewal alerts.
+
+## Tests
+
+- `frontend/tests-e2e/contracts/contracts.spec.ts` — UI list render, API-driven
+  create surfaced in the table, an activate reflected on the row.
+- `frontend/tests-e2e/contracts/contracts-lifecycle.spec.ts` — the control
+  paths, API-driven: each lifecycle transition (activate / terminate / cancel /
+  renew) enforces its valid source state (`409` / `400` on an invalid one) and
+  writes **exactly one** append-only audit row (a rejected transition writes
+  none); RBAC (clerk + cfo can read but get `403` on every mutation, create-po,
+  upload, and PATCH); `create-po` copies the contract's money exactly
+  (`Numeric`, no float drift), links the PO back to the contract, is audited,
+  and is refused (`409`) from a terminated contract; spend roll-up sums linked
+  invoices in `Decimal` (`100.10 + 100.20 = 200.30`), excludes rejected, and
+  computes `remaining` / `over_limit` correctly; and the file-proxy refuses a
+  cross-org key with the same `404` it returns for a missing file (no
+  enumeration).
