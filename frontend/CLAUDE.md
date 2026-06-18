@@ -553,16 +553,23 @@ the `ui/` primitive in the Source column.
 | KPI card | `.kpi` / `.kpi-value` / `.kpi-label` | `ui/KpiCard.svelte` |
 | Status badge | `<StatusBadge>` | `ui/StatusBadge.svelte` |
 | Money / currency | `<Money>` / `formatMoney` | `ui/Money.svelte` / `utils/money.ts` |
-| Checkbox | `input[type='checkbox']` (global base) | `src/app.css` |
+| Checkbox / radio / file | `input[type='checkbox'\|'radio'\|'file']` (global base) | `src/app.css` |
 
-**Checkboxes** are styled globally in `src/app.css` (`appearance: none`
-+ a drawn check) so every row-select / select-all / modal toggle box
-matches the dark theme — empty = subtle outline on `--bg`, checked =
-`--accent` fill + white check, plus `:indeterminate` / `:focus-visible`
-/ `:disabled` states. `:root { color-scheme: dark }` puts the remaining
-native controls (selects, scrollbars) in dark mode. Don't re-add
-per-route `accent-color` rules — they only tint the *checked* state and
-are now redundant no-ops under the global `appearance: none`.
+**Native form controls** are dark-themed globally in `src/app.css` so a
+bare `<input>` fits the theme without per-route CSS:
+- **Checkbox / radio** — `appearance: none` + a drawn mark (white check
+  / inset accent dot) so *both* states are themed — empty = subtle
+  outline on `--bg`, on = `--accent` fill, plus
+  `:indeterminate` (checkbox) / `:focus-visible` / `:disabled`.
+- **File input** — `::file-selector-button` restyled to match the
+  secondary (`.btn-cancel`) button.
+- `:root { color-scheme: dark }` puts the remaining native controls
+  (selects, scrollbars, date pickers) in dark mode; `::selection` is
+  accent-tinted.
+
+Don't re-add per-route `accent-color` rules — they only tint the
+*checked* state and are redundant no-ops under the global
+`appearance: none`.
 
 (All Source paths are under `$lib/components/`.) If a shared style is
 missing, add it to `src/app.css` (class-scoped) — not a per-route
