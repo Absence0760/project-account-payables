@@ -40,6 +40,14 @@ const E2E_TENANT_COUNT = parseInt(
 	10
 );
 
+// Optional fixed offset added to every worker's tenant index. Defaults to
+// 0 (no change to normal single- or multi-worker runs). It exists so that
+// several *independent* Playwright processes (e.g. parallel authoring
+// sessions, each running with PLAYWRIGHT_WORKERS=1) can each be pinned to a
+// distinct `e2e<N>` tenant instead of all colliding on `e2e1`: process k
+// sets `E2E_TENANT_OFFSET=k` and its lone worker resolves to `e2e<k+1>`.
+const E2E_TENANT_OFFSET = parseInt(process.env.E2E_TENANT_OFFSET ?? '0', 10);
+
 type TenantCreds = { email: string; password: string };
 
 type WorkerFixtures = {
@@ -51,7 +59,7 @@ type WorkerFixtures = {
 };
 
 function _tenantSlugFor(workerIndex: number): string {
-	return `e2e${(workerIndex % Math.max(E2E_TENANT_COUNT, 1)) + 1}`;
+	return `e2e${((workerIndex + E2E_TENANT_OFFSET) % Math.max(E2E_TENANT_COUNT, 1)) + 1}`;
 }
 
 function _credsFor(slug: string, role: 'admin' | 'manager' | 'clerk' | 'cfo'): TenantCreds {
