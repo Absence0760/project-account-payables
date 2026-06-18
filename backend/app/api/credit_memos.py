@@ -111,7 +111,13 @@ async def create_credit_memo(
     invoice_number: str | None = None
     if body.invoice_id:
         invoice_uuid = uuid.UUID(body.invoice_id)
-        inv_result = await db.execute(select(Invoice).where(Invoice.id == invoice_uuid))
+        # Lock the invoice row for the duration of the txn so two concurrent
+        # credit applies against the same invoice serialize through the
+        # over-application guard below (the invoice is the natural
+        # serialization point for "credits applied to this invoice").
+        inv_result = await db.execute(
+            select(Invoice).where(Invoice.id == invoice_uuid).with_for_update()
+        )
         invoice = inv_result.scalar_one_or_none()
         if not invoice:
             raise HTTPException(status_code=404, detail="Invoice not found")
@@ -199,7 +205,13 @@ async def apply_credit_memo(
         )
 
     invoice_uuid = uuid.UUID(body.invoice_id)
-    inv_result = await db.execute(select(Invoice).where(Invoice.id == invoice_uuid))
+    # Row-lock the invoice so concurrent applies to the same invoice serialize
+    # through the over-application guard (see create_credit_memo for the
+    # rationale). Without this, two applies can both read the same
+    # already-applied sum and both pass, over-crediting the invoice.
+    inv_result = await db.execute(
+        select(Invoice).where(Invoice.id == invoice_uuid).with_for_update()
+    )
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")

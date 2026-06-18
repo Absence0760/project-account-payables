@@ -313,4 +313,58 @@ test.describe('credit-memo money controls (API)', () => {
 			deleteMemo(memoId);
 		}
 	});
+
+	test('concurrent applies cannot over-credit the same invoice (row lock)', async ({
+		page
+	}) => {
+		const headers = await authedTenantHeaders(page);
+		const vendor = await firstVendor(page);
+		// Invoice worth 100.00; two open memos of 60.00 — each fits alone (≤100),
+		// but together they'd be 120 > 100. Firing both /apply at once must NOT
+		// let both through: the invoice row lock (`SELECT … FOR UPDATE`) serializes
+		// the over-application guard, so exactly one wins (200) and the other is
+		// refused (409). Without the lock both reads see an already-applied sum of
+		// 0 and both pass — over-crediting the invoice.
+		const invoiceId = await makeInvoice(page, vendor, 100);
+		const memoIds: string[] = [];
+
+		try {
+			const mkMemo = async (n: number): Promise<string> => {
+				const r = await page.request.post(`${API_BASE}/api/credit-memos`, {
+					headers,
+					data: {
+						memo_number: `CM-RACE${n}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+						vendor_id: vendor.id,
+						amount: 60
+					}
+				});
+				const id = ((await r.json()) as { id: string }).id;
+				memoIds.push(id);
+				return id;
+			};
+			const memoA = await mkMemo(1);
+			const memoB = await mkMemo(2);
+
+			const apply = (id: string) =>
+				page.request.post(`${API_BASE}/api/credit-memos/${id}/apply`, {
+					headers,
+					data: { invoice_id: invoiceId }
+				});
+			// Fire both at the HTTP layer simultaneously.
+			const [ra, rb] = await Promise.all([apply(memoA), apply(memoB)]);
+			const statuses = [ra.status(), rb.status()].sort();
+			// Exactly one 200, one 409 — never two 200s (that's the over-credit bug).
+			expect(statuses).toEqual([200, 409]);
+
+			// Ground truth in the DB: exactly one memo applied to the invoice, so
+			// the applied total (60.00) never exceeds the invoice's 100.00.
+			const appliedCount = tenantPsql(
+				`SELECT count(*) FROM credit_memos WHERE invoice_id='${invoiceId}' AND status='applied'`
+			).trim();
+			expect(appliedCount).toBe('1');
+		} finally {
+			for (const id of memoIds) deleteMemo(id);
+			cleanupInvoice(invoiceId);
+		}
+	});
 });
