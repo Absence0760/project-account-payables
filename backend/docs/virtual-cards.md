@@ -382,6 +382,45 @@ If the supplier portal is implemented, vendors can:
 - All card operations require authentication
 - Provider API keys stored encrypted in org settings (future: secrets manager)
 
+### Audit trail (every card state change is logged)
+
+Card lifecycle transitions write an append-only `audit_log` row
+(`entity_type="virtual_card"`) so the money + PII path is fully
+reconstructable for SOX. **No row ever carries the full PAN or CVV** —
+the `details` payload records only `last_four` plus the from/to status
+and (for charges/rebates) the exact **string-Decimal** amount, never a
+float.
+
+| Action | When | `details` |
+|---|---|---|
+| `card.details_viewed` | PAN reveal (`GET /{id}/details`) | `last_four` |
+| `card.cancelled` | manual cancel (`POST /{id}/cancel`) | `last_four`, `from`, `to` |
+| `card.charged` | authorization webhook applies a charge | `last_four`, `from`, `to`, `amount_charged` (string Decimal) |
+| `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals) |
+
+### Webhook handler (`POST /cards/webhook/{provider}`)
+
+Provider charge/settlement callbacks are **unauthenticated** (they come
+from Lithic / Nium, not a logged-in user) and verified by HMAC over the
+raw body against the owning tenant's
+`Organization.settings.cards.webhook_signing_secret`. The handler:
+
+1. parses `card_token` + `event_id` from the provider-specific body,
+2. finds the owning tenant by `provider_card_id`,
+3. verifies the HMAC (`verify_hmac_sha256`) — missing/forged signature is rejected,
+4. dedupes by `event_id` (`is_event_already_processed`, Redis `SET NX`) so a re-delivery is a no-op,
+5. applies the state change + writes the audit row in a single committed transaction.
+
+**Every rejection path returns `204` silently** (bad/missing signature,
+unknown card token, missing event id, malformed JSON) — a distinct 4xx
+would let an attacker enumerate card tokens or tenant slugs.
+
+E2E coverage: `frontend/tests-e2e/cards/` — `webhook-security.spec.ts`
+(HMAC reject + dedup + silent 204 + PII-free charge audit),
+`lifecycle.spec.ts` (issue → cancel audit + 409 double-cancel),
+`pan-reveal-pii.spec.ts` (role gate + last-four-only audit),
+`rebate-and-isolation.spec.ts` (exact-Decimal rebate + tenant scoping).
+
 ## Code Structure
 
 ```
