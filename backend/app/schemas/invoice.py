@@ -66,7 +66,15 @@ class InvoiceUpdate(BaseModel):
     received_date: date | None = None
     due_date: date | None = None
     payment_terms: str | None = Field(default=None, max_length=50)
-    status: InvoiceStatus | None = None
+    # NOTE: `status` is deliberately NOT editable here. A status change is a
+    # workflow transition, not an ordinary field edit — it must run through the
+    # state machine (validate_transition), segregation-of-duties, approval
+    # thresholds, the CFO gate, the approval signature, and the immutable audit
+    # trail. Those live on the dedicated transition endpoints
+    # (/approve, /reject, /resubmit, /send-to-erp, payments void) via
+    # services.review + workflow_engine.transition_invoice. Re-exposing `status`
+    # on this PATCH body would let a bare setattr bypass every one of them
+    # (e.g. new → paid, or an uploader self-approving). Keep it off.
     po_number: str | None = None
     subtotal: Decimal | None = Field(default=None, ge=0)
     tax_amount: Decimal | None = Field(default=None, ge=0)

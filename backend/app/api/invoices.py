@@ -414,9 +414,7 @@ async def export_einvoice(
         errors = country_format.validate(doc)
         if errors:
             # EInvoiceValidationError renders a PII-free "field: code" join.
-            raise HTTPException(
-                status_code=422, detail=str(EInvoiceValidationError(errors))
-            )
+            raise HTTPException(status_code=422, detail=str(EInvoiceValidationError(errors)))
         xml_bytes = country_format.generate(doc)
         media_type = country_format.media_type
         filename = f"einvoice-{base}-{country_format.format_code}.{country_format.file_extension}"
@@ -710,8 +708,15 @@ async def update_invoice(
     # Map frontend field name to DB column
     if "vendor" in update_data:
         update_data["vendor_name"] = update_data.pop("vendor")
-    if "status" in update_data and update_data["status"] is not None:
-        update_data["status"] = update_data["status"].value
+    # `status` is intentionally NOT an editable field here (it was removed from
+    # InvoiceUpdate). A status change is a workflow transition — it must run
+    # through validate_transition + segregation + thresholds + the CFO gate +
+    # the approval signature + the immutable audit row, all of which live on the
+    # dedicated transition endpoints (services.review / workflow_engine). A bare
+    # setattr here would bypass every one of them. Defensively drop it in case a
+    # caller smuggles it in (Pydantic already strips it from update_data, so this
+    # is belt-and-suspenders against a future schema edit re-adding the field).
+    update_data.pop("status", None)
 
     # Capture a per-field before/after diff for the audit trail (SOX change
     # history). Money fields serialise as string-Decimal inside the diff.

@@ -99,12 +99,16 @@ async def test_approve_endpoint_persists_status_and_writes_signed_audit_row(real
         assert inv.approved_by  # actor name recorded
 
         rows = (
-            await s.execute(
-                select(AuditLog)
-                .where(AuditLog.entity_id == inv_id)
-                .where(AuditLog.action == "invoice.approved")
+            (
+                await s.execute(
+                    select(AuditLog)
+                    .where(AuditLog.entity_id == inv_id)
+                    .where(AuditLog.action == "invoice.approved")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(rows) == 1, "approve must write exactly one invoice.approved audit row"
     details = rows[0].details or {}
     assert details.get("old_status") == "ready_for_review"
@@ -199,9 +203,7 @@ async def test_reject_endpoint_persists_status_opens_exception_and_audits_reason
         assert (audit.details or {}).get("reason") == "amount does not match the PO"
 
         exc = (
-            await s.execute(
-                select(APException).where(APException.invoice_id == inv_id)
-            )
+            await s.execute(select(APException).where(APException.invoice_id == inv_id))
         ).scalar_one()
     assert exc.exception_type == "review_rejected"
     assert exc.description == "amount does not match the PO"
@@ -289,9 +291,7 @@ async def test_approve_of_a_rejected_invoice_is_rejected_409_and_writes_no_audit
         assert inv.approval_date is None
         count = (
             await s.execute(
-                select(func.count())
-                .select_from(AuditLog)
-                .where(AuditLog.entity_id == inv_id)
+                select(func.count()).select_from(AuditLog).where(AuditLog.entity_id == inv_id)
             )
         ).scalar_one()
     assert count == 0, "an illegal transition must not write an audit row"
@@ -303,9 +303,7 @@ async def test_reject_of_a_paid_invoice_is_rejected_409(realdb):
     already-paid invoice must 409 — not silently flip a settled payable
     back into the review queue."""
     info = realdb.info("a")
-    inv_id = await _seed_invoice(
-        realdb.sessionmaker("a"), info.org_id, status=InvoiceStatus.paid
-    )
+    inv_id = await _seed_invoice(realdb.sessionmaker("a"), info.org_id, status=InvoiceStatus.paid)
 
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.post(f"/api/invoices/{inv_id}/reject", json={"reason": "too late"})
@@ -340,6 +338,107 @@ async def test_ap_clerk_cannot_approve_invoice_403(realdb):
 
 
 # ---------------------------------------------------------------------------
+# PATCH cannot change status (BUG 1) — status is a workflow transition, not an
+# editable field. A bare setattr via PATCH used to bypass the state machine,
+# segregation-of-duties, the approval thresholds, the CFO gate, the approval
+# signature, and the immutable audit row.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_cannot_jump_status_to_paid(realdb):
+    """PATCHing `status: paid` onto a `new` invoice must NOT change the status
+    (the field is no longer editable here — only the dedicated transition
+    endpoints move status, through the state machine). Other fields in the same
+    body still save; no transition audit row is written."""
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"), info.org_id, status=InvoiceStatus.new, amount="100.00"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(
+            f"/api/invoices/{inv_id}",
+            json={"status": "paid", "description": "edited note"},
+        )
+    # The request itself succeeds (it's a valid field edit) — status is just
+    # ignored. A 422 would also be acceptable, but we ship the field edit.
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "new", "PATCH must not move status"
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.status == InvoiceStatus.new, "status must stay put"
+        assert inv.description == "edited note", "the legitimate field edit must persist"
+
+        # The only audit row may be `invoice.edited` (the field diff) — never a
+        # transition row, and never one that flips status.
+        rows = (
+            (await s.execute(select(AuditLog).where(AuditLog.entity_id == inv_id))).scalars().all()
+        )
+    actions = {r.action for r in rows}
+    assert "invoice.paid" not in actions
+    assert "invoice.approved" not in actions
+    for r in rows:
+        d = r.details or {}
+        # No audit row may record a status transition out of `new`.
+        assert d.get("new_status") not in {"paid", "approved"}
+        # The field diff must not carry a status change either.
+        assert "status" not in (d.get("changes") or {})
+
+
+@pytest.mark.asyncio
+async def test_patch_self_approve_via_status_is_closed(realdb):
+    """The self-approve-via-PATCH hole: a user PATCHes `status: approved` onto
+    their own invoice. This must NOT approve it — status stays put, approved_by
+    / approval_date stay None, and no `invoice.approved` audit row is written.
+    (Segregation of duties + the signature live only on the approve endpoint;
+    PATCH must never reach them.)"""
+    info = realdb.info("a")
+    actor_id = info.users["ap_manager"]
+
+    # Seed an invoice this same user uploaded.
+    inv_id = uuid.uuid4()
+    async with realdb.sessionmaker("a")() as s:
+        s.add(
+            Invoice(
+                id=inv_id,
+                organization_id=info.org_id,
+                invoice_number="CP-SELF-APPROVE",
+                vendor_name="Self Approve Vendor",
+                amount=Decimal("100.00"),
+                currency="USD",
+                status=InvoiceStatus.ready_for_review,
+                uploaded_by_id=actor_id,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/invoices/{inv_id}", json={"status": "approved"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ready_for_review"
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.status == InvoiceStatus.ready_for_review, "PATCH must not approve"
+        assert inv.approved_by is None, "no approval finalize ran"
+        assert inv.approval_date is None
+
+        approved_rows = (
+            await s.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.entity_id == inv_id)
+                .where(AuditLog.action == "invoice.approved")
+            )
+        ).scalar_one()
+    assert approved_rows == 0, "no invoice.approved audit row may come from PATCH"
+
+
+# ---------------------------------------------------------------------------
 # Tenant isolation — approving a tenant-B invoice from tenant A is a 404
 # ---------------------------------------------------------------------------
 
@@ -367,9 +466,7 @@ async def test_cannot_approve_an_invoice_from_another_tenant(realdb):
         assert inv.status == InvoiceStatus.ready_for_review
         count = (
             await s.execute(
-                select(func.count())
-                .select_from(AuditLog)
-                .where(AuditLog.entity_id == b_inv_id)
+                select(func.count()).select_from(AuditLog).where(AuditLog.entity_id == b_inv_id)
             )
         ).scalar_one()
     assert count == 0

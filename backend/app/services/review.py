@@ -114,12 +114,16 @@ async def approve_invoice(
     # Segregation of duties: uploader cannot approve
     check_segregation(invoice, actor_id, approval_config)
 
-    # Threshold enforcement
-    await _enforce_approval_thresholds(db, invoice, actor_roles or set())
-
-    # Apply any field corrections, capturing a per-field before/after diff for
-    # the audit trail (SOX change-history requirement). Money fields serialise
-    # as string-Decimal inside the diff (build_field_diff handles the typing).
+    # Apply any field corrections FIRST, capturing a per-field before/after diff
+    # for the audit trail (SOX change-history requirement). Money fields
+    # serialise as string-Decimal inside the diff (build_field_diff handles the
+    # typing).
+    #
+    # Order matters: corrections (which can include `amount`) must be applied
+    # BEFORE threshold enforcement so the max-amount cap and the CFO gate are
+    # evaluated against the POST-correction amount. Enforcing first would let a
+    # reviewer approve a $100 invoice with corrections={"amount": 5000} and slip
+    # past a $1000 cap / $500 CFO gate — the gate would read the stale $100.
     field_diff: dict = {}
     if corrections:
         from app.services.audit_access import build_field_diff
@@ -138,6 +142,9 @@ async def approve_invoice(
         # Store vendor-consistent corrections in the correction cache so
         # future extractions from the same vendor pick up the right values.
         await record_corrections(db, invoice, corrections)
+
+    # Threshold enforcement — runs against the now-corrected invoice amount.
+    await _enforce_approval_thresholds(db, invoice, actor_roles or set())
 
     # Upsert the RAG embedding using the invoice's NOW-correct fields.
     # Best-effort: failures (S3 unavailable, no text layer, embedding API
@@ -176,9 +183,39 @@ async def approve_invoice(
                 # No levels apply — treat as single-level, fall through
                 pass
 
+        # The level index this approval is being recorded against — read BEFORE
+        # advancing (advance_approval_chain bumps current_level once the level
+        # is satisfied). Used for the partial-approval audit row below.
+        approved_level = ((instance.state_data or {}).get("approval_levels") or {}).get(
+            "current_level", 0
+        )
+
         chain_complete = advance_approval_chain(instance, actor_id)
         if not chain_complete:
-            # More levels needed — stay in ready_for_review, record partial
+            # More levels needed — stay in ready_for_review, record partial.
+            #
+            # Each intermediate approver's decision must land in the immutable
+            # audit trail, not only in the mutable state_data JSONB. Without
+            # this, a 3-level chain produced exactly ONE audit row (the final
+            # approval), so an auditor could never reconstruct who approved at
+            # levels 1..N-1. Write an append-only `invoice.approval_step` row
+            # capturing the actor + the level they approved at.
+            from app.services.audit_dispatch import dispatch_audit
+
+            await dispatch_audit(
+                db,
+                correlation_id=invoice.correlation_id,
+                organization_id=invoice.organization_id,
+                actor_id=actor_id,
+                action="invoice.approval_step",
+                entity_type="invoice",
+                entity_id=invoice.id,
+                details={
+                    "decision": "approved",
+                    "level": approved_level,
+                    **({"changes": field_diff} if field_diff else {}),
+                },
+            )
             await db.flush()
             return invoice
 
