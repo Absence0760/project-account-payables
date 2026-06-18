@@ -325,3 +325,42 @@ async def test_match_vendor_skips_inactive_rows(realdb, mk):
         vendor, conf = await match_vendor(s, vendor_name="Deactivated Supplier")
     assert vendor is None, "inactive vendor must not be returned as a match"
     assert conf == 0.0
+
+
+@pytest.mark.asyncio
+async def test_match_vendor_address_only_boosts_never_penalizes(realdb, mk):
+    """BUG regression: a perfect fuzzy name match with a STALE (non-matching)
+    listed address must keep its high confidence. The old blend
+    (`name*0.8 + addr*0.2`) dragged a 1.0 name score down to 0.8 when the
+    address disagreed — the address signal must only ever boost, never penalize.
+
+    The input name ("Acme Industries Inc") and the persisted name
+    ("Acme Industries Incorporated") both normalize to "acme industries"
+    → fuzzy similarity 1.0, but the strings differ so the exact-name
+    short-circuit (0.98) is bypassed and the address-blend code is reached.
+    """
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add(
+            Vendor(
+                name="Acme Industries Incorporated",
+                address="123 Old Street, Springfield",
+                organization_id=org_id,
+                entity_id=ent,
+                status="active",
+                source="manual",
+            )
+        )
+        await s.commit()
+
+        vendor, conf = await match_vendor(
+            s,
+            vendor_name="Acme Industries Inc",
+            vendor_address="999 New Avenue, Metropolis",  # deliberately disagrees
+        )
+    assert vendor is not None
+    assert vendor.name == "Acme Industries Incorporated"
+    # Perfect normalized-name match: the stale address must not erode it.
+    # Old (buggy) blend would have produced 0.8; the fix keeps it at 1.0.
+    assert conf == 1.0, f"stale address must not penalize a perfect name match (got {conf})"

@@ -103,13 +103,16 @@ async def match_vendor(
     for v in vendors:
         score = _similarity(normalized_input, _normalize(v.name))
 
-        # Boost score if address partially matches
+        # Address can only ever *boost* confidence — never drag a strong name
+        # match down. A non-matching listed address must not penalize a perfect
+        # name match (which the old `name*0.8 + addr*0.2` blend did, turning a
+        # 1.0 into 0.8). Take the better of the name score and the blend.
         if vendor_address and v.address:
             addr_score = _similarity(
                 vendor_address.lower(),
                 v.address.lower(),
             )
-            score = score * 0.8 + addr_score * 0.2
+            score = max(score, score * 0.8 + addr_score * 0.2)
 
         if score > best_score:
             best_score = score
