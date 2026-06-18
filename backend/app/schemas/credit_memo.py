@@ -4,6 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 from app.api.pagination import PageMeta
+from app.schemas.money import MoneyAmount
 
 
 class CreditMemoCreate(BaseModel):
@@ -27,7 +28,9 @@ class CreditMemoResponse(BaseModel):
     vendor_name: str | None = None
     invoice_id: str | None = None
     invoice_number: str | None = None
-    amount: float
+    # Decimal in Python (money-is-exact); serialises to a JSON number on the
+    # wire — same shape the frontend already parses, no precision loss.
+    amount: MoneyAmount
     currency: str
     issued_date: str | None = None
     reason: str | None = None

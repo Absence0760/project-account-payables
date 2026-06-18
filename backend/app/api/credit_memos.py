@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -26,6 +27,7 @@ from app.schemas.credit_memo import (
     CreditMemoListResponse,
     CreditMemoResponse,
 )
+from app.services.audit_dispatch import dispatch_audit
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/credit-memos", tags=["credit-memos"])
@@ -44,7 +46,7 @@ def _to_response(
         vendor_name=vendor_name,
         invoice_id=str(memo.invoice_id) if memo.invoice_id else None,
         invoice_number=invoice_number,
-        amount=float(memo.amount),
+        amount=memo.amount,  # Decimal — MoneyAmount serialises to a JSON number
         currency=memo.currency,
         issued_date=memo.issued_date.isoformat() if memo.issued_date else None,
         reason=memo.reason,
@@ -113,6 +115,30 @@ async def create_credit_memo(
         invoice = inv_result.scalar_one_or_none()
         if not invoice:
             raise HTTPException(status_code=404, detail="Invoice not found")
+        # Same guards as the /apply path — a credit applied at creation time must
+        # match the invoice's vendor and stay within its remaining balance.
+        if invoice.vendor_id and invoice.vendor_id != vendor_uuid:
+            raise HTTPException(
+                status_code=409,
+                detail="Credit memo vendor does not match invoice vendor",
+            )
+        already_applied = (
+            await db.execute(
+                select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
+                    CreditMemo.invoice_id == invoice_uuid,
+                    CreditMemo.status == "applied",
+                )
+            )
+        ).scalar_one()
+        remaining = invoice.amount - already_applied
+        if body.amount > remaining:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Credit memo amount exceeds the invoice's remaining creditable "
+                    f"balance ({remaining})"
+                ),
+            )
         invoice_number = invoice.invoice_number
 
     memo = CreditMemo(
@@ -131,6 +157,24 @@ async def create_credit_memo(
         entity_id=vendor.entity_id,
     )
     db.add(memo)
+    await db.flush()
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="credit_memo.created",
+        entity_type="credit_memo",
+        entity_id=memo.id,
+        details={
+            "memo_number": memo.memo_number,
+            "vendor_id": str(memo.vendor_id),
+            "invoice_id": str(memo.invoice_id) if memo.invoice_id else None,
+            "amount": str(memo.amount),  # string-Decimal, never float
+            "currency": memo.currency,
+            "status": memo.status,
+        },
+    )
     await db.commit()
     await db.refresh(memo)
     return _to_response(memo, vendor_name=vendor.name, invoice_number=invoice_number)
@@ -142,6 +186,7 @@ async def apply_credit_memo(
     body: CreditMemoApply,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(select(CreditMemo).where(CreditMemo.id == memo_id))
     memo = result.scalar_one_or_none()
@@ -164,10 +209,50 @@ async def apply_credit_memo(
             detail="Credit memo vendor does not match invoice vendor",
         )
 
+    # Over-application guard: the sum of credits applied to an invoice can never
+    # exceed what's owed on it. A credit beyond the invoice balance would create
+    # a negative payable — money out of nowhere. Compute the remaining
+    # creditable balance from already-applied memos (Decimal, never float).
+    already_applied = (
+        await db.execute(
+            select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(
+                CreditMemo.invoice_id == invoice_uuid,
+                CreditMemo.status == "applied",
+                CreditMemo.id != memo.id,
+            )
+        )
+    ).scalar_one()
+    remaining = invoice.amount - already_applied
+    if memo.amount > remaining:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Credit memo amount exceeds the invoice's remaining creditable "
+                f"balance ({remaining})"
+            ),
+        )
+
     memo.invoice_id = invoice_uuid
     memo.status = "applied"
     memo.applied_at = datetime.now(UTC)
     memo.applied_by = user.full_name
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="credit_memo.applied",
+        entity_type="credit_memo",
+        entity_id=memo.id,
+        details={
+            "memo_number": memo.memo_number,
+            "vendor_id": str(memo.vendor_id),
+            "invoice_id": str(invoice_uuid),
+            "amount": str(memo.amount),  # string-Decimal, never float
+            "currency": memo.currency,
+            "remaining_before": str(remaining),
+        },
+    )
     await db.commit()
     await db.refresh(memo)
 
@@ -181,6 +266,7 @@ async def void_credit_memo(
     memo_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(select(CreditMemo).where(CreditMemo.id == memo_id))
     memo = result.scalar_one_or_none()
@@ -192,6 +278,21 @@ async def void_credit_memo(
         )
 
     memo.status = "void"
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="credit_memo.voided",
+        entity_type="credit_memo",
+        entity_id=memo.id,
+        details={
+            "memo_number": memo.memo_number,
+            "vendor_id": str(memo.vendor_id),
+            "amount": str(memo.amount),  # string-Decimal, never float
+            "currency": memo.currency,
+        },
+    )
     await db.commit()
     await db.refresh(memo)
 
