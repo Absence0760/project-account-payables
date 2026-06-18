@@ -215,6 +215,37 @@ The procurement models already exist:
 | `POST` | `/api/invoices/{id}/match` | Run PO matching for an invoice (planned) |
 | `GET` | `/api/invoices/{id}/match-result` | Get the match result (planned) |
 
+> The matcher has no dedicated HTTP entry point — it runs inside
+> `invoice_warnings.refresh_warnings`, which fires on every invoice mutation
+> (`PATCH /api/invoices/{id}`), persisting the result on `Invoice.po_match`.
+> `POST /api/invoices` does **not** run it, and the `_refresh_po_match` guard
+> skips draft `new` invoices, so the computed `po_match` first appears after the
+> invoice leaves `new` and is next PATCHed.
+
+## End-to-end coverage
+
+`frontend/tests-e2e/matching/` exercises the matcher through the real
+PATCH→`refresh_warnings`→`match_invoice_to_po` path (PO/GR rows seeded via
+`tenantPsql`, inspections via `POST /api/inspections`, invoice via the API):
+
+- `two-three-way.spec.ts` — 2-way tolerance band (within / boundary `<=5%` /
+  outside → `mismatch` + `po_mismatch` exception by severity), `no_po`,
+  fractional-cent variance precision, 3-way full/partial/amount-mismatch
+  outcomes, `po_match` clears when `po_number` is removed, recompute idempotence.
+- `four-way-inspection.spec.ts` — Quality-Inspection gate (`pass`/`fail`/`partial`
+  → status + `quality_hold` severity), late inspection re-gating on recompute,
+  org-wide `require_inspection` (missing → `quality_hold` warning), commodity-GL
+  tolerance override.
+- `rules-and-isolation.spec.ts` — `matching_rules` per-field precedence
+  (vendor > commodity > org > default; malformed rule fails soft) asserted via
+  `po_match.details.tolerance_pct`, and tenant isolation (a PO is invisible to a
+  different tenant).
+- `inspections-api.spec.ts` — `/api/inspections` create/list/detail round-trip,
+  result-enum + bad-uuid 400s, 404, and the create RBAC gate (clerk denied).
+
+`goods-receipts/three-way-feed.spec.ts` proves a GR actually changes the match
+outcome (presence → 3-way; short receipt → `partial`).
+
 ## Implementation Status
 
 | Feature | Status |
