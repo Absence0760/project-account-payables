@@ -430,3 +430,65 @@ async def test_all_fraud_rules_disabled_via_org_settings():
     warnings = await refresh_warnings(db, inv, org_settings=org_settings)
     fraud_types = {t for t in _types(warnings) if t.startswith("fraud_")}
     assert fraud_types == set()
+
+
+# ---------------------------------------------------------------------------
+# Round-amount rule (BUG: only exact multiples of 1000 were flagged, missing
+# classic round figures like 1500 / 2500 / 7500). "Round" now means an even
+# multiple of 100 at/above `round_amount_min`.
+# ---------------------------------------------------------------------------
+
+# Disable every other fraud rule so the assertions isolate the round-amount
+# rule. `_make_db` defaults (old vendor, no dup, no prior remit, no history)
+# already keep the other rules quiet, but pinning the toggles is robust.
+_ONLY_ROUND = {
+    "fraud_rules": {
+        "round_amount_enabled": True,
+        "future_date_enabled": False,
+        "bank_change_enabled": False,
+        "stat_anomaly_enabled": False,
+        "rush_payment_enabled": False,
+        "new_vendor_large_enabled": False,
+        "personal_email_enabled": False,
+    }
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amount", ["1500", "2500", "7500", "10000", "1000"])
+async def test_round_amount_flags_multiples_of_100(amount):
+    """The headline fix: 1500 / 2500 / 7500 (and exact thousands) are all
+    round amounts and must be flagged. Before the fix only `% 1000 == 0`
+    values (1000, 10000) tripped, silently missing the common fabricated
+    figures."""
+    from app.services.invoice_warnings import refresh_warnings
+
+    inv = _invoice(amount=Decimal(amount))
+    db = _make_db(vendor=_vendor())
+    warnings = await refresh_warnings(db, inv, org_settings=_ONLY_ROUND)
+    assert "fraud_round_amount" in _types(warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amount", ["1499.99", "2530.00", "1234.56", "7501"])
+async def test_round_amount_not_flagged_for_non_round_values(amount):
+    """A value with fractional cents or not on a 100 boundary is not round —
+    the rule must stay specific, not flag everything."""
+    from app.services.invoice_warnings import refresh_warnings
+
+    inv = _invoice(amount=Decimal(amount))
+    db = _make_db(vendor=_vendor())
+    warnings = await refresh_warnings(db, inv, org_settings=_ONLY_ROUND)
+    assert "fraud_round_amount" not in _types(warnings)
+
+
+@pytest.mark.asyncio
+async def test_round_amount_respects_min_threshold():
+    """A round figure below `round_amount_min` (default 1000) is ignored so
+    small even amounts don't flood the queue."""
+    from app.services.invoice_warnings import refresh_warnings
+
+    inv = _invoice(amount=Decimal("500"))  # round but < 1000
+    db = _make_db(vendor=_vendor())
+    warnings = await refresh_warnings(db, inv, org_settings=_ONLY_ROUND)
+    assert "fraud_round_amount" not in _types(warnings)

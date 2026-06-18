@@ -37,7 +37,7 @@ DEFAULT_FRAUD_RULES: dict = {
     "personal_email_enabled": True,
     "llm_anomaly_enabled": False,  # opt-in: costs an LLM call per invoice
     # Threshold knobs. Whatever the org sets here drives the warning.
-    "round_amount_min": "1000",  # amounts >= this AND % 1000 == 0 flag
+    "round_amount_min": "1000",  # amounts >= this AND an even multiple of 100 flag
     "rush_payment_max_days": 3,  # due_date within N days of invoice_date
     "new_vendor_max_age_days": 30,  # vendor created within N days
     "new_vendor_large_amount": "10000",
@@ -146,10 +146,14 @@ async def refresh_warnings(
                 org_settings=org_settings,
             )
 
-    # Fraud: round amounts (legacy rule; configurable threshold)
+    # Fraud: round amounts (configurable threshold). "Round" = no fractional
+    # cents and an even multiple of 100 (…00) — catches the classic fabricated
+    # figures (1500, 2500, 7500), not only exact thousands. Anchored at
+    # `round_amount_min` so small even amounts don't flood the queue.
     if cfg["round_amount_enabled"] and invoice.amount and invoice.amount > 0:
         threshold = Decimal(str(cfg["round_amount_min"]))
-        if invoice.amount >= threshold and invoice.amount % 1000 == 0:
+        round_step = Decimal("100")
+        if invoice.amount >= threshold and invoice.amount % round_step == 0:
             warnings.append(
                 {
                     "type": "fraud_round_amount",
