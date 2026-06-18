@@ -74,16 +74,25 @@ test.describe('/cfo (admin)', () => {
 test.describe('/cfo RBAC', () => {
 	test.use({ storageState: { cookies: [], origins: [] } });
 
-	test('ap_clerk does not see the Cash Flow nav item', async ({ page, tenantClerk }) => {
+	// Cash Flow lives inside the folded "Insights" sidebar group; it surfaces as
+	// a section tab on the group's pages, not as its own sidebar row.
+	test('ap_clerk cannot reach Cash Flow (no sidebar row, no section tab)', async ({
+		page,
+		tenantClerk
+	}) => {
 		await signInAndWait(page, tenantClerk);
+		await page.goto('/assistant'); // the clerk's Insights landing
 		await expect(page.locator('aside.sidebar a.nav-item[href="/cfo"]')).toHaveCount(0);
+		await expect(page.locator('a.section-tab[href="/cfo"]')).toHaveCount(0);
 	});
 
-	test('cfo sees the Cash Flow nav item and can open it', async ({ page, tenantCfo }) => {
+	test('cfo opens Cash Flow via the Insights section tabs', async ({ page, tenantCfo }) => {
 		await signInAndWait(page, tenantCfo);
-		const navItem = page.locator('aside.sidebar a.nav-item[href="/cfo"]');
-		await expect(navItem).toBeVisible();
-		await navItem.click();
+		// The Insights group row lands on AI Assistant; Cash Flow is a tab there.
+		await page.locator('aside.sidebar a.nav-item', { hasText: 'Insights' }).click();
+		const tab = page.locator('a.section-tab[href="/cfo"]');
+		await expect(tab).toBeVisible();
+		await tab.click();
 		await expect(page.getByRole('heading', { name: 'Cash Flow' })).toBeVisible();
 	});
 });

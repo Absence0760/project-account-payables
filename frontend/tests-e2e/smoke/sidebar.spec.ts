@@ -36,3 +36,37 @@ test.describe('sidebar profile popover', () => {
 		await expect(page.locator('.profile-popover')).toBeHidden();
 	});
 });
+
+/**
+ * The notification bell lives in the sidebar header (it replaced the old
+ * Notifications nav row). It opens a popover peek with a "View all" link to the
+ * full page, and — like the other overlay menus — closes on Escape.
+ */
+test.describe('sidebar notification bell', () => {
+	test('Notifications is no longer a top-level nav row', async ({ page }) => {
+		await page.goto('/');
+		await expect(page.locator('aside.sidebar')).toBeVisible();
+		await expect(page.locator('aside.sidebar a.nav-item[href="/notifications"]')).toHaveCount(0);
+		// The bell is the way in instead.
+		await expect(page.locator('.bell-btn')).toBeVisible();
+	});
+
+	test('bell opens a popover; "View all" deep-links to the full page', async ({ page }) => {
+		await page.goto('/');
+		await page.locator('.bell-btn').click();
+		await expect(page.locator('.bell-popover')).toBeVisible();
+
+		await page.getByRole('button', { name: 'View all →' }).click();
+		await expect(page).toHaveURL(/\/notifications$/);
+	});
+
+	test('Escape closes the bell popover and restores focus to the bell', async ({ page }) => {
+		await page.goto('/');
+		await page.locator('.bell-btn').click();
+		await expect(page.locator('.bell-popover')).toBeVisible();
+
+		await page.keyboard.press('Escape');
+		await expect(page.locator('.bell-popover')).toBeHidden();
+		await expect(page.locator('.bell-btn')).toBeFocused();
+	});
+});

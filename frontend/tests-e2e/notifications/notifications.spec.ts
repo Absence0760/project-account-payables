@@ -74,7 +74,7 @@ test.describe('notification center', () => {
 		await expect(page.getByText('E2E notification').first()).toBeVisible();
 
 		// Sidebar badge reflects unread count (poll fires on mount).
-		const badge = page.locator('.nav-badge');
+		const badge = page.locator('.bell-badge');
 		await expect(badge).toHaveText('3', { timeout: 15_000 });
 
 		clearNotifications(me);
@@ -88,7 +88,7 @@ test.describe('notification center', () => {
 		seedNotifications(me, org, 2);
 
 		await page.goto('/notifications');
-		await expect(page.locator('.nav-badge')).toHaveText('2', { timeout: 15_000 });
+		await expect(page.locator('.bell-badge')).toHaveText('2', { timeout: 15_000 });
 
 		// Open the first notification's RowLink — marks read, then navigates to the invoice.
 		await page.getByRole('button', { name: /^Open E2E notification/ }).first().click();
@@ -96,7 +96,7 @@ test.describe('notification center', () => {
 
 		// Back on the center, badge is now 1.
 		await page.goto('/notifications');
-		await expect(page.locator('.nav-badge')).toHaveText('1', { timeout: 15_000 });
+		await expect(page.locator('.bell-badge')).toHaveText('1', { timeout: 15_000 });
 
 		clearNotifications(me);
 	});
@@ -109,11 +109,11 @@ test.describe('notification center', () => {
 		seedNotifications(me, org, 4);
 
 		await page.goto('/notifications');
-		await expect(page.locator('.nav-badge')).toHaveText('4', { timeout: 15_000 });
+		await expect(page.locator('.bell-badge')).toHaveText('4', { timeout: 15_000 });
 
 		await page.getByRole('button', { name: 'Mark all read' }).click();
 		// Badge disappears (unread === 0 renders no badge).
-		await expect(page.locator('.nav-badge')).toHaveCount(0, { timeout: 15_000 });
+		await expect(page.locator('.bell-badge')).toHaveCount(0, { timeout: 15_000 });
 
 		clearNotifications(me);
 	});
