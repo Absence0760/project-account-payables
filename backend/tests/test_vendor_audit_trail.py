@@ -21,11 +21,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 
 from app.api.vendors import _bank_details_audit_summary
+from app.models.invoice import Invoice, InvoiceStatus
+from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
 
@@ -348,3 +351,98 @@ async def test_reject_vendor_writes_audit_row(realdb, mk):
     assert len(rows) == 1
     assert rows[0].actor_id == actor_id
     assert rows[0].details["status"] == {"old": "unverified", "new": "rejected"}
+
+
+# ===========================================================================
+# Delete semantics: a vendor with retained history is protected (409); a
+# never-transacted vendor (even one carrying a create-time screening trail) is
+# cleanly hard-deletable. Before the fix, ANY vendor with a child row — incl.
+# the `sanctions_checks` row every API-created vendor gets — raised a raw
+# IntegrityError 500 on delete.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_delete_vendor_with_screening_trail_succeeds(realdb, mk):
+    """An API-created vendor always has a `sanctions_checks` child row from the
+    create-time screen. Deleting it used to 500 on the FK; now the vendor-owned
+    screening trail is cleaned up inside the savepoint and the delete succeeds."""
+    async with realdb.client(key=TENANT, role="admin") as client:
+        created = await client.post(
+            "/api/vendors", json={"name": "Screened Then Deleted", "code": "STD-1"}
+        )
+        vendor_id = uuid.UUID(created.json()["id"])
+        # Sanity: the create-time screen really did write a child row.
+        async with mk() as s:
+            checks = (
+                (
+                    await s.execute(
+                        select(SanctionsCheck).where(SanctionsCheck.vendor_id == vendor_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert checks, "precondition: API create should leave a sanctions_checks row"
+
+        deleted = await client.delete(f"/api/vendors/{vendor_id}")
+    assert deleted.status_code == 204, deleted.text
+
+    async with mk() as s:
+        gone = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+        leftover = (
+            (await s.execute(select(SanctionsCheck).where(SanctionsCheck.vendor_id == vendor_id)))
+            .scalars()
+            .all()
+        )
+        rows = await _vendor_audit_rows(s, vendor_id, "vendor.deleted")
+    assert gone is None
+    assert leftover == []  # owned screening trail cleaned up with the vendor
+    assert len(rows) == 1  # audit row survives the delete
+
+
+@pytest.mark.asyncio
+async def test_delete_vendor_with_business_history_is_refused(realdb, mk):
+    """A vendor referenced by a retained business record (here: an invoice) must
+    NOT be destroyed — that would orphan the invoice and erase history SOX
+    retention requires. The delete is refused with 409 and the operator is told
+    to deactivate; the vendor row stays and no `vendor.deleted` row is written."""
+    org_id = realdb.info(TENANT).org_id
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        vendor = Vendor(
+            name="Has Invoices Co",
+            code="HIC-1",
+            organization_id=org_id,
+            entity_id=ent,
+            status="active",
+            source="manual",
+        )
+        s.add(vendor)
+        await s.flush()
+        vendor_id = vendor.id
+        s.add(
+            Invoice(
+                invoice_number="INV-DEL-1",
+                vendor_name="Has Invoices Co",
+                amount=Decimal("100.00"),
+                status=InvoiceStatus.new,
+                organization_id=org_id,
+                entity_id=ent,
+                vendor_id=vendor_id,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        deleted = await client.delete(f"/api/vendors/{vendor_id}")
+    assert deleted.status_code == 409, deleted.text
+    assert "deactivate" in deleted.json()["detail"].lower()
+
+    async with mk() as s:
+        still_there = (
+            await s.execute(select(Vendor).where(Vendor.id == vendor_id))
+        ).scalar_one_or_none()
+        rows = await _vendor_audit_rows(s, vendor_id, "vendor.deleted")
+    assert still_there is not None  # refusal left the vendor intact
+    assert rows == []  # no bogus delete audit row on the refusal path

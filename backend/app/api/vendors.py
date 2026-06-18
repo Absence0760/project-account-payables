@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,13 +19,20 @@ from app.api.deps import (
 )
 from app.api.pagination import PaginationParams, paginated, pagination_params
 from app.config import settings
+from app.models.contract import Contract
+from app.models.credit_memo import CreditMemo
+from app.models.discount import DiscountOffer
 from app.models.invoice import Invoice
+from app.models.invoice_embedding import InvoiceEmbedding
 from app.models.organization import Organization
+from app.models.procurement import PurchaseOrder
 from app.models.sanctions_check import SanctionsCheck
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
+from app.models.vendor_priors import VendorExtractionPrior
 from app.models.vendor_user import VendorUser
+from app.models.virtual_card import VirtualCard
 from app.schemas.portal import (
     PortalInviteRequest,
     PortalInviteResponse,
@@ -479,9 +487,68 @@ async def delete_vendor(
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
-    # Append-only audit row BEFORE the delete so the trail survives (invariant
-    # #3). `audit_log.entity_id` is a bare UUID (no FK), so the row outlives the
-    # vendor row. PII guard: name only, never tax_id / bank_details.
+    # Capture the PII-free identifiers before the row is gone — the audit row
+    # below records name/code only, never tax_id / bank_details.
+    vendor_name, vendor_code = vendor.name, vendor.code
+
+    # A vendor is only hard-deletable when it carries no retained business or
+    # compliance history. Destroying a transacted vendor must NOT be allowed:
+    # it would erase records SOX retention requires and orphan downstream rows.
+    # Such vendors are DEACTIVATED (PATCH status = "inactive"), not deleted, so
+    # their history (and SOX audit trail) survives.
+    #
+    # We enforce this with an EXPLICIT pre-check rather than by relying on the
+    # database FK, because the two failure modes are inconsistent and one is
+    # silent:
+    #   * Tables WITHOUT a `Vendor.<rel>` ORM relationship (sanctions_checks,
+    #     priors, embeddings, credit_memos, contracts, POs, virtual_cards,
+    #     discounts) raise a raw IntegrityError on delete — the 500 the worker
+    #     hit, since every API-created vendor has a create-time screening row.
+    #   * Tables WITH a relationship — `Vendor.invoices` (no cascade) — are
+    #     worse: SQLAlchemy SILENTLY issues `UPDATE invoices SET vendor_id=NULL`
+    #     and the delete "succeeds", orphaning the invoice. An FK/savepoint
+    #     guard would never even see it.
+    # Counting the retained business tables up front catches both deterministically.
+    blocking: list[str] = []
+    for model, label in (
+        (Invoice, "invoices"),
+        (CreditMemo, "credit memos"),
+        (Contract, "contracts"),
+        (PurchaseOrder, "purchase orders"),
+        (VirtualCard, "virtual cards"),
+        (DiscountOffer, "discount offers"),
+    ):
+        count = (
+            await db.execute(
+                select(func.count()).select_from(model).where(model.vendor_id == vendor_id)
+            )
+        ).scalar() or 0
+        if count:
+            blocking.append(f"{count} {label}")
+    if blocking:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Vendor has retained history ({', '.join(blocking)}) and cannot be "
+                "deleted. Deactivate it instead (set status to 'inactive')."
+            ),
+        )
+
+    # No business history — clean up the vendor-OWNED derived rows that carry no
+    # independent retention value for a never-transacted vendor (its screening
+    # trail, extraction priors, embeddings; change-requests + portal users
+    # already cascade), then delete the vendor.
+    await db.execute(sa_delete(SanctionsCheck).where(SanctionsCheck.vendor_id == vendor_id))
+    await db.execute(
+        sa_delete(VendorExtractionPrior).where(VendorExtractionPrior.vendor_id == vendor_id)
+    )
+    await db.execute(sa_delete(InvoiceEmbedding).where(InvoiceEmbedding.vendor_id == vendor_id))
+    await db.delete(vendor)
+    await db.flush()
+
+    # Delete succeeded — write the append-only audit row (invariant #3).
+    # `audit_log.entity_id` is a bare UUID (no FK), so the row outlives the
+    # vendor it references.
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -489,12 +556,9 @@ async def delete_vendor(
         actor_id=user.id,
         action="vendor.deleted",
         entity_type="vendor",
-        entity_id=vendor.id,
-        details={"name": vendor.name, "code": vendor.code},
+        entity_id=vendor_id,
+        details={"name": vendor_name, "code": vendor_code},
     )
-    await db.flush()
-
-    await db.delete(vendor)
     await db.commit()
 
 
