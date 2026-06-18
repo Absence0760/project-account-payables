@@ -968,7 +968,7 @@ async def export_report(
       - `invoice_register` — every invoice in the period
       - `vendor_spend` — per-vendor totals
       - `payment_register` — every payment in the period
-      - `aging_snapshot` — current/30/60/90+ buckets as-of-today
+      - `aging_snapshot` — current/1-30/31-60/61-90/90+ buckets as-of-today
       - `cashflow_forecast` — projected AP outflows per period
         (forward-looking; uses `granularity` + `horizon_days`, not
         `period_days`)
@@ -1059,6 +1059,7 @@ async def export_report(
             "current": Decimal("0"),
             "days_30": Decimal("0"),
             "days_60": Decimal("0"),
+            "days_90": Decimal("0"),
             "days_90_plus": Decimal("0"),
         }
         for due, amt in aging_rows.all():
@@ -1070,6 +1071,8 @@ async def export_report(
                 buckets["days_30"] += amount
             elif days_past <= 60:
                 buckets["days_60"] += amount
+            elif days_past <= 90:
+                buckets["days_90"] += amount
             else:
                 buckets["days_90_plus"] += amount
         payload = EXPORTERS[report](buckets)

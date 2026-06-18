@@ -24,7 +24,18 @@ forecast variance). Both are computed by pure functions in
 
 Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
 `monthly_trend`, `upcoming_payments`, `touchless_rate`, `total_*`.
-New keys added in this iteration:
+
+- `aging` — open-invoice exposure bucketed by **days past the due date**:
+  `current` (not yet due), `days_30` (1-30), `days_60` (31-60), `days_90`
+  (61-90), `days_90_plus` (90+). The same five buckets back the
+  `aging_snapshot` CSV export.
+- `touchless_rate` — straight-through-processing rate: invoices that cleared
+  review without manual rework (reached `approved` or beyond) over every
+  invoice that has finished review (those same states **plus** `rejected`).
+  The numerator is a strict subset of the denominator, so the value is always
+  in `[0, 100]` — it can never go negative.
+
+New keys added in a prior iteration:
 
 - `processing_time` — avg / median / p95 days for (upload→approval)
   and (upload→paid). Sample size below 5 collapses to zeros
@@ -129,7 +140,7 @@ collected in `breaches[]` with the `shortfall`. Money params are parsed as
 | `invoice_register` | invoice_id, invoice_number, vendor_name, amount, currency, status, invoice_date, due_date, created_at, po_number |
 | `vendor_spend` | vendor_name, invoice_count, total_amount |
 | `payment_register` | payment_id, invoice_id, invoice_number, vendor_name, amount, currency, method, status, provider, reference, submitted_at, completed_at |
-| `aging_snapshot` | as_of_date, current, days_30, days_60, days_90_plus, total |
+| `aging_snapshot` | as_of_date, current, days_30, days_60, days_90, days_90_plus, total |
 | `cashflow_forecast` | period, period_start, period_end, scheduled_amount, committed_amount, pending_amount, discount_eligible_amount, count |
 
 `cashflow_forecast` is forward-looking — it takes `granularity` +

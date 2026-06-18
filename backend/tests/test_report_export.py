@@ -45,6 +45,7 @@ def test_exporters_registry_lists_all_reports():
         "payment_register",
         "aging_snapshot",
         "cashflow_forecast",
+        "expense_register",
     }
 
 
@@ -278,19 +279,48 @@ def test_payment_register_handles_orphan_payment_with_no_invoice():
 
 
 def test_aging_snapshot_emits_single_row_with_totals():
+    # Five buckets: current / 1-30 / 31-60 / 61-90 (days_90) / 90+ (BUG 7).
     buckets = {
         "current": Decimal("100"),
         "days_30": Decimal("200"),
         "days_60": Decimal("400"),
-        "days_90_plus": Decimal("800"),
+        "days_90": Decimal("800"),
+        "days_90_plus": Decimal("1600"),
     }
     out = _read(export_aging_snapshot(buckets, snapshot_date=date(2026, 5, 10)))
-    assert out[0] == ["as_of_date", "current", "days_30", "days_60", "days_90_plus", "total"]
-    # Total sums all four buckets.
-    assert out[1] == ["2026-05-10", "100.00", "200.00", "400.00", "800.00", "1500.00"]
+    assert out[0] == [
+        "as_of_date",
+        "current",
+        "days_30",
+        "days_60",
+        "days_90",
+        "days_90_plus",
+        "total",
+    ]
+    # Total sums all five buckets.
+    assert out[1] == [
+        "2026-05-10",
+        "100.00",
+        "200.00",
+        "400.00",
+        "800.00",
+        "1600.00",
+        "3100.00",
+    ]
+
+
+def test_aging_snapshot_keeps_61_90_separate_from_90_plus():
+    """BUG 7 regression at the CSV layer: the 61-90 band (`days_90`) must be
+    its own column, not folded into `days_90_plus`."""
+    buckets = {"days_90": Decimal("750"), "days_90_plus": Decimal("250")}
+    out = _read(export_aging_snapshot(buckets, snapshot_date=date(2026, 5, 10)))
+    header = out[0]
+    row = out[1]
+    assert row[header.index("days_90")] == "750.00"
+    assert row[header.index("days_90_plus")] == "250.00"
 
 
 def test_aging_snapshot_empty_buckets_safe():
     """Empty input → zero row, not a crash."""
     out = _read(export_aging_snapshot({}))
-    assert out[1][1:] == ["0.00", "0.00", "0.00", "0.00", "0.00"]
+    assert out[1][1:] == ["0.00", "0.00", "0.00", "0.00", "0.00", "0.00"]

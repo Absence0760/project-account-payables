@@ -11,7 +11,7 @@ Reports shipped today:
   - vendor_spend: per-vendor rollup (vendor, invoice_count, total)
   - payment_register: every payment with its invoice + status +
     fees
-  - aging_snapshot: current/30/60/90+ buckets with totals
+  - aging_snapshot: current/1-30/31-60/61-90/90+ buckets with totals
   - cashflow_forecast: projected AP outflows per period (day / week /
     month buckets) with committed vs pending split + discount-eligible
 
@@ -154,14 +154,18 @@ def export_payment_register(payments_with_invoice: Iterable) -> str:
 
 
 def export_aging_snapshot(aging_buckets: dict, *, snapshot_date: date | None = None) -> str:
-    """Single-row report with the as-of-date and the four buckets.
+    """Single-row report with the as-of-date and the five buckets
+    (current / 1-30 / 31-60 / 61-90 / 90+ days past due).
     Header matches the dashboard `aging` dict keys."""
-    buf, w = _writer(["as_of_date", "current", "days_30", "days_60", "days_90_plus", "total"])
+    buf, w = _writer(
+        ["as_of_date", "current", "days_30", "days_60", "days_90", "days_90_plus", "total"]
+    )
     current = Decimal(str(aging_buckets.get("current", 0) or 0))
     d30 = Decimal(str(aging_buckets.get("days_30", 0) or 0))
     d60 = Decimal(str(aging_buckets.get("days_60", 0) or 0))
-    d90 = Decimal(str(aging_buckets.get("days_90_plus", 0) or 0))
-    total = current + d30 + d60 + d90
+    d90 = Decimal(str(aging_buckets.get("days_90", 0) or 0))
+    d90plus = Decimal(str(aging_buckets.get("days_90_plus", 0) or 0))
+    total = current + d30 + d60 + d90 + d90plus
     w.writerow(
         [
             _fmt_date(snapshot_date or date.today()),
@@ -169,6 +173,7 @@ def export_aging_snapshot(aging_buckets: dict, *, snapshot_date: date | None = N
             _fmt_money(d30),
             _fmt_money(d60),
             _fmt_money(d90),
+            _fmt_money(d90plus),
             _fmt_money(total),
         ]
     )

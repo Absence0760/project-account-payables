@@ -131,8 +131,9 @@ async def get_dashboard(
     )
     vendor_spend = [{"vendor": row[0], "amount": float(row[1])} for row in vendor_spend_rows.all()]
 
-    # Aging buckets
-    aging = {"current": 0.0, "days_30": 0.0, "days_60": 0.0, "days_90_plus": 0.0}
+    # Aging buckets — boundaries are days past the due date:
+    # current (not yet due) / 1-30 / 31-60 / 61-90 / 90+.
+    aging = {"current": 0.0, "days_30": 0.0, "days_60": 0.0, "days_90": 0.0, "days_90_plus": 0.0}
     open_statuses = ("new", "pending", "ready_for_review", "approved")
     aging_rows = await db.execute(
         _inv(
@@ -150,6 +151,8 @@ async def get_dashboard(
             aging["days_30"] += amt
         elif days_past <= 60:
             aging["days_60"] += amt
+        elif days_past <= 90:
+            aging["days_90"] += amt
         else:
             aging["days_90_plus"] += amt
 
@@ -204,12 +207,24 @@ async def get_dashboard(
         for r in upcoming_rows.all()
     ]
 
-    # Touchless rate
-    terminal = ("approved", "sent_to_erp", "posted_in_erp", "payment_scheduled", "paid", "done")
-    total_processed = sum(pipeline.get(s, 0) for s in terminal)
+    # Touchless rate — share of invoices that cleared review straight through
+    # (reached approved-or-beyond) out of every invoice that has finished the
+    # review stage (the same approved-or-beyond states PLUS the ones bounced to
+    # `rejected`). Numerator is a strict subset of the denominator, so the rate
+    # is always in [0, 100] — it can never go negative.
+    auto_processed_statuses = (
+        "approved",
+        "sent_to_erp",
+        "posted_in_erp",
+        "payment_scheduled",
+        "paid",
+        "done",
+    )
+    auto_processed = sum(pipeline.get(s, 0) for s in auto_processed_statuses)
     rejected_count = pipeline.get("rejected", 0)
+    reviewed_total = auto_processed + rejected_count
     touchless_rate = round(
-        ((total_processed - rejected_count) / total_processed * 100) if total_processed > 0 else 0,
+        (auto_processed / reviewed_total * 100) if reviewed_total > 0 else 0,
         1,
     )
 

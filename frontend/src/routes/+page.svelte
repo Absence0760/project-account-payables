@@ -18,7 +18,13 @@
 		open_exceptions: number;
 		pipeline: Record<string, number>;
 		vendor_spend: Array<{ vendor: string; amount: number }>;
-		aging: { current: number; days_30: number; days_60: number; days_90_plus: number };
+		aging: {
+			current: number;
+			days_30: number;
+			days_60: number;
+			days_90: number;
+			days_90_plus: number;
+		};
 		monthly_trend: Array<{ month: string; count: number; amount: number }>;
 		upcoming_payments: Array<{
 			id: string;
@@ -80,11 +86,21 @@
 		failed: '#e04040',
 	};
 
-	const AGING_COLORS = ['#1fa86a', '#d4940a', '#f59e0b', '#e04040'];
+	const AGING_COLORS = ['#1fa86a', '#d4940a', '#f59e0b', '#ea580c', '#e04040'];
 
-	let agingTotal = $derived(
-		data ? data.aging.current + data.aging.days_30 + data.aging.days_60 + data.aging.days_90_plus : 0
+	const agingBuckets = $derived(
+		data
+			? [
+				{ label: 'Current', value: data.aging.current, color: AGING_COLORS[0] },
+				{ label: '1-30 days', value: data.aging.days_30, color: AGING_COLORS[1] },
+				{ label: '31-60 days', value: data.aging.days_60, color: AGING_COLORS[2] },
+				{ label: '61-90 days', value: data.aging.days_90, color: AGING_COLORS[3] },
+				{ label: '90+ days', value: data.aging.days_90_plus, color: AGING_COLORS[4] },
+			]
+			: []
 	);
+
+	let agingTotal = $derived(agingBuckets.reduce((sum, b) => sum + b.value, 0));
 
 	let maxVendorSpend = $derived(
 		data && data.vendor_spend.length > 0 ? Math.max(...data.vendor_spend.map(v => v.amount)) : 1
@@ -168,12 +184,7 @@
 				<h2>Invoice Aging</h2>
 					{#if agingTotal > 0}
 					<div class="aging-bar">
-						{#each [
-							{ label: 'Current', value: data.aging.current, color: AGING_COLORS[0] },
-							{ label: '1-30 days', value: data.aging.days_30, color: AGING_COLORS[1] },
-							{ label: '31-60 days', value: data.aging.days_60, color: AGING_COLORS[2] },
-							{ label: '90+ days', value: data.aging.days_90_plus, color: AGING_COLORS[3] },
-						] as bucket}
+						{#each agingBuckets as bucket}
 							{#if bucket.value > 0}
 								<div
 									class="aging-segment"
@@ -184,12 +195,7 @@
 						{/each}
 					</div>
 					<div class="aging-legend">
-						{#each [
-							{ label: 'Current', value: data.aging.current, color: AGING_COLORS[0] },
-							{ label: '1-30 days', value: data.aging.days_30, color: AGING_COLORS[1] },
-							{ label: '31-60 days', value: data.aging.days_60, color: AGING_COLORS[2] },
-							{ label: '90+ days', value: data.aging.days_90_plus, color: AGING_COLORS[3] },
-						] as bucket}
+						{#each agingBuckets as bucket}
 							<div class="aging-item">
 								<span class="aging-dot" style="background:{bucket.color}"></span>
 								<span class="aging-label">{bucket.label}</span>

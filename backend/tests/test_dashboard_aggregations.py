@@ -115,7 +115,9 @@ def _full_results(
 
 # ---------------------------------------------------------------------------
 # Aging buckets — the off-by-one trap. `days_past <= 0` is current;
-# 1–30 is days_30; 31–60 is days_60; 61+ is days_90_plus.
+# 1–30 is days_30; 31–60 is days_60; 61–90 is days_90; 90+ is days_90_plus.
+# A 75-days-past-due invoice MUST land in the 61-90 (`days_90`) band, not
+# inflate the most-distressed 90+ bucket (BUG 7 regression).
 # ---------------------------------------------------------------------------
 
 
@@ -131,7 +133,10 @@ async def test_aging_buckets_split_at_correct_day_boundaries():
         (today - timedelta(days=30), Decimal("400.00")),  # days_30 (exactly 30)
         (today - timedelta(days=31), Decimal("800.00")),  # days_60 (31 days)
         (today - timedelta(days=60), Decimal("1600.00")),  # days_60 (exactly 60)
-        (today - timedelta(days=61), Decimal("3200.00")),  # days_90_plus
+        (today - timedelta(days=61), Decimal("3200.00")),  # days_90 (61 days)
+        (today - timedelta(days=75), Decimal("500.00")),  # days_90 (61-90 band)
+        (today - timedelta(days=90), Decimal("700.00")),  # days_90 (exactly 90)
+        (today - timedelta(days=91), Decimal("900.00")),  # days_90_plus (91 days)
         (today - timedelta(days=365), Decimal("6400.00")),  # days_90_plus (way past)
     ]
     db = _mk_db(*_full_results(aging=aging_rows))
@@ -140,7 +145,22 @@ async def test_aging_buckets_split_at_correct_day_boundaries():
     assert result["aging"]["current"] == 100.0
     assert result["aging"]["days_30"] == 600.0  # 200 + 400
     assert result["aging"]["days_60"] == 2400.0  # 800 + 1600
-    assert result["aging"]["days_90_plus"] == 9600.0  # 3200 + 6400
+    assert result["aging"]["days_90"] == 4400.0  # 3200 + 500 + 700
+    assert result["aging"]["days_90_plus"] == 7300.0  # 900 + 6400
+
+
+@pytest.mark.asyncio
+async def test_aging_75_days_lands_in_61_90_band_not_90_plus():
+    """The headline BUG 7 case: before the fix, the only "old" bucket was
+    `days_90_plus` for everything past 60 days, so a 75-days-past-due
+    invoice was reported as 90+. It must now sit in the new 61-90
+    (`days_90`) band and contribute nothing to `days_90_plus`."""
+    today = date.today()
+    aging_rows = [(today - timedelta(days=75), Decimal("1000.00"))]
+    db = _mk_db(*_full_results(aging=aging_rows))
+    result = await get_dashboard(db=db, org=_org(), user=_user())
+    assert result["aging"]["days_90"] == 1000.0
+    assert result["aging"]["days_90_plus"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -158,27 +178,27 @@ async def test_aging_buckets_treat_future_due_date_as_current():
     assert result["aging"]["current"] == 350.0
     assert result["aging"]["days_30"] == 0.0
     assert result["aging"]["days_60"] == 0.0
+    assert result["aging"]["days_90"] == 0.0
     assert result["aging"]["days_90_plus"] == 0.0
 
 
 # ---------------------------------------------------------------------------
-# Touchless rate — the denominator MUST include rejected.
-# `(total_processed - rejected) / total_processed * 100`. A regression
-# that uses the numerator as the denominator pushes the rate to 100%.
+# Touchless rate — straight-through-processing share. Numerator =
+# auto-processed (approved-or-beyond); denominator = numerator + rejected
+# (everything that finished review). The numerator is a strict subset of the
+# denominator, so the rate is ALWAYS in [0, 100] and can never go negative
+# (BUG 9 regression — the old formula subtracted rejected from a numerator
+# whose base didn't include rejected, yielding e.g. -4900%).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_touchless_rate_excludes_rejected_from_numerator_only():
-    """80 reached a post-approval state, 20 were rejected. Touchless
-    rate = (80 - 0) / 80 * 100 = 100% if rejected is NOT in the
-    "processed" pool, but the dashboard counts only terminal states.
-    Rejected sits in pipeline.rejected and is subtracted from the
-    numerator. The correct read:
-      processed = 80 (sum of terminal states)
-      rate = (80 - 20) / 80 * 100 = 75%
+async def test_touchless_rate_counts_rejected_in_denominator():
+    """80 reached a post-approval state, 20 were rejected (manual rework).
+      auto_processed = 80
+      reviewed_total = 80 + 20 = 100
+      rate = 80 / 100 * 100 = 80%
     """
-    # Use plain strings — the dashboard accepts either enum or string keys.
     pipeline_rows = [
         (InvoiceStatus.approved, 30),
         (InvoiceStatus.posted_in_erp, 20),
@@ -188,14 +208,40 @@ async def test_touchless_rate_excludes_rejected_from_numerator_only():
     ]
     db = _mk_db(*_full_results(pipeline=pipeline_rows))
     result = await get_dashboard(db=db, org=_org(), user=_user())
-    # processed = 30 + 20 + 20 + 10 = 80; rejected = 20.
-    assert result["touchless_rate"] == 75.0
+    assert result["touchless_rate"] == 80.0
     assert result["pipeline"]["rejected"] == 20
 
 
 @pytest.mark.asyncio
+async def test_touchless_rate_never_goes_negative_with_many_rejections():
+    """The exact BUG 9 reproduction: {approved: 1, rejected: 50}. The old
+    formula `(1 - 50) / 1 * 100` returned -4900%. The coherent formula is
+    `1 / (1 + 50) * 100 ≈ 1.96%` — small, but never negative."""
+    pipeline_rows = [
+        (InvoiceStatus.approved, 1),
+        (InvoiceStatus.rejected, 50),
+    ]
+    db = _mk_db(*_full_results(pipeline=pipeline_rows))
+    result = await get_dashboard(db=db, org=_org(), user=_user())
+    assert result["touchless_rate"] >= 0
+    assert result["touchless_rate"] == round(1 / 51 * 100, 1)  # ≈ 2.0
+
+
+@pytest.mark.asyncio
+async def test_touchless_rate_is_100_with_no_rejections():
+    """Every invoice that finished review was auto-processed → 100%."""
+    pipeline_rows = [
+        (InvoiceStatus.approved, 5),
+        (InvoiceStatus.paid, 5),
+    ]
+    db = _mk_db(*_full_results(pipeline=pipeline_rows))
+    result = await get_dashboard(db=db, org=_org(), user=_user())
+    assert result["touchless_rate"] == 100.0
+
+
+@pytest.mark.asyncio
 async def test_touchless_rate_is_zero_when_no_invoices_processed():
-    """No invoices have hit a terminal state — touchless rate must be
+    """No invoices have finished review — touchless rate must be
     0, not a ZeroDivisionError."""
     db = _mk_db(*_full_results(pipeline=[(InvoiceStatus.new, 5)]))
     result = await get_dashboard(db=db, org=_org(), user=_user())
