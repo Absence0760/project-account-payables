@@ -418,15 +418,21 @@ async def void_payment(
     expected to chase the rail manually. Either way, the invoice flips
     back to ``approved`` so it re-enters the payment queue.
     """
+    # Lock the payment row FOR UPDATE and re-check its status inside the
+    # transaction. Two concurrent voids would otherwise both pass a
+    # non-locking guard, both call the adapter's `void_payment`, and both
+    # write a `payment.voided` audit row (double-void). The row lock
+    # serializes them: the first transaction flips the status to `voided`
+    # and commits; the second blocks on the lock, then re-reads the now-
+    # terminal status and 409s before touching the adapter. The Invoice is
+    # fetched separately — Postgres can't `FOR UPDATE` the nullable side of
+    # an outer join, and we don't need to lock the invoice here.
     result = await db.execute(
-        select(Payment, Invoice)
-        .outerjoin(Invoice, Payment.invoice_id == Invoice.id)
-        .where(Payment.id == payment_id)
+        select(Payment).where(Payment.id == payment_id).with_for_update()
     )
-    row = result.one_or_none()
-    if not row:
+    payment = result.scalar_one_or_none()
+    if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
-    payment, invoice = row
 
     if payment.status in ("voided", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Payment already {payment.status}")
@@ -435,6 +441,14 @@ async def void_payment(
             status_code=409,
             detail="Cannot void a failed payment (it never settled)",
         )
+
+    invoice = (
+        await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    ).scalar_one_or_none()
+
+    # Capture the status BEFORE mutating so the audit row records the real
+    # prior state (any of completed / submitted / processing / pending).
+    previous_status = payment.status
 
     # Adapter side: best-effort. A processor failure here doesn't block
     # the local void — operators can chase the rail manually, but the
@@ -485,10 +499,8 @@ async def void_payment(
         details={
             "reason": body.reason,
             "adapter_outcome": adapter_outcome,
-            "amount": float(payment.amount),
-            "previous_status": "completed"
-            if payment.completed_at and payment.completed_at <= now
-            else (payment.status or "unknown"),
+            "amount": str(payment.amount),
+            "previous_status": previous_status or "unknown",
         },
     )
     await db.commit()
@@ -747,7 +759,7 @@ async def approve_payment_run(
         action="payment_run.cfo_approved",
         entity_type="payment_run",
         entity_id=run.id,
-        details={"total_amount": float(run.total_amount or 0)},
+        details={"total_amount": str(run.total_amount or Decimal("0"))},
     )
     await db.commit()
     return {
@@ -804,7 +816,7 @@ async def cancel_payment_run(
         details={
             "invoice_ids": [str(i) for i in invoice_ids],
             "payment_count": len(payments),
-            "total_amount": float(run.total_amount or 0),
+            "total_amount": str(run.total_amount or Decimal("0")),
         },
     )
     await db.commit()
@@ -837,7 +849,20 @@ async def execute_payment_run(
       - `failed`    — every payment failed
       - `submitted` — at least one payment is in flight (waiting on webhook)
     """
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
+    # Lock the run row FOR UPDATE and atomically flip it out of `draft`
+    # BEFORE the adapter loop. Without this, two concurrent /execute calls
+    # both read `status == "draft"`, both pass the guard, and both dispatch
+    # every payment to the processor — the adapter is charged twice for the
+    # same rows (double-pay). The row lock serializes the two requests: the
+    # first acquires the lock, re-checks `draft`, flips the run to
+    # `executing`, and commits; the second blocks on the lock, then re-reads
+    # the now-`executing` status and 409s before any money moves. (The
+    # adapter call itself is also idempotency-keyed via
+    # `PaymentPayload.correlation_id` — defense in depth for processors that
+    # honor it, e.g. Modern Treasury / Column.)
+    result = await db.execute(
+        select(PaymentRun).where(PaymentRun.id == run_id).with_for_update()
+    )
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Payment run not found")
@@ -853,6 +878,12 @@ async def execute_payment_run(
                 "sign-off from a user with the CFO role."
             ),
         )
+
+    # Claim the run: flip it to an in-flight status and commit so the lock
+    # releases and any concurrent caller blocked above wakes to a non-draft
+    # run (→ 409). The final rollup status overwrites `executing` at the end.
+    run.status = "executing"
+    await db.commit()
 
     payment_config = (org.settings or {}).get("payments") or {}
     adapter = get_payment_adapter(payment_config)
@@ -1210,9 +1241,15 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
         if not payment:
             return  # late retry of a payment we don't have
 
-        # Don't downgrade a terminal payment — webhooks can arrive out of
-        # order and re-deliveries can land hours after success.
-        if payment.status in ("completed", "failed", "cancelled"):
+        # Only a genuinely in-flight payment may be advanced by a webhook.
+        # Webhooks arrive out of order and re-deliveries can land hours after
+        # a status already settled, so we use an allowlist of overwritable
+        # states rather than a blocklist of terminal ones — a blocklist
+        # silently lets through any state it forgot to name. In particular a
+        # late `completed` must NOT resurrect a `voided` / `cancelled` /
+        # `pending_compliance` payment (which would flip money back on with no
+        # audit row). `completed` / `failed` are already terminal too.
+        if payment.status not in ("pending", "submitted", "processing"):
             return
 
         payment.status = event.status.value

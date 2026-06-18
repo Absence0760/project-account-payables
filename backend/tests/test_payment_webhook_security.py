@@ -306,6 +306,114 @@ async def test_webhook_does_not_downgrade_failed_payment():
     db.commit.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_webhook_does_not_resurrect_voided_payment():
+    """BUG C regression. A `voided` payment is terminal — a late /
+    re-delivered `completed` event (e.g. the rail confirmed settlement
+    moments before AP voided it, but the webhook landed after) must NOT
+    flip it back to `completed`. That would silently re-enable money the
+    operator deliberately reversed, with no audit row recording the flip.
+
+    Before the fix the handler used a *blocklist* (`completed`/`failed`/
+    `cancelled`) that omitted `voided`, so this event was applied. The
+    fix switches to an *allowlist* of in-flight statuses, so any state
+    not in {pending, submitted, processing} is left untouched.
+    """
+    from app.api.payments import payment_webhook
+    from app.services.payment_adapters import PaymentStatus
+
+    org = _org()
+    voided = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_void",
+        payment_run_id=uuid.uuid4(),
+        status="voided",
+        completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        reference="REF-VOID",
+        failure_reason="Voided by AP: duplicate",
+    )
+
+    adapter = MagicMock()
+    adapter.parse_webhook = MagicMock(
+        return_value=SimpleNamespace(
+            provider_payment_id="px_void",
+            event_id="evt_void",
+            status=PaymentStatus.completed,  # late "settled" after the void
+            reference="REF-NEW",
+            failure_reason=None,
+        )
+    )
+
+    tenant_factory, db = _tenant_session_factory(voided)
+    with (
+        patch("app.database.control_session_factory", _ctrl_session_factory(org)),
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync") as mk_sync,
+    ):
+        await payment_webhook(
+            tenant_slug="acme",
+            provider="modern_treasury",
+            request=_fake_request(),
+        )
+
+    # Status + reason untouched, no commit, no ERP fan-out.
+    assert voided.status == "voided"
+    assert voided.reference == "REF-VOID"
+    db.commit.assert_not_called()
+    mk_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_webhook_does_not_resurrect_pending_compliance_payment():
+    """A `pending_compliance` hold is a deliberate AP-review state, not
+    an in-flight processor state. A `completed` webhook must not clear
+    the hold and mark it settled behind the reviewer's back."""
+    from app.api.payments import payment_webhook
+    from app.services.payment_adapters import PaymentStatus
+
+    org = _org()
+    held = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_hold",
+        payment_run_id=uuid.uuid4(),
+        status="pending_compliance",
+        completed_at=None,
+        reference=None,
+        failure_reason="compliance_hold: manual review",
+    )
+
+    adapter = MagicMock()
+    adapter.parse_webhook = MagicMock(
+        return_value=SimpleNamespace(
+            provider_payment_id="px_hold",
+            event_id="evt_hold",
+            status=PaymentStatus.completed,
+            reference="REF-NEW",
+            failure_reason=None,
+        )
+    )
+
+    tenant_factory, db = _tenant_session_factory(held)
+    with (
+        patch("app.database.control_session_factory", _ctrl_session_factory(org)),
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync") as mk_sync,
+    ):
+        await payment_webhook(
+            tenant_slug="acme",
+            provider="modern_treasury",
+            request=_fake_request(),
+        )
+
+    assert held.status == "pending_compliance"
+    db.commit.assert_not_called()
+    mk_sync.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Unknown payment / late delivery
 # ---------------------------------------------------------------------------

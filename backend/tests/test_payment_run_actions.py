@@ -28,13 +28,22 @@ def _db_returning_scalar(value):
     return session
 
 
-def _db_returning_row(row):
-    """Mock an AsyncSession whose `execute().one_or_none()` returns
-    `row` on the first call (used for the join in void_payment)."""
+def _void_db(payment, invoice=None):
+    """Mock an AsyncSession for `void_payment`'s new two-query shape.
+
+    The handler now locks the Payment row FOR UPDATE (first `execute`,
+    read via `scalar_one_or_none`) and then fetches the Invoice in a
+    separate `execute` (also `scalar_one_or_none`). The 404 path stops
+    after the first query, so passing `payment=None` only needs the one
+    result configured.
+    """
+    pay_res = MagicMock()
+    pay_res.scalar_one_or_none = MagicMock(return_value=payment)
+    inv_res = MagicMock()
+    inv_res.scalar_one_or_none = MagicMock(return_value=invoice)
+
     session = AsyncMock()
-    result = MagicMock()
-    result.one_or_none = MagicMock(return_value=row)
-    session.execute = AsyncMock(return_value=result)
+    session.execute = AsyncMock(side_effect=[pay_res, inv_res])
     return session
 
 
@@ -55,7 +64,7 @@ def _org():
 async def test_void_payment_returns_404_for_unknown_id():
     from app.api.payments import VoidPaymentRequest, void_payment
 
-    db = _db_returning_row(None)
+    db = _void_db(None)
 
     with pytest.raises(HTTPException) as exc:
         await void_payment(
@@ -82,7 +91,7 @@ async def test_void_payment_refuses_already_voided():
         correlation_id=uuid.uuid4(),
         completed_at=None,
     )
-    db = _db_returning_row((payment, None))
+    db = _void_db(payment)
 
     with pytest.raises(HTTPException) as exc:
         await void_payment(
@@ -111,7 +120,7 @@ async def test_void_payment_refuses_failed_payment():
         correlation_id=uuid.uuid4(),
         completed_at=None,
     )
-    db = _db_returning_row((payment, None))
+    db = _void_db(payment)
 
     with pytest.raises(HTTPException) as exc:
         await void_payment(
@@ -163,7 +172,7 @@ async def test_void_payment_returns_invoice_to_approved_via_transition_invoice()
         vendor_name="Acme",
         status=InvoiceStatus.payment_scheduled,
     )
-    db = _db_returning_row((payment, invoice))
+    db = _void_db(payment, invoice)
     db.refresh = AsyncMock()
 
     # No upstream adapter for this test — assert it's the invoice path
@@ -193,6 +202,80 @@ async def test_void_payment_returns_invoice_to_approved_via_transition_invoice()
 
     # And the payment.voided audit row is dispatched alongside.
     da.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_void_audit_records_real_previous_status_and_decimal_amount():
+    """BUG D regression. The void audit row must record the payment's
+    status *before* the void (here `submitted`), not a hardcoded
+    "completed", and the amount must serialize as a string-Decimal, not
+    a float.
+
+    Before the fix the handler set `payment.status = "voided"` and
+    `completed_at = now` *before* building the audit details, so the
+    `previous_status` expression always resolved to "completed" — losing
+    the real prior state — and the amount went out as `float(...)`,
+    drifting off the repo's string-Decimal audit convention.
+    """
+    from datetime import UTC, datetime
+    from unittest.mock import patch
+
+    from app.api.payments import VoidPaymentRequest, void_payment
+    from app.models.invoice import InvoiceStatus
+
+    payment_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    payment = SimpleNamespace(
+        id=payment_id,
+        invoice_id=uuid.uuid4(),
+        payment_run_id=None,
+        # The real prior state — a payment still in flight at the rail.
+        status="submitted",
+        provider_payment_id=None,  # no adapter call needed
+        amount=Decimal("250.55"),
+        method="ach",
+        reference="ref-1",
+        correlation_id=uuid.uuid4(),
+        created_at=now,
+        updated_at=now,
+        completed_at=None,
+        failure_reason=None,
+    )
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        invoice_number="INV-1",
+        vendor_name="Acme",
+        status=InvoiceStatus.payment_scheduled,
+    )
+    db = _void_db(payment, invoice)
+    db.refresh = AsyncMock()
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=SimpleNamespace()),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+        patch("app.services.audit_dispatch.dispatch_audit", new_callable=AsyncMock) as da,
+    ):
+        ti.return_value = invoice
+        da.return_value = None
+        await void_payment(
+            payment_id=payment_id,
+            body=VoidPaymentRequest(reason="duplicate"),
+            db=db,
+            org=_org(),
+            user=_user(),
+        )
+
+    da.assert_awaited_once()
+    details = da.call_args.kwargs["details"]
+    # Real prior status, not the hardcoded "completed".
+    assert details["previous_status"] == "submitted"
+    # Amount is a string-Decimal, never a float.
+    assert details["amount"] == "250.55"
+    assert isinstance(details["amount"], str)
+    # And the row really was flipped to voided afterwards.
+    assert payment.status == "voided"
 
 
 # ---------------------------------------------------------------------------
