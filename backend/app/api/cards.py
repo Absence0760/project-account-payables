@@ -361,7 +361,26 @@ async def cancel_card(
 
     adapter = get_card_adapter(card_config)
     await adapter.cancel_card(card.provider_card_id)
+    prior_status = card.status
     card.status = "cancelled"
+
+    # Cancelling voids an issued card before it can be charged — a card
+    # lifecycle state change must leave an append-only audit row (project
+    # invariant: status transitions write audit). PII-free: only the
+    # last_four + the from/to status, never the PAN.
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=card.correlation_id or uuid.uuid4(),
+        organization_id=card.organization_id,
+        actor_id=user.id,
+        action="card.cancelled",
+        entity_type="virtual_card",
+        entity_id=card.id,
+        details={"last_four": card.last_four, "from": prior_status, "to": "cancelled"},
+    )
+
     await db.commit()
 
     return {"success": True, "message": "Card cancelled"}
@@ -466,13 +485,34 @@ async def card_webhook(provider: str, request: Request):
                     "transaction" in event_type.lower() or "settlement" in event_type.lower()
                 )
 
+                from app.services.audit_dispatch import dispatch_audit
+
                 if is_auth and card.status in ("created", "sent", "active"):
+                    prior_status = card.status
                     card.status = "charged"
                     card.amount_charged = (
                         Decimal(str(amount)) / 100 if amount else card.amount_limit
                     )
                     card.charged_at = datetime.now(UTC)
                     card.merchant_name = merchant
+                    # A charge is a money-state transition — leave an
+                    # append-only audit row. Amount serialises as a string
+                    # Decimal (never float); no PAN ever enters the trail.
+                    await dispatch_audit(
+                        db,
+                        correlation_id=card.correlation_id or uuid.uuid4(),
+                        organization_id=card.organization_id,
+                        actor_id=None,
+                        action="card.charged",
+                        entity_type="virtual_card",
+                        entity_id=card.id,
+                        details={
+                            "last_four": card.last_four,
+                            "from": prior_status,
+                            "to": "charged",
+                            "amount_charged": str(card.amount_charged),
+                        },
+                    )
                 elif is_settled and card.status == "charged":
                     card.status = "completed"
                     # Create rebate
@@ -487,6 +527,22 @@ async def card_webhook(provider: str, request: Request):
                         organization_id=card.organization_id,
                     )
                     db.add(rebate)
+                    await dispatch_audit(
+                        db,
+                        correlation_id=card.correlation_id or uuid.uuid4(),
+                        organization_id=card.organization_id,
+                        actor_id=None,
+                        action="card.settled",
+                        entity_type="virtual_card",
+                        entity_id=card.id,
+                        details={
+                            "last_four": card.last_four,
+                            "from": "charged",
+                            "to": "completed",
+                            "rebate_amount": str(rebate_amount),
+                            "rebate_rate": str(rebate_rate),
+                        },
+                    )
 
                 await db.commit()
                 return
