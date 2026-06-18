@@ -553,6 +553,16 @@ the `ui/` primitive in the Source column.
 | KPI card | `.kpi` / `.kpi-value` / `.kpi-label` | `ui/KpiCard.svelte` |
 | Status badge | `<StatusBadge>` | `ui/StatusBadge.svelte` |
 | Money / currency | `<Money>` / `formatMoney` | `ui/Money.svelte` / `utils/money.ts` |
+| Checkbox | `input[type='checkbox']` (global base) | `src/app.css` |
+
+**Checkboxes** are styled globally in `src/app.css` (`appearance: none`
++ a drawn check) so every row-select / select-all / modal toggle box
+matches the dark theme — empty = subtle outline on `--bg`, checked =
+`--accent` fill + white check, plus `:indeterminate` / `:focus-visible`
+/ `:disabled` states. `:root { color-scheme: dark }` puts the remaining
+native controls (selects, scrollbars) in dark mode. Don't re-add
+per-route `accent-color` rules — they only tint the *checked* state and
+are now redundant no-ops under the global `appearance: none`.
 
 (All Source paths are under `$lib/components/`.) If a shared style is
 missing, add it to `src/app.css` (class-scoped) — not a per-route

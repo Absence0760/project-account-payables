@@ -1,5 +1,9 @@
 :root {
 	font-family: system-ui, -apple-system, sans-serif;
+	/* Tells the UA to render native form controls (checkboxes, selects,
+	   scrollbars, date pickers) in their dark variant instead of the default
+	   light styling that clashes with our dark surfaces. */
+	color-scheme: dark;
 	--bg: #0f1117;
 	--surface: #181a23;
 	--border: #2a2d3a;
@@ -20,6 +24,59 @@ html, body {
 	background: var(--bg);
 	color: var(--text);
 	-webkit-font-smoothing: antialiased;
+}
+
+/* ===================================================================
+   Checkboxes (global base)
+   -------------------------------------------------------------------
+   The app's checkboxes (row-select, select-all, modal toggles) were
+   bare <input type="checkbox">, so the UA painted them in its default
+   light style — a white box that reads as "filled/selected" on our
+   dark rows. We replace the native box with a custom one that matches
+   the surface palette: a subtle outline when empty, the accent fill +
+   white check when on. `accent-color` only tints the checked state, so
+   it alone can't fix the empty box — appearance:none + a drawn check
+   is the only way to own both states. This is the single source of
+   truth; per-route `accent-color` rules are now redundant no-ops.
+   =================================================================== */
+input[type='checkbox'] {
+	appearance: none;
+	-webkit-appearance: none;
+	width: 16px;
+	height: 16px;
+	margin: 0;
+	flex-shrink: 0;
+	vertical-align: middle;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	background: var(--bg);
+	background-repeat: no-repeat;
+	background-position: center;
+	background-size: 11px;
+	cursor: pointer;
+	transition: background-color 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+input[type='checkbox']:hover:not(:disabled) {
+	border-color: var(--accent);
+}
+input[type='checkbox']:checked,
+input[type='checkbox']:indeterminate {
+	background-color: var(--accent);
+	border-color: var(--accent);
+}
+input[type='checkbox']:checked {
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-6'/%3E%3C/svg%3E");
+}
+input[type='checkbox']:indeterminate {
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M4 8h8'/%3E%3C/svg%3E");
+}
+input[type='checkbox']:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.35);
+}
+input[type='checkbox']:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
 }
 
 /* ===================================================================
