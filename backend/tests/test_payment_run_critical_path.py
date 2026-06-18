@@ -1,0 +1,564 @@
+"""Critical-path tests for the money-moving payment flow.
+
+This file fills the genuine gaps left by the existing payment suite,
+focused on the highest-risk client flow — the payment run lifecycle and
+the CFO sign-off gate. The sibling files already cover:
+
+  - `test_payment_run_flow.py`  — execute run rollups, field hydration,
+    the already-completed (409) and CFO-unapproved (403) execute guards.
+  - `test_payment_run_actions.py` — void / cancel / approve *guard*
+    rejections (404 / 409).
+  - `test_payment_webhook_security.py` — webhook HMAC + dedup + terminal
+    no-downgrade.
+
+What's NOT covered there, and lives here:
+
+  1. `create_payment_run` — entirely untested. The CFO-threshold
+     computation (sets `requires_cfo_approval` by total vs the org's
+     `payments.cfo_approval_above`), the malformed-threshold fail-open,
+     404 on a missing invoice, and the Decimal total summation are all
+     money-path invariants with no coverage.
+  2. `approve_payment_run` happy path — only the guard rejections are
+     tested; the actual CFO sign-off (stamps `cfo_approved_at`, writes
+     the `payment_run.cfo_approved` audit row) is not.
+  3. The end-to-end CFO gate: a run created above the threshold is
+     blocked at /execute (403), and only after /approve does /execute
+     proceed — i.e. the gate is enforced *before* the adapter is called,
+     so no money moves on an un-approved over-threshold run.
+  4. Execute writes an audit row on the invoice status change (via
+     `transition_invoice`, never a bare `invoice.status = ...` assign) —
+     the append-only-audit invariant for the settle path.
+
+All tests are unit-level against the real handler coroutines with mocked
+AsyncSessions, matching the established pattern in the sibling files.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+
+from app.models.invoice import InvoiceStatus
+from app.services.payment_adapters import PaymentStatus
+
+# ---------------------------------------------------------------------------
+# Shared fakes (mirror the sibling payment tests' shapes)
+# ---------------------------------------------------------------------------
+
+
+def _user(role: str = "admin"):
+    return SimpleNamespace(id=uuid.uuid4(), full_name="Tester", roles=[role])
+
+
+def _org(*, cfo_above=None, provider: str = "mock"):
+    payments: dict = {"provider": provider}
+    if cfo_above is not None:
+        payments["cfo_approval_above"] = cfo_above
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Acme",
+        slug="acme",
+        settings={"payments": payments},
+    )
+
+
+def _invoice(*, amount: Decimal, status=InvoiceStatus.approved):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        entity_id=None,
+        status=status,
+        invoice_number="INV-1",
+        vendor_name="Acme Corp",
+        vendor_id=None,
+        currency="USD",
+        description=None,
+        amount=amount,
+    )
+
+
+def _create_run_db(invoices: list):
+    """Build an AsyncSession mock for `create_payment_run`.
+
+    The handler issues exactly one SELECT — `select(Invoice).where(
+    Invoice.id.in_(...))` → `.scalars().all()`. It then `db.add(run)`,
+    `db.flush()`, `db.add(payment)` per item, and `db.commit()`. We
+    capture every added object so a test can inspect the created run +
+    payment rows.
+    """
+    sel = MagicMock()
+    scalars = MagicMock()
+    scalars.all = MagicMock(return_value=invoices)
+    sel.scalars = MagicMock(return_value=scalars)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=sel)
+    db.commit = AsyncMock()
+    db.flush = AsyncMock()
+    db.added = []
+    db.add = MagicMock(side_effect=lambda obj: db.added.append(obj))
+    return db
+
+
+# ---------------------------------------------------------------------------
+# create_payment_run — the untested entry point
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_run_404_when_an_invoice_is_missing():
+    """If any selected invoice id doesn't resolve, the whole run is
+    refused with 404 — we never create a partial run that silently drops
+    invoices the operator thought they were paying."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("100.00"))
+    # Request names TWO invoices; the DB returns only ONE.
+    body = CreatePaymentRunRequest(
+        items=[
+            CreatePaymentRunItem(invoice_id=str(inv.id)),
+            CreatePaymentRunItem(invoice_id=str(uuid.uuid4())),
+        ]
+    )
+    db = _create_run_db([inv])
+
+    with pytest.raises(HTTPException) as exc:
+        await create_payment_run(
+            body=body,
+            db=db,
+            org=_org(),
+            user=_user(),
+            org_id=uuid.uuid4(),
+            entity_id=uuid.uuid4(),
+        )
+    assert exc.value.status_code == 404
+    db.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_run_sums_total_as_decimal_and_creates_pending_payments():
+    """The run's `total_amount` must be the exact Decimal sum of the
+    invoice amounts (no float drift), and each child Payment lands in
+    `pending` carrying the invoice's own correlation_id (the key the
+    webhook + reconciler later join on)."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    # Amounts chosen so a float sum would drift: 0.1 + 0.2 != 0.3 in float.
+    i1 = _invoice(amount=Decimal("0.10"))
+    i2 = _invoice(amount=Decimal("0.20"))
+    body = CreatePaymentRunRequest(
+        items=[
+            CreatePaymentRunItem(invoice_id=str(i1.id), method="ach"),
+            CreatePaymentRunItem(invoice_id=str(i2.id), method="wire"),
+        ]
+    )
+    db = _create_run_db([i1, i2])
+
+    result = await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(),  # no CFO threshold configured
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    runs = [o for o in db.added if isinstance(o, PaymentRun)]
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.status == "draft"
+    assert run.total_amount == Decimal("0.30")
+    assert isinstance(run.total_amount, Decimal)
+    assert run.requires_cfo_approval is False
+
+    payments = [o for o in db.added if o.__class__.__name__ == "Payment"]
+    assert len(payments) == 2
+    assert {p.method for p in payments} == {"ach", "wire"}
+    assert all(p.status == "pending" for p in payments)
+    # correlation_id flows from the invoice, not freshly minted.
+    assert {p.correlation_id for p in payments} == {i1.correlation_id, i2.correlation_id}
+
+    assert result["requires_cfo_approval"] is False
+    assert result["payment_count"] == 2
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_run_flags_cfo_approval_above_threshold():
+    """A run whose total clears the org's `cfo_approval_above` threshold
+    must be created with `requires_cfo_approval=True`. This is the gate
+    that later blocks /execute until a CFO signs off."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("10000.00"))
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    result = await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(cfo_above="5000"),  # 10000 > 5000 → gate trips
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    run = next(o for o in db.added if isinstance(o, PaymentRun))
+    assert run.requires_cfo_approval is True
+    assert result["requires_cfo_approval"] is True
+    assert "CFO approval required" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_run_does_not_flag_cfo_when_total_at_or_below_threshold():
+    """The threshold is strict-greater-than: a total exactly equal to the
+    threshold does NOT require CFO approval (boundary check)."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("5000.00"))
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(cfo_above="5000"),  # total == threshold → no gate
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    run = next(o for o in db.added if isinstance(o, PaymentRun))
+    assert run.requires_cfo_approval is False
+
+
+@pytest.mark.asyncio
+async def test_create_run_fails_open_on_malformed_threshold():
+    """A typo'd `cfo_approval_above` (non-numeric) must not blow up run
+    creation. The handler fails *open* (no gate) on a malformed value —
+    a missed gate is auditable; a 500 on every run is an outage."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("99999.00"))
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    # Should not raise.
+    await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(cfo_above="not-a-number"),
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    run = next(o for o in db.added if isinstance(o, PaymentRun))
+    assert run.requires_cfo_approval is False
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_run_ignores_zero_or_negative_threshold():
+    """A threshold of 0 (or negative) means "no gate configured" — it
+    must NOT trip CFO approval on every run. The handler only gates when
+    the threshold is strictly positive."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        PaymentRun,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("1000000.00"))
+    body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
+    db = _create_run_db([inv])
+
+    await create_payment_run(
+        body=body,
+        db=db,
+        org=_org(cfo_above="0"),
+        user=_user(),
+        org_id=uuid.uuid4(),
+        entity_id=uuid.uuid4(),
+    )
+
+    run = next(o for o in db.added if isinstance(o, PaymentRun))
+    assert run.requires_cfo_approval is False
+
+
+# ---------------------------------------------------------------------------
+# approve_payment_run — the happy-path sign-off (only guards tested before)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_run_stamps_cfo_and_writes_audit():
+    """The CFO sign-off must stamp `cfo_approved_by` / `cfo_approved_at`
+    AND write a `payment_run.cfo_approved` audit row (the append-only
+    audit invariant — a money-authorization decision is regulated)."""
+    from app.api.payments import approve_payment_run
+
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="draft",
+        requires_cfo_approval=True,
+        cfo_approved_at=None,
+        cfo_approved_by=None,
+        total_amount=Decimal("10000.00"),
+    )
+    sel = MagicMock()
+    sel.scalar_one_or_none = MagicMock(return_value=run)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=sel)
+    db.commit = AsyncMock()
+
+    cfo = _user(role="cfo")
+    before = datetime.now(UTC)
+    with patch("app.services.audit_dispatch.dispatch_audit", new_callable=AsyncMock) as da:
+        result = await approve_payment_run(run_id=run.id, db=db, org=_org(), user=cfo)
+
+    assert run.cfo_approved_by == cfo.id
+    assert run.cfo_approved_at is not None
+    assert run.cfo_approved_at >= before
+    # Status stays draft — approval is a pre-execute gate, not an execute.
+    assert run.status == "draft"
+
+    da.assert_awaited_once()
+    audit_kwargs = da.call_args.kwargs
+    assert audit_kwargs["action"] == "payment_run.cfo_approved"
+    assert audit_kwargs["entity_type"] == "payment_run"
+    assert audit_kwargs["entity_id"] == run.id
+    assert audit_kwargs["actor_id"] == cfo.id
+
+    assert result["cfo_approved_by"] == str(cfo.id)
+    db.commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end CFO gate: blocked before approve, allowed after — and the
+# adapter (= money movement) is never reached while un-approved.
+# ---------------------------------------------------------------------------
+
+
+def _execute_db(run, payments, invoice_by_id):
+    """DB mock for `execute_payment_run`: run SELECT, payments SELECT,
+    then per-payment invoice SELECT. Mirrors `_mock_db` in
+    test_payment_run_flow.py but inline so this file stays standalone."""
+    run_result = MagicMock()
+    run_result.scalar_one_or_none = MagicMock(return_value=run)
+
+    payments_result = MagicMock()
+    payments_scalars = MagicMock()
+    payments_scalars.all = MagicMock(return_value=payments)
+    payments_result.scalars = MagicMock(return_value=payments_scalars)
+
+    per_pay_results: list = []
+    for p in payments:
+        inv = invoice_by_id.get(str(p.invoice_id))
+        inv_res = MagicMock()
+        inv_res.scalar_one_or_none = MagicMock(return_value=inv)
+        per_pay_results.append(inv_res)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[run_result, payments_result, *per_pay_results])
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+    return db
+
+
+def _payment(amount: Decimal = Decimal("10000.00")):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        payment_run_id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        amount=amount,
+        method="ach",
+        status="pending",
+        provider=None,
+        provider_payment_id=None,
+        reference=None,
+        submitted_at=None,
+        completed_at=None,
+        failure_reason=None,
+        correlation_id=uuid.uuid4(),
+        source_currency=None,
+        source_amount=None,
+        fx_rate=None,
+        fx_locked_at=None,
+        corridor=None,
+        target_country=None,
+    )
+
+
+def _adapter():
+    adapter = MagicMock()
+    adapter.provider_name = "mock"
+    adapter.create_payment = AsyncMock(
+        return_value=SimpleNamespace(
+            success=True,
+            status=PaymentStatus.completed,
+            provider_payment_id="px_1",
+            reference="REF-1",
+            failure_reason=None,
+        )
+    )
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_over_threshold_run_blocks_execute_then_proceeds_after_cfo_approval():
+    """The full CFO gate, end to end:
+
+      1. An over-threshold run (`requires_cfo_approval=True`,
+         `cfo_approved_at=None`) is refused at /execute with 403, and
+         critically the payment adapter is NEVER called — money cannot
+         move on an un-approved run.
+      2. After the CFO signs off (`cfo_approved_at` set), the SAME run
+         executes: the adapter is called and the payment settles.
+
+    This is the load-bearing assertion: the gate is enforced *before*
+    the adapter, not cosmetically after.
+    """
+    from app.api.payments import execute_payment_run
+
+    run_id = uuid.uuid4()
+
+    # --- Phase 1: un-approved → 403, no adapter call -----------------
+    blocked_run = SimpleNamespace(
+        id=run_id,
+        status="draft",
+        total_amount=Decimal("10000.00"),
+        organization_id=uuid.uuid4(),
+        requires_cfo_approval=True,
+        cfo_approved_at=None,
+        cfo_approved_by=None,
+        executed_at=None,
+    )
+    sel = MagicMock()
+    sel.scalar_one_or_none = MagicMock(return_value=blocked_run)
+    blocked_db = AsyncMock()
+    blocked_db.execute = AsyncMock(return_value=sel)
+
+    with (
+        patch("app.api.payments.get_payment_adapter") as mk_adapter,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()) as mk_sync,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await execute_payment_run(
+                run_id=run_id, db=blocked_db, org=_org(cfo_above="5000"), user=_user()
+            )
+
+    assert exc.value.status_code == 403
+    mk_adapter.assert_not_called()  # MONEY DID NOT MOVE
+    mk_sync.assert_not_called()
+    assert blocked_run.executed_at is None
+
+    # --- Phase 2: CFO-approved → executes, adapter called ------------
+    approved_run = SimpleNamespace(
+        id=run_id,
+        status="draft",
+        total_amount=Decimal("10000.00"),
+        organization_id=uuid.uuid4(),
+        requires_cfo_approval=True,
+        cfo_approved_at=datetime.now(UTC),
+        cfo_approved_by=uuid.uuid4(),
+        executed_at=None,
+    )
+    p = _payment()
+    invoices = {str(p.invoice_id): _invoice(amount=Decimal("10000.00"))}
+    exec_db = _execute_db(approved_run, [p], invoices)
+    adapter = _adapter()
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+    ):
+        ti.return_value = invoices[str(p.invoice_id)]
+        result = await execute_payment_run(
+            run_id=run_id, db=exec_db, org=_org(cfo_above="5000"), user=_user()
+        )
+
+    adapter.create_payment.assert_awaited_once()  # money moved exactly once
+    assert approved_run.status == "completed"
+    assert approved_run.executed_at is not None
+    assert result["payments_completed"] == 1
+    assert p.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Execute writes an audit row for the invoice status change (append-only
+# audit invariant — the settle path goes through transition_invoice, never
+# a bare `invoice.status = ...` assignment).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_transitions_invoice_via_transition_invoice_not_bare_assign():
+    """A completed payment must flip its invoice to `payment_scheduled`
+    *through* `transition_invoice` (which writes the audit row), not by
+    assigning `invoice.status` directly. A regression that assigned the
+    status field would mutate state with no audit trail — an Improvement-
+    to-Critical violation of invariant #3 on a regulated money event."""
+    from app.api.payments import execute_payment_run
+
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="draft",
+        total_amount=Decimal("100.00"),
+        organization_id=uuid.uuid4(),
+        requires_cfo_approval=False,
+        cfo_approved_at=None,
+        cfo_approved_by=None,
+        executed_at=None,
+    )
+    p = _payment(amount=Decimal("100.00"))
+    invoice = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.approved)
+    invoices = {str(p.invoice_id): invoice}
+    db = _execute_db(run, [p], invoices)
+    adapter = _adapter()
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+    ):
+        ti.return_value = invoice
+        await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
+
+    ti.assert_awaited_once()
+    # Positional contract: transition_invoice(db, invoice, target_status, ...)
+    assert ti.call_args.args[2] == InvoiceStatus.payment_scheduled
+    assert ti.call_args.kwargs.get("action_name") == "invoice.payment_scheduled"
