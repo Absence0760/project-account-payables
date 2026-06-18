@@ -54,7 +54,10 @@ function hardDeleteInvoice(id: string): void {
 		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM audit_log WHERE entity_id='${id}'`);
+	// audit_log is append-only (a BEFORE DELETE trigger raises) — an invoice
+	// that ran through execute carries an invoice.payment_scheduled row that
+	// cannot be deleted. Leave it orphaned (no FK to invoices); deleting the
+	// invoice row is enough.
 	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
 }
 

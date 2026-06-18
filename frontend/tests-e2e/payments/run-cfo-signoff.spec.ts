@@ -1,0 +1,502 @@
+import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
+
+/**
+ * Payment-run money-out path — the load-bearing invariants the existing
+ * payments/ specs stop short of, exercised deeper:
+ *
+ *   - Idempotency under a TRUE concurrent double-submit of /execute
+ *     (Promise.all, not serial). Exactly one 200 + one 409, and exactly
+ *     ONE completed payment row — no double-pay. `execute.spec.ts` only
+ *     fires the two executes serially (first→200, second→409), which a
+ *     non-atomic guard could still pass while double-charging under real
+ *     concurrency. The `with_for_update` claim is the thing under test.
+ *   - Every payment status transition writes an append-only audit row.
+ *     The project invariant ("a status change that touches a regulated
+ *     timestamp like completed_at without an audit row is Critical")
+ *     was unverified for the execute path — and was in fact missing
+ *     (fixed in app/api/payments.py: payment_run.executed +
+ *     payment.<status> rows). These tests lock it.
+ *   - The CFO sign-off threshold BOUNDARY: total == threshold does NOT
+ *     require approval (`total > cfo_threshold`); total == threshold + a
+ *     cent does. `cfo-approval.spec.ts` uses 500 vs 5000 against a 1000
+ *     threshold — never the exact edge.
+ *   - Approval composes with idempotency: an approved over-threshold run
+ *     still 409s on a second execute (the approval gate doesn't reopen
+ *     the draft window).
+ *   - Concurrent void double-submit: exactly one 200 + one 409, exactly
+ *     one payment.voided audit row (no double-void).
+ *
+ * Cleanup mirrors the sibling specs: executed runs are append-only by
+ * design (no void-run endpoint) and payment_scheduled is an immutable
+ * invoice status the PATCH endpoint refuses, so revert is direct SQL.
+ */
+
+type Page = import('@playwright/test').Page;
+
+// This spec is almost entirely API-driven (it asserts the money-path
+// invariants over `page.request` + direct SQL), so it has no reason to pay
+// for — or depend on the timing of — the login UI. We opt out of the
+// worker's shared pre-signed-in storage-state (its JWT is minted once per
+// worker and can outlive the backend's 30-min token expiry on a long serial
+// run → a 401 on the first API call) AND avoid the login-UI
+// waitForURL-on-the-SPA (which flakes when the dev server is under load).
+// Instead each role is authenticated by minting a JWT straight from
+// `POST /api/auth/login` and writing it into localStorage the same way the
+// frontend does — fast, deterministic, render-independent. MFA is off in
+// dev, so login returns the access token directly.
+test.use({ storageState: { cookies: [], origins: [] } });
+
+// Token cache keyed by email. `POST /api/auth/login` is rate-limited to 10
+// attempts/min per IP; this spec authenticates in nearly every test (admin
+// baseline + a few CFO switches), which would blow that budget and 429. The
+// JWT is valid for 30 min and the whole file runs in seconds, so we mint
+// each role's token at most once and replay it into localStorage thereafter.
+const _tokenCache = new Map<string, string>();
+
+async function _mintToken(
+	page: Page,
+	creds: { email: string; password: string }
+): Promise<string> {
+	const cached = _tokenCache.get(creds.email);
+	if (cached) return cached;
+	const resp = await page.request.post(`${API_BASE}/api/auth/login`, {
+		data: { email: creds.email, password: creds.password }
+	});
+	expect(resp.status()).toBe(200);
+	const token = ((await resp.json()) as { access_token: string }).access_token;
+	expect(token).toBeTruthy();
+	_tokenCache.set(creds.email, token);
+	return token;
+}
+
+async function apiSignIn(page: Page, creds: { email: string; password: string }): Promise<void> {
+	const token = await _mintToken(page, creds);
+	// localStorage is per-origin; the page fixture has already navigated to
+	// the worker's tenant root, so this writes under the right origin and
+	// authToken(page) reads it back on the next authedTenantHeaders call.
+	await page.evaluate((t) => localStorage.setItem('auth_token', t), token);
+}
+
+test.beforeEach(async ({ page, tenantAdmin }) => {
+	await apiSignIn(page, tenantAdmin);
+});
+
+async function patchOrg(page: Page, partial: object): Promise<void> {
+	const resp = await page.request.patch(`${API_BASE}/api/organization`, {
+		headers: await authedTenantHeaders(page),
+		data: { settings: partial }
+	});
+	expect(resp.status()).toBe(200);
+}
+
+async function createApprovedInvoice(page: Page, suffix: string, amount: number): Promise<string> {
+	const resp = await page.request.post(`${API_BASE}/api/invoices`, {
+		headers: await authedTenantHeaders(page),
+		data: {
+			vendor: 'E2E Run Signoff Vendor',
+			invoice_number: `E2E-RUN-${suffix}`,
+			amount,
+			currency: 'USD',
+			status: 'approved'
+		}
+	});
+	expect(resp.status()).toBe(201);
+	return ((await resp.json()) as { id: string }).id;
+}
+
+async function createRun(
+	page: Page,
+	invoiceId: string,
+	method = 'ach'
+): Promise<{ id: string; requires_cfo_approval: boolean }> {
+	const resp = await page.request.post(`${API_BASE}/api/payments/runs`, {
+		headers: await authedTenantHeaders(page),
+		data: { items: [{ invoice_id: invoiceId, method }] }
+	});
+	expect(resp.status()).toBe(201);
+	return (await resp.json()) as { id: string; requires_cfo_approval: boolean };
+}
+
+async function getRunPayment(page: Page, runId: string): Promise<{ id: string; status: string }> {
+	const resp = await page.request.get(`${API_BASE}/api/payments/runs/${runId}`, {
+		headers: await authedTenantHeaders(page)
+	});
+	const body = (await resp.json()) as { payments: Array<{ id: string; status: string }> };
+	return body.payments[0];
+}
+
+async function getInvoiceStatus(page: Page, id: string): Promise<string> {
+	const resp = await page.request.get(`${API_BASE}/api/invoices/${id}`, {
+		headers: await authedTenantHeaders(page)
+	});
+	return ((await resp.json()) as { status: string }).status;
+}
+
+/** Count audit rows for an action against a given entity id. */
+function auditCount(action: string, entityId: string): number {
+	const out = tenantPsql(
+		`SELECT count(*) FROM audit_log WHERE action='${action}' AND entity_id='${entityId}'`
+	);
+	return parseInt(out.trim(), 10);
+}
+
+/** Count completed payments belonging to a run — the double-pay tripwire. */
+function completedPaymentCount(runId: string): number {
+	const out = tenantPsql(
+		`SELECT count(*) FROM payments WHERE payment_run_id='${runId}' AND status='completed'`
+	);
+	return parseInt(out.trim(), 10);
+}
+
+function hardDeleteInvoice(id: string): void {
+	tenantPsql(`DELETE FROM payments WHERE invoice_id='${id}'`);
+	tenantPsql(
+		`DELETE FROM payment_runs WHERE id IN (SELECT DISTINCT payment_run_id FROM payments WHERE invoice_id='${id}')`
+	);
+	tenantPsql(
+		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
+	);
+	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
+	// Do NOT delete audit_log rows — the table is append-only (a BEFORE
+	// DELETE trigger raises), and once an invoice runs through execute/void
+	// it carries invoice.payment_scheduled / invoice.voided_return_to_approved
+	// rows. Leaving them orphaned is harmless (audit_log has no FK to
+	// invoices) and is the only DB-honest cleanup.
+	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
+}
+
+function deletePaymentRun(runId: string): void {
+	// NB: the run/payment audit rows (payment_run.executed, payment.<status>,
+	// payment_run.cfo_approved/cancelled, payment.voided) are intentionally
+	// NOT deleted — audit_log is append-only at the DB level (a trigger
+	// rejects every DELETE), and that immutability is itself a money-path
+	// invariant. The orphaned rows reference removed run/payment ids, which
+	// is harmless (audit_log carries no FK) and each test counts rows for a
+	// freshly-created run id, so prior residue never inflates a count.
+	tenantPsql(`DELETE FROM payments WHERE payment_run_id='${runId}'`);
+	tenantPsql(`DELETE FROM payment_runs WHERE id='${runId}'`);
+}
+
+// ── Idempotency of execute under concurrent double-submit ──────────────
+
+test.describe('/payments — execute idempotency (no double-pay)', () => {
+	test('two concurrent /execute calls → exactly one 200 + one 409, exactly one completed payment', async ({
+		page
+	}) => {
+		const invoiceId = await createApprovedInvoice(page, `idem-${Date.now()}`, 1234.56);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			const headers = await authedTenantHeaders(page);
+
+			// Fire both executes truly concurrently. The FOR UPDATE row lock
+			// in execute_payment_run is what must serialize them — without
+			// it both read status='draft', both pass the guard, and the mock
+			// adapter is charged twice.
+			const [a, b] = await Promise.all([
+				page.request.post(`${API_BASE}/api/payments/runs/${runId}/execute`, { headers }),
+				page.request.post(`${API_BASE}/api/payments/runs/${runId}/execute`, { headers })
+			]);
+			const statuses = [a.status(), b.status()].sort();
+			expect(statuses).toEqual([200, 409]);
+
+			// The tripwire: exactly ONE completed payment for the run. Two
+			// would mean the adapter ran twice — money moved twice.
+			expect(completedPaymentCount(runId)).toBe(1);
+
+			// And exactly one settlement audit row for that single payment.
+			const payment = await getRunPayment(page, runId);
+			expect(payment.status).toBe('completed');
+			expect(auditCount('payment.completed', payment.id)).toBe(1);
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+
+	test('a third execute after settlement is still 409 and writes no new audit row', async ({
+		page
+	}) => {
+		const invoiceId = await createApprovedInvoice(page, `idem3-${Date.now()}`, 42.0);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			const headers = await authedTenantHeaders(page);
+
+			const first = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers }
+			);
+			expect(first.status()).toBe(200);
+			expect(auditCount('payment_run.executed', runId)).toBe(1);
+
+			const again = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers }
+			);
+			expect(again.status()).toBe(409);
+			// No second run-executed row — the 409 short-circuits before any
+			// state change or audit write.
+			expect(auditCount('payment_run.executed', runId)).toBe(1);
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+});
+
+// ── Audit rows on each money-movement transition ───────────────────────
+
+test.describe('/payments — append-only audit on every transition', () => {
+	test('execute writes a payment_run.executed row + a payment.completed row', async ({
+		page
+	}) => {
+		const invoiceId = await createApprovedInvoice(page, `audit-exec-${Date.now()}`, 777.0);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			const headers = await authedTenantHeaders(page);
+
+			// No execute audit rows exist before execution.
+			expect(auditCount('payment_run.executed', runId)).toBe(0);
+
+			const resp = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers }
+			);
+			expect(resp.status()).toBe(200);
+
+			// Run-level execution row.
+			expect(auditCount('payment_run.executed', runId)).toBe(1);
+			// Per-payment settlement row, recording the regulated transition
+			// that set completed_at.
+			const payment = await getRunPayment(page, runId);
+			expect(auditCount('payment.completed', payment.id)).toBe(1);
+
+			// PII guard: no bank/account fields leaked into the audit details.
+			const detailsJson = tenantPsql(
+				`SELECT coalesce(details::text,'') FROM audit_log WHERE action='payment.completed' AND entity_id='${payment.id}'`
+			).toLowerCase();
+			expect(detailsJson).not.toContain('account_number');
+			expect(detailsJson).not.toContain('routing');
+			expect(detailsJson).not.toContain('iban');
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+
+	test('CFO approve writes payment_run.cfo_approved; void writes payment.voided', async ({
+		page,
+		tenantCfo,
+		tenantAdmin
+	}) => {
+		await patchOrg(page, { payments: { cfo_approval_above: 1000 } });
+		const invoiceId = await createApprovedInvoice(page, `audit-cfo-${Date.now()}`, 6000);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			expect(run.requires_cfo_approval).toBe(true);
+
+			// CFO approves → cfo_approved audit row.
+			await apiSignIn(page, tenantCfo);
+			let headers = await authedTenantHeaders(page);
+			const approveResp = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/approve`,
+				{ headers }
+			);
+			expect(approveResp.status()).toBe(200);
+			expect(auditCount('payment_run.cfo_approved', runId)).toBe(1);
+
+			// Execute (CFO is in the payments role set), then void the
+			// settled payment → payment.voided audit row.
+			const execResp = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers }
+			);
+			expect(execResp.status()).toBe(200);
+			const payment = await getRunPayment(page, runId);
+			expect(payment.status).toBe('completed');
+
+			const voidResp = await page.request.post(
+				`${API_BASE}/api/payments/${payment.id}/void`,
+				{ headers, data: { reason: 'e2e audit check' } }
+			);
+			expect(voidResp.status()).toBe(200);
+			expect(auditCount('payment.voided', payment.id)).toBe(1);
+			// Void returns the invoice to approved (re-queue invariant).
+			expect(await getInvoiceStatus(page, invoiceId)).toBe('approved');
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+			await apiSignIn(page, tenantAdmin);
+			await patchOrg(page, { payments: { cfo_approval_above: null } });
+		}
+	});
+
+	test('cancel writes a payment_run.cancelled row and re-queues the invoice', async ({
+		page
+	}) => {
+		const invoiceId = await createApprovedInvoice(page, `audit-cancel-${Date.now()}`, 310.0);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			const headers = await authedTenantHeaders(page);
+
+			const cancelResp = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/cancel`,
+				{ headers }
+			);
+			expect(cancelResp.status()).toBe(200);
+			expect(auditCount('payment_run.cancelled', runId)).toBe(1);
+			expect(await getInvoiceStatus(page, invoiceId)).toBe('approved');
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+});
+
+// ── CFO threshold boundary ─────────────────────────────────────────────
+
+test.describe('/payments — CFO threshold boundary', () => {
+	test.afterEach(async ({ page, tenantAdmin }) => {
+		await apiSignIn(page, tenantAdmin);
+		await patchOrg(page, { payments: { cfo_approval_above: null } });
+	});
+
+	test('total exactly equal to the threshold does NOT require CFO approval', async ({ page }) => {
+		await patchOrg(page, { payments: { cfo_approval_above: 1000 } });
+		const invoiceId = await createApprovedInvoice(page, `eq-${Date.now()}`, 1000);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			// Gate is `total > cfo_threshold` — equality is below the gate.
+			expect(run.requires_cfo_approval).toBe(false);
+
+			// And it executes without any approval step.
+			const resp = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers: await authedTenantHeaders(page) }
+			);
+			expect(resp.status()).toBe(200);
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+
+	test('one cent over the threshold requires CFO approval and 403s execute until signed off', async ({
+		page
+	}) => {
+		await patchOrg(page, { payments: { cfo_approval_above: 1000 } });
+		const invoiceId = await createApprovedInvoice(page, `over1c-${Date.now()}`, 1000.01);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			expect(run.requires_cfo_approval).toBe(true);
+
+			const resp = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers: await authedTenantHeaders(page) }
+			);
+			expect(resp.status()).toBe(403);
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+});
+
+// ── Approval composes with idempotency ─────────────────────────────────
+
+test.describe('/payments — approval + idempotency compose', () => {
+	test.afterEach(async ({ page, tenantAdmin }) => {
+		await apiSignIn(page, tenantAdmin);
+		await patchOrg(page, { payments: { cfo_approval_above: null } });
+	});
+
+	test('an approved over-threshold run still 409s on a second execute', async ({
+		page,
+		tenantCfo
+	}) => {
+		await patchOrg(page, { payments: { cfo_approval_above: 1000 } });
+		const invoiceId = await createApprovedInvoice(page, `appidem-${Date.now()}`, 9000);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			expect(run.requires_cfo_approval).toBe(true);
+
+			await apiSignIn(page, tenantCfo);
+			const headers = await authedTenantHeaders(page);
+			expect(
+				(await page.request.post(`${API_BASE}/api/payments/runs/${runId}/approve`, { headers })).status()
+			).toBe(200);
+
+			const first = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers }
+			);
+			expect(first.status()).toBe(200);
+
+			// Approval gate already passed once; the draft→executing claim is
+			// terminal, so a replay is 409, not a second money movement.
+			const second = await page.request.post(
+				`${API_BASE}/api/payments/runs/${runId}/execute`,
+				{ headers }
+			);
+			expect(second.status()).toBe(409);
+			expect(completedPaymentCount(runId)).toBe(1);
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+});
+
+// ── Void idempotency under concurrent double-submit ────────────────────
+
+test.describe('/payments — void idempotency (no double-void)', () => {
+	test('two concurrent voids → exactly one 200 + one 409, exactly one payment.voided audit row', async ({
+		page
+	}) => {
+		const invoiceId = await createApprovedInvoice(page, `void-idem-${Date.now()}`, 480.0);
+		let runId: string | null = null;
+		try {
+			const run = await createRun(page, invoiceId);
+			runId = run.id;
+			const headers = await authedTenantHeaders(page);
+			await page.request.post(`${API_BASE}/api/payments/runs/${runId}/execute`, { headers });
+			const payment = await getRunPayment(page, runId);
+			expect(payment.status).toBe('completed');
+
+			const [a, b] = await Promise.all([
+				page.request.post(`${API_BASE}/api/payments/${payment.id}/void`, {
+					headers,
+					data: { reason: 'concurrent void A' }
+				}),
+				page.request.post(`${API_BASE}/api/payments/${payment.id}/void`, {
+					headers,
+					data: { reason: 'concurrent void B' }
+				})
+			]);
+			const statuses = [a.status(), b.status()].sort();
+			expect(statuses).toEqual([200, 409]);
+
+			// The FOR UPDATE lock in void_payment must serialize the two —
+			// exactly one void audit row, never two.
+			expect(auditCount('payment.voided', payment.id)).toBe(1);
+		} finally {
+			if (runId) deletePaymentRun(runId);
+			hardDeleteInvoice(invoiceId);
+		}
+	});
+});
