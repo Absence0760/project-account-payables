@@ -415,18 +415,28 @@ Currently, payment execution is a status change only — actual bank integration
 
 ### Audit Trail
 
-Every payment event writes to the audit log:
+Every payment **status transition** writes an append-only audit row (project
+invariant — the `audit_log` table is DB-level immutable). Executing a run is
+the load-bearing money-movement event, so it writes both a run-level row and
+one row per child payment recording its terminal state (the transition that
+set the regulated `completed_at`). Voiding, CFO sign-off, and cancellation
+each write their own row. `details` is PII-free: ids, status, method, the
+Decimal `amount` as a string, and the reference — never bank/account values.
 
-| Action | Trigger |
-|---|---|
-| `payment.created` | Payment record created |
-| `payment.processing` | Payment execution started |
-| `payment.completed` | Payment confirmed |
-| `payment.failed` | Payment failed |
-| `payment.cancelled` | Payment voided |
-| `payment_run.created` | New payment run |
-| `payment_run.executed` | Payment run submitted for processing |
-| `payment_run.completed` | All payments in run finished |
+| Action | Trigger | Entity |
+|---|---|---|
+| `payment_run.executed` | A run is executed (`POST /runs/{id}/execute`); rolls up `payments_completed` / `_in_flight` / `_failed` / `cards_issued` + `total_amount` | `payment_run` |
+| `payment.completed` | A child payment settled (mock adapter or, in prod, a webhook) | `payment` |
+| `payment.failed` | A child payment failed during execution | `payment` |
+| `payment.submitted` / `payment.processing` | A child payment is in flight awaiting the processor webhook | `payment` |
+| `payment.pending_compliance` | A child payment held by the sanctions/KYC gate | `payment` |
+| `payment.voided` | A completed / in-flight payment voided (`POST /{id}/void`); also writes the `invoice.voided_return_to_approved` invoice row | `payment` |
+| `payment_run.cfo_approved` | CFO sign-off on an over-threshold draft run | `payment_run` |
+| `payment_run.cancelled` | A draft run cancelled before execution | `payment_run` |
+
+The invoice side of a payment is audited separately by
+`transition_invoice` (`invoice.payment_scheduled` on execute,
+`invoice.voided_return_to_approved` on void) against the `invoice` entity.
 
 ## Role Access
 

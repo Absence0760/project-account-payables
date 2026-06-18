@@ -919,6 +919,42 @@ async def execute_payment_run(
                 notify_vendor_of_card,
             )
 
+            # Issuing a virtual card moves money just like an ACH/wire, so the
+            # same compliance gate applies: a blocked / sanctioned vendor must
+            # not receive a card. Refuse outright; a review-hold leaves the
+            # payment in pending_compliance for AP (no card minted).
+            if invoice.vendor_id:
+                from app.services.compliance import check_payment_compliance
+
+                v_card = (
+                    await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
+                ).scalar_one_or_none()
+                if v_card is not None:
+                    card_decision = await check_payment_compliance(
+                        db,
+                        vendor=v_card,
+                        payment_amount=payment.amount,
+                        payment_method=payment.method,
+                        org_settings=org.settings or {},
+                        organization_id=org.id,
+                        correlation_id=payment.correlation_id,
+                    )
+                    if card_decision.verdict == "refuse":
+                        payment.status = "failed"
+                        payment.failure_reason = "compliance_refusal: " + "; ".join(
+                            card_decision.reasons
+                        )
+                        payment.completed_at = now
+                        failed += 1
+                        continue
+                    if card_decision.verdict == "hold":
+                        payment.status = "pending_compliance"
+                        payment.failure_reason = "compliance_hold: " + "; ".join(
+                            card_decision.reasons
+                        )
+                        in_flight += 1
+                        continue
+
             issue = await issue_card_for_invoice(
                 invoice=invoice,
                 organization_id=org.id,
@@ -1034,14 +1070,20 @@ async def execute_payment_run(
             payment.corridor = prepared.payment.corridor
             payment.target_country = prepared.payment.target_country
 
-            # Compliance gate: run sanctions / KYC / AML checks against
-            # the vendor + the resolved corridor BEFORE the adapter
-            # call. A refusal fails the payment outright; a hold
-            # leaves it in pending_compliance for AP review.
+        # Compliance gate: run sanctions / KYC / AML checks against the
+        # vendor + the resolved corridor BEFORE the adapter call. This runs
+        # for EVERY rail (domestic ACH / wire / check as well as the
+        # international leg above) — the sticky `payments_blocked` block and
+        # a sanctions `match` must refuse a payment no matter the corridor,
+        # so this gate must NOT be nested under the international-leg `if`
+        # (a blocked vendor paid via domestic ACH would otherwise slip
+        # through unscreened). A refusal fails the payment outright; a hold
+        # leaves it in pending_compliance for AP review.
+        if invoice is not None and invoice.vendor_id:
             from app.services.compliance import check_payment_compliance
 
             v_result = await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
-            v_full = v_result.scalar_one_or_none() if invoice.vendor_id else None
+            v_full = v_result.scalar_one_or_none()
             if v_full is not None:
                 decision = await check_payment_compliance(
                     db,
@@ -1139,6 +1181,53 @@ async def execute_payment_run(
     else:
         run.status = "completed"
     run.executed_at = now
+
+    # Append-only audit trail for the money-movement event (project
+    # invariant: every payment status transition writes a log row, and a
+    # change that touches a regulated timestamp like `completed_at` is
+    # Critical without one). The execute loop above sets each payment's
+    # terminal status + `completed_at`/`submitted_at` and the run's
+    # `executed_at` — none of which produced an audit row until here.
+    # `transition_invoice` audits the *invoice* side; these rows audit the
+    # *payment* + *run* side. PII-free: only ids, status, and the Decimal
+    # amount as a string ever enter `details` — never bank/account values.
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=run.id,
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment_run.executed",
+        entity_type="payment_run",
+        entity_id=run.id,
+        details={
+            "status": run.status,
+            "provider": adapter.provider_name,
+            "payments_completed": completed,
+            "payments_in_flight": in_flight,
+            "payments_failed": failed,
+            "cards_issued": cards_issued,
+            "total_amount": str(run.total_amount or Decimal("0")),
+        },
+    )
+    for payment in payments:
+        await dispatch_audit(
+            db,
+            correlation_id=payment.correlation_id or run.id,
+            organization_id=org.id,
+            actor_id=user.id,
+            action=f"payment.{payment.status}",
+            entity_type="payment",
+            entity_id=payment.id,
+            details={
+                "status": payment.status,
+                "method": payment.method,
+                "amount": str(payment.amount),
+                "reference": payment.reference,
+                "payment_run_id": str(run.id),
+            },
+        )
 
     await db.commit()
 
