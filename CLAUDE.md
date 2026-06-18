@@ -135,7 +135,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/credit-memos` | Credit-memo CRUD, vendor application |
 | `/tax` | 1099 tracking (W-9 upload, YTD totals, Tax1099 export) |
 | `/analytics` | CFO dashboard aggregates + CSV/PDF exports + scheduled-report CRUD |
-| `/assistant` | Conversational AP assistant — chat (`POST /chat`) + SSE streaming (`POST /chat/stream`, `tool`/`delta`/`done`/`error` events; 429 before the stream) over 5 fixed read-only tools (current tenant only), conversation history, token-usage meter. Mock adapter default (local-first); claude adapter when keyed |
+| `/assistant` | Conversational AP assistant — chat (`POST /chat`) + SSE streaming (`POST /chat/stream`, `tool`/`delta`/`done`/`error` events; 429 before the stream) over 5 fixed read-only tools (current tenant only), conversation history, token-usage meter. `ollama` adapter is the committed dev default (local tool-capable model, fails soft to `mock`); `claude` when keyed; `mock` deterministic fallback |
 | `/workflows` | Workflow definition CRUD, active steps; no-code builder — templates (`GET /templates`, `POST /from-template`), version history (`GET/POST {id}/versions`, `POST {id}/restore/{version_id}`, `GET {id}/versions/diff`), simulation (`POST {id}/simulate`), import/export (`GET {id}/export`, `POST /import`). Builder step types (`condition`, `parallel`, `webhook`, `email`, `delay`) live in `steps_config` JSONB; PATCH auto-snapshots prior steps into a `WorkflowVersion` |
 | `/adaptive` | Approval-pattern learning, baseline anomalies, advisory workflow suggestions (read-only + dismiss) |
 | `/audit` | SOX auditor export — per-invoice / date-range trail (JSON+CSV, admin/CFO, GET-only); itself audited |
@@ -234,6 +234,8 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_ERP_MODE` | `local` | `local` or `lambda` |
 | `AP_ANTHROPIC_API_KEY` | (empty) | Claude Vision for platform extraction |
 | `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514` | AI model for extraction |
+| `AP_ASSISTANT_PROVIDER` | `mock` (code) / `ollama` (`.env.development`) | Conversational assistant adapter — `mock` \| `claude` \| `ollama`. Committed dev default is `ollama` (local model); `claude`/`ollama` fail soft to `mock`. See `backend/docs/conversational-assistant.md`. |
+| `AP_ASSISTANT_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local **tool-capable** Ollama text model for the assistant (NOT the vision model used for extraction). Base URL reuses `AP_OLLAMA_BASE_URL`. |
 | `AP_EXTRACTION_AUTO_ROTATE` | `true` | Run Tesseract OSD on rendered PDF pages before sending to vision adapters. No-ops if `pytesseract` / `tesseract` missing. |
 | `AP_AUDIT_SUMMARY_ENABLED` | `true` | Master switch for the invoice audit-log summary. When `false`, `GET /api/invoices/{id}/summary` returns the deterministic template summary with no LLM call. Reuses the extraction key/model — no new secret. |
 | `AP_AUDIT_SUMMARY_MODEL` | (empty) | Model for the audit summary; falls back to `AP_EXTRACTION_MODEL` when empty. |

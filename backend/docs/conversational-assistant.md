@@ -6,11 +6,21 @@ tenant. The assistant never exposes raw SQL and never reads another tenant's
 data; the model can only emit one of the five fixed tool calls with typed,
 clamped parameters.
 
-**Local-first.** The default `mock` adapter routes a query to one tool via
-deterministic keyword/intent heuristics — no network, no key. A real `claude`
-adapter (Anthropic Messages API tool-use) is selected only when an API key is
-configured; the dispatcher auto-downgrades `claude` → `mock` when
-`AP_ANTHROPIC_API_KEY` is empty, so `pnpm dev` runs with no credential.
+**Local-AI default.** `pnpm dev` ships with `AP_ASSISTANT_PROVIDER=ollama`
+(in `backend/.env.development`): the `ollama` adapter drives the assistant
+against a **local, tool-capable** Ollama text model (`AP_ASSISTANT_OLLAMA_MODEL`,
+default `qwen2.5-coder:7b`) — no key, no cloud. A real `claude` adapter
+(Anthropic Messages API tool-use) is selected with `AP_ASSISTANT_PROVIDER=claude`
++ a key.
+
+**Local-first is preserved.** The `ollama` adapter **fails soft to the
+deterministic `mock` adapter** whenever Ollama is unreachable, the model isn't
+pulled, or it returns no usable answer — so a fresh clone with no Ollama still
+answers with zero dependencies. (The `mock` adapter routes a query to one tool
+via keyword/intent heuristics, no network/key.) The `claude` adapter likewise
+auto-downgrades to `mock` when `AP_ANTHROPIC_API_KEY` is empty. The code-level
+default in `app/config.py` stays `mock`, so tests and a bare-config boot remain
+deterministic; only the committed dev env selects `ollama`.
 
 ## Architecture
 
@@ -51,10 +61,16 @@ Mirrors the extraction-adapter registry (`@register_assistant_adapter` +
 `get_assistant_adapter`). Config is assembled from settings:
 
 ```python
-{"provider": settings.assistant_provider,             # "mock" | "claude"
- "api_key":  settings.anthropic_api_key,              # reused — no new secret
- "model":    settings.assistant_model or settings.extraction_model}
+{"provider": settings.assistant_provider,             # "mock" | "claude" | "ollama"
+ "api_key":  settings.anthropic_api_key,              # reused — no new secret (claude)
+ "model":    settings.assistant_model or settings.extraction_model,  # claude model id
+ "ollama_model":    settings.assistant_ollama_model,  # local tool-capable text model
+ "ollama_base_url": settings.ollama_base_url}         # shared with the extraction adapter
 ```
+
+`mock` is the **synchronous-dispatch fallback** for `claude` (no key). `ollama`
+can't be probed synchronously, so it falls back to `mock` at **call** time
+inside the adapter instead.
 
 - **`mock_adapter.py`** (default) — ordered keyword/intent rules route the
   message to one tool, run it, and format a deterministic templated answer.
@@ -67,6 +83,20 @@ Mirrors the extraction-adapter registry (`@register_assistant_adapter` +
   `AP_ASSISTANT_MAX_TOOL_HOPS`. The model id resolves from config
   (`AP_ASSISTANT_MODEL` → falls back to `AP_EXTRACTION_MODEL`) — never
   hardcoded. Real `usage` tokens are summed across hops.
+- **`ollama_adapter.py`** (committed dev default) — raw `httpx` POST to a local
+  Ollama `/api/chat` with the five tools converted to OpenAI-style function
+  schemas, the same `AP_ASSISTANT_MAX_TOOL_HOPS` loop, and `prompt_eval_count` /
+  `eval_count` summed as the usage tokens. Uses a dedicated **tool-capable text
+  model** (`AP_ASSISTANT_OLLAMA_MODEL`, not the vision model used for
+  extraction). Robustness: many local models emit the tool call as JSON *text*
+  rather than a structured `tool_calls` field — `_parse_text_tool_calls`
+  recovers those so the tool still runs. Any failure (Ollama down, model not
+  pulled, non-200, no prose answer) **fails soft to `mock`**. Pull a model once
+  with e.g. `ollama pull qwen2.5-coder:7b`; see
+  [Local AI testing](local-ai-testing.md). Note that not every Ollama model
+  supports tool-calling (`deepseek-r1`, vision-only models reject `tools` with a
+  400) — pick one that does (`qwen2.5*`, `llama3.1`, `mistral-nemo`, …); the
+  fail-soft keeps the assistant answering regardless.
 
 ## The five tools
 

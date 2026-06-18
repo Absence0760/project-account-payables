@@ -195,9 +195,15 @@ class Settings(BaseSettings):
     # AP_MAX_CONCURRENT_SESSIONS=0 convention). Per-org override lives in
     # Organization.settings.assistant.monthly_token_budget.
     assistant_monthly_token_budget: int = 200_000
-    # Caps the claude adapter's tool-use loop so a single turn can't run away
-    # on cost. Each hop is one API round-trip.
+    # Caps the claude/ollama adapter's tool-use loop so a single turn can't run
+    # away on cost. Each hop is one API round-trip.
     assistant_max_tool_hops: int = 4
+    # Ollama assistant adapter: a local, tool-capable TEXT model (NOT the vision
+    # model used for extraction — that can't do function-calling). Must support
+    # Ollama tool-use. Base URL reuses `ollama_base_url`. When `ollama` is the
+    # selected provider but Ollama is unreachable or the model isn't pulled, the
+    # adapter fails soft to `mock`, so a fresh clone still runs (local-first).
+    assistant_ollama_model: str = "qwen2.5-coder:7b"
 
     # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
     lithic_api_key: str = ""  # your Lithic API key

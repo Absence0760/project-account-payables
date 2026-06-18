@@ -27,10 +27,12 @@ def get_assistant_adapter(config: dict) -> AssistantAdapter:
 
     Config shape::
 
-        {"provider": "mock"|"claude", "api_key": str, "model": str}
+        {"provider": "mock"|"claude"|"ollama", "api_key": str, "model": str,
+         "ollama_model": str, "ollama_base_url": str}
 
     Auto-downgrade ``claude`` → ``mock`` when no key is configured — the
-    local-first rail.
+    local-first rail. The ``ollama`` adapter can't be probed synchronously here,
+    so it fails soft to ``mock`` at call time instead (see ``ollama_adapter``).
     """
     provider = config.get("provider") or "mock"
     if provider == "claude" and not config.get("api_key"):
@@ -44,4 +46,8 @@ def list_available_providers() -> list[str]:
 
 
 # Register adapters on import (decorators run on module load).
-from app.services.assistant import claude_adapter, mock_adapter  # noqa: E402,F401
+from app.services.assistant import (  # noqa: E402,F401
+    claude_adapter,
+    mock_adapter,
+    ollama_adapter,
+)

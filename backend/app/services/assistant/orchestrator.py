@@ -39,6 +39,10 @@ def _assistant_config(org: Organization) -> dict:
         "provider": settings.assistant_provider,
         "api_key": settings.anthropic_api_key,
         "model": settings.assistant_model or settings.extraction_model,
+        # Ollama adapter knobs — a dedicated tool-capable local text model and
+        # base URL, kept separate from the claude-flavoured `model` above.
+        "ollama_model": settings.assistant_ollama_model,
+        "ollama_base_url": settings.ollama_base_url,
     }
 
 
