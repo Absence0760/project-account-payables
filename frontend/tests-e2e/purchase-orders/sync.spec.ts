@@ -106,8 +106,10 @@ test.describe('/api/purchase-orders/sync-erp', () => {
 		expect(secondBody.created).toBe(0);
 		expect(secondBody.skipped).toBe(MOCK_PO_NUMBERS.length);
 
-		// 4. The synced POs are listable by the regular endpoint.
-		const list = await page.request.get(`${API_BASE}/api/purchase-orders?page_size=200`, {
+		// 4. The synced POs are listable by the regular endpoint. page_size is
+		//    capped at MAX_PAGE_SIZE (100) — requesting more is a 422, and 100
+		//    is plenty for the three-PO mock catalogue.
+		const list = await page.request.get(`${API_BASE}/api/purchase-orders?page_size=100`, {
 			headers
 		});
 		expect(list.status()).toBe(200);
