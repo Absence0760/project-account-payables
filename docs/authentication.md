@@ -576,7 +576,7 @@ Failed checks return `403 Forbidden` with `{"detail": "Your role does not permit
 
 ### Permission matrix
 
-The matrix below is the source of truth — it mirrors `frontend/src/lib/components/Sidebar.svelte` (page visibility) and the `!isClerkOnly` / `isManager` / `isCfo` checks in invoice + workflow components. Roles are non-exclusive: a user may hold any combination.
+The matrix below is the source of truth — it mirrors the per-route `roles` gates in `frontend/src/lib/nav.ts` (which drives sidebar + section-tab visibility) and the `!isClerkOnly` / `isManager` / `isCfo` checks in invoice + workflow components. Roles are non-exclusive: a user may hold any combination.
 
 | Endpoint area | Read | Write |
 |---|---|---|

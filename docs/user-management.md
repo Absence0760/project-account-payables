@@ -19,11 +19,20 @@ Roles are enforced in the frontend UI. The `/api/auth/me` endpoint returns the u
 
 ### Role-Based UI Restrictions
 
+The sidebar (driven by `frontend/src/lib/nav.ts`) keeps high-traffic routes as
+direct rows and folds the rest into groups (Procurement / Billing / Insights /
+Settings) that open a sub-tabbed page. A group row appears when the role can see
+≥1 of its children; the per-page section tabs are filtered by the same per-route
+`roles` gate. So the table below is about route *access*, not literal rows —
+e.g. Workflows is reachable under the **Settings** group, not a top-level row.
+
 | Feature | Admin | AP Manager | AP Clerk | CFO |
 |---|---|---|---|---|
-| Sidebar: Invoices, Dashboard | Yes | Yes | Yes | Yes |
-| Sidebar: Payments, Vendors | Yes | Yes | No | Yes |
-| Sidebar: Workflows, Admin, Org | Yes | No | No | No |
+| Nav (direct): Dashboard, Invoices | Yes | Yes | Yes | Yes |
+| Nav (direct): Payments, Vendors | Yes | Yes | No | Yes |
+| Nav (direct): Exceptions | Yes | Yes | No | No |
+| Nav group: Procurement / Billing / Insights | Yes | Yes | Yes¹ | Yes |
+| Nav group: Settings (Org · Users & Roles · Workflows · Audit Trail) | Yes | No | No | Yes² |
 | Invoice: edit fields | Yes | Yes | Yes | Yes |
 | Invoice: change status dropdown | Yes | Yes | No | Yes |
 | Invoice: submit for review (new) | Yes | Yes | Yes | Yes |
@@ -31,6 +40,11 @@ Roles are enforced in the frontend UI. The `/api/auth/me` endpoint returns the u
 | Invoice: delete | Yes | Yes | No | Yes |
 | Bulk: delete, status change | Yes | Yes | No | Yes |
 | Bulk: export | Yes | Yes | Yes | Yes |
+
+¹ A clerk sees a reduced set of section tabs inside each group (e.g. Billing →
+Contracts + Expenses only; Insights → AI Assistant only). ² A CFO's Settings
+group shows only the Audit Trail tab, so the section bar is suppressed (a lone
+tab would just duplicate the page title).
 
 Backend API endpoints are role-gated via `Depends(require_roles(...))` in `backend/app/api/deps.py`. The frontend matrix above mirrors what the backend allows. A coverage gate in `backend/tests/test_rbac.py` fails CI if a new endpoint ships without an auth dependency. Full permission matrix in `authentication.md` § RBAC.
 

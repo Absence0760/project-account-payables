@@ -61,7 +61,7 @@ tests-e2e/
 ├── purchase-orders/                 list, sync
 ├── goods-receipts/                  list
 ├── vendors/                         verify
-└── smoke/                           nav smoke across sidebar routes
+└── smoke/                           nav smoke + grouped sidebar nav / section tabs / bell + profile popover (section-nav, sidebar specs)
 ```
 
 `testDir: '.'` walks recursively, so adding a new spec under any of
