@@ -156,6 +156,88 @@ input[type='file']::file-selector-button:hover {
 }
 
 /* ===================================================================
+   Select dropdowns (global base)
+   -------------------------------------------------------------------
+   appearance:none + a drawn chevron replaces the tiny native UA arrow.
+   The chevron is painted via background-image; because ~16 scoped
+   `select` rules across the app set `background: var(--bg)` and
+   `padding:` shorthands (which reset background-image + padding-right)
+   AND outrank a plain global rule via Svelte's `.svelte-<hash>`, the
+   chevron's background-* and its right-side gutter are forced with
+   !important so the arrow survives those shorthands. background-COLOR
+   is deliberately NOT forced, so a component can still choose its own
+   surface (e.g. `.method-select` uses --surface). [multiple]/[size]
+   list-boxes are excluded — they have no single collapsed arrow.
+   =================================================================== */
+select:not([multiple]):not([size]) {
+	appearance: none;
+	-webkit-appearance: none;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%238a8fa0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") !important;
+	background-repeat: no-repeat !important;
+	background-position: right 10px center !important;
+	background-size: 14px !important;
+	padding-right: 30px !important;
+	cursor: pointer;
+}
+
+/* Range slider — `accent-color` (paired with the :root color-scheme:dark)
+   themes both the track fill and thumb natively; this is the modern,
+   cross-browser-correct approach, so we set it globally rather than
+   rebuilding the track/thumb with vendor pseudo-elements. */
+input[type='range'] {
+	accent-color: var(--accent);
+	cursor: pointer;
+}
+
+/* Date / time picker indicator — color-scheme already renders it light
+   on dark; nudge the affordance so it reads as interactive. */
+input[type='date']::-webkit-calendar-picker-indicator,
+input[type='time']::-webkit-calendar-picker-indicator,
+input[type='datetime-local']::-webkit-calendar-picker-indicator,
+input[type='month']::-webkit-calendar-picker-indicator,
+input[type='week']::-webkit-calendar-picker-indicator {
+	cursor: pointer;
+	opacity: 0.6;
+	transition: opacity 0.12s;
+}
+input[type='date']:hover::-webkit-calendar-picker-indicator,
+input[type='time']:hover::-webkit-calendar-picker-indicator,
+input[type='datetime-local']:hover::-webkit-calendar-picker-indicator,
+input[type='month']:hover::-webkit-calendar-picker-indicator,
+input[type='week']:hover::-webkit-calendar-picker-indicator {
+	opacity: 1;
+}
+
+/* ===================================================================
+   Scrollbars (global base)
+   -------------------------------------------------------------------
+   color-scheme:dark already darkens UA scrollbars; this makes them
+   thin + theme-toned so inner-scrolling cards (wide tables, long
+   modals) don't show a chunky default bar against the dark surface.
+   =================================================================== */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: #363a49 transparent;
+}
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: #363a49;
+	border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: #454a5c;
+}
+::-webkit-scrollbar-corner {
+	background: transparent;
+}
+
+/* ===================================================================
    Shared UI contract
    -------------------------------------------------------------------
    Single source of truth for the design-system class names documented

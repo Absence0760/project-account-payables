@@ -563,12 +563,22 @@ bare `<input>` fits the theme without per-route CSS:
   `:indeterminate` (checkbox) / `:focus-visible` / `:disabled`.
 - **File input** — `::file-selector-button` restyled to match the
   secondary (`.btn-cancel`) button.
+- **Select** — `appearance: none` + a drawn chevron. The chevron's
+  `background-*` + `padding-right` carry `!important` because the ~16
+  scoped `select` rules set `background:`/`padding:` shorthands (which
+  reset those longhands) and outrank a plain global rule via Svelte's
+  `.svelte-<hash>`; `background-color` is left un-forced so a component
+  can still pick its own surface. *(Long-term these scoped rules should
+  collapse onto the shared recipe so the `!important` can drop.)*
+- **Range** — `accent-color: var(--accent)` (the modern cross-browser
+  approach; no pseudo-element rebuild).
 - `:root { color-scheme: dark }` puts the remaining native controls
-  (selects, scrollbars, date pickers) in dark mode; `::selection` is
-  accent-tinted.
+  (date pickers, scrollbars) in dark mode; scrollbars are further
+  thinned + tinted, the date-picker indicator gets a hover, and
+  `::selection` is accent-tinted.
 
-Don't re-add per-route `accent-color` rules — they only tint the
-*checked* state and are redundant no-ops under the global
+Don't re-add per-route `accent-color` rules on checkboxes/radios — they
+only tint the *checked* state and are redundant no-ops under the global
 `appearance: none`.
 
 (All Source paths are under `$lib/components/`.) If a shared style is
