@@ -2,6 +2,7 @@
 	import '../app.css';
 	import Landing from '$lib/components/marketing/Landing.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
+	import SectionTabs from '$lib/components/layout/SectionTabs.svelte';
 	import Toast from '$lib/components/ui/Toast.svelte';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -87,6 +88,7 @@
 	<div class="app-shell">
 		<Sidebar />
 		<main class="main-content" style="margin-left: {sidebar.collapsed ? 60 : 220}px">
+			<SectionTabs />
 			<slot />
 		</main>
 	</div>

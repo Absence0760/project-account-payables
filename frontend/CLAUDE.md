@@ -170,7 +170,24 @@ a definition as JSON). All wrap the shared `ui/Modal.svelte` and call the
 `workflowStore` builder methods.
 
 **`marketing/`** — `Landing.svelte` + `Pricing.svelte` (public no-tenant route).
-**`layout/`** — `Sidebar.svelte` (collapsed/expanded nav, profile popover).
+**`layout/`** — the shared left side panel:
+- `Sidebar.svelte` — collapsed/expanded nav + profile popover. The nav is
+  driven by **`$lib/nav.ts`** (the single source of truth, also read by
+  `SectionTabs`): high-traffic destinations are top-level `link`s; the rest are
+  folded into `group`s (Procurement / Billing / Insights / Settings) that show
+  ONE sidebar row and open a sub-tabbed page. A group's row links to the first
+  child the current role can see; a group hides when the role can see none.
+  Add/move a route by editing `$lib/nav.ts` (with its `roles` gate) — don't
+  hand-roll nav rows in the component.
+- `SectionTabs.svelte` — the per-page section sub-tab bar, rendered once in
+  `routes/+layout.svelte` above the page slot. For a grouped route it renders
+  the group's RBAC-visible children as tabs (suppressed when ≤1 is visible);
+  top-level routes get no bar.
+- `NotificationBell.svelte` — bell + unread badge in the sidebar header with a
+  recent-notifications popover (replaced the old Notifications nav row; the full
+  `/notifications` page is the "View all" target). Closes on Esc / backdrop.
+- `EntitySwitcher.svelte` — multi-entity (subsidiary) selector; hidden for
+  single-entity tenants.
 
 ### Types (`src/lib/types/`)
 

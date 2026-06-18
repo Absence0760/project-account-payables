@@ -2,9 +2,10 @@
 	import { page } from '$app/state';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { notificationStore } from '$lib/stores/notifications.svelte';
 	import { entityStore } from '$lib/stores/entity.svelte';
 	import EntitySwitcher from '$lib/components/layout/EntitySwitcher.svelte';
+	import NotificationBell from '$lib/components/layout/NotificationBell.svelte';
+	import { NAV, groupHref, isEntryActive, isEntryVisible, type NavEntry } from '$lib/nav';
 
 	let collapsed = $derived(sidebar.collapsed);
 
@@ -26,165 +27,75 @@
 		}
 	}
 
-	let unread = $derived(notificationStore.unread);
-	let badgeLabel = $derived(unread > 99 ? '99+' : String(unread));
+	// Role check bound to the auth store; reads reactive role state so the
+	// visible-entry list recomputes if the user's roles change.
+	const has = (...roles: string[]) => auth.hasAnyRole(...roles);
 
-	interface NavItem {
-		label: string;
-		href: string;
-		icon: string;
-		/** If set, user must have at least one of these roles to see this item. */
-		requiredRoles?: string[];
-		/** When true, render the unread-notification badge. */
-		badge?: boolean;
-	}
+	// The primary nav (`$lib/nav`) is the single source of truth, shared with
+	// the per-page section sub-tab bar. High-traffic destinations are top-level
+	// links; the rest are folded into groups (Procurement / Billing / Insights /
+	// Settings) that open a sub-tabbed page. Filter to what this role can see.
+	let entries = $derived(NAV.filter((e) => isEntryVisible(e, has)));
+	let pathname = $derived(page.url.pathname);
 
-	interface NavGroup {
-		title: string;
-		items: NavItem[];
-	}
-
-	const navGroups: NavGroup[] = [
-		{
-			title: 'Overview',
-			items: [
-				{ label: 'Dashboard', href: '/', icon: 'dashboard' },
-				{ label: 'Notifications', href: '/notifications', icon: 'bell', badge: true },
-			],
-		},
-		{
-			title: 'Payables',
-			items: [
-				{ label: 'Invoices', href: '/invoices', icon: 'invoices' },
-				{ label: 'Credit Memos', href: '/credit-memos', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-				{ label: 'Contracts', href: '/contracts', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-				{ label: 'Expenses', href: '/expenses', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-				{ label: 'Payments', href: '/payments', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-				{ label: 'Discounts', href: '/discounts', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-				{ label: 'Vendors', href: '/vendors', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-				{ label: 'Purchase Orders', href: '/purchase-orders', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-				{ label: 'Goods Receipts', href: '/goods-receipts', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-			],
-		},
-		{
-			title: 'Procurement',
-			items: [
-				{ label: 'Requisitions', href: '/requisitions', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-				{ label: 'Intake', href: '/intake', icon: 'invoices', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-				{ label: 'Catalogs', href: '/catalogs', icon: 'vendors', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-				{ label: 'Budgets', href: '/budgets', icon: 'payments', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-			],
-		},
-		{
-			title: 'Insights',
-			items: [
-				{ label: 'AI Assistant', href: '/assistant', icon: 'assistant', requiredRoles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
-				{ label: 'Cash Flow', href: '/cfo', icon: 'payments', requiredRoles: ['admin', 'cfo'] },
-				{ label: '1099 Reporting', href: '/tax', icon: 'audit', requiredRoles: ['admin', 'ap_manager', 'cfo'] },
-			],
-		},
-		{
-			title: 'Processing',
-			items: [
-				{ label: 'Exceptions', href: '/exceptions', icon: 'exceptions', requiredRoles: ['admin', 'ap_manager'] },
-				{ label: 'Workflows', href: '/workflows', icon: 'workflows', requiredRoles: ['admin'] },
-			],
-		},
-		{
-			title: 'Settings',
-			items: [
-				{ label: 'Audit Trail', href: '/audit', icon: 'audit', requiredRoles: ['admin', 'cfo'] },
-				{ label: 'Organization', href: '/organization', icon: 'organization', requiredRoles: ['admin'] },
-				{ label: 'Users & Roles', href: '/admin', icon: 'admin', requiredRoles: ['admin'] },
-			],
-		},
-	];
-
-	function canSeeItem(item: NavItem): boolean {
-		if (!item.requiredRoles) return true;
-		return auth.hasAnyRole(...item.requiredRoles);
-	}
-
-	const allHrefs = navGroups.flatMap((g) => g.items.map((i) => i.href));
-
-	function isActive(href: string): boolean {
-		if (href === '/') return page.url.pathname === '/';
-		if (page.url.pathname === href) return true;
-		// Prefix match — but only if no sibling href is a more specific
-		// prefix (eg. /admin must not light up when on /admin/roles).
-		if (!page.url.pathname.startsWith(href + '/')) return false;
-		const hasMoreSpecific = allHrefs.some(
-			(other) =>
-				other !== href &&
-				other.startsWith(href + '/') &&
-				(page.url.pathname === other || page.url.pathname.startsWith(other + '/'))
-		);
-		return !hasMoreSpecific;
+	// A group's row navigates to its first accessible child (links use their own
+	// href). `entries` already dropped groups with no visible child, so the
+	// fallback is unreachable.
+	function hrefFor(entry: NavEntry): string {
+		return entry.kind === 'link' ? entry.href : (groupHref(entry, has) ?? '#');
 	}
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} />
 
 <aside class="sidebar" class:collapsed>
-	<div class="logo">
-		{#if collapsed}
+	<div class="sidebar-header" class:collapsed>
+		<div class="logo">
 			<span class="logo-mark">AP</span>
-		{:else}
-			<span class="logo-mark">AP</span>
-			<span class="logo-text">Account Payables</span>
-		{/if}
+			{#if !collapsed}<span class="logo-text">Account Payables</span>{/if}
+		</div>
+		<NotificationBell {collapsed} />
 	</div>
 
 	<EntitySwitcher {collapsed} />
 
 	<nav class="nav-main">
-		{#each navGroups as group}
-			{@const visibleItems = group.items.filter(canSeeItem)}
-			{#if visibleItems.length > 0}
-				{#if !collapsed}
-					<div class="nav-group-title">{group.title}</div>
-				{:else}
-					<div class="nav-group-divider"></div>
-				{/if}
-				{#each visibleItems as item}
-					<a href={item.href} class="nav-item" class:active={isActive(item.href)} title={collapsed ? item.label : ''}>
-					<span class="nav-icon">
-						{#if item.icon === 'dashboard'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-						{:else if item.icon === 'invoices'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-						{:else if item.icon === 'workflows'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-						{:else if item.icon === 'payments'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-						{:else if item.icon === 'vendors'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-						{:else if item.icon === 'exceptions'}
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-					{:else if item.icon === 'organization'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-						{:else if item.icon === 'admin'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-						{:else if item.icon === 'bell'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-						{:else if item.icon === 'audit'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-						{:else if item.icon === 'assistant'}
-							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-						{/if}
-						{#if item.badge && unread > 0 && collapsed}
-							<span class="nav-badge-dot" aria-hidden="true"></span>
-						{/if}
-					</span>
-					{#if !collapsed}
-						<span class="nav-label">{item.label}</span>
-						{#if item.badge && unread > 0}
-							<span class="nav-badge" aria-label={`${unread} unread notifications`}>{badgeLabel}</span>
-						{/if}
-					{/if}
-				</a>
-			{/each}
+		{#each entries as entry, i (entry.label)}
+			{#if entry.kind === 'group' && entries[i - 1]?.kind === 'link'}
+				<!-- Divider sets the folded section areas off from the direct links. -->
+				<div class="nav-group-divider"></div>
 			{/if}
+			<a
+				href={hrefFor(entry)}
+				class="nav-item"
+				class:active={isEntryActive(entry, pathname)}
+				title={collapsed ? entry.label : ''}
+			>
+				<span class="nav-icon">
+					{#if entry.icon === 'dashboard'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+					{:else if entry.icon === 'invoices'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+					{:else if entry.icon === 'payments'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+					{:else if entry.icon === 'vendors'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+					{:else if entry.icon === 'exceptions'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+					{:else if entry.icon === 'cart'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+					{:else if entry.icon === 'receipt'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 2v20l2-1.5L8 22l2-1.5L12 22l2-1.5L16 22l2-1.5L20 22V2l-2 1.5L16 2l-2 1.5L12 2l-2 1.5L8 2 6 3.5 4 2z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+					{:else if entry.icon === 'assistant'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+					{:else if entry.icon === 'settings'}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+					{/if}
+				</span>
+				{#if !collapsed}
+					<span class="nav-label">{entry.label}</span>
+				{/if}
+			</a>
 		{/each}
 	</nav>
 
@@ -243,11 +154,26 @@
 		width: 60px;
 	}
 
+	.sidebar-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 4px;
+		padding: 8px 4px 20px 8px;
+	}
+
+	/* Collapsed rail (60px) — stack the AP mark over the bell so both fit. */
+	.sidebar-header.collapsed {
+		flex-direction: column;
+		gap: 12px;
+		padding: 8px 0 16px;
+	}
+
 	.logo {
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		padding: 8px 10px 20px;
+		gap: 8px;
+		min-width: 0;
 		white-space: nowrap;
 		overflow: hidden;
 	}
@@ -259,10 +185,13 @@
 		flex-shrink: 0;
 	}
 
+	/* Sized to clear the header bell within the 220px rail without clipping. */
 	.logo-text {
-		font-size: 1.05rem;
+		font-size: 0.88rem;
 		font-weight: 600;
 		color: var(--text);
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.nav-main {
@@ -399,29 +328,11 @@
 		color: var(--accent);
 	}
 
-	.nav-group-title {
-		font-size: 0.68rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		color: var(--text-muted);
-		padding: 14px 10px 4px;
-		opacity: 0.6;
-	}
-
-	.nav-group-title:first-child {
-		padding-top: 0;
-	}
-
 	.nav-group-divider {
 		height: 1px;
 		background: var(--border);
 		margin: 8px 10px;
 		opacity: 0.5;
-	}
-
-	.nav-group-divider:first-child {
-		display: none;
 	}
 
 	.nav-item {
@@ -456,35 +367,6 @@
 		width: 20px;
 		height: 20px;
 		position: relative;
-	}
-
-	/* Collapsed sidebar — a small dot over the bell instead of the pill count. */
-	.nav-badge-dot {
-		position: absolute;
-		top: -2px;
-		right: -2px;
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: #e04040;
-		border: 1px solid var(--surface);
-	}
-
-	/* Expanded sidebar — pill count pushed to the row's right edge. */
-	.nav-badge {
-		margin-left: auto;
-		min-width: 18px;
-		padding: 0 6px;
-		height: 18px;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 9px;
-		background: #e04040;
-		color: #fff;
-		font-size: 0.7rem;
-		font-weight: 700;
-		line-height: 1;
 	}
 
 	.nav-label {
