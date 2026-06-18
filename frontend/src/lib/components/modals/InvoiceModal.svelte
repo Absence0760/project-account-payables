@@ -303,8 +303,11 @@
 		reviewing = true;
 		try {
 			await api.post(`/api/invoices/${invoice.id}/approve`, {});
-			await invoiceStore.fetch();
 			toast('Invoice approved', 'success');
+			// The host (/invoices) refetches the list with ITS active filters
+			// in closeInvoiceModal. Firing an unfiltered invoiceStore.fetch()
+			// here races that filtered refetch and can leave the just-approved
+			// row visible under an active status chip — so let the host own it.
 			onclose();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
@@ -318,8 +321,8 @@
 		reviewing = true;
 		try {
 			await api.post(`/api/invoices/${invoice.id}/reject`, { reason: rejectReason.trim() });
-			await invoiceStore.fetch();
 			toast('Invoice rejected', 'success');
+			// Host refetches with its active filters on close (see approve).
 			onclose();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
