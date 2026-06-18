@@ -41,7 +41,12 @@ function createInvoiceStore() {
 			merged.page_size = String(20);
 			const query = '?' + new URLSearchParams(merged).toString();
 			const res = await api.get<InvoiceListResponse>(`/api/invoices${query}`);
-			invoices = [...invoices, ...res.items];
+			// Append, skipping any id already present. Offset pagination can
+			// re-surface a row when the underlying set shifts between fetches
+			// (e.g. a new invoice inserted); a duplicate id would crash the
+			// keyed {#each} on the list page.
+			const seen = new Set(invoices.map((inv) => inv.id));
+			invoices = [...invoices, ...res.items.filter((inv) => !seen.has(inv.id))];
 			total = res.total;
 			page = res.page;
 		} finally {

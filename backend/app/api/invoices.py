@@ -154,7 +154,11 @@ async def list_invoices(
 
     # Paginate. Eager-load extraction_results so priors_summary can be
     # computed without N+1 queries per row.
-    query = query.order_by(Invoice.created_at.desc())
+    # `created_at` is not unique (bulk/seed inserts share a timestamp), so it
+    # alone gives Postgres no stable order across OFFSET/LIMIT pages — page 2
+    # could re-return a page-1 row, which the frontend's keyed list rejects as a
+    # duplicate id. Tie-break on the unique PK for deterministic pagination.
+    query = query.order_by(Invoice.created_at.desc(), Invoice.id.desc())
     query = query.offset(pagination.offset).limit(pagination.limit)
     query = query.options(selectinload(Invoice.extraction_results))
     result = await db.execute(query)
