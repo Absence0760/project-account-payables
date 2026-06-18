@@ -32,7 +32,7 @@ e.g. Workflows is reachable under the **Settings** group, not a top-level row.
 | Nav (direct): Payments, Vendors | Yes | Yes | No | Yes |
 | Nav (direct): Exceptions | Yes | Yes | No | No |
 | Nav group: Procurement / Billing / Insights | Yes | Yes | Yes¹ | Yes |
-| Nav group: Settings (Org · Users & Roles · Workflows · Audit Trail) | Yes | No | No | Yes² |
+| Nav group: Settings (Org · Users · Roles · Audit Trail · Workflows) | Yes | No | No | Yes² |
 | Invoice: edit fields | Yes | Yes | Yes | Yes |
 | Invoice: change status dropdown | Yes | Yes | No | Yes |
 | Invoice: submit for review (new) | Yes | Yes | Yes | Yes |

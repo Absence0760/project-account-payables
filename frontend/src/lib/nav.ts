@@ -88,7 +88,10 @@ export const NAV: NavEntry[] = [
 		icon: 'settings',
 		children: [
 			{ label: 'Organization', href: '/organization', roles: ['admin'] },
-			{ label: 'Users & Roles', href: '/admin', roles: ['admin'] },
+			// Users + Roles share the /admin route via ?tab=; they're surfaced as
+			// peer section tabs (not a second tab row inside the page).
+			{ label: 'Users', href: '/admin?tab=users', roles: ['admin'] },
+			{ label: 'Roles', href: '/admin?tab=roles', roles: ['admin'] },
 			{ label: 'Audit Trail', href: '/audit', roles: ['admin', 'cfo'] },
 			{ label: 'Workflows', href: '/workflows', roles: ['admin'] },
 		],
@@ -114,10 +117,40 @@ export function groupHref(group: NavGroup, has: RoleCheck): string | null {
 	return visibleChildren(group, has)[0]?.href ?? null;
 }
 
-/** `/foo` is active on `/foo` and `/foo/bar`; `/` only on exactly `/`. */
+/**
+ * `/foo` is active on `/foo` and `/foo/bar`; `/` only on exactly `/`. Any query
+ * string / hash on `href` is ignored here — path comparison only. Query-aware
+ * active state (e.g. `/admin?tab=roles`) is handled by {@link sectionTabActive}.
+ */
 export function pathMatches(href: string, pathname: string): boolean {
-	if (href === '/') return pathname === '/';
-	return pathname === href || pathname.startsWith(href + '/');
+	const path = href.split(/[?#]/)[0];
+	if (path === '/') return pathname === '/';
+	return pathname === path || pathname.startsWith(path + '/');
+}
+
+/**
+ * Whether a section tab is the active one for the current URL. Handles tabs that
+ * differ only by query (Users/Roles both live at `/admin`):
+ *  - exact match on every query param the tab specifies → active;
+ *  - if the URL carries none of those params, the FIRST sibling sharing that
+ *    path is the default and wins (so bare `/admin` lights up Users).
+ */
+export function sectionTabActive(child: NavChild, siblings: NavChild[], url: URL): boolean {
+	const [path, qs] = child.href.split('?');
+	if (!pathMatches(path, url.pathname)) return false;
+	if (!qs) return true;
+
+	const want = new URLSearchParams(qs);
+	const keys = [...want.keys()];
+	if (keys.every((k) => url.searchParams.get(k) === want.get(k))) return true;
+
+	// URL specifies none of this tab's params → the first sibling on this path
+	// is the default selection.
+	if (keys.every((k) => url.searchParams.get(k) === null)) {
+		const firstOnPath = siblings.find((s) => s.href.split('?')[0] === path);
+		return firstOnPath?.href === child.href;
+	}
+	return false;
 }
 
 /** True when the current path belongs to this entry (link or any group child). */

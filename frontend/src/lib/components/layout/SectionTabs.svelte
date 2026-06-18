@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { groupForPath, pathMatches, visibleChildren } from '$lib/nav';
+	import { groupForPath, sectionTabActive, visibleChildren } from '$lib/nav';
 
 	// The grouped section (Procurement / Billing / Insights / Settings) that owns
 	// the current route, if any. Top-level links (Invoices, Payments, …) return
@@ -17,11 +17,12 @@
 	<nav class="section-tabs" aria-label={`${group.label} sections`}>
 		<div class="section-tabs-inner">
 			{#each tabs as tab (tab.href)}
+				{@const active = sectionTabActive(tab, tabs, page.url)}
 				<a
 					href={tab.href}
 					class="section-tab"
-					class:active={pathMatches(tab.href, page.url.pathname)}
-					aria-current={pathMatches(tab.href, page.url.pathname) ? 'page' : undefined}
+					class:active
+					aria-current={active ? 'page' : undefined}
 				>
 					{tab.label}
 				</a>
