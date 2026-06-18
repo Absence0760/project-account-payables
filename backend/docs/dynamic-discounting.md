@@ -130,3 +130,10 @@ a status `FilterChips` filter, an offers `DataTable` (tiers via the new
   (worthwhile→accept, threshold gate, money-path boundary, idempotency, audit).
 - `test_discounts_api.py` — router end-to-end (lifecycle, ROI, optimizer, bulk,
   dashboard, RBAC, tenant isolation).
+- `frontend/tests-e2e/discounts/money-path.spec.ts` — live-stack e2e asserting
+  the exact savings/ROI/APR Decimal values, best-vs-explicit tier selection,
+  accept idempotency (double-accept is a safe 409, no double-count), the
+  accept-never-moves-money boundary (no `Payment` row appears), the
+  optimizer's APR ranking + cash-budget binding (entity-scoped for
+  determinism), accept/decline RBAC (accept also cfo), and cross-tenant
+  isolation of offers.
