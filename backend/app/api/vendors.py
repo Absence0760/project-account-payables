@@ -42,7 +42,7 @@ from app.schemas.vendor import (
     VendorResponse,
     VendorUpdate,
 )
-from app.services.audit_access import log_access
+from app.services.audit_access import build_field_diff, log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
@@ -82,6 +82,61 @@ def _merge_bank_details(existing: dict | None, incoming: dict | None) -> dict | 
 
 
 _IDENTITY_FIELDS = frozenset({"name", "tax_id", "bank_details", "beneficial_owner_data"})
+
+# Scalar vendor fields whose before/after we record verbatim in the
+# `vendor.updated` audit diff. `bank_details` and `tax_id` are handled
+# separately because their raw values are PII / banking data and must be
+# masked (last-4 only) — see `_bank_details_audit_summary` / the tax_id path.
+_AUDITABLE_SCALAR_FIELDS = (
+    "name",
+    "code",
+    "email",
+    "phone",
+    "address",
+    "payment_terms",
+    "accepts_virtual_cards",
+    "status",
+)
+
+# Keys inside `bank_details` JSONB that hold raw banking secrets and must
+# NEVER appear in an audit row. We record only THAT they changed plus a
+# last-4 (PII-out-of-logs invariant). Every other key (counterparty_id,
+# *_last4, bank_name, swift_bic, country) is non-secret display metadata.
+_BANK_SECRET_KEYS = frozenset({"account_number", "routing_number", "iban"})
+
+
+def _last4(value: object) -> str | None:
+    s = str(value or "")
+    return s[-4:] if len(s) >= 4 else None
+
+
+def _bank_details_audit_summary(before: dict | None, after: dict | None) -> dict | None:
+    """PII-safe description of a `bank_details` change for the audit trail.
+
+    Records the SET of keys that changed and, for the raw banking secrets
+    (account/routing number, IBAN), only a masked last-4 of the old/new
+    value — never the full number (PII / banking data must stay out of the
+    audit trail). Non-secret display keys (counterparty_id, *_last4,
+    bank_name, swift_bic, country) record their literal old/new values.
+    Returns ``None`` when nothing changed.
+    """
+    before = before or {}
+    after = after or {}
+    all_keys = before.keys() | after.keys()
+    changed_keys = sorted(k for k in all_keys if before.get(k) != after.get(k))
+    if not changed_keys:
+        return None
+
+    field_changes: dict[str, dict] = {}
+    for k in changed_keys:
+        if k in _BANK_SECRET_KEYS:
+            field_changes[k] = {
+                "old_last4": _last4(before.get(k)),
+                "new_last4": _last4(after.get(k)),
+            }
+        else:
+            field_changes[k] = {"old": before.get(k), "new": after.get(k)}
+    return {"changed_fields": changed_keys, "fields": field_changes}
 
 
 async def _screen_best_effort(
@@ -309,6 +364,25 @@ async def create_vendor(
     await db.flush()
     await db.refresh(vendor)
 
+    # Append-only audit row for the create (invariant #3 — vendor mutations
+    # write an audit trail). PII guard: record whether tax_id / bank_details
+    # were SET, never their raw values.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.created",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={
+            "name": vendor.name,
+            "code": vendor.code,
+            "has_tax_id": bool(vendor.tax_id),
+            "has_bank_details": bool(vendor.bank_details),
+        },
+    )
+
     # Initial sanctions / PEP screen. Best-effort: a provider failure must
     # never roll back or 500 the vendor write, so the screen runs inside a
     # SAVEPOINT and its failure is swallowed (the vendor row survives).
@@ -337,12 +411,20 @@ async def update_vendor(
 
     payload = body.model_dump(exclude_unset=True)
 
+    # Snapshot the pre-mutation state for the SOX change diff (taken BEFORE we
+    # mutate the row). `bank_details` / `tax_id` are masked into the diff, so we
+    # only need the raw before-values transiently in-process here.
+    before_scalars = {f: getattr(vendor, f) for f in _AUDITABLE_SCALAR_FIELDS}
+    before_bank = dict(vendor.bank_details or {})
+    before_tax_last4 = _last4(vendor.tax_id)
+
     # Re-screen only when an identity-relevant field actually changed — a
     # name / tax_id / bank-country / beneficial-owner edit can flip a vendor
     # onto (or off of) a sanctions list. Cosmetic edits (phone, terms) don't.
     identity_changed = bool(_IDENTITY_FIELDS & payload.keys())
+    bank_in_payload = "bank_details" in payload
 
-    if "bank_details" in payload:
+    if bank_in_payload:
         vendor.bank_details = _merge_bank_details(vendor.bank_details, payload.pop("bank_details"))
 
     for field, value in payload.items():
@@ -350,6 +432,32 @@ async def update_vendor(
 
     await db.flush()
     await db.refresh(vendor)
+
+    # Append-only audit row with a field-level before/after diff (invariant #3).
+    # PII guard: scalar fields go verbatim, but tax_id and bank_details record
+    # masked last-4s only — the raw account number / tax id never enter the
+    # audit trail. This is the row that catches an insider/BEC bank-redirect.
+    after_scalars = {f: getattr(vendor, f) for f in _AUDITABLE_SCALAR_FIELDS}
+    changes = build_field_diff(before_scalars, after_scalars, list(_AUDITABLE_SCALAR_FIELDS))
+    if "tax_id" in payload:
+        after_tax_last4 = _last4(vendor.tax_id)
+        if after_tax_last4 != before_tax_last4:
+            changes["tax_id"] = {"old_last4": before_tax_last4, "new_last4": after_tax_last4}
+    if bank_in_payload:
+        bank_summary = _bank_details_audit_summary(before_bank, vendor.bank_details)
+        if bank_summary:
+            changes["bank_details"] = bank_summary
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.updated",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"changes": changes},
+    )
 
     if identity_changed:
         await _screen_best_effort(
@@ -364,11 +472,28 @@ async def delete_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
+
+    # Append-only audit row BEFORE the delete so the trail survives (invariant
+    # #3). `audit_log.entity_id` is a bare UUID (no FK), so the row outlives the
+    # vendor row. PII guard: name only, never tax_id / bank_details.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.deleted",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"name": vendor.name, "code": vendor.code},
+    )
+    await db.flush()
+
     await db.delete(vendor)
     await db.commit()
 
@@ -517,6 +642,7 @@ async def verify_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Verify an unverified vendor — makes them eligible for payment."""
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
@@ -529,6 +655,20 @@ async def verify_vendor(
     vendor.status = "active"
     vendor.verified_by = user.full_name
     vendor.verified_at = datetime.now(UTC)
+    await db.flush()
+
+    # Append-only audit row — verification makes the vendor payment-eligible,
+    # a regulated state change (invariant #3).
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.verified",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"status": {"old": "unverified", "new": "active"}},
+    )
     await db.commit()
     return VendorResponse.from_db(vendor)
 
@@ -538,6 +678,7 @@ async def reject_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Reject an unverified vendor — marks as invalid/duplicate."""
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
@@ -547,7 +688,21 @@ async def reject_vendor(
     if vendor.status not in ("unverified", "active"):
         raise HTTPException(status_code=409, detail="Vendor cannot be rejected from this status")
 
+    prev_status = vendor.status
     vendor.status = "rejected"
+    await db.flush()
+
+    # Append-only audit row — rejection is a regulated state change (#3).
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.rejected",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        details={"status": {"old": prev_status, "new": "rejected"}},
+    )
     await db.commit()
     return VendorResponse.from_db(vendor)
 
