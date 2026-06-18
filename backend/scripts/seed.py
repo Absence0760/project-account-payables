@@ -22,7 +22,7 @@ import argparse
 import asyncio
 import os
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import asyncpg
@@ -55,7 +55,12 @@ from app.models.virtual_card import (  # noqa: F401
     CardRevealToken,
     VirtualCard,
 )
-from app.models.workflow import AuditLog, WorkflowDefinition
+from app.models.workflow import (
+    AuditLog,
+    WorkflowDefinition,
+    WorkflowInstance,
+    WorkflowStep,
+)
 from app.utils.passwords import pwd_context
 
 # Canonical role set seeded into every control plane, keyed by the same
@@ -378,6 +383,93 @@ async def seed_control_plane():
         print("  Seeded 2 orgs, 6 users, 4 roles")
 
 
+# Per-status workflow progress: (completed step types, the one active/incomplete
+# step type or None). Mirrors STEP_TYPES = [extraction, approval, erp_export].
+# `ready_for_review` is the one that matters most — it leaves an ACTIVE approval
+# step so the approval queue (and the assistant's `list_pending_approvals` tool)
+# actually surfaces work, instead of being empty because no WorkflowStep exists.
+_WORKFLOW_PROGRESS: dict[str, tuple[list[str], str | None]] = {
+    "new": ([], None),
+    "pending": ([], "extraction"),
+    "failed": (["extraction"], None),
+    "ready_for_review": (["extraction"], "approval"),
+    "rejected": (["extraction", "approval"], None),
+    "approved": (["extraction", "approval"], None),
+    "sending_to_erp": (["extraction", "approval"], "erp_export"),
+    "sent_to_erp": (["extraction", "approval"], "erp_export"),
+    "posted_in_erp": (["extraction", "approval", "erp_export"], None),
+    "payment_scheduled": (["extraction", "approval", "erp_export"], None),
+    "paid": (["extraction", "approval", "erp_export"], None),
+    "done": (["extraction", "approval", "erp_export"], None),
+}
+_STEP_NUMBERS = {"extraction": 1, "approval": 2, "erp_export": 3}
+_STEP_ACTIONS = {"extraction": "extract", "approval": "approve", "erp_export": "export"}
+
+
+def _seed_workflows_for_invoices(
+    session,
+    *,
+    default_def: WorkflowDefinition,
+    invoices: list,
+    approver_id: uuid.UUID,
+    now: datetime,
+) -> None:
+    """Create a ``WorkflowInstance`` + ``WorkflowStep`` rows per invoice.
+
+    Without these, the entire approval-driven surface (the assistant's pending-
+    approvals tool, the approval queue) reads empty even when invoices sit in
+    ``ready_for_review``. Steps reflect each invoice's status via
+    ``_WORKFLOW_PROGRESS``; completed steps are stamped in the past and the
+    active approval step is back-dated ~6 days so "approvals sitting > 5 days"
+    demos return rows. Approval steps (active or completed) are assigned to the
+    org admin so the demo login's "my queue" is populated.
+    """
+    snapshot = default_def.steps_config
+    for inv in invoices:
+        completed, active = _WORKFLOW_PROGRESS.get(inv.status, ([], None))
+        instance = WorkflowInstance(
+            correlation_id=inv.correlation_id,
+            definition_id=default_def.id,
+            invoice_id=inv.id,
+            current_step=len(completed),
+            state="completed" if inv.status == "done" else "active",
+            steps_config_snapshot=snapshot,
+        )
+        session.add(instance)
+        for step_type in completed:
+            action = (
+                "reject"
+                if (step_type == "approval" and inv.status == "rejected")
+                else _STEP_ACTIONS[step_type]
+            )
+            session.add(
+                WorkflowStep(
+                    correlation_id=inv.correlation_id,
+                    instance=instance,
+                    step_number=_STEP_NUMBERS[step_type],
+                    step_type=step_type,
+                    assigned_to=approver_id if step_type == "approval" else None,
+                    original_assigned_to=approver_id if step_type == "approval" else None,
+                    action=action,
+                    completed_at=now - timedelta(days=7),
+                )
+            )
+        if active is not None:
+            # Back-date the active approval step so it reads as "waiting ~6 days".
+            created = now - timedelta(days=6) if active == "approval" else now
+            step = WorkflowStep(
+                correlation_id=inv.correlation_id,
+                instance=instance,
+                step_number=_STEP_NUMBERS[active],
+                step_type=active,
+                assigned_to=approver_id if active == "approval" else None,
+                original_assigned_to=approver_id if active == "approval" else None,
+                completed_at=None,
+            )
+            step.created_at = created
+            session.add(step)
+
+
 async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
     """Seed vendors and invoices into a tenant database."""
     tenant_url = _make_tenant_url(db_name)
@@ -570,48 +662,47 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
         # full status set the seeded invoices use. The default created
         # lazily by the API has all steps disabled, which would hide
         # most chips and make the demo (and e2e tests) shallow.
-        session.add(
-            WorkflowDefinition(
-                organization_id=org_id,
-                name="Default Workflow",
-                description="Full pipeline: extraction → approval → ERP export.",
-                is_active=True,
-                is_default=True,
-                steps_config={
-                    "steps": [
-                        {
-                            "number": 1,
-                            "type": "extraction",
-                            "name": "Data Extraction",
-                            "enabled": True,
-                            "config": {
-                                "auto_approve_enabled": False,
-                                "auto_approve_threshold": 0.95,
-                            },
+        default_def = WorkflowDefinition(
+            organization_id=org_id,
+            name="Default Workflow",
+            description="Full pipeline: extraction → approval → ERP export.",
+            is_active=True,
+            is_default=True,
+            steps_config={
+                "steps": [
+                    {
+                        "number": 1,
+                        "type": "extraction",
+                        "name": "Data Extraction",
+                        "enabled": True,
+                        "config": {
+                            "auto_approve_enabled": False,
+                            "auto_approve_threshold": 0.95,
                         },
-                        {
-                            "number": 2,
-                            "type": "approval",
-                            "name": "Manager Approval",
-                            "enabled": True,
-                            "config": {
-                                "required": True,
-                                "approver_id": None,
-                                "approver_strategy": "manual",
-                                "require_segregation": True,
-                            },
+                    },
+                    {
+                        "number": 2,
+                        "type": "approval",
+                        "name": "Manager Approval",
+                        "enabled": True,
+                        "config": {
+                            "required": True,
+                            "approver_id": None,
+                            "approver_strategy": "manual",
+                            "require_segregation": True,
                         },
-                        {
-                            "number": 3,
-                            "type": "erp_export",
-                            "name": "ERP Export",
-                            "enabled": True,
-                            "config": {"erp_system": "default"},
-                        },
-                    ]
-                },
-            )
+                    },
+                    {
+                        "number": 3,
+                        "type": "erp_export",
+                        "name": "ERP Export",
+                        "enabled": True,
+                        "config": {"erp_system": "default"},
+                    },
+                ]
+            },
         )
+        session.add(default_def)
         await session.flush()
 
         # Invoices — linked to vendor records via vendor_id
@@ -1424,6 +1515,19 @@ async def seed_tenant(db_name: str, org_id: uuid.UUID, tenant_label: str):
                 )
             )
         session.add_all(filler_invoices)
+        await session.flush()
+
+        # Workflow instances + steps for every invoice (named + filler). Without
+        # these, the approval queue and the assistant's pending-approvals tool
+        # read empty even though invoices sit in `ready_for_review`. seed_actor
+        # is the org admin, so the demo login's "my approval queue" is populated.
+        _seed_workflows_for_invoices(
+            session,
+            default_def=default_def,
+            invoices=invoices + filler_invoices,
+            approver_id=seed_actor,
+            now=datetime.now(UTC),
+        )
         await session.flush()
 
         # One audit "created" row per filler invoice so the InvoiceModal's
