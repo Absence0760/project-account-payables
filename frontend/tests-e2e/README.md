@@ -35,6 +35,30 @@ If a local flake suggests within-worker spec interference, run
 serially: `PLAYWRIGHT_WORKERS=1 pnpm test:e2e`. That matches
 the CI-shard behaviour.
 
+**`E2E_TENANT_OFFSET`** (default `0`) adds a fixed offset to every
+worker's tenant index. It exists so that several *independent*
+Playwright processes (e.g. parallel authoring sessions, each with
+`PLAYWRIGHT_WORKERS=1`) can each be pinned to a distinct tenant instead
+of all colliding on `e2e1`: process `k` sets `E2E_TENANT_OFFSET=k` and
+its lone worker resolves to `e2e<k+1>`. Normal single- or multi-worker
+runs leave it unset.
+
+### Match CI's backend env when running locally
+
+The CI e2e backend sets two env vars that the default `pnpm dev:backend`
+does **not**; without them a long serial run (or several concurrent
+independent processes) flakes on the shared auth surface:
+
+- `AP_RATE_LIMIT_ENABLED=false` — the login endpoint is otherwise capped
+  at 10/60s per IP, and every worker shares the loopback IP.
+- `AP_MAX_CONCURRENT_SESSIONS=100` — the default cap of 5 evicts the
+  per-worker cached storage-state JTI onto the blocklist once a spec
+  re-logs-in as the same user ≥5 times (e.g. an `afterEach` re-auth),
+  surfacing as a spurious `401` on later API setup calls.
+
+Start the local e2e backend with both set (CI uses these exact values):
+`AP_RATE_LIMIT_ENABLED=false AP_MAX_CONCURRENT_SESSIONS=100 python main.py`.
+
 ### Specs that don't follow the worker-tenant pattern
 
 | Spec | Why it's pinned |
