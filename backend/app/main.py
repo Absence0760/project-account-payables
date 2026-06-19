@@ -43,6 +43,7 @@ from app.api import (
     portal,
     portal_auth,
     purchase_orders,
+    recurring,
     requisitions,
     retention,
     scim,
@@ -90,6 +91,7 @@ async def lifespan(app: FastAPI):
     from app.services.extraction_reaper import run_reaper_loop
     from app.services.payment_reconciler import run_reconciler_loop
     from app.services.qms_sync import run_qms_sync_loop
+    from app.services.recurring_invoices import run_recurring_invoices_loop
     from app.services.retention_sweep import run_retention_loop
     from app.services.vendor_rescreen import run_vendor_rescreen_loop
 
@@ -102,6 +104,7 @@ async def lifespan(app: FastAPI):
     discount_task: asyncio.Task | None = None
     qms_task: asyncio.Task | None = None
     retention_task: asyncio.Task | None = None
+    recurring_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -139,6 +142,14 @@ async def lifespan(app: FastAPI):
     # deletes audit_log rows (composes with the immutability trigger).
     if settings.retention_enabled:
         retention_task = asyncio.create_task(run_retention_loop(), name="retention-sweep")
+    # Recurring / subscription invoice generation sweep. Disabled by default;
+    # flip AP_RECURRING_INVOICES_ENABLED on in deployed envs. Only creates
+    # pre-coded invoices in the approval queue — never moves money (see
+    # recurring_invoices).
+    if settings.recurring_invoices_enabled:
+        recurring_task = asyncio.create_task(
+            run_recurring_invoices_loop(), name="recurring-invoices"
+        )
 
     try:
         yield
@@ -153,6 +164,7 @@ async def lifespan(app: FastAPI):
             discount_task,
             qms_task,
             retention_task,
+            recurring_task,
         ):
             if task is not None:
                 task.cancel()
@@ -253,6 +265,7 @@ app.include_router(cards.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
 app.include_router(discounts.router, prefix="/api")
+app.include_router(recurring.router, prefix="/api")
 app.include_router(enrichment.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")
