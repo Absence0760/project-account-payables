@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { portalCompany } from '$lib/stores/portalCompany.svelte';
+	import { portalAuth } from '$lib/stores/portalAuth.svelte';
 	import { onMount } from 'svelte';
 
 	let email = $state('');
@@ -8,6 +9,64 @@
 	let contactSaving = $state(false);
 	let contactMsg = $state('');
 	let contactErr = $state('');
+
+	// --- MFA (two-factor) ---
+	const mfaEnabled = $derived(portalAuth.user?.mfa_enabled ?? false);
+	let mfaEnroll = $state<{ secret: string; qr_code_data_url: string } | null>(null);
+	let mfaCode = $state('');
+	let mfaBusy = $state(false);
+	let mfaErr = $state('');
+	let mfaMsg = $state('');
+	// Disable form: a current code re-verifies before MFA is turned off.
+	let disableMode = $state(false);
+	let disableCode = $state('');
+
+	async function startEnroll() {
+		mfaErr = '';
+		mfaMsg = '';
+		mfaBusy = true;
+		try {
+			const res = await portalAuth.startMfaEnrollment();
+			mfaEnroll = { secret: res.secret, qr_code_data_url: res.qr_code_data_url };
+			mfaCode = '';
+		} catch (err) {
+			mfaErr = err instanceof Error ? err.message : 'Could not start enrollment';
+		} finally {
+			mfaBusy = false;
+		}
+	}
+
+	async function confirmEnroll(e: Event) {
+		e.preventDefault();
+		mfaErr = '';
+		mfaBusy = true;
+		try {
+			await portalAuth.verifyMfaEnrollment(mfaCode);
+			mfaEnroll = null;
+			mfaCode = '';
+			mfaMsg = 'Two-factor authentication is now on.';
+		} catch (err) {
+			mfaErr = err instanceof Error ? err.message : 'Invalid code';
+		} finally {
+			mfaBusy = false;
+		}
+	}
+
+	async function confirmDisable(e: Event) {
+		e.preventDefault();
+		mfaErr = '';
+		mfaBusy = true;
+		try {
+			await portalAuth.disableMfa(disableCode);
+			disableMode = false;
+			disableCode = '';
+			mfaMsg = 'Two-factor authentication is off.';
+		} catch (err) {
+			mfaErr = err instanceof Error ? err.message : 'Invalid code';
+		} finally {
+			mfaBusy = false;
+		}
+	}
 
 	// Bank-detail change fields (staged, not applied live).
 	let bankName = $state('');
@@ -289,6 +348,87 @@
 			</button>
 		</form>
 	</section>
+
+	<!-- Security: two-factor authentication (TOTP) -->
+	<section class="card">
+		<h2>Two-factor authentication</h2>
+		<p class="note">
+			Add a one-time code from an authenticator app (Google Authenticator, 1Password, Authy) on
+			top of your password.
+			{#if mfaEnabled}<span class="tag">On</span>{/if}
+		</p>
+		{#if mfaErr}<div class="error">{mfaErr}</div>{/if}
+		{#if mfaMsg}<div class="message">{mfaMsg}</div>{/if}
+
+		{#if mfaEnabled && !disableMode}
+			<button type="button" class="btn-danger" onclick={() => (disableMode = true)}>
+				Turn off two-factor
+			</button>
+		{:else if disableMode}
+			<form onsubmit={confirmDisable}>
+				<label>
+					Enter a current code to turn it off
+					<input
+						type="text"
+						inputmode="numeric"
+						autocomplete="one-time-code"
+						bind:value={disableCode}
+						maxlength="8"
+					/>
+				</label>
+				<div class="btn-row">
+					<button
+						type="button"
+						class="btn-cancel"
+						onclick={() => {
+							disableMode = false;
+							disableCode = '';
+							mfaErr = '';
+						}}>Cancel</button
+					>
+					<button type="submit" class="btn-danger" disabled={mfaBusy || !disableCode}>
+						{mfaBusy ? 'Turning off…' : 'Turn off'}
+					</button>
+				</div>
+			</form>
+		{:else if mfaEnroll}
+			<p class="note">Scan this QR code with your authenticator app, then enter the code to confirm.</p>
+			<img class="qr" src={mfaEnroll.qr_code_data_url} alt="MFA QR code" />
+			<p class="note">
+				Can't scan? Enter this key manually: <code class="secret">{mfaEnroll.secret}</code>
+			</p>
+			<form onsubmit={confirmEnroll}>
+				<label>
+					Authentication code
+					<input
+						type="text"
+						inputmode="numeric"
+						autocomplete="one-time-code"
+						bind:value={mfaCode}
+						maxlength="8"
+					/>
+				</label>
+				<div class="btn-row">
+					<button
+						type="button"
+						class="btn-cancel"
+						onclick={() => {
+							mfaEnroll = null;
+							mfaCode = '';
+							mfaErr = '';
+						}}>Cancel</button
+					>
+					<button type="submit" class="btn-primary" disabled={mfaBusy || !mfaCode}>
+						{mfaBusy ? 'Verifying…' : 'Confirm'}
+					</button>
+				</div>
+			</form>
+		{:else}
+			<button type="button" class="btn-primary" onclick={startEnroll} disabled={mfaBusy}>
+				{mfaBusy ? 'Starting…' : 'Set up two-factor'}
+			</button>
+		{/if}
+	</section>
 </div>
 
 <style>
@@ -414,5 +554,50 @@
 		border-radius: 4px;
 		margin-bottom: 10px;
 		font-size: 0.85rem;
+	}
+	.btn-danger {
+		align-self: flex-start;
+		padding: 8px 16px;
+		border: 1px solid rgba(224, 64, 64, 0.5);
+		border-radius: 4px;
+		background: transparent;
+		color: #e04040;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.btn-danger:disabled {
+		opacity: 0.55;
+		cursor: default;
+	}
+	.btn-cancel {
+		padding: 8px 16px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: transparent;
+		color: var(--text);
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.btn-row {
+		display: flex;
+		gap: 8px;
+	}
+	.qr {
+		display: block;
+		width: 168px;
+		height: 168px;
+		border-radius: 6px;
+		background: #fff;
+		padding: 8px;
+		margin-bottom: 12px;
+	}
+	.secret {
+		font-family: monospace;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 2px 6px;
+		font-size: 0.8rem;
+		word-break: break-all;
 	}
 </style>

@@ -7,16 +7,30 @@
 	let error = $state('');
 	let loading = $state(false);
 
+	// MFA second-factor step. When login returns a challenge, we swap the
+	// password form for the TOTP-code form (stashing the challenge token).
+	let mfaChallenge = $state<string | null>(null);
+	let mfaCode = $state('');
+
+	function afterAuth() {
+		if (portalAuth.user?.must_change_password) {
+			goto('/portal/change-password');
+		} else {
+			goto('/portal/invoices');
+		}
+	}
+
 	async function handleSubmit(e: Event) {
 		e.preventDefault();
 		error = '';
 		loading = true;
 		try {
-			await portalAuth.login(email, password);
-			if (portalAuth.user?.must_change_password) {
-				goto('/portal/change-password');
+			const res = await portalAuth.login(email, password);
+			if (res.kind === 'mfa') {
+				mfaChallenge = res.challenge;
+				mfaCode = '';
 			} else {
-				goto('/portal/invoices');
+				afterAuth();
 			}
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Sign-in failed';
@@ -24,30 +38,79 @@
 			loading = false;
 		}
 	}
+
+	async function handleMfaSubmit(e: Event) {
+		e.preventDefault();
+		if (!mfaChallenge) return;
+		error = '';
+		loading = true;
+		try {
+			await portalAuth.completeMfa(mfaChallenge, mfaCode);
+			afterAuth();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Verification failed';
+		} finally {
+			loading = false;
+		}
+	}
+
+	function backToPassword() {
+		mfaChallenge = null;
+		mfaCode = '';
+		error = '';
+	}
 </script>
 
 <div class="login-page">
-	<form class="login-card" onsubmit={handleSubmit}>
-		<h1>Supplier Portal</h1>
-		<p class="subtitle">Sign in to submit invoices and view payments</p>
+	{#if mfaChallenge}
+		<form class="login-card" onsubmit={handleMfaSubmit}>
+			<h1>Two-factor authentication</h1>
+			<p class="subtitle">Enter the 6-digit code from your authenticator app</p>
 
-		{#if error}
-			<div class="error">{error}</div>
-		{/if}
+			{#if error}
+				<div class="error">{error}</div>
+			{/if}
 
-		<label>
-			<span>Email</span>
-			<input type="email" bind:value={email} required autocomplete="email" />
-		</label>
-		<label>
-			<span>Password</span>
-			<input type="password" bind:value={password} required autocomplete="current-password" />
-		</label>
+			<label>
+				<span>Authentication code</span>
+				<input
+					type="text"
+					inputmode="numeric"
+					autocomplete="one-time-code"
+					bind:value={mfaCode}
+					maxlength="8"
+					required
+				/>
+			</label>
 
-		<button type="submit" disabled={loading}>
-			{loading ? 'Signing in...' : 'Sign in'}
-		</button>
-	</form>
+			<button type="submit" disabled={loading}>
+				{loading ? 'Verifying...' : 'Verify'}
+			</button>
+			<button type="button" class="link-btn" onclick={backToPassword}>Back to sign in</button>
+		</form>
+	{:else}
+		<form class="login-card" onsubmit={handleSubmit}>
+			<h1>Supplier Portal</h1>
+			<p class="subtitle">Sign in to submit invoices and view payments</p>
+
+			{#if error}
+				<div class="error">{error}</div>
+			{/if}
+
+			<label>
+				<span>Email</span>
+				<input type="email" bind:value={email} required autocomplete="email" />
+			</label>
+			<label>
+				<span>Password</span>
+				<input type="password" bind:value={password} required autocomplete="current-password" />
+			</label>
+
+			<button type="submit" disabled={loading}>
+				{loading ? 'Signing in...' : 'Sign in'}
+			</button>
+		</form>
+	{/if}
 </div>
 
 <style>
@@ -127,5 +190,12 @@
 	button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+	.link-btn {
+		margin-top: 0;
+		background: transparent;
+		color: var(--text-muted);
+		font-weight: 400;
+		font-size: 0.82rem;
 	}
 </style>

@@ -30,25 +30,63 @@ application.
 | `is_active`            | BOOLEAN       | Soft-disable without deleting                          |
 | `must_change_password` | BOOLEAN       | Set on invite; cleared on first successful change      |
 | `last_login_at`        | TIMESTAMPTZ   | Updated on each successful login                       |
+| `mfa_secret`           | VARCHAR(64)   | base32 TOTP seed (migration 0053); held pending until verified |
+| `mfa_enabled`          | BOOLEAN       | True once the vendor verifies a code; gates the login challenge |
+| `mfa_enrolled_at`      | TIMESTAMPTZ   | Stamped on successful enrollment                       |
 | `created_at` / `updated_at` | TIMESTAMPTZ | Standard TimestampMixin                              |
 
-No MFA columns — MFA is a Phase 2 addition once we have demand.
+The three `mfa_*` columns (migration `0053_vendor_mfa`) mirror the `User` MFA
+columns exactly. See **MFA (two-factor)** below.
 
 ## Endpoints
 
 All under `/api/portal/*`. Tenant resolved via the usual `X-Tenant-Slug`
 header. RBAC coverage gate in `tests/test_rbac.py` asserts every endpoint
-uses `get_current_vendor_user` (except `/portal/auth/login` and
-`/portal/auth/logout`, which are listed in `NO_AUTH_REQUIRED`).
+uses `get_current_vendor_user` (except `/portal/auth/login`,
+`/portal/auth/logout`, and `/portal/auth/mfa/challenge`, which are listed in
+`NO_AUTH_REQUIRED`).
 
 ### Auth (`portal_auth.py`)
 
 | Method | Path                             | Notes                                                                         |
 |--------|----------------------------------|-------------------------------------------------------------------------------|
-| POST   | `/portal/auth/login`             | email + password → `{access_token, must_change_password}`                     |
+| POST   | `/portal/auth/login`             | email + password → `{access_token, …}` OR (MFA-enrolled) an MFA challenge     |
 | POST   | `/portal/auth/logout`            | Adds `jti` to the shared Redis blocklist                                      |
-| GET    | `/portal/auth/me`                | Returns the vendor-user + vendor summary                                      |
+| GET    | `/portal/auth/me`                | Returns the vendor-user + vendor summary (incl. `mfa_enabled`)               |
 | POST   | `/portal/auth/change-password`   | Used by the forced first-login rotation and voluntary rotations               |
+| POST   | `/portal/auth/mfa/challenge`     | **Public** — trade the login-issued challenge token + TOTP code for an access token |
+| POST   | `/portal/auth/mfa/enroll`        | Mint a TOTP secret + QR (pending until verified)                              |
+| POST   | `/portal/auth/mfa/verify`        | Verify a code to activate MFA (`mfa_enabled=true`)                            |
+| POST   | `/portal/auth/mfa/disable`       | Turn MFA off — re-verifies a current code first                              |
+
+### MFA (two-factor) — `portal_auth.py`
+
+TOTP MFA for supplier-portal vendor users (roadmap Priority 6), mirroring the
+employee flow (`docs/authentication.md` § MFA) but scoped to `VendorUser` + the
+`typ=vendor` JWT. Reuses the shared TOTP primitives in `services/mfa.py` —
+secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
+
+- **Master switch.** `AP_MFA_ENABLED` (default `false` for local dev) gates the
+  whole feature, exactly like employee MFA. With it off, an enrolled vendor
+  still logs in with just a password (no challenge). MFA is **opt-in per vendor
+  user**; there is no org-wide enforcement for vendors yet.
+- **Enrollment.** `POST /mfa/enroll` mints (or re-issues) a secret + QR data URL
+  and returns the secret in plaintext (manual entry); it's held pending until
+  `POST /mfa/verify` confirms a valid code and flips `mfa_enabled=true`. The
+  secret is never echoed back after activation. `POST /mfa/disable` re-verifies
+  a current code before clearing the columns.
+- **Login challenge.** When `AP_MFA_ENABLED` is on and the vendor is enrolled,
+  `POST /login` returns `PortalMFAChallengeResponse` (`{mfa_required, mfa_challenge_token,
+  methods: ["totp"]}`) instead of the access token. The browser submits the code
+  to `POST /mfa/challenge`, which verifies and mints the real vendor access token.
+- **Token-type isolation (cross-auth-leak guard).** The challenge token carries
+  `typ=vendor_mfa_challenge` — distinct from both the employee challenge
+  (`mfa_challenge`) and the vendor access token (`vendor`). So a challenge token
+  can never resolve as an access token through `get_current_vendor_user`, an
+  employee challenge can never hit `/portal/auth/mfa/challenge`, and a vendor
+  access token can never satisfy the challenge endpoint. `services/mfa.create_vendor_challenge_token`
+  / `decode_vendor_challenge_token` enforce the `typ` symmetrically.
+- TOTP only for now — no email-OTP backup for vendors (a future addition).
 
 ### Invoices + payments (`portal.py`)
 
@@ -228,13 +266,13 @@ Routes:
 
 | Route                         | Purpose                                                |
 |-------------------------------|--------------------------------------------------------|
-| `/portal/login`               | Sign-in form                                           |
+| `/portal/login`               | Sign-in form + MFA second-factor (TOTP) step           |
 | `/portal/change-password`     | Forced first-login rotation                            |
 | `/portal/invoices`            | List + upload                                          |
 | `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
 | `/portal/payments`            | Payment history + per-row "Download remittance"        |
 | `/portal/discount-offers`     | Early-payment discount offers — accept / decline       |
-| `/portal/company`             | Contact (live) + bank/tax change requests (staged) + W-9/W-8 tax-form upload/download (live) |
+| `/portal/company`             | Contact (live) + bank/tax change requests (staged) + W-9/W-8 tax-form upload/download (live) + Security (MFA enroll/disable) |
 | `/portal/notifications`       | Email preferences (paid / rejected) — vendor-controlled |
 
 The portal company form makes the approval-gating visible: bank/tax changes
@@ -253,12 +291,13 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] In-app per-invoice chat between vendor and AP team
 - [x] Notification preferences (email-on-paid, email-on-rejected) — per-portal-user, vendor-controlled; wired into the `transition_invoice` dispatch chokepoint
 - [x] Virtual card viewing (secure, single-use reveal token) — `GET /portal/cards/{token}` consumes a one-time `CardRevealToken`
+- [x] MFA (TOTP) for portal users (migration 0053; opt-in per vendor user, gated by `AP_MFA_ENABLED`)
 
 ## Phase 3 (deferred)
 
 Add these when there's demand from the first paying customer:
 
-- MFA for portal users
+- MFA email-OTP backup factor for portal users (TOTP shipped; email backup deferred)
 
 ## Operational notes
 

@@ -39,6 +39,11 @@ ALGORITHM = "HS256"
 
 EMAIL_OTP_PREFIX = "mfa:email_otp:"
 CHALLENGE_TYPE = "mfa_challenge"
+# Supplier-portal MFA challenge. A DISTINCT `typ` from both the employee
+# challenge (`mfa_challenge`) and the vendor access token (`vendor`), so a
+# vendor MFA challenge token can never resolve as an access token through
+# `get_current_vendor_user`, nor be confused with the employee flow.
+VENDOR_CHALLENGE_TYPE = "vendor_mfa_challenge"
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +169,40 @@ def decode_challenge_token(token: str) -> uuid.UUID:
     except JWTError as exc:
         raise ValueError("Invalid or expired MFA challenge token") from exc
     if payload.get("typ") != CHALLENGE_TYPE:
+        raise ValueError("Wrong token type for MFA challenge")
+    try:
+        return uuid.UUID(payload["sub"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError("Malformed MFA challenge token") from exc
+
+
+# ---------------------------------------------------------------------------
+# Vendor (supplier-portal) MFA challenge token — same shape, distinct `typ`
+# ---------------------------------------------------------------------------
+
+
+def create_vendor_challenge_token(vendor_user_id: uuid.UUID) -> str:
+    """Short-lived JWT proving a supplier-portal password was accepted but MFA
+    is still owed. `typ=vendor_mfa_challenge` keeps it out of every other auth
+    path (employee challenge, vendor access token)."""
+    expire = datetime.now(UTC) + timedelta(seconds=settings.mfa_challenge_ttl_seconds)
+    payload = {
+        "sub": str(vendor_user_id),
+        "typ": VENDOR_CHALLENGE_TYPE,
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
+def decode_vendor_challenge_token(token: str) -> uuid.UUID:
+    """Verify a vendor MFA challenge token and return the vendor_user_id.
+    Raises ValueError on bad tokens (wrong type, expired, malformed)."""
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+    except JWTError as exc:
+        raise ValueError("Invalid or expired MFA challenge token") from exc
+    if payload.get("typ") != VENDOR_CHALLENGE_TYPE:
         raise ValueError("Wrong token type for MFA challenge")
     try:
         return uuid.UUID(payload["sub"])
