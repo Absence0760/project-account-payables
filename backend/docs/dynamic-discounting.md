@@ -99,6 +99,27 @@ entity-scoped; lifecycle guards return `409`. Percent / ROI fields serialize as
 JSON **numbers** (matching the frontend `number`-typed contract) while staying
 `Decimal` in Python.
 
+### Supplier portal (`/api/portal/discount-offers`)
+
+The same offers are surfaced to the **vendor** so a supplier can accept an
+early-payment discount the AP team extends to them. The portal routes
+(`api/portal.py`, vendor-scoped via `get_current_vendor_user`) reuse the **same
+pure `services/discount_offers.py` primitives** — `accept_offer` / `decline_offer`
+/ `best_tier_for_date` / `discount_savings` — so the Decimal math and lifecycle
+are never duplicated.
+
+| Method + path | Purpose |
+|---|---|
+| `GET /portal/discount-offers` | offers scoped to the caller's own `vendor_id` **or** their own invoices; per-tier savings + best capturable tier today; `?status=` filter |
+| `POST /portal/discount-offers/{id}/accept` | accept at a tier (`tier_days` or best today); flips `offered → accepted` only — **never moves money** (CFO-gated payment run still funds it); re-accept is a `409`; foreign/unknown id `404` |
+| `POST /portal/discount-offers/{id}/decline` | decline; `409` if no longer `offered` |
+
+A vendor can never see another vendor's offers (cross-vendor / unknown id → 404,
+never 403). Audit rows are `discount_offer.accepted_by_vendor` /
+`.declined_by_vendor` — PII-free, `actor_id=None` (a `VendorUser` is not a
+control-plane user). No migration — the `DiscountOffer` table already exists.
+See `supplier-portal.md` § Early-payment discount offers.
+
 ## Config (`AP_` env vars)
 
 | Var | Default | Purpose |
@@ -122,6 +143,14 @@ a status `FilterChips` filter, an offers `DataTable` (tiers via the new
 "Early-payment optimizer" panel posting to `/optimize`. API wrappers in
 `lib/api/discounts.ts`, types in `lib/types/discounts.ts`.
 
+**Supplier portal:** `/portal/discount-offers`
+(`routes/portal/discount-offers/+page.svelte`) lists the vendor's own offers with
+per-tier savings + the best capturable tier today and lets them Accept (tier
+picker + live savings preview) or Decline. API helpers + types live in
+`lib/portalApi.ts` (`listPortalDiscountOffers` / `acceptPortalDiscountOffer` /
+`declinePortalDiscountOffer`); reachable from the **Discounts** link in the
+portal nav.
+
 ## Tests
 
 - `tests/test_discount_roi.py` (foundation), `test_discount_offers.py`,
@@ -130,6 +159,10 @@ a status `FilterChips` filter, an offers `DataTable` (tiers via the new
   (worthwhile→accept, threshold gate, money-path boundary, idempotency, audit).
 - `test_discounts_api.py` — router end-to-end (lifecycle, ROI, optimizer, bulk,
   dashboard, RBAC, tenant isolation).
+- `test_portal_discount_offers.py` — supplier-portal list + accept/decline
+  (real-DB): vendor scoping (own vendor + own invoices, never another vendor),
+  per-tier savings, accept flips status without creating a `Payment`/`PaymentRun`,
+  double-accept 409, foreign/unknown offer 404, auth-required.
 - `frontend/tests-e2e/discounts/money-path.spec.ts` — live-stack e2e asserting
   the exact savings/ROI/APR Decimal values, best-vs-explicit tier selection,
   accept idempotency (double-accept is a safe 409, no double-count), the
