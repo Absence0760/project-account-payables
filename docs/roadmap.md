@@ -468,7 +468,7 @@ The data layer is already internationalized (multi-currency rollups, locale-awar
 **Competitive gap: all competitors have a supplier portal**
 
 ### Vendor Self-Service
-**Status:** Partial — Phase 2 self-service shipped (PO flip, remittance download, approval-gated company/bank/tax self-update) on top of the Phase 1 MVP (separate auth, invoice submission, status/payment tracking). See [`backend/docs/supplier-portal.md`](../backend/docs/supplier-portal.md).
+**Status:** Complete — Phase 3 shipped (W-9/W-8 upload, vendor notification preferences, virtual-card reveal, early-payment discount offers, in-app supplier chat, portal MFA) on top of Phase 2 self-service (PO flip, remittance download, approval-gated company/bank/tax self-update) and the Phase 1 MVP (separate auth, invoice submission, status/payment tracking). Only an MFA email-OTP backup factor remains deferred. See [`backend/docs/supplier-portal.md`](../backend/docs/supplier-portal.md).
 
 Separate portal for vendors to interact with the AP system. Biggest workflow gap — forces email/manual invoice intake without this. Every competitor (Coupa CSP, Tipalti Supplier Hub, Basware Network, Stampli) offers this.
 
@@ -481,12 +481,12 @@ Separate portal for vendors to interact with the AP system. Biggest workflow gap
 - [x] Download remittances (PDF generation) — `GET /api/portal/payments/{id}/remittance` reuses `services/remittance_pdf.py`, ownership-joined on `Invoice.vendor_id`
 - [x] Update company info, bank details, tax ID — `GET/PATCH /api/portal/company` (contact fields apply live, masked bank/tax) + `POST /api/portal/company/{bank-change,tax-id-change}` staging
 - [x] Bank detail change requires AP admin approval (fraud prevention) — bank/tax changes stage a `VendorChangeRequest`; the vendor row is untouched until an admin approves via `POST /api/vendors/change-requests/{id}/approve`
-- [ ] W-9/W-8 form upload and management
-- [ ] Notification preferences (email on payment, on rejection)
-- [ ] Virtual card detail viewing (secure, one-time access)
-- [ ] Early payment discount offers (tie into dynamic discounting)
-- [ ] In-app per-invoice chat between vendor and AP team
-- [ ] MFA for portal users
+- [x] W-9/W-8 form upload and management — `GET/POST /api/portal/company/tax-form` (+ `/file`); vendor uploads their own signed form live onto `Vendor.w9_file_key`/`w9_received_date` (no migration), vendor-scoped + cross-tenant-gated, PII-free audit
+- [x] Notification preferences (email on payment, on rejection) — `GET/PATCH /api/portal/notification-preferences`; per-portal-user, vendor-controlled, wired into the `transition_invoice` dispatch chokepoint (migration 0052)
+- [x] Virtual card detail viewing (secure, one-time access) — `GET /api/portal/cards/{token}` consumes a single-use `CardRevealToken`
+- [x] Early payment discount offers (tie into dynamic discounting) — `GET /api/portal/discount-offers`, `POST .../{id}/accept`|`/decline`; reuses the dynamic-discounting engine, accept flips status only (never moves money), idempotent
+- [x] In-app per-invoice chat between vendor and AP team — `GET/POST /api/portal/invoices/{id}/chat` (+ attachments, file proxy); vendor-scoped, AP author ids masked
+- [x] MFA for portal users — TOTP via `POST /api/portal/auth/mfa/{enroll,verify,disable,challenge}`; opt-in per vendor user, `AP_MFA_ENABLED`-gated, distinct `typ=vendor_mfa_challenge` (migration 0053). Email-OTP backup factor still deferred
 
 **Files:** `backend/app/api/portal.py`, `backend/app/api/portal_auth.py`, `backend/app/models/vendor_user.py`, `frontend/src/routes/portal/`
 
