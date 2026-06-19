@@ -123,6 +123,14 @@ class Invoice(Base, EntityMixin, TimestampMixin):
     contract_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contracts.id"), index=True
     )
+    # Set on invoices auto-generated from a RecurringInvoiceTemplate. The
+    # (template_id, period_key) pair is the idempotency key — a partial unique
+    # index below makes a double-fire of the same period impossible to persist,
+    # so the generation sweep can retry safely. NULL = not template-generated.
+    recurring_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("recurring_invoice_templates.id"), index=True
+    )
+    recurring_period_key: Mapped[str | None] = mapped_column(String(40))
 
     __table_args__ = (
         # Idempotency backstop for the supplier-portal PO flip
@@ -138,6 +146,18 @@ class Invoice(Base, EntityMixin, TimestampMixin):
             "reference_number",
             unique=True,
             postgresql_where=text("reference_number LIKE 'po-flip:%'"),
+        ),
+        # Idempotency for the recurring-invoice generation sweep: at most one
+        # invoice per (template, period). A concurrent / retried double-fire of
+        # the same period raises IntegrityError on the second INSERT, which the
+        # sweep catches and turns into a no-op. Partial predicate keeps it from
+        # ever constraining ordinary (non-recurring) invoices.
+        Index(
+            "uq_invoice_recurring_period",
+            "recurring_template_id",
+            "recurring_period_key",
+            unique=True,
+            postgresql_where=text("recurring_template_id IS NOT NULL"),
         ),
     )
 

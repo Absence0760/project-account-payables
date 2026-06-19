@@ -110,6 +110,17 @@ class Settings(BaseSettings):
     discount_auto_capture_roi_threshold: float = 12.0
     discount_cost_of_capital_pct: float = 8.0
     approval_escalation_interval_seconds: int = 600
+    # Recurring / subscription invoice generation sweep. `recurring_invoices_enabled`
+    # is the master switch for the background loop — OFF by default so local dev /
+    # tests don't auto-create invoices. The sweep finds `active` templates whose
+    # `next_run_on` has arrived, generates the next Invoice (pre-coded, status
+    # `pending`), advances `next_run_on`, and is idempotent on the
+    # (template, period_key) DB unique index. `recurring_invoices_max_per_sweep`
+    # caps generations per tick so a backlog (or a misconfigured template) can't
+    # firehose the queue. See backend/docs/recurring-invoices.md.
+    recurring_invoices_enabled: bool = False
+    recurring_invoices_interval_seconds: int = 3600
+    recurring_invoices_max_per_sweep: int = 200
     # Payment-status reconciler: backstop polling for processors whose
     # webhooks have gone missing. Disabled by default in local dev (the
     # mock adapter settles synchronously, so there's nothing to

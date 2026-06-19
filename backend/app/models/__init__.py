@@ -44,6 +44,7 @@ from app.models.procurement import (
     RequisitionStatus,
 )
 from app.models.quality_inspection import QualityInspection
+from app.models.recurring_invoice import RecurringInvoiceTemplate
 from app.models.signup import EmailVerification
 from app.models.supplier_chat import (
     ChatAuthorRole,
@@ -86,6 +87,7 @@ __all__ = [
     "IntakeType",
     "IntakeStatus",
     "QualityInspection",
+    "RecurringInvoiceTemplate",
     "WorkflowDefinition",
     "WorkflowInstance",
     "WorkflowStep",
