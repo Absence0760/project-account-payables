@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import uuid
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
@@ -239,8 +240,11 @@ async def generate_check_issue(
         await db.flush()
     except IntegrityError:
         # Lost an idempotency race — the unique index claimed the slot. Roll
-        # back and return the row that won.
+        # back and return the row that won. The file_id we generated was never
+        # persisted, so its just-uploaded object is unreferenced — delete it so
+        # a loser's account-number-bearing bytes don't orphan in the bucket.
         await db.rollback()
+        storage.delete_file(file_key)
         winner = (
             await db.execute(
                 select(PositivePayFile).where(
@@ -318,7 +322,7 @@ async def generate_ach_authorization(
         file_type=FILE_TYPE_ACH_AUTHORIZATION,
         bank_format=bank_format,
         item_count=len(items),
-        total_amount=0,
+        total_amount=Decimal("0"),
         content_hash=content_hash,
         file_key=file_key,
         account_last4=_last4(account_number),
@@ -477,11 +481,11 @@ async def process_return(
     for result in classification.results:
         if result.classification not in (CLASS_AMOUNT_MISMATCH, CLASS_NOT_ON_FILE):
             continue
-        # Map the presented cheque back to its invoice. amount_mismatch always
-        # maps (matched by number); not_on_file may map if its number happens to
-        # be in our issued set under a different amount — but the classifier
-        # only sets matched_check_number for matched items, so look it up by the
-        # presented number for the not_on_file case.
+        # Map the presented cheque back to its invoice. Only amount_mismatch
+        # ever maps: it matched an issued cheque by number (matched_check_number
+        # is set). A not_on_file item by definition has no issued cheque with
+        # its number, so the lookup always misses and it falls through to
+        # meta.unmatched_returns below.
         key = result.matched_check_number or normalize_check_number(result.check_number)
         invoice_id = issued_map.get(key)
         if invoice_id is None:
@@ -537,8 +541,14 @@ async def process_return(
         "unmatched": len(unmatched),
     }
     meta = dict(row.meta) if row.meta else {}
+    # Keep the latest summary for quick reads, but append every run to a
+    # history list so re-processing a bank redelivery never silently clobbers
+    # the prior outcome an auditor may be relying on.
     meta["return_summary"] = return_summary
     meta["unmatched_returns"] = unmatched
+    history = list(meta.get("return_history") or [])
+    history.append(return_summary)
+    meta["return_history"] = history
     row.meta = meta
     row.status = STATUS_RETURNED_PROCESSED
 
@@ -589,5 +599,11 @@ async def delete_file(
         entity_id=row.id,
         details={"file_type": row.file_type, "bank_format": row.bank_format},
     )
+    # The rendered object is the only place full account / routing numbers live;
+    # remove it so deletion doesn't leave PII-bearing bytes at rest. Best-effort
+    # (a storage hiccup must not block the DB delete); captured before the row
+    # goes away.
+    file_key = row.file_key
     await db.delete(row)
     await db.commit()
+    storage.delete_file(file_key)

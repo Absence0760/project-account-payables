@@ -16,6 +16,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from app.models.entity import Entity
@@ -25,6 +26,7 @@ from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun
 from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
+from app.services import storage
 
 _TODAY = date.today()
 
@@ -439,11 +441,19 @@ async def test_delete_file(realdb):
         bank_details={"routing_number": "021000021", "account_number": "777"},
     )
     async with realdb.client(key="a", role="ap_manager") as c:
-        file_id = (await c.post("/api/positive-pay/ach-authorization", json={})).json()["id"]
+        created = (await c.post("/api/positive-pay/ach-authorization", json={})).json()
+        file_id = created["id"]
+        file_key = created["file_key"]
+        # The object holds full account / routing numbers — confirm it exists,
+        # then that delete purges it from MinIO (not just the DB row), so no
+        # PII-bearing bytes linger at rest.
+        assert storage.get_file(file_key)[0]
         resp = await c.delete(f"/api/positive-pay/{file_id}")
         assert resp.status_code == 204
         gone = await c.get(f"/api/positive-pay/{file_id}")
         assert gone.status_code == 404
+    with pytest.raises(Exception):
+        storage.get_file(file_key)
 
 
 # ---------------------------------------------------------------------------

@@ -259,3 +259,23 @@ def get_file(file_key: str) -> tuple[bytes, str]:
     content = response["Body"].read()
     content_type = response.get("ContentType", "application/octet-stream")
     return content, content_type
+
+
+def delete_file(file_key: str) -> None:
+    """Best-effort delete of a stored object.
+
+    Used when the owning DB row is removed and the bytes must not linger at
+    rest — notably the Positive Pay export, the one stored file that carries
+    full account / routing numbers. Swallows a missing-object / transport error
+    so a storage hiccup never blocks the DB delete that calls it; S3/MinIO
+    ``delete_object`` is itself idempotent (no error on an absent key).
+    """
+    if not file_key:
+        return
+    try:
+        client = _get_client()
+        client.delete_object(Bucket=settings.s3_bucket, Key=file_key)
+    except Exception:
+        # The DB row is the source of truth; a bucket-lifecycle / retention
+        # sweep is the backstop for any object this best-effort call misses.
+        pass
