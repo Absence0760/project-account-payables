@@ -131,6 +131,21 @@ class Invoice(Base, EntityMixin, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("recurring_invoice_templates.id"), index=True
     )
     recurring_period_key: Mapped[str | None] = mapped_column(String(40))
+    # Inter-company routing (multi-entity). Set when this invoice is a charge
+    # between two subsidiaries of the SAME tenant: `counterparty_entity_id` names
+    # the OTHER `entities` row (the entity that owes / is owed), and
+    # `intercompany_mirror_id` self-references the paired Invoice — origin ↔
+    # generated mirror, set on both. `services.intercompany.route_intercompany_invoice`
+    # generates the mirror payable under the counterparty entity, using
+    # `intercompany_mirror_id` as the idempotency guard (a set value means the
+    # mirror already exists — never create a second). NULL on ordinary invoices.
+    # See backend/docs/inter-company.md.
+    counterparty_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entities.id")
+    )
+    intercompany_mirror_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id")
+    )
 
     __table_args__ = (
         # Idempotency backstop for the supplier-portal PO flip

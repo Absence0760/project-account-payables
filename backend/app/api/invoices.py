@@ -27,6 +27,7 @@ from app.api.deps import (
 from app.api.pagination import PaginationParams, pagination_params
 from app.database import get_control_db
 from app.models.contract import Contract
+from app.models.entity import Entity
 from app.models.exception import Exception as ExceptionModel
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceLineItem
 from app.models.invoice import InvoiceStatus as DBInvoiceStatus
@@ -54,6 +55,7 @@ from app.schemas.invoice import (
     InvoiceListResponse,
     InvoiceResponse,
     InvoiceUpdate,
+    RouteIntercompanyRequest,
 )
 from app.services import audit_summary
 from app.services.audit_access import build_field_diff
@@ -836,6 +838,66 @@ async def unlink_contract(
         await refresh_warnings(db, invoice, org_settings=org.settings)
     await db.flush()
     return InvoiceResponse.from_db(invoice)
+
+
+@router.post("/{invoice_id}/route-intercompany", response_model=InvoiceResponse)
+async def route_intercompany(
+    invoice_id: uuid.UUID,
+    body: RouteIntercompanyRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+):
+    """Generate the mirror payable for an inter-company charge (multi-entity).
+
+    Sets the named counterparty entity on this invoice, then routes it: a mirror
+    payable Invoice is created under the counterparty entity, linked back to this
+    one. Idempotent at the boundary — calling twice returns the same mirror and
+    never creates a second (the routing service dedupes on
+    ``intercompany_mirror_id``). Returns the mirror invoice.
+    """
+    from app.services.intercompany import route_intercompany_invoice
+
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    try:
+        counterparty_uuid = uuid.UUID(body.counterparty_entity_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid counterparty_entity_id")
+
+    # Validate the counterparty is a real entity in THIS tenant (the entities
+    # table is tenant-local, so an unknown id can't point at another tenant's
+    # subsidiary — same guard `app.tenant.get_entity_id` uses).
+    exists = (
+        await db.execute(select(Entity.id).where(Entity.id == counterparty_uuid))
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Unknown counterparty entity for this tenant")
+
+    invoice.counterparty_entity_id = counterparty_uuid
+    try:
+        mirror = await route_intercompany_invoice(db, invoice, actor_id=user.id)
+    except ValueError as exc:
+        # Self-billing or a missing counterparty — a client error, PII-free.
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.flush()
+
+    # Re-fetch the mirror with extraction_results eager-loaded so
+    # InvoiceResponse.from_db → _priors_summary doesn't trigger a lazy load.
+    mirror_row = (
+        await db.execute(
+            select(Invoice)
+            .options(selectinload(Invoice.extraction_results))
+            .where(Invoice.id == mirror.id)
+        )
+    ).scalar_one()
+    return InvoiceResponse.from_db(mirror_row)
 
 
 # ---------------------------------------------------------------------------

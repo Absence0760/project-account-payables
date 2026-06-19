@@ -137,6 +137,12 @@ class InvoiceResponse(BaseModel):
     # Spend-to-contract link (services.contract_spend / contract_compliance).
     # Null = off-contract spend. Set via POST /api/invoices/{id}/link-contract.
     contract_id: str | None = None
+    # Inter-company routing (multi-entity). `counterparty_entity_id` names the
+    # other subsidiary on an inter-company charge; `intercompany_mirror_id` links
+    # an origin invoice to its generated mirror payable (and vice-versa). Both
+    # null on ordinary invoices. See backend/docs/inter-company.md.
+    counterparty_entity_id: str | None = None
+    intercompany_mirror_id: str | None = None
     created_at: str
     file_url: str | None
     warnings: list[dict] | None = None
@@ -190,6 +196,12 @@ class InvoiceResponse(BaseModel):
             department=inv.department,
             project=inv.project,
             contract_id=str(inv.contract_id) if inv.contract_id else None,
+            counterparty_entity_id=(
+                str(inv.counterparty_entity_id) if inv.counterparty_entity_id else None
+            ),
+            intercompany_mirror_id=(
+                str(inv.intercompany_mirror_id) if inv.intercompany_mirror_id else None
+            ),
             created_at=inv.created_at.isoformat() if inv.created_at else "",
             file_url=inv.file_url,
             warnings=inv.warnings,
@@ -282,6 +294,18 @@ class InvoiceLineItemResponse(BaseModel):
     gl_account: str | None
 
     model_config = {"from_attributes": True}
+
+
+class RouteIntercompanyRequest(BaseModel):
+    """Body for POST /api/invoices/{id}/route-intercompany.
+
+    `counterparty_entity_id` names the OTHER subsidiary (an `entities` row in
+    this tenant) that the inter-company charge is billed to. The service
+    generates the mirror payable under that entity. See
+    backend/docs/inter-company.md.
+    """
+
+    counterparty_entity_id: str
 
 
 class AuditSummaryResponse(BaseModel):
