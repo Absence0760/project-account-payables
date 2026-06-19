@@ -167,7 +167,11 @@
 					{#each forecast.periods as p (p.period)}
 						<div class="cf-bar-row">
 							<span class="cf-bar-label">{formatPeriod(p.period)}</span>
-							<div class="cf-bar-bg">
+							<div
+								class="cf-bar-bg"
+								role="img"
+								aria-label={`Committed ${fmt(p.committed_amount)}, pending ${fmt(p.pending_amount)}`}
+							>
 								<div
 									class="cf-bar committed"
 									style="width:{(p.committed_amount / maxScheduled) * 100}%"

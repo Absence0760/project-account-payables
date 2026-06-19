@@ -74,9 +74,11 @@
 			{/if}
 		</p>
 
-		{#if error}
-			<div class="error">{error}</div>
-		{/if}
+		<div role="alert" aria-live="assertive">
+			{#if error}
+				<div class="error">{error}</div>
+			{/if}
+		</div>
 
 		<label>
 			<span>Current password</span>

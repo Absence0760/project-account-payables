@@ -882,12 +882,12 @@
 			<div class="header-actions">
 				<button class="icon-btn" onclick={toggleFullscreen} aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
 					{#if fullscreen}
-						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 							<polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
 							<line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
 						</svg>
 					{:else}
-						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 							<polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
 							<line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
 						</svg>
@@ -912,7 +912,7 @@
 					{/if}
 				{:else}
 					<div class="no-pdf">
-						<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+						<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
 							<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
 							<polyline points="14 2 14 8 20 8" />
 							<line x1="9" y1="15" x2="15" y2="15" />
@@ -1080,25 +1080,25 @@
 									{#each lineItems as li, idx}
 										<tr>
 											<td class="li-num">{idx + 1}</td>
-											<td><input type="text" class="li-input" value={li.description ?? ''} oninput={(e) => updateLineItem(idx, 'description', e.currentTarget.value)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" value={li.quantity ?? ''} oninput={(e) => updateLineItem(idx, 'quantity', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" value={li.unit_price ?? ''} oninput={(e) => updateLineItem(idx, 'unit_price', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" value={li.tax ?? ''} oninput={(e) => updateLineItem(idx, 'tax', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" value={li.total ?? ''} oninput={(e) => updateLineItem(idx, 'total', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="text" class="li-input" aria-label={`Line ${idx + 1} description`} value={li.description ?? ''} oninput={(e) => updateLineItem(idx, 'description', e.currentTarget.value)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} quantity`} value={li.quantity ?? ''} oninput={(e) => updateLineItem(idx, 'quantity', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} unit price`} value={li.unit_price ?? ''} oninput={(e) => updateLineItem(idx, 'unit_price', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} tax`} value={li.tax ?? ''} oninput={(e) => updateLineItem(idx, 'tax', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} total`} value={li.total ?? ''} oninput={(e) => updateLineItem(idx, 'total', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
 											<td>
 											{#if glAccounts.length > 0}
-												<select class="li-input li-gl" value={li.gl_account ?? ''} onchange={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)}>
+												<select class="li-input li-gl" aria-label={`Line ${idx + 1} GL account`} value={li.gl_account ?? ''} onchange={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)}>
 													<option value="">—</option>
 													{#each glAccounts as acct}
 														<option value={acct.code}>{acct.code}</option>
 													{/each}
 												</select>
 											{:else}
-												<input type="text" class="li-input li-gl" value={li.gl_account ?? ''} oninput={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)} />
+												<input type="text" class="li-input li-gl" aria-label={`Line ${idx + 1} GL account`} value={li.gl_account ?? ''} oninput={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)} />
 											{/if}
 										</td>
 											<td>
-												<button type="button" class="li-delete" onclick={() => removeLineItem(idx)}>&times;</button>
+												<button type="button" class="li-delete" aria-label={`Remove line ${idx + 1}`} onclick={() => removeLineItem(idx)}>&times;</button>
 											</td>
 										</tr>
 									{/each}
@@ -1129,7 +1129,7 @@
 						{:else if isClerkOnly}
 							<span class="contract-empty">No contract linked.</span>
 						{:else}
-							<select class="contract-select" bind:value={pickContractId}>
+							<select class="contract-select" aria-label="Select contract to link" bind:value={pickContractId}>
 								<option value="">Select contract…</option>
 								{#each contracts as c (c.id)}
 									<option value={c.id}>{c.contract_number}{c.vendor_name ? ` — ${c.vendor_name}` : ''}</option>
@@ -1145,7 +1145,7 @@
 						<div class="warnings-list">
 							{#each invoice.warnings.filter(w => w.type !== 'missing_field' && w.type !== 'po_mismatch') as w}
 								<div class="warning-item {w.severity}">
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 										<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
 								</svg>
 								{w.message}
@@ -1282,7 +1282,7 @@
 							</div>
 							{#if canRetryErp}
 								<button type="button" class="btn-retry-erp" disabled={retryingErp} onclick={handleRetryErp}>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
 									{retryingErp ? 'Retrying...' : 'Retry ERP Send'}
 								</button>
 							{/if}
@@ -1430,6 +1430,7 @@
 									<textarea
 										class="reject-input"
 										placeholder="Reason for rejection..."
+										aria-label="Reason for rejection"
 										bind:value={rejectReason}
 										rows="2"
 									></textarea>
@@ -1443,11 +1444,11 @@
 							{:else}
 								<div class="review-actions">
 									<button type="button" class="btn-approve" disabled={reviewing} onclick={handleApprove}>
-										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
 										{reviewing ? 'Approving...' : 'Approve'}
 									</button>
 									<button type="button" class="btn-reject-outline" disabled={reviewing} onclick={() => (showRejectForm = true)}>
-										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
 										Reject
 									</button>
 								</div>
@@ -1465,10 +1466,10 @@
 							{#if canExtract || extracting}
 								<button type="button" class="btn-extract" disabled={extracting} onclick={handleExtract}>
 									{#if extracting}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
 										{extractionStatus || 'Extracting...'}
 									{:else}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
 										{status === 'failed' ? 'Re-extract' : 'Extract'}
 									{/if}
 								</button>
@@ -1485,7 +1486,7 @@
 							{/if}
 							{#if canSubmit}
 								{#if needsApproverSelect}
-									<select class="approver-select" bind:value={selectedApproverId}>
+									<select class="approver-select" aria-label="Assign approver" bind:value={selectedApproverId}>
 										<option value="">Approver...</option>
 										{#each adminStore.users.filter(u => u.is_active && u.id !== auth.user?.id) as user}
 											<option value={user.id}>{user.full_name}</option>
@@ -2952,6 +2953,11 @@
 	@keyframes audit-summary-shimmer {
 		0% { background-position: 200% 0; }
 		100% { background-position: -200% 0; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.audit-summary-skeleton {
+			animation: none;
+		}
 	}
 
 	/* -------------------------- priors panel ---------------------------- */

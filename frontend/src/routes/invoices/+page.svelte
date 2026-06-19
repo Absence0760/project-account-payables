@@ -397,7 +397,7 @@
 				onclick={() => { advancedFilters = { ...advancedFilters, statuses: [...activeStatuses] }; showAdvancedSearch = true; }}
 				aria-label="Advanced search"
 			>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 					<line x1="4" y1="6" x2="20" y2="6" />
 					<line x1="8" y1="12" x2="20" y2="12" />
 					<line x1="12" y1="18" x2="20" y2="18" />
@@ -443,10 +443,10 @@
 						}}
 					>
 						{#if confirmBulkDelete}
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
 							Confirm Delete
 						{:else}
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
 							Delete
 						{/if}
 					</button>
@@ -460,13 +460,13 @@
 							disabled={bulkBusy || validBulkTransitions.length === 0}
 							onclick={(e) => { e.stopPropagation(); showBulkStatusSelect = !showBulkStatusSelect; }}
 						>
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
 							Change Status
 						</button>
 					</span>
 					{#if showBulkStatusSelect && validBulkTransitions.length > 0}
 						<div class="bulk-status-dropdown">
-							<select bind:value={bulkStatusValue}>
+							<select bind:value={bulkStatusValue} aria-label="New status for selected invoices">
 								{#each validBulkTransitions as s}
 									<option value={s}>{STATUS_LABELS[s]}</option>
 								{/each}
@@ -517,8 +517,13 @@
 							{invoice.invoice_number || '—'}
 						</RowLink>
 						{#if invoice.warnings?.length}
-							<span class="warning-icon" title={invoice.warnings.map(w => w.message).join(', ')}>
-								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<span
+								class="warning-icon"
+								role="img"
+								aria-label={`Warnings: ${invoice.warnings.map((w) => w.message).join(', ')}`}
+								title={invoice.warnings.map((w) => w.message).join(', ')}
+							>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 									<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
 								</svg>
 							</span>

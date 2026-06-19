@@ -48,32 +48,34 @@
 	</div>
 	<div class="palette-list">
 		{#each PALETTE as type (type)}
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div
+			<button
+				type="button"
 				class="palette-item"
 				draggable="true"
 				ondragstart={(e) => handleDragStart(e, type)}
 				ondragend={ondragend}
 				onclick={() => onadd(type)}
-				onkeydown={(e) => {
-					if (e.key === 'Enter' || e.key === ' ') {
-						e.preventDefault();
-						onadd(type);
-					}
-				}}
-				role="button"
-				tabindex="0"
 				data-palette-type={type}
 				title={STEP_TYPE_DESCRIPTIONS[type]}
+				aria-label={`Add ${STEP_TYPE_LABELS[type]} step`}
 			>
-				<svg class="palette-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<svg
+					class="palette-icon"
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					aria-hidden="true"
+				>
 					<path d={ICONS[type]} />
 				</svg>
 				<div class="palette-text">
 					<span class="palette-name">{STEP_TYPE_LABELS[type]}</span>
 					<span class="palette-desc">{STEP_TYPE_DESCRIPTIONS[type]}</span>
 				</div>
-			</div>
+			</button>
 		{/each}
 	</div>
 </div>
@@ -123,6 +125,10 @@
 		border-radius: 6px;
 		background: var(--bg);
 		cursor: grab;
+		width: 100%;
+		text-align: left;
+		font: inherit;
+		color: inherit;
 		transition:
 			border-color 0.15s,
 			background 0.15s;

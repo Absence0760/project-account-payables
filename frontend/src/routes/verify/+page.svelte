@@ -36,7 +36,7 @@
 </svelte:head>
 
 <div class="page">
-	<div class="card">
+	<div class="card" aria-live="polite">
 		{#if phase === 'pending'}
 			<h1>Creating your workspace…</h1>
 			<p class="sub">
@@ -131,5 +131,11 @@
 	}
 	@keyframes spin {
 		to { transform: rotate(360deg); }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation-duration: 0.01ms;
+			animation-iteration-count: 1;
+		}
 	}
 </style>

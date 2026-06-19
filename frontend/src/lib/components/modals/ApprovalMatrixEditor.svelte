@@ -128,6 +128,7 @@
 					class="level-name"
 					type="text"
 					placeholder="Level name"
+					aria-label={`Approval level ${levelIdx + 1} name`}
 					value={level.name}
 					oninput={(e) => patchLevel(levelIdx, { name: e.currentTarget.value })}
 				/>
@@ -136,6 +137,7 @@
 						type="button"
 						class="icon-btn"
 						title="Move up"
+						aria-label="Move level up"
 						disabled={levelIdx === 0}
 						onclick={() => moveLevel(levelIdx, -1)}
 					>↑</button>
@@ -143,6 +145,7 @@
 						type="button"
 						class="icon-btn"
 						title="Move down"
+						aria-label="Move level down"
 						disabled={levelIdx === chain.length - 1}
 						onclick={() => moveLevel(levelIdx, 1)}
 					>↓</button>
@@ -150,6 +153,7 @@
 						type="button"
 						class="icon-btn danger"
 						title="Remove level"
+						aria-label="Remove level"
 						onclick={() => removeLevel(levelIdx)}
 					>×</button>
 				</div>
@@ -250,6 +254,7 @@
 					<div class="rule-row">
 						<select
 							value={rule.field}
+							aria-label="Routing rule field"
 							onchange={(e) =>
 								patchRule(levelIdx, ruleIdx, { field: e.currentTarget.value as RoutingField })}
 						>
@@ -259,6 +264,7 @@
 						</select>
 						<select
 							value={rule.operator}
+							aria-label="Routing rule operator"
 							onchange={(e) =>
 								operatorChanged(levelIdx, ruleIdx, e.currentTarget.value as RoutingOperator)}
 						>
@@ -269,6 +275,7 @@
 						<input
 							type="text"
 							placeholder={SET_OPERATORS.includes(rule.operator) ? 'comma, separated' : 'value'}
+							aria-label="Routing rule value"
 							value={ruleValueForInput(rule)}
 							oninput={(e) =>
 								patchRule(levelIdx, ruleIdx, {
@@ -279,6 +286,7 @@
 							type="button"
 							class="icon-btn danger"
 							title="Remove rule"
+							aria-label="Remove rule"
 							onclick={() => removeRule(levelIdx, ruleIdx)}
 						>×</button>
 					</div>

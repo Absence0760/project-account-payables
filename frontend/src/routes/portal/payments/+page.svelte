@@ -71,7 +71,7 @@
 		<h1>Payments</h1>
 	</header>
 
-	{#if error}<div class="error">{error}</div>{/if}
+	{#if error}<div class="error" role="alert">{error}</div>{/if}
 
 	{#if loading && !items.length}
 		<div class="loading">Loading...</div>

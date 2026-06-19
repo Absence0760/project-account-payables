@@ -59,7 +59,16 @@
 		</svg>
 	</span>
 
-	<svg class="node-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+	<svg
+		class="node-icon"
+		width="18"
+		height="18"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="2"
+		aria-hidden="true"
+	>
 		<path d={iconPath(step.type)} />
 	</svg>
 
@@ -75,6 +84,7 @@
 			class:on={step.enabled}
 			title={step.enabled ? 'Enabled' : 'Disabled'}
 			aria-label={step.enabled ? 'Disable step' : 'Enable step'}
+			aria-pressed={step.enabled}
 			onclick={(e) => {
 				e.stopPropagation();
 				ontoggle();

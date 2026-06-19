@@ -196,7 +196,7 @@
 		<header class="toolbar">
 			<div class="toolbar-left">
 				<a href="/workflows" class="back-link" aria-label="Back to workflows">
-					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
 				</a>
 				{#if editingName}
 					<input
@@ -208,13 +208,19 @@
 						onkeydown={(e) => { if (e.key === 'Enter') { editingName = false; dirty = true; } }}
 					/>
 				{:else}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<h2 class="page-title" onclick={() => (editingName = true)} onkeydown={() => {}}>
-						{nameInput}
+					<h1 class="page-title">
+						<button
+							type="button"
+							class="page-title-edit"
+							aria-label={`Edit workflow name: ${nameInput}`}
+							onclick={() => (editingName = true)}
+						>
+							{nameInput}
+						</button>
 						{#if workflow.is_default}
 							<span class="default-badge">Default</span>
 						{/if}
-					</h2>
+					</h1>
 				{/if}
 			</div>
 			<div class="toolbar-right">
@@ -231,6 +237,7 @@
 			<input
 				class="desc-input"
 				type="text"
+				aria-label="Workflow description"
 				placeholder="Add a description..."
 				bind:value={descInput}
 				oninput={() => (dirty = true)}
@@ -283,11 +290,14 @@
 						</div>
 
 						<div class="field toggle-field">
-							<label for="step-enabled">Enabled</label>
+							<label id="step-enabled-label" for="step-enabled">Enabled</label>
 							<button
 								id="step-enabled"
 								class="toggle"
 								class:on={selectedStep.enabled}
+								role="switch"
+								aria-checked={selectedStep.enabled}
+								aria-labelledby="step-enabled-label"
 								onclick={() => updateStepField(selectedIndex, 'enabled', !selectedStep.enabled)}
 							>
 								<span class="toggle-knob"></span>
@@ -300,11 +310,14 @@
 						{#if selectedStep.type === 'extraction'}
 							{@const cfg = selectedStep.config as ExtractionStepConfig}
 							<div class="field toggle-field">
-								<label for="auto-approve">Auto-approve on high confidence</label>
+								<label id="auto-approve-label" for="auto-approve">Auto-approve on high confidence</label>
 								<button
 									id="auto-approve"
 									class="toggle"
 									class:on={cfg.auto_approve_enabled}
+									role="switch"
+									aria-checked={cfg.auto_approve_enabled}
+									aria-labelledby="auto-approve-label"
 									onclick={() => updateStepConfig(selectedIndex, 'auto_approve_enabled', !cfg.auto_approve_enabled)}
 								>
 									<span class="toggle-knob"></span>
@@ -337,11 +350,14 @@
 						{#if selectedStep.type === 'approval'}
 							{@const cfg = selectedStep.config as ApprovalStepConfig}
 							<div class="field toggle-field">
-								<label for="approval-required">Approval Required</label>
+								<label id="approval-required-label" for="approval-required">Approval Required</label>
 								<button
 									id="approval-required"
 									class="toggle"
 									class:on={cfg.required}
+									role="switch"
+									aria-checked={cfg.required}
+									aria-labelledby="approval-required-label"
 									onclick={() => updateStepConfig(selectedIndex, 'required', !cfg.required)}
 								>
 									<span class="toggle-knob"></span>
@@ -384,6 +400,7 @@
 													<button
 														type="button"
 														class="chip-remove"
+														aria-label={`Remove approver ${user?.full_name ?? ''}`}
 														onclick={(e) => {
 															e.stopPropagation();
 															updateStepConfig(selectedIndex, 'approver_ids', ids.filter((uid: string) => uid !== user?.id));
@@ -394,8 +411,10 @@
 										</div>
 									{/if}
 
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<div class="approver-search-wrap" onclick={() => (approverDropdownOpen = true)}>
+									<!-- Opening the dropdown is driven by the input's onfocus below
+									     (keyboard Tab + pointer click both focus it), so the wrapper
+									     itself carries no click handler — keeps it a plain container. -->
+									<div class="approver-search-wrap">
 										<input
 											id="approver-search-input"
 											type="text"
@@ -510,11 +529,14 @@
 							<p class="field-hint">ERP connection credentials are configured in <a href="/organization">Organization Settings</a>. This step controls what and when to send.</p>
 
 							<div class="field toggle-field">
-								<label for="auto-send">Auto-send on approval</label>
+								<label id="auto-send-label" for="auto-send">Auto-send on approval</label>
 								<button
 									id="auto-send"
 									class="toggle"
 									class:on={cfg.auto_send_on_approval}
+									role="switch"
+									aria-checked={cfg.auto_send_on_approval}
+									aria-labelledby="auto-send-label"
 									onclick={() => updateStepConfig(selectedIndex, 'auto_send_on_approval', !cfg.auto_send_on_approval)}
 								>
 									<span class="toggle-knob"></span>
@@ -558,11 +580,14 @@
 							<h4 class="field-section-title">Payload Options</h4>
 
 							<div class="field toggle-field">
-								<label for="include-lines">Include line items</label>
+								<label id="include-lines-label" for="include-lines">Include line items</label>
 								<button
 									id="include-lines"
 									class="toggle"
 									class:on={cfg.include_line_items}
+									role="switch"
+									aria-checked={cfg.include_line_items}
+									aria-labelledby="include-lines-label"
 									onclick={() => updateStepConfig(selectedIndex, 'include_line_items', !cfg.include_line_items)}
 								>
 									<span class="toggle-knob"></span>
@@ -570,11 +595,14 @@
 							</div>
 
 							<div class="field toggle-field">
-								<label for="include-attach">Include PDF attachment URL</label>
+								<label id="include-attach-label" for="include-attach">Include PDF attachment URL</label>
 								<button
 									id="include-attach"
 									class="toggle"
 									class:on={cfg.include_attachments}
+									role="switch"
+									aria-checked={cfg.include_attachments}
+									aria-labelledby="include-attach-label"
 									onclick={() => updateStepConfig(selectedIndex, 'include_attachments', !cfg.include_attachments)}
 								>
 									<span class="toggle-knob"></span>
@@ -670,10 +698,25 @@
 		font-weight: 600;
 		color: var(--text);
 		margin: 0;
-		cursor: pointer;
 		display: flex;
 		align-items: center;
 		gap: 8px;
+	}
+
+	.page-title-edit {
+		font-size: inherit;
+		font-weight: inherit;
+		color: inherit;
+		background: none;
+		border: none;
+		padding: 0;
+		margin: 0;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.page-title-edit:hover {
+		text-decoration: underline;
 	}
 
 	.name-input {

@@ -514,7 +514,7 @@
 								<td>{item.vendor_name}</td>
 								<td class="right mono">{formatCurrency(item.amount)}</td>
 								<td>
-									<select class="method-select" value={paymentMethods[item.id] || 'ach'} onchange={(e) => (paymentMethods[item.id] = e.currentTarget.value)}>
+									<select class="method-select" aria-label={`Payment method for ${item.invoice_number}`} value={paymentMethods[item.id] || 'ach'} onchange={(e) => (paymentMethods[item.id] = e.currentTarget.value)}>
 										<option value="ach">ACH</option>
 										<option value="wire">Wire</option>
 										<option value="check">Check</option>

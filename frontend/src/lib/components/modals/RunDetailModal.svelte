@@ -166,7 +166,7 @@
 			{#if loading}
 				<div class="loading">Loading…</div>
 			{:else if error}
-				<div class="error">{error}</div>
+				<div class="error" role="alert">{error}</div>
 			{:else if run}
 				<dl class="meta">
 					<dt>Total</dt>

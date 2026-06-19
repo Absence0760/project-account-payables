@@ -230,7 +230,12 @@
 							<tr>
 								<td>
 									{#if editable}
-										<input type="text" bind:value={l.description} placeholder="Item description" />
+										<input
+											type="text"
+											bind:value={l.description}
+											placeholder="Item description"
+											aria-label={`Line ${i + 1} description`}
+										/>
 									{:else}
 										{l.description || '—'}
 									{/if}
@@ -242,6 +247,7 @@
 											step="0.0001"
 											min="0"
 											class="num"
+											aria-label={`Line ${i + 1} quantity`}
 											value={l.quantity ?? ''}
 											oninput={(e) => (l.quantity = numOrNull(e.currentTarget.value))}
 										/>
@@ -256,6 +262,7 @@
 											step="0.01"
 											min="0"
 											class="num"
+											aria-label={`Line ${i + 1} unit price`}
 											value={l.unit_price ?? ''}
 											oninput={(e) => (l.unit_price = numOrNull(e.currentTarget.value))}
 										/>
@@ -265,14 +272,20 @@
 								</td>
 								<td>
 									{#if editable}
-										<input type="text" class="uom" bind:value={l.uom} placeholder="ea" />
+										<input
+											type="text"
+											class="uom"
+											bind:value={l.uom}
+											placeholder="ea"
+											aria-label={`Line ${i + 1} unit of measure`}
+										/>
 									{:else}
 										{l.uom || '—'}
 									{/if}
 								</td>
 								<td>
 									{#if editable}
-										<select bind:value={l.gl_account_id}>
+										<select bind:value={l.gl_account_id} aria-label={`Line ${i + 1} GL account`}>
 											<option value="">—</option>
 											{#each glAccounts as g (g.id)}
 												<option value={g.id}>{g.code}</option>

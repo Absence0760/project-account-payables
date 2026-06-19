@@ -107,9 +107,11 @@
 		<h1>Account Payables</h1>
 		<p class="subtitle">Sign in to continue</p>
 
-		{#if error}
-			<div class="error">{error}</div>
-		{/if}
+		<div role="alert" aria-live="assertive">
+			{#if error}
+				<div class="error">{error}</div>
+			{/if}
+		</div>
 
 		{#if !ssoOnly}
 			<label>

@@ -17,7 +17,7 @@
 		{/each}
 
 		{#if message.error}
-			<p class="msg-error">{message.error}</p>
+			<p class="msg-error" role="alert">{message.error}</p>
 		{:else if message.content}
 			<!-- Plain-text only — never {@html}. Whitespace preserved for the
 			     token-by-token streamed answer. -->
@@ -25,8 +25,9 @@
 		{/if}
 
 		{#if message.streaming && !message.content && message.tools.length === 0}
-			<span class="typing" aria-label="Assistant is thinking">
-				<span></span><span></span><span></span>
+			<span class="typing" role="img" aria-label="Assistant is thinking">
+				<span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"
+				></span>
 			</span>
 		{/if}
 	</div>
@@ -109,6 +110,11 @@
 		}
 		40% {
 			opacity: 1;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.typing span {
+			animation: none;
 		}
 	}
 </style>

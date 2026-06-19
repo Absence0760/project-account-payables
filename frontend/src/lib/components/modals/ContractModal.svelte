@@ -440,13 +440,13 @@
 						{#each lineItems as li, idx (idx)}
 							<tr>
 								<td class="li-num">{idx + 1}</td>
-								<td><input type="text" class="li-input" value={li.description ?? ''} oninput={(e) => updateLine(idx, 'description', e.currentTarget.value)} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" value={li.quantity ?? ''} oninput={(e) => updateLine(idx, 'quantity', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" value={li.unit_price ?? ''} oninput={(e) => updateLine(idx, 'unit_price', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" value={li.total ?? ''} oninput={(e) => updateLine(idx, 'total', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="text" class="li-input li-gl" value={li.gl_account ?? ''} oninput={(e) => updateLine(idx, 'gl_account', e.currentTarget.value)} disabled={!canEdit} /></td>
+								<td><input type="text" class="li-input" aria-label={`Line ${idx + 1} description`} value={li.description ?? ''} oninput={(e) => updateLine(idx, 'description', e.currentTarget.value)} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} quantity`} value={li.quantity ?? ''} oninput={(e) => updateLine(idx, 'quantity', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} unit price`} value={li.unit_price ?? ''} oninput={(e) => updateLine(idx, 'unit_price', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} total`} value={li.total ?? ''} oninput={(e) => updateLine(idx, 'total', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
+								<td><input type="text" class="li-input li-gl" aria-label={`Line ${idx + 1} GL account`} value={li.gl_account ?? ''} oninput={(e) => updateLine(idx, 'gl_account', e.currentTarget.value)} disabled={!canEdit} /></td>
 								{#if canEdit}
-									<td><button type="button" class="li-delete" onclick={() => removeLine(idx)}>&times;</button></td>
+									<td><button type="button" class="li-delete" aria-label={`Remove line ${idx + 1}`} onclick={() => removeLine(idx)}>&times;</button></td>
 								{/if}
 							</tr>
 						{/each}

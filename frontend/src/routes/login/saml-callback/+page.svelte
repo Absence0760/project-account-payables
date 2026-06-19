@@ -51,13 +51,13 @@
 </svelte:head>
 
 <div class="page">
-	<div class="card">
+	<div class="card" aria-live="polite">
 		{#if phase === 'working'}
-			<div class="spinner"></div>
+			<div class="spinner" aria-hidden="true"></div>
 			<p class="status">{message}</p>
 		{:else}
 			<h1>Sign-in failed</h1>
-			<p class="error">{message}</p>
+			<p class="error" role="alert">{message}</p>
 			<a href="/login">Back to sign in</a>
 		{/if}
 	</div>
@@ -90,6 +90,12 @@
 	@keyframes spin {
 		to {
 			transform: rotate(360deg);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation-duration: 0.01ms;
+			animation-iteration-count: 1;
 		}
 	}
 	.status {

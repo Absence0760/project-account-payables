@@ -268,26 +268,51 @@
 
 			{#if canEdit}
 				<div class="add-item">
-					<input class="grow" type="text" placeholder="Item name *" bind:value={newName} />
-					<input type="text" placeholder="SKU" bind:value={newSku} />
+					<input
+						class="grow"
+						type="text"
+						placeholder="Item name *"
+						aria-label="New item name"
+						bind:value={newName}
+					/>
+					<input type="text" placeholder="SKU" aria-label="New item SKU" bind:value={newSku} />
 					<input
 						type="number"
 						step="0.01"
 						min="0"
 						placeholder="Price"
+						aria-label="New item price"
 						value={newPrice ?? ''}
 						oninput={(e) => (newPrice = numOrNull(e.currentTarget.value))}
 					/>
-					<input class="cur" type="text" maxlength="3" placeholder="USD" bind:value={newCurrency} />
-					<input class="uom" type="text" placeholder="UoM" bind:value={newUom} />
-					<input type="text" placeholder="Category" bind:value={newCategory} />
-					<select bind:value={newVendorId}>
+					<input
+						class="cur"
+						type="text"
+						maxlength="3"
+						placeholder="USD"
+						aria-label="New item currency"
+						bind:value={newCurrency}
+					/>
+					<input
+						class="uom"
+						type="text"
+						placeholder="UoM"
+						aria-label="New item unit of measure"
+						bind:value={newUom}
+					/>
+					<input
+						type="text"
+						placeholder="Category"
+						aria-label="New item category"
+						bind:value={newCategory}
+					/>
+					<select bind:value={newVendorId} aria-label="New item vendor">
 						<option value="">Vendor…</option>
 						{#each vendors as v (v.id)}
 							<option value={v.id}>{v.name}</option>
 						{/each}
 					</select>
-					<select bind:value={newGlId}>
+					<select bind:value={newGlId} aria-label="New item GL account">
 						<option value="">GL…</option>
 						{#each glAccounts as g (g.id)}
 							<option value={g.id}>{g.code}</option>

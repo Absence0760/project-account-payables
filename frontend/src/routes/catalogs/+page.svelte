@@ -166,8 +166,18 @@
 	{#if showGuided}
 		<section class="guided-panel">
 			<div class="guided-controls">
-				<input type="text" placeholder="Category (e.g. office)" bind:value={guidedCategory} />
-				<input type="text" placeholder="Search items…" bind:value={guidedQuery} />
+				<input
+					type="text"
+					placeholder="Category (e.g. office)"
+					aria-label="Filter by category"
+					bind:value={guidedCategory}
+				/>
+				<input
+					type="text"
+					placeholder="Search items…"
+					aria-label="Search items"
+					bind:value={guidedQuery}
+				/>
 				<button class="btn-primary" onclick={runGuided} disabled={guidedLoading}>
 					{guidedLoading ? 'Finding…' : 'Find preferred sources'}
 				</button>

@@ -67,9 +67,11 @@
 			<h1>Two-factor authentication</h1>
 			<p class="subtitle">Enter the 6-digit code from your authenticator app</p>
 
-			{#if error}
-				<div class="error">{error}</div>
-			{/if}
+			<div role="alert" aria-live="assertive">
+				{#if error}
+					<div class="error">{error}</div>
+				{/if}
+			</div>
 
 			<label>
 				<span>Authentication code</span>
@@ -93,9 +95,11 @@
 			<h1>Supplier Portal</h1>
 			<p class="subtitle">Sign in to submit invoices and view payments</p>
 
-			{#if error}
-				<div class="error">{error}</div>
-			{/if}
+			<div role="alert" aria-live="assertive">
+				{#if error}
+					<div class="error">{error}</div>
+				{/if}
+			</div>
 
 			<label>
 				<span>Email</span>

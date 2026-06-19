@@ -70,7 +70,7 @@
 		<h1>Purchase Orders</h1>
 	</header>
 
-	{#if error}<div class="error">{error}</div>{/if}
+	{#if error}<div class="error" role="alert">{error}</div>{/if}
 	{#if message}<div class="message">{message}</div>{/if}
 
 	{#if loading && !items.length}

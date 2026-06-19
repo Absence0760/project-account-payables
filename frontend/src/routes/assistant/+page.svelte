@@ -242,7 +242,13 @@
 		</aside>
 
 		<section class="chat-pane">
-			<div class="chat-scroll" bind:this={scrollEl}>
+			<div
+				class="chat-scroll"
+				bind:this={scrollEl}
+				role="log"
+				aria-live="polite"
+				aria-busy={busy}
+			>
 				{#if isEmpty}
 					<ExamplePrompts onpick={pickPrompt} />
 				{:else}

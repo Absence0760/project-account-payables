@@ -32,7 +32,9 @@
 		<h1>Set a new password</h1>
 		<p class="hint">Your invited password is temporary — choose one only you know.</p>
 
-		{#if error}<div class="error">{error}</div>{/if}
+		<div role="alert" aria-live="assertive">
+			{#if error}<div class="error">{error}</div>{/if}
+		</div>
 
 		<label>
 			<span>Current (temporary) password</span>

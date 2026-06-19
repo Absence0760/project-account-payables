@@ -92,7 +92,15 @@
 			busy = false;
 		}
 	}
+
+	// WCAG 2.1.2 — this dialog hand-rolls its shell (pending migration to
+	// ui/Modal), so Esc-to-close is wired explicitly to match every other modal.
+	function onKey(e: KeyboardEvent) {
+		if (e.key === 'Escape') onclose();
+	}
 </script>
+
+<svelte:window onkeydown={onKey} />
 
 <div
 	class="backdrop"

@@ -270,7 +270,7 @@
 										class="chat-chip"
 										onclick={() => downloadAttachment(att.file_url, att.filename)}
 									>
-										<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+										<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
 										<span class="chat-chip-name">{att.filename}</span>
 									</button>
 								{/each}
@@ -321,6 +321,7 @@
 			<textarea
 				class="chat-input"
 				placeholder="Write a message…"
+				aria-label="Write a message"
 				rows="2"
 				bind:value={body}
 				data-testid="chat-input"
@@ -333,6 +334,7 @@
 							type="text"
 							class="chat-mention-input"
 							placeholder="@mention…"
+							aria-label="Mention a teammate"
 							bind:value={mentionQuery}
 							onfocus={() => (mentionOpen = true)}
 							oninput={() => (mentionOpen = true)}

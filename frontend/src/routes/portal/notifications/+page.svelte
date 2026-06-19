@@ -59,7 +59,7 @@
 		<p class="sub">Choose when we email you about your invoices.</p>
 	</header>
 
-	{#if err}<div class="error">{err}</div>{/if}
+	{#if err}<div class="error" role="alert">{err}</div>{/if}
 	{#if msg}<div class="message">{msg}</div>{/if}
 
 	<section class="card">

@@ -142,8 +142,8 @@
 		</label>
 	</header>
 
-	{#if error}<div class="error">{error}</div>{/if}
-	{#if message}<div class="msg">{message}</div>{/if}
+	{#if error}<div class="error" role="alert">{error}</div>{/if}
+	{#if message}<div class="msg" role="status" aria-live="polite">{message}</div>{/if}
 
 	{#if loading && !items.length}
 		<div class="loading">Loading...</div>
@@ -166,10 +166,29 @@
 			</thead>
 			<tbody>
 				{#each items as inv}
-					<tr class="clickable" class:expanded={expandedId === inv.id} onclick={() => toggleChat(inv.id)}>
+					<tr
+						class="clickable"
+						class:expanded={expandedId === inv.id}
+						onclick={(e) => {
+							// Pointer enhancement: clicking anywhere on the row toggles the
+							// chat disclosure, except when the click lands on the in-cell
+							// toggle button (which handles it itself, incl. via keyboard).
+							if ((e.target as HTMLElement).closest('.row-toggle')) return;
+							toggleChat(inv.id);
+						}}
+					>
 						<td>
-							<span class="row-caret">{expandedId === inv.id ? '▾' : '▸'}</span>
-							{inv.invoice_number || '(pending extraction)'}
+							<button
+								type="button"
+								class="row-toggle"
+								aria-expanded={expandedId === inv.id}
+								onclick={() => toggleChat(inv.id)}
+							>
+								<span class="row-caret" aria-hidden="true"
+									>{expandedId === inv.id ? '▾' : '▸'}</span
+								>
+								{inv.invoice_number || '(pending extraction)'}
+							</button>
 						</td>
 						<td>{fmtDate(inv.submitted_at)}</td>
 						<td>{fmtDate(inv.invoice_date)}</td>
@@ -265,6 +284,19 @@
 	}
 	tr.expanded td {
 		background: var(--bg);
+	}
+	.row-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: none;
+		border: none;
+		padding: 0;
+		margin: 0;
+		font: inherit;
+		color: inherit;
+		cursor: pointer;
+		text-align: left;
 	}
 	.row-caret {
 		display: inline-block;

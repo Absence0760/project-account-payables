@@ -144,9 +144,11 @@
 			<h1>Create your workspace</h1>
 			<p class="sub">Get your own AP workspace in under a minute.</p>
 
-			{#if error}
-				<div class="error">{error}</div>
-			{/if}
+			<div role="alert" aria-live="assertive">
+				{#if error}
+					<div class="error">{error}</div>
+				{/if}
+			</div>
 
 			<label>
 				<span>Company name</span>
@@ -167,18 +169,24 @@
 						autocapitalize="off"
 						autocorrect="off"
 						spellcheck="false"
+						aria-describedby="slug-hint"
+						aria-invalid={slugStatus === 'bad'}
 					/>
 					<span class="slug-suffix">{tenantUrlSuffix}</span>
 				</div>
-				{#if slugStatus === 'checking'}
-					<small class="hint">Checking availability…</small>
-				{:else if slugStatus === 'ok'}
-					<small class="hint ok">Available</small>
-				{:else if slugStatus === 'bad'}
-					<small class="hint bad">{slugError}</small>
-				{:else}
-					<small class="hint">3–30 lowercase letters, digits, hyphens. Starts with a letter.</small>
-				{/if}
+				<div id="slug-hint" aria-live="polite">
+					{#if slugStatus === 'checking'}
+						<small class="hint">Checking availability…</small>
+					{:else if slugStatus === 'ok'}
+						<small class="hint ok">Available</small>
+					{:else if slugStatus === 'bad'}
+						<small class="hint bad">{slugError}</small>
+					{:else}
+						<small class="hint"
+							>3–30 lowercase letters, digits, hyphens. Starts with a letter.</small
+						>
+					{/if}
+				</div>
 			</label>
 
 			<label>

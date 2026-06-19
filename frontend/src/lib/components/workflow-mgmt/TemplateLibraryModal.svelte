@@ -87,7 +87,7 @@
 		{#if loading}
 			<p class="tl-status">Loading templates…</p>
 		{:else if error}
-			<p class="tl-status tl-error">{error}</p>
+			<p class="tl-status tl-error" role="alert">{error}</p>
 		{:else if templates.length === 0}
 			<p class="tl-status">No templates available.</p>
 		{:else}
