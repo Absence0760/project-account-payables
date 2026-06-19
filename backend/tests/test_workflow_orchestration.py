@@ -49,6 +49,9 @@ def _invoice():
         id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
+        # create_workflow_instance resolves the entity's workflow definition
+        # (per-entity selection, Phase 3); a real Invoice always carries this.
+        entity_id=uuid.uuid4(),
     )
 
 
