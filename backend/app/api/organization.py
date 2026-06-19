@@ -17,12 +17,32 @@ from app.schemas.organization import (
     OrganizationResponse,
     UpdateOrganizationRequest,
 )
+from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.data_residency import (
+    DEFAULT_REGION,
+    SUPPORTED_REGIONS,
+    get_region_placement,
+    resolve_region,
+)
 from app.services.sso import generate_scim_token
 from app.tenant import get_tenant
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/organization", tags=["organization"])
+
+
+class DataResidencyResponse(BaseModel):
+    """Where this tenant's data is pinned to live (GDPR/CCPA residency)."""
+
+    region: str  # the tenant's effective residency region (override → default)
+    default_region: str  # platform default, so the UI can show "(default)"
+    supported_regions: list[str]
+    placement: dict[str, str]  # documented DB/object-storage target for `region`
+
+
+class UpdateDataResidencyRequest(BaseModel):
+    region: str  # must be one of SUPPORTED_REGIONS; validated server-side
 
 
 class SCIMTokenResponse(BaseModel):
@@ -88,6 +108,81 @@ async def update_organization(
 
     await db.commit()
     return _org_response(org)
+
+
+@router.get("/data-residency", response_model=DataResidencyResponse)
+async def get_data_residency(
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(get_current_user),
+):
+    """Return the tenant's effective data-residency region + its placement.
+
+    Read-gated to any authenticated org user (same as `GET /api/organization`);
+    only the mutate path is admin-only. The placement block is the documented
+    DB-cluster + object-storage target the region maps to — see
+    `docs/data-residency.md` for the single-region reality + multi-region plan.
+    """
+    region = resolve_region(org)
+    return DataResidencyResponse(
+        region=region,
+        default_region=DEFAULT_REGION,
+        supported_regions=list(SUPPORTED_REGIONS),
+        placement=get_region_placement(region),
+    )
+
+
+@router.put("/data-residency", response_model=DataResidencyResponse)
+async def update_data_residency(
+    body: UpdateDataResidencyRequest,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Pin this tenant to a residency region. Admin only; audited.
+
+    Validates against `SUPPORTED_REGIONS` before any write (an unknown region is
+    422, so a typo can't strand a tenant on a dead placement key). Writes to
+    `org.settings["residency"]["region"]` via `flag_modified` (in-place nested
+    JSONB mutation otherwise isn't marked dirty) and audits the change into the
+    tenant trail. Changing the region is a *configuration* change — it does not
+    itself migrate data; multi-region data movement is an infra operation tracked
+    separately (see `docs/data-residency.md`).
+    """
+    if body.region not in SUPPORTED_REGIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported region '{body.region}'; valid: {list(SUPPORTED_REGIONS)}",
+        )
+
+    before = resolve_region(org)
+
+    existing = dict(org.settings or {})
+    residency = dict(existing.get("residency") or {})
+    residency["region"] = body.region
+    existing["residency"] = residency
+    org.settings = existing
+    # Mutating a nested dict in-place doesn't mark JSONB dirty on its own.
+    flag_modified(org, "settings")
+
+    await db.commit()
+
+    # Audit the config change into the TENANT trail (where every other mutation
+    # for this tenant lands). Settings live on the control plane, so use the
+    # self-committing tenant-audit helper. PII-free: only region tokens.
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="organization.residency_updated",
+        entity_id=org.id,
+        details={"region": {"old": before, "new": body.region}},
+    )
+
+    return DataResidencyResponse(
+        region=body.region,
+        default_region=DEFAULT_REGION,
+        supported_regions=list(SUPPORTED_REGIONS),
+        placement=get_region_placement(body.region),
+    )
 
 
 @router.post("/test-erp")
