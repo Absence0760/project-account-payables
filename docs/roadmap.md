@@ -399,12 +399,13 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 - [x] Currency displayed correctly per locale — frontend `<Money>` component + `formatMoney()` (`Intl.NumberFormat`, ISO-4217-code-driven) applied across invoices / payments / dashboard / analytics / portal; each amount renders with its own currency code, never a hardcoded `$`
 
 ### Multi-Entity
-**Status:** Partial (multi-tenant exists, not multi-entity within org)
+**Status:** Done (subsidiaries within one tenant DB — Phases 1–4). See `docs/multi-entity.md`.
 
-- [ ] Multiple entities (subsidiaries) within one organization
-- [ ] Entity-level chart of accounts, GL codes, cost centers
-- [ ] Inter-company invoice routing
-- [ ] Consolidated reporting across entities
+- [x] Multiple entities (subsidiaries) within one organization — `Entity` model + nullable `entity_id` on business tables (`EntityMixin`), `X-Entity-ID` request scoping + sidebar switcher, per-tenant Default entity (Phases 1/2/2b)
+- [x] Entity-level chart of accounts, GL codes, cost centers — `GLAccount.entity_id` NULL = shared ∪ entity-specific; wired into the AI extraction GL catalog + bulk-recode validation (per-invoice-entity), not just the list endpoint
+- [x] Inter-company invoice routing — `POST /api/invoices/{id}/route-intercompany` generates the mirror payable under the counterparty entity (`counterparty_entity_id` / `intercompany_mirror_id`, migration 0051); idempotent, audited on both rows. See `backend/docs/inter-company.md`
+- [x] Consolidated reporting across entities — `GET /api/analytics/by-entity` per-entity rollup + consolidated cross-check; "By entity" breakdown on the `/cfo` dashboard
+- Also shipped: per-entity workflow selection — the engine picks the entity's active/default `WorkflowDefinition` (shared NULL fallback), one default per `(org, entity)` enforced by `uq_workflow_definitions_one_default` (migration 0050)
 
 ### Tax Compliance
 **Status:** Done (US 1099 + international VAT/GST/withholding) — e-invoicing (Peppol/ZUGFeRD etc.) tracked separately under Priority 10. See `backend/docs/tax-1099.md` + `backend/docs/international-tax.md`.

@@ -5,13 +5,15 @@ inside its single tenant database. This is distinct from multi-tenancy: the
 tenant boundary is still the per-org database (`app/tenant.py`,
 `X-Tenant-Slug` → `ap_<slug>`). Entities subdivide data *within* one tenant.
 
-**Status: Phase 2 + 2b (query scoping + entity switcher + CFO analytics)
-shipped.** On top of the Phase 1 schema, requests scope to a selected subsidiary
-via the `X-Entity-ID` header, new rows are stamped with an `entity_id`, a sidebar
-switcher drives it, and the full CFO analytics surface (`analytics.py`) is
-scoped. One piece remains deferred: per-entity **workflow** selection to Phase 3
-(detailed under *Deferred from Phase 2* below). See `docs/roadmap.md` →
-Priority 5 → Multi-Entity.
+**Status: complete (Phases 1–4).** On top of the Phase 1 schema, requests scope
+to a selected subsidiary via the `X-Entity-ID` header, new rows are stamped with
+an `entity_id`, a sidebar switcher drives it, and the full CFO analytics surface
+(`analytics.py`) is scoped (Phases 2/2b). Phase 3 wired the entity-level chart of
+accounts into the AI extraction GL catalog + bulk-recode validation and taught
+the workflow engine to pick the entity's own definition. Phase 4 added
+inter-company invoice routing and a consolidated cross-entity report. See
+`docs/roadmap.md` → Priority 5 → Multi-Entity, and *Remaining phases* below for
+the per-feature detail.
 
 ## Data model
 
@@ -138,15 +140,13 @@ the scope from the scoped invoice query they consume.
   (All entities + each entity, Default first). Renders **only when the tenant
   has >1 entity**, so a single-entity tenant sees the pre-multi-entity UI.
 
-### Deferred from Phase 2
+### Deferred from Phase 2 → delivered in Phase 3
 
-- **Per-entity workflow selection → Phase 3.** `workflow_definitions` carries an
-  `entity_id` (Phase 1 backfill) but is **not** scoped: the workflow engine
-  picks the active/default definition by `organization_id`, and there's one
-  `is_default` per org. Scoping the list without teaching
-  `create_workflow_instance` to choose the entity's workflow (and rethinking
-  one-default-per-org → per-entity) would be incoherent. Folded into the Phase 3
-  engine work below.
+- **Per-entity workflow selection.** Originally deferred because scoping the
+  `workflow_definitions` list without teaching the engine to *pick* the entity's
+  workflow would be incoherent. Now done: `create_workflow_instance` resolves the
+  entity's definition (shared NULL fallback) and one default per `(org, entity)`
+  is enforced. See *Phase 3 — entity-level COA + per-entity workflow* below.
 
 ## API
 
@@ -160,11 +160,63 @@ the scope from the scoped invoice query they consume.
 
 Reads are open to all roles because the Phase 2 entity selector needs the list.
 
-## Remaining phases
+## Phase 3 — entity-level COA + per-entity workflow (shipped)
 
-- **Phase 3** — entity-level COA wired into the extraction catalog (shared ∪
-  entity) + bulk-recode validation, **and** per-entity workflow selection
-  (teach `create_workflow_instance` to pick the entity's active/default
-  definition; rethink one-`is_default`-per-org → per-entity). See *Deferred from
-  Phase 2*.
-- **Phase 4** — inter-company invoice routing (entity A payable by entity B).
+### Entity-level chart of accounts (consumers)
+
+The `GET /api/gl-accounts` list already returned shared ∪ entity (`include_shared=True`).
+Phase 3 extended the same rule to the two places that *consume* the chart and
+previously filtered by `organization_id` only:
+
+- **AI extraction GL catalog** (`services/extraction.py`) — the GL-account hint
+  passed to the extractor is now scoped to `shared (NULL) ∪ the invoice's own
+  entity_id`, so the model never sees another subsidiary's codes.
+- **Bulk re-code validation** (`services/gl_recode.py`) — because one bulk run
+  spans invoices in different entities, validity is resolved **per-invoice-entity**:
+  a candidate GL code applies iff the account is shared or belongs to that
+  invoice's entity. An entity-B-only code is rejected for an entity-A invoice.
+
+Single-entity tenants are a no-op (every account is shared or under the one entity).
+
+### Per-entity workflow selection
+
+`workflow_engine.get_or_create_workflow_definition(db, organization_id, entity_id=None)`
+resolves the definition by precedence: the entity's own active definition
+(`is_default` first) → a shared/org-wide active definition (`entity_id IS NULL`)
+→ auto-create a shared default. `create_workflow_instance` passes
+`invoice.entity_id` through. At most one `is_default` per `(organization_id,
+entity_id)` is enforced by the partial unique index
+`uq_workflow_definitions_one_default` on `(organization_id, COALESCE(entity_id,
+'00000000-…'::uuid)) WHERE is_default = true` (migration `0050`, mirrored in the
+model's `__table_args__` so fresh `create_all` tenants get it; the migration
+defensively demotes any pre-existing duplicate defaults before creating the
+index). The snapshot pattern is unchanged. The org-wide "active steps" UI surface
+is not yet entity-scoped (a frontend follow-up).
+
+## Phase 4 — inter-company invoice routing + consolidated reporting (shipped)
+
+### Inter-company invoice routing
+
+When entity A bills entity B inside the same tenant, the mirror **payable** is
+generated under the counterparty entity so both subsidiaries' books reflect it.
+`Invoice` gains two nullable columns (migration `0051`): `counterparty_entity_id`
+(FK → `entities.id`, the other subsidiary) and `intercompany_mirror_id`
+(self-FK → `invoices.id`, the bidirectional origin↔mirror link).
+`services/intercompany.route_intercompany_invoice` creates the mirror under
+`entity_id = counterparty_entity_id`, copies the **exact `Decimal` amount** /
+currency / vendor, prefixes the number `IC-`, enters the normal workflow, and
+writes a PII-free `invoice.intercompany_routed` audit row on **both** invoices.
+It is **idempotent** on `intercompany_mirror_id` — a second call returns the
+existing mirror, never a duplicate. Surfaced at `POST
+/api/invoices/{id}/route-intercompany` (admin / ap_manager; self-billing → 400).
+See `backend/docs/inter-company.md`.
+
+### Consolidated reporting across entities
+
+`GET /api/analytics/by-entity` (admin / CFO) returns a per-entity rollup (total
+spend, outstanding, invoice count, open exceptions, open-PO amount — money as
+string-Decimal) plus a `consolidated` block computed with `entity_id=None` as a
+cross-check (it equals the sum across entities). It deliberately **ignores
+`X-Entity-ID`** — it reports every entity at once — and reuses the same scoped
+helpers as `/analytics/cfo`. The `/cfo` dashboard renders it as a "By entity"
+breakdown table (hidden for single-entity tenants).
