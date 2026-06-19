@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
@@ -121,6 +123,15 @@ class Settings(BaseSettings):
     recurring_invoices_enabled: bool = False
     recurring_invoices_interval_seconds: int = 3600
     recurring_invoices_max_per_sweep: int = 200
+    # Vendor statement reconciliation: the platform-default materiality
+    # threshold (in the run's currency) above which a vendor's leftover
+    # unreconciled balance (missing-on-our-side + amount-mismatch, unresolved)
+    # flags the vendor as not-close-ready on GET /api/vendor-statements/
+    # close-readiness. A per-call `?materiality=` query param overrides it.
+    # No background sweep — reconciliation is user-triggered. A currency amount,
+    # so Decimal (never float) per the money-is-exact invariant. See
+    # backend/docs/vendor-statement-reconciliation.md.
+    statement_recon_materiality_default: Decimal = Decimal("1000.00")
     # Payment-status reconciler: backstop polling for processors whose
     # webhooks have gone missing. Disabled by default in local dev (the
     # mock adapter settles synchronously, so there's nothing to
