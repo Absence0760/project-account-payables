@@ -229,7 +229,7 @@ The invoice is **immutable** in the later half of the lifecycle. PATCH and DELET
 
 ### WorkflowDefinition
 
-One per organization. Represents the workflow template. The `steps_config` JSONB column defines the step sequence:
+Represents the workflow template. The `steps_config` JSONB column defines the step sequence:
 
 ```json
 {
@@ -245,6 +245,17 @@ One per organization. Represents the workflow template. The `steps_config` JSONB
 Step types `extraction`, `approval`, `erp_export`, `done` are canonical. Legacy aliases `upload`, `review`, `erp_push` are still accepted by `_STEP_TYPE_ALIASES` for backwards compatibility but new configs should use the canonical names.
 
 Seeded per tenant at organization creation. Configurable for custom approval chains.
+
+#### Per-entity selection (multi-entity Phase 3)
+
+`workflow_definitions` carries a nullable `entity_id` (`EntityMixin`): a definition either belongs to a specific subsidiary (`entity_id` set) or is **shared / org-wide** (`entity_id IS NULL`). When a new invoice is created, `workflow_engine.get_or_create_workflow_definition(db, organization_id, entity_id)` (called by `create_workflow_instance` with `invoice.entity_id`) resolves which definition governs it, in precedence order:
+
+1. The invoice's own entity's active definition — prefer its `is_default`, then the oldest active (`created_at` tiebreak).
+2. Otherwise a shared / org-wide active definition (`entity_id IS NULL`) — same default-then-oldest ordering.
+
+If neither exists the org-wide default is auto-created with `entity_id = NULL` and `is_default = true`, so a single-entity tenant keeps getting exactly one org-wide definition — fully backward compatible. The resolved definition's `steps_config` is then snapshotted onto the `WorkflowInstance` as usual (in-flight invoices never see a later edit).
+
+At most one `is_default = true` definition may exist per `(organization_id, entity_id)`, enforced by the partial unique index `uq_workflow_definitions_one_default` on `(organization_id, COALESCE(entity_id, '00000000-…-0000'::uuid)) WHERE is_default = true` (the COALESCE sentinel collapses the NULL/shared bucket to a single key, since SQL treats `NULL != NULL`). The index is declared on the model (so fresh `create_all` tenants get it) and installed on existing tenants by migration `0050_workflow_per_entity_default` (which first demotes any pre-existing duplicate defaults, keeping the earliest `created_at` per group). See `../../docs/multi-entity.md`.
 
 ## No-Code Builder step types
 

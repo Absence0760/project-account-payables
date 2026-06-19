@@ -302,15 +302,55 @@ async def _maybe_notify_transition(
 
 
 async def get_or_create_workflow_definition(
-    db: AsyncSession, organization_id: uuid.UUID
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    entity_id: uuid.UUID | None = None,
 ) -> WorkflowDefinition:
+    """Resolve the active WorkflowDefinition that governs a new invoice.
+
+    Selection precedence (multi-entity Phase 3 — see docs/multi-entity.md):
+
+    1. The invoice's own entity has an active definition (``entity_id`` matches)
+       — prefer its ``is_default`` one, then any active (stable ``created_at``
+       tiebreak).
+    2. Otherwise a shared / org-wide active definition (``entity_id IS NULL``) —
+       same default-then-oldest ordering.
+
+    When neither exists the org-wide default is auto-created with ``entity_id``
+    NULL (shared), so a single-entity tenant keeps getting exactly one org-wide
+    definition as before — backward compatible.
+    """
+    # Deterministic ordering: prefer the explicit default, then the oldest
+    # active definition as a stable tiebreak.
+    order = (
+        WorkflowDefinition.is_default.desc(),
+        WorkflowDefinition.created_at.asc(),
+    )
+
+    if entity_id is not None:
+        result = await db.execute(
+            select(WorkflowDefinition)
+            .where(
+                WorkflowDefinition.organization_id == organization_id,
+                WorkflowDefinition.entity_id == entity_id,
+                WorkflowDefinition.is_active == True,  # noqa: E712
+            )
+            .order_by(*order)
+        )
+        defn = result.scalars().first()
+        if defn:
+            return defn
+
     result = await db.execute(
-        select(WorkflowDefinition).where(
+        select(WorkflowDefinition)
+        .where(
             WorkflowDefinition.organization_id == organization_id,
+            WorkflowDefinition.entity_id.is_(None),
             WorkflowDefinition.is_active == True,  # noqa: E712
         )
+        .order_by(*order)
     )
-    defn = result.scalar_one_or_none()
+    defn = result.scalars().first()
     if defn:
         return defn
 
@@ -319,7 +359,9 @@ async def get_or_create_workflow_definition(
         description="Upload → Review → ERP → Done",
         steps_config=DEFAULT_STEPS_CONFIG,
         is_active=True,
+        is_default=True,
         organization_id=organization_id,
+        entity_id=None,
     )
     db.add(defn)
     await db.flush()
@@ -327,7 +369,7 @@ async def get_or_create_workflow_definition(
 
 
 async def create_workflow_instance(db: AsyncSession, invoice: Invoice) -> WorkflowInstance:
-    defn = await get_or_create_workflow_definition(db, invoice.organization_id)
+    defn = await get_or_create_workflow_definition(db, invoice.organization_id, invoice.entity_id)
     instance = WorkflowInstance(
         correlation_id=invoice.correlation_id,
         definition_id=defn.id,

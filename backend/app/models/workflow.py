@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,22 @@ class WorkflowDefinition(Base, EntityMixin, TimestampMixin):
     )
 
     instances: Mapped[list["WorkflowInstance"]] = relationship(back_populates="definition")
+
+    # At most one is_default=true definition per (organization_id, entity_id),
+    # treating a NULL entity (shared / org-wide) as a single sentinel so the
+    # SQL NULL != NULL semantics don't let two shared defaults coexist. Mirrors
+    # the uq_entities_one_default partial index in the entities table; lives here
+    # so fresh tenants built via create_all (not Alembic) get it too (migration
+    # 0050 installs it on existing tenants). See docs/multi-entity.md Phase 3.
+    __table_args__ = (
+        Index(
+            "uq_workflow_definitions_one_default",
+            text("organization_id"),
+            text("COALESCE(entity_id, '00000000-0000-0000-0000-000000000000'::uuid)"),
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
+    )
 
 
 class WorkflowVersion(Base):
