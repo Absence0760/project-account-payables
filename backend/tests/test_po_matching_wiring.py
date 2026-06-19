@@ -65,6 +65,10 @@ def _fake_invoice(*, po_number="PO-001", amount=100.0, status_value="ready_for_r
         amount=amount,
         po_match=None,
         contract_id=None,
+        # _refresh_po_match resolves the per-vendor/commodity match rule, which
+        # reads these — None falls through to the org/hardcoded default.
+        vendor_id=None,
+        gl_account=None,
         status=SimpleNamespace(value=status_value),
     )
 
