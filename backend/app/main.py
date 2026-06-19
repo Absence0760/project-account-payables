@@ -52,6 +52,7 @@ from app.api import (
     tax,
     tax_intl,
     vendor_risk,
+    vendor_statement_recon,
     vendors,
     workflow,
     workflow_definitions,
@@ -293,6 +294,7 @@ app.include_router(budgets.router, prefix="/api")
 app.include_router(intake.router, prefix="/api")
 app.include_router(vendors.router, prefix="/api")
 app.include_router(vendor_risk.router, prefix="/api")
+app.include_router(vendor_statement_recon.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
