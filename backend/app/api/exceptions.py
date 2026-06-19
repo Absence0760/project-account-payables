@@ -43,7 +43,7 @@ def _exception_dict(exc: APException, inv: Invoice | None) -> dict:
     )
     return {
         "id": str(exc.id),
-        "invoice_id": str(exc.invoice_id),
+        "invoice_id": str(exc.invoice_id) if exc.invoice_id else None,
         "invoice_number": inv.invoice_number if inv else None,
         "vendor_name": inv.vendor_name if inv else None,
         "amount": float(inv.amount) if inv else None,

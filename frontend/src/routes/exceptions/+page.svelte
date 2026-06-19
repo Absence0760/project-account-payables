@@ -12,7 +12,7 @@
 
 	interface ExceptionItem {
 		id: string;
-		invoice_id: string;
+		invoice_id: string | null;
 		invoice_number: string | null;
 		vendor_name: string | null;
 		amount: number | null;
@@ -396,8 +396,8 @@
 					<td class="actions">
 						{#if exc.status === 'open' || exc.status === 'escalated'}
 							<RowAction onclick={() => openResolve(exc)}>Resolve</RowAction>
-							<RowAction href="/invoices?id={exc.invoice_id}">Invoice</RowAction>
-						{:else}
+						{/if}
+						{#if exc.invoice_id}
 							<RowAction href="/invoices?id={exc.invoice_id}">Invoice</RowAction>
 						{/if}
 					</td>

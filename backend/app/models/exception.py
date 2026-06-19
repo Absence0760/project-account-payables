@@ -12,8 +12,14 @@ class Exception(Base, EntityMixin, TimestampMixin):
     __tablename__ = "exceptions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    invoice_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+    # Nullable: nearly every exception is invoice-scoped, but a few fraud signals
+    # have no invoice — notably a Positive Pay `not_on_file` return (a cheque the
+    # bank cleared that we never issued). Those surface as a standalone
+    # `fraud_flag` with `invoice_id=None` rather than being hidden in a JSON
+    # field. Agent auto-resolution requires an invoice, so the agent-resolve
+    # path 422s on an invoice-less exception (human triage only).
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
     )
     exception_type: Mapped[str] = mapped_column(String(50), nullable=False)
     # Types: duplicate, po_mismatch, fraud_flag, extraction_failed,

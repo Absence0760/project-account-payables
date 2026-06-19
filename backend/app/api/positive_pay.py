@@ -445,10 +445,10 @@ async def process_return(
 
     Rebuilds the issued cheque list from the file's payment run, classifies each
     presented item (``matched_ok`` / ``amount_mismatch`` — altered / ``not_on_file``
-    — never issued), and for every fraud signal that maps to a known invoice
-    raises a deduped ``fraud_flag`` Exception. Presented cheques with no matching
-    payment can't become an Exception (``Exception.invoice_id`` is NOT NULL) — they
-    are recorded in ``meta.unmatched_returns`` instead. The file flips to
+    — never issued), and raises a deduped ``fraud_flag`` Exception for every fraud
+    signal: ``amount_mismatch`` rows map to their invoice; ``not_on_file`` rows
+    (a cheque we never wrote) have no invoice and become a standalone
+    ``invoice_id=None`` fraud_flag in the queue. The file flips to
     ``returned_processed`` with a PII-free summary in ``meta``.
     """
     row = await _get_scoped_file(db, file_id, entity_id)
@@ -477,55 +477,50 @@ async def process_return(
     )
 
     exceptions_created = 0
-    unmatched: list[dict] = []
     for result in classification.results:
         if result.classification not in (CLASS_AMOUNT_MISMATCH, CLASS_NOT_ON_FILE):
             continue
-        # Map the presented cheque back to its invoice. Only amount_mismatch
-        # ever maps: it matched an issued cheque by number (matched_check_number
-        # is set). A not_on_file item by definition has no issued cheque with
-        # its number, so the lookup always misses and it falls through to
-        # meta.unmatched_returns below.
+        # Map the presented cheque back to its invoice. amount_mismatch matched
+        # an issued cheque by number (matched_check_number is set) → invoice-
+        # scoped fraud_flag. not_on_file has no issued cheque with its number —
+        # a cheque we *never wrote*, the strongest fraud signal — so it has no
+        # invoice and becomes a standalone (invoice_id=None) fraud_flag.
         key = result.matched_check_number or normalize_check_number(result.check_number)
         invoice_id = issued_map.get(key)
-        if invoice_id is None:
-            unmatched.append(
-                {
-                    "check_number": result.check_number,
-                    "amount": str(result.presented_amount)
-                    if result.presented_amount is not None
-                    else None,
-                    "classification": result.classification,
-                }
-            )
-            continue
-
-        # Dedupe: skip if an open fraud_flag already exists for this invoice
-        # (mirrors invoice_warnings._ensure_exception).
-        already = (
-            await db.execute(
-                select(func.count()).where(
-                    APException.invoice_id == invoice_id,
-                    APException.exception_type == "fraud_flag",
-                    APException.status.in_(["open", "escalated"]),
-                )
-            )
-        ).scalar() or 0
-        if already > 0:
-            continue
 
         reason = (
             "altered amount"
             if result.classification == CLASS_AMOUNT_MISMATCH
             else "not on issued file"
         )
+        description = f"Positive Pay return: check {result.check_number} {reason}"
+
+        # Dedupe so re-processing a redelivery doesn't pile up duplicates
+        # (mirrors invoice_warnings._ensure_exception). Invoice-scoped rows
+        # dedupe on the invoice; invoice-less rows dedupe on the description
+        # (which carries the unique cheque number) since there's no invoice key.
+        dedupe = select(func.count()).where(
+            APException.exception_type == "fraud_flag",
+            APException.status.in_(["open", "escalated"]),
+        )
+        if invoice_id is not None:
+            dedupe = dedupe.where(APException.invoice_id == invoice_id)
+        else:
+            dedupe = dedupe.where(
+                APException.invoice_id.is_(None),
+                APException.description == description,
+            )
+        already = (await db.execute(dedupe)).scalar() or 0
+        if already > 0:
+            continue
+
         db.add(
             APException(
                 invoice_id=invoice_id,
                 exception_type="fraud_flag",
                 severity="error",
                 status="open",
-                description=f"Positive Pay return: check {result.check_number} {reason}",
+                description=description,
                 organization_id=org_id,
                 entity_id=entity_id,
             )
@@ -538,14 +533,12 @@ async def process_return(
         "amount_mismatches": classification.amount_mismatch,
         "not_on_file": classification.not_on_file,
         "exceptions_created": exceptions_created,
-        "unmatched": len(unmatched),
     }
     meta = dict(row.meta) if row.meta else {}
     # Keep the latest summary for quick reads, but append every run to a
     # history list so re-processing a bank redelivery never silently clobbers
     # the prior outcome an auditor may be relying on.
     meta["return_summary"] = return_summary
-    meta["unmatched_returns"] = unmatched
     history = list(meta.get("return_history") or [])
     history.append(return_summary)
     meta["return_history"] = history
@@ -570,7 +563,6 @@ async def process_return(
         amount_mismatches=classification.amount_mismatch,
         not_on_file=classification.not_on_file,
         exceptions_created=exceptions_created,
-        unmatched=len(unmatched),
         file=_file_to_response(row),
     )
 

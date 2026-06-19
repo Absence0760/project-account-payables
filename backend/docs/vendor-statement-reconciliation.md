@@ -186,18 +186,19 @@ run's still-`unresolved` lines.
 
 The actionable differences are surfaced as **reconciliation lines** (the
 `vendor_statement_recon_lines` review queue), **not** as `Exception` rows. This
-is deliberate, and the most important one is structural:
+is deliberate.
 
-**`Exception.invoice_id` is NOT NULL.** A `missing_on_our_side` row — *"the
-supplier billed invoice X, and we have no invoice for it"* — by definition has
-no invoice on our side. It literally cannot be represented as an `Exception`
-without fabricating a placeholder invoice first, which would pollute the AP
-ledger with a non-invoice and corrupt every downstream aggregate (aging, spend,
-the payment queue). The recon line is the right home: it's a durable work item
-that *describes a missing invoice* and feeds invoice intake — once the clerk
-creates the real invoice, they resolve the line.
+A `missing_on_our_side` row — *"the supplier billed invoice X, and we have no
+invoice for it"* — by definition has no invoice on our side, and representing it
+as an `Exception` would historically have meant fabricating a placeholder
+invoice (the `Exception.invoice_id` column used to be NOT NULL). Migration `0049`
+has since made that column nullable (so the Positive Pay feature can raise
+invoice-less fraud exceptions), so the constraint is no longer the blocker — but
+the recon line remains the right home regardless, for the reasons below:
 
-Secondary reasons:
+- **It describes a missing invoice and feeds intake.** The recon line is a
+  durable work item that *points at* an invoice we should create; once the clerk
+  creates the real invoice, they resolve the line.
 
 - **The run is the unit of work, not the invoice.** Exceptions hang off a single
   invoice; a statement reconciliation is a vendor-and-period-scoped batch whose

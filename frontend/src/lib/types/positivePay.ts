@@ -51,15 +51,6 @@ export interface ReturnSummary {
 	amount_mismatches: number;
 	not_on_file: number;
 	exceptions_created: number;
-	unmatched: number;
-}
-
-// One presented cheque that couldn't be mapped to an invoice (recorded under
-// `meta.unmatched_returns` rather than as a fraud Exception).
-export interface UnmatchedReturn {
-	check_number: string | null;
-	amount: string | null;
-	classification: string;
 }
 
 export interface PositivePayFile {
@@ -74,11 +65,11 @@ export interface PositivePayFile {
 	file_key: string | null;
 	created_at: string;
 	updated_at: string | null;
-	// Free-form metadata: holds `issued_map`, `return_summary`,
-	// `unmatched_returns`. Typed loosely (only the fields the UI reads matter).
+	// Free-form metadata: holds `issued_map`, `return_summary`, `return_history`.
+	// Typed loosely (only the fields the UI reads matter).
 	meta?: {
 		return_summary?: ReturnSummary;
-		unmatched_returns?: UnmatchedReturn[];
+		return_history?: ReturnSummary[];
 		[k: string]: unknown;
 	} | null;
 }
@@ -103,6 +94,5 @@ export interface ProcessReturnResponse {
 	amount_mismatches: number;
 	not_on_file: number;
 	exceptions_created: number;
-	unmatched: number;
 	file: PositivePayFile;
 }

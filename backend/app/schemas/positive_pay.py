@@ -72,5 +72,4 @@ class ProcessReturnResponse(BaseModel):
     amount_mismatches: int
     not_on_file: int
     exceptions_created: int
-    unmatched: int
     file: PositivePayFileResponse

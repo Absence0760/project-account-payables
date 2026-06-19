@@ -52,7 +52,7 @@ float.
 | `file_key` | varchar(512) | MinIO key of the rendered file (the file holding the full account numbers). |
 | `account_last4` | varchar(4) | Masked originating / cheque account — **never** the full number. |
 | `generated_by` | uuid | The actor who generated the file (plain UUID, no cross-DB FK). |
-| `meta` | jsonb (MutableDict) | Free-form bag — holds the `issued_map` (check# → invoice id, for return processing) and, after a return, `return_summary` + `unmatched_returns`. **No PII.** |
+| `meta` | jsonb (MutableDict) | Free-form bag — holds the `issued_map` (check# → invoice id, for return processing) and, after a return, `return_summary` + `return_history`. **No PII.** |
 | `entity_id` | uuid FK → entities | From `EntityMixin` (multi-entity). |
 | `created_at` / `updated_at` | timestamptz | From `TimestampMixin`. |
 
@@ -203,31 +203,42 @@ number):
 | `positive_pay.return_processed` | `POST .../process-return` (`details` = the return summary counts) |
 | `positive_pay.deleted` | `DELETE /{id}` |
 
-## Return handling — and the `Exception.invoice_id` NOT NULL design note
+## Return handling — both fraud signals become `fraud_flag` Exceptions
 
 `POST .../process-return` rebuilds the issued cheque list from the file's
-payment run, classifies each presented item, and for every fraud signal
-(`amount_mismatch` / `not_on_file`) that maps to a known invoice raises a deduped
-`fraud_flag` Exception (`exception_type="fraud_flag"`, `severity="error"`,
-`status="open"`, description `"Positive Pay return: check <num> <reason>"` — no
-account numbers). Dedupe mirrors `invoice_warnings._ensure_exception`: skip if an
-open `fraud_flag` already exists for that invoice.
+payment run, classifies each presented item, and raises a deduped `fraud_flag`
+Exception for **every** fraud signal (`exception_type="fraud_flag"`,
+`severity="error"`, `status="open"`, description `"Positive Pay return: check
+<num> <reason>"` — no account numbers):
 
-**The structural constraint — `Exception.invoice_id` is NOT NULL.** A
-`not_on_file` cheque the bank saw that we *never issued* has, by definition, no
-invoice on our side. It literally cannot be represented as an `Exception` without
-fabricating a placeholder invoice, which would pollute the AP ledger and corrupt
-every downstream aggregate (aging, spend, the payment queue). This is the exact
-same design note the vendor-statement reconciliation feature calls out for its
-`missing_on_our_side` rows. So those unmapped presented cheques are recorded in
-`file.meta["unmatched_returns"]` (a list of `{check_number, amount, classification}`)
-and counted — they're durable, surfaced in the UI, but they are **not** forced
-into the Exception model. The mappable fraud signals (an *altered* cheque whose
-number we did issue) do become Exceptions, because those have a real invoice.
+- **`amount_mismatch`** (an *altered* cheque whose number we did issue) maps to
+  its invoice → an invoice-scoped `fraud_flag`. Dedupe: skip if an open/escalated
+  `fraud_flag` already exists for that invoice (mirrors
+  `invoice_warnings._ensure_exception`).
+- **`not_on_file`** (a cheque the bank cleared that we *never issued* — the
+  strongest fraud signal) has, by definition, no invoice on our side. It becomes
+  a **standalone `fraud_flag` with `invoice_id = None`**, so it's a first-class,
+  queryable item in the exception queue rather than a buried JSON field. Dedupe:
+  skip if an open/escalated invoice-less `fraud_flag` with the same description
+  (which carries the unique cheque number) already exists.
+
+**Why this needs a nullable `invoice_id`.** Migration `0049` drops the
+`exceptions.invoice_id` NOT NULL constraint precisely so a never-issued cheque
+can be a real Exception without fabricating a placeholder invoice (which would
+pollute the AP ledger + every aggregate). One consequence: an invoice-less
+exception can't be auto-resolved by an agent (there's no invoice to act on), so
+`POST /api/exceptions/{id}/agent-resolve` returns **422** for it — human triage
+only. The exceptions list already `outerjoin`s the invoice, so these rows render
+with a null `invoice_id` / `invoice_number`. (Vendor-statement reconciliation
+still models its `missing_on_our_side` rows as recon **lines**, not Exceptions —
+that's a deliberate choice for its resolve/ignore lifecycle, no longer forced by
+the constraint.)
 
 The file then flips to `status = "returned_processed"` with a PII-free summary in
 `meta["return_summary"] = {presented_count, matched_ok, amount_mismatches,
-not_on_file, exceptions_created, unmatched}`.
+not_on_file, exceptions_created}`, and each run is appended to
+`meta["return_history"]` so a re-processed bank redelivery never clobbers the
+prior outcome.
 
 ## storage helper
 

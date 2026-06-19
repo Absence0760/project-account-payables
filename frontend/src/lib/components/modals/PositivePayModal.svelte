@@ -169,7 +169,6 @@
 	}
 
 	const returnSummary = $derived(detail?.meta?.return_summary ?? null);
-	const unmatchedReturns = $derived(detail?.meta?.unmatched_returns ?? []);
 
 	const modalTitle = $derived(
 		isCreate ? 'Generate Positive Pay File' : `Positive Pay — ${fileTypeLabel(detail?.file_type ?? '')}`
@@ -290,27 +289,12 @@
 					<span class="stat-chip warn">{returnSummary.amount_mismatches} altered</span>
 					<span class="stat-chip flag">{returnSummary.not_on_file} not on file</span>
 					<span class="stat-chip flag">{returnSummary.exceptions_created} exceptions</span>
-					<span class="stat-chip">{returnSummary.unmatched} unmatched</span>
 				</div>
-				{#if unmatchedReturns.length > 0}
-					<table class="diff-table">
-						<thead>
-							<tr>
-								<th>Check #</th>
-								<th class="right">Amount</th>
-								<th>Classification</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each unmatchedReturns as u (u.check_number ?? Math.random())}
-								<tr>
-									<td class="mono">{u.check_number ?? '—'}</td>
-									<td class="right mono">{u.amount ?? '—'}</td>
-									<td>{u.classification}</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
+				{#if returnSummary.exceptions_created > 0}
+					<p class="intake-hint">
+						Fraud signals were raised as <a href="/exceptions?type=fraud_flag">fraud exceptions</a> —
+						including never-issued cheques (which have no invoice).
+					</p>
 				{/if}
 			</div>
 		{/if}

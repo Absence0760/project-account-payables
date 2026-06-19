@@ -105,6 +105,13 @@ async def agent_resolve(
         raise HTTPException(status_code=404, detail="Exception not found")
     if exc.status not in ("open", "escalated"):
         raise HTTPException(status_code=409, detail=f"Cannot run agent from '{exc.status}' status")
+    if exc.invoice_id is None:
+        # Invoice-less exceptions (e.g. a Positive Pay not_on_file fraud return)
+        # have no invoice for an agent to act on — human triage only.
+        raise HTTPException(
+            status_code=422,
+            detail="This exception has no associated invoice and can't be auto-resolved by an agent.",  # noqa: E501
+        )
 
     try:
         result = await run_agent(

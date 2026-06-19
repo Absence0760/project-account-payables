@@ -3,8 +3,8 @@
 Exercises check-issue generation (+ idempotency on the (run, format) slot), the
 ACH-authorization file, list / detail / download (with the cross-tenant download
 gate), return processing (raising a deduped ``fraud_flag`` Exception on an
-altered cheque + recording an unknown cheque as unmatched), and the RBAC
-read/write split — end-to-end against the live test tenants. The formatter +
+altered cheque + a standalone invoice-less one for a never-issued cheque), and
+the RBAC read/write split — end-to-end against the live test tenants. The formatter +
 classifier math is owned by the separately-tested ``positive_pay`` service; here
 we prove the HTTP surface wires it through with exact ``Numeric`` money and the
 PII invariant (no account number in the audit trail).
@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.entity import Entity
 from app.models.exception import Exception as APException
@@ -314,7 +314,7 @@ async def test_generate_ach_authorization(realdb):
 # ---------------------------------------------------------------------------
 
 
-async def test_process_return_raises_fraud_and_records_unmatched(realdb):
+async def test_process_return_raises_fraud_including_standalone_not_on_file(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
     await _set_check_account(realdb, org_id)
@@ -347,13 +347,16 @@ async def test_process_return_raises_fraud_and_records_unmatched(realdb):
         assert body["presented_count"] == 2
         assert body["amount_mismatches"] == 1
         assert body["not_on_file"] == 1
-        assert body["exceptions_created"] == 1
-        assert body["unmatched"] == 1
+        # BOTH fraud signals raise an exception now — the never-issued cheque is
+        # a standalone (invoice-less) fraud_flag, not a buried meta entry.
+        assert body["exceptions_created"] == 2
+        assert "unmatched" not in body
         assert body["file"]["status"] == "returned_processed"
-        assert body["file"]["meta"]["unmatched_returns"][0]["check_number"] == "CHK9999"
+        assert "unmatched_returns" not in (body["file"]["meta"] or {})
 
         async with mk() as s:
-            exc = (
+            # Invoice-scoped fraud_flag for the altered cheque.
+            linked = (
                 (
                     await s.execute(
                         select(APException).where(
@@ -365,11 +368,30 @@ async def test_process_return_raises_fraud_and_records_unmatched(realdb):
                 .scalars()
                 .all()
             )
-            assert len(exc) == 1
-            assert exc[0].severity == "error"
-            assert exc[0].status == "open"
-            # PII invariant — no account number in the fraud description.
-            assert _ACCOUNT_NUMBER not in (exc[0].description or "")
+            assert len(linked) == 1
+            assert linked[0].severity == "error"
+            assert linked[0].status == "open"
+
+            # Standalone (invoice_id IS NULL) fraud_flag for the never-issued cheque.
+            standalone = (
+                (
+                    await s.execute(
+                        select(APException).where(
+                            APException.invoice_id.is_(None),
+                            APException.exception_type == "fraud_flag",
+                            APException.organization_id == org_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(standalone) == 1
+            assert "CHK9999" in (standalone[0].description or "")
+            assert standalone[0].status == "open"
+            # PII invariant — no account number in either fraud description.
+            assert _ACCOUNT_NUMBER not in (linked[0].description or "")
+            assert _ACCOUNT_NUMBER not in (standalone[0].description or "")
             # return-processed audit row carries no account number either.
             audit = (
                 await s.execute(
@@ -381,31 +403,66 @@ async def test_process_return_raises_fraud_and_records_unmatched(realdb):
             ).scalar_one()
             assert _ACCOUNT_NUMBER not in str(audit.details)
 
-        # Re-running the return must NOT duplicate the fraud_flag exception.
+        # The standalone fraud exception surfaces in the queue with a null invoice_id.
+        async with realdb.client(key="a", role="ap_manager") as c:
+            listing = (await c.get("/api/exceptions?type=fraud_flag")).json()
+        standalone_rows = [
+            r
+            for r in listing["items"]
+            if r["invoice_id"] is None and "CHK9999" in (r["description"] or "")
+        ]
+        assert len(standalone_rows) == 1
+        assert standalone_rows[0]["invoice_number"] is None
+
+        # Re-running the return must NOT duplicate either fraud_flag exception.
         async with realdb.client(key="a", role="ap_manager") as c:
             again = await c.post(
                 f"/api/positive-pay/{file_id}/process-return",
-                json={"presented_items": [{"check_number": "CHK5001", "amount": "900.00"}]},
+                json={
+                    "presented_items": [
+                        {"check_number": "CHK5001", "amount": "900.00"},
+                        {"check_number": "CHK9999", "amount": "42.00"},
+                    ]
+                },
             )
         assert again.status_code == 200
         assert again.json()["exceptions_created"] == 0
 
         async with mk() as s:
-            exc2 = (
-                (
-                    await s.execute(
-                        select(APException).where(
-                            APException.invoice_id == uuid.UUID(invoice_id),
-                            APException.exception_type == "fraud_flag",
-                        )
+            total_fraud = (
+                await s.execute(
+                    select(func.count()).where(
+                        APException.exception_type == "fraud_flag",
+                        APException.organization_id == org_id,
                     )
                 )
-                .scalars()
-                .all()
-            )
-            assert len(exc2) == 1
+            ).scalar()
+            assert total_fraud == 2
     finally:
         await _clear_settings(realdb, org_id)
+
+
+async def test_agent_resolve_422_on_invoiceless_exception(realdb):
+    """A standalone (invoice-less) fraud exception can't be agent-resolved."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    async with mk() as s:
+        exc = APException(
+            invoice_id=None,
+            exception_type="fraud_flag",
+            severity="error",
+            status="open",
+            description="Positive Pay return: check CHK-ORPHAN not on issued file",
+            organization_id=org_id,
+        )
+        s.add(exc)
+        await s.commit()
+        exc_id = str(exc.id)
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(f"/api/exceptions/{exc_id}/agent-resolve")
+    assert resp.status_code == 422
+    assert "no associated invoice" in resp.json()["detail"]
 
 
 async def test_process_return_422_on_ach_file(realdb):
