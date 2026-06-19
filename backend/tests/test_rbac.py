@@ -33,6 +33,7 @@ from app.api import (
     contracts,
     credit_memos,
     dashboard,
+    email_actions,
     email_intake,
     entities,
     erp_webhook,
@@ -130,6 +131,10 @@ NO_AUTH_REQUIRED = {
     # shared-secret HMAC-verified + BuyerCookie-correlated, tenant in URL path,
     # public-by-design (the supplier / buyer browser POSTs it).
     ("POST", "/catalogs/punchout/return/{tenant_slug}"),
+    # email_actions.py — approve/reject from the assigned-invoice email; the
+    # signed single-action token in the URL IS the credential (no JWT/session).
+    ("GET", "/invoices/email-action/{token}"),
+    ("POST", "/invoices/email-action/{token}/confirm"),
 }
 
 # Routers wired into the app at /api — same set as app/main.py.
@@ -148,6 +153,7 @@ ROUTERS = [
     contracts.router,
     credit_memos.router,
     dashboard.router,
+    email_actions.public_router,
     email_intake.admin_router,
     email_intake.public_router,
     entities.router,
