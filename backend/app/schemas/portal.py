@@ -186,6 +186,36 @@ class PortalChangeRequestResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Tax forms (W-9 / W-8) — vendor self-service. The vendor uploads their own
+# signed form; AP uses it for 1099 / withholding compliance. The response is
+# PII-free: it never echoes a tax ID, only whether a form is on file + the
+# form type + received date. See backend/docs/supplier-portal.md.
+# ---------------------------------------------------------------------------
+
+
+# US vendors file a W-9; foreign vendors file a W-8 (BEN / BEN-E etc.). We keep
+# the stored marker to the two coarse buckets; the AP-side tax tooling already
+# tracks the finer `tax_classification`.
+TAX_FORM_TYPES = ("w9", "w8")
+
+
+class PortalTaxFormResponse(BaseModel):
+    """Whether a tax form is on file for the caller's own vendor.
+
+    Never carries the tax ID or any document bytes — only the boolean
+    on-file flag, the coarse form type, and the received date. ``form_type``
+    is ``None`` when nothing is on file.
+    """
+
+    on_file: bool = False
+    form_type: str | None = None
+    received_date: date | None = None
+    # The vendor's country, when known, drives the default form type the UI
+    # pre-selects (US → W-9, otherwise W-8). Never required for upload.
+    suggested_form_type: str = "w9"
+
+
+# ---------------------------------------------------------------------------
 # Supplier chat (portal side) — datetimes are raw `datetime`, matching the rest
 # of portal.py. AP author ids are masked (never exposed to the supplier).
 # See backend/docs/supplier-chat.md.

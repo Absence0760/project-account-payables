@@ -173,6 +173,54 @@ async def upload_expense_receipt(
     return file_key, file_url
 
 
+async def upload_tax_form_file(
+    org_id: uuid.UUID,
+    vendor_id: uuid.UUID,
+    form_type: str,
+    file: UploadFile,
+) -> tuple[str, str]:
+    """Upload a vendor's signed W-9 / W-8 tax form to S3 and return
+    ``(file_key, file_url)``.
+
+    The key is ``<org_id>/tax-forms/<vendor_id>/<form_type>/<safe-filename>`` —
+    the leading ``org_id`` segment is the cross-tenant download gate (the tax
+    form download endpoint refuses keys whose first segment isn't the caller's
+    org), mirroring the invoice / contract / expense file paths. The
+    ``form_type`` segment lets the read path recover whether the on-file form is
+    a W-9 or W-8 without adding a vendor column (no migration). ``form_type`` is
+    validated by the caller against a fixed allowlist, so it can't smuggle a
+    path separator into the key.
+
+    Tax forms are signed PDFs (occasionally scanned to image), so the
+    invoice-grade ``ALLOWED_CONTENT_TYPES`` (PDF / PNG / JPEG / TIFF / XML)
+    applies — no Word documents.
+    """
+    content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError(f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB")
+
+    content_type = file.content_type or "application/octet-stream"
+    if content_type not in ALLOWED_CONTENT_TYPES:
+        raise ValueError(
+            f"File type '{content_type}' not allowed. Accepted: PDF, PNG, JPEG, TIFF, XML"
+        )
+
+    file_key = f"{org_id}/tax-forms/{vendor_id}/{form_type}/{_safe_filename(file.filename)}"
+
+    client = _get_client()
+    _ensure_bucket(client)
+    client.put_object(
+        Bucket=settings.s3_bucket,
+        Key=file_key,
+        Body=content,
+        ContentType=content_type,
+    )
+
+    file_url = "/api/portal/company/tax-form/file"
+    return file_key, file_url
+
+
 async def upload_chat_file(
     org_id: uuid.UUID,
     invoice_id: uuid.UUID,

@@ -77,6 +77,38 @@ uses `get_current_vendor_user` (except `/portal/auth/login` and
 | POST   | `/portal/company/bank-change`         | **Stages** a `bank_details` change (NOT applied); 202; deduped on pending    |
 | POST   | `/portal/company/tax-id-change`       | **Stages** a `tax_id` change (NOT applied); 202                             |
 | GET    | `/portal/company/change-requests`     | This vendor's own change requests + statuses                                |
+| GET    | `/portal/company/tax-form`            | Whether a W-9/W-8 is on file (PII-free: on-file flag + form type + received date) |
+| POST   | `/portal/company/tax-form`            | Multipart upload of the vendor's own signed W-9 (US) / W-8 (foreign) — **applies live** |
+| GET    | `/portal/company/tax-form/file`       | Vendor-scoped download proxy of their own uploaded form; 404 on foreign/missing |
+
+#### W-9 / W-8 tax-form upload (self-service)
+
+US suppliers file a **W-9**, foreign suppliers a **W-8** (BEN / BEN-E). The
+vendor uploads their own signed form from the portal; AP uses it for 1099 /
+withholding compliance. Design notes:
+
+- **Reuses the existing vendor columns.** The form writes
+  `Vendor.w9_file_key` + `Vendor.w9_received_date` on the caller's **own**
+  vendor row — the same columns the AP-side `POST /api/tax/vendors/{id}/w9`
+  upload writes. **No new vendor column, no migration.**
+- **Form type without a column.** W-9 vs W-8 is encoded in the S3 key segment
+  (`<org>/tax-forms/<vendor>/<form_type>/<file>`, via
+  `storage.upload_tax_form_file`) and recovered on read by
+  `portal._tax_form_type_from_key`. A W-9 stored via the AP-side path (key
+  prefix `<org>/w9/<vendor>/…`, no form-type segment) reads back as `w9`.
+- **Applies live, unlike bank/tax-ID changes.** A tax form is a document, not
+  a money-routing target, so there's no AP-approval gate. (AP still verifies
+  the TIN separately via `POST /api/tax/vendors/{id}/tin-verify`.)
+- **Vendor-scoped + cross-tenant gated.** Every handler resolves the vendor by
+  `vu.vendor_id` only (cross-vendor → 404, not 403). The download proxy reads
+  the key from the vendor row (never the request) **and** cross-checks the
+  key's leading org segment against the vendor's org — wrong-org / missing both
+  404, no enumeration. Content-type is gated by `ALLOWED_CONTENT_TYPES` (PDF /
+  PNG / JPEG / TIFF / XML) at the storage boundary.
+- **PII-out-of-logs.** The `vendor.tax_form_uploaded_by_vendor` audit row
+  carries only the form type + filename + `vendor_user_id` — never the tax ID.
+  The `GET` response carries an on-file boolean + form type + received date,
+  never the tax ID or the document bytes.
 
 ### Admin invite + change-request approval (`vendors.py`)
 
@@ -160,7 +192,7 @@ Routes:
 | `/portal/invoices`            | List + upload                                          |
 | `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
 | `/portal/payments`            | Payment history + per-row "Download remittance"        |
-| `/portal/company`             | Contact (live) + bank/tax change requests (staged)     |
+| `/portal/company`             | Contact (live) + bank/tax change requests (staged) + W-9/W-8 tax-form upload/download (live) |
 
 The portal company form makes the approval-gating visible: bank/tax changes
 show a "pending AP approval" banner (read from `GET /portal/company`'s
@@ -172,12 +204,12 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] Remittance download (reuses `services/remittance_pdf.py`)
 - [x] Company info self-update (contact live; bank/tax staged)
 - [x] Bank-detail changes with AP admin approval workflow (fraud mitigation)
+- [x] W-9 / W-8 upload + storage (self-service; reuses `Vendor.w9_file_key` / `w9_received_date`, no migration — see *W-9 / W-8 tax-form upload* above)
 
 ## Phase 3 (deferred)
 
 Add these when there's demand from the first paying customer:
 
-- W-9 / W-8 upload + storage
 - Virtual card viewing (secure, one-time access)
 - Notification preferences (email-on-paid, email-on-rejected)
 - Dynamic-discount offers
