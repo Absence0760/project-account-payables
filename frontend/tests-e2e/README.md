@@ -74,6 +74,7 @@ tests-e2e/
 ├── playwright.config.ts             config; webServer boots `pnpm dev`; workers default 4
 ├── fixtures/
 │   └── helpers.ts                   per-worker fixtures + signIn / tenantPsql / etc.
+├── a11y/                            axe-core accessibility regression guard (WCAG 2.2 AA)
 ├── auth/                            login, signup, RBAC, tenant isolation
 ├── admin/                           user lifecycle, bulk-delete, custom roles
 ├── invoices/                        list, detail, edit, bulk recode, status transitions
@@ -90,6 +91,33 @@ tests-e2e/
 
 `testDir: '.'` walks recursively, so adding a new spec under any of
 these folders picks up automatically.
+
+## Accessibility guard (`a11y/`)
+
+`a11y/axe.spec.ts` is the automated WCAG 2.2 Level AA regression guard. It
+runs [`axe-core`](https://github.com/dequelabs/axe-core) (via
+`@axe-core/playwright`) against the key surfaces — dashboard, `/invoices`,
+`/vendors`, `/payments`, `/exceptions`, the invoice detail modal, the AP
+login page, and the supplier portal login — at the
+`wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa` tag set and asserts **zero
+violations**. On failure it attaches a readable summary (rule id, impact,
+help URL, offending nodes) so the CI log is actionable.
+
+Because `testDir: '.'` walks recursively, the guard runs as part of the
+normal `pnpm test:e2e` (and each CI shard) — so a change that reintroduces a
+machine-detectable barrier fails CI. For a fast focused run:
+
+```bash
+pnpm test:e2e:a11y      # frontend/package.json — targets just tests-e2e/a11y
+```
+
+It uses the same per-worker `e2e<N>` tenant + admin storage-state fixtures as
+every other spec (the two login surfaces opt out of the storage state). The
+shared `a11y/axe-helper.ts` owns the tag set + the `expectNoA11yViolations`
+assertion; reuse it when adding a route to the guard. Automated tooling only
+covers the machine-detectable criteria — the manual screen-reader passes and
+the conformance docs (`docs/accessibility.md`, `docs/accessibility-vpat.md`)
+cover the rest.
 
 ## Local dev loop
 
