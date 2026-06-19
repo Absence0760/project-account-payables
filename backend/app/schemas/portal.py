@@ -2,10 +2,26 @@
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PlainSerializer
 
 from app.api.pagination import PageMeta
+from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+
+
+def _decimal_to_number(value: Decimal | None) -> float | None:
+    return None if value is None else float(value)
+
+
+# A non-money Decimal (a percentage) that serialises to a JSON *number*, matching
+# the dynamic-discounting wire contract (and the frontend's `number`-typed
+# discount types) while staying exact in Python. Mirrors the AP-side
+# `schemas/discount.PercentNumber`.
+PercentNumber = Annotated[
+    Decimal,
+    PlainSerializer(_decimal_to_number, return_type=float, when_used="json"),
+]
 
 
 class PortalLoginRequest(BaseModel):
@@ -216,3 +232,68 @@ class PortalChatThreadResponse(BaseModel):
     invoice_id: str
     status: str  # "open" | "resolved"
     messages: list[PortalChatMessageResponse] = []
+
+
+# ---------------------------------------------------------------------------
+# Early-payment discount offers (portal side)
+#
+# A vendor sees early-payment discount offers the AP team has extended to them
+# (scoped to their own vendor_id and/or their own invoices) and can accept the
+# offered early-pay discount. Accepting only flips the offer status — it never
+# moves money (the CFO-gated payment run still funds it). Tier percents stay
+# Decimal-exact; the JSON contract serialises them as numbers.
+# See backend/docs/dynamic-discounting.md § Supplier portal.
+# ---------------------------------------------------------------------------
+
+
+class PortalDiscountTier(BaseModel):
+    """One rung of a sliding-scale offer — pay within `days` for `percent` off."""
+
+    days: int
+    percent: PercentNumber
+    # Dollar discount this rung yields against the offer's base amount.
+    savings: MoneyAmount
+
+
+class PortalDiscountOfferResponse(BaseModel):
+    """An early-payment discount offer as seen by the supplier.
+
+    Only the fields a vendor cares about: the amount the discount applies to,
+    the sliding-scale tiers with per-tier savings, the offer window, the chosen
+    tier once accepted, and the realised savings once captured. No internal
+    actor ids are exposed. Money + percent serialise as JSON numbers (the
+    dynamic-discounting contract).
+    """
+
+    id: str
+    status: str  # offered | accepted | captured | declined | expired
+    scope: str  # invoice | vendor
+    invoice_id: str | None = None
+    invoice_number: str | None = None
+    base_amount: MoneyAmount
+    currency: str
+    tiers: list[PortalDiscountTier] = []
+    # The best (highest-percent) tier still capturable today, with its savings —
+    # the headline number for the vendor's "accept" decision. None once the
+    # window has closed or the offer is no longer open.
+    best_tier: PortalDiscountTier | None = None
+    valid_from: date | None = None
+    valid_until: date | None = None
+    accepted_tier: PortalDiscountTier | None = None
+    accepted_at: datetime | None = None
+    captured_amount: OptionalMoneyAmount = None
+    captured_at: datetime | None = None
+    notes: str | None = None
+    created_at: datetime
+
+
+class PortalDiscountOfferListResponse(PageMeta):
+    items: list[PortalDiscountOfferResponse]
+    total: int
+
+
+class PortalAcceptOfferRequest(BaseModel):
+    """Accept an offer. `tier_days` picks an explicit rung; omit it to take the
+    best tier still capturable today (mirrors the AP-side accept)."""
+
+    tier_days: int | None = None

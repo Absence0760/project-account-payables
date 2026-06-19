@@ -7,6 +7,7 @@ A vendor user cannot reference another vendor's invoices even by guessing IDs.
 
 import logging
 import uuid
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import (
@@ -16,6 +17,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Response,
     UploadFile,
     status,
@@ -27,6 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
 from app.database import get_control_db
+from app.models.discount import (
+    OFFER_STATUS_OFFERED,
+    DiscountOffer,
+)
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.payment import Payment
 from app.models.procurement import POLineItem, PurchaseOrder
@@ -35,6 +41,7 @@ from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_user import VendorUser
 from app.schemas.portal import (
+    PortalAcceptOfferRequest,
     PortalBankChangeRequest,
     PortalChangeRequestResponse,
     PortalChatAttachmentOut,
@@ -43,6 +50,9 @@ from app.schemas.portal import (
     PortalChatThreadResponse,
     PortalCompanyInfoResponse,
     PortalCompanyInfoUpdateRequest,
+    PortalDiscountOfferListResponse,
+    PortalDiscountOfferResponse,
+    PortalDiscountTier,
     PortalFlipResponse,
     PortalInvoiceListItem,
     PortalInvoiceListResponse,
@@ -55,6 +65,7 @@ from app.schemas.portal import (
     PortalPOListResponse,
     PortalTaxIdChangeRequest,
 )
+from app.services import discount_offers as offers_svc
 from app.services.audit_dispatch import dispatch_audit
 from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
@@ -994,6 +1005,239 @@ async def list_my_change_requests(
         )
         for r in rows
     ]
+
+
+# ---------- Early-payment discount offers ----------
+#
+# A vendor sees the early-payment discount offers the AP team has extended to
+# them (offers scoped to their own vendor_id, and offers on their own invoices)
+# and can ACCEPT the offered early-pay discount. Accepting only flips the offer
+# status to `accepted` (reusing `discount_offers.accept_offer`) — it never moves
+# money; the CFO-gated payment run still funds it. Re-accepting an already-
+# accepted (or otherwise non-`offered`) offer is a no-op 409, mirroring the AP
+# side. Every offer query is filtered to the caller's own vendor, and a 404
+# (never 403) is returned for a foreign offer so the portal can't probe IDs.
+
+
+def _offer_tier(base_amount: Decimal, tier: dict | None) -> PortalDiscountTier | None:
+    """Turn a stored tier dict into the vendor-facing tier (with savings)."""
+    if not tier:
+        return None
+    return PortalDiscountTier(
+        days=int(tier["days"]),
+        percent=offers_svc.tier_percent(tier),
+        savings=offers_svc.discount_savings(base_amount, tier),
+    )
+
+
+def _portal_offer_response(
+    offer: DiscountOffer, *, invoice_number: str | None, today: date
+) -> PortalDiscountOfferResponse:
+    tiers = [_offer_tier(offer.base_amount, t) for t in (offer.tiers or [])]
+    # Best capturable tier today is only meaningful while the offer is still open.
+    best_tier = None
+    if offer.status == OFFER_STATUS_OFFERED:
+        best = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        best_tier = _offer_tier(offer.base_amount, best)
+    return PortalDiscountOfferResponse(
+        id=str(offer.id),
+        status=offer.status,
+        scope=offer.scope,
+        invoice_id=str(offer.invoice_id) if offer.invoice_id else None,
+        invoice_number=invoice_number,
+        base_amount=offer.base_amount,
+        currency=offer.currency,
+        tiers=[t for t in tiers if t is not None],
+        best_tier=best_tier,
+        valid_from=offer.valid_from,
+        valid_until=offer.valid_until,
+        accepted_tier=_offer_tier(offer.base_amount, offer.accepted_tier),
+        accepted_at=offer.accepted_at,
+        captured_amount=offer.captured_amount,
+        captured_at=offer.captured_at,
+        notes=offer.notes,
+        created_at=offer.created_at,
+    )
+
+
+def _vendor_offer_filter(vu: VendorUser):
+    """Predicate restricting offers to the calling vendor.
+
+    A vendor sees offers explicitly scoped to their `vendor_id`, plus offers on
+    one of their own invoices (invoice-scoped offers carry the invoice_id, not a
+    vendor_id). The own-invoices set is an in-query subquery so the data layer —
+    not just app code — enforces the scoping (project invariant: tenant/vendor
+    isolation at the data layer)."""
+    own_invoice_ids = select(Invoice.id).where(Invoice.vendor_id == vu.vendor_id)
+    return (DiscountOffer.vendor_id == vu.vendor_id) | (
+        DiscountOffer.invoice_id.in_(own_invoice_ids)
+    )
+
+
+async def _portal_offer_or_404(
+    db: AsyncSession, offer_id: uuid.UUID, vu: VendorUser
+) -> DiscountOffer:
+    """Fetch an offer the calling vendor owns, else 404 (never 403)."""
+    offer = (
+        await db.execute(
+            select(DiscountOffer).where(
+                DiscountOffer.id == offer_id,
+                _vendor_offer_filter(vu),
+            )
+        )
+    ).scalar_one_or_none()
+    if offer is None:
+        raise HTTPException(status_code=404, detail="Discount offer not found")
+    return offer
+
+
+async def _invoice_numbers(db: AsyncSession, offers: list[DiscountOffer]) -> dict[uuid.UUID, str]:
+    invoice_ids = {o.invoice_id for o in offers if o.invoice_id}
+    if not invoice_ids:
+        return {}
+    rows = await db.execute(
+        select(Invoice.id, Invoice.invoice_number).where(Invoice.id.in_(invoice_ids))
+    )
+    return {iid: (num or "") for iid, num in rows.all()}
+
+
+@router.get("/discount-offers", response_model=PortalDiscountOfferListResponse)
+async def list_my_discount_offers(
+    pagination: PaginationParams = Depends(pagination_params),
+    status_filter: str | None = Query(None, alias="status"),
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Early-payment discount offers relevant to the calling vendor.
+
+    Scoped to the vendor's own `vendor_id` and to offers on their own invoices —
+    a vendor can never see another vendor's offers. Includes the per-tier
+    savings + the best capturable tier today so the supplier sees the ROI of
+    accepting. Optional `?status=` filter (e.g. `offered`)."""
+    query = select(DiscountOffer).where(_vendor_offer_filter(vu))
+    if status_filter:
+        wanted = [s.strip() for s in status_filter.split(",") if s.strip()]
+        if wanted:
+            query = query.where(DiscountOffer.status.in_(wanted))
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = (
+        query.order_by(DiscountOffer.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
+    rows = list((await db.execute(query)).scalars().all())
+    inv_nums = await _invoice_numbers(db, rows)
+    today = date.today()
+
+    return PortalDiscountOfferListResponse(
+        items=[
+            _portal_offer_response(
+                o, invoice_number=inv_nums.get(o.invoice_id) if o.invoice_id else None, today=today
+            )
+            for o in rows
+        ],
+        total=total,
+        page=pagination.page,
+        page_size=pagination.page_size,
+    )
+
+
+@router.post("/discount-offers/{offer_id}/accept", response_model=PortalDiscountOfferResponse)
+async def accept_my_discount_offer(
+    offer_id: uuid.UUID,
+    body: PortalAcceptOfferRequest | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Vendor accepts an offered early-payment discount.
+
+    Reuses `discount_offers.accept_offer` (the same pure mutator the AP side
+    uses), which flips `offered → accepted` and records the chosen tier. This
+    NEVER moves money — no `Payment`/`PaymentRun` is created; the CFO-gated
+    payment run still funds the early payment. Idempotency: re-accepting a
+    non-`offered` offer raises `409` (the status guard is the dedupe), so a
+    double-click can't double-count savings."""
+    offer = await _portal_offer_or_404(db, offer_id, vu)
+    today = date.today()
+
+    tier_days = body.tier_days if body else None
+    if tier_days is not None:
+        tier = offers_svc.select_tier(offer.tiers or [], tier_days)
+        if tier is None:
+            raise HTTPException(status_code=422, detail="No tier matches the requested days")
+    else:
+        tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        if tier is None:
+            raise HTTPException(status_code=409, detail="Offer has no capturable tier today")
+
+    try:
+        offers_svc.accept_offer(offer, tier=tier, actor_id=None, now=datetime.now(UTC))
+    except ValueError as exc:
+        # Not in `offered` status (already accepted / declined / expired / captured).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Audit — actor_id=None (a VendorUser is not a control-plane user); PII-free.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=offer.organization_id,
+        actor_id=None,
+        action="discount_offer.accepted_by_vendor",
+        entity_type="discount_offer",
+        entity_id=offer.id,
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "vendor_id": str(vu.vendor_id),
+            "tier": offer.accepted_tier,
+        },
+    )
+    await db.commit()
+    await db.refresh(offer)
+
+    invoice_number = None
+    if offer.invoice_id:
+        invoice_number = (await _invoice_numbers(db, [offer])).get(offer.invoice_id)
+    return _portal_offer_response(offer, invoice_number=invoice_number, today=today)
+
+
+@router.post("/discount-offers/{offer_id}/decline", response_model=PortalDiscountOfferResponse)
+async def decline_my_discount_offer(
+    offer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Vendor declines an offered early-payment discount. Reuses
+    `discount_offers.decline_offer`; `409` if the offer is no longer `offered`."""
+    offer = await _portal_offer_or_404(db, offer_id, vu)
+    try:
+        offers_svc.decline_offer(offer, now=datetime.now(UTC))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=offer.organization_id,
+        actor_id=None,
+        action="discount_offer.declined_by_vendor",
+        entity_type="discount_offer",
+        entity_id=offer.id,
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "vendor_id": str(vu.vendor_id),
+        },
+    )
+    await db.commit()
+    await db.refresh(offer)
+
+    today = date.today()
+    invoice_number = None
+    if offer.invoice_id:
+        invoice_number = (await _invoice_numbers(db, [offer])).get(offer.invoice_id)
+    return _portal_offer_response(offer, invoice_number=invoice_number, today=today)
 
 
 # ---------- Card reveal (no auth — token is the credential) ----------
