@@ -1,0 +1,495 @@
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import Money from '$lib/components/ui/Money.svelte';
+	import {
+		listPortalDiscountOffers,
+		acceptPortalDiscountOffer,
+		declinePortalDiscountOffer,
+		type PortalDiscountOffer,
+	} from '$lib/portalApi';
+
+	const FILTERS = [
+		{ key: '', label: 'All' },
+		{ key: 'offered', label: 'Open' },
+		{ key: 'accepted', label: 'Accepted' },
+		{ key: 'captured', label: 'Captured' },
+		{ key: 'declined,expired', label: 'Closed' },
+	];
+
+	let items = $state<PortalDiscountOffer[]>([]);
+	let loading = $state(false);
+	let error = $state('');
+	let activeFilter = $state('');
+	let busy = $state<string | null>(null);
+	// The offer whose tier the vendor is choosing in the accept dialog.
+	let accepting = $state<PortalDiscountOffer | null>(null);
+	let chosenTierDays = $state<number | null>(null);
+
+	async function refresh() {
+		loading = true;
+		error = '';
+		try {
+			const res = await listPortalDiscountOffers(activeFilter || undefined);
+			items = res.items;
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Load failed';
+		} finally {
+			loading = false;
+		}
+	}
+
+	function setFilter(key: string) {
+		activeFilter = key;
+		refresh();
+	}
+
+	function openAccept(offer: PortalDiscountOffer) {
+		accepting = offer;
+		// Default to the best capturable tier today; fall back to the first tier.
+		chosenTierDays = offer.best_tier?.days ?? offer.tiers[0]?.days ?? null;
+	}
+
+	function closeAccept() {
+		accepting = null;
+		chosenTierDays = null;
+	}
+
+	async function confirmAccept() {
+		if (!accepting) return;
+		const offer = accepting;
+		busy = offer.id;
+		error = '';
+		try {
+			await acceptPortalDiscountOffer(offer.id, chosenTierDays ?? undefined);
+			closeAccept();
+			await refresh();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Accept failed';
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function decline(offer: PortalDiscountOffer) {
+		busy = offer.id;
+		error = '';
+		try {
+			await declinePortalDiscountOffer(offer.id);
+			await refresh();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Decline failed';
+		} finally {
+			busy = null;
+		}
+	}
+
+	function fmtDate(iso: string | null | undefined): string {
+		if (!iso) return '—';
+		return new Date(iso).toLocaleDateString();
+	}
+
+	function fmtPct(n: number): string {
+		return `${n}%`;
+	}
+
+	// The chosen tier object for the accept dialog (for the live savings preview).
+	const chosenTier = $derived(
+		accepting && chosenTierDays !== null
+			? (accepting.tiers.find((t) => t.days === chosenTierDays) ?? null)
+			: null,
+	);
+
+	onMount(refresh);
+</script>
+
+<div class="page">
+	<header>
+		<h1>Early-Payment Discounts</h1>
+		<p class="sub">Accept an early-payment discount to get paid sooner for a small discount.</p>
+	</header>
+
+	<nav class="filters" aria-label="Filter offers by status">
+		{#each FILTERS as f (f.key)}
+			<button
+				type="button"
+				class="filter-chip"
+				class:active={activeFilter === f.key}
+				onclick={() => setFilter(f.key)}>{f.label}</button
+			>
+		{/each}
+	</nav>
+
+	{#if error}<div class="error">{error}</div>{/if}
+
+	{#if loading && !items.length}
+		<div class="loading">Loading...</div>
+	{:else if !items.length}
+		<div class="empty">
+			<p>No discount offers right now.</p>
+			<p class="hint">
+				When your customer offers an early-payment discount, it shows up here for you to accept.
+			</p>
+		</div>
+	{:else}
+		<table>
+			<thead>
+				<tr>
+					<th>Applies to</th>
+					<th class="num">Amount</th>
+					<th>Tiers</th>
+					<th class="num">Best discount</th>
+					<th class="num">You save</th>
+					<th>Window</th>
+					<th>Status</th>
+					<th class="actions-col"></th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each items as o (o.id)}
+					<tr>
+						<td>
+							{#if o.scope === 'invoice'}
+								Invoice {o.invoice_number || '—'}
+							{:else}
+								All open invoices
+							{/if}
+						</td>
+						<td class="num"><Money amount={o.base_amount} currency={o.currency} /></td>
+						<td class="tiers">
+							{#each o.tiers as t (t.days)}
+								<span class="tier">{t.days}d → {fmtPct(t.percent)}</span>
+							{/each}
+						</td>
+						<td class="num">
+							{o.best_tier ? fmtPct(o.best_tier.percent) : '—'}
+						</td>
+						<td class="num">
+							{#if o.status === 'captured' && o.captured_amount !== null}
+								<Money amount={o.captured_amount} currency={o.currency} />
+							{:else if o.accepted_tier}
+								<Money amount={o.accepted_tier.savings} currency={o.currency} />
+							{:else if o.best_tier}
+								<Money amount={o.best_tier.savings} currency={o.currency} />
+							{:else}
+								—
+							{/if}
+						</td>
+						<td class="window">{fmtDate(o.valid_from)} – {fmtDate(o.valid_until)}</td>
+						<td><span class="status s-{o.status}">{o.status}</span></td>
+						<td class="actions">
+							{#if o.status === 'offered'}
+								<button
+									type="button"
+									class="act accept"
+									disabled={busy === o.id || !o.best_tier}
+									onclick={() => openAccept(o)}
+								>
+									Accept
+								</button>
+								<button
+									type="button"
+									class="act"
+									disabled={busy === o.id}
+									onclick={() => decline(o)}
+								>
+									Decline
+								</button>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	{/if}
+</div>
+
+{#if accepting}
+	<div
+		class="backdrop"
+		role="presentation"
+		onclick={closeAccept}
+		onkeydown={(e) => e.key === 'Escape' && closeAccept()}
+	>
+		<div
+			class="dialog"
+			role="dialog"
+			tabindex="-1"
+			aria-modal="true"
+			aria-label="Accept early-payment discount"
+			onclick={(e) => e.stopPropagation()}
+			onkeydown={() => {}}
+		>
+			<h2>Accept early-payment discount</h2>
+			<p class="dlg-sub">
+				Accepting confirms you'll take the discount in exchange for earlier payment. It does not
+				move any money — your customer still processes the payment.
+			</p>
+
+			{#if accepting.tiers.length > 1}
+				<label class="field">
+					<span>Choose a tier</span>
+					<select bind:value={chosenTierDays}>
+						{#each accepting.tiers as t (t.days)}
+							<option value={t.days}>Pay within {t.days} days → {fmtPct(t.percent)} off</option>
+						{/each}
+					</select>
+				</label>
+			{/if}
+
+			{#if chosenTier}
+				<div class="preview">
+					<span>You save</span>
+					<strong><Money amount={chosenTier.savings} currency={accepting.currency} /></strong>
+					<span class="muted">({fmtPct(chosenTier.percent)} for paying within {chosenTier.days} days)</span>
+				</div>
+			{/if}
+
+			<div class="dlg-footer">
+				<button type="button" class="btn-cancel" onclick={closeAccept}>Cancel</button>
+				<button
+					type="button"
+					class="btn-primary"
+					disabled={busy === accepting.id || chosenTierDays === null}
+					onclick={confirmAccept}
+				>
+					{busy === accepting.id ? 'Accepting…' : 'Accept discount'}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<style>
+	.page {
+		max-width: 1100px;
+		margin: 0 auto;
+	}
+	header {
+		margin-bottom: 16px;
+	}
+	h1 {
+		margin: 0;
+		font-size: 1.25rem;
+	}
+	.sub {
+		margin: 4px 0 0;
+		color: var(--text-muted);
+		font-size: 0.85rem;
+	}
+	.filters {
+		display: flex;
+		gap: 8px;
+		margin-bottom: 16px;
+		flex-wrap: wrap;
+	}
+	.filter-chip {
+		padding: 5px 12px;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.82rem;
+		cursor: pointer;
+	}
+	.filter-chip:hover {
+		color: var(--text);
+	}
+	.filter-chip.active {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: #fff;
+	}
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		overflow: hidden;
+	}
+	th,
+	td {
+		text-align: left;
+		padding: 10px 12px;
+		font-size: 0.88rem;
+		border-bottom: 1px solid var(--border);
+		vertical-align: top;
+	}
+	th {
+		background: var(--bg);
+		color: var(--text-muted);
+		font-weight: 500;
+		text-transform: uppercase;
+		font-size: 0.72rem;
+		letter-spacing: 0.04em;
+	}
+	tbody tr:last-child td {
+		border-bottom: none;
+	}
+	.num {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+	.tiers {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.tier {
+		font-size: 0.78rem;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+	.window {
+		white-space: nowrap;
+		font-size: 0.82rem;
+		color: var(--text-muted);
+	}
+	.actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		white-space: nowrap;
+	}
+	.act {
+		padding: 4px 12px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: transparent;
+		color: var(--text);
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.act:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	.act.accept:hover:not(:disabled) {
+		border-color: rgba(40, 160, 80, 0.6);
+		color: #2aa050;
+	}
+	.act:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+	.status {
+		padding: 2px 8px;
+		border-radius: 3px;
+		font-size: 0.75rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		text-transform: capitalize;
+	}
+	.s-accepted,
+	.s-captured {
+		background: rgba(40, 160, 80, 0.15);
+		border-color: rgba(40, 160, 80, 0.4);
+	}
+	.s-declined,
+	.s-expired {
+		background: rgba(224, 64, 64, 0.12);
+		border-color: rgba(224, 64, 64, 0.35);
+	}
+	.empty,
+	.loading {
+		padding: 40px;
+		text-align: center;
+		background: var(--surface);
+		border: 1px dashed var(--border);
+		border-radius: 4px;
+		color: var(--text-muted);
+	}
+	.empty .hint {
+		font-size: 0.82rem;
+	}
+	.error {
+		background: rgba(224, 64, 64, 0.1);
+		border: 1px solid rgba(224, 64, 64, 0.3);
+		color: #e04040;
+		padding: 10px 14px;
+		border-radius: 4px;
+		margin-bottom: 12px;
+	}
+
+	/* Accept dialog — the portal has no AP shared Modal, so it carries its own
+	   small backdrop+dialog (matching the portal's self-contained styling). */
+	.backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		display: grid;
+		place-items: center;
+		z-index: 50;
+	}
+	.dialog {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 20px 22px;
+		width: 440px;
+		max-width: calc(100vw - 32px);
+	}
+	.dialog h2 {
+		margin: 0 0 6px;
+		font-size: 1.05rem;
+	}
+	.dlg-sub {
+		margin: 0 0 14px;
+		color: var(--text-muted);
+		font-size: 0.83rem;
+	}
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-bottom: 14px;
+		font-size: 0.85rem;
+	}
+	.field span {
+		color: var(--text-muted);
+	}
+	.preview {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		padding: 12px;
+		background: var(--bg);
+		border-radius: 4px;
+		margin-bottom: 16px;
+		flex-wrap: wrap;
+	}
+	.preview strong {
+		font-size: 1.1rem;
+	}
+	.preview .muted {
+		color: var(--text-muted);
+		font-size: 0.8rem;
+	}
+	.dlg-footer {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+	.btn-cancel {
+		padding: 7px 14px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: transparent;
+		color: var(--text);
+		cursor: pointer;
+		font-size: 0.85rem;
+	}
+	.btn-primary {
+		padding: 7px 14px;
+		border: 1px solid var(--accent);
+		border-radius: 4px;
+		background: var(--accent);
+		color: #fff;
+		cursor: pointer;
+		font-size: 0.85rem;
+	}
+	.btn-primary:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+</style>

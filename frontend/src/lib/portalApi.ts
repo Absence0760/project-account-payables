@@ -107,3 +107,68 @@ export const portalApi = {
 		return request<T>(path, { method: 'POST', body: form, headers: {} });
 	},
 };
+
+// ---------------------------------------------------------------------------
+// Early-payment discount offers (portal side)
+//
+// Mirrors the AP-side dynamic-discounting types, but vendor-scoped and without
+// any internal actor ids. Money + percent arrive as JSON numbers. Accepting an
+// offer only flips its status — it never moves money (the CFO-gated payment run
+// still funds it). See backend/docs/dynamic-discounting.md § Supplier portal.
+// ---------------------------------------------------------------------------
+
+export type PortalOfferStatus = 'offered' | 'accepted' | 'captured' | 'declined' | 'expired';
+
+export interface PortalDiscountTier {
+	days: number;
+	percent: number;
+	savings: number;
+}
+
+export interface PortalDiscountOffer {
+	id: string;
+	status: PortalOfferStatus;
+	scope: 'invoice' | 'vendor';
+	invoice_id: string | null;
+	invoice_number: string | null;
+	base_amount: number;
+	currency: string;
+	tiers: PortalDiscountTier[];
+	best_tier: PortalDiscountTier | null;
+	valid_from: string | null;
+	valid_until: string | null;
+	accepted_tier: PortalDiscountTier | null;
+	accepted_at: string | null;
+	captured_amount: number | null;
+	captured_at: string | null;
+	notes: string | null;
+	created_at: string;
+}
+
+export interface PortalDiscountOfferPage {
+	items: PortalDiscountOffer[];
+	total: number;
+	page: number;
+	page_size: number;
+}
+
+/** List early-payment discount offers relevant to the signed-in vendor. */
+export function listPortalDiscountOffers(status?: string): Promise<PortalDiscountOfferPage> {
+	const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+	return portalApi.get<PortalDiscountOfferPage>(`/api/portal/discount-offers${qs}`);
+}
+
+/** Accept an offer (optionally at a specific tier). Flips status only. */
+export function acceptPortalDiscountOffer(
+	id: string,
+	tierDays?: number,
+): Promise<PortalDiscountOffer> {
+	return portalApi.post<PortalDiscountOffer>(`/api/portal/discount-offers/${id}/accept`, {
+		tier_days: tierDays ?? null,
+	});
+}
+
+/** Decline an offer. */
+export function declinePortalDiscountOffer(id: string): Promise<PortalDiscountOffer> {
+	return portalApi.post<PortalDiscountOffer>(`/api/portal/discount-offers/${id}/decline`, {});
+}
