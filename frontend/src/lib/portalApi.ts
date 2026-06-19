@@ -107,3 +107,25 @@ export const portalApi = {
 		return request<T>(path, { method: 'POST', body: form, headers: {} });
 	},
 };
+
+// --- Notification preferences -------------------------------------------------
+
+/** Vendor-controlled email preferences for their own invoices' lifecycle. */
+export interface PortalNotificationPreferences {
+	email_on_payment: boolean;
+	email_on_rejection: boolean;
+}
+
+export function getPortalNotificationPreferences() {
+	return portalApi.get<PortalNotificationPreferences>('/api/portal/notification-preferences');
+}
+
+/** Partial update — omit a field to leave that preference unchanged. */
+export function updatePortalNotificationPreferences(
+	update: Partial<PortalNotificationPreferences>
+) {
+	return portalApi.patch<PortalNotificationPreferences>(
+		'/api/portal/notification-preferences',
+		update
+	);
+}
