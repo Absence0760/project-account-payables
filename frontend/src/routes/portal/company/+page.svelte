@@ -21,8 +21,22 @@
 	let taxSaving = $state(false);
 	let taxErr = $state('');
 
+	// Tax-form (W-9 / W-8) upload — applies live (it's a document, not a routing target).
+	let taxFormType = $state('w9');
+	let taxFormFile = $state<File | null>(null);
+	let taxFormSaving = $state(false);
+	let taxFormErr = $state('');
+	let taxFormMsg = $state('');
+	let downloadingForm = $state(false);
+
 	const info = $derived(portalCompany.info);
 	const pending = $derived(portalCompany.info?.pending_change ?? null);
+	const taxForm = $derived(portalCompany.taxForm);
+
+	const FORM_TYPE_LABEL: Record<string, string> = {
+		w9: 'W-9 (US)',
+		w8: 'W-8 (foreign)'
+	};
 
 	async function load() {
 		await portalCompany.fetchCompany();
@@ -31,6 +45,54 @@
 			email = i.email ?? '';
 			phone = i.phone ?? '';
 			address = i.address ?? '';
+		}
+		try {
+			await portalCompany.fetchTaxForm();
+			if (portalCompany.taxForm) taxFormType = portalCompany.taxForm.suggested_form_type;
+		} catch {
+			// Non-fatal — the rest of the page still renders.
+		}
+	}
+
+	function onTaxFormFile(e: Event) {
+		const target = e.target as HTMLInputElement;
+		taxFormFile = target.files && target.files.length ? target.files[0] : null;
+	}
+
+	async function submitTaxForm(e: Event) {
+		e.preventDefault();
+		if (!taxFormFile) return;
+		taxFormSaving = true;
+		taxFormErr = '';
+		taxFormMsg = '';
+		try {
+			await portalCompany.uploadTaxForm(taxFormFile, taxFormType);
+			taxFormFile = null;
+			taxFormMsg = 'Tax form uploaded.';
+		} catch (err) {
+			taxFormErr = err instanceof Error ? err.message : 'Upload failed';
+		} finally {
+			taxFormSaving = false;
+		}
+	}
+
+	async function downloadTaxForm() {
+		downloadingForm = true;
+		taxFormErr = '';
+		try {
+			const blob = await portalCompany.downloadTaxForm();
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `tax-form-${taxForm?.form_type ?? 'document'}`;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			taxFormErr = err instanceof Error ? err.message : 'Download failed';
+		} finally {
+			downloadingForm = false;
 		}
 	}
 
@@ -174,6 +236,59 @@
 			</button>
 		</form>
 	</section>
+
+	<!-- Tax forms: W-9 (US) / W-8 (foreign) — uploaded live -->
+	<section class="card">
+		<h2>Tax forms (W-9 / W-8)</h2>
+		<p class="note">
+			Upload your signed <strong>W-9</strong> (US suppliers) or
+			<strong>W-8</strong> (foreign suppliers) so your customer can meet their 1099 / withholding
+			obligations. PDF, PNG, JPEG, or TIFF.
+			{#if taxForm?.on_file}
+				<span class="tag">
+					{FORM_TYPE_LABEL[taxForm.form_type ?? ''] ?? 'On file'}
+					{#if taxForm.received_date}· received {taxForm.received_date}{/if}
+				</span>
+			{/if}
+		</p>
+		{#if taxFormErr}<div class="error">{taxFormErr}</div>{/if}
+		{#if taxFormMsg}<div class="message">{taxFormMsg}</div>{/if}
+
+		{#if taxForm?.on_file}
+			<p class="note">
+				A form is on file. You can replace it by uploading a new one below.
+				<button
+					type="button"
+					class="btn-link"
+					onclick={downloadTaxForm}
+					disabled={downloadingForm}
+				>
+					{downloadingForm ? 'Preparing…' : 'Download current form'}
+				</button>
+			</p>
+		{/if}
+
+		<form onsubmit={submitTaxForm}>
+			<label>
+				Form type
+				<select bind:value={taxFormType}>
+					<option value="w9">W-9 (US)</option>
+					<option value="w8">W-8 (foreign)</option>
+				</select>
+			</label>
+			<label>
+				Signed form
+				<input
+					type="file"
+					accept="application/pdf,image/png,image/jpeg,image/tiff"
+					onchange={onTaxFormFile}
+				/>
+			</label>
+			<button type="submit" class="btn-primary" disabled={taxFormSaving || !taxFormFile}>
+				{taxFormSaving ? 'Uploading…' : taxForm?.on_file ? 'Replace tax form' : 'Upload tax form'}
+			</button>
+		</form>
+	</section>
 </div>
 
 <style>
@@ -260,6 +375,27 @@
 	.btn-primary:disabled {
 		opacity: 0.55;
 		cursor: default;
+	}
+	.btn-link {
+		background: none;
+		border: none;
+		color: var(--accent);
+		cursor: pointer;
+		padding: 0;
+		font-size: inherit;
+		text-decoration: underline;
+	}
+	.btn-link:disabled {
+		opacity: 0.55;
+		cursor: default;
+	}
+	select {
+		padding: 8px 10px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--bg);
+		color: var(--text);
+		font-size: 0.9rem;
 	}
 	.error {
 		background: rgba(224, 64, 64, 0.1);

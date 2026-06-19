@@ -24,9 +24,17 @@ export interface PortalChangeRequest {
 	created_at: string;
 }
 
+export interface PortalTaxForm {
+	on_file: boolean;
+	form_type: string | null; // 'w9' | 'w8' | null
+	received_date: string | null;
+	suggested_form_type: string;
+}
+
 function createPortalCompany() {
 	let info = $state<PortalCompanyInfo | null>(null);
 	let changeRequests = $state<PortalChangeRequest[]>([]);
+	let taxForm = $state<PortalTaxForm | null>(null);
 	let loading = $state(false);
 	let error = $state('');
 
@@ -67,12 +75,31 @@ function createPortalCompany() {
 		);
 	}
 
+	async function fetchTaxForm() {
+		taxForm = await portalApi.get<PortalTaxForm>('/api/portal/company/tax-form');
+	}
+
+	async function uploadTaxForm(file: File, formType: string) {
+		// `upload` sends multipart with the file under `file`; the form type
+		// rides as an extra multipart field, matching the backend's Form(...).
+		taxForm = await portalApi.upload<PortalTaxForm>('/api/portal/company/tax-form', file, {
+			form_type: formType,
+		});
+	}
+
+	function downloadTaxForm(): Promise<Blob> {
+		return portalApi.download('/api/portal/company/tax-form/file');
+	}
+
 	return {
 		get info() {
 			return info;
 		},
 		get changeRequests() {
 			return changeRequests;
+		},
+		get taxForm() {
+			return taxForm;
 		},
 		get loading() {
 			return loading;
@@ -85,6 +112,9 @@ function createPortalCompany() {
 		requestBankChange,
 		requestTaxIdChange,
 		fetchChangeRequests,
+		fetchTaxForm,
+		uploadTaxForm,
+		downloadTaxForm,
 	};
 }
 
