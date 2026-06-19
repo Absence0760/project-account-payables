@@ -1,0 +1,231 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/models/invoice.dart';
+import 'package:ap_mobile/screens/approvals_screen.dart';
+import 'package:ap_mobile/screens/invoices_screen.dart';
+import 'package:ap_mobile/screens/login_screen.dart';
+import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/widgets/invoice_list_tile.dart';
+import 'package:ap_mobile/widgets/kpi_card.dart';
+import 'package:ap_mobile/widgets/status_badge.dart';
+
+// Regression guard mirroring the web axe pass: every key surface must clear
+// Flutter's built-in accessibility guidelines — minimum tap-target size
+// (WCAG 2.5.8), labelled tappables (WCAG 4.1.2 / 1.1.1) and text contrast
+// (WCAG 1.4.3). Run with `flutter test test/a11y/`.
+
+Widget _host(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+Invoice _invoice() => Invoice(
+      id: 'inv1',
+      invoiceNumber: 'INV-001',
+      vendorName: 'Acme Supplies',
+      amount: 1500,
+      currency: 'USD',
+      status: InvoiceStatus.readyForReview,
+      dueDate: DateTime(2026, 2, 1),
+      createdAt: DateTime(2026, 1, 1),
+    );
+
+http.Response _list(List<Map<String, dynamic>> items) => http.Response(
+      jsonEncode({'invoices': items}),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+
+Map<String, dynamic> _invoiceJson(String id) => {
+      'id': id,
+      'invoice_number': 'INV-$id',
+      'vendor_name': 'Acme Corp',
+      'amount': 100,
+      'currency': 'USD',
+      'status': 'ready_for_review',
+      'created_at': '2026-01-01T12:00:00',
+    };
+
+Future<void> _pumpUntil(WidgetTester tester, Finder finder) async {
+  for (var i = 0; i < 30 && finder.evaluate().isEmpty; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
+void main() {
+  group('InvoiceListTile', () {
+    testWidgets('meets tap-target, label and contrast guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        InvoiceListTile(invoice: _invoice(), onTap: () {}),
+      ));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+
+    testWidgets('announces a single composed label (vendor, amount, status)',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        InvoiceListTile(invoice: _invoice(), onTap: () {}),
+      ));
+      // The merged announcement leads with vendor + amount, not 5 fragments.
+      expect(
+        find.bySemanticsLabel(RegExp(r'Acme Supplies.*1,500.*Ready for Review')),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+  });
+
+  group('KpiCard', () {
+    testWidgets('meets contrast guideline and merges into one label',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        const KpiCard(
+          title: 'For Review',
+          value: '7',
+          subtitle: '3 overdue',
+          icon: Icons.rate_review,
+        ),
+      ));
+
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      expect(find.bySemanticsLabel('For Review: 7, 3 overdue'), findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('StatusBadge', () {
+    testWidgets('exposes its status as a label and clears contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        const StatusBadge(status: InvoiceStatus.pending),
+      ));
+
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      expect(find.bySemanticsLabel('Status: Pending'), findsOneWidget);
+      handle.dispose();
+    });
+
+    // The amber/orange/red hues are the worst-case for AA on the pale tint —
+    // guard each so a future "make it amber again" regression is caught.
+    for (final status in [
+      InvoiceStatus.readyForReview, // amber tint
+      InvoiceStatus.pending, // orange tint
+      InvoiceStatus.rejected, // red tint
+      InvoiceStatus.approved, // green tint
+    ]) {
+      testWidgets('clears contrast for ${status.value}', (tester) async {
+        final handle = tester.ensureSemantics();
+        await tester.pumpWidget(_host(StatusBadge(status: status)));
+        await expectLater(tester, meetsGuideline(textContrastGuideline));
+        handle.dispose();
+      });
+    }
+  });
+
+  group('LoginScreen', () {
+    setUp(() {
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('meets tap-target, label and contrast guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+      await tester.pump();
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+
+    testWidgets('the password show/hide toggle exposes an accessible label',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+      await tester.pump();
+
+      // The icon-only visibility toggle must announce its purpose (WCAG 4.1.2).
+      expect(find.bySemanticsLabel('Show password'), findsOneWidget);
+      // Toggling flips the label so its state is conveyed too.
+      await tester.tap(find.byTooltip('Show password'));
+      await tester.pump();
+      expect(find.bySemanticsLabel('Hide password'), findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('InvoicesScreen', () {
+    setUpAll(() async {
+      OfflineStore.instance.debugUseMemory();
+    });
+
+    setUp(() async {
+      InvoiceStore.instance.debugReset();
+      FlutterSecureStorage.setMockInitialValues({});
+      await OfflineStore.instance.clear();
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('the capture-invoice app-bar action exposes a label',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => _list([])),
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+      await tester.pump();
+
+      expect(find.bySemanticsLabel('Capture invoice'), findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('ApprovalsScreen', () {
+    setUpAll(() async {
+      OfflineStore.instance.debugUseMemory();
+    });
+
+    setUp(() async {
+      InvoiceStore.instance.debugReset();
+      FlutterSecureStorage.setMockInitialValues({});
+      await OfflineStore.instance.clear();
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('approve/reject affordances meet tap-target + label guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => _list([_invoiceJson('1')])),
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+      await _pumpUntil(tester, find.byType(InvoiceListTile));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+}

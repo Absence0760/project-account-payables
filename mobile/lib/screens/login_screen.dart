@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/screens/home_screen.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
+import 'package:ap_mobile/utils/a11y.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -15,6 +16,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
   final _tenantController = TextEditingController(text: 'acme');
   final _formKey = GlobalKey<FormState>();
+  bool _obscurePassword = true;
 
   @override
   void dispose() {
@@ -33,10 +35,18 @@ class _LoginScreenState extends State<LoginScreen> {
       _tenantController.text.trim(),
     );
 
-    if (success && mounted) {
+    if (!mounted) return;
+    if (success) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomeScreen()),
       );
+    } else {
+      // Live-region announce the failure so screen-reader users hear it
+      // without re-scanning the form (WCAG 4.1.3).
+      final error = AuthStore.instance.error;
+      if (error != null) {
+        A11y.announce(context, error);
+      }
     }
   }
 
@@ -57,10 +67,13 @@ class _LoginScreenState extends State<LoginScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(
-                        Icons.receipt_long,
-                        size: 64,
-                        color: Colors.blue,
+                      // Brand mark — decorative; hidden from assistive tech.
+                      const ExcludeSemantics(
+                        child: Icon(
+                          Icons.receipt_long,
+                          size: 64,
+                          color: Colors.blue,
+                        ),
                       ),
                       const SizedBox(height: 16),
                       const Text(
@@ -78,7 +91,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 14,
-                          color: Colors.grey.shade500,
+                          // shade700 clears AA contrast (shade500 is 2.55:1).
+                          color: Colors.grey.shade700,
                         ),
                       ),
                       const SizedBox(height: 32),
@@ -109,22 +123,48 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 16),
                       TextFormField(
                         controller: _passwordController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Password',
-                          prefixIcon: Icon(Icons.lock),
-                          border: OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.lock),
+                          border: const OutlineInputBorder(),
+                          // Labelled, ≥48dp show/hide toggle (WCAG 4.1.2). The
+                          // explicit Semantics label is the screen-reader name;
+                          // the tooltip serves sighted hover/long-press.
+                          suffixIcon: Semantics(
+                            label: _obscurePassword
+                                ? 'Show password'
+                                : 'Hide password',
+                            button: true,
+                            child: IconButton(
+                              tooltip: _obscurePassword
+                                  ? 'Show password'
+                                  : 'Hide password',
+                              icon: Icon(
+                                _obscurePassword
+                                    ? Icons.visibility
+                                    : Icons.visibility_off,
+                              ),
+                              onPressed: () => setState(
+                                () => _obscurePassword = !_obscurePassword,
+                              ),
+                            ),
+                          ),
                         ),
-                        obscureText: true,
+                        obscureText: _obscurePassword,
                         validator: (v) =>
                             v == null || v.isEmpty ? 'Required' : null,
                         onFieldSubmitted: (_) => _login(),
                       ),
                       if (auth.error != null) ...[
                         const SizedBox(height: 12),
-                        Text(
-                          auth.error!,
-                          style: const TextStyle(color: Colors.red),
-                          textAlign: TextAlign.center,
+                        Semantics(
+                          liveRegion: true,
+                          child: Text(
+                            auth.error!,
+                            // shade700 keeps the error legible at AA contrast.
+                            style: TextStyle(color: Colors.red.shade700),
+                            textAlign: TextAlign.center,
+                          ),
                         ),
                       ],
                       const SizedBox(height: 24),

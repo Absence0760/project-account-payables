@@ -7,6 +7,7 @@ import 'package:ap_mobile/config.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/utils/a11y.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
 
 final _currencyFormat = NumberFormat.currency(symbol: '\$');
@@ -123,6 +124,9 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+    // Mirror the toast to assistive tech — a SnackBar is not reliably
+    // announced on its own (WCAG 4.1.3).
+    A11y.announce(context, message);
   }
 
   @override
@@ -193,7 +197,10 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           // Invoice image
           if (inv.fileUrl != null && inv.fileUrl!.isNotEmpty) ...[
             const SizedBox(height: 16),
-            GestureDetector(
+            Semantics(
+              label: 'Invoice file. Double tap to view full screen.',
+              button: true,
+              child: GestureDetector(
               onTap: () => _showFullImage(context, inv.fileUrl!),
               child: Container(
                 constraints: const BoxConstraints(maxHeight: 200),
@@ -217,13 +224,14 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
                         const SizedBox(height: 8),
                         Text(
                           'Tap to view file',
-                          style: TextStyle(color: Colors.grey.shade500),
+                          style: TextStyle(color: Colors.grey.shade700),
                         ),
                       ],
                     ),
                   ),
                 ),
               ),
+            ),
             ),
           ],
 
@@ -320,14 +328,15 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: _submitting ? null : _reject,
-                icon: const Icon(Icons.close, color: Colors.red),
-                label: const Text(
+                icon: Icon(Icons.close, color: Colors.red.shade700),
+                label: Text(
                   'Reject',
-                  style: TextStyle(color: Colors.red),
+                  // shade700 keeps the destructive label at AA contrast.
+                  style: TextStyle(color: Colors.red.shade700),
                 ),
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 14),
-                  side: const BorderSide(color: Colors.red),
+                  side: BorderSide(color: Colors.red.shade700),
                 ),
               ),
             ),

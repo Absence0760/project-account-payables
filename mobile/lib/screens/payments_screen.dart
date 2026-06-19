@@ -58,18 +58,28 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                               const Divider(height: 1),
                           itemBuilder: (context, index) {
                             final p = _payments[index];
-                            return ListTile(
-                              leading: _methodIcon(p.method),
-                              title: Text(
-                                _currencyFormat.format(p.amount),
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
+                            final reference =
+                                p.reference ?? p.id.substring(0, 8);
+                            // One merged announcement for the whole payment row.
+                            return Semantics(
+                              label:
+                                  '${_currencyFormat.format(p.amount)}, '
+                                  '${p.method.label}, $reference, '
+                                  '${_statusLabel(p.status)}',
+                              excludeSemantics: true,
+                              child: ListTile(
+                                leading: _methodIcon(p.method),
+                                title: Text(
+                                  _currencyFormat.format(p.amount),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
+                                subtitle: Text(
+                                  '${p.method.label} • $reference',
+                                ),
+                                trailing: _statusChip(p.status),
                               ),
-                              subtitle: Text(
-                                '${p.method.label} • ${p.reference ?? p.id.substring(0, 8)}',
-                              ),
-                              trailing: _statusChip(p.status),
                             );
                           },
                         ),
@@ -90,13 +100,25 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     );
   }
 
+  String _statusLabel(PaymentStatus status) => switch (status) {
+        PaymentStatus.pending => 'Pending',
+        PaymentStatus.processing => 'Processing',
+        PaymentStatus.completed => 'Completed',
+        PaymentStatus.failed => 'Failed',
+        PaymentStatus.cancelled => 'Cancelled',
+      };
+
   Widget _statusChip(PaymentStatus status) {
-    final (label, color) = switch (status) {
-      PaymentStatus.pending => ('Pending', Colors.orange),
-      PaymentStatus.processing => ('Processing', Colors.blue),
-      PaymentStatus.completed => ('Completed', Colors.green),
-      PaymentStatus.failed => ('Failed', Colors.red),
-      PaymentStatus.cancelled => ('Cancelled', Colors.grey),
+    // Tint drives the background/border; text uses a darkened variant so the
+    // 12px bold label clears AA contrast (≥4.5:1) over the pale tint
+    // (WCAG 1.4.3). Orange can't reach 4.5:1 as a true orange, so `pending`
+    // uses a dark brown that reads as deep amber.
+    final (color, textColor) = switch (status) {
+      PaymentStatus.pending => (Colors.orange, Colors.brown.shade800),
+      PaymentStatus.processing => (Colors.blue, Colors.blue.shade800),
+      PaymentStatus.completed => (Colors.green, Colors.green.shade900),
+      PaymentStatus.failed => (Colors.red, Colors.red.shade900),
+      PaymentStatus.cancelled => (Colors.grey, Colors.grey.shade800),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -105,8 +127,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
-        label,
-        style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600),
+        _statusLabel(status),
+        style: TextStyle(
+          color: textColor,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

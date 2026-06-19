@@ -66,7 +66,7 @@ void main() {
     ));
     // The due-date label is the only Text rendered with a red color.
     final reds = tester.widgetList<Text>(find.byType(Text)).where(
-          (t) => t.style?.color == Colors.red,
+          (t) => t.style?.color == Colors.red.shade700,
         );
     expect(reds, isNotEmpty);
   });
@@ -77,7 +77,7 @@ void main() {
       InvoiceListTile(invoice: _invoice(dueDate: future)),
     ));
     final reds = tester.widgetList<Text>(find.byType(Text)).where(
-          (t) => t.style?.color == Colors.red,
+          (t) => t.style?.color == Colors.red.shade700,
         );
     expect(reds, isEmpty);
   });

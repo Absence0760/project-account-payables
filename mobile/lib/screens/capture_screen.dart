@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/services/camera_capture.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/utils/a11y.dart';
 
 /// Camera capture screen — snap a photo or pick from gallery, then upload.
 class CaptureScreen extends StatefulWidget {
@@ -48,15 +49,20 @@ class _CaptureScreenState extends State<CaptureScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(message)),
         );
+        // Announce success before navigating away (WCAG 4.1.3).
+        A11y.announce(context, message);
         Navigator.of(context).pop();
       }
     } catch (e) {
+      final message = e is ApiException
+          ? 'Upload failed (${e.statusCode}): ${e.message}'
+          : 'Upload failed: $e';
+      if (!mounted) return;
       setState(() {
         _uploading = false;
-        _error = e is ApiException
-            ? 'Upload failed (${e.statusCode}): ${e.message}'
-            : 'Upload failed: $e';
+        _error = message;
       });
+      A11y.announce(context, message);
     }
   }
 
@@ -78,10 +84,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          Icons.camera_alt,
-                          size: 80,
-                          color: Colors.grey.shade300,
+                        const ExcludeSemantics(
+                          child: Icon(
+                            Icons.camera_alt,
+                            size: 80,
+                            color: Colors.grey, // decorative placeholder
+                          ),
                         ),
                         const SizedBox(height: 16),
                         const Text(
@@ -112,10 +120,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text(
-                _error!,
-                style: const TextStyle(color: Colors.red),
-                textAlign: TextAlign.center,
+              child: Semantics(
+                liveRegion: true,
+                child: Text(
+                  _error!,
+                  style: TextStyle(color: Colors.red.shade700),
+                  textAlign: TextAlign.center,
+                ),
               ),
             ),
           if (_selectedFile != null)

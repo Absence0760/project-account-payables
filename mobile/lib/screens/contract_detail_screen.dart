@@ -5,6 +5,7 @@ import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/contract_store.dart';
+import 'package:ap_mobile/utils/a11y.dart';
 import 'package:ap_mobile/widgets/contract_status_badge.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
 
@@ -115,6 +116,8 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+    // Mirror the toast to assistive tech (WCAG 4.1.3).
+    A11y.announce(context, message);
   }
 
   @override
@@ -362,14 +365,15 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: _submitting ? null : _terminate,
-                icon: const Icon(Icons.block, color: Colors.red),
-                label: const Text(
+                icon: Icon(Icons.block, color: Colors.red.shade700),
+                label: Text(
                   'Terminate',
-                  style: TextStyle(color: Colors.red),
+                  // shade700 keeps the destructive label at AA contrast.
+                  style: TextStyle(color: Colors.red.shade700),
                 ),
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 14),
-                  side: const BorderSide(color: Colors.red),
+                  side: BorderSide(color: Colors.red.shade700),
                 ),
               ),
             ),

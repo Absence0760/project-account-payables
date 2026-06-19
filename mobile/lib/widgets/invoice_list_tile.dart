@@ -16,8 +16,34 @@ class InvoiceListTile extends StatelessWidget {
     this.onTap,
   });
 
+  // A single, sensible screen-reader announcement for the whole row, instead
+  // of letting the reader walk 4-5 disjoint Text spans (WCAG 1.3.1 / 4.1.2).
+  String get _semanticLabel {
+    final parts = <String>[
+      invoice.vendorName ?? 'Unknown Vendor',
+      if (invoice.amount != null) _currencyFormat.format(invoice.amount),
+      if (invoice.invoiceNumber != null) 'invoice ${invoice.invoiceNumber}',
+      invoice.status.label,
+      if (invoice.dueDate != null)
+        '${invoice.dueDate!.isBefore(DateTime.now()) ? 'past due' : 'due'} '
+            '${DateFormat('MMMM d').format(invoice.dueDate!)}',
+    ];
+    return parts.join(', ');
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Merge the inner spans into one announcement; the row stays a single
+    // focusable button for assistive tech when it's tappable.
+    return Semantics(
+      label: _semanticLabel,
+      button: onTap != null,
+      excludeSemantics: true,
+      child: _buildTile(),
+    );
+  }
+
+  Widget _buildTile() {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       onTap: onTap,
@@ -57,9 +83,11 @@ class InvoiceListTile extends StatelessWidget {
               Text(
                 DateFormat('MMM d').format(invoice.dueDate!),
                 style: TextStyle(
+                  // Darkened so the due-date label clears AA contrast at 12px
+                  // against white (plain Colors.red / grey.shade500 fail).
                   color: invoice.dueDate!.isBefore(DateTime.now())
-                      ? Colors.red
-                      : Colors.grey.shade500,
+                      ? Colors.red.shade700
+                      : Colors.grey.shade700,
                   fontSize: 12,
                 ),
               ),

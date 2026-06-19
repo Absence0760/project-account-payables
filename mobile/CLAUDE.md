@@ -153,6 +153,58 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Bulk operations (select multiple, delete, status change)
 - Export (CSV, JSON, XML)
 
+## Accessibility (WCAG 2.2 AA equivalent)
+
+The app targets WCAG 2.2 AA / EU EAA / ADA via Flutter's accessibility APIs.
+Follow these conventions on every new screen/widget:
+
+- **Label every icon-only / custom tappable.** A bare tooltip is *not* reliably
+  exposed as a screen-reader label on all platforms (verified — `IconButton`'s
+  `tooltip` shows up via `find.byTooltip` but not `find.bySemanticsLabel`). Wrap
+  icon-only buttons in `Semantics(label: ..., button: true, child: IconButton(...))`
+  and keep the `tooltip` for sighted hover (e.g. the login password show/hide
+  toggle, the invoices Capture action). Swipe-action affordances carry a visible
+  text label beside the icon (see `approvals_screen._swipeBackground`).
+- **Compose one announcement per row/card.** List tiles, KPI cards and status
+  badges wrap their inner spans in `Semantics(label: '...', excludeSemantics: true)`
+  so assistive tech reads one sensible phrase ("Acme Supplies, $1,500, invoice
+  INV-001, Ready for Review") instead of 5 disjoint fragments. Status badges
+  expose `'Status: <label>'`.
+- **Live-region announcements** for state changes that aren't seamlessly spoken
+  (toasts, a swiped row vanishing, inline form errors). Funnel them through
+  `A11y.announce(context, message)` in `lib/utils/a11y.dart` — it uses the
+  non-deprecated `SemanticsService.sendAnnouncement` and resolves
+  `TextDirection` from the active `Directionality` (avoids the `intl`
+  `TextDirection` name clash). Wired into the `_showSnack` helpers
+  (invoice/contract detail), capture upload result, login error, and the
+  approvals swipe-approve.
+- **Colour contrast ≥4.5:1.** Status/payment badges render the text in a
+  *darkened* variant (`.shade700`/`.shade800`/`.shade900`) of the accent over
+  the 0.15-alpha tint — the full-saturation hue fails AA. Muted greys use
+  `grey.shade700` (not `shade500`/`shade600`, which fail at 11-14px).
+- **Decorative icons** (brand mark, placeholder camera glyph, aging dots) are
+  wrapped in `ExcludeSemantics` so they aren't announced.
+- **Tap targets ≥48dp** — use `IconButton` defaults; don't shrink hit areas.
+- **Don't disable text scaling / reduce-motion.** The app uses default Material
+  transitions only, which already honour the platform settings; no custom
+  animation caps scaling or ignores `MediaQuery.disableAnimations`.
+
+**Regression guard** (mirrors the web axe pass) — `test/a11y/accessibility_test.dart`.
+In a `testWidgets`, call `tester.ensureSemantics()`, pump the widget/screen, then:
+
+```dart
+await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+await expectLater(tester, meetsGuideline(textContrastGuideline));
+```
+
+plus `find.bySemanticsLabel(...)` to confirm icon buttons expose labels. Covers
+the invoice list tile, KPI card, status badge, login screen, the capture action,
+and the approvals approve/reject affordances. `textContrastGuideline` is strict
+(it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
+contrast check when introducing new coloured text.
+
 ## Conventions
 
 - **StatefulWidget + setState** for local state, **ChangeNotifier** for shared state

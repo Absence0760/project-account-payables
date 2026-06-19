@@ -23,12 +23,21 @@ void main() {
     }
   });
 
-  testWidgets('tints the text by status color (active = green)',
+  testWidgets('tints the text by status color (active = darkened green)',
       (tester) async {
     await tester.pumpWidget(_host(
       const ContractStatusBadge(status: ContractStatus.active),
     ));
     final text = tester.widget<Text>(find.text('Active'));
-    expect(text.style?.color, Colors.green);
+    // Darkened to shade900 for WCAG AA contrast (≥4.5:1) against the pale tint.
+    expect(text.style?.color, Colors.green.shade900);
+  });
+
+  testWidgets('passes the text-contrast accessibility guideline',
+      (tester) async {
+    await tester.pumpWidget(_host(
+      const ContractStatusBadge(status: ContractStatus.expired),
+    ));
+    await expectLater(tester, meetsGuideline(textContrastGuideline));
   });
 }

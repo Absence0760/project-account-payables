@@ -208,24 +208,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _agingBucket(String label, double amount, Color color) {
+    // One announcement per bucket ("Current: $1,234") rather than the dot +
+    // amount + label read as three fragments (WCAG 1.3.1).
     return Expanded(
-      child: Column(
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            _currencyFormat.format(amount),
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-          ),
-          Text(
-            label,
-            style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-          ),
-        ],
+      child: Semantics(
+        label: '$label: ${_currencyFormat.format(amount)}',
+        excludeSemantics: true,
+        child: Column(
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _currencyFormat.format(amount),
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+            Text(
+              label,
+              // shade700 keeps the small (11px) label at AA contrast.
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 11),
+            ),
+          ],
+        ),
       ),
     );
   }

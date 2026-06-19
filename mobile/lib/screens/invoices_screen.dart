@@ -37,11 +37,17 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
       appBar: AppBar(
         title: const Text('Invoices'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.camera_alt),
-            tooltip: 'Capture Invoice',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const CaptureScreen()),
+          // Explicit label is the screen-reader name (tooltip alone isn't
+          // exposed as a semantics label on all platforms — WCAG 4.1.2).
+          Semantics(
+            label: 'Capture invoice',
+            button: true,
+            child: IconButton(
+              icon: const Icon(Icons.camera_alt),
+              tooltip: 'Capture Invoice',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const CaptureScreen()),
+              ),
             ),
           ),
         ],

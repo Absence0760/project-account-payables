@@ -16,8 +16,33 @@ class ContractListTile extends StatelessWidget {
     this.onTap,
   });
 
+  // A single, sensible screen-reader announcement for the whole row instead of
+  // walking each disjoint Text span (WCAG 1.3.1 / 4.1.2).
+  String get _semanticLabel {
+    final parts = <String>[
+      contract.title ?? contract.vendorName ?? 'Untitled Contract',
+      if (contract.totalValue != null)
+        _currencyFormat.format(contract.totalValue),
+      if (contract.contractNumber != null) 'contract ${contract.contractNumber}'
+      else if (contract.vendorName != null) contract.vendorName!,
+      contract.status.label,
+      if (contract.endDate != null)
+        'ends ${DateFormat('MMMM d, yyyy').format(contract.endDate!)}',
+    ];
+    return parts.join(', ');
+  }
+
   @override
   Widget build(BuildContext context) {
+    return Semantics(
+      label: _semanticLabel,
+      button: onTap != null,
+      excludeSemantics: true,
+      child: _buildTile(),
+    );
+  }
+
+  Widget _buildTile() {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       onTap: onTap,
@@ -69,9 +94,10 @@ class ContractListTile extends StatelessWidget {
               Text(
                 DateFormat('MMM d, yyyy').format(contract.endDate!),
                 style: TextStyle(
+                  // Darkened for AA contrast at 12px against white.
                   color: contract.endDate!.isBefore(DateTime.now())
-                      ? Colors.red
-                      : Colors.grey.shade500,
+                      ? Colors.red.shade700
+                      : Colors.grey.shade700,
                   fontSize: 12,
                 ),
               ),

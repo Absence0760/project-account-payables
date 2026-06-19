@@ -23,12 +23,22 @@ void main() {
     }
   });
 
-  testWidgets('tints the text by status color (approved = green)',
+  testWidgets('tints the text by status color (approved = darkened green)',
       (tester) async {
     await tester.pumpWidget(_host(
       const StatusBadge(status: InvoiceStatus.approved),
     ));
     final text = tester.widget<Text>(find.text('Approved'));
-    expect(text.style?.color, Colors.green);
+    // Darkened to shade900 so the foreground clears WCAG AA contrast (≥4.5:1)
+    // against the pale tint background.
+    expect(text.style?.color, Colors.green.shade900);
+  });
+
+  testWidgets('passes the text-contrast accessibility guideline',
+      (tester) async {
+    await tester.pumpWidget(_host(
+      const StatusBadge(status: InvoiceStatus.readyForReview),
+    ));
+    await expectLater(tester, meetsGuideline(textContrastGuideline));
   });
 }

@@ -126,10 +126,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // Logout
           ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title: const Text(
+            leading: Icon(Icons.logout, color: Colors.red.shade700),
+            title: Text(
               'Sign Out',
-              style: TextStyle(color: Colors.red),
+              // shade700 keeps the destructive label at AA contrast.
+              style: TextStyle(color: Colors.red.shade700),
             ),
             onTap: () async {
               await AuthStore.instance.logout();
