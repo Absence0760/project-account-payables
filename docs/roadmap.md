@@ -84,15 +84,15 @@ Conflict resolution: the per-vendor cache (see above) runs AFTER the AI output a
 - [x] GL code validation against chart of accounts — post-extraction guard in `run_extraction` rejects any AI-suggested code (or cached vendor prior that's gone stale) that isn't in the org's active chart, drops it from the invoice header and line items, and emits a structured `gl_account_invalid` warning. No-ops when the org hasn't synced a chart yet.
 
 ### Recurring / Subscription Invoices
-**Status:** Planned
+**Status:** Shipped. A `RecurringInvoiceTemplate` (tenant-scoped, migration 0046) captures vendor + amount + GL coding + entity + cadence; the `recurring_invoices` background sweep (mirrors `contract_renewal` / `discount_auto_trigger`, off by default via `AP_RECURRING_INVOICES_ENABLED`) generates the next pre-coded `Invoice` into the approval queue, idempotent on `(template, period_key)` via the partial unique index `uq_invoice_recurring_period`. `/api/recurring` CRUD + pause/resume/end/generate-now + upcoming-schedule + history; the `/recurring` frontend route under the Billing nav group. See `backend/docs/recurring-invoices.md`.
 
 Predictable, fixed-cadence spend (rent, SaaS seats, utilities, insurance) shouldn't need a fresh upload + extraction every period. A recurring template auto-generates the next invoice on schedule, pre-coded and pre-matched, so it lands straight in the approval queue. Common in Bill.com, Tipalti, and Stampli; absent here today.
 
-- [ ] `RecurringInvoiceTemplate` tenant-scoped model — vendor, amount (or amount source), GL coding, entity, cadence (RRULE-ish: monthly / quarterly / annual + day-of-period), start/end, next-run-at; new Alembic migration that fans out to every tenant
-- [ ] Background generation sweep — mirror the existing `contract_renewal` / `discount_auto_trigger` loop pattern (`AP_RECURRING_INVOICES_ENABLED` master switch, off in local dev); generates the next `Invoice` in `new`/`pending` and advances `next_run_at`. **Idempotent** on `(template_id, period_key)` so a double-fire never double-creates
-- [ ] Variance handling — flag when an arrived invoice for a recurring vendor deviates from the template amount beyond a tolerance (reuse the price-variance signal from data enrichment) rather than blindly trusting the schedule
-- [ ] Link generated invoices back to their template + a "skip / pause / end" control on the template; every generation + lifecycle change audited
-- [ ] Frontend `/recurring` route — template CRUD, upcoming-schedule preview, generated-invoice history
+- [x] `RecurringInvoiceTemplate` tenant-scoped model — vendor, amount, GL coding, entity, cadence (monthly / quarterly / annual + `day_of_period`), start/end, `next_run_on`; Alembic migration 0046 fans out to every tenant
+- [x] Background generation sweep (`services/recurring_invoices.py`) — mirrors the existing `contract_renewal` / `discount_auto_trigger` loop pattern (`AP_RECURRING_INVOICES_ENABLED` master switch, off in local dev); generates the next `Invoice` into the queue and advances `next_run_on`. **Idempotent** on `(template_id, period_key)` (partial unique index `uq_invoice_recurring_period`) so a double-fire never double-creates. Never moves money
+- [x] Variance handling — flags when an arrived invoice for a recurring vendor deviates from the template amount beyond `variance_tolerance_pct` (reuses the price-variance signal from data enrichment) rather than blindly trusting the schedule
+- [x] Generated invoices link back to their template (`invoices.recurring_template_id`) + pause / resume / end / generate-now controls on the template; every generation + lifecycle change audited (`recurring_template.*` actions)
+- [x] Frontend `/recurring` route — template CRUD, status filter chips, KPI row, upcoming-schedule preview + generated-invoice history in the detail modal
 
 **Competitors:** Bill.com (recurring bills), Tipalti (subscription spend), Stampli, Airbase (SaaS spend management)
 

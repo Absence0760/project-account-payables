@@ -1,10 +1,11 @@
 """Add feature-page demo data to a tenant: contracts, credit memos, discount
-offers, and expenses (reports + policies).
+offers, recurring invoice templates, and expenses (reports + policies).
 
 The main ``scripts/seed.py`` full seed builds invoices/vendors/POs/payments but
 never populated the CLM (`/contracts`), credit-memo (`/credit-memos`),
-dynamic-discounting (`/discounts`) or expense (`/expenses`) pages — so those
-list views render empty on a freshly-seeded tenant. This script fills that gap.
+dynamic-discounting (`/discounts`), recurring-invoice (`/recurring`) or expense
+(`/expenses`) pages — so those list views render empty on a freshly-seeded
+tenant. This script fills that gap.
 
 It is **additive and idempotent**: it bails if the tenant already has contracts,
 so re-running is safe, and `seed.py`'s `seed_tenant` calls `seed_extras()`
@@ -59,6 +60,14 @@ from app.models.expense import (
 from app.models.gl_account import GLAccount
 from app.models.invoice import Invoice
 from app.models.organization import Organization
+from app.models.recurring_invoice import (
+    CADENCE_ANNUAL,
+    CADENCE_MONTHLY,
+    CADENCE_QUARTERLY,
+    STATUS_ACTIVE,
+    STATUS_PAUSED,
+    RecurringInvoiceTemplate,
+)
 from app.models.user import User
 from app.models.vendor import Vendor
 
@@ -78,7 +87,8 @@ async def _actor_user_id(org_id: uuid.UUID) -> uuid.UUID | None:
 
 
 async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
-    """Add contracts, credit memos, discount offers, and expenses to a tenant.
+    """Add contracts, credit memos, discount offers, recurring templates, and
+    expenses to a tenant.
 
     Idempotent: returns an empty tally and does nothing if the tenant already
     has contracts. Does **not** commit — the caller owns the transaction.
@@ -361,6 +371,51 @@ async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
         )
     session.add_all(offers)
 
+    # ---- Recurring / subscription invoice templates -----------------------
+    # A small spread so the `/recurring` page isn't empty: a couple of active
+    # monthly templates (SaaS + lease), a quarterly active one, and a paused
+    # one. `next_run_on` is set to a near-future date so the upcoming-schedule
+    # preview + generate-now have a live period to project; the sweep itself is
+    # off by default (AP_RECURRING_INVOICES_ENABLED=false) so nothing fires in
+    # local dev. Money is exact (Numeric(15, 2)).
+    recurring_specs = [
+        # (name, cadence, status, amount, gl_idx, day_of_period, terms)
+        ("Cloud hosting subscription", CADENCE_MONTHLY, STATUS_ACTIVE, "2400.00", 0, 1, "Net 30"),
+        ("Office lease — HQ", CADENCE_MONTHLY, STATUS_ACTIVE, "12000.00", 1, 1, "Net 15"),
+        ("Quarterly support retainer", CADENCE_QUARTERLY, STATUS_ACTIVE, "9000.00", 2, 5, "Net 30"),
+        ("Annual insurance premium", CADENCE_ANNUAL, STATUS_ACTIVE, "18000.00", 0, 10, "Net 45"),
+        ("Paused — legacy SaaS seats", CADENCE_MONTHLY, STATUS_PAUSED, "750.00", 1, 1, "Net 30"),
+    ]
+    recurring: list[RecurringInvoiceTemplate] = []
+    for i, (name, cadence, status, amount, gl_idx, day, terms) in enumerate(recurring_specs):
+        vendor = vendors[i % len(vendors)]
+        gl = gl_accounts[gl_idx % len(gl_accounts)].code if gl_accounts else None
+        # next_run_on: active templates roll in the next few days; paused get none.
+        next_run = (today + timedelta(days=3 + i)) if status == STATUS_ACTIVE else None
+        recurring.append(
+            _ent(
+                RecurringInvoiceTemplate(
+                    organization_id=org_id,
+                    name=name,
+                    vendor_id=vendor.id,
+                    vendor_name=vendor.name,
+                    description=f"{name} — {vendor.name} (recurring).",
+                    amount=_q(Decimal(amount)),
+                    currency="USD",
+                    gl_account=gl,
+                    payment_terms=terms,
+                    cadence=cadence,
+                    day_of_period=day,
+                    start_date=today - timedelta(days=90),
+                    next_run_on=next_run,
+                    status=status,
+                    variance_tolerance_pct=Decimal("5.00"),
+                    notes="Seed demo recurring template.",
+                )
+            )
+        )
+    session.add_all(recurring)
+
     # ---- Expense policies -------------------------------------------------
     policies = [
         _ent(
@@ -497,6 +552,7 @@ async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
         "contracts": len(contracts),
         "credit_memos": len(memos),
         "discount_offers": len(offers),
+        "recurring_templates": len(recurring),
         "expense_policies": len(policies),
         "expense_reports": len(reports),
         "expenses": len(all_expenses),
@@ -528,7 +584,7 @@ async def _run(db_name: str) -> None:
         await engine.dispose()
     print(
         f"Done. Visit http://{org.slug}.localhost:7777/contracts "
-        "(and /credit-memos, /discounts, /expenses)."
+        "(and /credit-memos, /discounts, /recurring, /expenses)."
     )
 
 

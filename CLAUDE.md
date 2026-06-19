@@ -121,6 +121,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `/vendors` | Vendor CRUD, ERP sync; sanctions screening (`POST {id}/screen`, `GET {id}/screening-history`, `GET screening/review-queue`, `POST {id}/block`\|`/unblock` — screen also runs on create/update), vendor risk (`GET {id}/risk`, `POST {id}/risk/recompute`, `GET risk/summary`). See `backend/docs/vendor-risk-screening.md` |
 | `/payments` | Payment listing, payment runs (create/execute) |
 | `/discounts` | Dynamic discounting — supplier-offered sliding-scale early-pay offers (`GET/POST /offers`, `POST {id}/accept`\|`/decline`), per-invoice ROI (`GET /invoices/{id}/roi`), cash-constrained optimizer (`POST /optimize`), bulk vendor negotiation (`POST /bulk-negotiate`), captured/missed/projected-savings dashboard (`GET /dashboard`). Read all four roles; mutate admin/ap_manager (accept also cfo); every mutation audited; entity-scoped. See `backend/docs/dynamic-discounting.md` |
+| `/recurring` | Recurring / subscription invoice templates — list (status/vendor_id/search/page filters), CRUD (DELETE 409s once invoices generated), `POST {id}/pause`\|`/resume`\|`/end`\|`/generate-now`, `GET {id}/upcoming-schedule?count=`, `GET {id}/history`. The `recurring_invoices` sweep generates the next pre-coded Invoice into the approval queue, idempotent on `(template, period_key)` via `uq_invoice_recurring_period`; never moves money. Read all four roles; mutate admin/ap_manager; entity-scoped; every mutation audited (`recurring_template.created/updated/paused/resumed/ended/deleted/generated`). See `backend/docs/recurring-invoices.md` |
 | `/cards` | Virtual card issuance (Lithic/Nium), webhooks, rebates |
 | `/contracts` | Contract lifecycle (CLM) — CRUD + search/filter, document upload (`POST {id}/upload`) + proxy (`GET /file/{file_key}`, cross-tenant-checked), lifecycle (`POST {id}/activate\|terminate\|cancel\|renew`), spend summary on detail, contract-based PO creation (`POST {id}/create-po`). Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager; every mutation audited |
 | `/expenses` | Expense Management — expense CRUD (list paginated + entity-scoped, status/report filters), receipt upload (`POST {id}/receipt` → `upload_expense_receipt`) + cross-tenant-checked download proxy (`GET /receipt/{file_key}`), CSV export, bulk GL re-code. WF3 refreshes `Expense.policy_violations` (best-effort) on every create/PATCH/receipt write via `services/expense_policy.evaluate_expense`. Read admin/ap_manager/ap_clerk/cfo; mutate admin/ap_manager/ap_clerk; every mutation audited |
@@ -172,6 +173,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 | `discount_offers.py` | `DiscountOffer` tier selection + savings math + lifecycle mutators (accept/decline/capture/expire) + bulk-vendor offer builder. Pure; never commits. |
 | `discount_optimizer.py` | Ranks open offers by APR and greedily selects the highest-yield worthwhile ones within a cash budget (capture vs. cash preservation). Pure. |
 | `discount_auto_trigger.py` | Background sweep that auto-accepts open offers clearing `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`. Mirrors `contract_renewal`; **only flags `offered → accepted`, never moves money** (CFO-gated payment run still funds). |
+| `recurring_invoices.py` | Recurring / subscription invoice generation sweep. Mirrors `discount_auto_trigger` / `contract_renewal`; finds `active` `RecurringInvoiceTemplate`s whose `next_run_on` has arrived, generates the next pre-coded `Invoice` into the approval queue (period_key `YYYY-MM` / `YYYY-Qn` / `YYYY`), advances `next_run_on`, and writes a `recurring_template.generated` audit row. **Idempotent on `(template, period_key)`** via the partial unique index `uq_invoice_recurring_period` — **never moves money** (CFO-gated payment run still funds). Disabled by default (`AP_RECURRING_INVOICES_ENABLED`). See `backend/docs/recurring-invoices.md`. |
 
 ### Adapter patterns (pluggable providers)
 
@@ -215,7 +217,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 ### Data models
 
 **Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate
-**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage, ExpenseReport, Expense, ExpensePolicy, CorporateCardTransaction, ExpensePreapproval, DiscountOffer
+**Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage, ExpenseReport, Expense, ExpensePolicy, CorporateCardTransaction, ExpensePreapproval, DiscountOffer, RecurringInvoiceTemplate
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 2 + 2b scope reads/writes (incl. the dashboard + CFO analytics) by the `X-Entity-ID` header (`app/tenant.py` → `get_entity_id` / `get_write_entity_id` / `apply_entity_scope`) with a sidebar entity switcher; per-entity workflow selection is deferred (Phase 3). See `docs/multi-entity.md`.
 
@@ -273,6 +275,9 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_DISCOUNT_OPTIMIZATION_ENABLED` | `false` | Master switch for the dynamic-discounting auto-capture background sweep — keep `false` in local dev, flip on in deployed envs. The sweep only flags high-ROI offers as accepted; it never moves money. See `backend/docs/dynamic-discounting.md`. |
 | `AP_DISCOUNT_OPTIMIZATION_INTERVAL_SECONDS` | `3600` | Auto-capture sweep interval. |
 | `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD` | `12.0` | Annualized return (APR %) an early-pay offer must clear for the sweep to auto-accept it. |
+| `AP_RECURRING_INVOICES_ENABLED` | `false` | Master switch for the recurring / subscription invoice generation sweep — keep `false` in local dev, flip on in deployed envs. The sweep only generates pre-coded invoices into the approval queue; it never moves money. See `backend/docs/recurring-invoices.md`. |
+| `AP_RECURRING_INVOICES_INTERVAL_SECONDS` | `3600` | Recurring-invoice generation sweep interval. |
+| `AP_RECURRING_INVOICES_MAX_PER_SWEEP` | `200` | Per-tick cap on invoices generated per tenant (backlog guard). |
 | `AP_DISCOUNT_COST_OF_CAPITAL_PCT` | `8.0` | Platform-default annual cost of capital used by the ROI calculator; per-org override `Organization.settings.discounting.cost_of_capital_pct`. |
 | `AP_QMS_SYNC_ENABLED` | `false` | Master switch for the QMS inspection-sync background sweep — keep `false` in local dev, flip on in deployed envs once a real QMS is configured per-org. Only upserts inspection rows; never moves money. See `backend/docs/po-matching.md` § QMS integration. |
 | `AP_QMS_SYNC_INTERVAL_SECONDS` | `3600` | QMS sync sweep interval. |
@@ -300,6 +305,7 @@ Full list in `backend/app/config.py`.
 | Payments | `backend/docs/payments.md` — payment runs, schedules, ERP sync |
 | Virtual cards | `backend/docs/virtual-cards.md` — Lithic/Nium, rebates, webhooks |
 | Dynamic discounting | `backend/docs/dynamic-discounting.md` — DiscountOffer model + migration 0043, ROI primitive, optimizer, auto-capture sweep, financing adapters, `/api/discounts` + `/discounts` dashboard |
+| Recurring / subscription invoices | `backend/docs/recurring-invoices.md` — RecurringInvoiceTemplate model + migration 0046, the `(template, period_key)` idempotency index, generation sweep + env vars, variance signal, `/api/recurring` API + `/recurring` route |
 | PO matching | `backend/docs/po-matching.md` — 2-way/3-way matching logic |
 | Vendor mgmt | `backend/docs/vendor-management.md` — sources, sync, matching |
 | Local AI testing | `backend/docs/local-ai-testing.md` — Ollama setup |

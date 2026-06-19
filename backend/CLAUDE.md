@@ -18,6 +18,7 @@ Deep-dive docs live in `backend/docs/`:
 | Workflow snapshot semantics | `docs/workflow-snapshots.md` |
 | Payment runs + ERP sync | `docs/payments.md` |
 | Dynamic discounting & early-payment optimization | `docs/dynamic-discounting.md` |
+| Recurring / subscription invoices | `docs/recurring-invoices.md` |
 | International payments (FX + SEPA + SWIFT) | `docs/international-payments.md` |
 | Multi-currency reporting (reporting currency + unrealized FX) | `docs/multi-currency.md` |
 | International tax (VAT / GST / withholding) | `docs/international-tax.md` |
@@ -227,8 +228,9 @@ Step types: `extraction` → `approval` → `erp_export` → `done`
 | `services/contract_renewal.py` | Contract renewal-alert sweep. Sweeps every tenant DB; finds `active` contracts within their own `renewal_notice_days` of `end_date` with no alert sent, notifies the owner + AP managers once (`contract_renewal_due` event), then stamps `renewal_alert_sent_at` for idempotency (cleared on `POST /api/contracts/{id}/renew`). Disabled by default (`AP_CONTRACT_RENEWAL_ENABLED`); `AP_CONTRACT_RENEWAL_INTERVAL_SECONDS` / `_DEFAULT_NOTICE_DAYS`. See `docs/contracts.md`. |
 | `services/discount_auto_trigger.py` | Dynamic-discounting auto-capture sweep. Sweeps every tenant DB; auto-accepts `offered` `DiscountOffer`s whose annualized ROI clears `AP_DISCOUNT_AUTO_CAPTURE_ROI_THRESHOLD`, writing a `discount_offer.auto_accepted` audit row. **Only flags `offered → accepted` — never creates a Payment/PaymentRun**; the status guard is the dedupe. Disabled by default (`AP_DISCOUNT_OPTIMIZATION_ENABLED`). See `docs/dynamic-discounting.md`. |
 | `services/retention_sweep.py` | Retention-policy enforcement sweep (SOX records management). Sweeps every tenant DB; soft-archives overdue terminal (`done`/`paid`) invoices via a `meta.archived_at` marker (idempotent — re-run never double-archives) and writes a `retention.archived` manifest. **Composes with the audit-immutability trigger — NEVER deletes `audit_log` rows**; for the audit class "retention" verifies WORM shipment (`shipped_at`) + records overdue/unshipped counts only. Windows are per-class on `Organization.settings.retention` (`resolve_retention_months`); `GET/PUT /api/retention-policy` reads/updates them. Disabled by default (`AP_RETENTION_ENABLED`); `AP_RETENTION_INTERVAL_SECONDS` / `_DEFAULT_MONTHS`. See `docs/retention.md`. |
+| `services/recurring_invoices.py` | Recurring / subscription invoice generation sweep. Sweeps every tenant DB; finds `active` `RecurringInvoiceTemplate`s whose `next_run_on` has arrived, generates the next pre-coded `Invoice` into the approval queue (period_key `YYYY-MM` / `YYYY-Qn` / `YYYY`), advances `next_run_on`, and writes a `recurring_template.generated` audit row. **Idempotent on `(template, period_key)`** via the partial unique index `uq_invoice_recurring_period` (a double-fire never double-creates); **only creates an Invoice in the queue — never creates a Payment/PaymentRun**, exactly like `discount_auto_trigger`. Per-tenant cap `AP_RECURRING_INVOICES_MAX_PER_SWEEP`. Disabled by default (`AP_RECURRING_INVOICES_ENABLED`); `AP_RECURRING_INVOICES_INTERVAL_SECONDS`. See `docs/recurring-invoices.md`. |
 
-All seven are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
+All eight are long-lived asyncio tasks started in `main.lifespan` and cancelled on shutdown.
 
 ## Adapter patterns
 
