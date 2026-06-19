@@ -35,6 +35,39 @@ logged (PII-free) and swallowed — the transition/assignment always completes.
 `ap_manager` recipients are resolved against the control plane via
 `notification_dispatch.resolve_role_user_ids(org_id, "ap_manager")`.
 
+For `invoice_paid` and `invoice_rejected`, the same chokepoint **also** emails
+the invoice's **vendor portal users** — see § Vendor recipients below.
+
+### Vendor recipients (`invoice_paid` / `invoice_rejected`)
+
+The supplier portal lets a vendor get **emailed** when one of *their own*
+invoices is paid or rejected (supplier-portal Phase 2). This fans out from the
+same `transition_invoice` chokepoint, but through a **separate** path —
+`services/vendor_notifications.notify_vendor_of_invoice_event` — because the
+recipients are `VendorUser`s (tenant DB), not control-plane `User`s, and
+`notify_event` only ever reaches control-plane Users:
+
+- It loads the **active** portal users of the invoice's `vendor_id` and emails
+  each one whose per-user preference allows it.
+- It is **independent** of the control-plane recipient resolution: a
+  portal-submitted invoice usually has no `uploaded_by_id` (the actor was a
+  VendorUser), so it has zero control-plane recipients yet still must reach the
+  supplier. The vendor fan-out runs even when the control-plane recipient list
+  is empty.
+- It runs under its own best-effort guard (in addition to `notify_event`'s) so a
+  failure never breaks the invoice transition or its audit row.
+- Preferences are stored on `vendor_users.notification_prefs` (JSONB, migration
+  0052), keyed by the **same** `invoice_paid` / `invoice_rejected` event strings
+  and read with the **same** `resolve_prefs` helper (opt-out, defaults on).
+  Vendors have no in-app center, so only the `email` channel is consulted.
+- Emails reuse the shared **PII-free** templates (`notification_templates.render`)
+  — invoice number, vendor name, amount, currency, optional rejection reason.
+  Failures log the event type only, never the recipient address.
+
+The vendor-friendly API shape (`email_on_payment` / `email_on_rejection`) and
+the GET/PATCH portal endpoints are documented in
+[supplier-portal.md](supplier-portal.md) § Notification preferences.
+
 ### Email approval links (`invoice_assigned` only)
 
 When `AP_EMAIL_ACTION_SIGNING_KEY` is set, the **`invoice_assigned`** email gains
@@ -152,5 +185,11 @@ user's row returns the same 404 as a missing row — no enumeration.
   transition + audit row survive), kill switch (real DB).
 - `tests/test_notifications.py` — router: per-user scoping, cross-user/tenant
   isolation, mark-read 404, read-all, pagination shape, prefs round-trip.
+- `tests/test_vendor_notification_prefs.py` — vendor prefs: pure mapping
+  (`prefs_to_response` / `apply_pref_update`), the GET/PATCH portal endpoints
+  (vendor-scoped, auth enforced, audited, caller-only), and the dispatch
+  substance — paid emails the vendor when on, rejected suppressed when off,
+  inactive/other-vendor users skipped, failing adapter never breaks the
+  transition (real DB).
 - `frontend/tests-e2e/notifications/` — center badge/list, mark read, unread
   filter + empty state, preference persistence.

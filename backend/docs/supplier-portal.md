@@ -78,6 +78,27 @@ uses `get_current_vendor_user` (except `/portal/auth/login` and
 | POST   | `/portal/company/tax-id-change`       | **Stages** a `tax_id` change (NOT applied); 202                             |
 | GET    | `/portal/company/change-requests`     | This vendor's own change requests + statuses                                |
 
+### Notification preferences (`portal.py`)
+
+| Method | Path                                  | Notes                                                                        |
+|--------|---------------------------------------|------------------------------------------------------------------------------|
+| GET    | `/portal/notification-preferences`    | Calling vendor user's effective email prefs (`email_on_payment`, `email_on_rejection`); defaults on |
+| PATCH  | `/portal/notification-preferences`    | Partial update of the **caller's own** `VendorUser` prefs; audited; unspecified fields unchanged |
+
+A vendor portal user controls, per user, whether they get **emailed** when one
+of *their own* invoices is **paid** or **rejected**. Stored on
+`vendor_users.notification_prefs` (JSONB, migration 0052), keyed by the same
+`invoice_paid` / `invoice_rejected` event strings the rest of the system uses
+(`{event_type: {"email": bool}}`), mapped to the vendor-friendly
+`email_on_payment` / `email_on_rejection` shape by
+`services/vendor_notifications.py`. Opt-out, not opt-in: an unset event defaults
+to **on**. Vendors have no in-app notification center, so only the `email`
+channel exists. The PATCH is scoped to the caller's own row
+(`get_current_vendor_user`) — a vendor user can never touch another's prefs —
+and writes a PII-free `vendor_user.notification_prefs_updated` audit row (field
+names only). Actual email dispatch is wired into the `transition_invoice`
+chokepoint; see [notifications.md](notifications.md) § Vendor recipients.
+
 ### Admin invite + change-request approval (`vendors.py`)
 
 | Method | Path                                                 | Notes                                 |
@@ -161,6 +182,7 @@ Routes:
 | `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
 | `/portal/payments`            | Payment history + per-row "Download remittance"        |
 | `/portal/company`             | Contact (live) + bank/tax change requests (staged)     |
+| `/portal/notifications`       | Email preferences (paid / rejected) — vendor-controlled |
 
 The portal company form makes the approval-gating visible: bank/tax changes
 show a "pending AP approval" banner (read from `GET /portal/company`'s
@@ -172,6 +194,7 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] Remittance download (reuses `services/remittance_pdf.py`)
 - [x] Company info self-update (contact live; bank/tax staged)
 - [x] Bank-detail changes with AP admin approval workflow (fraud mitigation)
+- [x] Notification preferences (email-on-paid, email-on-rejected) — per-portal-user, vendor-controlled; wired into the `transition_invoice` dispatch chokepoint
 
 ## Phase 3 (deferred)
 
@@ -179,7 +202,6 @@ Add these when there's demand from the first paying customer:
 
 - W-9 / W-8 upload + storage
 - Virtual card viewing (secure, one-time access)
-- Notification preferences (email-on-paid, email-on-rejected)
 - Dynamic-discount offers
 - In-app per-invoice chat between vendor and AP team
 - MFA for portal users
