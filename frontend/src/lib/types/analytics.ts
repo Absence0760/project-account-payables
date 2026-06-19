@@ -82,3 +82,32 @@ export interface CashPosition {
 	periods: CashPositionPeriod[];
 	breaches: CashPositionBreach[];
 }
+
+// Consolidated reporting ACROSS entities — `GET /api/analytics/by-entity`.
+// Money fields are string-Decimal (the backend never floats currency); render
+// them through the `Money` component / `formatMoney`, never `parseFloat`. This
+// endpoint reports every active entity at once and intentionally ignores the
+// X-Entity-ID selection.
+
+export interface EntityMetrics {
+	total_spend: string;
+	outstanding_amount: string;
+	invoice_count: number;
+	open_exceptions: number;
+	open_po_amount: string;
+}
+
+export interface EntityRollupRow extends EntityMetrics {
+	entity_id: string;
+	entity_name: string;
+	entity_slug: string;
+	currency: string | null;
+	is_default: boolean;
+}
+
+export interface AnalyticsByEntity {
+	period_days: number;
+	period_start: string;
+	entities: EntityRollupRow[];
+	consolidated: EntityMetrics;
+}

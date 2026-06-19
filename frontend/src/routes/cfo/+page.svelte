@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import type {
@@ -249,6 +250,9 @@
 				</table>
 			</div>
 		{/if}
+
+		<!-- Consolidated reporting across entities (self-hides for single-entity tenants) -->
+		<ByEntityBreakdown />
 	{/if}
 </PageHeader>
 
