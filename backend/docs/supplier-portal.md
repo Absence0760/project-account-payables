@@ -110,6 +110,26 @@ withholding compliance. Design notes:
   The `GET` response carries an on-file boolean + form type + received date,
   never the tax ID or the document bytes.
 
+### Early-payment discount offers (`portal.py`)
+
+Vendor-facing view of the dynamic-discounting offers the AP team extends to the
+supplier (see `dynamic-discounting.md`). Every offer the vendor sees is scoped
+to their own `vendor_id` **or** to one of their own invoices — a vendor can
+never see another vendor's offers (cross-vendor / unknown id → 404, never 403).
+
+| Method | Path                                       | Notes                                                                                  |
+|--------|--------------------------------------------|----------------------------------------------------------------------------------------|
+| GET    | `/portal/discount-offers`                  | Vendor-scoped offer list; per-tier savings + best capturable tier today; `?status=` filter |
+| POST   | `/portal/discount-offers/{id}/accept`      | Accept the discount (`tier_days` or best tier today). **Never moves money** — flips `offered → accepted` only (reuses `discount_offers.accept_offer`); CFO-gated payment run still funds it. Idempotent: re-accepting a non-`offered` offer is a `409`; foreign/unknown id `404` |
+| POST   | `/portal/discount-offers/{id}/decline`     | Decline the discount (reuses `discount_offers.decline_offer`); `409` if no longer `offered` |
+
+Both money math (savings) and the lifecycle mutators are the **same pure
+`services/discount_offers.py` primitives** the AP `/api/discounts` router uses —
+the vendor side never duplicates the Decimal math. Audit rows
+(`discount_offer.accepted_by_vendor` / `.declined_by_vendor`) are PII-free
+(`actor_id=None`, no values, only the chosen tier). No migration — the
+`DiscountOffer` table already exists (migration 0043).
+
 ### Admin invite + change-request approval (`vendors.py`)
 
 | Method | Path                                                 | Notes                                 |
@@ -192,6 +212,7 @@ Routes:
 | `/portal/invoices`            | List + upload                                          |
 | `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
 | `/portal/payments`            | Payment history + per-row "Download remittance"        |
+| `/portal/discount-offers`     | Early-payment discount offers — accept / decline       |
 | `/portal/company`             | Contact (live) + bank/tax change requests (staged) + W-9/W-8 tax-form upload/download (live) |
 
 The portal company form makes the approval-gating visible: bank/tax changes
@@ -205,6 +226,9 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] Company info self-update (contact live; bank/tax staged)
 - [x] Bank-detail changes with AP admin approval workflow (fraud mitigation)
 - [x] W-9 / W-8 upload + storage (self-service; reuses `Vendor.w9_file_key` / `w9_received_date`, no migration — see *W-9 / W-8 tax-form upload* above)
+- [x] Dynamic-discount offers — vendor accepts/declines early-payment discounts
+  (ties into the dynamic-discounting engine; accept never moves money)
+- [x] In-app per-invoice chat between vendor and AP team
 
 ## Phase 3 (deferred)
 
@@ -212,8 +236,6 @@ Add these when there's demand from the first paying customer:
 
 - Virtual card viewing (secure, one-time access)
 - Notification preferences (email-on-paid, email-on-rejected)
-- Dynamic-discount offers
-- In-app per-invoice chat between vendor and AP team
 - MFA for portal users
 
 ## Operational notes

@@ -7,7 +7,7 @@ A vendor user cannot reference another vendor's invoices even by guessing IDs.
 
 import logging
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import (
@@ -17,6 +17,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Response,
     UploadFile,
     status,
@@ -28,23 +29,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
 from app.database import get_control_db
+from app.models.discount import (
+    OFFER_STATUS_OFFERED,
+    DiscountOffer,
+)
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.payment import Payment
 from app.models.procurement import POLineItem, PurchaseOrder
-from app.models.supplier_chat import ChatAuthorRole, ChatThreadStatus, SupplierChatMessage
 from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_user import VendorUser
 from app.schemas.portal import (
     TAX_FORM_TYPES,
+    PortalAcceptOfferRequest,
     PortalBankChangeRequest,
     PortalChangeRequestResponse,
-    PortalChatAttachmentOut,
-    PortalChatMessageCreate,
-    PortalChatMessageResponse,
-    PortalChatThreadResponse,
     PortalCompanyInfoResponse,
     PortalCompanyInfoUpdateRequest,
+    PortalDiscountOfferListResponse,
+    PortalDiscountOfferResponse,
+    PortalDiscountTier,
     PortalFlipResponse,
     PortalInvoiceListItem,
     PortalInvoiceListResponse,
@@ -58,21 +62,14 @@ from app.schemas.portal import (
     PortalTaxFormResponse,
     PortalTaxIdChangeRequest,
 )
+from app.services import discount_offers as offers_svc
 from app.services.audit_dispatch import dispatch_audit
 from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import (
     get_file,
-    upload_chat_file,
     upload_invoice_file,
     upload_tax_form_file,
-)
-from app.services.supplier_chat import (
-    chat_enabled,
-    get_or_create_thread,
-    get_thread,
-    list_messages,
-    notify_supplier_post,
 )
 from app.services.workflow_engine import (
     create_workflow_instance,
@@ -1148,324 +1145,234 @@ async def get_my_tax_form_file(
     return Response(content=content, media_type=content_type)
 
 
-# ---------- Card reveal (no auth — token is the credential) ----------
-
-
-@router.get("/cards/{token}")
-async def reveal_card(
-    token: str,
-    db: AsyncSession = Depends(get_tenant_db),
-):
-    """Vendor-facing single-use card reveal.
-
-    Resolves the URL-safe token, returns the live PAN/CVV/expiry on the
-    first hit, and marks the token used so a second visit returns
-    `gone`. The token itself is the credential — no portal-auth dep
-    here. Tokens expire after 7 days regardless of use.
-
-    Errors come back as small JSON bodies with stable shapes so the
-    portal UI can show a sensible message:
-      404 invalid    — wrong / unknown token
-      410 used       — already revealed once
-      410 expired    — past the expiry window
-    """
-    from app.services.audit_dispatch import dispatch_audit
-    from app.services.card_adapters import (
-        get_card_adapter,
-    )
-    from app.services.card_reveal import consume_reveal_token
-
-    card, error = await consume_reveal_token(db, token)
-    if error == "invalid":
-        raise HTTPException(status_code=404, detail="Invalid token")
-    if error == "expired":
-        raise HTTPException(status_code=410, detail="This link has expired")
-    if error == "used":
-        raise HTTPException(status_code=410, detail="This link has already been used")
-    assert card is not None  # narrowing for mypy
-
-    # Re-fetch + decrypt the PAN via the adapter, same path the
-    # /api/cards/{id}/details endpoint uses internally.
-    org_settings_result = await db.execute(
-        select(Vendor).where(Vendor.id == card.vendor_id)
-        if card.vendor_id
-        else select(Vendor).limit(0)
-    )
-    _ = org_settings_result.scalar_one_or_none()  # not strictly needed; left for parity
-
-    # Build a config that matches the cards section of the org settings.
-    # Loading the Organization here is unusual — portal sessions don't
-    # carry one — so we read it directly via the org_id on the card.
-    from app.config import settings as app_settings
-    from app.database import control_session_factory
-    from app.models.organization import Organization
-
-    async with control_session_factory() as ctrl:
-        org_row = await ctrl.execute(
-            select(Organization).where(Organization.id == card.organization_id)
-        )
-        org = org_row.scalar_one_or_none()
-
-    from app.services.card_issuance import _resolve_card_config
-
-    config = _resolve_card_config(org.settings if org else {}, app_settings)
-    if config is None:
-        # Org disabled cards after issuance — surface the saved last4
-        # only so the vendor still has something to call about.
-        await db.commit()
-        return {
-            "last_four": card.last_four,
-            "amount_limit": float(card.amount_limit),
-            "currency": card.currency,
-            "expires_at": card.expires_at.isoformat() if card.expires_at else None,
-            "pan": None,
-            "cvv": None,
-            "warning": "Card details are no longer available for retrieval.",
-        }
-
-    import app.services.card_adapters.lithic  # noqa: F401
-    import app.services.card_adapters.mock_adapter  # noqa: F401
-    import app.services.card_adapters.nium  # noqa: F401
-
-    adapter = get_card_adapter(config)
-    try:
-        details = await adapter.get_card_details(card.provider_card_id)
-    except Exception:  # noqa: BLE001
-        # Adapter outage — return the saved metadata so the vendor at
-        # least sees the link worked, and tell them to contact AP.
-        await db.commit()
-        return {
-            "last_four": card.last_four,
-            "amount_limit": float(card.amount_limit),
-            "currency": card.currency,
-            "expires_at": card.expires_at.isoformat() if card.expires_at else None,
-            "pan": None,
-            "cvv": None,
-            "warning": "Card details are temporarily unavailable. Please contact AP.",
-        }
-
-    await dispatch_audit(
-        db,
-        correlation_id=card.correlation_id or uuid.uuid4(),
-        organization_id=card.organization_id,
-        actor_id=None,  # vendor reveal — no internal user
-        action="card.revealed_via_token",
-        entity_type="virtual_card",
-        entity_id=card.id,
-        details={"last_four": card.last_four},
-    )
-    await db.commit()
-
-    return {
-        "last_four": card.last_four,
-        "amount_limit": float(card.amount_limit),
-        "currency": card.currency,
-        "expires_at": card.expires_at.isoformat() if card.expires_at else None,
-        "pan": details.pan,
-        "cvv": details.cvv,
-    }
-
-
-# ---------- Supplier chat (portal side) ----------
+# ---------- Early-payment discount offers ----------
 #
-# Vendor-scoped per-invoice chat. The supplier sees AP author names only (never
-# an internal users.id). No mentions, no templates, no resolve/reopen here.
-# Datetimes are raw `datetime` (portal convention). See
-# backend/docs/supplier-chat.md.
+# A vendor sees the early-payment discount offers the AP team has extended to
+# them (offers scoped to their own vendor_id, and offers on their own invoices)
+# and can ACCEPT the offered early-pay discount. Accepting only flips the offer
+# status to `accepted` (reusing `discount_offers.accept_offer`) — it never moves
+# money; the CFO-gated payment run still funds it. Re-accepting an already-
+# accepted (or otherwise non-`offered`) offer is a no-op 409, mirroring the AP
+# side. Every offer query is filtered to the caller's own vendor, and a 404
+# (never 403) is returned for a foreign offer so the portal can't probe IDs.
 
 
-def _portal_chat_message_to_response(msg: SupplierChatMessage) -> PortalChatMessageResponse:
-    return PortalChatMessageResponse(
-        id=str(msg.id),
-        author_role=str(msg.author_role),
-        author_name=msg.author_name,
-        body=msg.body,
-        attachments=[
-            PortalChatAttachmentOut(
-                file_url=a.get("file_url", ""),
-                filename=a.get("filename", ""),
-                content_type=a.get("content_type", ""),
-                size=a.get("size", 0),
-            )
-            for a in (msg.attachments or [])
-        ],
-        created_at=msg.created_at,
+def _offer_tier(base_amount: Decimal, tier: dict | None) -> PortalDiscountTier | None:
+    """Turn a stored tier dict into the vendor-facing tier (with savings)."""
+    if not tier:
+        return None
+    return PortalDiscountTier(
+        days=int(tier["days"]),
+        percent=offers_svc.tier_percent(tier),
+        savings=offers_svc.discount_savings(base_amount, tier),
     )
 
 
-async def _portal_invoice_or_404(
-    db: AsyncSession, invoice_id: uuid.UUID, vu: VendorUser
-) -> Invoice:
-    inv = (
+def _portal_offer_response(
+    offer: DiscountOffer, *, invoice_number: str | None, today: date
+) -> PortalDiscountOfferResponse:
+    tiers = [_offer_tier(offer.base_amount, t) for t in (offer.tiers or [])]
+    # Best capturable tier today is only meaningful while the offer is still open.
+    best_tier = None
+    if offer.status == OFFER_STATUS_OFFERED:
+        best = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        best_tier = _offer_tier(offer.base_amount, best)
+    return PortalDiscountOfferResponse(
+        id=str(offer.id),
+        status=offer.status,
+        scope=offer.scope,
+        invoice_id=str(offer.invoice_id) if offer.invoice_id else None,
+        invoice_number=invoice_number,
+        base_amount=offer.base_amount,
+        currency=offer.currency,
+        tiers=[t for t in tiers if t is not None],
+        best_tier=best_tier,
+        valid_from=offer.valid_from,
+        valid_until=offer.valid_until,
+        accepted_tier=_offer_tier(offer.base_amount, offer.accepted_tier),
+        accepted_at=offer.accepted_at,
+        captured_amount=offer.captured_amount,
+        captured_at=offer.captured_at,
+        notes=offer.notes,
+        created_at=offer.created_at,
+    )
+
+
+def _vendor_offer_filter(vu: VendorUser):
+    """Predicate restricting offers to the calling vendor.
+
+    A vendor sees offers explicitly scoped to their `vendor_id`, plus offers on
+    one of their own invoices (invoice-scoped offers carry the invoice_id, not a
+    vendor_id). The own-invoices set is an in-query subquery so the data layer —
+    not just app code — enforces the scoping (project invariant: tenant/vendor
+    isolation at the data layer)."""
+    own_invoice_ids = select(Invoice.id).where(Invoice.vendor_id == vu.vendor_id)
+    return (DiscountOffer.vendor_id == vu.vendor_id) | (
+        DiscountOffer.invoice_id.in_(own_invoice_ids)
+    )
+
+
+async def _portal_offer_or_404(
+    db: AsyncSession, offer_id: uuid.UUID, vu: VendorUser
+) -> DiscountOffer:
+    """Fetch an offer the calling vendor owns, else 404 (never 403)."""
+    offer = (
         await db.execute(
-            select(Invoice).where(Invoice.id == invoice_id, Invoice.vendor_id == vu.vendor_id)
+            select(DiscountOffer).where(
+                DiscountOffer.id == offer_id,
+                _vendor_offer_filter(vu),
+            )
         )
     ).scalar_one_or_none()
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    return inv
+    if offer is None:
+        raise HTTPException(status_code=404, detail="Discount offer not found")
+    return offer
 
 
-async def _portal_org(ctrl_db: AsyncSession, organization_id: uuid.UUID):
-    from app.models.organization import Organization
+async def _invoice_numbers(db: AsyncSession, offers: list[DiscountOffer]) -> dict[uuid.UUID, str]:
+    invoice_ids = {o.invoice_id for o in offers if o.invoice_id}
+    if not invoice_ids:
+        return {}
+    rows = await db.execute(
+        select(Invoice.id, Invoice.invoice_number).where(Invoice.id.in_(invoice_ids))
+    )
+    return {iid: (num or "") for iid, num in rows.all()}
 
-    return (
-        await ctrl_db.execute(select(Organization).where(Organization.id == organization_id))
-    ).scalar_one_or_none()
 
-
-@router.get("/invoices/{invoice_id}/chat", response_model=PortalChatThreadResponse)
-async def get_portal_chat(
-    invoice_id: uuid.UUID,
+@router.get("/discount-offers", response_model=PortalDiscountOfferListResponse)
+async def list_my_discount_offers(
+    pagination: PaginationParams = Depends(pagination_params),
+    status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_tenant_db),
-    ctrl_db: AsyncSession = Depends(get_control_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
-    inv = await _portal_invoice_or_404(db, invoice_id, vu)
-    org = await _portal_org(ctrl_db, inv.organization_id)
-    if not chat_enabled(org):
-        return PortalChatThreadResponse(
-            invoice_id=str(inv.id), status=ChatThreadStatus.open.value, messages=[]
-        )
-    thread = await get_thread(db, inv.id)
-    if thread is None:
-        return PortalChatThreadResponse(
-            invoice_id=str(inv.id), status=ChatThreadStatus.open.value, messages=[]
-        )
-    messages = await list_messages(db, thread.id)
-    return PortalChatThreadResponse(
-        invoice_id=str(inv.id),
-        status=str(thread.status),
-        messages=[_portal_chat_message_to_response(m) for m in messages],
+    """Early-payment discount offers relevant to the calling vendor.
+
+    Scoped to the vendor's own `vendor_id` and to offers on their own invoices —
+    a vendor can never see another vendor's offers. Includes the per-tier
+    savings + the best capturable tier today so the supplier sees the ROI of
+    accepting. Optional `?status=` filter (e.g. `offered`)."""
+    query = select(DiscountOffer).where(_vendor_offer_filter(vu))
+    if status_filter:
+        wanted = [s.strip() for s in status_filter.split(",") if s.strip()]
+        if wanted:
+            query = query.where(DiscountOffer.status.in_(wanted))
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = (
+        query.order_by(DiscountOffer.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
+    )
+    rows = list((await db.execute(query)).scalars().all())
+    inv_nums = await _invoice_numbers(db, rows)
+    today = date.today()
+
+    return PortalDiscountOfferListResponse(
+        items=[
+            _portal_offer_response(
+                o, invoice_number=inv_nums.get(o.invoice_id) if o.invoice_id else None, today=today
+            )
+            for o in rows
+        ],
+        total=total,
+        page=pagination.page,
+        page_size=pagination.page_size,
     )
 
 
-async def _post_portal_chat_message(
-    db: AsyncSession,
-    inv: Invoice,
-    vu: VendorUser,
-    *,
-    body: str,
-    attachments: list[dict] | None,
-) -> PortalChatMessageResponse:
-    vendor = (
-        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
-    ).scalar_one_or_none()
-    author_name = vu.full_name or (vendor.name if vendor else None)
+@router.post("/discount-offers/{offer_id}/accept", response_model=PortalDiscountOfferResponse)
+async def accept_my_discount_offer(
+    offer_id: uuid.UUID,
+    body: PortalAcceptOfferRequest | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Vendor accepts an offered early-payment discount.
 
-    thread = await get_or_create_thread(db, inv)
-    msg = SupplierChatMessage(
-        thread_id=thread.id,
-        author_role=ChatAuthorRole.supplier,
-        author_user_id=vu.id,
-        author_name=author_name,
-        body=body,
-        mentions=None,
-        attachments=attachments or None,
-        template_key=None,
-    )
-    db.add(msg)
-    await db.flush()
+    Reuses `discount_offers.accept_offer` (the same pure mutator the AP side
+    uses), which flips `offered → accepted` and records the chosen tier. This
+    NEVER moves money — no `Payment`/`PaymentRun` is created; the CFO-gated
+    payment run still funds the early payment. Idempotency: re-accepting a
+    non-`offered` offer raises `409` (the status guard is the dedupe), so a
+    double-click can't double-count savings."""
+    offer = await _portal_offer_or_404(db, offer_id, vu)
+    today = date.today()
 
-    # Audit — actor_id=None (a VendorUser is not a control-plane user). PII-free.
+    tier_days = body.tier_days if body else None
+    if tier_days is not None:
+        tier = offers_svc.select_tier(offer.tiers or [], tier_days)
+        if tier is None:
+            raise HTTPException(status_code=422, detail="No tier matches the requested days")
+    else:
+        tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        if tier is None:
+            raise HTTPException(status_code=409, detail="Offer has no capturable tier today")
+
+    try:
+        offers_svc.accept_offer(offer, tier=tier, actor_id=None, now=datetime.now(UTC))
+    except ValueError as exc:
+        # Not in `offered` status (already accepted / declined / expired / captured).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Audit — actor_id=None (a VendorUser is not a control-plane user); PII-free.
     await dispatch_audit(
         db,
-        correlation_id=inv.correlation_id,
-        organization_id=inv.organization_id,
+        correlation_id=uuid.uuid4(),
+        organization_id=offer.organization_id,
         actor_id=None,
-        action="chat_message_posted",
-        entity_type="invoice",
-        entity_id=inv.id,
+        action="discount_offer.accepted_by_vendor",
+        entity_type="discount_offer",
+        entity_id=offer.id,
         details={
-            "thread_id": str(thread.id),
-            "message_id": str(msg.id),
-            "author_role": str(msg.author_role),
-            "has_attachment": bool(msg.attachments),
-            "template_key": msg.template_key,
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "vendor_id": str(vu.vendor_id),
+            "tier": offer.accepted_tier,
         },
     )
-
-    # Notify the org's AP managers (control-plane Users only). Pre-commit.
-    await notify_supplier_post(db, invoice=inv)
-
     await db.commit()
-    await db.refresh(msg)
-    return _portal_chat_message_to_response(msg)
+    await db.refresh(offer)
+
+    invoice_number = None
+    if offer.invoice_id:
+        invoice_number = (await _invoice_numbers(db, [offer])).get(offer.invoice_id)
+    return _portal_offer_response(offer, invoice_number=invoice_number, today=today)
 
 
-@router.post(
-    "/invoices/{invoice_id}/chat",
-    response_model=PortalChatMessageResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def post_portal_chat(
-    invoice_id: uuid.UUID,
-    payload: PortalChatMessageCreate,
+@router.post("/discount-offers/{offer_id}/decline", response_model=PortalDiscountOfferResponse)
+async def decline_my_discount_offer(
+    offer_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    ctrl_db: AsyncSession = Depends(get_control_db),
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
-    inv = await _portal_invoice_or_404(db, invoice_id, vu)
-    org = await _portal_org(ctrl_db, inv.organization_id)
-    if not chat_enabled(org):
-        raise HTTPException(status_code=403, detail="Supplier chat is disabled")
-    return await _post_portal_chat_message(db, inv, vu, body=payload.body, attachments=None)
-
-
-@router.post(
-    "/invoices/{invoice_id}/chat/attachments",
-    response_model=PortalChatMessageResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def post_portal_chat_attachment(
-    invoice_id: uuid.UUID,
-    file: UploadFile = File(...),
-    body: str = Form(default=""),
-    db: AsyncSession = Depends(get_tenant_db),
-    ctrl_db: AsyncSession = Depends(get_control_db),
-    vu: VendorUser = Depends(get_current_vendor_user),
-):
-    inv = await _portal_invoice_or_404(db, invoice_id, vu)
-    org = await _portal_org(ctrl_db, inv.organization_id)
-    if not chat_enabled(org):
-        raise HTTPException(status_code=403, detail="Supplier chat is disabled")
-
-    message_id = uuid.uuid4()
+    """Vendor declines an offered early-payment discount. Reuses
+    `discount_offers.decline_offer`; `409` if the offer is no longer `offered`."""
+    offer = await _portal_offer_or_404(db, offer_id, vu)
     try:
-        file_key, filename, content_type, size = await upload_chat_file(
-            inv.organization_id, inv.id, message_id, file
-        )
+        offers_svc.decline_offer(offer, now=datetime.now(UTC))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    attachment = {
-        "file_key": file_key,
-        "file_url": f"/api/portal/invoices/{inv.id}/chat/file/{file_key}",
-        "filename": filename,
-        "content_type": content_type,
-        "size": size,
-    }
-    return await _post_portal_chat_message(
-        db, inv, vu, body=body or filename, attachments=[attachment]
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=offer.organization_id,
+        actor_id=None,
+        action="discount_offer.declined_by_vendor",
+        entity_type="discount_offer",
+        entity_id=offer.id,
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "vendor_id": str(vu.vendor_id),
+        },
     )
+    await db.commit()
+    await db.refresh(offer)
 
-
-@router.get("/invoices/{invoice_id}/chat/file/{file_key:path}")
-async def get_portal_chat_file(
-    invoice_id: uuid.UUID,
-    file_key: str,
-    db: AsyncSession = Depends(get_tenant_db),
-    vu: VendorUser = Depends(get_current_vendor_user),
-):
-    """Download a chat attachment. The invoice must be the vendor's own, and the
-    key's leading org segment must match the invoice's org — wrong-org / missing
-    both 404 (no enumeration)."""
-    inv = await _portal_invoice_or_404(db, invoice_id, vu)
-    prefix = file_key.split("/", 1)[0]
-    if prefix != str(inv.organization_id):
-        raise HTTPException(status_code=404, detail="File not found")
-    try:
-        content, content_type = get_file(file_key)
-    except Exception:
-        raise HTTPException(status_code=404, detail="File not found")
-    return Response(content=content, media_type=content_type)
+    today = date.today()
+    invoice_number = None
+    if offer.invoice_id:
+        invoice_number = (await _invoice_numbers(db, [offer])).get(offer.invoice_id)
+    return _portal_offer_response(offer, invoice_number=invoice_number, today=today)

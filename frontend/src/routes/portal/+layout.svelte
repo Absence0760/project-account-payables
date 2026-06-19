@@ -68,6 +68,10 @@
 				<a href="/portal/payments" class:active={$page.url.pathname.startsWith('/portal/payments')}
 					>Payments</a
 				>
+				<a
+					href="/portal/discount-offers"
+					class:active={$page.url.pathname.startsWith('/portal/discount-offers')}>Discounts</a
+				>
 				<a href="/portal/company" class:active={$page.url.pathname.startsWith('/portal/company')}
 					>Company</a
 				>

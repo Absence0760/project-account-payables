@@ -1,0 +1,379 @@
+"""Supplier-portal early-payment discount offers — vendor-scoped list + accept.
+
+DB-backed (the `realdb` fixture) because the security-critical behaviour here is
+data-layer: a vendor must only ever see offers scoped to their own vendor_id (or
+their own invoices), accepting an offer only flips its status (never mints a
+Payment/PaymentRun), and a double-accept is a safe 409 with no double-count.
+Source-level mocks can't prove the accept never seeds the money path — only a
+real round-trip can.
+
+Mirrors the threading style of `test_portal_self_service.py`: one tenant
+sessionmaker per test, a vendor JWT client over the realdb ASGI app.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import date, timedelta
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import func, select
+
+from app.api.deps import create_vendor_access_token
+from app.models.discount import (
+    OFFER_SCOPE_INVOICE,
+    OFFER_SCOPE_VENDOR,
+    OFFER_STATUS_ACCEPTED,
+    OFFER_STATUS_OFFERED,
+    DiscountOffer,
+)
+from app.models.invoice import Invoice, InvoiceStatus
+from app.models.payment import Payment, PaymentRun
+from app.models.vendor import Vendor
+from app.models.vendor_user import VendorUser
+from app.models.workflow import AuditLog
+
+TENANT = "a"
+
+_TIERS = [{"days": 5, "percent": "3.00"}, {"days": 10, "percent": "2.00"}]
+
+
+async def _seed_vendor_and_user(mk, org_id, *, name="Acme Supply") -> tuple[uuid.UUID, uuid.UUID]:
+    vendor_id = uuid.uuid4()
+    vu_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Vendor(
+                id=vendor_id,
+                name=name,
+                organization_id=org_id,
+                status="active",
+                source="manual",
+            )
+        )
+        s.add(
+            VendorUser(
+                id=vu_id,
+                vendor_id=vendor_id,
+                email=f"{vu_id}@portal.test",
+                full_name="Portal User",
+                hashed_password="x",
+                is_active=True,
+            )
+        )
+        await s.commit()
+    return vendor_id, vu_id
+
+
+async def _seed_vendor_offer(
+    mk,
+    org_id,
+    vendor_id,
+    *,
+    base_amount="10000.00",
+    status=OFFER_STATUS_OFFERED,
+    tiers=None,
+) -> uuid.UUID:
+    """A vendor-scoped offer (scope=vendor) belonging to `vendor_id`."""
+    offer_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            DiscountOffer(
+                id=offer_id,
+                organization_id=org_id,
+                scope=OFFER_SCOPE_VENDOR,
+                vendor_id=vendor_id,
+                source="supplier",
+                status=status,
+                tiers=tiers if tiers is not None else _TIERS,
+                base_amount=Decimal(base_amount),
+                currency="USD",
+                valid_from=date.today(),
+                valid_until=date.today() + timedelta(days=30),
+            )
+        )
+        await s.commit()
+    return offer_id
+
+
+async def _seed_invoice_offer(
+    mk, org_id, vendor_id, *, base_amount="2500.00"
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """An invoice-scoped offer on one of `vendor_id`'s invoices."""
+    invoice_id = uuid.uuid4()
+    offer_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Invoice(
+                id=invoice_id,
+                invoice_number="INV-DISC-1",
+                vendor_name="Acme Supply",
+                vendor_id=vendor_id,
+                amount=Decimal(base_amount),
+                currency="USD",
+                status=InvoiceStatus.approved,
+                organization_id=org_id,
+            )
+        )
+        # Flush the invoice before the offer so the offer's invoice_id FK resolves
+        # (SQLAlchemy won't infer the insert order without a relationship).
+        await s.flush()
+        s.add(
+            DiscountOffer(
+                id=offer_id,
+                organization_id=org_id,
+                scope=OFFER_SCOPE_INVOICE,
+                invoice_id=invoice_id,
+                source="supplier",
+                status=OFFER_STATUS_OFFERED,
+                tiers=_TIERS,
+                base_amount=Decimal(base_amount),
+                currency="USD",
+                valid_from=date.today(),
+                valid_until=date.today() + timedelta(days=30),
+            )
+        )
+        await s.commit()
+    return offer_id, invoice_id
+
+
+def _portal_client(realdb, vendor_user_id: uuid.UUID, vendor_id: uuid.UUID):
+    token = create_vendor_access_token(vendor_user_id, vendor_id)
+    client = realdb.client(key=TENANT, role=None)
+    client.headers["Authorization"] = f"Bearer {token}"
+    return client
+
+
+# ---------------------------------------------------------------------------
+# List — vendor scoping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_returns_vendor_scoped_offers_with_savings(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    await _seed_vendor_offer(mk, org_id, vendor_id, base_amount="10000.00")
+    await _seed_invoice_offer(mk, org_id, vendor_id, base_amount="2500.00")
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.get("/api/portal/discount-offers")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 2
+    # Both the vendor-scoped and the invoice-scoped (own invoice) offer show up.
+    scopes = {o["scope"] for o in body["items"]}
+    assert scopes == {OFFER_SCOPE_VENDOR, OFFER_SCOPE_INVOICE}
+
+    by_scope = {o["scope"]: o for o in body["items"]}
+    vendor_offer = by_scope[OFFER_SCOPE_VENDOR]
+    # base 10000 * 3% = 300.00 best-tier savings; tiers carry per-rung savings.
+    assert vendor_offer["best_tier"]["percent"] == 3.0
+    assert vendor_offer["best_tier"]["savings"] == 300.0
+    tier_savings = {t["days"]: t["savings"] for t in vendor_offer["tiers"]}
+    assert tier_savings == {5: 300.0, 10: 200.0}
+
+    inv_offer = by_scope[OFFER_SCOPE_INVOICE]
+    assert inv_offer["invoice_number"] == "INV-DISC-1"
+
+
+@pytest.mark.asyncio
+async def test_list_never_shows_another_vendors_offers(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    mine_vid, mine_vu = await _seed_vendor_and_user(mk, org_id, name="Mine")
+    other_vid, _ = await _seed_vendor_and_user(mk, org_id, name="Other")
+    await _seed_vendor_offer(mk, org_id, mine_vid)
+    await _seed_vendor_offer(mk, org_id, other_vid)
+
+    async with _portal_client(realdb, mine_vu, mine_vid) as client:
+        resp = await client.get("/api/portal/discount-offers")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["scope"] == OFFER_SCOPE_VENDOR
+
+
+@pytest.mark.asyncio
+async def test_list_requires_vendor_auth(realdb):
+    """No vendor JWT → 401 (auth before everything)."""
+    async with realdb.client(key=TENANT, role=None) as client:
+        resp = await client.get("/api/portal/discount-offers")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_status_filter(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    await _seed_vendor_offer(mk, org_id, vendor_id, status=OFFER_STATUS_OFFERED)
+    await _seed_vendor_offer(mk, org_id, vendor_id, status=OFFER_STATUS_ACCEPTED)
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.get("/api/portal/discount-offers?status=offered")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["status"] == OFFER_STATUS_OFFERED
+
+
+# ---------------------------------------------------------------------------
+# Accept — money-path boundary + idempotency + cross-vendor 404
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accept_flips_status_without_moving_money(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id, base_amount="10000.00")
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{offer_id}/accept", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == OFFER_STATUS_ACCEPTED
+    # Best tier today (5 days → 3%) is chosen when no tier_days is given.
+    assert body["accepted_tier"]["days"] == 5
+    assert body["accepted_tier"]["percent"] == 3.0
+    assert body["accepted_tier"]["savings"] == 300.0
+
+    async with mk() as s:
+        offer = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert offer.status == OFFER_STATUS_ACCEPTED
+        assert offer.accepted_tier["percent"] == "3.00"
+        # Money-path boundary: accepting created NO Payment / PaymentRun.
+        pay_count = (await s.execute(select(func.count()).select_from(Payment))).scalar()
+        run_count = (await s.execute(select(func.count()).select_from(PaymentRun))).scalar()
+        assert pay_count == 0
+        assert run_count == 0
+        # Audit row written, PII-free (no value, only the tier).
+        actions = {r.action for r in (await s.execute(select(AuditLog))).scalars().all()}
+    assert "discount_offer.accepted_by_vendor" in actions
+
+
+@pytest.mark.asyncio
+async def test_accept_specific_tier(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id, base_amount="10000.00")
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(
+            f"/api/portal/discount-offers/{offer_id}/accept", json={"tier_days": 10}
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["accepted_tier"]["days"] == 10
+    assert body["accepted_tier"]["savings"] == 200.0
+
+
+@pytest.mark.asyncio
+async def test_double_accept_is_safe_409(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id)
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        first = await client.post(f"/api/portal/discount-offers/{offer_id}/accept", json={})
+        second = await client.post(f"/api/portal/discount-offers/{offer_id}/accept", json={})
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+    # Still exactly one accept audit row — no double count.
+    async with mk() as s:
+        n = (
+            await s.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.action == "discount_offer.accepted_by_vendor")
+            )
+        ).scalar()
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_accept_foreign_offer_404(realdb):
+    """Accepting another vendor's offer is a 404 (never 403), and never mutates
+    it."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    mine_vid, mine_vu = await _seed_vendor_and_user(mk, org_id, name="Mine")
+    other_vid, _ = await _seed_vendor_and_user(mk, org_id, name="Other")
+    foreign_offer = await _seed_vendor_offer(mk, org_id, other_vid)
+
+    async with _portal_client(realdb, mine_vu, mine_vid) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{foreign_offer}/accept", json={})
+    assert resp.status_code == 404
+
+    async with mk() as s:
+        offer = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == foreign_offer))
+        ).scalar_one()
+        assert offer.status == OFFER_STATUS_OFFERED  # untouched
+
+
+@pytest.mark.asyncio
+async def test_accept_unknown_offer_404(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{uuid.uuid4()}/accept", json={})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_accept_bad_tier_days_422(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id)
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(
+            f"/api/portal/discount-offers/{offer_id}/accept", json={"tier_days": 99}
+        )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Decline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decline_flips_status(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id)
+    offer_id = await _seed_vendor_offer(mk, org_id, vendor_id)
+
+    async with _portal_client(realdb, vu_id, vendor_id) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{offer_id}/decline")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "declined"
+
+    async with mk() as s:
+        actions = {r.action for r in (await s.execute(select(AuditLog))).scalars().all()}
+    assert "discount_offer.declined_by_vendor" in actions
+
+
+@pytest.mark.asyncio
+async def test_decline_foreign_offer_404(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    mine_vid, mine_vu = await _seed_vendor_and_user(mk, org_id, name="Mine")
+    other_vid, _ = await _seed_vendor_and_user(mk, org_id, name="Other")
+    foreign_offer = await _seed_vendor_offer(mk, org_id, other_vid)
+
+    async with _portal_client(realdb, mine_vu, mine_vid) as client:
+        resp = await client.post(f"/api/portal/discount-offers/{foreign_offer}/decline")
+    assert resp.status_code == 404
