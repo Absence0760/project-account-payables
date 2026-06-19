@@ -32,4 +32,15 @@ class VendorUser(Base, TimestampMixin):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # MFA — TOTP shared secret + enrollment metadata. Mirrors the columns on
+    # `User` (control plane) exactly: `mfa_secret` is the base32 TOTP seed,
+    # populated during enrollment and only treated as "active" once
+    # `mfa_enabled` flips true (after the vendor verifies a code). The pending
+    # secret stays around so the user can re-scan without restarting enrollment.
+    # MFA stays opt-in per vendor user and is gated by the `AP_MFA_ENABLED`
+    # master switch, exactly like employee MFA. See docs/supplier-portal.md.
+    mfa_secret: Mapped[str | None] = mapped_column(String(64))
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    mfa_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     vendor: Mapped["Vendor"] = relationship(back_populates="portal_users")  # noqa: F821

@@ -24,11 +24,60 @@ class PortalChangePasswordRequest(BaseModel):
     new_password: str
 
 
+# ---------- MFA (TOTP) — mirrors the employee MFA flow for vendor users ----------
+
+
+class PortalMFAChallengeResponse(BaseModel):
+    """Returned by /portal/auth/login when the password checks out but the
+    vendor still has to clear MFA. The browser swaps `mfa_challenge_token` for
+    an access token by calling /portal/auth/mfa/challenge. The challenge token
+    carries `typ=vendor_mfa_challenge` — distinct from both the employee
+    challenge (`mfa_challenge`) and the full vendor access token (`vendor`) — so
+    a challenge token can never be used as an access token, and vice versa."""
+
+    mfa_required: bool = True
+    mfa_challenge_token: str
+    methods: list[str] = ["totp"]  # TOTP only — no email-OTP backup for vendors yet
+
+
+class PortalMFAEnrollStartResponse(BaseModel):
+    """First step of TOTP enrollment — server mints a secret + QR. The secret is
+    also returned in plaintext so vendors with no QR scanner can paste it into
+    their authenticator app manually. Only returned during enrollment (before
+    MFA is confirmed active); never echoed back afterwards."""
+
+    secret: str
+    provisioning_uri: str
+    qr_code_data_url: str
+
+
+class PortalMFAVerifyRequest(BaseModel):
+    """Activate enrollment by proving the vendor can produce a valid code."""
+
+    code: str = Field(..., min_length=6, max_length=8)
+
+
+class PortalMFADisableRequest(BaseModel):
+    """Disabling MFA re-verifies a current TOTP code — a stolen session
+    shouldn't be able to silently strip MFA off."""
+
+    code: str = Field(..., min_length=6, max_length=8)
+
+
+class PortalMFAChallengeVerifyRequest(BaseModel):
+    """Trade the login-issued challenge token + a valid TOTP code for a real
+    vendor access token."""
+
+    challenge_token: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=6, max_length=8)
+
+
 class PortalMeResponse(BaseModel):
     id: str
     email: str
     full_name: str
     must_change_password: bool
+    mfa_enabled: bool = False
     vendor_id: str
     vendor_name: str
     vendor_status: str
