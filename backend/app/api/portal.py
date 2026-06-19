@@ -46,6 +46,8 @@ from app.schemas.portal import (
     PortalFlipResponse,
     PortalInvoiceListItem,
     PortalInvoiceListResponse,
+    PortalNotificationPreferencesResponse,
+    PortalNotificationPreferencesUpdateRequest,
     PortalPaymentListItem,
     PortalPaymentListResponse,
     PortalPendingChange,
@@ -994,6 +996,61 @@ async def list_my_change_requests(
         )
         for r in rows
     ]
+
+
+# ---------- Notification preferences ----------
+
+
+@router.get("/notification-preferences", response_model=PortalNotificationPreferencesResponse)
+async def get_my_notification_preferences(
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """The calling vendor user's effective email preferences for their own
+    invoices' paid / rejected events. Defaults to on (opt-out)."""
+    from app.services.vendor_notifications import prefs_to_response
+
+    return PortalNotificationPreferencesResponse(**prefs_to_response(vu.notification_prefs))
+
+
+@router.patch("/notification-preferences", response_model=PortalNotificationPreferencesResponse)
+async def update_my_notification_preferences(
+    body: PortalNotificationPreferencesUpdateRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Partial update of the calling vendor user's email preferences. An
+    unspecified field leaves that preference unchanged. Scoped to the caller's
+    own `VendorUser` row — a vendor user can never touch another's prefs."""
+    from app.services.vendor_notifications import apply_pref_update, prefs_to_response
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    update = body.model_dump(exclude_unset=True)
+    vu.notification_prefs = apply_pref_update(vu.notification_prefs, update)
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=vendor.organization_id,
+        actor_id=None,
+        action="vendor_user.notification_prefs_updated",
+        entity_type="vendor_user",
+        entity_id=vu.id,
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "fields": sorted(update.keys()),
+        },
+    )
+    await db.commit()
+    await db.refresh(vu)
+    return PortalNotificationPreferencesResponse(**prefs_to_response(vu.notification_prefs))
 
 
 # ---------- Card reveal (no auth — token is the credential) ----------

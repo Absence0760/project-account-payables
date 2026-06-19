@@ -276,7 +276,28 @@ async def _maybe_notify_transition(
         except Exception:  # noqa: BLE001 — role lookup must not break the transition
             pass
 
-    if not event_type or not recipients:
+    if not event_type:
+        return
+
+    # Vendor-portal fan-out (paid / rejected) — supplier portal users who own
+    # this invoice get an email IF their per-user preference allows it. This is
+    # independent of the control-plane recipient resolution above: a
+    # portal-submitted invoice often has no `uploaded_by_id` (the actor is a
+    # VendorUser, not a User), so it has zero control-plane recipients yet still
+    # must reach the supplier. Best-effort + self-contained (never raises).
+    try:
+        from app.services.vendor_notifications import notify_vendor_of_invoice_event
+
+        await notify_vendor_of_invoice_event(
+            db,
+            event_type=event_type,
+            invoice=invoice,
+            reason=(details or {}).get("reason"),
+        )
+    except Exception:  # noqa: BLE001 — vendor email must not break the transition
+        _log.exception("vendor notification hook failed for invoice event %s", event_type)
+
+    if not recipients:
         return
 
     ctx = InvoiceContext(
