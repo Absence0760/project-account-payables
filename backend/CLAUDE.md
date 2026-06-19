@@ -24,6 +24,7 @@ Deep-dive docs live in `backend/docs/`:
 | International tax (VAT / GST / withholding) | `docs/international-tax.md` |
 | Bank reconciliation | `docs/bank-reconciliation.md` |
 | Vendor statement reconciliation | `docs/vendor-statement-reconciliation.md` |
+| Positive Pay / payment-fraud file | `docs/positive-pay.md` |
 | Analytics + CFO dashboard + CSV + scheduled reports | `docs/analytics.md` |
 | Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
 | PO matching (2-way / 3-way) | `docs/po-matching.md` |
@@ -290,6 +291,20 @@ Registered: `mock`, `modern_treasury`, `stripe_treasury`, `increase`, `column`, 
 `execute_payment_run` dispatches via the adapter; webhook handler at `/api/payments/webhook/{tenant_slug}/{provider}` drives the `submitted → completed/failed` transition. Tenant comes from the URL path (no JWT, no header). Idempotent on the payment's `correlation_id`.
 
 Per-org config in `Organization.settings.payments`. See `../docs/payments.md` § Payment processor adapters.
+
+### Positive Pay formatters (`services/positive_pay_adapters/`)
+
+```python
+@register_positive_pay_formatter("my_bank")
+class MyBankFormatter(PositivePayFormatter):
+    format_name = "my_bank"
+    file_extension = "csv"
+    content_type = "text/csv"
+    def format_check_issue(self, items: list[CheckIssueItem], ctx: FormatterContext) -> str: ...
+    def format_ach_authorization(self, items: list[AchAuthorizationItem], ctx: FormatterContext) -> str: ...
+```
+
+Registered: `csv` (default), `fixed_width`. `get_positive_pay_formatter(name)` defaults to `csv` and falls back to `csv` on an unknown key (never raises — a bad config can't break generation). Renders a Positive Pay fraud-control file from the formatter dataclasses (`CheckIssueItem` / `AchAuthorizationItem` / `FormatterContext` in `base.py`); the async DB→dataclass builders + the pure return classifier (`matched_ok` / `amount_mismatch` / `not_on_file`) live in `services/positive_pay.py`. The rendered file legitimately holds full account/routing numbers and is stored in MinIO via `storage.upload_positive_pay_file`; the `PositivePayFile` DB row + audit/logs/errors are PII-free (`account_last4` only). Mounted at `/api/positive-pay`. Idempotent per `(payment_run_id, bank_format)` via the partial unique index `uq_positive_pay_run_format`. See `docs/positive-pay.md`.
 
 ### FX rate adapters (`services/fx_adapters/`)
 

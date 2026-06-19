@@ -336,14 +336,16 @@ Distinct from bank reconciliation (cleared payments ↔ bank lines): this reconc
 ---
 
 ### Positive Pay / Payment Fraud File
-**Status:** Planned
+**Status:** Done
 
 Bank-side fraud control: export an issued-items file so the bank only honors checks/ACH debits we actually originated. A natural extension of the existing `checkeeper` check-printing + payment-rail adapters, and a frequent enterprise-AP procurement requirement.
 
-- [ ] Positive Pay file export (check issue file) — per-bank format (BAI2-ish / fixed-width / CSV) of `{check_number, payee, amount, issue_date, account}` for every check in an executed payment run; pluggable per-bank formatter like the existing payment adapters
-- [ ] ACH Positive Pay / debit-block authorization list — export approved originators for ACH debit filtering
-- [ ] Exception return handling — ingest the bank's "items presented not on file" report and surface mismatches as fraud exceptions
-- [ ] Generation is idempotent per run + audited; account/routing numbers stay out of logs and error bodies (PII invariant)
+Shipped: a `PositivePayFile` model + migration 0048 (tenant-gated + fans out; idempotent `uq_positive_pay_run_format` partial unique index for one check-issue file per run+format), pluggable per-bank formatter adapters (`positive_pay_adapters/`: `csv` + `fixed_width`), a pure return classifier (`matched_ok` / `amount_mismatch` / `not_on_file`) + the async file-item builders, the `/api/positive-pay` router (generate check-issue + ACH-authorization, list/detail, MinIO download with a cross-tenant gate, process-return, delete), and the `/positive-pay` frontend route. PII handled per the invariant (full account/routing numbers only in the MinIO file; DB stores `account_last4`; audit/logs/errors PII-free). See `backend/docs/positive-pay.md`.
+
+- [x] Positive Pay file export (check issue file) — per-bank format (BAI2-ish / fixed-width / CSV) of `{check_number, payee, amount, issue_date, account}` for every check in an executed payment run; pluggable per-bank formatter like the existing payment adapters
+- [x] ACH Positive Pay / debit-block authorization list — export approved originators for ACH debit filtering
+- [x] Exception return handling — ingest the bank's "items presented not on file" report and surface mismatches as fraud exceptions *(Design note: altered cheques we issued become `fraud_flag` Exceptions; never-issued `not_on_file` cheques can't — `Exception.invoice_id` is NOT NULL — so they're recorded in `meta.unmatched_returns`. See the doc.)*
+- [x] Generation is idempotent per run + audited; account/routing numbers stay out of logs and error bodies (PII invariant)
 
 **Competitors:** Coupa Pay, Tipalti, AvidXchange (positive pay as a treasury-controls feature)
 
