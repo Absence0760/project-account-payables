@@ -22,14 +22,44 @@
 
 	let { tabs, active = $bindable(), onchange, ariaLabel, idPrefix = 'tabs' }: Props = $props();
 
+	let tablistEl = $state<HTMLDivElement | null>(null);
+
 	function select(key: string) {
 		if (key === active) return;
 		active = key;
 		onchange?.(key);
 	}
+
+	// WAI-ARIA tabs pattern (WCAG 2.4.3 / 4.1.2): roving tabindex — only the
+	// active tab is in the Tab order; Arrow keys move between tabs and activate.
+	function onKey(e: KeyboardEvent) {
+		const idx = tabs.findIndex((t) => t.key === active);
+		if (idx === -1) return;
+		let next = idx;
+		if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % tabs.length;
+		else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + tabs.length) % tabs.length;
+		else if (e.key === 'Home') next = 0;
+		else if (e.key === 'End') next = tabs.length - 1;
+		else return;
+		e.preventDefault();
+		select(tabs[next].key);
+		tablistEl
+			?.querySelector<HTMLElement>(`#${CSS.escape(`${idPrefix}-tab-${tabs[next].key}`)}`)
+			?.focus();
+	}
 </script>
 
-<div class="tab-row" role="tablist" aria-label={ariaLabel}>
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<!-- The tablist itself is not in the Tab order by design (WAI-ARIA APG tabs
+     pattern): focus lives on the active tab via roving tabindex below, and the
+     tablist's onkeydown only re-dispatches Arrow/Home/End to those tabs. -->
+<div
+	bind:this={tablistEl}
+	class="tab-row"
+	role="tablist"
+	aria-label={ariaLabel}
+	onkeydown={onKey}
+>
 	{#each tabs as tab (tab.key)}
 		<button
 			class="tab"
@@ -39,6 +69,7 @@
 			id={`${idPrefix}-tab-${tab.key}`}
 			aria-controls={`${idPrefix}-panel-${tab.key}`}
 			aria-selected={active === tab.key}
+			tabindex={active === tab.key ? 0 : -1}
 			onclick={() => select(tab.key)}
 		>
 			{tab.label}{#if tab.count !== undefined}{' '}<span class="tab-count">{tab.count}</span>{/if}

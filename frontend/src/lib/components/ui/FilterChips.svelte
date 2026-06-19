@@ -30,6 +30,7 @@
 			class="filter-chip"
 			class:active={active === chip.key}
 			type="button"
+			aria-pressed={active === chip.key}
 			onclick={() => select(chip.key)}
 		>
 			{chip.label}{#if chip.count !== undefined}{' '}<span class="count" class:alert={chip.alert}>{chip.count}</span>{/if}

@@ -34,14 +34,19 @@
 		color: #1fa86a;
 	}
 
+	/* WCAG 1.4.3 — these badges are small but bold uppercase, treated as normal
+	   text (need ≥4.5:1). Foreground brightened against the ~15%-tint-over-bg
+	   effective background: failed #e04040→#f06464 (3.86:1→5.21:1),
+	   sent_to_erp #8c64f0→#a585f5 (3.99:1→5.59:1). The passing tones
+	   (new 4.98, pending 5.46, ready_for_review 4.84, done 5.08) are unchanged. */
 	.failed {
 		background: rgba(240, 70, 70, 0.15);
-		color: #e04040;
+		color: #f06464;
 	}
 
 	.sent_to_erp {
 		background: rgba(140, 100, 240, 0.15);
-		color: #8c64f0;
+		color: #a585f5;
 	}
 
 	.done {

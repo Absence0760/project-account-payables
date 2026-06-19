@@ -593,6 +593,55 @@ missing, add it to `src/app.css` (class-scoped) — not a per-route
 class name for an existing pattern, and **do not** re-introduce a
 per-route copy of the table/modal/chip/shell CSS.
 
+### Accessibility patterns (WCAG 2.2 AA)
+
+The shared web foundation carries the baseline a11y so route pages
+inherit it for free. Reuse these; don't re-solve them per page.
+
+- **Skip link** (`.skip-link`, app.css; WCAG 2.4.1) — the first
+  focusable element in both the app shell (`routes/+layout.svelte`)
+  and the supplier portal (`routes/portal/+layout.svelte`). Off-screen
+  until focused, then a high-contrast pill. Targets `#main-content` —
+  the `<main>` element, which carries `id="main-content" tabindex="-1"`
+  so the jump lands focus there. A new top-level shell must keep this
+  pairing.
+- **Landmarks** (WCAG 1.3.1) — the sidebar nav is `<nav aria-label="Primary">`,
+  the section sub-tabs `<nav aria-label="<group> sections">`, the portal
+  nav `<nav aria-label="Supplier portal">`. Name every nav landmark so
+  multiple navs are distinguishable. Page `<h1>` lives in `PageHeader`.
+- **Global focus ring** (app.css; WCAG 2.4.7) — a `:focus-visible`
+  accent outline covers `a / button / [role=button|tab|option] /
+  [tabindex] / input / select / textarea / summary`. Never set
+  `outline: none` without replacing it with a visible ring (checkbox /
+  radio do this — accent box-shadow). This is the floor; component-local
+  `:focus-visible` (RowLink) layers on top.
+- **Reduced motion** (app.css end; WCAG 2.3.3) — a global
+  `@media (prefers-reduced-motion: reduce)` block near-zeroes all
+  animation/transition durations. Don't gate functionality on a
+  transition finishing.
+- **Modal** (`ui/Modal.svelte`; WCAG 2.1.2 / 2.4.3) — on open, focus
+  moves into the dialog (first focusable, else the dialog box, which
+  has `tabindex="-1"`); Tab / Shift+Tab are trapped with wrap-around;
+  on close, focus restores to the element that opened it. Esc +
+  backdrop-click still close. Every dialog reuses this, so every dialog
+  gets focus management — never hand-roll a modal shell.
+- **Toast** (`ui/Toast.svelte`; WCAG 4.1.3) — `role="region"` +
+  two persistent live containers (`aria-live="assertive"` for errors,
+  `"polite"` for the rest). Each toast has a real `<button>` dismiss
+  (`aria-label="Dismiss notification"`); auto-dismiss timer kept.
+- **Tabs** (`ui/Tabs.svelte`; WAI-ARIA tabs) — roving `tabindex`
+  (active=0, others=-1) + Arrow/Home/End key navigation, plus the
+  existing `role=tablist/tab` + `aria-selected` + `aria-controls`. The
+  caller still gives the panel `role="tabpanel"` + the matching ids.
+- **Filter chips** (`ui/FilterChips.svelte`) — `<button aria-pressed>`
+  reflects the active chip.
+- **DataTable** (`ui/DataTable.svelte`) — auto-rendered `<th>` get
+  `scope="col"`. A page that passes its own `{#snippet header()}` owns
+  adding `scope` to its `<th>`s.
+- **Icon-only controls** — every icon-only `<button>` needs an
+  `aria-label` (NotificationBell reflects the unread count; the sidebar
+  collapse toggle + profile button carry `aria-label` + `aria-expanded`).
+
 ## Conventions
 
 - **Svelte 5 runes** — `$state`, `$derived`, `$effect`, `$props`. No legacy options API.

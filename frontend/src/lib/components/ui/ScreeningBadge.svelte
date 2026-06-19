@@ -69,9 +69,11 @@
 		background: rgba(212, 148, 10, 0.12);
 		color: #d4940a;
 	}
+	/* WCAG 1.4.3 — #e04040 on the 12%-tint-over-bg was 4.05:1 (fail);
+	   #f06464 lifts it to 5.46:1. green (5.34) + amber (6.12) already pass. */
 	.screen-badge.red {
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: #f06464;
 	}
 	.screen-badge.grey {
 		background: var(--bg);

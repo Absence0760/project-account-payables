@@ -87,8 +87,16 @@
 	<slot />
 {:else if auth.loggedIn && auth.user && !auth.user.must_change_password}
 	<div class="app-shell">
+		<!-- WCAG 2.4.1 Bypass Blocks: first focusable element jumps past the
+		     sidebar nav straight to the page content. -->
+		<a href="#main-content" class="skip-link">Skip to main content</a>
 		<Sidebar />
-		<main class="main-content" style="margin-left: {sidebar.collapsed ? 60 : 220}px">
+		<main
+			id="main-content"
+			tabindex="-1"
+			class="main-content"
+			style="margin-left: {sidebar.collapsed ? 60 : 220}px"
+		>
 			<SectionTabs />
 			<slot />
 		</main>

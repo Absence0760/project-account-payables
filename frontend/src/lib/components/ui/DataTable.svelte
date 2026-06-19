@@ -48,7 +48,8 @@
 			{:else if columns}
 				<tr>
 					{#each columns as col}
-						<th class={col.class ?? null}>{col.label ?? ''}</th>
+						<!-- WCAG 1.3.1: scope ties each header to its column for AT. -->
+						<th scope="col" class={col.class ?? null}>{col.label ?? ''}</th>
 					{/each}
 				</tr>
 			{/if}

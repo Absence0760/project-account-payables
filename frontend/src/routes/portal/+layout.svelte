@@ -52,12 +52,14 @@
 	<slot />
 {:else if portalAuth.loggedIn && portalAuth.user && !portalAuth.user.must_change_password}
 	<div class="portal-shell">
+		<!-- WCAG 2.4.1 Bypass Blocks. -->
+		<a href="#main-content" class="skip-link">Skip to main content</a>
 		<header class="portal-header">
 			<div class="brand">
 				<strong>Supplier Portal</strong>
 				<span class="vendor">{portalAuth.user.vendor_name}</span>
 			</div>
-			<nav>
+			<nav aria-label="Supplier portal">
 				<a href="/portal/invoices" class:active={$page.url.pathname.startsWith('/portal/invoices')}
 					>Invoices</a
 				>
@@ -85,7 +87,7 @@
 				<button type="button" onclick={handleLogout}>Log out</button>
 			</div>
 		</header>
-		<main class="portal-main">
+		<main id="main-content" tabindex="-1" class="portal-main">
 			<slot />
 		</main>
 	</div>

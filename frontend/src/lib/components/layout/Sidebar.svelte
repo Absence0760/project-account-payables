@@ -59,7 +59,9 @@
 
 	<EntitySwitcher {collapsed} />
 
-	<nav class="nav-main">
+	<!-- WCAG 1.3.1 / 4.1.2: name the landmark so it's distinguishable from the
+	     section sub-tab nav and the portal nav. -->
+	<nav class="nav-main" aria-label="Primary">
 		{#each entries as entry, i (entry.label)}
 			{#if entry.kind === 'group' && entries[i - 1]?.kind === 'link'}
 				<!-- Divider sets the folded section areas off from the direct links. -->
@@ -114,7 +116,16 @@
 				<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
 			</div>
 		{/if}
-		<button bind:this={profileBtn} class="profile-btn" class:collapsed title={collapsed ? 'Profile' : ''} onclick={() => (showProfile = !showProfile)}>
+		<button
+			bind:this={profileBtn}
+			class="profile-btn"
+			class:collapsed
+			title={collapsed ? 'Profile' : ''}
+			aria-label="Profile and account menu"
+			aria-haspopup="menu"
+			aria-expanded={showProfile}
+			onclick={() => (showProfile = !showProfile)}
+		>
 			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
 			{#if !collapsed}
 				<span class="profile-label">{auth.user?.full_name ?? 'Profile'}</span>

@@ -8,6 +8,9 @@
 	--surface: #181a23;
 	--border: #2a2d3a;
 	--text: #e2e4ea;
+	/* WCAG 1.4.3 Contrast (Minimum): #8a8fa0 on --bg (#0f1117) computes to
+	   5.86:1, and 5.38:1 on --surface (#181a23) — both clear the 4.5:1 bar for
+	   normal text, so the muted token is kept as-is. */
 	--text-muted: #8a8fa0;
 	--accent: #638cff;
 }
@@ -24,6 +27,69 @@ html, body {
 	background: var(--bg);
 	color: var(--text);
 	-webkit-font-smoothing: antialiased;
+}
+
+/* ===================================================================
+   Skip link (WCAG 2.4.1 Bypass Blocks)
+   -------------------------------------------------------------------
+   First focusable element in the app + portal shells. Visually hidden
+   off-screen until focused, then it reveals as a high-contrast pill
+   above everything. Targets `#main-content` (the <main>, tabindex=-1).
+   =================================================================== */
+.skip-link {
+	position: fixed;
+	top: 8px;
+	left: 8px;
+	/* Pull it off-screen until focused; transform keeps it focusable
+	   (display:none / visibility:hidden would drop it from the tab order). */
+	transform: translateY(-150%);
+	z-index: 100000;
+	padding: 10px 16px;
+	background: var(--accent);
+	color: #fff;
+	font-size: 0.9rem;
+	font-weight: 600;
+	border-radius: 6px;
+	text-decoration: none;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+	transition: transform 0.12s ease;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+	transform: translateY(0);
+	outline: 2px solid #fff;
+	outline-offset: 2px;
+}
+
+/* ===================================================================
+   Global focus indicator (WCAG 2.4.7 Focus Visible)
+   -------------------------------------------------------------------
+   Every interactive element gets a visible accent ring on keyboard
+   focus. Uses :focus-visible so it doesn't fire on mouse clicks. The
+   box-shadow companion guarantees a visible ring even where an element
+   sits flush against a same-coloured edge (offset outlines can be
+   clipped by overflow:hidden ancestors). Components that already define
+   their own :focus-visible (inputs, RowLink) keep theirs — this is the
+   floor, not a cap, and nowhere suppresses an outline without a
+   replacement. */
+a:focus-visible,
+button:focus-visible,
+[role='button']:focus-visible,
+[role='tab']:focus-visible,
+[role='option']:focus-visible,
+[tabindex]:focus-visible,
+summary:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
+/* Text-entry controls keep the accent ring but as a box-shadow so the
+   border-colour change many components apply on :focus still reads. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
 }
 
 /* ===================================================================
@@ -600,4 +666,25 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 }
 .kpi.highlight-red .kpi-value {
 	color: #e04040;
+}
+
+/* ===================================================================
+   Reduced motion (WCAG 2.3.3 Animation from Interactions)
+   -------------------------------------------------------------------
+   Honour the OS "reduce motion" preference globally: near-instant
+   animations/transitions everywhere, plus explicit neutralisation of
+   the two motions users actually feel — the Toast slide-in and the
+   main-content margin shift when the sidebar collapses. Kept at the
+   end of the file so it overrides the transitions declared above and
+   in component <style> blocks (same specificity, later wins).
+   =================================================================== */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.001ms !important;
+		scroll-behavior: auto !important;
+	}
 }
