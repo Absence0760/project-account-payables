@@ -66,6 +66,7 @@ def _make_invoice():
         gl_account=None,
         cost_center=None,
         vendor_id=None,
+        entity_id=None,
         warnings=None,
         po_match=None,
     )

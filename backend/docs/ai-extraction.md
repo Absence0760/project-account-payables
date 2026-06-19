@@ -216,6 +216,8 @@ The extraction prompt includes GL account suggestions based on the vendor type a
 
 The org's active `GLAccount` rows are queried and injected into the extraction prompt via `config["gl_account_catalog"]`, so the AI suggests from real codes. Falls back to the hardcoded default list above when no GL accounts are configured for the org.
 
+The catalog is scoped to the **invoice's effective chart** — shared accounts (`entity_id IS NULL`, available to every entity) ∪ the invoice's own `entity_id` — so the AI never sees another subsidiary's codes. Single-entity tenants are unaffected (all accounts are shared or under the one entity). See `../../docs/multi-entity.md` § Chart of accounts. The same effective-chart rule governs `services/gl_recode.bulk_recode_gl`: a vendor-prior recode candidate validates per-invoice-entity, so an entity-specific code applies only to that entity's invoices while a shared code applies everywhere.
+
 ### Post-extraction validation
 
 Even with the chart pinned in the prompt, the model can still hallucinate a plausible-looking code. After extraction, `run_extraction` re-checks every assigned GL code (header `suggested_gl_account` + each `InvoiceLineItem.gl_account`) against the active chart. Codes that aren't in the chart are dropped to `None` and a single aggregated warning is appended to `invoice.warnings`:

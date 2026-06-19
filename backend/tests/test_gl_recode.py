@@ -35,6 +35,7 @@ def _make_invoice(
     status=InvoiceStatus.ready_for_review,
     invoice_number="INV-1",
     invoice_date=None,
+    entity_id=None,
 ):
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -45,6 +46,7 @@ def _make_invoice(
         invoice_number=invoice_number,
         vendor_name="Acme Corp",
         invoice_date=invoice_date,
+        entity_id=entity_id,
         warnings=None,
     )
 
@@ -97,7 +99,10 @@ def _make_db_for(
     skipped_no_vendor: int = 0,
 ):
     """Sequence the SELECTs `bulk_recode_gl` issues:
-    1. _load_active_chart           → list of GL codes
+    1. _load_active_chart           → list of (code, entity_id) tuples
+                                      (a bare string in `active_codes` is
+                                      treated as a SHARED account, entity_id
+                                      NULL — preserves single-entity tests)
     2. _select_scope eligible       → list of Invoice rows
                                       (already pre-filtered for
                                       status NOT IN immutable AND
@@ -107,12 +112,13 @@ def _make_db_for(
     4. _select_scope no-vendor count
     5. _load_priors                 → list of (vendor_id, value) tuples
     """
+    chart_rows = [c if isinstance(c, tuple) else (c, None) for c in active_codes]
     db = MagicMock()
     db.commit = AsyncMock()
     db.add = MagicMock()
     db.execute = _Stub(
         [
-            _scalars_all(active_codes),
+            _all_rows(chart_rows),
             _scalars_all(eligible_invoices),
             _scalar(skipped_immutable),
             _scalar(skipped_no_vendor),

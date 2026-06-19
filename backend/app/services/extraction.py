@@ -72,6 +72,7 @@ async def run_extraction(
     # Cache IDs before try block — after rollback, invoice attrs may be expired
     invoice_id = invoice.id
     invoice_org_id = invoice.organization_id
+    invoice_entity_id = invoice.entity_id
 
     try:
         config = _resolve_extraction_config(org_settings)
@@ -141,15 +142,25 @@ async def run_extraction(
 
         # GL catalog: inject org-specific chart of accounts so the AI
         # uses real codes instead of the hardcoded default list.
+        from sqlalchemy import or_
         from sqlalchemy import select as sa_select
 
         from app.models.gl_account import GLAccount
 
+        # Scope the catalog hint to the invoice's effective chart: shared
+        # accounts (entity_id NULL, available to every entity) ∪ the invoice's
+        # own entity. A single-entity tenant has all accounts shared or under
+        # the one entity, so this is a no-op there. See docs/multi-entity.md
+        # § Chart of accounts.
         gl_result = await db.execute(
             sa_select(GLAccount)
             .where(
                 GLAccount.organization_id == invoice_org_id,
                 GLAccount.is_active == True,  # noqa: E712
+                or_(
+                    GLAccount.entity_id == invoice_entity_id,
+                    GLAccount.entity_id.is_(None),
+                ),
             )
             .order_by(GLAccount.code)
         )

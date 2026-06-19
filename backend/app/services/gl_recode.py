@@ -123,20 +123,54 @@ class RecodeReport:
         }
 
 
-async def _load_active_chart(db: AsyncSession, organization_id: uuid.UUID) -> set[str]:
+@dataclass
+class _ActiveChart:
+    """Entity-aware view of the active chart of accounts.
+
+    A GL code is valid for an invoice iff the account is *shared*
+    (``entity_id IS NULL``, available to every entity) OR its
+    ``entity_id`` matches the invoice's own entity. ``bulk_recode_gl``
+    processes invoices that may span different entities, so validity is
+    resolved per-invoice-entity rather than against one flat org-wide set.
+
+    See ``docs/multi-entity.md`` § Chart of accounts.
+    """
+
+    #: Codes on shared accounts (entity_id NULL) — valid for every entity.
+    shared: set[str]
+    #: entity_id → codes on that entity's own (non-shared) accounts.
+    by_entity: dict[uuid.UUID, set[str]]
+
+    def is_empty(self) -> bool:
+        """No active accounts at all → nothing to validate against (accept any
+        candidate, mirroring the pre-multi-entity behaviour)."""
+        return not self.shared and not self.by_entity
+
+    def is_valid_for(self, code: str, entity_id: uuid.UUID | None) -> bool:
+        if code in self.shared:
+            return True
+        if entity_id is not None and code in self.by_entity.get(entity_id, frozenset()):
+            return True
+        return False
+
+
+async def _load_active_chart(db: AsyncSession, organization_id: uuid.UUID) -> _ActiveChart:
     rows = (
-        (
-            await db.execute(
-                select(GLAccount.code).where(
-                    GLAccount.organization_id == organization_id,
-                    GLAccount.is_active == True,  # noqa: E712
-                )
+        await db.execute(
+            select(GLAccount.code, GLAccount.entity_id).where(
+                GLAccount.organization_id == organization_id,
+                GLAccount.is_active == True,  # noqa: E712
             )
         )
-        .scalars()
-        .all()
-    )
-    return set(rows)
+    ).all()
+    shared: set[str] = set()
+    by_entity: dict[uuid.UUID, set[str]] = {}
+    for code, entity_id in rows:
+        if entity_id is None:
+            shared.add(code)
+        else:
+            by_entity.setdefault(entity_id, set()).add(code)
+    return _ActiveChart(shared=shared, by_entity=by_entity)
 
 
 async def _load_priors(db: AsyncSession, vendor_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
@@ -287,9 +321,12 @@ async def bulk_recode_gl(
             needs_ai.append(inv)
             continue
 
-        if active_chart and prior_code not in active_chart:
-            # Cached value is now stale — don't apply, but try AI fallback
-            # if the operator opted in. Otherwise count as invalid.
+        if not active_chart.is_empty() and not active_chart.is_valid_for(prior_code, inv.entity_id):
+            # Cached value isn't in this invoice's effective chart (shared ∪ the
+            # invoice's own entity) — don't apply, but try AI fallback if the
+            # operator opted in. Otherwise count as invalid. An entity-B-only
+            # code is rejected here for an entity-A invoice even though it's a
+            # live code elsewhere in the org.
             report.skipped_invalid_code += 1
             needs_ai.append(inv)
             continue
