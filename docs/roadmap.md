@@ -321,15 +321,15 @@ Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on ever
 ---
 
 ### Vendor Statement Reconciliation
-**Status:** Planned
+**Status:** Done (CSV + manual intake; PDF-via-extraction deferred) — pure engine in `backend/app/services/vendor_statement_recon.py`, `/api/vendor-statements` router, `/vendor-statements` frontend route, migration 0047. See `backend/docs/vendor-statement-reconciliation.md`.
 
 Distinct from bank reconciliation (cleared payments ↔ bank lines): this reconciles a **supplier's statement of open items** against our AP ledger to catch missing invoices, double-posted bills, mis-applied credits, and stale balances before month-end close. A core AP-clerk task that's entirely manual today.
 
-- [ ] Statement intake — CSV/PDF upload (reuse the extraction pipeline for PDF statements) parsed into a normalized list of `{invoice_number, date, amount, status}` line items, vendor-scoped
-- [ ] Reconciliation engine (`services/vendor_statement_recon.py`, pure) — match statement lines to our `Invoice` rows by invoice number → amount+date fallback; classify each as *matched* / *missing on our side* (supplier billed, we never received) / *missing on their side* (we have it, they don't) / *amount mismatch*
-- [ ] Persist a `VendorStatementReconciliation` run + line results (tenant migration, fans out); surface "missing on our side" rows as actionable exceptions feeding invoice intake
-- [ ] Frontend reconciliation view — upload, side-by-side diff, per-line resolve; every resolution audited
-- [ ] Period close tie-in — block/flag close when a vendor with a material balance has an unreconciled statement
+- [x] Statement intake — CSV upload (forgiving header sniff, mirrors the bank-rec CSV parser) + manual pasted-lines path, parsed into a normalized list of `{invoice_number, invoice_date, amount, status}` line items, vendor-scoped. *(PDF-via-extraction + raw-file storage deferred — see the doc's Deferred section.)*
+- [x] Reconciliation engine (`services/vendor_statement_recon.py`, pure) — matches statement lines to our `Invoice` rows by normalized invoice number → amount+date-window fallback; classifies each as *matched* / *amount mismatch* (within/over a tolerance) / *missing on our side* (supplier billed, we never received) / *missing on their side* (we have an open invoice they omitted)
+- [x] Persist a `VendorStatementReconciliation` run + `VendorStatementReconLine` results (migration 0047, tenant-gated + fans out); the actionable rows (missing-on-our-side + amount-mismatch) surface as the per-run review queue feeding invoice intake. *(Design note: they're recon **lines**, not `Exception` rows — `Exception.invoice_id` is NOT NULL, so a "we have no invoice" row can't be an Exception without a fabricated invoice; the recon line is the durable work item. See the doc.)*
+- [x] Frontend reconciliation view (`/vendor-statements`) — upload / manual create, side-by-side statement-vs-ledger diff, per-line resolve/ignore; every mutation RBAC-gated + audited (`vendor_statement_recon.created` / `.line_resolved` / `.deleted`)
+- [x] Period close tie-in — `GET /api/vendor-statements/close-readiness` flags vendors whose most-recent open run carries a material (over `AP_STATEMENT_RECON_MATERIALITY_DEFAULT`, `?materiality=` override) unreconciled balance
 
 **Competitors:** Tipalti, Basware, Medius (statement reconciliation in close workflows); most SMB tools lack it — a differentiator down-market
 

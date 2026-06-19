@@ -23,6 +23,7 @@ Deep-dive docs live in `backend/docs/`:
 | Multi-currency reporting (reporting currency + unrealized FX) | `docs/multi-currency.md` |
 | International tax (VAT / GST / withholding) | `docs/international-tax.md` |
 | Bank reconciliation | `docs/bank-reconciliation.md` |
+| Vendor statement reconciliation | `docs/vendor-statement-reconciliation.md` |
 | Analytics + CFO dashboard + CSV + scheduled reports | `docs/analytics.md` |
 | Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
 | PO matching (2-way / 3-way) | `docs/po-matching.md` |

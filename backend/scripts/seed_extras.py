@@ -1,11 +1,13 @@
 """Add feature-page demo data to a tenant: contracts, credit memos, discount
-offers, recurring invoice templates, and expenses (reports + policies).
+offers, recurring invoice templates, expenses (reports + policies), and a
+vendor-statement reconciliation run.
 
 The main ``scripts/seed.py`` full seed builds invoices/vendors/POs/payments but
 never populated the CLM (`/contracts`), credit-memo (`/credit-memos`),
-dynamic-discounting (`/discounts`), recurring-invoice (`/recurring`) or expense
-(`/expenses`) pages — so those list views render empty on a freshly-seeded
-tenant. This script fills that gap.
+dynamic-discounting (`/discounts`), recurring-invoice (`/recurring`), expense
+(`/expenses`) or vendor-statement-reconciliation (`/vendor-statements`) pages —
+so those list views render empty on a freshly-seeded tenant. This script fills
+that gap.
 
 It is **additive and idempotent**: it bails if the tenant already has contracts,
 so re-running is safe, and `seed.py`'s `seed_tenant` calls `seed_extras()`
@@ -70,6 +72,14 @@ from app.models.recurring_invoice import (
 )
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.models.vendor_statement_recon import (
+    RESOLUTION_UNRESOLVED,
+    SOURCE_MANUAL,
+    STATUS_OPEN,
+    VendorStatementReconciliation,
+    VendorStatementReconLine,
+)
+from app.services import vendor_statement_recon as recon
 
 
 def _q(amount: Decimal) -> Decimal:
@@ -548,6 +558,9 @@ async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
     session.add_all(all_expenses)
     await session.flush()
 
+    # ---- Vendor statement reconciliation ---------------------------------
+    recon_runs = await seed_vendor_statement_recon(session, org_id)
+
     tally = {
         "contracts": len(contracts),
         "credit_memos": len(memos),
@@ -556,6 +569,7 @@ async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
         "expense_policies": len(policies),
         "expense_reports": len(reports),
         "expenses": len(all_expenses),
+        "statement_recons": recon_runs,
     }
     print(
         "  Seeded extras: "
@@ -563,6 +577,167 @@ async def seed_extras(session, org_id: uuid.UUID) -> dict[str, int]:
         + (" (entity_id set)" if default_entity_id is not None else " (entity backfill pending)")
     )
     return tally
+
+
+async def seed_vendor_statement_recon(session, org_id: uuid.UUID) -> int:
+    """Add one vendor-statement-reconciliation run to a tenant so the
+    `/vendor-statements` page isn't empty on a freshly seeded tenant.
+
+    Picks an existing vendor that has a couple of open invoices, hand-builds a
+    small supplier statement (lines that match those invoices, plus one phantom
+    line that doesn't), and runs the **real** `reconcile` engine — then persists
+    the run + its per-line results exactly like the API's
+    `api.vendor_statement_recon._create_run`. The phantom line yields a genuine
+    `missing_on_our_side` row, so the actionable review queue + close-readiness
+    have real data.
+
+    Idempotent: bails (returns 0) if the tenant already has a reconciliation
+    run. Additive + skip-if-exists, like the rest of `seed_extras`. Does **not**
+    commit — the caller owns the transaction. Returns the number of runs created
+    (0 or 1).
+    """
+    existing = (
+        await session.execute(text("SELECT count(*) FROM vendor_statement_reconciliations"))
+    ).scalar()
+    if existing and existing > 0:
+        print("  Vendor statement recon already seeded. Skipping.")
+        return 0
+
+    default_entity_id = (
+        await session.execute(text("SELECT id FROM entities WHERE is_default LIMIT 1"))
+    ).scalar()
+    actor_id = await _actor_user_id(org_id)
+    today = date.today()
+
+    # Find a vendor with at least two non-settled invoices to reconcile against.
+    vendor = None
+    ledger_invoices: list[recon.LedgerInvoice] = []
+    vendors = list(
+        (
+            await session.execute(
+                select(Vendor).where(Vendor.status == "active").order_by(Vendor.name).limit(20)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for cand in vendors:
+        invoices = list(
+            (
+                await session.execute(
+                    select(Invoice)
+                    .where(
+                        Invoice.vendor_id == cand.id,
+                        Invoice.status.notin_(("paid", "done")),
+                    )
+                    .order_by(Invoice.invoice_number)
+                    .limit(3)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(invoices) >= 2:
+            vendor = cand
+            ledger_invoices = [
+                recon.LedgerInvoice(
+                    id=inv.id,
+                    invoice_number=inv.invoice_number,
+                    amount=inv.amount,
+                    invoice_date=inv.invoice_date,
+                    currency=inv.currency or "USD",
+                    status=str(inv.status),
+                )
+                for inv in invoices
+            ]
+            break
+
+    if vendor is None:
+        print("  No vendor with ≥2 open invoices — run scripts/seed.py first. Skipping recon.")
+        return 0
+
+    # Hand-build the supplier's statement: the first ledger invoice matches
+    # exactly, the second is short-paid by $50 (→ amount_mismatch), and a third
+    # phantom line has no matching invoice (→ missing_on_our_side). Any ledger
+    # invoice the statement omits becomes missing_on_their_side automatically.
+    statement_lines = [
+        recon.StatementLine(
+            invoice_number=ledger_invoices[0].invoice_number,
+            invoice_date=ledger_invoices[0].invoice_date,
+            amount=_q(ledger_invoices[0].amount),
+            status="open",
+            raw={"source": "seed"},
+        ),
+        recon.StatementLine(
+            invoice_number=ledger_invoices[1].invoice_number,
+            invoice_date=ledger_invoices[1].invoice_date,
+            amount=_q(ledger_invoices[1].amount + Decimal("50.00")),
+            status="open",
+            raw={"source": "seed"},
+        ),
+        recon.StatementLine(
+            invoice_number="SUP-PHANTOM-001",
+            invoice_date=today - timedelta(days=20),
+            amount=_q(Decimal("1875.00")),
+            status="open",
+            raw={"source": "seed"},
+        ),
+    ]
+
+    results, summary = recon.reconcile(statement_lines, ledger_invoices)
+
+    run = VendorStatementReconciliation(
+        organization_id=org_id,
+        entity_id=default_entity_id,
+        vendor_id=vendor.id,
+        vendor_name=vendor.name,
+        statement_date=today,
+        statement_reference="STMT-2026-06",
+        currency="USD",
+        source_format=SOURCE_MANUAL,
+        file_key=None,
+        status=STATUS_OPEN,
+        statement_total=summary.statement_total,
+        ledger_total=summary.ledger_total,
+        line_count=summary.line_count,
+        matched_count=summary.matched_count,
+        amount_mismatch_count=summary.amount_mismatch_count,
+        missing_our_side_count=summary.missing_our_side_count,
+        missing_their_side_count=summary.missing_their_side_count,
+        notes="Seed demo statement reconciliation.",
+        created_by=actor_id,
+    )
+    session.add(run)
+    await session.flush()
+
+    for r in results:
+        session.add(
+            VendorStatementReconLine(
+                reconciliation_id=run.id,
+                organization_id=org_id,
+                entity_id=default_entity_id,
+                statement_invoice_number=r.statement_invoice_number,
+                statement_date=r.statement_date,
+                statement_amount=r.statement_amount,
+                statement_status=r.statement_status,
+                classification=r.classification,
+                matched_invoice_id=r.matched_invoice_id,
+                ledger_amount=r.ledger_amount,
+                amount_difference=r.amount_difference,
+                match_method=r.match_method,
+                resolution_status=RESOLUTION_UNRESOLVED,
+                raw=r.raw,
+            )
+        )
+    await session.flush()
+
+    print(
+        f"  Seeded vendor statement recon: 1 run for {vendor.name} "
+        f"(matched={summary.matched_count}, amount_mismatch={summary.amount_mismatch_count}, "
+        f"missing_our_side={summary.missing_our_side_count}, "
+        f"missing_their_side={summary.missing_their_side_count})"
+    )
+    return 1
 
 
 async def _run(db_name: str) -> None:
@@ -579,12 +754,16 @@ async def _run(db_name: str) -> None:
     try:
         async with factory() as session:
             await seed_extras(session, org.id)
+            # seed_extras short-circuits when contracts already exist, so on an
+            # already-seeded tenant top up the statement-recon page separately
+            # (it has its own skip-if-exists guard).
+            await seed_vendor_statement_recon(session, org.id)
             await session.commit()
     finally:
         await engine.dispose()
     print(
         f"Done. Visit http://{org.slug}.localhost:7777/contracts "
-        "(and /credit-memos, /discounts, /recurring, /expenses)."
+        "(and /credit-memos, /discounts, /recurring, /expenses, /vendor-statements)."
     )
 
 
