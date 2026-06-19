@@ -46,6 +46,7 @@ Deep-dive docs live in `backend/docs/`:
 | Expense management | `docs/expense-management.md` |
 | Digital signatures on approvals (SOX) | `docs/approval-signatures.md` |
 | Retention policies (SOX records management) | `docs/retention.md` |
+| Privacy — GDPR/CCPA DSAR export + right-to-erasure | `docs/privacy.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
