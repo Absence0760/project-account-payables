@@ -130,6 +130,27 @@ the vendor side never duplicates the Decimal math. Audit rows
 (`actor_id=None`, no values, only the chosen tier). No migration — the
 `DiscountOffer` table already exists (migration 0043).
 
+### Notification preferences (`portal.py`)
+
+| Method | Path                                  | Notes                                                                        |
+|--------|---------------------------------------|------------------------------------------------------------------------------|
+| GET    | `/portal/notification-preferences`    | Calling vendor user's effective email prefs (`email_on_payment`, `email_on_rejection`); defaults on |
+| PATCH  | `/portal/notification-preferences`    | Partial update of the **caller's own** `VendorUser` prefs; audited; unspecified fields unchanged |
+
+A vendor portal user controls, per user, whether they get **emailed** when one
+of *their own* invoices is **paid** or **rejected**. Stored on
+`vendor_users.notification_prefs` (JSONB, migration 0052), keyed by the same
+`invoice_paid` / `invoice_rejected` event strings the rest of the system uses
+(`{event_type: {"email": bool}}`), mapped to the vendor-friendly
+`email_on_payment` / `email_on_rejection` shape by
+`services/vendor_notifications.py`. Opt-out, not opt-in: an unset event defaults
+to **on**. Vendors have no in-app notification center, so only the `email`
+channel exists. The PATCH is scoped to the caller's own row
+(`get_current_vendor_user`) — a vendor user can never touch another's prefs —
+and writes a PII-free `vendor_user.notification_prefs_updated` audit row (field
+names only). Actual email dispatch is wired into the `transition_invoice`
+chokepoint; see [notifications.md](notifications.md) § Vendor recipients.
+
 ### Admin invite + change-request approval (`vendors.py`)
 
 | Method | Path                                                 | Notes                                 |
@@ -214,6 +235,7 @@ Routes:
 | `/portal/payments`            | Payment history + per-row "Download remittance"        |
 | `/portal/discount-offers`     | Early-payment discount offers — accept / decline       |
 | `/portal/company`             | Contact (live) + bank/tax change requests (staged) + W-9/W-8 tax-form upload/download (live) |
+| `/portal/notifications`       | Email preferences (paid / rejected) — vendor-controlled |
 
 The portal company form makes the approval-gating visible: bank/tax changes
 show a "pending AP approval" banner (read from `GET /portal/company`'s
@@ -229,13 +251,13 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] Dynamic-discount offers — vendor accepts/declines early-payment discounts
   (ties into the dynamic-discounting engine; accept never moves money)
 - [x] In-app per-invoice chat between vendor and AP team
+- [x] Notification preferences (email-on-paid, email-on-rejected) — per-portal-user, vendor-controlled; wired into the `transition_invoice` dispatch chokepoint
+- [x] Virtual card viewing (secure, single-use reveal token) — `GET /portal/cards/{token}` consumes a one-time `CardRevealToken`
 
 ## Phase 3 (deferred)
 
 Add these when there's demand from the first paying customer:
 
-- Virtual card viewing (secure, one-time access)
-- Notification preferences (email-on-paid, email-on-rejected)
 - MFA for portal users
 
 ## Operational notes

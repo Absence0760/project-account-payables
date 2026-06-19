@@ -75,6 +75,10 @@
 				<a href="/portal/company" class:active={$page.url.pathname.startsWith('/portal/company')}
 					>Company</a
 				>
+				<a
+					href="/portal/notifications"
+					class:active={$page.url.pathname.startsWith('/portal/notifications')}>Notifications</a
+				>
 			</nav>
 			<div class="user">
 				<span>{portalAuth.user.full_name}</span>

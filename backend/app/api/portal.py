@@ -29,13 +29,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.pagination import PaginationParams, pagination_params
 from app.api.portal_deps import get_current_vendor_user
 from app.database import get_control_db
-from app.models.discount import (
-    OFFER_STATUS_OFFERED,
-    DiscountOffer,
-)
+from app.models.discount import OFFER_STATUS_OFFERED, DiscountOffer
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.payment import Payment
 from app.models.procurement import POLineItem, PurchaseOrder
+from app.models.supplier_chat import ChatAuthorRole, ChatThreadStatus, SupplierChatMessage
 from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_user import VendorUser
@@ -44,6 +42,10 @@ from app.schemas.portal import (
     PortalAcceptOfferRequest,
     PortalBankChangeRequest,
     PortalChangeRequestResponse,
+    PortalChatAttachmentOut,
+    PortalChatMessageCreate,
+    PortalChatMessageResponse,
+    PortalChatThreadResponse,
     PortalCompanyInfoResponse,
     PortalCompanyInfoUpdateRequest,
     PortalDiscountOfferListResponse,
@@ -52,6 +54,8 @@ from app.schemas.portal import (
     PortalFlipResponse,
     PortalInvoiceListItem,
     PortalInvoiceListResponse,
+    PortalNotificationPreferencesResponse,
+    PortalNotificationPreferencesUpdateRequest,
     PortalPaymentListItem,
     PortalPaymentListResponse,
     PortalPendingChange,
@@ -68,8 +72,16 @@ from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
 from app.services.storage import (
     get_file,
+    upload_chat_file,
     upload_invoice_file,
     upload_tax_form_file,
+)
+from app.services.supplier_chat import (
+    chat_enabled,
+    get_or_create_thread,
+    get_thread,
+    list_messages,
+    notify_supplier_post,
 )
 from app.services.workflow_engine import (
     create_workflow_instance,
@@ -1376,3 +1388,381 @@ async def decline_my_discount_offer(
     if offer.invoice_id:
         invoice_number = (await _invoice_numbers(db, [offer])).get(offer.invoice_id)
     return _portal_offer_response(offer, invoice_number=invoice_number, today=today)
+
+
+# ---------- Notification preferences ----------
+
+
+@router.get("/notification-preferences", response_model=PortalNotificationPreferencesResponse)
+async def get_my_notification_preferences(
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """The calling vendor user's effective email preferences for their own
+    invoices' paid / rejected events. Defaults to on (opt-out)."""
+    from app.services.vendor_notifications import prefs_to_response
+
+    return PortalNotificationPreferencesResponse(**prefs_to_response(vu.notification_prefs))
+
+
+@router.patch("/notification-preferences", response_model=PortalNotificationPreferencesResponse)
+async def update_my_notification_preferences(
+    body: PortalNotificationPreferencesUpdateRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Partial update of the calling vendor user's email preferences. An
+    unspecified field leaves that preference unchanged. Scoped to the caller's
+    own `VendorUser` row — a vendor user can never touch another's prefs."""
+    from app.services.vendor_notifications import apply_pref_update, prefs_to_response
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    update = body.model_dump(exclude_unset=True)
+    vu.notification_prefs = apply_pref_update(vu.notification_prefs, update)
+    await db.flush()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=vendor.organization_id,
+        actor_id=None,
+        action="vendor_user.notification_prefs_updated",
+        entity_type="vendor_user",
+        entity_id=vu.id,
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "fields": sorted(update.keys()),
+        },
+    )
+    await db.commit()
+    await db.refresh(vu)
+    return PortalNotificationPreferencesResponse(**prefs_to_response(vu.notification_prefs))
+
+
+# ---------- Card reveal (no auth — token is the credential) ----------
+
+
+@router.get("/cards/{token}")
+async def reveal_card(
+    token: str,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Vendor-facing single-use card reveal.
+
+    Resolves the URL-safe token, returns the live PAN/CVV/expiry on the
+    first hit, and marks the token used so a second visit returns
+    `gone`. The token itself is the credential — no portal-auth dep
+    here. Tokens expire after 7 days regardless of use.
+
+    Errors come back as small JSON bodies with stable shapes so the
+    portal UI can show a sensible message:
+      404 invalid    — wrong / unknown token
+      410 used       — already revealed once
+      410 expired    — past the expiry window
+    """
+    from app.services.audit_dispatch import dispatch_audit
+    from app.services.card_adapters import (
+        get_card_adapter,
+    )
+    from app.services.card_reveal import consume_reveal_token
+
+    card, error = await consume_reveal_token(db, token)
+    if error == "invalid":
+        raise HTTPException(status_code=404, detail="Invalid token")
+    if error == "expired":
+        raise HTTPException(status_code=410, detail="This link has expired")
+    if error == "used":
+        raise HTTPException(status_code=410, detail="This link has already been used")
+    assert card is not None  # narrowing for mypy
+
+    # Re-fetch + decrypt the PAN via the adapter, same path the
+    # /api/cards/{id}/details endpoint uses internally.
+    org_settings_result = await db.execute(
+        select(Vendor).where(Vendor.id == card.vendor_id)
+        if card.vendor_id
+        else select(Vendor).limit(0)
+    )
+    _ = org_settings_result.scalar_one_or_none()  # not strictly needed; left for parity
+
+    # Build a config that matches the cards section of the org settings.
+    # Loading the Organization here is unusual — portal sessions don't
+    # carry one — so we read it directly via the org_id on the card.
+    from app.config import settings as app_settings
+    from app.database import control_session_factory
+    from app.models.organization import Organization
+
+    async with control_session_factory() as ctrl:
+        org_row = await ctrl.execute(
+            select(Organization).where(Organization.id == card.organization_id)
+        )
+        org = org_row.scalar_one_or_none()
+
+    from app.services.card_issuance import _resolve_card_config
+
+    config = _resolve_card_config(org.settings if org else {}, app_settings)
+    if config is None:
+        # Org disabled cards after issuance — surface the saved last4
+        # only so the vendor still has something to call about.
+        await db.commit()
+        return {
+            "last_four": card.last_four,
+            "amount_limit": float(card.amount_limit),
+            "currency": card.currency,
+            "expires_at": card.expires_at.isoformat() if card.expires_at else None,
+            "pan": None,
+            "cvv": None,
+            "warning": "Card details are no longer available for retrieval.",
+        }
+
+    import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
+    import app.services.card_adapters.nium  # noqa: F401
+
+    adapter = get_card_adapter(config)
+    try:
+        details = await adapter.get_card_details(card.provider_card_id)
+    except Exception:  # noqa: BLE001
+        # Adapter outage — return the saved metadata so the vendor at
+        # least sees the link worked, and tell them to contact AP.
+        await db.commit()
+        return {
+            "last_four": card.last_four,
+            "amount_limit": float(card.amount_limit),
+            "currency": card.currency,
+            "expires_at": card.expires_at.isoformat() if card.expires_at else None,
+            "pan": None,
+            "cvv": None,
+            "warning": "Card details are temporarily unavailable. Please contact AP.",
+        }
+
+    await dispatch_audit(
+        db,
+        correlation_id=card.correlation_id or uuid.uuid4(),
+        organization_id=card.organization_id,
+        actor_id=None,  # vendor reveal — no internal user
+        action="card.revealed_via_token",
+        entity_type="virtual_card",
+        entity_id=card.id,
+        details={"last_four": card.last_four},
+    )
+    await db.commit()
+
+    return {
+        "last_four": card.last_four,
+        "amount_limit": float(card.amount_limit),
+        "currency": card.currency,
+        "expires_at": card.expires_at.isoformat() if card.expires_at else None,
+        "pan": details.pan,
+        "cvv": details.cvv,
+    }
+
+
+# ---------- Supplier chat (portal side) ----------
+#
+# Vendor-scoped per-invoice chat. The supplier sees AP author names only (never
+# an internal users.id). No mentions, no templates, no resolve/reopen here.
+# Datetimes are raw `datetime` (portal convention). See
+# backend/docs/supplier-chat.md.
+
+
+def _portal_chat_message_to_response(msg: SupplierChatMessage) -> PortalChatMessageResponse:
+    return PortalChatMessageResponse(
+        id=str(msg.id),
+        author_role=str(msg.author_role),
+        author_name=msg.author_name,
+        body=msg.body,
+        attachments=[
+            PortalChatAttachmentOut(
+                file_url=a.get("file_url", ""),
+                filename=a.get("filename", ""),
+                content_type=a.get("content_type", ""),
+                size=a.get("size", 0),
+            )
+            for a in (msg.attachments or [])
+        ],
+        created_at=msg.created_at,
+    )
+
+
+async def _portal_invoice_or_404(
+    db: AsyncSession, invoice_id: uuid.UUID, vu: VendorUser
+) -> Invoice:
+    inv = (
+        await db.execute(
+            select(Invoice).where(Invoice.id == invoice_id, Invoice.vendor_id == vu.vendor_id)
+        )
+    ).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return inv
+
+
+async def _portal_org(ctrl_db: AsyncSession, organization_id: uuid.UUID):
+    from app.models.organization import Organization
+
+    return (
+        await ctrl_db.execute(select(Organization).where(Organization.id == organization_id))
+    ).scalar_one_or_none()
+
+
+@router.get("/invoices/{invoice_id}/chat", response_model=PortalChatThreadResponse)
+async def get_portal_chat(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    inv = await _portal_invoice_or_404(db, invoice_id, vu)
+    org = await _portal_org(ctrl_db, inv.organization_id)
+    if not chat_enabled(org):
+        return PortalChatThreadResponse(
+            invoice_id=str(inv.id), status=ChatThreadStatus.open.value, messages=[]
+        )
+    thread = await get_thread(db, inv.id)
+    if thread is None:
+        return PortalChatThreadResponse(
+            invoice_id=str(inv.id), status=ChatThreadStatus.open.value, messages=[]
+        )
+    messages = await list_messages(db, thread.id)
+    return PortalChatThreadResponse(
+        invoice_id=str(inv.id),
+        status=str(thread.status),
+        messages=[_portal_chat_message_to_response(m) for m in messages],
+    )
+
+
+async def _post_portal_chat_message(
+    db: AsyncSession,
+    inv: Invoice,
+    vu: VendorUser,
+    *,
+    body: str,
+    attachments: list[dict] | None,
+) -> PortalChatMessageResponse:
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    author_name = vu.full_name or (vendor.name if vendor else None)
+
+    thread = await get_or_create_thread(db, inv)
+    msg = SupplierChatMessage(
+        thread_id=thread.id,
+        author_role=ChatAuthorRole.supplier,
+        author_user_id=vu.id,
+        author_name=author_name,
+        body=body,
+        mentions=None,
+        attachments=attachments or None,
+        template_key=None,
+    )
+    db.add(msg)
+    await db.flush()
+
+    # Audit — actor_id=None (a VendorUser is not a control-plane user). PII-free.
+    await dispatch_audit(
+        db,
+        correlation_id=inv.correlation_id,
+        organization_id=inv.organization_id,
+        actor_id=None,
+        action="chat_message_posted",
+        entity_type="invoice",
+        entity_id=inv.id,
+        details={
+            "thread_id": str(thread.id),
+            "message_id": str(msg.id),
+            "author_role": str(msg.author_role),
+            "has_attachment": bool(msg.attachments),
+            "template_key": msg.template_key,
+        },
+    )
+
+    # Notify the org's AP managers (control-plane Users only). Pre-commit.
+    await notify_supplier_post(db, invoice=inv)
+
+    await db.commit()
+    await db.refresh(msg)
+    return _portal_chat_message_to_response(msg)
+
+
+@router.post(
+    "/invoices/{invoice_id}/chat",
+    response_model=PortalChatMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_portal_chat(
+    invoice_id: uuid.UUID,
+    payload: PortalChatMessageCreate,
+    db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    inv = await _portal_invoice_or_404(db, invoice_id, vu)
+    org = await _portal_org(ctrl_db, inv.organization_id)
+    if not chat_enabled(org):
+        raise HTTPException(status_code=403, detail="Supplier chat is disabled")
+    return await _post_portal_chat_message(db, inv, vu, body=payload.body, attachments=None)
+
+
+@router.post(
+    "/invoices/{invoice_id}/chat/attachments",
+    response_model=PortalChatMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_portal_chat_attachment(
+    invoice_id: uuid.UUID,
+    file: UploadFile = File(...),
+    body: str = Form(default=""),
+    db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    inv = await _portal_invoice_or_404(db, invoice_id, vu)
+    org = await _portal_org(ctrl_db, inv.organization_id)
+    if not chat_enabled(org):
+        raise HTTPException(status_code=403, detail="Supplier chat is disabled")
+
+    message_id = uuid.uuid4()
+    try:
+        file_key, filename, content_type, size = await upload_chat_file(
+            inv.organization_id, inv.id, message_id, file
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    attachment = {
+        "file_key": file_key,
+        "file_url": f"/api/portal/invoices/{inv.id}/chat/file/{file_key}",
+        "filename": filename,
+        "content_type": content_type,
+        "size": size,
+    }
+    return await _post_portal_chat_message(
+        db, inv, vu, body=body or filename, attachments=[attachment]
+    )
+
+
+@router.get("/invoices/{invoice_id}/chat/file/{file_key:path}")
+async def get_portal_chat_file(
+    invoice_id: uuid.UUID,
+    file_key: str,
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Download a chat attachment. The invoice must be the vendor's own, and the
+    key's leading org segment must match the invoice's org — wrong-org / missing
+    both 404 (no enumeration)."""
+    inv = await _portal_invoice_or_404(db, invoice_id, vu)
+    prefix = file_key.split("/", 1)[0]
+    if prefix != str(inv.organization_id):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        content, content_type = get_file(file_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(content=content, media_type=content_type)

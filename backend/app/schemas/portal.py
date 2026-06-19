@@ -327,3 +327,24 @@ class PortalAcceptOfferRequest(BaseModel):
     best tier still capturable today (mirrors the AP-side accept)."""
 
     tier_days: int | None = None
+
+
+# Notification preferences (portal side) — vendor-controlled email opt-out for
+# invoice lifecycle events that touch THEIR invoices (paid / rejected).
+# Vendors have no in-app notification center, so only the `email` channel is
+# exposed. See backend/docs/supplier-portal.md + backend/docs/notifications.md.
+# ---------------------------------------------------------------------------
+
+
+class PortalNotificationPreferencesResponse(BaseModel):
+    """Effective preferences, with defaults applied for any unset event."""
+
+    email_on_payment: bool = True
+    email_on_rejection: bool = True
+
+
+class PortalNotificationPreferencesUpdateRequest(BaseModel):
+    """Partial update — an unspecified field leaves that preference unchanged."""
+
+    email_on_payment: bool | None = None
+    email_on_rejection: bool | None = None
