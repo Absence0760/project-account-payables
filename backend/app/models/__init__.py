@@ -26,6 +26,7 @@ from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
 from app.models.peppol_transmission import PeppolTransmission
+from app.models.positive_pay import PositivePayFile
 from app.models.procurement import (
     Budget,
     BudgetDimension,
@@ -100,6 +101,7 @@ __all__ = [
     "PaymentSchedule",
     "Payment",
     "PeppolTransmission",
+    "PositivePayFile",
     "Vendor",
     "VendorChangeRequest",
     "VendorStatementReconciliation",
