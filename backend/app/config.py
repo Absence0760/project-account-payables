@@ -462,6 +462,22 @@ class Settings(BaseSettings):
     # sops. See backend/docs/approval-signatures.md.
     approval_signing_key: str = ""
 
+    # Email approval — approve/reject an assigned invoice straight from the
+    # review-assignment email, with no login. The link carries a signed,
+    # expiring, single-action token (HMAC-SHA256 over tenant + invoice + actor +
+    # action + expiry) that IS the credential; the action endpoint re-runs the
+    # normal review approve/reject path as that reviewer (segregation, CFO gate,
+    # thresholds, audit row, approval signature all still apply). Empty by
+    # default → the feature is OFF: no links are added to emails and every token
+    # is rejected (fail-closed, no hardcoded fallback, mirroring the other HMAC
+    # secrets). The committed .env.development sets a NON-secret dev value so the
+    # flow is exercisable under `pnpm dev` (console / Mailpit email); deployed
+    # envs set the real key via sops. See backend/docs/email-approval.md.
+    email_action_signing_key: str = ""
+    # Validity window of an email-approval link, in hours (default 7 days). A
+    # reviewer who acts after this re-authenticates in the app instead.
+    email_action_ttl_hours: int = 168
+
     # Retention policies (SOX records management). The enforcement sweep is a
     # long-lived loop (like contract renewal / qms sync) that finds records past
     # their configured retention window and archives them via a privileged,

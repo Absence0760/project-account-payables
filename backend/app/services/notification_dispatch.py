@@ -64,6 +64,20 @@ async def _load_recipients(recipient_user_ids: list[uuid.UUID]) -> dict[uuid.UUI
     return {u.id: u for u in users}
 
 
+async def _resolve_org_slug(organization_id: uuid.UUID) -> str | None:
+    """Look up an org's tenant slug (control plane). Used only to build the
+    per-recipient email-approval links — returns None on any miss so the caller
+    simply omits the links."""
+    from app.database import control_session_factory
+    from app.models.organization import Organization
+
+    async with control_session_factory() as ctrl_db:
+        result = await ctrl_db.execute(
+            select(Organization.slug).where(Organization.id == organization_id)
+        )
+        return result.scalar_one_or_none()
+
+
 async def resolve_role_user_ids(organization_id: uuid.UUID, role_name: str) -> list[uuid.UUID]:
     """Return the ids of active users in an org holding a given role.
 
@@ -136,6 +150,26 @@ async def notify_event(
         logger.exception("notify_event: failed loading recipients for event_type=%s", event_type)
         return
 
+    # Email approval: when an invoice is assigned for review and the feature is
+    # configured, the reviewer's email gets per-recipient Approve/Reject links
+    # (the token binds to *that* reviewer). Resolve the tenant slug once here;
+    # the per-recipient token is built inside the loop. Best-effort — any miss
+    # just omits the links.
+    from app.models.notification import EVENT_INVOICE_ASSIGNED
+
+    tenant_slug: str | None = None
+    if (
+        event_type == EVENT_INVOICE_ASSIGNED
+        and entity_type == "invoice"
+        and settings.email_action_signing_key
+        and entity_id is not None
+    ):
+        try:
+            tenant_slug = await _resolve_org_slug(organization_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("notify_event: failed resolving tenant slug for action links")
+            tenant_slug = None
+
     # De-dup recipients so a user who is both uploader and AP-manager gets one.
     for recipient_id in {uid for uid in recipient_user_ids if uid is not None}:
         user = users_by_id.get(recipient_id)
@@ -162,11 +196,28 @@ async def notify_event(
             )
 
         if channels["email"] and getattr(user, "email", None):
+            email_text = rendered.body_text
+            email_html = rendered.body_html
+            if tenant_slug is not None:
+                from app.services.email_action_token import build_email_action_links
+
+                links = build_email_action_links(
+                    api_base_url=settings.api_public_url,
+                    tenant_slug=tenant_slug,
+                    invoice_id=entity_id,
+                    actor_id=recipient_id,
+                    signing_key=settings.email_action_signing_key,
+                    ttl_hours=settings.email_action_ttl_hours,
+                )
+                if links:
+                    text_block, html_block = links
+                    email_text = f"{email_text}\n\n{text_block}"
+                    email_html = f"{email_html or ''}{html_block}"
             await _send_email_best_effort(
                 user.email,
                 rendered.title,
-                rendered.body_text,
-                rendered.body_html,
+                email_text,
+                email_html,
                 event_type=event_type,
             )
 
