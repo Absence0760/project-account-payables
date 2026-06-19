@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -31,5 +31,15 @@ class VendorUser(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Per-portal-user notification preferences. Shape: a map of event_type ->
+    # {"email": bool}. Empty `{}` means "use defaults" (all channels on) —
+    # see services/notification_dispatch.resolve_prefs. Mirrors
+    # `User.notification_prefs` but vendor-scoped: the supplier controls whether
+    # they get emailed when their invoices are paid / rejected. Vendors have no
+    # in-app notification center, so only the `email` channel is consulted.
+    notification_prefs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     vendor: Mapped["Vendor"] = relationship(back_populates="portal_users")  # noqa: F821
