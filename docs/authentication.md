@@ -430,6 +430,16 @@ Disable requires password re-entry — a stolen session shouldn't be able to sil
 
 OIDC SSO sign-in does **not** trigger our MFA challenge — the IdP is the source of truth for "did this person prove a second factor." Configure MFA in Okta/Entra itself if you want it enforced for SSO users.
 
+### Supplier-portal MFA (vendor users)
+
+The supplier portal has its own TOTP MFA for `VendorUser`s, mirroring this flow but on the separate vendor auth surface (`typ=vendor` JWT, tenant-scoped). It reuses the same `services/mfa.py` TOTP primitives and the same `AP_MFA_ENABLED` master switch.
+
+- **Columns:** `vendor_users.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` (migration `0053_vendor_mfa`, tenant DB) — the exact shape of the `User` MFA columns.
+- **Opt-in per vendor user.** There's no org-wide enforcement for vendors (unlike employee `Organization.settings.mfa.required`). With `AP_MFA_ENABLED=false` (local-dev default), an enrolled vendor still logs in with just a password.
+- **Login challenge** returns `PortalMFAChallengeResponse` (`methods: ["totp"]`); the vendor completes `POST /api/portal/auth/mfa/challenge` to mint the access token. Enroll / verify / disable live at `/api/portal/auth/mfa/{enroll,verify,disable}`.
+- **Token-type isolation.** The portal challenge token carries `typ=vendor_mfa_challenge` — distinct from the employee challenge (`mfa_challenge`) and the vendor access token (`vendor`) — so the three token types can never be substituted for one another across surfaces.
+- TOTP only for now (no email-OTP backup factor for vendors yet). Full reference: `backend/docs/supplier-portal.md` § MFA.
+
 ### Endpoints
 
 | Method | Path | Purpose |
