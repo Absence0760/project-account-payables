@@ -71,6 +71,7 @@ export const NAV: NavEntry[] = [
 			{ label: 'Credit Memos', href: '/credit-memos', roles: ['admin', 'ap_manager', 'cfo'] },
 			{ label: 'Discounts', href: '/discounts', roles: ['admin', 'ap_manager', 'cfo'] },
 			{ label: 'Recurring', href: '/recurring', roles: ['admin', 'ap_manager', 'cfo'] },
+			{ label: 'Statements', href: '/vendor-statements', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 		],
 	},
 	{
