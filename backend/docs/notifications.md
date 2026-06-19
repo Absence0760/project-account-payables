@@ -35,6 +35,17 @@ logged (PII-free) and swallowed — the transition/assignment always completes.
 `ap_manager` recipients are resolved against the control plane via
 `notification_dispatch.resolve_role_user_ids(org_id, "ap_manager")`.
 
+### Email approval links (`invoice_assigned` only)
+
+When `AP_EMAIL_ACTION_SIGNING_KEY` is set, the **`invoice_assigned`** email gains
+per-recipient **Approve / Reject** links so the reviewer can decide straight from
+the email without logging in. `notify_event` resolves the tenant slug once and
+calls `email_action_token.build_email_action_links` per recipient (the token
+binds to that reviewer + invoice + action). The links land on the public
+`GET /api/invoices/email-action/{token}` confirm page → `POST .../confirm`, which
+runs the normal `services/review` approve/reject path. Empty key → no links
+added. Full design + security properties: [email-approval.md](email-approval.md).
+
 ### `chat_message` (supplier chat)
 
 The embedded supplier-chat feature fans out via `services/supplier_chat.py`

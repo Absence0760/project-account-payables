@@ -35,6 +35,7 @@ Deep-dive docs live in `backend/docs/`:
 | Periodic access reviews (SOX) | `docs/access-reviews.md` |
 | Audit-log summarization (invoice modal) | `docs/audit-summary.md` |
 | Email + in-app notifications | `docs/notifications.md` |
+| Email approval (approve/reject from the email, no login) | `docs/email-approval.md` |
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
 | Adaptive AI workflows | `docs/adaptive-workflows.md` |
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
