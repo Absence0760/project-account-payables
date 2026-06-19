@@ -75,6 +75,10 @@
 	});
 </script>
 
+<svelte:head>
+	<title>Accounts Payable</title>
+</svelte:head>
+
 {#if tenant === undefined}
 	<!-- SSR / hydration: tenant not resolved yet, render nothing to avoid flash -->
 {:else if $page.url.pathname.startsWith(PORTAL_PREFIX)}

@@ -42,6 +42,10 @@
 	}
 </script>
 
+<svelte:head>
+	<title>Supplier Portal</title>
+</svelte:head>
+
 {#if tenant === undefined}
 	<!-- hydrating -->
 {:else if tenant === null}

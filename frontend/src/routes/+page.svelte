@@ -508,7 +508,7 @@
 	}
 
 	.overdue-text {
-		color: #e04040;
+		color: #f06464;
 	}
 
 	.overdue-badge {
@@ -518,7 +518,7 @@
 		padding: 1px 5px;
 		border-radius: 6px;
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: #f06464;
 		margin-left: 4px;
 	}
 

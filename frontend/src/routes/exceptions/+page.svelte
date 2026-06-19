@@ -59,20 +59,24 @@
 	let resolutionText = $state('');
 	let saving = $state(false);
 
+	// Badge text sits on a 12%-tint-of-itself background, so the tone must
+	// clear WCAG 1.4.3 (4.5:1) on that tint — #e04040 (3.68) and #8b5cf6
+	// (3.60) fail; their lighter siblings #f06464 (4.76) / #a78bfa (5.27)
+	// pass. Amber #d4940a (5.51) already passes.
 	const TYPE_COLORS: Record<string, string> = {
-		duplicate: '#8b5cf6',
+		duplicate: '#a78bfa',
 		po_mismatch: '#d4940a',
-		fraud_flag: '#e04040',
-		extraction_failed: '#e04040',
+		fraud_flag: '#f06464',
+		extraction_failed: '#f06464',
 		unverified_vendor: '#d4940a',
-		review_rejected: '#e04040',
-		amount_exceeded: '#e04040',
+		review_rejected: '#f06464',
+		amount_exceeded: '#f06464',
 		missing_data: '#d4940a',
-		quality_hold: '#e04040',
+		quality_hold: '#f06464',
 	};
 
 	const SEVERITY_COLORS: Record<string, string> = {
-		error: '#e04040',
+		error: '#f06464',
 		warning: '#d4940a',
 		info: '#638cff',
 	};
@@ -592,8 +596,12 @@
 
 	/* --- Bespoke cells / rows --- */
 
+	/* De-emphasize resolved/dismissed rows with a tint, not a blanket
+	   opacity — opacity composites every cell's text below the WCAG 1.4.3
+	   4.5:1 contrast floor. The resolved/dismissed status badge carries the
+	   state signal. */
 	tbody tr.resolved td {
-		opacity: 0.55;
+		background: rgba(138, 143, 160, 0.05);
 	}
 
 	.checkbox-col {
@@ -606,7 +614,7 @@
 	}
 
 	.muted-cell.overdue {
-		color: #e04040;
+		color: #f06464;
 		font-weight: 600;
 	}
 
@@ -643,7 +651,7 @@
 
 	.badge-escalated {
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: #f06464;
 	}
 
 	.badge-resolved {

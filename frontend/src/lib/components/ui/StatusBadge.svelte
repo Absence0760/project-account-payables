@@ -21,7 +21,10 @@
 
 	.new {
 		background: rgba(99, 140, 255, 0.15);
-		color: #638cff;
+		/* On the modal's lighter --surface the 15% tint composites to #232b44,
+		   where #638cff is only 4.48:1 (fails WCAG 1.4.3). #7d9bff lifts it to
+		   5.18:1 on surface / 5.72:1 on --bg. */
+		color: #7d9bff;
 	}
 
 	.pending {
@@ -31,7 +34,9 @@
 
 	.ready_for_review {
 		background: rgba(50, 200, 130, 0.15);
-		color: #1fa86a;
+		/* #1fa86a is only 4.33:1 on the green 15%-tint-over-surface (#1c3431);
+		   #26b977 lifts it to 5.37:1 (WCAG 1.4.3). */
+		color: #26b977;
 	}
 
 	/* WCAG 1.4.3 — these badges are small but bold uppercase, treated as normal
@@ -51,6 +56,6 @@
 
 	.done {
 		background: rgba(31, 168, 106, 0.15);
-		color: #1fa86a;
+		color: #26b977;
 	}
 </style>

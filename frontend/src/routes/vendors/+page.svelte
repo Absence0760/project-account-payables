@@ -348,8 +348,12 @@
 	.unverified {
 		background: rgba(212, 148, 10, 0.04);
 	}
+	/* De-emphasize rejected rows with a subtle tint rather than a blanket
+	   opacity (which would composite every cell's text below the WCAG
+	   1.4.3 4.5:1 contrast floor). The red "Rejected" status badge carries
+	   the state signal. */
 	.rejected td {
-		opacity: 0.5;
+		background: rgba(224, 64, 64, 0.04);
 	}
 	.vendor-name {
 		font-weight: 500;
@@ -375,7 +379,7 @@
 	}
 	.status-badge.rejected {
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: #f06464;
 	}
 	.source-badge {
 		display: inline-block;

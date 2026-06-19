@@ -205,8 +205,8 @@
 	}
 
 	.btn-accent {
-		background: var(--accent);
-		border-color: var(--accent);
+		background: var(--accent-strong);
+		border-color: var(--accent-strong);
 		color: #fff;
 		font-weight: 600;
 	}

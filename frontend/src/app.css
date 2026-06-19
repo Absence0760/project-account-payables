@@ -13,6 +13,13 @@
 	   normal text, so the muted token is kept as-is. */
 	--text-muted: #8a8fa0;
 	--accent: #638cff;
+	/* WCAG 1.4.3 Contrast: --accent (#638cff) only reaches 3.12:1 against
+	   white, so white text on an --accent fill fails the 4.5:1 bar. This
+	   darker companion (#3f5fd6) computes ~4.92:1 white-on-it while staying
+	   in the same blue hue. Use it ONLY for text-bearing accent BACKGROUNDS
+	   (buttons, active filter chip, skip link). Leave --accent for borders,
+	   focus rings, checkbox/radio fills, and accent-coloured text. */
+	--accent-strong: #3f5fd6;
 }
 
 *,
@@ -45,7 +52,7 @@ html, body {
 	transform: translateY(-150%);
 	z-index: 100000;
 	padding: 10px 16px;
-	background: var(--accent);
+	background: var(--accent-strong);
 	color: #fff;
 	font-size: 0.9rem;
 	font-weight: 600;
@@ -360,7 +367,7 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	padding: 8px 18px;
 	border-radius: 6px;
 	border: none;
-	background: var(--accent);
+	background: var(--accent-strong);
 	color: #fff;
 	font-size: 0.85rem;
 	font-weight: 500;
@@ -418,13 +425,17 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	color: var(--text);
 }
 .filter-chip.active {
-	background: var(--accent);
+	background: var(--accent-strong);
 	color: #fff;
-	border-color: var(--accent);
+	border-color: var(--accent-strong);
 }
 .filter-chip .count {
+	/* The smaller font de-emphasizes the count; an opacity dim is avoided
+	   because it dropped both the inactive count (muted grey → 3.31:1) and
+	   the active count (white-on-accent → 3.56:1) below WCAG 1.4.3's 4.5:1.
+	   Full opacity keeps muted grey at 5.38:1 and white-on-accent-strong at
+	   5.5:1. */
 	font-size: 0.72rem;
-	opacity: 0.7;
 }
 .filter-chip .count.alert {
 	background: #e04040;
@@ -624,7 +635,7 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	border-top: 1px solid var(--border);
 }
 .required {
-	color: #e04040;
+	color: #f06464;
 	font-style: normal;
 }
 
@@ -665,7 +676,7 @@ input[type='week']:hover::-webkit-calendar-picker-indicator {
 	background: rgba(224, 64, 64, 0.04);
 }
 .kpi.highlight-red .kpi-value {
-	color: #e04040;
+	color: #f06464;
 }
 
 /* ===================================================================

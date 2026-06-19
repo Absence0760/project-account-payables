@@ -553,7 +553,7 @@
 		>
 			{#snippet header()}
 				<tr>
-					<th class="checkbox-col"><input type="checkbox" checked={allQueueSelected} onchange={toggleQueueSelectAll} /></th>
+					<th class="checkbox-col"><input type="checkbox" aria-label="Select all payable invoices" checked={allQueueSelected} onchange={toggleQueueSelectAll} /></th>
 					<th>Invoice #</th>
 					<th>Vendor</th>
 					<th class="right">Amount</th>
@@ -570,7 +570,7 @@
 						class:row-selected={selectedQueue.has(item.id)}
 						class:discount-eligible={item.discount_eligible}
 					>
-						<td class="checkbox-col"><input type="checkbox" checked={selectedQueue.has(item.id)} onchange={() => toggleQueueSelect(item.id)} /></td>
+						<td class="checkbox-col"><input type="checkbox" aria-label={`Select invoice ${item.invoice_number}`} checked={selectedQueue.has(item.id)} onchange={() => toggleQueueSelect(item.id)} /></td>
 						<td class="mono">{item.invoice_number}</td>
 						<td>{item.vendor_name}</td>
 						<td class="right mono">{formatCurrency(item.amount, item.currency)}</td>
@@ -944,7 +944,7 @@
 	}
 
 	.overdue-text {
-		color: #e04040;
+		color: #f06464;
 	}
 
 	.overdue-badge {
@@ -954,7 +954,7 @@
 		padding: 1px 6px;
 		border-radius: 8px;
 		background: rgba(224, 64, 64, 0.12);
-		color: #e04040;
+		color: #f06464;
 		margin-left: 6px;
 	}
 
@@ -1004,7 +1004,7 @@
 
 	.badge.failed {
 		background: rgba(240, 70, 70, 0.15);
-		color: #e04040;
+		color: #f06464;
 	}
 
 	.badge.cancelled {

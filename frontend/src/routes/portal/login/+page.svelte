@@ -184,7 +184,7 @@
 		padding: 10px;
 		border-radius: 4px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.9rem;
 		font-weight: 500;

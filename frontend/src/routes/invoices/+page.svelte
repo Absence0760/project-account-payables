@@ -488,7 +488,7 @@
 	<DataTable isEmpty={invoiceStore.all.length === 0} empty="No invoices match your filters." colspan={9} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
-				<th class="checkbox-col"><input type="checkbox" checked={allSelected} onchange={toggleSelectAll} /></th>
+				<th class="checkbox-col"><input type="checkbox" aria-label="Select all invoices" checked={allSelected} onchange={toggleSelectAll} /></th>
 				<th>Invoice #</th>
 				<th>Vendor</th>
 				<th>Description</th>
@@ -508,7 +508,7 @@
 						if (isRowOpenClick(e)) editing = invoice;
 					}}
 				>
-					<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
+					<td class="checkbox-col" title={SYSTEM_MANAGED_STATUSES.has(invoice.status) ? `Cannot select — ${STATUS_LABELS[invoice.status]} is system-managed` : ''}><input type="checkbox" aria-label={`Select invoice ${invoice.invoice_number}`} checked={selected.has(invoice.id)} disabled={SYSTEM_MANAGED_STATUSES.has(invoice.status)} onchange={() => toggleSelect(invoice.id)} /></td>
 					<td class="mono">
 						<RowLink
 							onclick={() => (editing = invoice)}
@@ -708,7 +708,7 @@
 		padding: 8px 18px;
 		border-radius: 6px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -906,7 +906,7 @@
 		padding: 5px 12px;
 		border-radius: 4px;
 		border: none;
-		background: var(--accent);
+		background: var(--accent-strong);
 		color: #fff;
 		font-size: 0.8rem;
 		font-weight: 500;
