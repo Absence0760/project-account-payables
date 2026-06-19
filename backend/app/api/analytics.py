@@ -823,6 +823,167 @@ async def _received_amount(db: AsyncSession, entity_id: uuid.UUID | None) -> Dec
 
 
 # ---------------------------------------------------------------------------
+# /api/analytics/by-entity — per-entity rollup + consolidated cross-check
+# ---------------------------------------------------------------------------
+
+# Open (still-payable) statuses — the AP balance / outstanding leg. Shared by
+# the per-entity rollup so every row counts "outstanding" the same way the
+# /cfo dashboard's accounts_payable_balance does.
+_OPEN_AP_STATUSES = (
+    InvoiceStatus.approved.value,
+    InvoiceStatus.sending_to_erp.value,
+    InvoiceStatus.sent_to_erp.value,
+    InvoiceStatus.posted_in_erp.value,
+    InvoiceStatus.payment_scheduled.value,
+)
+
+
+async def _entity_metrics(
+    db: AsyncSession,
+    *,
+    entity_id: uuid.UUID | None,
+    period_start: date,
+) -> dict:
+    """Compute the per-entity AP rollup for one ``entity_id`` (``None`` =
+    consolidated across every entity). Reuses the same entity-scoped query
+    shapes as ``/analytics/cfo`` — total spend in window, open-payables
+    balance, invoice count, open-exception count, open-PO accrual — so a
+    per-entity row and the consolidated row are computed identically and the
+    consolidated block is a true sum-across-entities cross-check.
+
+    Money is returned as string-Decimal (never float); the route serialises
+    it through directly. Lazily-imported models (Exception, PurchaseOrder)
+    fail soft to zero on tenants without those tables, mirroring ``/cfo``.
+    """
+
+    def _inv(q):
+        return apply_entity_scope(q, Invoice, entity_id)
+
+    # Total spend in the trailing window (excludes rejected) — matches /cfo's
+    # naive `total_spend`.
+    total_spend_q = await db.execute(
+        _inv(
+            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                Invoice.invoice_date >= period_start,
+                Invoice.status != InvoiceStatus.rejected.value,
+            )
+        )
+    )
+    total_spend = Decimal(str(total_spend_q.scalar() or 0))
+
+    # Invoice count in window (same filter as total spend).
+    invoice_count_q = await db.execute(
+        _inv(
+            select(func.count(Invoice.id)).where(
+                Invoice.invoice_date >= period_start,
+                Invoice.status != InvoiceStatus.rejected.value,
+            )
+        )
+    )
+    invoice_count = int(invoice_count_q.scalar() or 0)
+
+    # Open-payables balance — same status set as /cfo's accounts_payable_balance.
+    outstanding_q = await db.execute(
+        _inv(
+            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
+                Invoice.status.in_(_OPEN_AP_STATUSES)
+            )
+        )
+    )
+    outstanding_amount = Decimal(str(outstanding_q.scalar() or 0))
+
+    # Open-exceptions count (entity-scoped) — fails soft to 0.
+    open_exceptions = 0
+    try:
+        from app.models.exception import Exception as APException
+
+        exc_q = await db.execute(
+            apply_entity_scope(
+                select(func.count(APException.id)).where(APException.status == "open"),
+                APException,
+                entity_id,
+            )
+        )
+        open_exceptions = int(exc_q.scalar() or 0)
+    except Exception:  # noqa: BLE001
+        open_exceptions = 0
+
+    # Open-PO accrual — reuses /cfo's `_open_po_sum_query` (entity-scoped,
+    # literal-0 on tenants without procurement tables).
+    open_po_q = await db.execute(_open_po_sum_query(entity_id))
+    try:
+        open_po_amount = Decimal(str(open_po_q.scalar() or 0))
+    except Exception:  # noqa: BLE001
+        open_po_amount = Decimal("0")
+
+    return {
+        "total_spend": str(total_spend),
+        "outstanding_amount": str(outstanding_amount),
+        "invoice_count": invoice_count,
+        "open_exceptions": open_exceptions,
+        "open_po_amount": str(open_po_amount),
+    }
+
+
+@router.get("/by-entity")
+async def get_analytics_by_entity(
+    period_days: int = Query(365, ge=30, le=730),
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(*_CFO_ROLES)),
+):
+    """Side-by-side per-entity AP rollup PLUS a consolidated total — the
+    "consolidated reporting across entities" view (multi-entity).
+
+    Unlike every other endpoint in this file this one **ignores** the
+    ``X-Entity-ID`` selection: it reports ALL active entities at once,
+    each scoped row computed via ``_entity_metrics(entity_id=...)`` and a
+    final ``consolidated`` block computed with ``entity_id=None`` (so it
+    equals the sum across the rows and is the cross-check).
+
+    Entities are ordered default-first, then by name — matching the entity
+    switcher's order. Money is string-Decimal throughout.
+    """
+    from app.models.entity import Entity
+
+    period_start = date.today() - timedelta(days=period_days)
+
+    entities = (
+        (
+            await db.execute(
+                select(Entity)
+                .where(Entity.is_active)
+                .order_by(Entity.is_default.desc(), Entity.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    rows: list[dict] = []
+    for e in entities:
+        metrics = await _entity_metrics(db, entity_id=e.id, period_start=period_start)
+        rows.append(
+            {
+                "entity_id": str(e.id),
+                "entity_name": e.name,
+                "entity_slug": e.slug,
+                "currency": e.currency,
+                "is_default": e.is_default,
+                **metrics,
+            }
+        )
+
+    consolidated = await _entity_metrics(db, entity_id=None, period_start=period_start)
+
+    return {
+        "period_days": period_days,
+        "period_start": period_start.isoformat(),
+        "entities": rows,
+        "consolidated": consolidated,
+    }
+
+
+# ---------------------------------------------------------------------------
 # /api/analytics/drill/spend_concentration — top vendors with invoice list
 # ---------------------------------------------------------------------------
 

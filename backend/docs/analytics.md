@@ -85,6 +85,42 @@ Drill-through:
   Forecasts are NOT persisted — the CFO pastes from their FP&A
   tool.
 
+## Consolidated reporting across entities (`GET /api/analytics/by-entity`)
+
+Read-only, admin + CFO only. A side-by-side **per-entity AP rollup PLUS a
+consolidated total** — the multi-entity "consolidated reporting across
+entities" view. Every other endpoint in `analytics.py` reports either ONE
+entity (the `X-Entity-ID` selection) or the fully-merged consolidated total;
+this one returns **all active entities at once** so subsidiaries can be
+compared side by side.
+
+Unlike its neighbours it **intentionally ignores `X-Entity-ID`** — it doesn't
+depend on `get_entity_id`. Instead it lists active entities directly
+(`is_default` first, then by name — matching the entity switcher's order) and
+calls the shared `_entity_metrics(entity_id=...)` helper once per entity, then
+once more with `entity_id=None` for the `consolidated` block. Because every row
+and the consolidated block run the same entity-scoped query shapes used by
+`/analytics/cfo` (total spend, open-payables balance, invoice count,
+open-exception count, open-PO accrual via `_open_po_sum_query`), the
+consolidated block is a true sum-across-entities cross-check.
+
+Query params: `period_days` (default 365, range 30–730).
+
+Response:
+- `period_days`, `period_start`
+- `entities[]` — one row per active entity:
+  `{entity_id, entity_name, entity_slug, currency, is_default, total_spend,
+  outstanding_amount, invoice_count, open_exceptions, open_po_amount}`
+- `consolidated` — the same metric block computed with `entity_id=None`
+  (equals the sum across `entities[]`)
+
+Money fields (`total_spend`, `outstanding_amount`, `open_po_amount`) are
+**string-Decimal** (never floats). A single-entity tenant still returns a
+coherent one-row breakdown whose row equals the consolidated block. The web
+surface is the `By entity` table on `/cfo`
+(`frontend/src/lib/components/analytics/ByEntityBreakdown.svelte`), which
+self-hides for single-entity tenants (mirrors the entity switcher).
+
 ## Predictive cash-flow forecasting (`/api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}`)
 
 Read-only, admin + CFO only. All three resolve the tenant DB through
@@ -193,3 +229,4 @@ is stored.
 | `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
 | `tests/test_scheduled_reports.py` | 11 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
+| `tests/test_analytics_by_entity.py` | `/by-entity` — per-entity spend/invoice-count scoping for two entities; `consolidated` equals the cross-entity sum; open-exceptions scope per entity; single-entity tenant returns a coherent one-row breakdown; RBAC (ap_clerk/ap_manager 403, cfo 200); the endpoint ignores `X-Entity-ID` |
