@@ -213,6 +213,45 @@ async def upload_chat_file(
     return file_key, safe_name, content_type, len(content)
 
 
+async def upload_positive_pay_file(
+    org_id: uuid.UUID,
+    file_id: uuid.UUID,
+    content: bytes,
+    filename: str,
+    content_type: str,
+) -> tuple[str, str]:
+    """Store a system-generated Positive Pay export in S3.
+
+    The key is ``<org_id>/positive-pay/<file_id>/<safe-filename>`` — the
+    leading ``org_id`` segment is the cross-tenant download gate (the positive
+    pay download endpoint refuses keys whose first segment isn't the caller's
+    org), mirroring the invoice / contract / expense file paths.
+
+    Unlike the upload helpers above, the content is already-rendered bytes
+    (not an ``UploadFile``) and is system-generated — there's no content-type
+    allowlist to enforce — but the size is still capped defensively. The
+    rendered file legitimately contains full account / routing numbers (that's
+    the file's purpose); it lives only here in MinIO, never in a DB column or a
+    log line.
+    """
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError(f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB")
+
+    file_key = f"{org_id}/positive-pay/{file_id}/{_safe_filename(filename)}"
+
+    client = _get_client()
+    _ensure_bucket(client)
+    client.put_object(
+        Bucket=settings.s3_bucket,
+        Key=file_key,
+        Body=content,
+        ContentType=content_type or "application/octet-stream",
+    )
+
+    file_url = f"/api/positive-pay/{file_id}/download"
+    return file_key, file_url
+
+
 def get_file(file_key: str) -> tuple[bytes, str]:
     """Download a file from S3 and return (content, content_type)."""
     client = _get_client()
