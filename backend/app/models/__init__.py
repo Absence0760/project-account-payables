@@ -4,6 +4,7 @@ from app.models.assistant import AssistantUsage, Conversation, ConversationMessa
 from app.models.base import Base
 from app.models.contract import Contract, ContractLineItem, ContractStatus, ContractType
 from app.models.credit_memo import CreditMemo
+from app.models.data_subject_request import DataSubjectRequest
 from app.models.discount import DiscountOffer
 from app.models.entity import Entity
 from app.models.exception import Exception as APException
@@ -112,6 +113,7 @@ __all__ = [
     "AgentDecision",
     "WorkflowSuggestion",
     "CreditMemo",
+    "DataSubjectRequest",
     "DiscountOffer",
     "Contract",
     "ContractLineItem",

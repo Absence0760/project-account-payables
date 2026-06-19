@@ -44,6 +44,7 @@ from app.api import (
     portal,
     portal_auth,
     positive_pay,
+    privacy,
     purchase_orders,
     recurring,
     requisitions,
@@ -297,6 +298,7 @@ app.include_router(vendors.router, prefix="/api")
 app.include_router(vendor_risk.router, prefix="/api")
 app.include_router(vendor_statement_recon.router, prefix="/api")
 app.include_router(positive_pay.router, prefix="/api")
+app.include_router(privacy.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
