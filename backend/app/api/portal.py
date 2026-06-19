@@ -7,6 +7,7 @@ A vendor user cannot reference another vendor's invoices even by guessing IDs.
 
 import logging
 import uuid
+from datetime import date
 from decimal import Decimal
 
 from fastapi import (
@@ -35,6 +36,7 @@ from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_user import VendorUser
 from app.schemas.portal import (
+    TAX_FORM_TYPES,
     PortalBankChangeRequest,
     PortalChangeRequestResponse,
     PortalChatAttachmentOut,
@@ -53,12 +55,18 @@ from app.schemas.portal import (
     PortalPOLineItem,
     PortalPOListItem,
     PortalPOListResponse,
+    PortalTaxFormResponse,
     PortalTaxIdChangeRequest,
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.extraction_dispatch import dispatch_extraction
 from app.services.invoice_warnings import refresh_warnings
-from app.services.storage import get_file, upload_chat_file, upload_invoice_file
+from app.services.storage import (
+    get_file,
+    upload_chat_file,
+    upload_invoice_file,
+    upload_tax_form_file,
+)
 from app.services.supplier_chat import (
     chat_enabled,
     get_or_create_thread,
@@ -994,6 +1002,150 @@ async def list_my_change_requests(
         )
         for r in rows
     ]
+
+
+# ---------- Tax forms (W-9 / W-8) ----------
+#
+# The vendor uploads their OWN signed W-9 (US) or W-8 (foreign) onto their OWN
+# vendor row, reusing the same `Vendor.w9_file_key` / `w9_received_date` columns
+# the AP-side `/api/tax/vendors/{id}/w9` upload writes. The coarse form type
+# (w9 vs w8) is encoded in the S3 key path segment, so no vendor column / no
+# migration is needed to distinguish the two. The tax ID is never read, logged,
+# or echoed by any handler here — only an on-file boolean + form type + date.
+
+
+def _tax_form_type_from_key(file_key: str | None) -> str | None:
+    """Recover the coarse form type (w9 / w8) from a stored tax-form S3 key.
+
+    The key shape is ``<org>/tax-forms/<vendor>/<form_type>/<file>`` (see
+    ``storage.upload_tax_form_file``). A key written by the AP-side W-9 upload
+    uses a different prefix (``<org>/w9/<vendor>/<file>``) and has no form-type
+    segment — that path defaults to ``w9`` since the AP flow only handles W-9s.
+    """
+    if not file_key:
+        return None
+    parts = file_key.split("/")
+    if len(parts) >= 5 and parts[1] == "tax-forms" and parts[3] in TAX_FORM_TYPES:
+        return parts[3]
+    # A W-9 stored via the AP-side upload (or any legacy key) — it's a W-9.
+    return "w9"
+
+
+@router.get("/company/tax-form", response_model=PortalTaxFormResponse)
+async def get_my_tax_form(
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Whether a W-9 / W-8 is on file for the caller's own vendor.
+
+    PII-free: never returns the tax ID or the document — only the on-file
+    flag, the coarse form type, and the received date. Scoped to the caller's
+    own vendor via the `Vendor.id == vu.vendor_id` clause."""
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    on_file = bool(vendor.w9_file_key)
+    return PortalTaxFormResponse(
+        on_file=on_file,
+        form_type=_tax_form_type_from_key(vendor.w9_file_key) if on_file else None,
+        received_date=vendor.w9_received_date if on_file else None,
+        suggested_form_type="w9",
+    )
+
+
+@router.post("/company/tax-form", response_model=PortalTaxFormResponse)
+async def upload_my_tax_form(
+    file: UploadFile = File(...),
+    form_type: str = Form(default="w9"),
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Upload the caller's own signed W-9 (US) or W-8 (foreign) tax form.
+
+    Writes `w9_file_key` + `w9_received_date` on the caller's OWN vendor row —
+    the only vendor the handler ever touches is `vu.vendor_id`. Unlike the
+    bank/tax-ID change flow, the form itself is just a document (not a routing
+    target), so it applies live; AP still verifies the TIN separately. The
+    audit row is PII-free (form type + filename only, never the tax ID)."""
+    ft = (form_type or "w9").strip().lower()
+    if ft not in TAX_FORM_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"form_type must be one of {', '.join(TAX_FORM_TYPES)}",
+        )
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    try:
+        file_key, _ = await upload_tax_form_file(vendor.organization_id, vendor.id, ft, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    vendor.w9_file_key = file_key
+    vendor.w9_received_date = date.today()
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=vendor.organization_id,
+        actor_id=None,  # vendor user — not a control-plane user
+        action="vendor.tax_form_uploaded_by_vendor",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        # PII guard: form type + filename only — never the tax ID.
+        details={
+            "actor_type": "vendor_user",
+            "vendor_user_id": str(vu.id),
+            "form_type": ft,
+            "filename": file.filename,
+        },
+    )
+    await db.commit()
+    await db.refresh(vendor)
+
+    return PortalTaxFormResponse(
+        on_file=True,
+        form_type=_tax_form_type_from_key(vendor.w9_file_key),
+        received_date=vendor.w9_received_date,
+        suggested_form_type="w9",
+    )
+
+
+@router.get("/company/tax-form/file")
+async def get_my_tax_form_file(
+    db: AsyncSession = Depends(get_tenant_db),
+    vu: VendorUser = Depends(get_current_vendor_user),
+):
+    """Download the caller's own uploaded W-9 / W-8.
+
+    The file key is read from the caller's OWN vendor row (never from the
+    request), so a vendor can only ever fetch their own form. The key's
+    leading org segment is additionally cross-checked against the vendor's
+    org — wrong-org / missing both 404 (no enumeration), mirroring the chat
+    file proxy."""
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    if not vendor.w9_file_key:
+        raise HTTPException(status_code=404, detail="No tax form on file")
+
+    prefix = vendor.w9_file_key.split("/", 1)[0]
+    if prefix != str(vendor.organization_id):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        content, content_type = get_file(vendor.w9_file_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(content=content, media_type=content_type)
 
 
 # ---------- Card reveal (no auth — token is the credential) ----------
