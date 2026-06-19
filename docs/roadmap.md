@@ -775,15 +775,15 @@ Selling internationally means handling vendor + employee PII and banking data un
 **Competitors:** every EU-serving competitor (Basware, Medius, SAP Ariba, Coupa) has GDPR DSAR + residency; it's table stakes for enterprise procurement reviews
 
 ### Accessibility (WCAG 2.2 AA / EU EAA / ADA)
-**Status:** Planned
+**Status:** Shipped — WCAG 2.2 AA adopted as the conformance target across web, supplier portal, and Flutter mobile; baseline fixes landed across the shared component library + every route, an `axe-core` CI guard (web) and `meetsGuideline` widget tests (mobile) lock against regressions, and a conformance statement + VPAT/ACR are published. The one remaining item is the **manual screen-reader device pass** (VoiceOver / NVDA / TalkBack), tracked as outstanding work in the VPAT. See `docs/accessibility.md` + `docs/accessibility-vpat.md`.
 
-Legally required, not optional: the **EU Accessibility Act** is in force (June 2025), and US ADA Title III + Section 508 apply to enterprise buyers. Components already carry some `aria-*` usage, but there's no systematic conformance target, audit, or regression guard. An `audit:accessibility` skill + `compliance-auditor` agent already exist to drive this.
+Legally required, not optional: the **EU Accessibility Act** is in force (June 2025), and US ADA Title III + Section 508 apply to enterprise buyers.
 
-- [ ] Adopt **WCAG 2.2 AA** as the conformance target across web (SvelteKit), mobile (Flutter), and the supplier portal; publish a VPAT/ACR
-- [ ] Web baseline — keyboard navigability (no traps — there's a `ux-hunt` check for this), visible focus rings, semantic landmarks/roles, form-label + error association, `aria-live` on async/toast surfaces, AA contrast on `StatusBadge`/charts
-- [ ] Audit-and-fix pass via the existing `audit:accessibility` skill, route by route (shared `lib/components/` first so fixes propagate); track findings to closure (no dangling deferrals)
-- [ ] Automated regression guard — `axe-core` assertions wired into the Playwright e2e suite so a regression fails CI; mirror with Flutter's accessibility guidelines / `flutter test` semantics checks on mobile
-- [ ] Screen-reader pass (VoiceOver / NVDA / TalkBack) on the core invoice → approve → pay flow and the supplier portal; respect `prefers-reduced-motion`
+- [x] Adopt **WCAG 2.2 AA** as the conformance target across web (SvelteKit), mobile (Flutter), and the supplier portal; publish a VPAT/ACR — `docs/accessibility.md` (conformance statement) + `docs/accessibility-vpat.md` (VPAT 2.5 criterion table)
+- [x] Web baseline — skip link + named landmarks, global `:focus-visible` ring, `Modal` focus trap/restore (no keyboard traps), form-label + error association (`aria-describedby`/`aria-invalid`), `aria-live` on async + toast surfaces, `prefers-reduced-motion` blanket, AA contrast on `StatusBadge`/`ScreeningBadge`/charts. Shared `lib/components/` carry the baseline so route pages inherit it
+- [x] Audit-and-fix pass route by route (shared `lib/components/` first so fixes propagate); findings driven to closure. Two items deferred **with tracked follow-ups in the VPAT** (no silent deferrals): (a) keyboard drag-to-reorder in the workflow-builder canvas — add/select/toggle/delete are keyboard-operable; only drag-reorder/insert-at-slot is pointer-only, durable fix = per-node move up/down buttons over the existing `onreorder`; (b) migrate the four hand-rolled modal shells (`InvoiceModal`, `RunDetailModal`, `BulkRecodeGLModal`, portal `discount-offers`) onto `ui/Modal` for shared focus trap/restore (`BulkRecodeGLModal`'s missing Esc was fixed inline)
+- [x] Automated regression guard — `axe-core` assertions wired into the Playwright e2e suite (`tests-e2e/a11y/`, auto-run in the standard glob so a regression fails CI) + Flutter `meetsGuideline` semantics/contrast/tap-target widget tests (`mobile/test/a11y/`)
+- [x] `prefers-reduced-motion` respected (global app.css rule + component-scoped guards; mobile uses default Material transitions which honor the platform setting). Manual **screen-reader pass** (VoiceOver / NVDA / TalkBack) on the invoice → approve → pay flow + supplier portal is the tracked outstanding VPAT item (the supporting semantics — labels, roles, live regions — are in place)
 
 **Competitors:** enterprise suites (Coupa, SAP Ariba, Basware) ship VPATs; a clean ACR is increasingly a procurement gate, especially for public-sector + EU buyers
 

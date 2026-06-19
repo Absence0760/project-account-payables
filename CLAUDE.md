@@ -333,6 +333,7 @@ Full list in `backend/app/config.py`.
 | SOC 2 readiness | `docs/soc2-readiness.md` — vendor comparison, control mapping, kickoff plan |
 | Data privacy (GDPR/CCPA) | `backend/docs/privacy.md` (DSAR + erasure), `docs/data-residency.md` (region pinning), `docs/ropa.md` (Record of Processing Activities), `docs/sub-processors.md` (sub-processor register) |
 | Founder runbooks (non-code) | `docs/founder-runbooks/` — legal, prod deploy, Stripe, payment rails, SOC 2 vendor, support + status, DPA template, breach-notification runbook |
+| Accessibility (WCAG 2.2 AA) | `docs/accessibility.md` (conformance statement) + `docs/accessibility-vpat.md` (VPAT/ACR). Web baseline lives in the shared `frontend/src/lib/components/` + `app.css` (see `frontend/CLAUDE.md` → Accessibility patterns); regression guards are `frontend/tests-e2e/a11y/` (axe-core) + `mobile/test/a11y/` (`meetsGuideline`) |
 | CSV data import | `backend/docs/csv-import.md` — pilot Day-0 vendor + invoice migration |
 | Email-to-invoice intake | `backend/docs/email-intake.md` — per-tenant inbound address, SES + Mailgun setup |
 | Contract Management (CLM) | `backend/docs/contracts.md` — lifecycle, Contract/ContractLineItem model, repository + upload, spend-to-contract tracking, renewal sweep + env vars, compliance (`contract_noncompliant`), contract-based PO creation, migrations 0036/0037 |
