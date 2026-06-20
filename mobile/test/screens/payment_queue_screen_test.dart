@@ -7,10 +7,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/payment_queue_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/payment_queue_store.dart';
+
+/// Wraps a screen in a MaterialApp carrying the localization delegates so
+/// `AppLocalizations.of(context)` resolves (defaults to English).
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -119,7 +128,7 @@ void main() {
       _screenClient(queue: [_queueItem('1'), _queueItem('2')]),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentQueueScreen()));
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
     await _pumpUntil(tester, find.text('Total Paid'));
 
     expect(find.text('Total Paid'), findsOneWidget);
@@ -132,7 +141,7 @@ void main() {
   testWidgets('selecting a row reveals the Create Run bar', (tester) async {
     await loginThen(['ap_manager'], _screenClient(queue: [_queueItem('1')]));
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentQueueScreen()));
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
     await _pumpUntil(tester, find.text('Vendor 1'));
 
     expect(find.text('Create Run'), findsNothing);
@@ -166,7 +175,7 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentQueueScreen()));
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
     await _pumpUntil(tester, find.text('Vendor 1'));
 
     await tester.tap(find.byType(Checkbox).first);
@@ -184,7 +193,7 @@ void main() {
     // CFO can manage payments per the backend gate, so the checkbox IS shown.
     await loginThen(['cfo'], _screenClient(queue: [_queueItem('1')]));
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentQueueScreen()));
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
     await _pumpUntil(tester, find.text('Vendor 1'));
 
     expect(find.byType(Checkbox), findsOneWidget);
@@ -193,7 +202,7 @@ void main() {
   testWidgets('empty queue renders the empty state', (tester) async {
     await loginThen(['ap_manager'], _screenClient(queue: []));
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentQueueScreen()));
+    await tester.pumpWidget(_localized(const PaymentQueueScreen()));
     await _pumpUntil(tester, find.text('No invoices awaiting payment'));
 
     expect(find.text('No invoices awaiting payment'), findsOneWidget);
