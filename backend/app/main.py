@@ -64,6 +64,7 @@ from app.api import (
     workflow_definitions,
 )
 from app.api.v1 import router as public_v1_router
+from app.api.v1_openapi import router as public_v1_openapi_router
 from app.config import settings
 
 
@@ -281,6 +282,9 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(api_keys.router, prefix="/api")
 # Public versioned programmatic surface (X-API-Key auth) — becomes /api/v1/...
 app.include_router(public_v1_router, prefix="/api")
+# Published OpenAPI spec + Swagger UI for the public /api/v1 surface only
+# (GET /api/v1/openapi.json, GET /api/v1/docs). Both respect AP_PUBLIC_API_ENABLED.
+app.include_router(public_v1_openapi_router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")

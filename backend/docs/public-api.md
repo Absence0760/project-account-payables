@@ -4,8 +4,10 @@ Programmatic, versioned access to the platform for external integrators —
 authenticated with per-org **API keys** (not the SPA's JWT session). The first
 slice shipped API-key auth + key management + a small read-only `/api/v1`
 surface; the second shipped **outbound webhooks** (see [Outbound
-webhooks](#outbound-webhooks)). A published OpenAPI spec is a later slice (see
-[Deferred](#deferred)).
+webhooks](#outbound-webhooks)); the third shipped the **published, versioned
+OpenAPI spec + a developer docs page** for the `/api/v1` surface (see
+[Published OpenAPI spec](#published-openapi-spec) and [Versioning &
+deprecation policy](#versioning--deprecation-policy)).
 
 ## Auth model
 
@@ -88,11 +90,81 @@ V1Invoice = { id, invoice_number, vendor_name, amount, currency,
               status, invoice_date, due_date, created_at }
 ```
 
+## Published OpenAPI spec
+
+The `/api/v1` surface ships a **published, versioned OpenAPI document** — the
+machine-readable contract integrators code (and generate clients) against.
+
+| Method | Path | Returns |
+|--------|------|---------|
+| `GET` | `/api/v1/openapi.json` | The OpenAPI 3.1 document for the public surface (JSON). |
+| `GET` | `/api/v1/docs` | Swagger UI rendered against that spec (human-readable). |
+
+Both are **public** (no `X-API-Key` needed to *read the contract*) but both
+respect the `AP_PUBLIC_API_ENABLED` kill switch: when the public API is off they
+`404` — the surface, and therefore its contract, is simply not there. The 404
+(rather than a distinct "disabled") matches the opaque-failure posture of the
+data routes.
+
+**Scoped, not the whole app.** The spec is generated from the *live* FastAPI
+route table (so it can never drift from the routes) but then filtered to the
+`/api/v1` paths only and overlaid with a curated security scheme + servers +
+version (`app/api/v1_openapi.py::build_public_openapi`). The internal SPA API
+(`/api/auth`, `/api/invoices`, `/api/payments`, …) is **never** described here,
+and component schemas are pruned to those reachable from the v1 routes — an
+internal-only Pydantic model can't leak into the public contract via an orphan.
+
+What the document carries:
+
+- `info.version: "v1"` — the contract version (tracks the path prefix).
+- A `servers` entry built from `AP_API_PUBLIC_URL`, so generated clients target
+  the right base URL.
+- A single `ApiKeyAuth` security scheme (`apiKey` in the `X-API-Key` header),
+  applied **globally** — every operation shows the auth requirement.
+- The published `V1Invoice` / `V1InvoiceList` component schemas, with `amount`
+  typed as a **string** (money-is-exact — exact arithmetic over JSON, no float),
+  and the `status` / `page` / `page_size` pagination parameters on the list
+  operation.
+
+The route mount is additive in `app/main.py` (`public_v1_openapi_router`); the
+generator is pure with respect to the app (reads routes, returns a fresh dict),
+so it's safe to build per request.
+
+> Relation to `endpoint-inventory`. The internal `/endpoint-inventory` skill
+> enumerates **every** backend route for `/audit/auth` and integrator docs. This
+> published spec is the narrower, *contractual* artifact: only the supported
+> `/api/v1` routes, with the stability guarantees below. The live `/api/v1`
+> routes are the source of truth; the spec is generated from them, not hand-kept.
+
+## Versioning & deprecation policy
+
+The `/api/v1` surface carries an explicit stability contract so integrators can
+build against it safely:
+
+- **Versioning is in the path.** A new major version is a new prefix
+  (`/api/v2`), served alongside `/api/v1` with its own `openapi.json` + `docs`.
+  The `info.version` string tracks the prefix.
+- **`v1` is additive-only.** Within `v1` we may **add** optional response fields,
+  new endpoints, and new optional query params. We will **not** remove or rename
+  a documented field, change its type (e.g. `amount` stays a string), narrow an
+  enum, or make an optional param required — those are breaking changes and
+  require a new version. The `V1Invoice` schema is decoupled from the internal
+  ORM precisely so an internal column change never silently alters the contract.
+- **Deprecation window.** When a version is slated for sunset, it is announced in
+  this doc and (where applicable) flagged via the standard `Deprecation` /
+  `Sunset` response headers and `deprecated: true` in the OpenAPI operation. A
+  deprecated version is supported for **at least 6 months** after the
+  announcement before removal, with the successor version available for the whole
+  window so integrators can migrate.
+- **The kill switch is not a deprecation.** `AP_PUBLIC_API_ENABLED=false` is an
+  operational stop (incident response), not a contract change; it 404s the whole
+  surface immediately and uniformly.
+
 ## Config
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AP_PUBLIC_API_ENABLED` | `true` | Platform kill switch for the `/api/v1` surface. The surface is auth-gated regardless; when `false` every key fails closed with the opaque 401. No secret — API keys are minted per-org and stored hashed. |
+| `AP_PUBLIC_API_ENABLED` | `true` | Platform kill switch for the `/api/v1` surface — the read routes **and** the published spec/docs (`/api/v1/openapi.json`, `/api/v1/docs`). The surface is auth-gated regardless; when `false` every key fails closed with the opaque 401 and the spec/docs 404. No secret — API keys are minted per-org and stored hashed. |
 
 There is no API-key secret in config or `.env` — each key is generated at mint
 time and only its hash persists, so the secrets-via-sops / no-hardcoded-fallback
@@ -231,8 +303,9 @@ These are explicitly **out of scope** for the current slices and tracked as
 later roadmap work:
 
 - **`exception.raised` event source** — see [Event sources wired](#event-sources-wired).
-- **Published OpenAPI spec / contract** — a versioned, downloadable schema for
-  the `/api/v1` surface and a developer portal.
+- **Full developer portal** — the published [OpenAPI spec + Swagger UI docs
+  page](#published-openapi-spec) ship now; a richer hosted portal (guides,
+  changelog, API-key self-service from the docs) is later work.
 - **Write scopes + endpoints** — only `read` is minted today. The scope plumbing
   (`scopes` column + `require_api_scope`) is in place for it.
 - **Per-key rate limiting** — the repo has a Redis sliding-window limiter
