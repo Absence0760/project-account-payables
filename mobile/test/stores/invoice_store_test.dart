@@ -361,4 +361,139 @@ void main() {
       expect(store.fetchAuditLog('1'), throwsA(isA<ApiException>()));
     });
   });
+
+  group('selection mode', () {
+    test('enter/toggle/select-all/clear/exit track the selected set', () async {
+      store.debugReset();
+      // Populate the list via a real fetch so selectAll has rows to enumerate.
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => _list([
+              _invoiceJson('1'),
+              _invoiceJson('2'),
+              _invoiceJson('3'),
+            ])),
+      );
+      await store.fetch();
+      expect(store.invoices, hasLength(3));
+
+      expect(store.selectionMode, isFalse);
+
+      store.enterSelectionMode('1');
+      expect(store.selectionMode, isTrue);
+      expect(store.isSelected('1'), isTrue);
+      expect(store.selectedCount, 1);
+
+      store.toggleSelected('2');
+      expect(store.selectedCount, 2);
+      store.toggleSelected('2'); // toggling off
+      expect(store.isSelected('2'), isFalse);
+
+      store.selectAll();
+      expect(store.selectedCount, 3);
+
+      store.clearSelection();
+      expect(store.selectedCount, 0);
+      expect(store.selectionMode, isTrue, reason: 'clear keeps the mode on');
+
+      store.exitSelectionMode();
+      expect(store.selectionMode, isFalse);
+      expect(store.selectedCount, 0);
+    });
+  });
+
+  group('bulk operations', () {
+    test('bulkDeleteSelected posts ids, exits selection, and refetches',
+        () async {
+      Map<String, dynamic>? sentBody;
+      var listCalls = 0;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' && req.url.path.endsWith('/bulk/delete')) {
+            sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({'deleted': 2, 'skipped': ['3']}),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          listCalls++;
+          return _list([]);
+        }),
+      );
+
+      store
+        ..debugReset()
+        ..enterSelectionMode('1')
+        ..toggleSelected('2');
+
+      final result = await store.bulkDeleteSelected();
+
+      expect(result, isNotNull);
+      expect(result!.count, 2);
+      expect(result.skipped, ['3']);
+      expect((sentBody!['ids'] as List).toSet(), {'1', '2'});
+      expect(store.selectionMode, isFalse, reason: 'exits selection on success');
+      expect(listCalls, 1, reason: 'success triggers a refetch');
+    });
+
+    test('bulkStatusSelected sends the target status', () async {
+      Map<String, dynamic>? sentBody;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' && req.url.path.endsWith('/bulk/status')) {
+            sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({'updated': 1, 'skipped': []}),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return _list([]);
+        }),
+      );
+
+      store
+        ..debugReset()
+        ..enterSelectionMode('1');
+
+      final result = await store.bulkStatusSelected('approved');
+
+      expect(result!.count, 1);
+      expect(sentBody!['status'], 'approved');
+      expect(sentBody!['ids'], ['1']);
+    });
+
+    test('bulk action with nothing selected is a no-op (null, no request)',
+        () async {
+      var calls = 0;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          calls++;
+          return _list([]);
+        }),
+      );
+
+      store.debugReset();
+      expect(await store.bulkDeleteSelected(), isNull);
+      expect(await store.bulkStatusSelected('approved'), isNull);
+      expect(calls, 0);
+    });
+
+    test('failure records the error, returns null, keeps selection', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 500)),
+      );
+
+      store
+        ..debugReset()
+        ..enterSelectionMode('1');
+
+      final result = await store.bulkDeleteSelected();
+
+      expect(result, isNull);
+      expect(store.error, isNotNull);
+      expect(store.selectionMode, isTrue,
+          reason: 'a failed bulk op leaves the selection intact to retry');
+    });
+  });
 }

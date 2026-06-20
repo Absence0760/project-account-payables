@@ -57,12 +57,24 @@ class InvoiceStore extends ChangeNotifier {
   InvoiceSearchFilters _filters = InvoiceSearchFilters.empty;
   bool _fromCache = false;
 
+  // ----- Bulk-operation selection -----
+  // Multi-select mode for bulk delete / status-change. The set of selected
+  // invoice ids lives in the store so the list's ListenableBuilder reacts to
+  // selection changes the same way it reacts to data changes.
+  bool _selectionMode = false;
+  final Set<String> _selectedIds = <String>{};
+
   List<Invoice> get invoices => _invoices;
   bool get loading => _loading;
   String? get error => _error;
   String? get statusFilter => _statusFilter;
   InvoiceSearchFilters get filters => _filters;
   bool get fromCache => _fromCache;
+
+  bool get selectionMode => _selectionMode;
+  Set<String> get selectedIds => Set.unmodifiable(_selectedIds);
+  int get selectedCount => _selectedIds.length;
+  bool isSelected(String id) => _selectedIds.contains(id);
 
   List<Invoice> get pendingApproval =>
       _invoices.where((i) => i.status == InvoiceStatus.readyForReview).toList();
@@ -78,6 +90,43 @@ class InvoiceStore extends ChangeNotifier {
     _searchQuery = null;
     _filters = InvoiceSearchFilters.empty;
     _fromCache = false;
+    _selectionMode = false;
+    _selectedIds.clear();
+  }
+
+  // ----- Selection mutators -----
+
+  /// Enter multi-select mode (no-op if already on); optionally seed the first
+  /// selected id (e.g. from a long-press on a row).
+  void enterSelectionMode([String? firstId]) {
+    _selectionMode = true;
+    if (firstId != null) _selectedIds.add(firstId);
+    notifyListeners();
+  }
+
+  /// Leave multi-select mode and clear the selection.
+  void exitSelectionMode() {
+    _selectionMode = false;
+    _selectedIds.clear();
+    notifyListeners();
+  }
+
+  void toggleSelected(String id) {
+    if (!_selectedIds.remove(id)) _selectedIds.add(id);
+    notifyListeners();
+  }
+
+  /// Select every invoice currently in the list.
+  void selectAll() {
+    _selectedIds
+      ..clear()
+      ..addAll(_invoices.map((i) => i.id));
+    notifyListeners();
+  }
+
+  void clearSelection() {
+    _selectedIds.clear();
+    notifyListeners();
   }
 
   void setStatusFilter(String? status) {
@@ -198,6 +247,43 @@ class InvoiceStore extends ChangeNotifier {
   /// first) or rethrows for the caller to surface.
   Future<List<AuditEntry>> fetchAuditLog(String id) {
     return InvoiceApi.auditLog(id);
+  }
+
+  /// Bulk-delete the currently-selected invoices. On success exits selection
+  /// mode and refetches the list; returns the `{deleted, skipped}` result so
+  /// the screen can announce partials. Returns null + records the error on
+  /// failure. No-op (null) when nothing is selected.
+  Future<BulkResult?> bulkDeleteSelected() async {
+    if (_selectedIds.isEmpty) return null;
+    final ids = _selectedIds.toList();
+    try {
+      final result = await InvoiceApi.bulkDelete(ids);
+      exitSelectionMode();
+      await fetch();
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// Bulk status-change the currently-selected invoices to [status] (the target
+  /// status value, e.g. `approved`). Same success/failure contract as
+  /// [bulkDeleteSelected].
+  Future<BulkResult?> bulkStatusSelected(String status) async {
+    if (_selectedIds.isEmpty) return null;
+    final ids = _selectedIds.toList();
+    try {
+      final result = await InvoiceApi.bulkStatus(ids, status);
+      exitSelectionMode();
+      await fetch();
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
   }
 
   Map<String, dynamic> _invoiceToJson(Invoice i) => {

@@ -34,6 +34,13 @@ class AuthStore extends ChangeNotifier {
   // Invoice field editing — mirrors the backend PATCH /api/invoices/{id} gate
   // (admin / ap_manager / cfo). Clerks are read-only here.
   bool get canEditInvoice => isAdmin || isManager || isCfo;
+  // Bulk invoice operations (delete / status change) — mirrors the backend
+  // gate on POST /api/invoices/bulk/{delete,status}
+  // (require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)). Clerks excluded.
+  bool get canBulkEditInvoices => isAdmin || isManager || isCfo;
+  // Admin surfaces — user management + organization settings. Both backend
+  // surfaces (/api/admin/*, PATCH /api/organization) are admin-only.
+  bool get isOrgAdmin => isAdmin;
   // Predictive cash-flow forecast — mirrors the backend analytics gate
   // (_CFO_ROLES = admin, cfo on /analytics/cashflow_forecast + /cash_position).
   // Note: ap_manager is deliberately excluded (it's a privileged CFO surface).

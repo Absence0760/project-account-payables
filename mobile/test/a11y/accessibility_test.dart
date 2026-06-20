@@ -26,6 +26,7 @@ import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/stores/notification_store.dart';
 import 'package:ap_mobile/widgets/activity_timeline.dart';
 import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
+import 'package:ap_mobile/widgets/bulk_action_bar.dart';
 import 'package:ap_mobile/widgets/erp_status_panel.dart';
 import 'package:ap_mobile/widgets/exception_list_tile.dart';
 import 'package:ap_mobile/widgets/exception_status_badge.dart';
@@ -178,6 +179,48 @@ void main() {
         find.bySemanticsLabel(RegExp(r'Acme Supplies.*1,500.*Ready for Review')),
         findsOneWidget,
       );
+      handle.dispose();
+    });
+
+    testWidgets('selection mode exposes a checked state + keeps tap target',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        InvoiceListTile(
+          invoice: _invoice(),
+          selectionMode: true,
+          selected: true,
+          onTap: () {},
+        ),
+      ));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // The merged row label leads with the selection state for the reader.
+      expect(
+        find.bySemanticsLabel(RegExp(r'Selected.*Acme Supplies')),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+  });
+
+  group('BulkActionBar', () {
+    testWidgets('labels the count + actions and clears contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        BulkActionBar(
+          selectedCount: 3,
+          onStatusChange: () {},
+          onDelete: () {},
+        ),
+      ));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      expect(find.bySemanticsLabel('3 selected'), findsOneWidget);
       handle.dispose();
     });
   });

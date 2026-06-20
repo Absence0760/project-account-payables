@@ -119,6 +119,50 @@ class InvoiceApi {
         .map((e) => AuditEntry.fromJson(e as Map<String, dynamic>))
         .toList();
   }
+
+  /// Bulk-delete invoices — `POST /api/invoices/bulk/delete`
+  /// (admin / ap_manager / cfo). The backend skips rows in an immutable status
+  /// (en route to / posted in ERP, scheduled, paid, done) rather than failing
+  /// the batch, returning `{deleted, skipped}` so the UI can report partials.
+  static Future<BulkResult> bulkDelete(List<String> ids) async {
+    final data = await _api.post('/invoices/bulk/delete', {'ids': ids});
+    return BulkResult.fromJson(data, countKey: 'deleted');
+  }
+
+  /// Bulk status change — `POST /api/invoices/bulk/status`
+  /// (admin / ap_manager / cfo). [status] is the target invoice status value
+  /// (e.g. `approved`); immutable rows are skipped. The transition runs through
+  /// the normal workflow chokepoint (audited), so it's not a money-moving write.
+  static Future<BulkResult> bulkStatus(List<String> ids, String status) async {
+    final data = await _api.post('/invoices/bulk/status', {
+      'ids': ids,
+      'status': status,
+    });
+    return BulkResult.fromJson(data, countKey: 'updated');
+  }
+}
+
+/// Result of a bulk invoice mutation (`{deleted|updated, skipped}`). [count] is
+/// the number actually mutated; [skipped] lists ids the backend refused
+/// (immutable status). Reused for both bulk-delete and bulk-status.
+class BulkResult {
+  final int count;
+  final List<String> skipped;
+
+  const BulkResult({required this.count, required this.skipped});
+
+  factory BulkResult.fromJson(
+    Map<String, dynamic> json, {
+    required String countKey,
+  }) {
+    final skipped = json['skipped'];
+    return BulkResult(
+      count: (json[countKey] as num?)?.toInt() ?? 0,
+      skipped: skipped is List
+          ? skipped.map((e) => e.toString()).toList()
+          : const [],
+    );
+  }
 }
 
 class ContractApi {
