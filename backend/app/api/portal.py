@@ -680,6 +680,7 @@ async def get_my_payment_remittance(
     """Vendor-scoped remittance-advice PDF. Ownership is enforced by the
     `Invoice.vendor_id == vu.vendor_id` join — a payment on another vendor's
     invoice returns 404, never a foreign PDF."""
+    from app.services.branding import get_brand_context
     from app.services.remittance_pdf import (
         RemittanceContext,
         RemittanceLine,
@@ -732,6 +733,7 @@ async def get_my_payment_remittance(
                 amount=payment.amount,
             )
         ],
+        brand=get_brand_context(org.settings if org else None),
     )
     pdf_bytes = render_remittance_pdf(ctx)
     filename = f"remittance-{payment.reference or str(payment.id)[:8]}.pdf"

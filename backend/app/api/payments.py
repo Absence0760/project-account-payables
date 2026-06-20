@@ -314,6 +314,7 @@ async def get_payment_remittance(
     bump, this endpoint will pick up the rest automatically (the line
     item list is built from the row's invoice_id today, but the PDF
     accepts a list)."""
+    from app.services.branding import get_brand_context
     from app.services.remittance_pdf import (
         RemittanceContext,
         RemittanceLine,
@@ -354,6 +355,7 @@ async def get_payment_remittance(
                 amount=payment.amount,
             )
         ],
+        brand=get_brand_context(org.settings),
     )
     pdf_bytes = render_remittance_pdf(ctx)
 

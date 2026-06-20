@@ -41,6 +41,7 @@ from app.services.approval_signature import verify_approval
 from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.audit_report_pdf import AuditReportContext, render_audit_report_pdf
+from app.services.branding import get_brand_context
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -200,6 +201,7 @@ async def export_audit_trail(
             generated_by_name=user.full_name,
             generated_by_email=user.email,
             entries=export,
+            brand=get_brand_context(org.settings if org else None),
         )
         pdf_bytes = render_audit_report_pdf(ctx)
         filename = f"audit_report_{date.today().isoformat()}.pdf"

@@ -24,7 +24,7 @@ renderer is faithful to it by adding nothing of its own.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
 
@@ -41,6 +41,12 @@ from reportlab.platypus import (
 )
 
 from app.schemas.audit import AuditExportEntry
+from app.services.branding import (
+    PLATFORM_ACCENT_COLOR,
+    BrandContext,
+    build_logo_flowable,
+    get_brand_context,
+)
 
 
 @dataclass
@@ -61,6 +67,9 @@ class AuditReportContext:
     generated_by_name: str
     generated_by_email: str
     entries: list[AuditExportEntry]
+    # Resolved tenant brand for the header. Defaults to the platform brand so a
+    # call site that doesn't pass one still renders.
+    brand: BrandContext = field(default_factory=lambda: get_brand_context(None))
 
 
 def render_audit_report_pdf(ctx: AuditReportContext) -> bytes:
@@ -76,6 +85,7 @@ def render_audit_report_pdf(ctx: AuditReportContext) -> bytes:
         rightMargin=0.6 * inch,
         title=f"SOX Audit Trail — {ctx.org_name}",
     )
+    brand = ctx.brand
     styles = getSampleStyleSheet()
     body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=9, leading=12)
     cell = ParagraphStyle("cell", parent=body, fontSize=7.5, leading=9.5)
@@ -104,10 +114,25 @@ def render_audit_report_pdf(ctx: AuditReportContext) -> bytes:
         spaceBefore=8,
         spaceAfter=4,
     )
+    h_brand = ParagraphStyle(
+        "brand",
+        parent=styles["Heading2"],
+        fontSize=12,
+        leading=15,
+        textColor=_brand_color(brand.accent_color),
+        spaceAfter=6,
+    )
 
     story = []
 
     # ---- Cover / header -------------------------------------------------
+    # Branded header (logo when embeddable, else product name in accent).
+    logo = build_logo_flowable(brand, max_width_pt=2.2 * inch, max_height_pt=0.55 * inch)
+    if logo is not None:
+        story.append(logo)
+        story.append(Spacer(1, 0.06 * inch))
+    else:
+        story.append(Paragraph(_escape(brand.product_name), h_brand))
     story.append(Paragraph("SOX Audit Trail", h_title))
     story.append(Paragraph(_escape(ctx.org_name), body))
     story.append(
@@ -229,6 +254,15 @@ def render_audit_report_pdf(ctx: AuditReportContext) -> bytes:
 
     doc.build(story)
     return buf.getvalue()
+
+
+def _brand_color(hex_value: str):
+    """Resolve a validated brand hex into a ReportLab color, falling back to the
+    platform accent if the value is somehow unparseable."""
+    try:
+        return colors.HexColor(hex_value)
+    except Exception:  # noqa: BLE001 — never let a color literal break the PDF.
+        return colors.HexColor(PLATFORM_ACCENT_COLOR)
 
 
 def _short(value: str | None) -> str:

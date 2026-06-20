@@ -12,7 +12,7 @@ fetches the rows and wraps them in a `Response` with the right headers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -28,6 +28,8 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+
+from app.services.branding import BrandContext, build_logo_flowable, get_brand_context
 
 
 @dataclass
@@ -55,6 +57,9 @@ class RemittanceContext:
     currency: str
     lines: list[RemittanceLine]
     notes: str | None = None
+    # Resolved tenant brand for the header/footer. Defaults to the platform
+    # brand so an old call site that doesn't pass one still renders.
+    brand: BrandContext = field(default_factory=lambda: get_brand_context(None))
 
 
 def render_remittance_pdf(ctx: RemittanceContext) -> bytes:
@@ -69,6 +74,7 @@ def render_remittance_pdf(ctx: RemittanceContext) -> bytes:
         rightMargin=0.75 * inch,
         title=f"Remittance Advice — {ctx.payment_reference or 'Payment'}",
     )
+    brand = ctx.brand
     styles = getSampleStyleSheet()
     body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=10, leading=13)
     label = ParagraphStyle(
@@ -88,6 +94,14 @@ def render_remittance_pdf(ctx: RemittanceContext) -> bytes:
         textColor=colors.HexColor("#0f172a"),
         spaceAfter=4,
     )
+    h_brand = ParagraphStyle(
+        "brand",
+        parent=styles["Heading2"],
+        fontSize=13,
+        leading=16,
+        textColor=_brand_color(brand.accent_color),
+        spaceAfter=8,
+    )
     h_section = ParagraphStyle(
         "section",
         parent=styles["Heading2"],
@@ -99,6 +113,16 @@ def render_remittance_pdf(ctx: RemittanceContext) -> bytes:
     )
 
     story = []
+
+    # Branded header: the tenant logo when one is configured + embeddable,
+    # otherwise the tenant product name in the accent color. Logo embed is
+    # best-effort and never breaks the PDF (falls back to the text header).
+    logo = build_logo_flowable(brand, max_width_pt=2.4 * inch, max_height_pt=0.6 * inch)
+    if logo is not None:
+        story.append(logo)
+        story.append(Spacer(1, 0.08 * inch))
+    else:
+        story.append(Paragraph(_escape(brand.product_name), h_brand))
 
     story.append(Paragraph("Remittance Advice", h_title))
     story.append(
@@ -200,21 +224,33 @@ def render_remittance_pdf(ctx: RemittanceContext) -> bytes:
         story.append(Paragraph(_escape(ctx.notes), body))
 
     story.append(Spacer(1, 0.4 * inch))
-    story.append(
-        Paragraph(
-            "Questions about this remittance? Reply to this email and reference the payment "
-            "number above.",
-            ParagraphStyle(
-                "footer",
-                parent=body,
-                fontSize=8,
-                textColor=colors.HexColor("#94a3b8"),
-            ),
-        )
+    footer_style = ParagraphStyle(
+        "footer",
+        parent=body,
+        fontSize=8,
+        textColor=colors.HexColor("#94a3b8"),
     )
+    footer = (
+        "Questions about this remittance? Reply to this email and reference the payment "
+        "number above."
+    )
+    if brand.has_support_url:
+        footer += f" Or visit {_escape(brand.support_url)}."
+    story.append(Paragraph(footer, footer_style))
 
     doc.build(story)
     return buf.getvalue()
+
+
+def _brand_color(hex_value: str):
+    """Resolve a validated brand hex into a ReportLab color, tolerating a bad
+    value by falling back to the platform accent."""
+    try:
+        return colors.HexColor(hex_value)
+    except Exception:  # noqa: BLE001 — never let a color literal break the PDF.
+        from app.services.branding import PLATFORM_ACCENT_COLOR
+
+        return colors.HexColor(PLATFORM_ACCENT_COLOR)
 
 
 def _method_label(method: str) -> str:

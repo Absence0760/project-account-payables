@@ -39,6 +39,7 @@ from app.models.organization import Organization
 from app.models.tax_filing import Tax1099Filing
 from app.models.user import User
 from app.models.vendor import Vendor
+from app.services.branding import get_brand_context
 from app.services.storage import (
     ALLOWED_CONTENT_TYPES,
     _ensure_bucket,
@@ -290,6 +291,7 @@ async def download_vendor_1099(
         payer_address=company.get("address"),
         recipient_address=vendor.address,
         misc_box=misc_box,
+        brand=get_brand_context(org.settings),
     )
     pdf = render_1099_pdf(ctx)
     filename = f"{form_type}-{year}-{vendor.id}.pdf"

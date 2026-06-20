@@ -24,7 +24,7 @@ returns PDF bytes. No DB / network here — the route loads the data.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -35,6 +35,12 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.branding import (
+    PLATFORM_ACCENT_COLOR,
+    BrandContext,
+    build_logo_flowable,
+    get_brand_context,
+)
 from app.services.tax_1099 import VendorReportRow
 
 FORM_NEC = "1099-NEC"
@@ -70,6 +76,9 @@ class Form1099Context:
     box_label: str
     box_amount: Decimal
     generated_at: date
+    # Resolved tenant brand for the header. Defaults to the platform brand so a
+    # call site that doesn't pass one still renders.
+    brand: BrandContext = field(default_factory=lambda: get_brand_context(None))
 
 
 def mask_tin(tin: str | None) -> str | None:
@@ -110,6 +119,7 @@ def build_form_context(
     payer_address: str | None,
     recipient_address: str | None,
     misc_box: str = "3",
+    brand: BrandContext | None = None,
 ) -> Form1099Context:
     """Build a render context for one vendor's 1099.
 
@@ -135,7 +145,17 @@ def build_form_context(
         box_label=box_label,
         box_amount=row.ytd_paid,
         generated_at=date.today(),
+        brand=brand if brand is not None else get_brand_context(None),
     )
+
+
+def _brand_color(hex_value: str):
+    """Resolve a validated brand hex into a ReportLab color, falling back to the
+    platform accent if the value is somehow unparseable."""
+    try:
+        return colors.HexColor(hex_value)
+    except Exception:  # noqa: BLE001 — never let a color literal break the PDF.
+        return colors.HexColor(PLATFORM_ACCENT_COLOR)
 
 
 def _money(amount: Decimal) -> str:
@@ -159,6 +179,7 @@ def render_1099_pdf(ctx: Form1099Context) -> bytes:
         rightMargin=0.75 * inch,
         title=f"{ctx.form_type} ({ctx.tax_year}) — {ctx.recipient_name}",
     )
+    brand = ctx.brand
     styles = getSampleStyleSheet()
     body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=10, leading=13)
     label = ParagraphStyle(
@@ -177,8 +198,23 @@ def render_1099_pdf(ctx: Form1099Context) -> bytes:
         textColor=colors.HexColor("#0f172a"),
         spaceAfter=2,
     )
+    h_brand = ParagraphStyle(
+        "brand",
+        parent=styles["Heading2"],
+        fontSize=13,
+        leading=16,
+        textColor=_brand_color(brand.accent_color),
+        spaceAfter=8,
+    )
 
     story = []
+    # Branded header (logo when embeddable, else product name in accent).
+    logo = build_logo_flowable(brand, max_width_pt=2.4 * inch, max_height_pt=0.6 * inch)
+    if logo is not None:
+        story.append(logo)
+        story.append(Spacer(1, 0.08 * inch))
+    else:
+        story.append(Paragraph(_escape(brand.product_name), h_brand))
     story.append(Paragraph(f"Form {ctx.form_type}", h_title))
     story.append(
         Paragraph(
