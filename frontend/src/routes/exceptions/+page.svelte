@@ -11,6 +11,7 @@
 	import AgentDashboard from '$lib/components/exceptions/AgentDashboard.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface ExceptionItem {
 		id: string;
@@ -263,48 +264,48 @@
 		return `in ${Math.round(hours / 24)}d`;
 	}
 
-	const COLUMNS = [
+	let COLUMNS = $derived([
 		{ class: 'checkbox-col' },
-		{ label: 'Type' },
-		{ label: 'Sev' },
-		{ label: 'Invoice' },
-		{ label: 'Vendor' },
-		{ label: 'Amount', class: 'right' },
-		{ label: 'Assignee' },
-		{ label: 'Age' },
-		{ label: 'Due' },
-		{ label: 'Status' },
+		{ label: m('exceptions.col.type') },
+		{ label: m('exceptions.col.severity') },
+		{ label: m('exceptions.col.invoice') },
+		{ label: m('exceptions.col.vendor') },
+		{ label: m('exceptions.col.amount'), class: 'right' },
+		{ label: m('exceptions.col.assignee') },
+		{ label: m('exceptions.col.age') },
+		{ label: m('exceptions.col.due') },
+		{ label: m('exceptions.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	let statusChips = $derived(
 		summary
 			? [
 					{
 						key: 'all',
-						label: 'All',
+						label: m('common.all'),
 						count: summary.open + summary.escalated + summary.resolved + summary.dismissed
 					},
-					{ key: 'open', label: 'Open', count: summary.open },
-					{ key: 'escalated', label: 'Escalated', count: summary.escalated },
-					{ key: 'resolved', label: 'Resolved', count: summary.resolved },
-					{ key: 'dismissed', label: 'Dismissed', count: summary.dismissed }
+					{ key: 'open', label: m('exceptions.filter.open'), count: summary.open },
+					{ key: 'escalated', label: m('exceptions.filter.escalated'), count: summary.escalated },
+					{ key: 'resolved', label: m('exceptions.filter.resolved'), count: summary.resolved },
+					{ key: 'dismissed', label: m('exceptions.filter.dismissed'), count: summary.dismissed }
 				]
 			: []
 	);
 
 	let emptyMessage = $derived(
 		statusFilter === 'open'
-			? 'No open exceptions. Everything looks good!'
-			: 'No exceptions found.'
+			? m('exceptions.empty.open')
+			: m('exceptions.empty.other')
 	);
 </script>
 
-<PageHeader title="Exceptions">
+<PageHeader title={m('exceptions.title')}>
 	<Tabs
 		tabs={[
-			{ key: 'queue', label: 'Queue', count: summary ? summary.open + summary.escalated : undefined },
-			{ key: 'agents', label: 'AI Agents' }
+			{ key: 'queue', label: m('exceptions.tab.queue'), count: summary ? summary.open + summary.escalated : undefined },
+			{ key: 'agents', label: m('exceptions.tab.agents') }
 		]}
 		bind:active={view}
 		ariaLabel="Exceptions views"
@@ -327,7 +328,7 @@
 					class:active={typeFilter === null}
 					onclick={() => (typeFilter = null)}
 				>
-					All types
+					{m('exceptions.filter.allTypes')}
 				</button>
 				{#each Object.entries(summary.by_type) as [type, count]}
 					<button
@@ -347,7 +348,7 @@
 	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
 		{#snippet actions()}
 			<button class="bulk-action-btn" onclick={openBulkResolve}>
-				Resolve {selectedIds.size}
+				{m('exceptions.bulk.resolve', { n: selectedIds.size })}
 			</button>
 		{/snippet}
 	</BulkBar>
@@ -360,18 +361,18 @@
 						type="checkbox"
 						checked={allSelected}
 						onchange={toggleSelectAll}
-						aria-label="Select all selectable exceptions"
+						aria-label={m('exceptions.selectAllAria')}
 					/>
 				</th>
-				<th>Type</th>
-				<th>Sev</th>
-				<th>Invoice</th>
-				<th>Vendor</th>
-				<th class="right">Amount</th>
-				<th>Assignee</th>
-				<th>Age</th>
-				<th>Due</th>
-				<th>Status</th>
+				<th>{m('exceptions.col.type')}</th>
+				<th>{m('exceptions.col.severity')}</th>
+				<th>{m('exceptions.col.invoice')}</th>
+				<th>{m('exceptions.col.vendor')}</th>
+				<th class="right">{m('exceptions.col.amount')}</th>
+				<th>{m('exceptions.col.assignee')}</th>
+				<th>{m('exceptions.col.age')}</th>
+				<th>{m('exceptions.col.due')}</th>
+				<th>{m('exceptions.col.status')}</th>
 				<th class="actions-col"></th>
 			</tr>
 		{/snippet}
@@ -387,7 +388,7 @@
 								type="checkbox"
 								checked={selectedIds.has(exc.id)}
 								onchange={() => toggleSelect(exc.id)}
-								aria-label="Select exception"
+								aria-label={m('exceptions.selectAria')}
 							/>
 						{/if}
 					</td>
@@ -421,10 +422,10 @@
 					</td>
 					<td class="actions">
 						{#if exc.status === 'open' || exc.status === 'escalated'}
-							<RowAction onclick={() => openResolve(exc)}>Resolve</RowAction>
+							<RowAction onclick={() => openResolve(exc)}>{m('exceptions.row.resolve')}</RowAction>
 						{/if}
 						{#if exc.invoice_id}
-							<RowAction href="/invoices?id={exc.invoice_id}">Invoice</RowAction>
+							<RowAction href="/invoices?id={exc.invoice_id}">{m('exceptions.row.invoice')}</RowAction>
 						{/if}
 					</td>
 				</tr>
@@ -435,12 +436,12 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={loadMoreExceptions} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${exceptions.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('exceptions.loadMore', { shown: exceptions.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} exception{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('exceptions.showingAll', { total })}</span>
 		</div>
 	{/if}
 	</div>
@@ -455,7 +456,7 @@
 	onclose={() => (resolveTarget = null)}
 >
 	{#if resolveTarget}
-		<h2>Resolve exception</h2>
+		<h2>{m('exceptions.resolveModal.title')}</h2>
 		<p class="modal-hint">
 			<strong>{resolveTarget.type_label}</strong>
 			{#if resolveTarget.invoice_number}— {resolveTarget.invoice_number}{/if}
@@ -466,18 +467,18 @@
 		{/if}
 		<form onsubmit={(e) => { e.preventDefault(); commitResolve('resolve'); }}>
 			<label>
-				<span>Resolution note</span>
+				<span>{m('exceptions.resolveModal.note')}</span>
 				<input
 					type="text"
 					bind:value={resolutionText}
-					placeholder="What did you do?"
+					placeholder={m('exceptions.resolveModal.notePlaceholder')}
 					maxlength="500"
 					autofocus
 				/>
 			</label>
 			<div class="modal-footer">
 				<button type="button" class="btn-cancel" onclick={() => (resolveTarget = null)}>
-					Cancel
+					{m('common.cancel')}
 				</button>
 				<button
 					type="button"
@@ -485,7 +486,7 @@
 					disabled={saving}
 					onclick={() => commitResolve('dismiss')}
 				>
-					Dismiss
+					{m('exceptions.resolveModal.dismiss')}
 				</button>
 				<button
 					type="button"
@@ -493,10 +494,10 @@
 					disabled={saving || !resolutionText.trim()}
 					onclick={() => commitResolve('escalate')}
 				>
-					Escalate
+					{m('exceptions.resolveModal.escalate')}
 				</button>
 				<button type="submit" class="btn-primary" disabled={saving || !resolutionText.trim()}>
-					{saving ? 'Saving…' : 'Resolve'}
+					{saving ? m('common.saving') : m('exceptions.resolveModal.resolve')}
 				</button>
 			</div>
 		</form>
@@ -510,25 +511,24 @@
 	width="sm"
 	onclose={() => (bulkResolveOpen = false)}
 >
-	<h2>Resolve {selectedIds.size} exception{selectedIds.size === 1 ? '' : 's'}</h2>
+	<h2>{m('exceptions.bulkModal.title', { n: selectedIds.size })}</h2>
 	<p class="modal-hint">
-		All selected rows will receive the same resolution note. Rows already in a terminal
-		state are silently skipped server-side.
+		{m('exceptions.bulkModal.hint')}
 	</p>
 	<form onsubmit={(e) => { e.preventDefault(); commitBulkResolve('resolve'); }}>
 		<label>
-			<span>Resolution note</span>
+			<span>{m('exceptions.resolveModal.note')}</span>
 			<input
 				type="text"
 				bind:value={resolutionText}
-				placeholder="Applied to every selected row"
+				placeholder={m('exceptions.bulkModal.notePlaceholder')}
 				maxlength="500"
 				autofocus
 			/>
 		</label>
 		<div class="modal-footer">
 			<button type="button" class="btn-cancel" onclick={() => (bulkResolveOpen = false)}>
-				Cancel
+				{m('common.cancel')}
 			</button>
 			<button
 				type="button"
@@ -536,7 +536,7 @@
 				disabled={saving}
 				onclick={() => commitBulkResolve('dismiss')}
 			>
-				Dismiss
+				{m('exceptions.resolveModal.dismiss')}
 			</button>
 			<button
 				type="button"
@@ -544,10 +544,10 @@
 				disabled={saving || !resolutionText.trim()}
 				onclick={() => commitBulkResolve('escalate')}
 			>
-				Escalate
+				{m('exceptions.resolveModal.escalate')}
 			</button>
 			<button type="submit" class="btn-primary" disabled={saving || !resolutionText.trim()}>
-				{saving ? 'Saving…' : 'Resolve'}
+				{saving ? m('common.saving') : m('exceptions.resolveModal.resolve')}
 			</button>
 		</div>
 	</form>

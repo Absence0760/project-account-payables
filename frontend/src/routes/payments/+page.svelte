@@ -17,37 +17,38 @@
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
-	const HISTORY_COLUMNS = [
-		{ label: 'Invoice #' },
-		{ label: 'Vendor' },
-		{ label: 'Method' },
-		{ label: 'Amount', class: 'right' },
-		{ label: 'Status' },
-		{ label: 'Reference' },
-		{ label: 'Date' },
+	let HISTORY_COLUMNS = $derived([
+		{ label: m('payments.col.invoiceNumber') },
+		{ label: m('payments.col.vendor') },
+		{ label: m('payments.col.method') },
+		{ label: m('payments.col.amount'), class: 'right' },
+		{ label: m('payments.col.status') },
+		{ label: m('payments.col.reference') },
+		{ label: m('payments.col.date') },
 		{ class: 'actions-col' }
-	];
+	]);
 
-	const RUNS_COLUMNS = [
-		{ label: 'Run' },
-		{ label: 'Status' },
-		{ label: 'Total', class: 'right' },
-		{ label: 'Payments' },
-		{ label: 'Executed' },
-		{ label: 'Created' }
-	];
+	let RUNS_COLUMNS = $derived([
+		{ label: m('payments.col.run') },
+		{ label: m('payments.col.status') },
+		{ label: m('payments.col.total'), class: 'right' },
+		{ label: m('payments.summary.payments') },
+		{ label: m('payments.col.executed') },
+		{ label: m('payments.col.created') }
+	]);
 
-	const CARDS_COLUMNS = [
-		{ label: 'Card' },
-		{ label: 'Vendor' },
-		{ label: 'Invoice' },
-		{ label: 'Limit', class: 'right' },
-		{ label: 'Charged', class: 'right' },
-		{ label: 'Status' },
-		{ label: 'Expires' },
+	let CARDS_COLUMNS = $derived([
+		{ label: m('payments.col.card') },
+		{ label: m('payments.col.vendor') },
+		{ label: m('payments.col.invoice') },
+		{ label: m('payments.col.limit'), class: 'right' },
+		{ label: m('payments.col.charged'), class: 'right' },
+		{ label: m('payments.col.status') },
+		{ label: m('payments.col.expires') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	type Tab = 'queue' | 'history' | 'runs' | 'cards';
 	let activeTab = $state<Tab>('queue');
@@ -414,7 +415,7 @@
 	}
 
 	let historyChips = $derived([
-		{ key: 'all', label: 'All', count: paymentStore.all.length },
+		{ key: 'all', label: m('common.all'), count: paymentStore.all.length },
 		...PAYMENT_STATUSES.map((s) => ({
 			key: s,
 			label: PAYMENT_STATUS_LABELS[s],
@@ -423,29 +424,29 @@
 	]);
 </script>
 
-<PageHeader title="Payments">
+<PageHeader title={m('payments.title')}>
 	{#if summary}
 		<div class="summary-cards">
 			<div class="scard">
 				<span class="scard-value">{formatCurrency(summary.total_paid)}</span>
-				<span class="scard-label">Total Paid</span>
+				<span class="scard-label">{m('payments.summary.totalPaid')}</span>
 			</div>
 			<div class="scard">
 				<span class="scard-value">{formatCurrency(summary.total_pending)}</span>
-				<span class="scard-label">Pending</span>
+				<span class="scard-label">{m('payments.summary.pending')}</span>
 			</div>
 			<div class="scard">
 				<span class="scard-value">{summary.queue_count}</span>
-				<span class="scard-label">Ready to Pay</span>
+				<span class="scard-label">{m('payments.summary.readyToPay')}</span>
 			</div>
 			<div class="scard">
 				<span class="scard-value">{summary.payment_count}</span>
-				<span class="scard-label">Payments</span>
+				<span class="scard-label">{m('payments.summary.payments')}</span>
 			</div>
 			{#if summary.total_rebates > 0}
 				<div class="scard rebate">
 					<span class="scard-value">{formatCurrency(summary.total_rebates)}</span>
-					<span class="scard-label">Rebates Earned</span>
+					<span class="scard-label">{m('payments.summary.rebatesEarned')}</span>
 				</div>
 			{/if}
 		</div>
@@ -453,16 +454,16 @@
 
 	<nav class="tabs">
 		<button class="tab" class:active={activeTab === 'queue'} onclick={() => (activeTab = 'queue')}>
-			Queue {#if summary}<span class="tab-count">{summary.queue_count}</span>{/if}
+			{m('payments.tab.queue')} {#if summary}<span class="tab-count">{summary.queue_count}</span>{/if}
 		</button>
 		<button class="tab" class:active={activeTab === 'history'} onclick={() => (activeTab = 'history')}>
-			History
+			{m('payments.tab.history')}
 		</button>
 		<button class="tab" class:active={activeTab === 'cards'} onclick={() => (activeTab = 'cards')}>
-			Cards
+			{m('payments.tab.cards')}
 		</button>
 		<button class="tab" class:active={activeTab === 'runs'} onclick={() => (activeTab = 'runs')}>
-			Runs
+			{m('payments.tab.runs')}
 		</button>
 	</nav>
 
@@ -470,8 +471,8 @@
 		<div class="filter-row">
 			<SearchBox
 				bind:value={search}
-				placeholder="Search payments..."
-				ariaLabel="Search payments"
+				placeholder={m('payments.search.placeholder')}
+				ariaLabel={m('payments.search.aria')}
 			/>
 			<FilterChips chips={historyChips} bind:active={activeStatus} />
 		</div>
@@ -481,30 +482,30 @@
 		{#if selectedQueue.size > 0}
 			<div class="pay-bar">
 				<span class="pay-bar-count">
-				{selectedQueue.size} selected — {formatCurrency(selectedTotal)}
+				{m('payments.queue.selected', { n: selectedQueue.size, total: formatCurrency(selectedTotal) })}
 				{#if selectedSavings > 0}
-					<span class="pay-bar-savings">· save {formatCurrency(selectedSavings)}</span>
+					<span class="pay-bar-savings">{m('payments.queue.save', { amount: formatCurrency(selectedSavings) })}</span>
 				{/if}
 			</span>
 				{#if !showReview}
 					<button class="btn-pay" onclick={() => (showReview = true)}>
-						Review & Pay
+						{m('payments.queue.reviewAndPay')}
 					</button>
 				{/if}
-				<button class="btn-clear" onclick={() => { selectedQueue = new Set(); showReview = false; }}>Clear</button>
+				<button class="btn-clear" onclick={() => { selectedQueue = new Set(); showReview = false; }}>{m('common.clear')}</button>
 			</div>
 		{/if}
 
 		{#if showReview && selectedQueue.size > 0}
 			<div class="review-panel">
-				<div class="review-title">Payment Review</div>
+				<div class="review-title">{m('payments.queue.reviewTitle')}</div>
 				<table class="review-table">
 					<thead>
 						<tr>
-							<th>Invoice</th>
-							<th>Vendor</th>
-							<th class="right">Amount</th>
-							<th>Method</th>
+							<th>{m('payments.col.invoice')}</th>
+							<th>{m('payments.col.vendor')}</th>
+							<th class="right">{m('payments.col.amount')}</th>
+							<th>{m('payments.col.method')}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -526,11 +527,11 @@
 					</tbody>
 				</table>
 				<div class="review-footer">
-					<span class="review-total">Total: {formatCurrency(selectedTotal)}</span>
+					<span class="review-total">{m('payments.queue.total', { amount: formatCurrency(selectedTotal) })}</span>
 					<button class="btn-execute" disabled={creatingRun} onclick={createDraftRun}>
 						{creatingRun
-							? 'Creating draft...'
-							: `Create Draft Run · ${selectedQueue.size} Invoice${selectedQueue.size > 1 ? 's' : ''}`}
+							? m('payments.queue.creatingDraft')
+							: m('payments.queue.createDraftRun', { n: selectedQueue.size })}
 					</button>
 				</div>
 			</div>
@@ -540,27 +541,26 @@
 			<div class="savings-banner">
 				<span class="savings-icon">💸</span>
 				<span>
-					<strong>{formatCurrency(queueTotalSavings)}</strong> in early-pay discounts
-					available — pay the highlighted invoices before their discount date to capture them.
+					{m('payments.queue.savingsBanner', { amount: formatCurrency(queueTotalSavings) })}
 				</span>
 			</div>
 		{/if}
 
 		<DataTable
 			isEmpty={queue.length === 0}
-			empty="No invoices ready for payment."
+			empty={m('payments.queue.empty')}
 			colspan={8}
 		>
 			{#snippet header()}
 				<tr>
-					<th class="checkbox-col"><input type="checkbox" aria-label="Select all payable invoices" checked={allQueueSelected} onchange={toggleQueueSelectAll} /></th>
-					<th>Invoice #</th>
-					<th>Vendor</th>
-					<th class="right">Amount</th>
-					<th>Due Date</th>
-					<th>Discount</th>
-					<th>Terms</th>
-					<th>Status</th>
+					<th class="checkbox-col"><input type="checkbox" aria-label={m('payments.selectAllPayableAria')} checked={allQueueSelected} onchange={toggleQueueSelectAll} /></th>
+					<th>{m('payments.col.invoiceNumber')}</th>
+					<th>{m('payments.col.vendor')}</th>
+					<th class="right">{m('payments.col.amount')}</th>
+					<th>{m('payments.col.dueDate')}</th>
+					<th>{m('payments.col.discount')}</th>
+					<th>{m('payments.col.terms')}</th>
+					<th>{m('payments.col.status')}</th>
 				</tr>
 			{/snippet}
 			{#snippet body()}
@@ -577,7 +577,7 @@
 						<td class:overdue-text={item.is_overdue}>
 							{formatDate(item.due_date)}
 							{#if item.is_overdue}
-								<span class="overdue-badge">Overdue</span>
+								<span class="overdue-badge">{m('payments.overdue')}</span>
 							{/if}
 						</td>
 						<td>
@@ -586,8 +586,8 @@
 									class="discount-chip"
 									title="{item.discount_percent}% discount expires {formatDate(item.discount_date)}"
 								>
-									Save {formatCurrency(item.discount_amount, item.currency)}
-									<span class="discount-pct">{item.discount_percent}% by {formatDate(item.discount_date)}</span>
+									{m('payments.queue.discountSave', { amount: formatCurrency(item.discount_amount, item.currency) })}
+									<span class="discount-pct">{m('payments.queue.discountBy', { percent: item.discount_percent, date: formatDate(item.discount_date) })}</span>
 								</span>
 							{:else}
 								<span class="muted">—</span>
@@ -604,7 +604,7 @@
 		<DataTable
 			columns={HISTORY_COLUMNS}
 			isEmpty={paymentStore.all.length === 0}
-			empty="No payments match your filters."
+			empty={m('payments.history.empty')}
 			colspan={8}
 		>
 			{#snippet body()}
@@ -626,10 +626,10 @@
 						<td class="muted">{formatDate(p.created_at)}</td>
 						<td class="actions">
 							{#if p.status === 'completed'}
-								<RowAction onclick={() => downloadRemittance(p)}>Remittance</RowAction>
+								<RowAction onclick={() => downloadRemittance(p)}>{m('payments.history.remittance')}</RowAction>
 							{/if}
 							{#if canVoid(p)}
-								<RowAction variant="danger" onclick={() => openVoid(p)}>Void</RowAction>
+								<RowAction variant="danger" onclick={() => openVoid(p)}>{m('payments.history.void')}</RowAction>
 							{/if}
 						</td>
 					</tr>
@@ -641,14 +641,14 @@
 			<div class="load-more-row">
 				<button class="btn-load-more" onclick={() => paymentStore.loadMore()} disabled={paymentStore.loading}>
 					{paymentStore.loading
-						? 'Loading…'
-						: `Load more (${paymentStore.all.length} of ${paymentStore.total})`}
+						? m('common.loading')
+						: m('payments.history.loadMore', { shown: paymentStore.all.length, total: paymentStore.total })}
 				</button>
 			</div>
 		{:else if paymentStore.total > 0}
 			<div class="load-more-row">
 				<span class="load-more-end"
-					>Showing all {paymentStore.total} payment{paymentStore.total === 1 ? '' : 's'}</span
+					>{m('payments.history.showingAll', { total: paymentStore.total })}</span
 				>
 			</div>
 		{/if}
@@ -657,7 +657,7 @@
 		<DataTable
 			columns={RUNS_COLUMNS}
 			isEmpty={runs.length === 0}
-			empty="No payment runs yet."
+			empty={m('payments.runs.empty')}
 			colspan={6}
 		>
 			{#snippet body()}
@@ -689,20 +689,20 @@
 		{#if cardDashboard}
 			<div class="rebate-grid">
 				<div class="rebate-card">
-					<span class="rebate-label">Rebates this month</span>
+					<span class="rebate-label">{m('payments.cards.rebatesThisMonth')}</span>
 					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_this_month)}</span>
 				</div>
 				<div class="rebate-card">
-					<span class="rebate-label">Rebates YTD</span>
+					<span class="rebate-label">{m('payments.cards.rebatesYtd')}</span>
 					<span class="rebate-value">{formatCurrency(cardDashboard.rebates_ytd)}</span>
 				</div>
 				<div class="rebate-card highlight">
-					<span class="rebate-label">Projected annual</span>
+					<span class="rebate-label">{m('payments.cards.projectedAnnual')}</span>
 					<span class="rebate-value">{formatCurrency(cardDashboard.projected_annual_rebates)}</span>
-					<span class="rebate-hint">at current run rate</span>
+					<span class="rebate-hint">{m('payments.cards.atRunRate')}</span>
 				</div>
 				<div class="rebate-card">
-					<span class="rebate-label">Active cards</span>
+					<span class="rebate-label">{m('payments.cards.activeCards')}</span>
 					<span class="rebate-value">
 						{cardDashboard.active_cards}
 						<span class="rebate-sub">{formatCurrency(cardDashboard.active_cards_value)}</span>
@@ -714,7 +714,7 @@
 		<DataTable
 			columns={CARDS_COLUMNS}
 			isEmpty={cards.length === 0}
-			empty={loadingCards ? 'Loading cards…' : 'No virtual cards issued yet.'}
+			empty={loadingCards ? m('payments.cards.loading') : m('payments.cards.empty')}
 			colspan={8}
 		>
 			{#snippet body()}
@@ -740,7 +740,7 @@
 						<td class="muted">{formatDate(card.expires_at)}</td>
 						<td class="actions">
 							{#if card.status === 'created' || card.status === 'sent' || card.status === 'active'}
-								<RowAction onclick={() => revealCard(card.id)}>Reveal</RowAction>
+								<RowAction onclick={() => revealCard(card.id)}>{m('payments.cards.reveal')}</RowAction>
 							{/if}
 						</td>
 					</tr>
@@ -751,12 +751,12 @@
 		{#if hasMoreCards}
 			<div class="load-more-row">
 				<button class="btn-load-more" onclick={loadMoreCards} disabled={loadingMoreCards}>
-					{loadingMoreCards ? 'Loading…' : `Load more (${cards.length} of ${cardsTotal})`}
+					{loadingMoreCards ? m('common.loading') : m('payments.cards.loadMore', { shown: cards.length, total: cardsTotal })}
 				</button>
 			</div>
 		{:else if cardsTotal > 0}
 			<div class="load-more-row">
-				<span class="load-more-end">Showing all {cardsTotal} card{cardsTotal === 1 ? '' : 's'}</span>
+				<span class="load-more-end">{m('payments.cards.showingAll', { total: cardsTotal })}</span>
 			</div>
 		{/if}
 	{/if}
@@ -773,32 +773,30 @@
 <Modal
 	open={revealedCard !== null}
 	ariaLabel="Card details"
-	title="Virtual card details"
+	title={m('payments.cardDetails.title')}
 	onclose={() => (revealedCard = null)}
 >
 	{#if revealedCard}
 		<p class="modal-hint">
-			These values are fetched on demand and the access is audit-logged. Treat them like
-			a credit card number — paste into the vendor's portal and close this dialog when
-			you're done.
+			{m('payments.cardDetails.hint')}
 		</p>
 		<div class="card-details">
 			<div class="card-row">
-				<span class="card-label">Card number</span>
+				<span class="card-label">{m('payments.cardDetails.cardNumber')}</span>
 				<span class="card-value mono">{revealedCard.pan}</span>
 			</div>
 			<div class="card-row">
-				<span class="card-label">CVV</span>
+				<span class="card-label">{m('payments.cardDetails.cvv')}</span>
 				<span class="card-value mono">{revealedCard.cvv}</span>
 			</div>
 			<div class="card-row">
-				<span class="card-label">Expires</span>
+				<span class="card-label">{m('payments.cardDetails.expires')}</span>
 				<span class="card-value mono">{formatDate(revealedCard.expires)}</span>
 			</div>
 		</div>
 		<div class="modal-footer">
 			<button type="button" class="btn-cancel" onclick={() => (revealedCard = null)}>
-				Close
+				{m('payments.cardDetails.close')}
 			</button>
 		</div>
 	{/if}
@@ -807,7 +805,7 @@
 <Modal
 	open={voidTarget !== null}
 	ariaLabel="Void payment"
-	title="Void payment"
+	title={m('payments.void.title')}
 	onclose={() => (voidTarget = null)}
 >
 	{#if voidTarget}
@@ -817,31 +815,29 @@
 			· {formatCurrency(voidTarget.amount)}
 		</p>
 		<p class="modal-warn">
-			This flips the payment to <strong>voided</strong> and re-opens the invoice for
-			re-payment. If the processor supports it, we'll attempt an upstream reversal too.
-			Audit-logged.
+			{m('payments.void.warning')}
 		</p>
 		<form onsubmit={(e) => { e.preventDefault(); commitVoid(); }}>
 			<label>
-				<span>Reason</span>
+				<span>{m('payments.void.reason')}</span>
 				<input
 					type="text"
 					bind:value={voidReason}
-					placeholder="Why is this being voided?"
+					placeholder={m('payments.void.reasonPlaceholder')}
 					maxlength="500"
 					autofocus
 				/>
 			</label>
 			<div class="modal-footer">
 				<button type="button" class="btn-cancel" onclick={() => (voidTarget = null)}>
-					Cancel
+					{m('common.cancel')}
 				</button>
 				<button
 					type="submit"
 					class="btn-danger"
 					disabled={voiding || !voidReason.trim()}
 				>
-					{voiding ? 'Voiding…' : 'Void payment'}
+					{voiding ? m('payments.void.voiding') : m('payments.void.confirm')}
 				</button>
 			</div>
 		</form>

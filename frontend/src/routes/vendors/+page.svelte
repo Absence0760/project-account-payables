@@ -11,19 +11,20 @@
 	import VendorModal from '$lib/components/modals/VendorModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 
-	const COLUMNS = [
-		{ label: 'Vendor' },
-		{ label: 'Code' },
-		{ label: 'Email' },
-		{ label: 'Status' },
-		{ label: 'Screening' },
-		{ label: 'Source' },
-		{ label: 'Invoices' },
-		{ label: 'ERP' },
+	let COLUMNS = $derived([
+		{ label: m('vendors.col.vendor') },
+		{ label: m('vendors.col.code') },
+		{ label: m('vendors.col.email') },
+		{ label: m('vendors.col.status') },
+		{ label: m('vendors.col.screening') },
+		{ label: m('vendors.col.source') },
+		{ label: m('vendors.col.invoices') },
+		{ label: m('vendors.col.erp') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	type BankDetails = VendorBankDetails;
 
@@ -170,31 +171,31 @@
 	let unverifiedCount = $derived(vendors.filter(v => v.status === 'unverified').length);
 
 	let statusChips = $derived([
-		{ key: 'all', label: 'All', count: vendors.length },
+		{ key: 'all', label: m('common.all'), count: vendors.length },
 		{
 			key: 'unverified',
-			label: 'Unverified',
+			label: m('vendors.filter.unverified'),
 			count: unverifiedCount > 0 ? unverifiedCount : undefined,
 			alert: true
 		},
-		{ key: 'active', label: 'Active' },
-		{ key: 'rejected', label: 'Rejected' }
+		{ key: 'active', label: m('vendors.filter.active') },
+		{ key: 'rejected', label: m('vendors.filter.rejected') }
 	]);
 </script>
 
-<PageHeader title="Vendors">
+<PageHeader title={m('vendors.title')}>
 	{#snippet actions()}
 		<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
-			{syncing ? 'Syncing...' : 'Sync from ERP'}
+			{syncing ? m('vendors.action.syncing') : m('vendors.action.syncErp')}
 		</button>
 	{/snippet}
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search vendors..." ariaLabel="Search vendors" />
+		<SearchBox bind:value={search} placeholder={m('vendors.search.placeholder')} ariaLabel={m('vendors.search.aria')} />
 		<FilterChips chips={statusChips} bind:active={statusFilter} />
 	</div>
 
-	<DataTable columns={COLUMNS} isEmpty={vendors.length === 0} empty="No vendors found.">
+	<DataTable columns={COLUMNS} isEmpty={vendors.length === 0} empty={m('vendors.empty')}>
 		{#snippet body()}
 			{#each vendors as v (v.id)}
 				<tr
@@ -242,11 +243,11 @@
 					</td>
 					<td class="actions">
 						{#if v.status === 'unverified'}
-							<RowAction variant="success" onclick={() => verifyVendor(v.id)}>Verify</RowAction>
-							<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>Reject</RowAction>
+							<RowAction variant="success" onclick={() => verifyVendor(v.id)}>{m('vendors.row.verify')}</RowAction>
+							<RowAction variant="danger" onclick={() => rejectVendor(v.id)}>{m('vendors.row.reject')}</RowAction>
 						{/if}
 						<RowAction onclick={() => openBankEditor(v)}>
-							{v.bank_details?.counterparty_id ? 'Bank ✓' : 'Bank'}
+							{v.bank_details?.counterparty_id ? m('vendors.row.bankSet') : m('vendors.row.bank')}
 						</RowAction>
 					</td>
 				</tr>
@@ -257,12 +258,12 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={loadMoreVendors} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${vendors.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('vendors.loadMore', { shown: vendors.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} vendor{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('vendors.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>
@@ -281,7 +282,7 @@
 	onclose={() => (bankEditing = null)}
 >
 	{#if bankEditing}
-		<h2>{bankEditing.name} — bank details</h2>
+		<h2>{m('vendors.bank.title', { vendor: bankEditing.name })}</h2>
 		<p class="modal-hint">
 			These values bridge to your payment processor (e.g. Modern Treasury). The
 			<code>counterparty_id</code> is the processor's identifier; the last4s are stored
@@ -289,29 +290,29 @@
 		</p>
 		<form onsubmit={(e) => { e.preventDefault(); saveBankDetails(); }}>
 			<label>
-				<span>Processor counterparty ID</span>
+				<span>{m('vendors.bank.counterpartyId')}</span>
 				<input type="text" maxlength="255" bind:value={bankForm.counterparty_id} />
 			</label>
 			<label>
-				<span>Bank name</span>
+				<span>{m('vendors.bank.bankName')}</span>
 				<input type="text" maxlength="255" bind:value={bankForm.bank_name} />
 			</label>
 			<div class="form-row">
 				<label>
-					<span>Account last 4</span>
+					<span>{m('vendors.bank.accountLast4')}</span>
 					<input type="text" maxlength="4" bind:value={bankForm.account_last4} />
 				</label>
 				<label>
-					<span>Routing last 4</span>
+					<span>{m('vendors.bank.routingLast4')}</span>
 					<input type="text" maxlength="4" bind:value={bankForm.routing_last4} />
 				</label>
 			</div>
 			<div class="modal-footer">
 				<button type="button" class="btn-cancel" onclick={() => (bankEditing = null)}>
-					Cancel
+					{m('common.cancel')}
 				</button>
 				<button type="submit" class="btn-primary" disabled={savingBank}>
-					{savingBank ? 'Saving…' : 'Save'}
+					{savingBank ? m('common.saving') : m('common.save')}
 				</button>
 			</div>
 		</form>

@@ -431,7 +431,7 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 **Competitors:** Tipalti (1099 + W-8BEN + VAT), Bill.com (1099 e-filing), Basware (global VAT, 60+ countries), Medius (EU e-invoicing mandates)
 
 ### Multi-Language UI (Internationalization / i18n)
-**Status:** In progress — **web runtime + full starter locale set shipped**: `frontend/src/lib/i18n/` (locale negotiation, typed `en` catalogue + the full `de/fr/es/pt-BR/ja` set as lazy chunks, lazy loader registry, reactive `m()`/`setLocale()`/`initLocale()`, ICU plurals, `<html lang/dir>`, locale picker with endonyms, `messages_parity` vitest) with the shell/nav + **dashboard** + **invoices list** extracted; `formatMoney` follows the active locale. Remaining: extract the rest of the routes, the mobile ARB track, and server-side email localization. See `frontend/CLAUDE.md` → i18n.
+**Status:** In progress — **web runtime + full starter locale set shipped**: `frontend/src/lib/i18n/` (locale negotiation, typed `en` catalogue + the full `de/fr/es/pt-BR/ja` set as lazy chunks, lazy loader registry, reactive `m()`/`setLocale()`/`initLocale()`, ICU plurals, `<html lang/dir>`, locale picker with endonyms, `messages_parity` vitest) with the shell/nav + **dashboard** + **invoices list** + **payments** + **vendors** + **exceptions** extracted; `formatMoney` follows the active locale. Remaining: extract the rest of the routes, the mobile ARB track, and server-side email localization. See `frontend/CLAUDE.md` → i18n.
 
 The data layer is already internationalized (multi-currency rollups, locale-aware `Intl` money/date formatting, country tax rules, e-invoicing) — but every label, button, email, and error string is still hardcoded English. Localizing the **presentation** layer is the remaining piece for genuine international reach (EU mandates, LATAM, APAC, MENA). Basware/Medius ship 20+ UI languages; Tipalti and Bill.com localize the supplier-facing surfaces. Starter set: `en, de, fr, es, pt-BR, ja` (the six [`../project-running`](../../project-running) already ships), with the RTL switch-point in place for a later `ar`/`he`.
 
@@ -443,7 +443,7 @@ The data layer is already internationalized (multi-currency rollups, locale-awar
 - [x] Locale picker in settings/shell (endonyms — each language in its own script: English / Deutsch / Français / Español / Português (Brasil) / 日本語), choice persisted to `localStorage`
 - [x] Active locale drives the existing `Intl.NumberFormat`/`Intl.DateTimeFormat` formatters (`<Money>` / `formatMoney()`) so numbers and currency localize together (date helpers still pending)
 - [x] RTL switch-point (`dirForLocale`) wired to `<html dir>`; audit CSS for logical properties so an `ar`/`he` catalogue drops in with no further layout plumbing (switch-point present + unit-tested; no RTL catalogue ships yet)
-- [x] Incremental string extraction — shell/nav first, then route-by-route (shell/nav + dashboard + invoices list done); an un-extracted literal simply stays English until its turn
+- [x] Incremental string extraction — shell/nav first, then route-by-route (shell/nav + dashboard + invoices list + payments + vendors + exceptions done); an un-extracted literal simply stays English until its turn
 
 **Mobile (Flutter, `mobile/`):**
 - [ ] Standard Flutter `gen-l10n` + `intl` + `.arb` catalogues (idiomatic path — plural/placeholder/ICU + `Localizations.localeOf`), committed (non-synthetic) output, same six locales
