@@ -9,8 +9,10 @@ import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
 import 'package:ap_mobile/widgets/activity_timeline.dart';
+import 'package:ap_mobile/widgets/erp_status_panel.dart';
 import 'package:ap_mobile/widgets/invoice_edit_sheet.dart';
 import 'package:ap_mobile/widgets/invoice_file_viewer.dart';
+import 'package:ap_mobile/widgets/invoice_warnings_panel.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
 
 final _currencyFormat = NumberFormat.currency(symbol: '\$');
@@ -279,6 +281,16 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             ),
           ],
 
+          // Warnings / fraud flags + PO match (parity with the web modal).
+          if (inv.warnings.isNotEmpty ||
+              (inv.poMatch != null && !inv.poMatch!.isNoPo)) ...[
+            const SizedBox(height: 16),
+            InvoiceWarningsPanel(
+              warnings: inv.warnings,
+              poMatch: inv.poMatch,
+            ),
+          ],
+
           // Invoice file preview (image thumbnail or PDF card → full viewer)
           if (inv.fileUrl != null && inv.fileUrl!.isNotEmpty) ...[
             const SizedBox(height: 16),
@@ -307,6 +319,25 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             'Created',
             _dateFormat.format(inv.createdAt),
           ),
+
+          // ERP status — derived from the loaded audit log (the activity is
+          // fetched independently, so this fills in once the trail lands).
+          if (!_activityLoading) ...[
+            Builder(
+              builder: (context) {
+                final panel = ErpStatusPanel(
+                  invoice: inv,
+                  erpInfo: ErpInfo.fromAuditLog(_activity),
+                );
+                // Only add spacing when the panel actually renders.
+                if (!panel.visible) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: panel,
+                );
+              },
+            ),
+          ],
 
           const SizedBox(height: 24),
           const Divider(),

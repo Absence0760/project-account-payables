@@ -36,6 +36,8 @@ Map<String, dynamic> _invoiceJson(
   String? poNumber,
   String? description,
   String? fileUrl,
+  List<Map<String, dynamic>>? warnings,
+  Map<String, dynamic>? poMatch,
 }) =>
     {
       'id': id,
@@ -47,6 +49,8 @@ Map<String, dynamic> _invoiceJson(
       'po_number': poNumber,
       'description': description,
       'file_url': fileUrl,
+      'warnings': warnings,
+      'po_match': poMatch,
       'created_at': '2026-01-01T12:00:00',
     };
 
@@ -729,5 +733,94 @@ void main() {
 
     expect(find.text('Reject Invoice'), findsNothing);
     expect(rejectCalls, 0);
+  });
+
+  testWidgets('renders warnings / fraud flags from the invoice', (tester) async {
+    await _arrange(_detailClient(_invoiceJson(
+      '1',
+      warnings: [
+        {
+          'type': 'duplicate',
+          'severity': 'warning',
+          'message': 'Duplicate invoice number for this vendor',
+        },
+        {
+          'type': 'fraud_bank_change',
+          'severity': 'error',
+          'message': 'Vendor bank details recently changed',
+        },
+      ],
+    )));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.text('Warnings & fraud flags'), findsOneWidget);
+    expect(find.text('Duplicate invoice number for this vendor'),
+        findsOneWidget);
+    expect(find.text('Vendor bank details recently changed'), findsOneWidget);
+  });
+
+  testWidgets('renders the PO match panel when present', (tester) async {
+    await _arrange(_detailClient(_invoiceJson(
+      '1',
+      poNumber: 'PO-9',
+      poMatch: {
+        'match_type': '3-way',
+        'status': 'mismatch',
+        'variance_pct': 8.0,
+        'within_tolerance': false,
+        'issues': ['Amount variance of 8.0%'],
+      },
+    )));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.text('PO Match'), findsOneWidget);
+    expect(find.text('3-way match'), findsOneWidget);
+    expect(find.text('Mismatch'), findsOneWidget);
+  });
+
+  testWidgets('shows ERP status derived from the audit log', (tester) async {
+    await _arrange(_detailClient(
+      _invoiceJson('1', status: 'sent_to_erp'),
+      audit: [
+        {
+          'id': 'a1',
+          'actor_id': 'u1',
+          'actor_name': 'Demo User',
+          'action': 'invoice.erp_confirmed',
+          'entity_type': 'invoice',
+          'entity_id': '1',
+          'details': {'erp_reference': 'ERP-12345'},
+          'created_at': '2026-01-02T10:00:00',
+        },
+      ],
+    ));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('ERP Status'));
+
+    expect(find.text('ERP Status'), findsOneWidget);
+    expect(find.text('ERP Reference'), findsOneWidget);
+    expect(find.text('ERP-12345'), findsOneWidget);
+  });
+
+  testWidgets('hides the ERP panel for a non-ERP status', (tester) async {
+    await _arrange(_detailClient(_invoiceJson('1', status: 'ready_for_review')));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.text('ERP Status'), findsNothing);
   });
 }

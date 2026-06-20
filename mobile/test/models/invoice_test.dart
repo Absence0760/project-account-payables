@@ -108,5 +108,92 @@ void main() {
       });
       expect(invoice.status, InvoiceStatus.newStatus);
     });
+
+    test('parses warnings into typed InvoiceWarning list', () {
+      final invoice = Invoice.fromJson({
+        'id': 'inv1',
+        'status': 'ready_for_review',
+        'created_at': '2026-01-01T12:00:00',
+        'warnings': [
+          {'type': 'duplicate', 'severity': 'warning', 'message': 'Dup'},
+          {'type': 'missing_field', 'severity': 'error', 'message': 'No amount'},
+          {'type': 'fraud_round_amount', 'severity': 'info', 'message': 'Round'},
+        ],
+      });
+      expect(invoice.warnings, hasLength(3));
+      expect(invoice.warnings[0].type, 'duplicate');
+      expect(invoice.warnings[0].severity, WarningSeverity.warning);
+      expect(invoice.warnings[1].severity, WarningSeverity.error);
+      expect(invoice.warnings[2].severity, WarningSeverity.info);
+      expect(invoice.warnings[1].message, 'No amount');
+    });
+
+    test('defaults to an empty warnings list when absent or not a list', () {
+      expect(
+        Invoice.fromJson({
+          'id': 'i',
+          'status': 'new',
+          'created_at': '2026-01-01T12:00:00',
+        }).warnings,
+        isEmpty,
+      );
+      expect(
+        Invoice.fromJson({
+          'id': 'i',
+          'status': 'new',
+          'created_at': '2026-01-01T12:00:00',
+          'warnings': 'not-a-list',
+        }).warnings,
+        isEmpty,
+      );
+    });
+
+    test('warning severity falls back to info on an unknown value', () {
+      final w = InvoiceWarning.fromJson(
+        {'type': 'x', 'severity': 'bogus', 'message': 'm'},
+      );
+      expect(w.severity, WarningSeverity.info);
+    });
+
+    test('parses po_match into a typed PoMatch', () {
+      final invoice = Invoice.fromJson({
+        'id': 'inv1',
+        'status': 'ready_for_review',
+        'created_at': '2026-01-01T12:00:00',
+        'po_match': {
+          'match_type': '3-way',
+          'status': 'mismatch',
+          'variance_pct': 12.5,
+          'within_tolerance': false,
+          'issues': ['Amount variance', 'Quantity mismatch'],
+        },
+      });
+      final m = invoice.poMatch!;
+      expect(m.matchType, '3-way');
+      expect(m.status, 'mismatch');
+      expect(m.statusLabel, 'Mismatch');
+      expect(m.variancePct, 12.5);
+      expect(m.withinTolerance, isFalse);
+      expect(m.issues, ['Amount variance', 'Quantity mismatch']);
+      expect(m.isNoPo, isFalse);
+    });
+
+    test('po_match is null when absent, isNoPo when status=no_po', () {
+      expect(
+        Invoice.fromJson({
+          'id': 'i',
+          'status': 'new',
+          'created_at': '2026-01-01T12:00:00',
+        }).poMatch,
+        isNull,
+      );
+      final noPo = Invoice.fromJson({
+        'id': 'i',
+        'status': 'new',
+        'created_at': '2026-01-01T12:00:00',
+        'po_match': {'match_type': 'none', 'status': 'no_po', 'issues': []},
+      }).poMatch!;
+      expect(noPo.isNoPo, isTrue);
+    });
   });
 }
