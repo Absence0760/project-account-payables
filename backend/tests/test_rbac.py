@@ -23,6 +23,7 @@ from app.api import (
     access_reviews,
     admin,
     analytics,
+    api_keys,
     audit,
     auth,
     auth_saml,
@@ -67,10 +68,12 @@ from app.api.deps import (
     ROLE_AP_CLERK,
     ROLE_AP_MANAGER,
     ROLE_CFO,
+    get_api_key_principal,
     get_current_user,
     require_roles,
 )
 from app.api.portal_deps import get_current_vendor_user
+from app.api.v1 import router as public_v1_router
 
 # ---------- Endpoints that legitimately don't take a JWT --------------------
 
@@ -146,6 +149,8 @@ ROUTERS = [
     access_reviews.router,
     admin.router,
     analytics.router,
+    api_keys.router,
+    public_v1_router,
     audit.router,
     auth.router,
     auth_saml.router,
@@ -211,8 +216,11 @@ def _has_auth_dep(endpoint: callable) -> bool:
             continue
         if dep is get_current_user or dep is get_current_vendor_user:
             return True
-        # require_roles returns a closure named "checker" that itself
-        # depends on get_current_user.
+        # Programmatic /api/v1 routes authenticate with an API key, not a JWT.
+        if dep is get_api_key_principal:
+            return True
+        # require_roles AND require_api_scope each return a closure named
+        # "checker" that itself depends on get_current_user / the api-key dep.
         if getattr(dep, "__name__", "") == "checker":
             return True
     return False

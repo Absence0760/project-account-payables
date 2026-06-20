@@ -34,6 +34,10 @@ CONTROL_TABLES: frozenset[str] = frozenset(
         "roles",
         "user_roles",
         "email_verifications",
+        # Programmatic API keys authenticate an org's access to the public
+        # /api/v1 surface. They live alongside organizations/users in the
+        # control plane (keyed by org_id), NOT in any tenant DB.
+        "api_keys",
         # Assistant token meter is a control-plane billing table (see
         # app/models/assistant.py). Excluded here so tenant DBs don't get it;
         # the conversation/message tables ARE tenant-scoped and stay in.

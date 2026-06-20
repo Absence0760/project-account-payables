@@ -9,6 +9,7 @@ from app.api import (
     adaptive_workflows,
     admin,
     analytics,
+    api_keys,
     assistant,
     audit,
     auth,
@@ -59,6 +60,7 @@ from app.api import (
     workflow,
     workflow_definitions,
 )
+from app.api.v1 import router as public_v1_router
 from app.config import settings
 
 
@@ -263,6 +265,9 @@ app.add_middleware(
 app.include_router(access_reviews.router, prefix="/api")
 app.include_router(adaptive_workflows.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(api_keys.router, prefix="/api")
+# Public versioned programmatic surface (X-API-Key auth) — becomes /api/v1/...
+app.include_router(public_v1_router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")

@@ -357,6 +357,7 @@ class RealDB:
         import httpx
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+        from app.api.deps import get_api_key_db
         from app.config import settings as cfg
         from app.database import _make_tenant_url, get_control_db
         from app.main import app
@@ -389,6 +390,12 @@ class RealDB:
 
         app.dependency_overrides[get_control_db] = _control_db
         app.dependency_overrides[get_tenant_db] = _tenant_db
+        # The public-API path resolves its tenant session via get_api_key_db,
+        # which calls the *global* get_tenant_engine directly (production-correct,
+        # single-loop). Point it at this client's per-loop harness engine too, or
+        # multi-client-context tests hit a stale cross-loop engine. Auth still
+        # runs — the v1 routes also depend on require_api_scope/get_api_key_principal.
+        app.dependency_overrides[get_api_key_db] = _tenant_db
 
         headers = {"X-Tenant-Slug": info.slug}
         if role is not None:

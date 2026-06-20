@@ -1,5 +1,6 @@
 from app.models.adaptive_suggestion import WorkflowSuggestion
 from app.models.agent_decision import AgentDecision
+from app.models.api_key import ApiKey
 from app.models.assistant import AssistantUsage, Conversation, ConversationMessage
 from app.models.base import Base
 from app.models.contract import Contract, ContractLineItem, ContractStatus, ContractType
@@ -68,6 +69,7 @@ from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, 
 
 __all__ = [
     "Base",
+    "ApiKey",
     "Entity",
     "Organization",
     "User",
