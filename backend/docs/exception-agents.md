@@ -5,8 +5,9 @@ either auto-resolves it (mutating the invoice through the same audited path a
 human would use) or escalates it to a human. Tenant-scoped, append-only
 decision log, local-first (no LLM key required), opt-in per org.
 
-**Status:** first slice. One fully-implemented resolver (small amount
-mismatch); the rest are escalate-only stubs (see [Deferred](#deferred)).
+**Status:** two fully-implemented resolvers for `po_mismatch` (small amount
+mismatch + missing-PO auto-link), behind a single dispatcher; the rest are
+escalate-only stubs (see [Deferred](#deferred)).
 
 ## Data model — `AgentDecision`
 
@@ -46,7 +47,9 @@ app/services/exception_agents/
 ├── coordinator.py     # run_agent(): evaluate → (apply | escalate) → record AgentDecision
 ├── __init__.py        # re-exports + imports resolvers for decorator side effects
 └── resolvers/
-    ├── amount_mismatch.py  # the one real resolver (po_mismatch amount variance)
+    ├── po_mismatch.py      # dispatcher registered for `po_mismatch` — tries each delegate
+    ├── amount_mismatch.py  # delegate: po_mismatch amount variance (snap + approve)
+    ├── missing_po.py       # delegate: missing/unresolved PO (link by vendor+amount+date)
     └── stubs.py            # escalate-only stubs (missing_data, duplicate, fraud_flag)
 ```
 
@@ -58,6 +61,21 @@ app/services/exception_agents/
 - The **coordinator** (`run_agent`) is generic: resolve the org's autonomy
   threshold, dispatch to the resolver, decide whether confidence clears the
   threshold, call `apply` (or escalate), and always persist one `AgentDecision`.
+
+### One exception type, several strategies — the `po_mismatch` dispatcher
+
+The registry is keyed by `exception_type` (one resolver per type), but a single
+`po_mismatch` exception covers several distinct invoice↔PO problems, each with
+its own fix. `resolvers/po_mismatch.py::PoMismatchDispatcher` is the **single**
+resolver registered for `po_mismatch`; it owns an ordered list of delegate
+resolvers and, in `evaluate`, tries each until one recommends `auto_resolved`.
+That delegate's recommendation **and its `agent_type`** become the dispatcher's
+result, so the coordinator records the real resolver (`amount_mismatch_v1` /
+`missing_po_v1`) in the `AgentDecision`; `apply` is forwarded to the selected
+delegate. The delegates are **disjoint by live match status** — `matched` →
+amount-mismatch, `no_po` → missing-PO — so at most one ever fires; ordering only
+decides the rationale carried on a full escalation. The dispatcher never mutates
+state itself.
 
 ### Coordinator flow
 
@@ -143,6 +161,54 @@ A successful auto-resolve writes **two** rows:
 2. **`AgentDecision`** — the decision log (this feature's own product). It is
    **not** a substitute for the audit row.
 
+## The missing-PO resolver (`missing_po_v1`)
+
+Handles `exception_type == "po_mismatch"` where the **live** match status is
+`no_po` — the invoice references a `po_number` that resolves to nothing (a
+typo'd / mis-extracted number, or a number whose PO sits under a different
+vendor). The real PO usually *does* exist; the resolver finds it and links it
+rather than escalating a blank.
+
+- **Disjoint from amount-mismatch.** `evaluate` re-runs `match_invoice_to_po`
+  and only proceeds when the live status is exactly `no_po`; a `matched` status
+  belongs to `amount_mismatch_v1`, anything else to a human. The two
+  `po_mismatch` delegates therefore never both fire.
+- **Candidate search — vendor ∧ amount ∧ date** (`_candidate_pos`):
+  - **Vendor:** the invoice's `vendor_id` (exact). If the invoice has no
+    `vendor_id` but does carry a `vendor_name`, `vendor_matching.match_vendor`
+    resolves the name → vendor and only a **≥ 0.8** confident name match is used;
+    no vendor signal at all → no candidates (it never amount-matches the whole
+    tenant blind).
+  - **Amount:** the PO `total` within the org's effective PO-match tolerance band
+    (`matching_rules.resolve_match_rule` — the same per-vendor / per-commodity
+    resolver the matcher itself uses; default **5%**). Money is `Decimal`.
+  - **Date:** the PO's `created_at` (a `PurchaseOrder` has no order-date column)
+    must fall in an asymmetric window around the invoice's `invoice_date` —
+    `[invoice_date − lookback, invoice_date + 5d]` (POs precede invoices;
+    `lookback` default 90 days, override
+    `Organization.settings.exception_agents.po_match_window_days`). When the
+    invoice has **no** `invoice_date`, the date leg is skipped.
+- **Confidence:** exactly one candidate clearing all legs →
+  - `0.92` when corroborated by date (auto-resolves at `balanced`/`aggressive`);
+  - `0.80` for an undated, vendor+amount-only match — deliberately **below** the
+    `balanced` 0.90 gate, so it auto-resolves only under `aggressive` autonomy.
+  - Zero or **multiple** candidates → `0.0` → escalate (ambiguous → a human picks).
+- **`apply` — link + approve via the audited path.** There is no `Invoice.po_id`
+  FK; the link is `invoice.po_number` (+ aligning `invoice.vendor_id` to the PO's
+  when absent), mirroring how `po_matching` resolves a PO. `apply` re-locks the
+  invoice, re-asserts `ready_for_review`, re-verifies the live match is still
+  `no_po`, re-fetches the **exact** PO chosen in `evaluate` (bailing if it
+  vanished / is no longer `open`), re-points `po_number`, calls
+  `invoice_warnings.refresh_warnings` to refresh `po_match`, and requires the
+  post-link match to be a clean `matched` before approving through
+  `review.approve_invoice` (`actor_roles={"ap_manager"}`). It **never adjusts the
+  amount** — it only links. The CFO/maximum gate is honoured exactly as in
+  amount-mismatch (escalate, never self-approve past a threshold). Idempotent:
+  a re-run after the link finds the live match no longer `no_po` and bails, and
+  the coordinator's exception row-lock already prevents a second decision on a
+  resolved exception. Writes the two audit rows (`invoice.approved` + the
+  `AgentDecision`, the latter recording `changes={"po_number": {...}}`).
+
 ## No-LLM-key fail-soft
 
 `llm_rationale.build_rationale` mirrors `audit_summary.py`: the deterministic
@@ -183,7 +249,8 @@ the API maps to **409** (no second `AgentDecision` row, no status clobber).
 {
   "exception_agents": {
     "autonomy_level": "conservative",
-    "amount_tolerance_pct": 2.5
+    "amount_tolerance_pct": 2.5,
+    "po_match_window_days": 90
   }
 }
 ```
@@ -199,7 +266,7 @@ roadmap follow-up.
 
 | Exception type | State | Follow-up |
 |----------------|-------|-----------|
-| `missing_data` | stub — always escalates | missing-PO matcher / missing-data auto-fill |
+| `missing_data` | stub — always escalates | missing-data field auto-fill (the missing-**PO** case is now handled by `missing_po_v1` under `po_mismatch`/`no_po`, not here) |
 | `duplicate` | stub — always escalates | duplicate auto-merge |
 | `fraud_flag` | stub — always escalates | (likely stays human-gated) |
 | `unverified_vendor`, `review_rejected`, `amount_exceeded`, `extraction_failed` | unregistered → `no_action` | human gates / out of scope for this slice |
@@ -207,3 +274,7 @@ roadmap follow-up.
 Also deferred: GL-coding auto-resolve, the agent dashboard UI, a mobile surface,
 adaptive/learned thresholds, and an accuracy metric (needs a human-overturn
 signal — `agent-stats.accuracy` is `null` until then).
+
+Missing-PO follow-ups (out of this slice): line-level (multi-PO) split matching —
+one invoice spanning several POs; matching against `created`/non-`open` POs; and
+a learned date window / amount band per vendor instead of the static defaults.

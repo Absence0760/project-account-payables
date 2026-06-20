@@ -3,5 +3,6 @@
 
 from app.services.exception_agents.resolvers import (  # noqa: F401
     amount_mismatch,
+    po_mismatch,
     stubs,
 )

@@ -31,7 +31,6 @@ from app.services.exception_agents.base import (
     ExceptionResolver,
 )
 from app.services.exception_agents.llm_rationale import build_rationale
-from app.services.exception_agents.registry import register_exception_agent
 
 # Default auto-fix tolerance. The PO-matcher's own warning tolerance is 5%
 # (po_matching); the AGENT only auto-fixes a *tighter* band so it never
@@ -62,7 +61,6 @@ async def _approval_thresholds(db: AsyncSession, invoice: Invoice) -> dict:
     return get_step_config(instance.steps_config_snapshot, "approval") or {}
 
 
-@register_exception_agent("po_mismatch")
 class AmountMismatchResolver(ExceptionResolver):
     agent_type = "amount_mismatch_v1"
     exception_type = "po_mismatch"
