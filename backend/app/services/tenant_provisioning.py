@@ -38,6 +38,10 @@ CONTROL_TABLES: frozenset[str] = frozenset(
         # /api/v1 surface. They live alongside organizations/users in the
         # control plane (keyed by org_id), NOT in any tenant DB.
         "api_keys",
+        # Per-key, per-day request meter for the public /api/v1 surface (feeds
+        # billing). Keyed off api_keys/organizations — control-plane only, never
+        # fanned to tenant DBs.
+        "api_key_usage",
         # Assistant token meter is a control-plane billing table (see
         # app/models/assistant.py). Excluded here so tenant DBs don't get it;
         # the conversation/message tables ARE tenant-scoped and stay in.
