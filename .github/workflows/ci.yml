@@ -138,11 +138,39 @@ jobs:
       - name: Format check
         run: ruff format --check .
 
+      # MinIO can't be a `services:` container: the official minio/minio image
+      # needs a `server /data` argument, which GitHub Actions service containers
+      # can't supply (they only take flags, not the command). Start it via
+      # `docker run` instead so the storage-roundtrip tests (receipts, contract
+      # docs, chat attachments, PEPPOL inbound) hit a real S3 backend rather
+      # than failing with connection-refused — same local-first parity as the
+      # Postgres/Redis services above. The `invoices` bucket is auto-created by
+      # storage._ensure_bucket on first upload.
+      - name: Start MinIO (S3)
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live; then
+              echo "MinIO ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::MinIO did not become healthy in time"; exit 1
+
       - name: Run tests
         env:
           AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
           AP_REDIS_URL: redis://localhost:6379
           AP_SECRET_KEY: ci-test-secret
+          # MinIO started above; the storage layer defaults already match these,
+          # but pin them explicitly alongside the other service URLs.
+          AP_S3_ENDPOINT_URL: http://localhost:9000
+          AP_S3_ACCESS_KEY: minioadmin
+          AP_S3_SECRET_KEY: minioadmin
+          AP_S3_BUCKET: invoices
           # Postgres is a declared, health-checked service in this job — so the
           # realdb fixture must run, not silently skip. With this set, an
           # unreachable DB hard-fails instead of dropping the tenant-isolation /
