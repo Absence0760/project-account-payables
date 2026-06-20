@@ -27,15 +27,87 @@ from app.models.organization import Organization
 ALL_ENTITIES = "all"
 
 
+def normalize_custom_domain(host: str | None) -> str | None:
+    """Reduce a raw ``Host`` header to a bare, lowercase hostname.
+
+    Strips any ``:port`` suffix and surrounding whitespace, lowercases
+    (hostnames are case-insensitive), and rejects empty / obviously
+    non-host values. Returns ``None`` when there's nothing usable to
+    match — the caller then falls back to the ``X-Tenant-Slug`` path.
+    """
+    if not host:
+        return None
+    h = host.strip().lower()
+    # Drop a :port suffix. IPv6 literals (``[::1]``) carry colons inside
+    # brackets — never a configured custom domain, so bail on them.
+    if h.startswith("["):
+        return None
+    h = h.split(":", 1)[0]
+    if not h or "/" in h or " " in h:
+        return None
+    return h
+
+
+async def resolve_tenant_slug_by_custom_domain(db: AsyncSession, host: str | None) -> str | None:
+    """Map a request ``Host`` to a tenant slug via the per-org custom-domain list.
+
+    A tenant may register vanity hostnames (e.g. ``ap.acmecorp.com``) under
+    ``Organization.settings.brand.custom_domains`` (a JSON array of bare
+    hostnames). When a request arrives on one of those hosts, this maps it back
+    to the owning org's slug so the existing ``get_tenant`` flow can resolve it.
+
+    This is purely a *candidate* resolution: the slug it returns still goes
+    through ``get_tenant``'s JWT ``org``-claim cross-check, so a forged ``Host``
+    header alone can never widen access. An unknown / unmatched host returns
+    ``None`` (caller falls back to the header path); the lookup never raises.
+    """
+    normalized = normalize_custom_domain(host)
+    if normalized is None:
+        return None
+    # JSONB containment: find the org whose brand.custom_domains array holds
+    # this exact host. Domains are stored normalized (lowercase, no port) so an
+    # exact-element match is correct and uses the GIN-indexable @> operator on
+    # the whole `settings` column (``settings @> '{"brand":{"custom_domains":["x"]}}'``).
+    stmt = select(Organization.slug).where(
+        Organization.settings.contains({"brand": {"custom_domains": [normalized]}})
+    )
+    try:
+        result = await db.execute(stmt)
+    except Exception:
+        # A malformed settings blob (e.g. custom_domains not an array) must not
+        # 500 tenant resolution — fall back to the header path.
+        return None
+    slug = result.scalars().first()
+    return slug
+
+
 async def get_tenant_slug(
     x_tenant_slug: str | None = Header(default=None),
+    host: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_control_db),
 ) -> str:
-    if not x_tenant_slug:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing X-Tenant-Slug header",
-        )
-    return x_tenant_slug
+    """Resolve the tenant slug for the request.
+
+    Primary path: the ``X-Tenant-Slug`` header set by the SPA from the
+    subdomain. Fallback (white-label custom domains): when the header is
+    absent, the request ``Host`` is matched against the per-org
+    ``settings.brand.custom_domains`` list — so a tenant served on a vanity
+    hostname (``ap.acmecorp.com``) resolves without the SPA needing to know its
+    slug.
+
+    Either way the returned slug is only a *candidate*: ``get_tenant`` still
+    cross-checks it against the JWT ``org`` claim, so neither a swapped header
+    nor a forged ``Host`` widens access on its own.
+    """
+    if x_tenant_slug:
+        return x_tenant_slug
+    domain_slug = await resolve_tenant_slug_by_custom_domain(db, host)
+    if domain_slug:
+        return domain_slug
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Missing X-Tenant-Slug header",
+    )
 
 
 async def get_tenant(
@@ -47,10 +119,16 @@ async def get_tenant(
 
     Cross-tenant guard: if the caller presents an employee JWT (typ
     other than ``vendor``), the token's ``org`` claim must match the
-    resolved tenant. Otherwise the X-Tenant-Slug header alone decides
-    which tenant's row the endpoint sees — letting any authenticated
-    user from tenant A read or mutate tenant B's data by swapping the
-    header.
+    resolved tenant. Otherwise the tenant selector alone (the
+    X-Tenant-Slug header, or a custom-domain Host that maps to a slug)
+    decides which tenant's row the endpoint sees — letting any
+    authenticated user from tenant A read or mutate tenant B's data by
+    swapping the header (or pointing a forged Host at it).
+
+    This cross-check is what makes the custom-domain fallback safe: a
+    Host header resolves only a *candidate* tenant; the JWT org claim
+    still has to match, so a leaked/forged Host alone can't widen
+    access.
 
     Vendor-portal tokens are exempt: VendorUser rows live in the
     per-tenant DB, so a cross-tenant attempt fails naturally on the
