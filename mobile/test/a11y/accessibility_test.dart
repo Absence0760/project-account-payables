@@ -7,12 +7,17 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
+import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/widgets/exception_list_tile.dart';
+import 'package:ap_mobile/widgets/exception_status_badge.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
@@ -35,11 +40,44 @@ Invoice _invoice() => Invoice(
       createdAt: DateTime(2026, 1, 1),
     );
 
+ApException _exception() => ApException(
+      id: 'exc1',
+      invoiceId: 'inv1',
+      invoiceNumber: 'INV-001',
+      vendorName: 'Acme Supplies',
+      amount: 1500,
+      exceptionType: 'duplicate',
+      typeLabel: 'Duplicate Invoice',
+      severity: ApExceptionSeverity.error,
+      status: ApExceptionStatus.open,
+      createdAt: DateTime(2026, 1, 1),
+    );
+
 http.Response _list(List<Map<String, dynamic>> items) => http.Response(
       jsonEncode({'invoices': items}),
       200,
       headers: {'content-type': 'application/json'},
     );
+
+http.Response _wrappedList(List<Map<String, dynamic>> items) => http.Response(
+      jsonEncode({'items': items, 'total': items.length, 'page': 1}),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+
+Map<String, dynamic> _exceptionJson(String id) => {
+      'id': id,
+      'invoice_id': 'inv-$id',
+      'invoice_number': 'INV-$id',
+      'vendor_name': 'Acme Corp',
+      'amount': 250,
+      'exception_type': 'duplicate',
+      'type_label': 'Duplicate Invoice',
+      'severity': 'error',
+      'status': 'open',
+      'is_overdue': false,
+      'created_at': '2026-01-01T12:00:00',
+    };
 
 Map<String, dynamic> _invoiceJson(String id) => {
       'id': id,
@@ -220,6 +258,84 @@ void main() {
 
       await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
       await _pumpUntil(tester, find.byType(InvoiceListTile));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+
+  group('ExceptionListTile', () {
+    testWidgets('meets tap-target, label and contrast guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        ExceptionListTile(exception: _exception(), onTap: () {}),
+      ));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+
+    testWidgets('announces a single composed label (type, invoice, status)',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        ExceptionListTile(exception: _exception(), onTap: () {}),
+      ));
+      expect(
+        find.bySemanticsLabel(
+          RegExp(r'Duplicate Invoice.*INV-001.*Open'),
+        ),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+  });
+
+  group('ExceptionStatusBadge', () {
+    // Open (deep-amber) / escalated (red) are the worst-case hues for AA on the
+    // pale tint — guard each.
+    for (final status in ApExceptionStatus.values) {
+      testWidgets('exposes label and clears contrast for ${status.value}',
+          (tester) async {
+        final handle = tester.ensureSemantics();
+        await tester.pumpWidget(_host(ExceptionStatusBadge(status: status)));
+        await expectLater(tester, meetsGuideline(textContrastGuideline));
+        expect(find.bySemanticsLabel('Status: ${status.label}'),
+            findsOneWidget);
+        handle.dispose();
+      });
+    }
+  });
+
+  group('ExceptionsScreen', () {
+    setUpAll(() async {
+      OfflineStore.instance.debugUseMemory();
+    });
+
+    setUp(() async {
+      ExceptionStore.instance.debugReset();
+      FlutterSecureStorage.setMockInitialValues({});
+      await OfflineStore.instance.clear();
+      ApiClient().debugConfigure();
+      ExceptionStore.instance.setStatusFilter(null);
+    });
+
+    testWidgets('the loaded queue meets tap-target + label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => _wrappedList([_exceptionJson('1')])),
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+      await _pumpUntil(tester, find.byType(ExceptionListTile));
 
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));

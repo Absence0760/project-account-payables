@@ -13,6 +13,7 @@ import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/contract_store.dart';
 import 'package:ap_mobile/stores/dashboard_store.dart';
+import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
@@ -89,6 +90,9 @@ MockClient _homeClient(
     if (req.method == 'GET' && path == '/api/contracts') {
       return _json({'items': <Map<String, dynamic>>[]});
     }
+    if (req.method == 'GET' && path == '/api/exceptions') {
+      return _json({'items': <Map<String, dynamic>>[]});
+    }
     return http.Response('not found', 404);
   });
 }
@@ -107,6 +111,7 @@ void main() {
     DashboardStore.instance.debugReset();
     InvoiceStore.instance.debugReset();
     ContractStore.instance.debugReset();
+    ExceptionStore.instance.debugReset();
     await OfflineStore.instance.clear();
     FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();
@@ -204,8 +209,9 @@ void main() {
     );
   });
 
-  testWidgets('ap_manager sees all six tabs including Approvals and Payments',
-      (tester) async {
+  testWidgets(
+      'ap_manager sees all seven tabs including Approvals, Exceptions, '
+      'Payments', (tester) async {
     await loginAs(['ap_manager']);
     await pumpHome(tester);
 
@@ -216,17 +222,18 @@ void main() {
         'Invoices',
         'Contracts',
         'Approvals',
+        'Exceptions',
         'Payments',
         'Settings',
       ],
     );
   });
 
-  testWidgets('admin sees all six tabs', (tester) async {
+  testWidgets('admin sees all seven tabs', (tester) async {
     await loginAs(['admin']);
     await pumpHome(tester);
 
-    expect(navLabels(tester), hasLength(6));
+    expect(navLabels(tester), hasLength(7));
     expect(
       navLabels(tester),
       [
@@ -234,6 +241,7 @@ void main() {
         'Invoices',
         'Contracts',
         'Approvals',
+        'Exceptions',
         'Payments',
         'Settings',
       ],
@@ -260,7 +268,7 @@ void main() {
     await loginAs(['admin']);
     await pumpHome(tester);
 
-    // Move to the Settings tab (last item, index 5 for admin).
+    // Move to the Settings tab (last item, index 6 for admin).
     await tester.tap(navItem('Settings'));
     await tester.pump();
 
@@ -268,7 +276,7 @@ void main() {
       tester
           .widget<BottomNavigationBar>(find.byType(BottomNavigationBar))
           .currentIndex,
-      5,
+      6,
     );
     // IndexedStack keeps all children mounted; Settings renders the logged-in
     // user's email in its profile header.

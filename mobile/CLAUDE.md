@@ -35,6 +35,7 @@ mobile/
 │   ├── models/
 │   │   ├── user.dart            # User model with role helpers
 │   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states)
+│   │   ├── exception.dart       # ApException, ApExceptionStatus + ApExceptionSeverity enums
 │   │   └── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
 │   ├── services/
 │   │   ├── biometric_service.dart  # Face ID / fingerprint via local_auth
@@ -44,6 +45,7 @@ mobile/
 │   ├── stores/
 │   │   ├── auth_store.dart      # Auth state — login, logout, role checks
 │   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject (offline cached)
+│   │   ├── exception_store.dart # Exception list, filter, resolve/escalate/dismiss (offline cached)
 │   │   └── dashboard_store.dart # Dashboard KPI data (offline cached)
 │   ├── screens/
 │   │   ├── login_screen.dart    # Tenant + email/password login
@@ -52,11 +54,14 @@ mobile/
 │   │   ├── invoices_screen.dart  # Invoice list with search + status filters + camera button
 │   │   ├── invoice_detail_screen.dart # Detail view with approve/reject
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
+│   │   ├── exceptions_screen.dart # Exception queue — filter + swipe/sheet resolve/escalate/dismiss
 │   │   ├── capture_screen.dart   # Camera/gallery capture → upload → extract
 │   │   ├── payments_screen.dart  # Payment history
 │   │   └── settings_screen.dart  # User profile, biometric toggle, logout
 │   └── widgets/
 │       ├── status_badge.dart    # Colored invoice status chip
+│       ├── exception_status_badge.dart # Colored exception status chip (open/escalated/resolved/dismissed)
+│       ├── exception_list_tile.dart    # Exception row with type, invoice, severity, status
 │       ├── kpi_card.dart        # Dashboard metric card
 │       └── invoice_list_tile.dart # Invoice row with vendor, amount, status
 ├── test/                        # Unit and widget tests
@@ -92,6 +97,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Invoices | `GET /api/invoices` |
 | Invoice Detail | `GET /api/invoices/{id}`, `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject` |
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
+| Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss) |
 | Payments | `GET /api/payments` |
 | Settings | Uses cached auth state |
 
@@ -104,6 +110,7 @@ Bottom navigation adapts based on user roles (same as web frontend):
 | Dashboard | All roles |
 | Invoices | All roles |
 | Approvals | Admin, AP Manager |
+| Exceptions | Admin, AP Manager |
 | Payments | Admin, AP Manager, CFO |
 | Settings | All roles |
 
@@ -115,6 +122,7 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Invoice list with search + status filter chips
 - Invoice detail with approve/reject
 - Approvals tab with swipe-to-approve
+- Exception queue (list + status filter + resolve / escalate / dismiss via swipe + action sheet; admin / AP manager only)
 - Payment history list
 - Role-based bottom navigation
 - Settings (profile, tenant info, logout)
@@ -142,7 +150,6 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Advanced search modal (vendor, PO, amount range, date range)
 - Invoice warnings/fraud flags display
 - ERP status display on invoice detail
-- Exception queue (list, resolve, escalate, dismiss)
 - Vendor management (list, verify/reject, ERP sync)
 - Payment queue (select invoices, choose method)
 - Payment runs (create/execute batches)
@@ -201,7 +208,9 @@ await expectLater(tester, meetsGuideline(textContrastGuideline));
 
 plus `find.bySemanticsLabel(...)` to confirm icon buttons expose labels. Covers
 the invoice list tile, KPI card, status badge, login screen, the capture action,
-and the approvals approve/reject affordances. `textContrastGuideline` is strict
+the approvals approve/reject affordances, and the exception list tile + exception
+status badge + exceptions screen (queue swipe/sheet actions).
+`textContrastGuideline` is strict
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.
 

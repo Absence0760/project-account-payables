@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
 import 'package:ap_mobile/screens/contracts_screen.dart';
 import 'package:ap_mobile/screens/dashboard_screen.dart';
+import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/screens/payments_screen.dart';
 import 'package:ap_mobile/screens/settings_screen.dart';
@@ -26,6 +27,9 @@ class _HomeScreenState extends State<HomeScreen> {
     ];
     if (AuthStore.instance.canApprove) {
       screens.add(const ApprovalsScreen());
+      // Exception queue is gated to admin / ap_manager on the backend
+      // (require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)) — same as approvals.
+      screens.add(const ExceptionsScreen());
     }
     if (AuthStore.instance.canViewPayments) {
       screens.add(const PaymentsScreen());
@@ -53,6 +57,10 @@ class _HomeScreenState extends State<HomeScreen> {
       items.add(const BottomNavigationBarItem(
         icon: Icon(Icons.check_circle),
         label: 'Approvals',
+      ));
+      items.add(const BottomNavigationBarItem(
+        icon: Icon(Icons.error_outline),
+        label: 'Exceptions',
       ));
     }
     if (AuthStore.instance.canViewPayments) {

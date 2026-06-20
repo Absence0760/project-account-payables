@@ -1,5 +1,6 @@
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/models/contract.dart';
+import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/models/payment.dart';
 import 'package:ap_mobile/models/user.dart';
@@ -112,6 +113,41 @@ class ContractApi {
   static Future<Contract> cancel(String id) async {
     final data = await _api.post('/contracts/$id/cancel');
     return Contract.fromJson(data);
+  }
+}
+
+class ExceptionApi {
+  static final _api = ApiClient();
+
+  static Future<List<ApException>> list({
+    String? status,
+    int page = 1,
+    int perPage = 20,
+  }) async {
+    final params = <String, String>{
+      'page': page.toString(),
+      'per_page': perPage.toString(),
+    };
+    if (status != null) params['status'] = status;
+
+    final items = await _api.getList('/exceptions', params);
+    return items
+        .map((e) => ApException.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Resolve / escalate / dismiss an exception. The backend route is
+  /// `POST /exceptions/{id}/resolve` with `{action, resolution}` (action is one
+  /// of resolve | escalate | dismiss); a missing resolution is rejected.
+  static Future<void> act(
+    String id, {
+    required String action,
+    required String resolution,
+  }) async {
+    await _api.post('/exceptions/$id/resolve', {
+      'action': action,
+      'resolution': resolution,
+    });
   }
 }
 
