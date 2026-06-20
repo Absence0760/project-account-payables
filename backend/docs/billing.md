@@ -123,6 +123,40 @@ period:
 an exact decimal **string** (this is a billing surface — exactness is the point).
 Plan-change, payment-method, and invoice-list endpoints are later slices.
 
+## Customer-facing UI (`frontend/src/routes/billing/`)
+
+The read/display surface for the endpoint above. Route `/billing`, mounted as
+the **Subscription** sub-tab of the existing **Billing** nav group
+(`$lib/nav.ts`, `labelKey: 'nav.platformBilling'`), admin/cfo-gated to match the
+backend (`require_roles(admin, cfo)`); a clerk/manager is redirected to the
+dashboard and never sees the tab.
+
+- `+page.svelte` consumes `GET /api/billing/subscription` via
+  `$lib/api/billing.ts::getBillingSubscription` (types in
+  `$lib/types/billing.ts`) — the shared `api` client adds the JWT + tenant
+  header.
+- Renders: the current plan (tier name, monthly price via `<Money>` so the
+  exact decimal string is formatted, not re-computed), a `SubscriptionBadge`
+  status pill (`trialing`/`active`/`past_due`/`canceled`), the billing-period
+  window + trial-end (when trialing), the granted entitlement flags, and the
+  usage-to-date meters (`KpiCard`s for extractions / billable extractions /
+  card rebates).
+- **States:** loading, error-with-retry, and a friendly **empty state** (no
+  live subscription → "No active subscription" + a contact-sales link, usage
+  meters still shown).
+- The live-Stripe **plan-change / payment-method** actions are a later backend
+  slice; they're surfaced as **disabled** "coming soon" buttons + a "contact
+  us" link so the surface reads complete without implying an unwired action.
+- `SubscriptionBadge.svelte` (`$lib/components/ui/`) is a new shared status pill
+  for the four subscription states (WCAG-1.4.3-calibrated tones, matching
+  `StatusBadge`).
+- e2e: `frontend/tests-e2e/billing/billing.spec.ts` — header + empty state +
+  usage meters, a seeded-Plan/Subscription happy path (plan name, exact `$49.00`
+  price, Active badge, entitlement flag), the Subscription section tab
+  visible/active for admin, and clerk RBAC (redirect + no tab + API 403). The
+  billing rows live in the control plane, so the spec seeds them via
+  control-plane psql and tears down in `finally`.
+
 ## Config
 
 | Variable | Default | Purpose |

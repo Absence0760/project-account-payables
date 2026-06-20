@@ -946,7 +946,7 @@ The product meters extraction usage (`ExtractionUsage`, `CardRebate`) but had no
 - [x] Entitlement gating — `require_entitlement` (JWT) / `require_api_entitlement` (API key) in `deps.py`, 402 on a plan miss, composes with `require_roles` / `require_api_scope`; wired onto the public `/api/v1` surface (`public_api` feature). Reads `services/billing/entitlements.py`
 - [x] Customer-facing read endpoint — `GET /api/billing/subscription` (admin/cfo): current plan + status + usage-to-date
 - [ ] Live Stripe Billing API calls (create/get subscription, report usage) + the inbound webhook route (HMAC-verified, deduped) + dunning / past-due automation + proration
-- [ ] Customer-facing billing surface (UI) — plan changes, invoices/receipts, payment method
+- [x] Customer-facing billing surface (UI) — **read/display slice shipped**: `/billing` route (Subscription sub-tab of the Billing nav group, admin/cfo-gated) shows the current plan + price (`<Money>`), a `SubscriptionBadge` status pill, the period/trial window, granted entitlements, and usage-to-date meters from `GET /api/billing/subscription` (via `$lib/api/billing.ts`); loading / error / empty states handled. Live-Stripe **plan changes / payment method** are surfaced as disabled "contact us" affordances (they ride the deferred live-Stripe backend slice above); **invoices/receipts** list is still deferred. e2e: `tests-e2e/billing/billing.spec.ts`. See `backend/docs/billing.md` § Customer-facing UI
 
 **Competitors:** standard SaaS monetization; the metering primitives (`ExtractionUsage`) already exist — this productizes them
 
