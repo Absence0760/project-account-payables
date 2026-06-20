@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/models/admin_user.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
@@ -11,6 +13,7 @@ import 'package:ap_mobile/models/payment.dart';
 import 'package:ap_mobile/models/payment_queue.dart';
 import 'package:ap_mobile/models/user.dart';
 import 'package:ap_mobile/models/vendor.dart';
+import 'package:ap_mobile/models/workflow.dart';
 
 class AuthApi {
   static final _api = ApiClient();
@@ -175,6 +178,25 @@ class InvoiceApi {
       'status': status,
     });
     return BulkResult.fromJson(data, countKey: 'updated');
+  }
+
+  /// Bulk export — `POST /api/invoices/bulk/export` (any authenticated role).
+  /// [format] is `csv` or `xml`; the backend streams the rendered file (with a
+  /// `Content-Disposition` filename) rather than JSON, so this reads raw bytes.
+  /// Returns the bytes plus a filename — the server's suggested name, or a
+  /// `invoices-export.<format>` fallback when the header is absent.
+  static Future<({Uint8List bytes, String filename})> bulkExport(
+    List<String> ids,
+    String format,
+  ) async {
+    final result = await _api.postBytes('/invoices/bulk/export', {
+      'ids': ids,
+      'format': format,
+    });
+    return (
+      bytes: result.bytes,
+      filename: result.filename ?? 'invoices-export.$format',
+    );
   }
 }
 
@@ -566,5 +588,26 @@ class VendorApi {
   /// ERP is configured.
   static Future<Map<String, dynamic>> syncErp() async {
     return _api.post('/vendors/sync-erp');
+  }
+}
+
+class WorkflowApi {
+  static final _api = ApiClient();
+
+  /// List workflow definitions — `GET /api/workflows` (any authenticated role;
+  /// the mobile surface is admin-gated in the UI to mirror the web nav). The
+  /// backend auto-creates a default definition if the org has none, so the list
+  /// is never empty. Read-only — mobile never creates/edits definitions.
+  static Future<List<WorkflowDefinition>> list() async {
+    final items = await _api.getList('/workflows');
+    return items
+        .map((e) => WorkflowDefinition.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Fetch one workflow definition — `GET /api/workflows/{id}`. 404 cross-org.
+  static Future<WorkflowDefinition> getById(String id) async {
+    final data = await _api.get('/workflows/$id');
+    return WorkflowDefinition.fromJson(data);
   }
 }

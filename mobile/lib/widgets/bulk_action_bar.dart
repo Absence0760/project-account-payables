@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 
 /// Bottom action bar shown while the invoice list is in multi-select mode.
-/// Surfaces the selected-count plus the two bulk actions (status-change /
+/// Surfaces the selected-count plus the bulk actions (export / status-change /
 /// delete). Pure presentation — the parent owns the store, the selection and
 /// the confirmations; this just renders enabled/disabled buttons and forwards
 /// taps. Reused shape so any future bulk surface (e.g. vendors) can adopt it.
+/// An action whose callback is null is omitted, so a surface can opt in to only
+/// the actions it supports.
 class BulkActionBar extends StatelessWidget {
   final int selectedCount;
   final bool busy;
+  final VoidCallback? onExport;
   final VoidCallback? onStatusChange;
   final VoidCallback? onDelete;
 
@@ -15,6 +18,7 @@ class BulkActionBar extends StatelessWidget {
     super.key,
     required this.selectedCount,
     this.busy = false,
+    this.onExport,
     this.onStatusChange,
     this.onDelete,
   });
@@ -44,21 +48,32 @@ class BulkActionBar extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-              TextButton.icon(
-                onPressed: hasSelection ? onStatusChange : null,
-                icon: const Icon(Icons.swap_horiz),
-                label: const Text('Status'),
-              ),
-              const SizedBox(width: 4),
-              TextButton.icon(
-                onPressed: hasSelection ? onDelete : null,
-                icon: Icon(Icons.delete_outline, color: Colors.red.shade700),
-                label: Text(
-                  'Delete',
-                  // shade700 keeps the destructive label at AA contrast.
-                  style: TextStyle(color: Colors.red.shade700),
+              if (onExport != null) ...[
+                TextButton.icon(
+                  onPressed: hasSelection ? onExport : null,
+                  icon: const Icon(Icons.ios_share),
+                  label: const Text('Export'),
                 ),
-              ),
+                const SizedBox(width: 4),
+              ],
+              if (onStatusChange != null) ...[
+                TextButton.icon(
+                  onPressed: hasSelection ? onStatusChange : null,
+                  icon: const Icon(Icons.swap_horiz),
+                  label: const Text('Status'),
+                ),
+                const SizedBox(width: 4),
+              ],
+              if (onDelete != null)
+                TextButton.icon(
+                  onPressed: hasSelection ? onDelete : null,
+                  icon: Icon(Icons.delete_outline, color: Colors.red.shade700),
+                  label: Text(
+                    'Delete',
+                    // shade700 keeps the destructive label at AA contrast.
+                    style: TextStyle(color: Colors.red.shade700),
+                  ),
+                ),
             ],
           ),
         ),

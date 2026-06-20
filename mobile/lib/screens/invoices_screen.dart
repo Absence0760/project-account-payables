@@ -5,6 +5,7 @@ import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/screens/capture_screen.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
+import 'package:ap_mobile/services/file_share.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
@@ -138,6 +139,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
               ? BulkActionBar(
                   selectedCount: InvoiceStore.instance.selectedCount,
                   busy: _busy,
+                  onExport: _bulkExport,
                   onStatusChange: _bulkStatusChange,
                   onDelete: _bulkDelete,
                 )
@@ -357,6 +359,80 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
     A11y.announce(context, message);
+  }
+
+  Future<void> _bulkExport() async {
+    // Offer the two file formats the backend renders (CSV is the safe default;
+    // XML for systems that want structured data). JSON is omitted — it's not a
+    // natural "share a file" format on a phone.
+    final format = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text(
+                  'Export as…',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.table_chart_outlined),
+                title: const Text('CSV'),
+                onTap: () => Navigator.of(sheetContext).pop('csv'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.code),
+                title: const Text('XML'),
+                onTap: () => Navigator.of(sheetContext).pop('xml'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (format == null || !mounted) return;
+
+    final count = InvoiceStore.instance.selectedCount;
+    setState(() => _busy = true);
+    final result = await InvoiceStore.instance.exportSelected(format);
+    if (!mounted) return;
+
+    if (result == null) {
+      setState(() => _busy = false);
+      final message =
+          'Export failed: ${InvoiceStore.instance.error ?? 'unknown error'}';
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+      A11y.announce(context, message);
+      return;
+    }
+
+    try {
+      await FileShare.instance.shareBytes(
+        bytes: result.bytes,
+        filename: result.filename,
+        mimeType: format == 'xml' ? 'application/xml' : 'text/csv',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final message = 'Could not open the share sheet: $e';
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+      A11y.announce(context, message);
+      return;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (!mounted) return;
+    final noun = count == 1 ? 'invoice' : 'invoices';
+    A11y.announce(
+      context,
+      'Exported $count $noun as ${format.toUpperCase()}',
+    );
   }
 
   /// Compose a "verb N invoice(s) (M skipped)" result line shared by both

@@ -286,6 +286,25 @@ class InvoiceStore extends ChangeNotifier {
     }
   }
 
+  /// Export the currently-selected invoices in [format] (`csv` or `xml`).
+  /// Returns the rendered file's bytes + filename for the caller to hand to the
+  /// platform share sheet; the read is non-mutating, so it leaves selection mode
+  /// intact (the user can keep acting on the same set). Returns null + records
+  /// the error on failure. No-op (null) when nothing is selected.
+  Future<({Uint8List bytes, String filename})?> exportSelected(
+    String format,
+  ) async {
+    if (_selectedIds.isEmpty) return null;
+    final ids = _selectedIds.toList();
+    try {
+      return await InvoiceApi.bulkExport(ids, format);
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
   Map<String, dynamic> _invoiceToJson(Invoice i) => {
         'id': i.id,
         'invoice_number': i.invoiceNumber,
