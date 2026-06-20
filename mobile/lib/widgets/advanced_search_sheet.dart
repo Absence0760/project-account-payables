@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 
 final _searchDateFormat = DateFormat('MMM d, yyyy');
@@ -62,7 +63,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
     final v = (raw ?? '').trim();
     if (v.isEmpty) return null;
     if (!RegExp(r'^\d+(\.\d+)?$').hasMatch(v)) {
-      return 'Enter a valid amount (e.g. 1000)';
+      return AppLocalizations.of(context).advSearchInvalidAmount;
     }
     return null;
   }
@@ -71,7 +72,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
     final min = double.tryParse(_amountMin.text.trim());
     final max = double.tryParse(_amountMax.text.trim());
     if (min != null && max != null && min > max) {
-      return 'Min must not exceed max';
+      return AppLocalizations.of(context).advSearchMinMaxError;
     }
     return null;
   }
@@ -116,6 +117,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
@@ -130,20 +132,20 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
               children: [
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        'Advanced Search',
-                        style: TextStyle(
+                        l.advSearchTitle,
+                        style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                     ),
                     Semantics(
-                      label: 'Close advanced search',
+                      label: l.advSearchClose,
                       button: true,
                       child: IconButton(
-                        tooltip: 'Close',
+                        tooltip: l.commonClose,
                         icon: const Icon(Icons.close),
                         onPressed: () => Navigator.of(context).pop(),
                       ),
@@ -151,16 +153,16 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                _field(_vendor, 'Vendor',
+                _field(_vendor, l.advSearchVendor,
                     textInputAction: TextInputAction.next),
-                _field(_poNumber, 'PO Number'),
+                _field(_poNumber, l.advSearchPoNumber),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
                       child: _field(
                         _amountMin,
-                        'Min amount',
+                        l.advSearchMinAmount,
                         keyboardType: const TextInputType.numberWithOptions(
                           decimal: true,
                         ),
@@ -175,7 +177,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
                     Expanded(
                       child: _field(
                         _amountMax,
-                        'Max amount',
+                        l.advSearchMaxAmount,
                         keyboardType: const TextInputType.numberWithOptions(
                           decimal: true,
                         ),
@@ -192,7 +194,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
                   children: [
                     Expanded(
                       child: _dateField(
-                        label: 'Due from',
+                        label: l.advSearchDueFrom,
                         value: _dueDateFrom,
                         onTap: () => _pickDate(from: true),
                         onClear: () => setState(() => _dueDateFrom = null),
@@ -201,7 +203,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _dateField(
-                        label: 'Due to',
+                        label: l.advSearchDueTo,
                         value: _dueDateTo,
                         onTap: () => _pickDate(from: false),
                         onClear: () => setState(() => _dueDateTo = null),
@@ -218,7 +220,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
                         style: OutlinedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
-                        child: const Text('Clear'),
+                        child: Text(l.commonClear),
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -228,7 +230,7 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
                         style: FilledButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
-                        child: const Text('Apply'),
+                        child: Text(l.commonApply),
                       ),
                     ),
                   ],
@@ -271,9 +273,11 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
     required VoidCallback onTap,
     required VoidCallback onClear,
   }) {
-    final text = value != null ? _searchDateFormat.format(value) : 'Any';
+    final l = AppLocalizations.of(context);
+    final text =
+        value != null ? _searchDateFormat.format(value) : l.advSearchAny;
     return Semantics(
-      label: '$label, currently $text. Double tap to change.',
+      label: l.advSearchDateFieldHint(label, text),
       button: true,
       child: InkWell(
         onTap: onTap,
@@ -289,10 +293,10 @@ class _AdvancedSearchSheetState extends State<AdvancedSearchSheet> {
               ),
               if (value != null)
                 Semantics(
-                  label: 'Clear $label',
+                  label: l.advSearchClearField(label),
                   button: true,
                   child: IconButton(
-                    tooltip: 'Clear',
+                    tooltip: l.commonClear,
                     icon: const Icon(Icons.clear, size: 18),
                     onPressed: onClear,
                   ),
