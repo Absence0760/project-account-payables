@@ -431,12 +431,12 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 **Competitors:** Tipalti (1099 + W-8BEN + VAT), Bill.com (1099 e-filing), Basware (global VAT, 60+ countries), Medius (EU e-invoicing mandates)
 
 ### Multi-Language UI (Internationalization / i18n)
-**Status:** Planned
+**Status:** In progress — **web runtime shipped (first slice)**: `frontend/src/lib/i18n/` (locale negotiation, typed `en` catalogue + `de`, lazy loader, reactive `m()`/`setLocale()`/`initLocale()`, ICU plurals, `<html lang/dir>`, locale picker, `messages_parity` vitest) with the shell/nav extracted; `formatMoney` follows the active locale. Remaining: extract the rest of the routes, more locales (`fr/es/pt-BR/ja`), the mobile ARB track, and server-side email localization. See `frontend/CLAUDE.md` → i18n.
 
 The data layer is already internationalized (multi-currency rollups, locale-aware `Intl` money/date formatting, country tax rules, e-invoicing) — but every label, button, email, and error string is still hardcoded English. Localizing the **presentation** layer is the remaining piece for genuine international reach (EU mandates, LATAM, APAC, MENA). Basware/Medius ship 20+ UI languages; Tipalti and Bill.com localize the supplier-facing surfaces. Starter set: `en, de, fr, es, pt-BR, ja` (the six [`../project-running`](../../project-running) already ships), with the RTL switch-point in place for a later `ar`/`he`.
 
 **Web (SvelteKit, `frontend/`):**
-- [ ] i18n runtime under `frontend/src/lib/i18n/` — client-side locale detection on first mount (stored choice → `navigator.languages` → English), reactive `m(key, params)` lookup, `<html lang/dir>` applied. **No `Accept-Language` SSR hook** — the frontend is adapter-static (GitHub Pages), so detection must be client-side
+- [x] i18n runtime under `frontend/src/lib/i18n/` — client-side locale detection on first mount (stored choice → `navigator.languages` → English), reactive `m(key, params)` lookup, `<html lang/dir>` applied. **No `Accept-Language` SSR hook** — the frontend is adapter-static (GitHub Pages), so detection must be client-side
 - [ ] English statically bundled (fallback dict + prerender default); every other locale a dynamic `import()` chunk via a typed loader registry, so a single-locale visitor downloads only their strings — i18n adds ~nothing to the initial payload
 - [ ] Compile-time + runtime parity: `Messages = typeof en` + `satisfies Messages` per locale (missing/extra key = type error); a `messages_parity` vitest validating every locale is loadable, complete, non-empty, and placeholder-faithful
 - [ ] ICU inline plurals (`{n, plural, one {…} other {…}}`) resolved via `Intl.PluralRules` for the active locale — not `fooOne`/`fooOther` key pairs (keeps web and mobile plural shapes identical)
@@ -579,7 +579,7 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 - [ ] Invoice editing (change fields in detail screen)
 - [ ] Activity timeline in invoice detail (audit log)
 - [ ] PDF/image viewer for uploaded invoice files
-- [ ] Exception queue (list, resolve, escalate, dismiss)
+- [x] Exception queue (list, resolve, escalate, dismiss) — `ExceptionsScreen` + `ExceptionStore` over `GET /api/exceptions` + `POST /api/exceptions/{id}/resolve`, admin/ap_manager. Detail view / assign / bulk-resolve deferred
 - [ ] Vendor management (list, verify/reject, ERP sync)
 - [ ] Payment queue (select invoices, choose method)
 - [ ] Payment runs (create/execute batches)
@@ -604,7 +604,7 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 - [x] Configurable notification preferences per user — `users.notification_prefs` JSONB, per-event in-app/email toggles in `/profile`, gating both channels.
 - [x] In-app notification center — tenant `notifications` table, `/api/notifications*`, `/notifications` route + sidebar unread badge.
 - [ ] Email-to-invoice — forward invoices to a dedicated email address for auto-import (Bill.com, Tipalti, Stampli, Medius have this)
-- [ ] Slack/Teams integration for approval notifications (Stampli, Airbase differentiate here)
+- [x] Slack/Teams integration for approval notifications (Stampli, Airbase differentiate here) — pluggable `chat_notification_adapters/` (mock default + slack + teams, per-org config) wired best-effort into `notify_event` on the approval events; fails closed without a webhook URL, PII-free, no migration. Redelivery UI / dead-letter deferred to the outbound-webhook track. See backend/docs/notifications.md
 - [ ] Mobile parity — the email/in-app backend serves mobile for free once a `NotificationsScreen` calls `GET /api/notifications`; no mobile screen ships in this slice.
 
 ---
@@ -652,7 +652,7 @@ Auto-populate and validate invoice fields using historical data from the same su
 - [x] Auto-fill GL account, cost center, payment terms from vendor history — GL/cost-center/terms suggested from the vendor's approved-invoice history (dominant value + confidence + evidence); suggestion-only, never overwrites. `GET /api/enrichment/invoices/{id}/suggestions`. See backend/docs/data-enrichment.md.
 - [ ] Flag deviations — "This vendor usually invoices ~$5K, this one is $50K" — already shipped via `adaptive_workflows.detect_invoice_anomaly` (`GET /api/adaptive/anomalies`); not duplicated here.
 - [ ] Vendor performance scoring — on-time delivery, invoice accuracy, dispute rate — accuracy + dispute sub-scores shipped (`GET /api/enrichment/vendors/{id}/score`); on-time delivery deferred pending a PO expected-date column.
-- [ ] Suggest vendor consolidation — identify duplicate/similar vendors
+- [x] Suggest vendor consolidation — identify duplicate/similar vendors — `GET /api/enrichment/vendors/consolidation-suggestions` clusters by tax_id / code / fuzzy name (union-find, blocking-bounded), deterministic canonical pick, tax_id masked. Advisory; auto-merge deferred. See backend/docs/data-enrichment.md
 - [ ] Enrich vendor data from external sources (D&B, Clearbit)
 - [x] Price variance detection — same item, different price across invoices — per-vendor line-item median baseline + tolerance; returned inline on the suggestions endpoint with baseline+delta. Persisting as a warning/exception is a tracked follow-up.
 
@@ -921,11 +921,11 @@ Contract lifecycle management. Only enterprise tools (Coupa, Basware) have this 
 ---
 
 ### Public Developer API & Webhooks
-**Status:** Planned
+**Status:** In progress (first slice: API-key auth + `/api/v1` read surface + key management shipped; outbound webhooks + published OpenAPI deferred)
 
 The backend is a rich REST surface, but it's framed as an internal contract — CLAUDE.md notes "no OpenAPI published as the contract," and the `endpoint-inventory` skill exists precisely because integrators have no published spec. A first-class public API turns the platform into something customers and partners build on (ERP middleware, custom dashboards, RPA bots).
 
-- [ ] API-key auth for programmatic access — per-tenant, scoped, revocable keys (hashed at rest like the supplier-portal card tokens), separate from the user-JWT path; rate-limited
+- [x] API-key auth for programmatic access — per-tenant, scoped, revocable keys (control-plane `ApiKey`, migration 0055; sha256 + indexed prefix; `X-API-Key` resolves org→tenant via the existing chokepoint), admin-gated mint/list/revoke, audited. First slice also ships a stable `GET /api/v1/invoices(+/{id})` read surface behind `require_api_scope('read')`. Per-key rate-limiting deferred (the `rate_limit` primitive can key on `api_key_id`). See backend/docs/public-api.md
 - [ ] Published, versioned OpenAPI spec + a stable `/api/v1` contract surface (the `endpoint-inventory` output is the seed) with deprecation policy
 - [ ] **Outbound** webhooks — let customers subscribe to events (invoice approved, payment settled, exception raised); signed payloads (reuse `webhook_security.py` HMAC), delivery retries + dead-letter, a redelivery UI. Mirror of the inbound webhook discipline (sign + dedupe)
 - [ ] Developer docs + sandbox keys against the local-first stack; key-management UI in org settings
