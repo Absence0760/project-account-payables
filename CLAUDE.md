@@ -237,6 +237,8 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 
 `admin`, `ap_manager`, `ap_clerk`, `cfo` — checked in both backend (deps.py) and frontend (auth store).
 
+**Granular permissions (SoD).** On top of roles, fraud-sensitive *splittable* duties are gated by a granular permission layer (`backend/app/api/permissions.py`): a small catalog (`invoice.approve`, `payment_run.approve`, `payment.execute`, `payment.void`, `vendor.bank_change.approve`, `vendor.block`, `vendor.manage`, `user.manage`), a static system-role→default-permissions map reproducing the prior matrix exactly, and a control-plane `roles.permissions` JSONB column (migration `0062`, control-plane-only) so **custom roles can grant access** and an org can split duties. Effective permissions = union over the user's roles (system via the map, custom via the stored list), computed in `get_current_user`, exposed on `GET /api/auth/me`'s `permissions`, enforced by `require_permission(*perms)` and `auth.can(perm)`. Only the splittable sensitive endpoints (payment execute/void, run approve, vendor bank-change approve, vendor block/unblock + manage, user management) moved to `require_permission`; everything else stays on `require_roles`. See `docs/authentication.md` § Granular permissions / segregation of duties.
+
 ## Key environment variables (`AP_` prefix)
 
 | Variable | Default | Purpose |

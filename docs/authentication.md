@@ -227,21 +227,65 @@ The database supports four roles:
 - **ap_clerk** — upload and edit invoices, submit for review (cannot approve, delete, or change status)
 - **cfo** — approve high-value invoices, view reports, manage vendors and payments
 
-Roles are returned by `GET /api/auth/me` in the `roles` array. The frontend uses these to control sidebar navigation visibility, button visibility, and action availability (see [user-management.md](user-management.md) for the full matrix).
+Roles are returned by `GET /api/auth/me` in the `roles` array, and the user's
+effective **granular permissions** in the `permissions` array. The frontend uses
+roles to control sidebar navigation visibility and most button/action
+availability, and `auth.can(perm)` for the *split* sensitive controls (see
+[user-management.md](user-management.md) for the full matrix and § Granular
+permissions / segregation of duties below).
 
-Backend API-level role enforcement is in place via `Depends(require_roles(...))` on every protected endpoint. The full permission matrix is in the **RBAC** section below. Frontend gates exist for UX (hiding buttons, sidebar items) but are not the security boundary — the backend is.
+Backend API-level enforcement is via `Depends(require_roles(...))` on most
+protected endpoints and `Depends(require_permission(...))` on the
+fraud-sensitive, SoD-splittable subset (see below). The full permission matrix
+is in the **RBAC** section below. Frontend gates exist for UX (hiding buttons,
+sidebar items) but are not the security boundary — the backend is.
 
-> **Custom roles are inert for access control.** Admins can mint per-org
-> custom roles (`POST /api/admin/roles`, surfaced at `/admin/roles`) and
-> assign them to users, but `require_roles(...)` only ever matches the four
-> system-role names above, and the frontend gates (`isManager` / `isCfo` /
-> `hasAnyRole(...)`) are likewise hardcoded to them. A user holding *only*
-> custom roles can authenticate but passes no gate — so a custom role today
-> is an organizational label, not a permission. Nothing reads custom role
-> names for approval routing either (the approval chain routes by explicit
-> `approver_ids`; `resolve_role_user_ids` is only ever called with
-> `"ap_manager"`). Making custom roles functional is scoped under
-> *Granular permissions / segregation of duties* in the roadmap.
+### Granular permissions / segregation of duties
+
+The four system roles bundle whole sets of duties, which conflates
+fraud-sensitive ones — e.g. one `ap_manager` could both **approve a vendor
+bank-detail change** and **execute a payment run** (the person who can redirect
+where money goes can also send it). A granular **permission layer**
+(`backend/app/api/permissions.py`) lets an org **split** these duties via custom
+roles. It is additive and backward-compatible: the four system roles behave
+exactly as before.
+
+- **Catalog** — a small, deliberately-scoped set of *splittable* permission
+  constants (dotted strings): `invoice.approve`, `payment_run.approve`,
+  `payment.execute`, `payment.void`, `vendor.bank_change.approve`,
+  `vendor.block`, `vendor.manage`, `user.manage`. `GET /api/admin/permissions`
+  (admin) returns the catalog (key + label) for the role editor. Everything not
+  in the catalog stays on `require_roles`.
+- **System-role defaults** — a static map (`ROLE_DEFAULT_PERMISSIONS`)
+  reproduces today's matrix exactly: `admin` holds all; `ap_manager` holds
+  invoice approve + run approve/execute + vendor bank-change/block/manage (NOT
+  payment void); `cfo` holds invoice approve + run approve/execute + payment
+  void; `ap_clerk` holds none.
+- **Custom-role permissions** — a control-plane JSONB column `roles.permissions`
+  (migration `0062_role_permissions`, control-plane-only — `roles` is
+  control-plane). System roles leave it NULL (they resolve via the default map);
+  custom roles store an explicit, sanitized list. A custom role with an empty
+  list grants nothing (the inert pre-feature default).
+- **Effective permissions** — the union over all the user's roles (system via
+  the default map, custom via their stored list). Computed once in
+  `get_current_user` (cached on `User.effective_permissions`), exposed on
+  `GET /api/auth/me`'s `permissions` array, and enforced by
+  `require_permission(*perms)` (any-of semantics, 403 on miss, WARN log; typos
+  rejected at import time).
+- **Migrated endpoints** — only the splittable sensitive set moved to
+  `require_permission`: payment-run create (`payment_run.approve`), payment-run
+  execute (`payment.execute`), payment void (`payment.void`), vendor
+  create/update/verify/reject (`vendor.manage`), vendor block/unblock
+  (`vendor.block`), vendor bank-change approve (`vendor.bank_change.approve`),
+  and user create/update/delete/bulk-delete (`user.manage`). Role/permission
+  CRUD itself stays admin-only on `require_roles` (managing the catalog must not
+  be a grantable permission — that would be a privilege-escalation path).
+- **Frontend** — `auth.can(perm)` mirrors `require_permission`; the gated
+  controls converted so far are payment Execute, payment Void, and vendor
+  Block/Unblock. The `/admin/roles` editor renders permission checkboxes from
+  the catalog and shows each custom role's grants. This composes with the
+  instance-level SoD check (`check_segregation`, approver ≠ creator), which is
+  unchanged.
 
 ## Testing Auth via curl
 
@@ -638,5 +682,5 @@ A companion test catches the inverse: if `NO_AUTH_REQUIRED` references an endpoi
 ### Not in this pass
 
 - **Segregation of duties (SoD)** — users currently can approve invoices they themselves created. The classic AP SoD invariant ("approver != creator") is a sensible follow-up but not part of basic RBAC. Tracked in the roadmap.
-- **Per-org custom roles with teeth** — the CRUD exists (`/api/admin/roles`, `/admin/roles` UI), but custom roles confer no permissions: `require_roles(...)` and the frontend gates only recognize the four hardcoded system roles (see the callout in the RBAC intro above). Making a custom role actually grant access needs finer-grained permissions than whole-role bundling can express — the conflation is *within* `ap_manager` (e.g. approving vendor bank-detail changes and executing payment runs share one role), so the durable fix is a permission layer, scoped under *Granular permissions / segregation of duties* in the roadmap.
+- **Per-org custom roles with teeth** — *Done.* Custom roles now grant access via the granular permission layer (`roles.permissions` + `require_permission`) — see § Granular permissions / segregation of duties above. A custom role granted, say, only `invoice.approve` can approve invoices but is 403'd on payment execution. Permission CRUD itself stays admin-only on purpose.
 - **Audit log of denied requests** — denials are logged via Python `logging.warning` for now, not persisted to the `audit_log` table. If oncall wants to query historical denials, surface them via centralized log shipping (planned under SOC 2 readiness).
