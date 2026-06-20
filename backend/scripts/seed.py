@@ -61,6 +61,7 @@ from app.models.workflow import (
     WorkflowInstance,
     WorkflowStep,
 )
+from app.services.tenant_provisioning import CONTROL_TABLES
 from app.utils.passwords import pwd_context
 
 # Canonical role set seeded into every control plane, keyed by the same
@@ -86,13 +87,12 @@ TECH_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000020")
 # parallelism. Setting it to 0 skips the e2e seed entirely.
 E2E_TENANT_COUNT = int(os.environ.get("AP_E2E_TENANT_COUNT", "4"))
 
-CONTROL_TABLES = {
-    "organizations",
-    "users",
-    "roles",
-    "user_roles",
-    "email_verifications",
-}
+# Control-plane vs tenant table split is owned by
+# `app.services.tenant_provisioning.CONTROL_TABLES` (imported above). Seeding
+# reuses that single source of truth — a local copy here previously drifted
+# stale (missing api_keys / plans / subscriptions / webhooks / webauthn), so the
+# tenant-table create_all tried to build control tables with cross-DB FKs to
+# `organizations` and failed.
 
 # Supplier-portal demo credential. One VendorUser is seeded per tenant
 # (full + lean) tied to a known seeded vendor, so the Playwright
