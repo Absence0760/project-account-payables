@@ -580,10 +580,10 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 - [x] Activity timeline in invoice detail (audit log) — `GET /api/invoices/{id}/audit-log` rendered as a timeline widget (actor, action, time, per-field before→after), with empty/loading/error states
 - [x] PDF/image viewer for uploaded invoice files — `InvoiceFileViewer` on the invoice detail screen: images via `Image.network` (auth headers), PDFs fetched as bytes (`ApiClient.getBytes`) + rendered with `pdfx`; inline image-thumbnail / PDF-card preview opens the full viewer; loading/error/Retry states
 - [x] Exception queue (list, resolve, escalate, dismiss) — `ExceptionsScreen` + `ExceptionStore` over `GET /api/exceptions` + `POST /api/exceptions/{id}/resolve`, admin/ap_manager. Detail view / assign / bulk-resolve deferred
-- [ ] Vendor management (list, verify/reject, ERP sync)
-- [ ] Payment queue (select invoices, choose method)
-- [ ] Payment runs (create/execute batches)
-- [ ] Payment summary cards (total paid, pending, rebates)
+- [x] Vendor management (list, verify/reject, ERP sync) — `VendorsScreen` + `VendorStore` over `GET /api/vendors`, status filter chips + search, swipe verify/reject + ERP-sync action, RBAC-gated
+- [x] Payment queue (select invoices, choose method) — `PaymentQueueScreen` Queue tab over `GET /api/payments/queue`, per-row method dropdown
+- [x] Payment runs (create/execute batches) — Runs tab: create draft from selection, execute/cancel with CFO-approval-gate surfacing
+- [x] Payment summary cards (total paid, pending, rebates) — KPI summary bar over `GET /api/payments/summary`
 - [ ] Advanced search modal (vendor, PO, amount range, date range)
 - [ ] Invoice warnings/fraud flags display
 - [ ] ERP status display on invoice detail
