@@ -15,9 +15,11 @@ accounts-payable money path the app manages for customers.
 > resolver that persists the ids on `settings.billing`), mid-period
 > proration math + the `POST /api/billing/change-plan` endpoint, **and the
 > billing invoices / receipts list (`GET /api/billing/invoices` + the adapter
-> `list_invoices` capability).** **Deferred to later slices:** the
-> payment-method endpoint, and the frontend invoices/receipts UI (owned by the
-> frontend track).
+> `list_invoices` capability), **and the payment-method endpoint (`POST
+> /api/billing/payment-method/setup-intent` + `GET /api/billing/payment-methods`
+> + the adapter `create_setup_intent` / `list_payment_methods` capabilities).**
+> **Deferred to later slices:** the frontend invoices/receipts + payment-method
+> UI (owned by the frontend track).
 
 ## Where it lives (control plane)
 
@@ -72,6 +74,8 @@ class MyAdapter(BillingAdapter):
     async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription: ...
     async def list_invoices(self, *, customer_id, limit=24) -> list[ProviderInvoice]: ...
     async def report_usage(self, report: UsageReport) -> None: ...
+    async def create_setup_intent(self, customer_id) -> ProviderSetupIntent | None: ...
+    async def list_payment_methods(self, customer_id) -> list[ProviderPaymentMethod]: ...
     def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None: ...
     async def test_connection(self) -> bool: ...
 ```
@@ -84,10 +88,22 @@ never provisioned at the provider) → `[]`. The `BillingAdapter` base supplies 
 safe default returning `[]`, so an adapter without a real billing back-end
 degrades gracefully rather than 500ing.
 
+`create_setup_intent(customer_id)` starts a **SetupIntent** — collects + saves a
+payment method against the customer *without a charge* — and returns a
+`ProviderSetupIntent` (`external_setup_intent_id`, `client_secret`, `status`).
+The frontend confirms the `client_secret` with the provider's JS SDK to attach
+the card; it is single-use and scoped to one intent, and **never carries a PAN**.
+`customer_id is None` (never provisioned) → `None`. `list_payment_methods(customer_id)`
+returns the org's saved cards as `ProviderPaymentMethod` DTOs —
+**PII-safe metadata only** (`external_payment_method_id`, `brand`, `last4`,
+`exp_month`, `exp_year`, `is_default`), **never a full PAN**; `None` customer →
+`[]`. The base supplies safe defaults (`None` / `[]`) so an adapter without a
+real billing back-end degrades gracefully rather than 500ing.
+
 | Adapter | Notes |
 |---------|-------|
-| `mock` (**default**) | In-process, deterministic, no network/credential. Synthetic `mock_sub_<org>` id; `report_usage` is a no-op; `parse_webhook` reads a dev JSON envelope; `list_invoices` fabricates a stable run of monthly `$49.00` receipts (newest `open`, the rest `paid`) keyed off the customer id, or `[]` when there's no customer. Local-first. |
-| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `AP_BILLING_STRIPE_API_KEY`. `ensure_customer` / `ensure_price` / `create_subscription` / `get_subscription` / `report_usage` are **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; every create sends an `Idempotency-Key` header so a retry can't duplicate; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `ensure_customer` resolve-or-creates the per-org Stripe `customer` (idempotency key `ap-customer-<org>`, sends only the org business name + an admin email — never bank/tax/PAN); `ensure_price` resolve-or-creates the per-plan recurring `price` (unit amount = the plan's monthly price in integer **minor units** via exact Decimal math, idempotency key `ap-price-<code>-<cents>-<cur>`). `create_subscription` consumes the resolved `stripe_customer_id` + `stripe_price_id` from config (the provisioning resolver injects them) → `BillingNotConfigured` if absent. A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body and maps Stripe statuses → our four-state lifecycle. `list_invoices` GETs `/v1/invoices?customer=<id>&limit=` (cap 100), normalizes each to `ProviderInvoice` (amount from the integer-minor-units `total` via exact Decimal → decimal **string**; `created`/`period_start` Unix → ISO/`YYYY-MM`; status map `draft`/`uncollectible`→`open`, `void`→`void`; `hosted_invoice_url` → `invoice_pdf` fallback) — fails closed without a key, returns `[]` for a `None` customer. |
+| `mock` (**default**) | In-process, deterministic, no network/credential. Synthetic `mock_sub_<org>` id; `report_usage` is a no-op; `parse_webhook` reads a dev JSON envelope; `list_invoices` fabricates a stable run of monthly `$49.00` receipts (newest `open`, the rest `paid`) keyed off the customer id, or `[]` when there's no customer; `create_setup_intent` returns a deterministic synthetic SetupIntent (`mock_seti_<cus>` + `<…>_secret`, status `requires_payment_method`) and `list_payment_methods` a single deterministic `visa ****4242` (exp 12/2030, default), both `None`/`[]` with no customer. Local-first. |
+| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `AP_BILLING_STRIPE_API_KEY`. `ensure_customer` / `ensure_price` / `create_subscription` / `get_subscription` / `report_usage` are **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; every create sends an `Idempotency-Key` header so a retry can't duplicate; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `ensure_customer` resolve-or-creates the per-org Stripe `customer` (idempotency key `ap-customer-<org>`, sends only the org business name + an admin email — never bank/tax/PAN); `ensure_price` resolve-or-creates the per-plan recurring `price` (unit amount = the plan's monthly price in integer **minor units** via exact Decimal math, idempotency key `ap-price-<code>-<cents>-<cur>`). `create_subscription` consumes the resolved `stripe_customer_id` + `stripe_price_id` from config (the provisioning resolver injects them) → `BillingNotConfigured` if absent. A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body and maps Stripe statuses → our four-state lifecycle. `list_invoices` GETs `/v1/invoices?customer=<id>&limit=` (cap 100), normalizes each to `ProviderInvoice` (amount from the integer-minor-units `total` via exact Decimal → decimal **string**; `created`/`period_start` Unix → ISO/`YYYY-MM`; status map `draft`/`uncollectible`→`open`, `void`→`void`; `hosted_invoice_url` → `invoice_pdf` fallback) — fails closed without a key, returns `[]` for a `None` customer. `create_setup_intent` POSTs `/v1/setup_intents` (`customer`, `payment_method_types[]=card`, `usage=off_session`) → `ProviderSetupIntent`; `list_payment_methods` GETs `/v1/payment_methods?customer=<id>&type=card` and maps each to brand/last4/exp **only** (Stripe never returns a PAN here) — both fail closed without a key, `None`/`[]` for a `None` customer. |
 
 `get_billing_adapter(provider=None)` resolves: explicit arg → `AP_BILLING_PROVIDER`
 → `mock`. An unknown name falls back to `mock` (a bad config can't break read
@@ -319,8 +335,40 @@ The org's provider-side customer id is read from
 **Graceful degradation:** an org never provisioned with the provider (no customer
 id), an unconfigured/unavailable provider (the live adapter fails closed without
 a key), or any provider error yields an **empty list** — never a 500. Money is an
-exact decimal **string**. The payment-method endpoint is a later slice; the
-frontend invoices/receipts UI is owned by the frontend track.
+exact decimal **string**. The frontend invoices/receipts UI is owned by the
+frontend track.
+
+### Payment-method endpoint
+
+`POST /api/billing/payment-method/setup-intent` and `GET
+/api/billing/payment-methods` (both `require_roles(admin, cfo)`) manage the org's
+saved cards, sourced through the adapter's `create_setup_intent` /
+`list_payment_methods` capabilities.
+
+`POST .../setup-intent` starts a SetupIntent so the org can add or replace a
+card and returns the single-use `client_secret` the frontend confirms with the
+provider's JS SDK — no charge, and no PAN ever touches our backend:
+
+```json
+{"provider": "mock", "configured": true,
+ "client_secret": "mock_seti_mock_cus_test_secret", "setup_intent_id": "mock_seti_mock_cus_test"}
+```
+
+`GET .../payment-methods` lists the saved cards as **PII-safe metadata only**
+(brand / last4 / expiry — **never a full PAN**):
+
+```json
+{"provider": "mock",
+ "payment_methods": [{"id": "mock_pm_...", "brand": "visa", "last4": "4242",
+                      "exp_month": 12, "exp_year": 2030, "is_default": true}]}
+```
+
+Both read the provider-side customer id from
+`Organization.settings.billing.stripe_customer_id`. **Graceful degradation:** an
+org never provisioned (no customer id), an unconfigured/unavailable provider (the
+live adapter fails closed without a key), or any provider error yields
+`configured=false` + null `client_secret` (setup-intent) or an **empty list**
+(payment-methods) — never a 500.
 
 ## Customer-facing UI (`frontend/src/routes/billing/`)
 
@@ -378,7 +426,13 @@ gating, null-plan case), the invoices/receipts list (mock `list_invoices`
 determinism + amount-as-string, Stripe `list_invoices` shape against a mocked
 `httpx` transport + minor-units exactness + fail-closed-without-key + no-customer
 short-circuit, and `GET /api/billing/invoices` returning the list with money as
-exact strings, no-customer → empty list not 500, admin/cfo RBAC), and the
+exact strings, no-customer → empty list not 500, admin/cfo RBAC), the
+payment-method surface (mock `create_setup_intent` / `list_payment_methods`
+determinism + PII-safety, Stripe shape-mapping against a mocked `httpx` transport
++ fail-closed-without-key + no-customer short-circuit, and the
+`POST /api/billing/payment-method/setup-intent` + `GET /api/billing/payment-methods`
+endpoints returning the client_secret / PII-safe cards, no-customer → not-configured /
+empty not 500, admin/cfo RBAC), and the
 `/api/v1` plan-gate (402 without `public_api`, 200 with). The control-tables coverage test in
 `tests/test_tenant_provisioning.py` includes `plans` + `subscriptions`.
 
