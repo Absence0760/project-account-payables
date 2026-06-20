@@ -375,6 +375,29 @@ class Settings(BaseSettings):
     # TOTP / email challenge. Five minutes is enough to find your phone.
     mfa_challenge_ttl_seconds: int = 300
 
+    # WebAuthn / passkeys (an ADDITIONAL MFA factor — separate code path from
+    # TOTP, gated by the same `mfa_enabled` master switch above).
+    #
+    # The Relying Party ID is the registrable domain the passkey is bound to.
+    # WebAuthn requires it be the page's effective domain or a registrable
+    # parent of it — and (critically) it must be a bare host, never a scheme or
+    # port. For local dev the SPA runs on subdomains of `localhost`
+    # (`acme.localhost:7777`), so `localhost` is the correct RP ID: passkeys
+    # registered under it work across every tenant subdomain. In deployed envs
+    # set this to your apex (e.g. `app.example.com`).
+    webauthn_rp_id: str = "localhost"
+    # Human-readable Relying Party name shown by the authenticator UI.
+    webauthn_rp_name: str = "Account Payables"
+    # Comma-separated list of allowed origins the browser ceremony may come
+    # from — verified against `response.origin` on both register + authenticate.
+    # Multiple because each tenant is its own subdomain origin in dev. A value
+    # must include scheme + host (+ port). Empty falls back to the dev origins.
+    webauthn_origins: str = "http://localhost:7777"
+    # Challenge lifetime (seconds). The register/authenticate options carry a
+    # server-minted random challenge stashed in Redis; the browser must complete
+    # the ceremony before it expires. 5 minutes matches the MFA challenge TTL.
+    webauthn_challenge_ttl_seconds: int = 300
+
     # SSO / SCIM
     # Base URL the OIDC provider redirects back to. Must exactly match what's
     # registered with Okta / Entra. {base} is substituted from AP_PUBLIC_URL.

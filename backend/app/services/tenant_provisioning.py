@@ -56,6 +56,11 @@ CONTROL_TABLES: frozenset[str] = frozenset(
         # /api/v1 pull surface. Control-plane only, never fanned to tenant DBs.
         "webhook_subscriptions",
         "webhook_deliveries",
+        # WebAuthn / passkey credentials (see app/models/webauthn_credential.py).
+        # An additional MFA factor bound to a control-plane User — keyed by
+        # user_id, the same placement as User.mfa_secret. Control-plane only,
+        # never fanned to tenant DBs.
+        "webauthn_credentials",
     }
 )
 
