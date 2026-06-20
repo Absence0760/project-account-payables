@@ -69,6 +69,7 @@ from app.services.adaptive_workflows import (
     ThresholdRecommendation,
     VendorBaseline,
     _decimal_days,
+    compute_approver_outcomes,
     compute_approver_patterns,
     compute_effectiveness,
     compute_outcome_stats,
@@ -92,6 +93,10 @@ _WRITE_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER)
 # Roles that can actually act on an approval — the eligible-approver pool for
 # smart routing. ap_clerk enters invoices but does not approve, so it's excluded.
 _APPROVAL_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
+
+# Minimum decided invoices an approver must have before the routing down-weight
+# penalises them on overturns — thin evidence (one bad call) never penalises.
+_ROUTING_OUTCOME_MIN_SAMPLE = 5
 
 # Approved-or-beyond — the "historically accepted" set used for the vendor
 # baseline (pending / rejected invoices are not part of the accepted norm).
@@ -228,6 +233,82 @@ async def _decision_rows(
             }
         )
     return decisions
+
+
+async def _approver_outcome_rows(
+    db: AsyncSession, *, since: datetime, entity_id: uuid.UUID | None
+) -> list[dict]:
+    """Per-(approver, invoice) outcome rows for the routing down-weight.
+
+    The population is each approver's ``invoice.approved`` decisions in the
+    window (``actor_id`` = the approver). For each, an *overturn* is read from
+    the SAME invoice's later audit rows — but, crucially, only when someone
+    **else** walked the decision back (an approver correcting their own decision
+    on the way in is not an overturn *of themselves*):
+
+      * **voided** — ``invoice.voided_return_to_approved`` after the approval
+        (a void is always a separate, later treasury action);
+      * **rejected** — a later ``invoice.rejected``;
+      * **corrected** — a later ``invoice.approved`` carrying ``details.changes``
+        by a DIFFERENT actor (the re-review walked this approver's call back).
+
+    One LEFT-joined aggregate, mirroring ``_auto_approval_outcome_rows`` but keyed
+    by the approving actor. Entity-scoped via the invoice join. The pure
+    ``compute_approver_outcomes`` consumer de-dupes per ``(approver, invoice)``."""
+    decision = AuditLog.__table__.alias("decision")
+    overturn = AuditLog.__table__.alias("overturn")
+
+    is_void = overturn.c.action == "invoice.voided_return_to_approved"
+    is_reject = overturn.c.action == "invoice.rejected"
+    # A correction by a DIFFERENT actor (an approver's own corrections-on-approval
+    # don't overturn themselves). The decision's actor is guaranteed non-NULL by
+    # the WHERE below, so IS DISTINCT FROM also makes an *unattributed* walk-back
+    # (overturn actor NULL) count — conservative, never hides one.
+    is_correct = (
+        (overturn.c.action == "invoice.approved")
+        & (overturn.c.details["changes"].isnot(None))
+        & overturn.c.actor_id.is_distinct_from(decision.c.actor_id)
+    )
+
+    q = (
+        select(
+            decision.c.actor_id.label("approver_id"),
+            decision.c.entity_id.label("inv_id"),
+            func.bool_or(case((is_void, True), else_=False)).label("voided"),
+            func.bool_or(case((is_reject, True), else_=False)).label("rejected"),
+            func.bool_or(case((is_correct, True), else_=False)).label("corrected"),
+        )
+        .select_from(decision)
+        .join(Invoice, Invoice.id == decision.c.entity_id)
+        .join(
+            overturn,
+            (overturn.c.entity_id == decision.c.entity_id)
+            & (overturn.c.entity_type == "invoice")
+            & (overturn.c.created_at >= decision.c.created_at)
+            & (overturn.c.id != decision.c.id)
+            & (is_void | is_reject | is_correct),
+            isouter=True,
+        )
+        .where(
+            decision.c.entity_type == "invoice",
+            decision.c.action == "invoice.approved",
+            decision.c.actor_id.isnot(None),
+            decision.c.created_at >= since,
+        )
+        .group_by(decision.c.actor_id, decision.c.entity_id)
+    )
+    q = apply_entity_scope(q, Invoice, entity_id)
+    rows = (await db.execute(q)).all()
+    return [
+        {
+            "approver_id": str(approver_id),
+            "invoice_id": str(inv_id),
+            "voided": bool(voided),
+            "rejected": bool(rejected),
+            "corrected": bool(corrected),
+        }
+        for approver_id, inv_id, voided, rejected, corrected in rows
+    ]
 
 
 async def _approver_names(
@@ -696,11 +777,16 @@ def _routing_dict(s: RoutingSuggestion) -> dict:
                 "approver_id": c.approver_id,
                 "approver_name": c.approver_name,
                 "score": str(c.score),
+                "base_score": str(c.base_score),
+                "outcome_penalty": str(c.outcome_penalty),
                 "rank": c.rank,
                 "median_time_to_approve_days": str(c.median_time_to_approve_days),
                 "approval_rate_pct": str(c.approval_rate_pct),
                 "sample_size": c.sample_size,
                 "vendor_approved_count": c.vendor_approved_count,
+                "overturn_rate_pct": str(c.overturn_rate_pct),
+                "overturned_count": c.overturned_count,
+                "outcome_sample_size": c.outcome_sample_size,
                 "reasons": c.reasons,
             }
             for c in s.candidates
@@ -724,6 +810,13 @@ async def _rank_for_invoice(
     decisions = await _decision_rows(db, since=since, entity_id=entity_id)
 
     approvers = compute_approver_patterns(decisions)
+
+    # Per-approver OUTCOME signal (feedback down-weight): how often each approver's
+    # own decisions were later overturned (voided / corrected-by-someone-else /
+    # rejected). Below the min-sample an approver gets no ApproverOutcome →
+    # recommend_approvers applies no penalty (thin evidence never penalises).
+    outcome_rows = await _approver_outcome_rows(db, since=since, entity_id=entity_id)
+    outcomes = compute_approver_outcomes(outcome_rows, min_sample=_ROUTING_OUTCOME_MIN_SAMPLE)
 
     # Per-approver familiarity with THIS vendor: count approvals of this vendor's
     # invoices, keyed by approver id, over the same decision-row window.
@@ -754,6 +847,7 @@ async def _rank_for_invoice(
     return recommend_approvers(
         eligible,
         approvers,
+        outcomes=outcomes,
         invoice_id=str(inv.id),
         vendor_id=inv_vendor_id,
         vendor_name=inv_vendor_name,
