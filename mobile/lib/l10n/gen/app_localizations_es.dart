@@ -209,4 +209,168 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get invoicesColStatus => 'Estado';
+
+  @override
+  String get notificationsTitle => 'Notificaciones';
+
+  @override
+  String get notificationsMarkAllRead => 'Marcar todo como leído';
+
+  @override
+  String get notificationsMarkAllReadLabel =>
+      'Marcar todas las notificaciones como leídas';
+
+  @override
+  String get notificationsFilterUnread => 'No leídas';
+
+  @override
+  String get notificationsAllMarkedRead =>
+      'Todas las notificaciones marcadas como leídas';
+
+  @override
+  String get notificationsCouldNotMarkAll =>
+      'No se pudo marcar todo como leído';
+
+  @override
+  String get notificationsEmptyUnread => 'No hay notificaciones sin leer';
+
+  @override
+  String get notificationsEmpty => 'No hay notificaciones';
+
+  @override
+  String get notificationsCaughtUp => 'Estás al día';
+
+  @override
+  String get notificationsNothingYet => 'Aún no hay nada aquí';
+
+  @override
+  String get notificationsLoadError =>
+      'No se pudieron cargar las notificaciones';
+
+  @override
+  String get vendorsTitle => 'Proveedores';
+
+  @override
+  String get vendorsSyncErp => 'Sincronizar desde ERP';
+
+  @override
+  String get vendorsSyncErpLabel => 'Sincronizar proveedores desde ERP';
+
+  @override
+  String get vendorsSearchHint => 'Buscar proveedores…';
+
+  @override
+  String get vendorsFilterUnverified => 'Sin verificar';
+
+  @override
+  String get vendorsFilterActive => 'Activos';
+
+  @override
+  String get vendorsFilterInactive => 'Inactivos';
+
+  @override
+  String get vendorsFilterRejected => 'Rechazados';
+
+  @override
+  String get vendorsEmpty => 'No se encontraron proveedores';
+
+  @override
+  String get vendorsLoadError => 'No se pudieron cargar los proveedores';
+
+  @override
+  String get vendorActionVerify => 'Verificar';
+
+  @override
+  String get vendorActionReject => 'Rechazar';
+
+  @override
+  String get vendorUnverifiedLabel => 'Proveedor sin verificar';
+
+  @override
+  String get vendorVerifyHint => 'Habilitar para pago';
+
+  @override
+  String get vendorRejectHint => 'Marcar como no válido / duplicado';
+
+  @override
+  String get vendorVerified => 'Proveedor verificado';
+
+  @override
+  String get vendorRejected => 'Proveedor rechazado';
+
+  @override
+  String get vendorActionFailed => 'Acción fallida';
+
+  @override
+  String vendorSyncFailed(String error) {
+    return 'Error de sincronización con ERP: $error';
+  }
+
+  @override
+  String get exceptionsTitle => 'Excepciones';
+
+  @override
+  String get exceptionsFilterOpen => 'Abiertas';
+
+  @override
+  String get exceptionsFilterEscalated => 'Escaladas';
+
+  @override
+  String get exceptionsFilterResolved => 'Resueltas';
+
+  @override
+  String get exceptionsFilterDismissed => 'Descartadas';
+
+  @override
+  String get exceptionsEmpty => 'No hay excepciones';
+
+  @override
+  String get exceptionsQueueClear => 'La cola de excepciones está vacía';
+
+  @override
+  String get exceptionActionResolve => 'Resolver';
+
+  @override
+  String get exceptionActionEscalate => 'Escalar';
+
+  @override
+  String get exceptionActionDismiss => 'Descartar';
+
+  @override
+  String get exceptionResolved => 'Excepción resuelta';
+
+  @override
+  String get exceptionEscalated => 'Excepción escalada';
+
+  @override
+  String get exceptionDismissed => 'Excepción descartada';
+
+  @override
+  String get exceptionActionFailed => 'Acción fallida';
+
+  @override
+  String get paymentsTitle => 'Pagos';
+
+  @override
+  String get paymentsEmpty => 'No hay pagos';
+
+  @override
+  String paymentsErrorPrefix(String error) {
+    return 'Error: $error';
+  }
+
+  @override
+  String get paymentStatusPending => 'Pendiente';
+
+  @override
+  String get paymentStatusProcessing => 'En proceso';
+
+  @override
+  String get paymentStatusCompleted => 'Completado';
+
+  @override
+  String get paymentStatusFailed => 'Fallido';
+
+  @override
+  String get paymentStatusCancelled => 'Cancelado';
 }

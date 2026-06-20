@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
@@ -28,8 +29,9 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Exceptions')),
+      appBar: AppBar(title: Text(l.exceptionsTitle)),
       body: Column(
         children: [
           // Status filter chips.
@@ -43,11 +45,11 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   children: [
-                    _filterChip('All', null, current),
-                    _filterChip('Open', 'open', current),
-                    _filterChip('Escalated', 'escalated', current),
-                    _filterChip('Resolved', 'resolved', current),
-                    _filterChip('Dismissed', 'dismissed', current),
+                    _filterChip(l.commonAll, null, current),
+                    _filterChip(l.exceptionsFilterOpen, 'open', current),
+                    _filterChip(l.exceptionsFilterEscalated, 'escalated', current),
+                    _filterChip(l.exceptionsFilterResolved, 'resolved', current),
+                    _filterChip(l.exceptionsFilterDismissed, 'dismissed', current),
                   ],
                 );
               },
@@ -66,25 +68,25 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
                 }
 
                 if (store.exceptions.isEmpty) {
-                  return const Center(
+                  return Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
+                        const Icon(
                           Icons.check_circle,
                           size: 64,
                           color: Colors.green,
                         ),
-                        SizedBox(height: 16),
+                        const SizedBox(height: 16),
                         Text(
-                          'No exceptions',
-                          style: TextStyle(
+                          l.exceptionsEmpty,
+                          style: const TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                        SizedBox(height: 4),
-                        Text('The exception queue is clear'),
+                        const SizedBox(height: 4),
+                        Text(l.exceptionsQueueClear),
                       ],
                     ),
                   );
@@ -110,6 +112,7 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
   }
 
   Widget _buildRow(ApException exc) {
+    final l = AppLocalizations.of(context);
     final tile = ExceptionListTile(
       exception: exc,
       onTap: () => _showActions(exc),
@@ -126,13 +129,13 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
         Colors.green.shade700,
         Icons.check,
         Alignment.centerLeft,
-        'Resolve',
+        l.exceptionActionResolve,
       ),
       secondaryBackground: _swipeBackground(
         Colors.blueGrey.shade700,
         Icons.block,
         Alignment.centerRight,
-        'Dismiss',
+        l.exceptionActionDismiss,
       ),
       confirmDismiss: (direction) async {
         final resolve = direction == DismissDirection.startToEnd;
@@ -143,7 +146,7 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
           // The row vanishing isn't announced on its own (WCAG 4.1.3).
           A11y.announce(
             context,
-            resolve ? 'Exception resolved' : 'Exception dismissed',
+            resolve ? l.exceptionResolved : l.exceptionDismissed,
           );
         }
         return ok;
@@ -182,6 +185,7 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
   /// swipe) and stays reachable for terminal rows that show details only.
   void _showActions(ApException exc) {
     if (!exc.status.isActionable) return;
+    final l = AppLocalizations.of(context);
     showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) {
@@ -191,17 +195,17 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
             children: [
               ListTile(
                 leading: const Icon(Icons.check, color: Colors.green),
-                title: const Text('Resolve'),
+                title: Text(l.exceptionActionResolve),
                 onTap: () => _runAction(sheetContext, exc, 'resolve'),
               ),
               ListTile(
                 leading: Icon(Icons.arrow_upward, color: Colors.red.shade700),
-                title: const Text('Escalate'),
+                title: Text(l.exceptionActionEscalate),
                 onTap: () => _runAction(sheetContext, exc, 'escalate'),
               ),
               ListTile(
                 leading: Icon(Icons.block, color: Colors.blueGrey.shade700),
-                title: const Text('Dismiss'),
+                title: Text(l.exceptionActionDismiss),
                 onTap: () => _runAction(sheetContext, exc, 'dismiss'),
               ),
             ],
@@ -217,6 +221,7 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
     String action,
   ) async {
     Navigator.of(sheetContext).pop();
+    final l = AppLocalizations.of(context);
     final store = ExceptionStore.instance;
     final ok = switch (action) {
       'resolve' => await store.resolve(exc.id),
@@ -224,9 +229,14 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
       _ => await store.dismiss(exc.id),
     };
     if (!mounted) return;
+    final successMessage = switch (action) {
+      'resolve' => l.exceptionResolved,
+      'escalate' => l.exceptionEscalated,
+      _ => l.exceptionDismissed,
+    };
     A11y.announce(
       context,
-      ok ? 'Exception ${action}d' : 'Action failed',
+      ok ? successMessage : l.exceptionActionFailed,
     );
   }
 

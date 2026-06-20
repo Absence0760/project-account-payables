@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/notification.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
 import 'package:ap_mobile/stores/notification_store.dart';
@@ -29,11 +30,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Future<void> _markAllRead() async {
+    final l = AppLocalizations.of(context);
     final ok = await NotificationStore.instance.markAllRead();
     if (!mounted) return;
     A11y.announce(
       context,
-      ok ? 'All notifications marked read' : 'Could not mark all read',
+      ok ? l.notificationsAllMarkedRead : l.notificationsCouldNotMarkAll,
     );
   }
 
@@ -51,9 +53,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Notifications'),
+        title: Text(l.notificationsTitle),
         actions: [
           ListenableBuilder(
             listenable: NotificationStore.instance,
@@ -62,10 +65,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               // Only offer mark-all-read when there's something to clear.
               if (store.unread == 0) return const SizedBox.shrink();
               return Semantics(
-                label: 'Mark all notifications read',
+                label: l.notificationsMarkAllReadLabel,
                 button: true,
                 child: IconButton(
-                  tooltip: 'Mark all read',
+                  tooltip: l.notificationsMarkAllRead,
                   icon: const Icon(Icons.done_all),
                   onPressed: _markAllRead,
                 ),
@@ -86,8 +89,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   children: [
-                    _filterChip('All', false, unreadOnly),
-                    _filterChip('Unread', true, unreadOnly),
+                    _filterChip(l.commonAll, false, unreadOnly),
+                    _filterChip(l.notificationsFilterUnread, true, unreadOnly),
                   ],
                 );
               },
@@ -152,6 +155,7 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -163,11 +167,11 @@ class _EmptyState extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Text(
-            unreadOnly ? 'No unread notifications' : 'No notifications',
+            unreadOnly ? l.notificationsEmptyUnread : l.notificationsEmpty,
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
-          Text(unreadOnly ? "You're all caught up" : 'Nothing here yet'),
+          Text(unreadOnly ? l.notificationsCaughtUp : l.notificationsNothingYet),
         ],
       ),
     );
@@ -180,20 +184,21 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.cloud_off, size: 64, color: Colors.grey.shade700),
           const SizedBox(height: 16),
-          const Text(
-            "Couldn't load notifications",
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          Text(
+            l.notificationsLoadError,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 12),
           FilledButton.tonal(
             onPressed: onRetry,
-            child: const Text('Retry'),
+            child: Text(l.commonRetry),
           ),
         ],
       ),

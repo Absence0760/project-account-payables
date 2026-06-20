@@ -208,4 +208,164 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get invoicesColStatus => 'Status';
+
+  @override
+  String get notificationsTitle => 'Notifications';
+
+  @override
+  String get notificationsMarkAllRead => 'Mark all read';
+
+  @override
+  String get notificationsMarkAllReadLabel => 'Mark all notifications read';
+
+  @override
+  String get notificationsFilterUnread => 'Unread';
+
+  @override
+  String get notificationsAllMarkedRead => 'All notifications marked read';
+
+  @override
+  String get notificationsCouldNotMarkAll => 'Could not mark all read';
+
+  @override
+  String get notificationsEmptyUnread => 'No unread notifications';
+
+  @override
+  String get notificationsEmpty => 'No notifications';
+
+  @override
+  String get notificationsCaughtUp => 'You\'re all caught up';
+
+  @override
+  String get notificationsNothingYet => 'Nothing here yet';
+
+  @override
+  String get notificationsLoadError => 'Couldn\'t load notifications';
+
+  @override
+  String get vendorsTitle => 'Vendors';
+
+  @override
+  String get vendorsSyncErp => 'Sync from ERP';
+
+  @override
+  String get vendorsSyncErpLabel => 'Sync vendors from ERP';
+
+  @override
+  String get vendorsSearchHint => 'Search vendors...';
+
+  @override
+  String get vendorsFilterUnverified => 'Unverified';
+
+  @override
+  String get vendorsFilterActive => 'Active';
+
+  @override
+  String get vendorsFilterInactive => 'Inactive';
+
+  @override
+  String get vendorsFilterRejected => 'Rejected';
+
+  @override
+  String get vendorsEmpty => 'No vendors found';
+
+  @override
+  String get vendorsLoadError => 'Could not load vendors';
+
+  @override
+  String get vendorActionVerify => 'Verify';
+
+  @override
+  String get vendorActionReject => 'Reject';
+
+  @override
+  String get vendorUnverifiedLabel => 'Unverified vendor';
+
+  @override
+  String get vendorVerifyHint => 'Make eligible for payment';
+
+  @override
+  String get vendorRejectHint => 'Mark as invalid / duplicate';
+
+  @override
+  String get vendorVerified => 'Vendor verified';
+
+  @override
+  String get vendorRejected => 'Vendor rejected';
+
+  @override
+  String get vendorActionFailed => 'Action failed';
+
+  @override
+  String vendorSyncFailed(String error) {
+    return 'ERP sync failed: $error';
+  }
+
+  @override
+  String get exceptionsTitle => 'Exceptions';
+
+  @override
+  String get exceptionsFilterOpen => 'Open';
+
+  @override
+  String get exceptionsFilterEscalated => 'Escalated';
+
+  @override
+  String get exceptionsFilterResolved => 'Resolved';
+
+  @override
+  String get exceptionsFilterDismissed => 'Dismissed';
+
+  @override
+  String get exceptionsEmpty => 'No exceptions';
+
+  @override
+  String get exceptionsQueueClear => 'The exception queue is clear';
+
+  @override
+  String get exceptionActionResolve => 'Resolve';
+
+  @override
+  String get exceptionActionEscalate => 'Escalate';
+
+  @override
+  String get exceptionActionDismiss => 'Dismiss';
+
+  @override
+  String get exceptionResolved => 'Exception resolved';
+
+  @override
+  String get exceptionEscalated => 'Exception escalated';
+
+  @override
+  String get exceptionDismissed => 'Exception dismissed';
+
+  @override
+  String get exceptionActionFailed => 'Action failed';
+
+  @override
+  String get paymentsTitle => 'Payments';
+
+  @override
+  String get paymentsEmpty => 'No payments';
+
+  @override
+  String paymentsErrorPrefix(String error) {
+    return 'Error: $error';
+  }
+
+  @override
+  String get paymentStatusPending => 'Pending';
+
+  @override
+  String get paymentStatusProcessing => 'Processing';
+
+  @override
+  String get paymentStatusCompleted => 'Completed';
+
+  @override
+  String get paymentStatusFailed => 'Failed';
+
+  @override
+  String get paymentStatusCancelled => 'Cancelled';
 }

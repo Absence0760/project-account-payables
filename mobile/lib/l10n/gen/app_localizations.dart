@@ -484,6 +484,318 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Status'**
   String get invoicesColStatus;
+
+  /// No description provided for @notificationsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications'**
+  String get notificationsTitle;
+
+  /// No description provided for @notificationsMarkAllRead.
+  ///
+  /// In en, this message translates to:
+  /// **'Mark all read'**
+  String get notificationsMarkAllRead;
+
+  /// No description provided for @notificationsMarkAllReadLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Mark all notifications read'**
+  String get notificationsMarkAllReadLabel;
+
+  /// No description provided for @notificationsFilterUnread.
+  ///
+  /// In en, this message translates to:
+  /// **'Unread'**
+  String get notificationsFilterUnread;
+
+  /// No description provided for @notificationsAllMarkedRead.
+  ///
+  /// In en, this message translates to:
+  /// **'All notifications marked read'**
+  String get notificationsAllMarkedRead;
+
+  /// No description provided for @notificationsCouldNotMarkAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not mark all read'**
+  String get notificationsCouldNotMarkAll;
+
+  /// No description provided for @notificationsEmptyUnread.
+  ///
+  /// In en, this message translates to:
+  /// **'No unread notifications'**
+  String get notificationsEmptyUnread;
+
+  /// No description provided for @notificationsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No notifications'**
+  String get notificationsEmpty;
+
+  /// No description provided for @notificationsCaughtUp.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'re all caught up'**
+  String get notificationsCaughtUp;
+
+  /// No description provided for @notificationsNothingYet.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing here yet'**
+  String get notificationsNothingYet;
+
+  /// No description provided for @notificationsLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load notifications'**
+  String get notificationsLoadError;
+
+  /// No description provided for @vendorsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Vendors'**
+  String get vendorsTitle;
+
+  /// No description provided for @vendorsSyncErp.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync from ERP'**
+  String get vendorsSyncErp;
+
+  /// No description provided for @vendorsSyncErpLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync vendors from ERP'**
+  String get vendorsSyncErpLabel;
+
+  /// No description provided for @vendorsSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search vendors...'**
+  String get vendorsSearchHint;
+
+  /// No description provided for @vendorsFilterUnverified.
+  ///
+  /// In en, this message translates to:
+  /// **'Unverified'**
+  String get vendorsFilterUnverified;
+
+  /// No description provided for @vendorsFilterActive.
+  ///
+  /// In en, this message translates to:
+  /// **'Active'**
+  String get vendorsFilterActive;
+
+  /// No description provided for @vendorsFilterInactive.
+  ///
+  /// In en, this message translates to:
+  /// **'Inactive'**
+  String get vendorsFilterInactive;
+
+  /// No description provided for @vendorsFilterRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Rejected'**
+  String get vendorsFilterRejected;
+
+  /// No description provided for @vendorsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No vendors found'**
+  String get vendorsEmpty;
+
+  /// No description provided for @vendorsLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load vendors'**
+  String get vendorsLoadError;
+
+  /// No description provided for @vendorActionVerify.
+  ///
+  /// In en, this message translates to:
+  /// **'Verify'**
+  String get vendorActionVerify;
+
+  /// No description provided for @vendorActionReject.
+  ///
+  /// In en, this message translates to:
+  /// **'Reject'**
+  String get vendorActionReject;
+
+  /// No description provided for @vendorUnverifiedLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Unverified vendor'**
+  String get vendorUnverifiedLabel;
+
+  /// No description provided for @vendorVerifyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Make eligible for payment'**
+  String get vendorVerifyHint;
+
+  /// No description provided for @vendorRejectHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Mark as invalid / duplicate'**
+  String get vendorRejectHint;
+
+  /// No description provided for @vendorVerified.
+  ///
+  /// In en, this message translates to:
+  /// **'Vendor verified'**
+  String get vendorVerified;
+
+  /// No description provided for @vendorRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Vendor rejected'**
+  String get vendorRejected;
+
+  /// No description provided for @vendorActionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Action failed'**
+  String get vendorActionFailed;
+
+  /// No description provided for @vendorSyncFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'ERP sync failed: {error}'**
+  String vendorSyncFailed(String error);
+
+  /// No description provided for @exceptionsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Exceptions'**
+  String get exceptionsTitle;
+
+  /// No description provided for @exceptionsFilterOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Open'**
+  String get exceptionsFilterOpen;
+
+  /// No description provided for @exceptionsFilterEscalated.
+  ///
+  /// In en, this message translates to:
+  /// **'Escalated'**
+  String get exceptionsFilterEscalated;
+
+  /// No description provided for @exceptionsFilterResolved.
+  ///
+  /// In en, this message translates to:
+  /// **'Resolved'**
+  String get exceptionsFilterResolved;
+
+  /// No description provided for @exceptionsFilterDismissed.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismissed'**
+  String get exceptionsFilterDismissed;
+
+  /// No description provided for @exceptionsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No exceptions'**
+  String get exceptionsEmpty;
+
+  /// No description provided for @exceptionsQueueClear.
+  ///
+  /// In en, this message translates to:
+  /// **'The exception queue is clear'**
+  String get exceptionsQueueClear;
+
+  /// No description provided for @exceptionActionResolve.
+  ///
+  /// In en, this message translates to:
+  /// **'Resolve'**
+  String get exceptionActionResolve;
+
+  /// No description provided for @exceptionActionEscalate.
+  ///
+  /// In en, this message translates to:
+  /// **'Escalate'**
+  String get exceptionActionEscalate;
+
+  /// No description provided for @exceptionActionDismiss.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismiss'**
+  String get exceptionActionDismiss;
+
+  /// No description provided for @exceptionResolved.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception resolved'**
+  String get exceptionResolved;
+
+  /// No description provided for @exceptionEscalated.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception escalated'**
+  String get exceptionEscalated;
+
+  /// No description provided for @exceptionDismissed.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception dismissed'**
+  String get exceptionDismissed;
+
+  /// No description provided for @exceptionActionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Action failed'**
+  String get exceptionActionFailed;
+
+  /// No description provided for @paymentsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Payments'**
+  String get paymentsTitle;
+
+  /// No description provided for @paymentsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No payments'**
+  String get paymentsEmpty;
+
+  /// No description provided for @paymentsErrorPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Error: {error}'**
+  String paymentsErrorPrefix(String error);
+
+  /// No description provided for @paymentStatusPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get paymentStatusPending;
+
+  /// No description provided for @paymentStatusProcessing.
+  ///
+  /// In en, this message translates to:
+  /// **'Processing'**
+  String get paymentStatusProcessing;
+
+  /// No description provided for @paymentStatusCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed'**
+  String get paymentStatusCompleted;
+
+  /// No description provided for @paymentStatusFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get paymentStatusFailed;
+
+  /// No description provided for @paymentStatusCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get paymentStatusCancelled;
 }
 
 class _AppLocalizationsDelegate

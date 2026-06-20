@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/payment.dart';
 
 final _currencyFormat = NumberFormat.currency(symbol: '\$');
@@ -42,16 +43,17 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Payments')),
+      appBar: AppBar(title: Text(l.paymentsTitle)),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(child: Text('Error: $_error'))
+              ? Center(child: Text(l.paymentsErrorPrefix(_error!)))
               : RefreshIndicator(
                   onRefresh: _load,
                   child: _payments.isEmpty
-                      ? const Center(child: Text('No payments'))
+                      ? Center(child: Text(l.paymentsEmpty))
                       : ListView.separated(
                           itemCount: _payments.length,
                           separatorBuilder: (_, _) =>
@@ -65,7 +67,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                               label:
                                   '${_currencyFormat.format(p.amount)}, '
                                   '${p.method.label}, $reference, '
-                                  '${_statusLabel(p.status)}',
+                                  '${_statusLabel(l, p.status)}',
                               excludeSemantics: true,
                               child: ListTile(
                                 leading: _methodIcon(p.method),
@@ -78,7 +80,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                 subtitle: Text(
                                   '${p.method.label} • $reference',
                                 ),
-                                trailing: _statusChip(p.status),
+                                trailing: _statusChip(l, p.status),
                               ),
                             );
                           },
@@ -100,15 +102,16 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     );
   }
 
-  String _statusLabel(PaymentStatus status) => switch (status) {
-        PaymentStatus.pending => 'Pending',
-        PaymentStatus.processing => 'Processing',
-        PaymentStatus.completed => 'Completed',
-        PaymentStatus.failed => 'Failed',
-        PaymentStatus.cancelled => 'Cancelled',
+  String _statusLabel(AppLocalizations l, PaymentStatus status) =>
+      switch (status) {
+        PaymentStatus.pending => l.paymentStatusPending,
+        PaymentStatus.processing => l.paymentStatusProcessing,
+        PaymentStatus.completed => l.paymentStatusCompleted,
+        PaymentStatus.failed => l.paymentStatusFailed,
+        PaymentStatus.cancelled => l.paymentStatusCancelled,
       };
 
-  Widget _statusChip(PaymentStatus status) {
+  Widget _statusChip(AppLocalizations l, PaymentStatus status) {
     // Tint drives the background/border; text uses a darkened variant so the
     // 12px bold label clears AA contrast (≥4.5:1) over the pale tint
     // (WCAG 1.4.3). Orange can't reach 4.5:1 as a true orange, so `pending`
@@ -127,7 +130,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
-        _statusLabel(status),
+        _statusLabel(l, status),
         style: TextStyle(
           color: textColor,
           fontSize: 12,

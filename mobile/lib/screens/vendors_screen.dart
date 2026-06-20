@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/vendor.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/vendor_store.dart';
@@ -40,16 +41,17 @@ class _VendorsScreenState extends State<VendorsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Vendors'),
+        title: Text(l.vendorsTitle),
         actions: [
           if (_canManage)
             Semantics(
-              label: 'Sync vendors from ERP',
+              label: l.vendorsSyncErpLabel,
               button: true,
               child: IconButton(
-                tooltip: 'Sync from ERP',
+                tooltip: l.vendorsSyncErp,
                 icon: _syncing
                     ? const SizedBox(
                         width: 20,
@@ -67,7 +69,7 @@ class _VendorsScreenState extends State<VendorsScreen> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: SearchBar(
               controller: _searchController,
-              hintText: 'Search vendors...',
+              hintText: l.vendorsSearchHint,
               leading: const Icon(Icons.search, size: 20),
               onChanged: (q) =>
                   VendorStore.instance.setSearch(q.isEmpty ? null : q),
@@ -88,11 +90,11 @@ class _VendorsScreenState extends State<VendorsScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   children: [
-                    _filterChip('All', null, current),
-                    _filterChip('Unverified', 'unverified', current),
-                    _filterChip('Active', 'active', current),
-                    _filterChip('Inactive', 'inactive', current),
-                    _filterChip('Rejected', 'rejected', current),
+                    _filterChip(l.commonAll, null, current),
+                    _filterChip(l.vendorsFilterUnverified, 'unverified', current),
+                    _filterChip(l.vendorsFilterActive, 'active', current),
+                    _filterChip(l.vendorsFilterInactive, 'inactive', current),
+                    _filterChip(l.vendorsFilterRejected, 'rejected', current),
                   ],
                 );
               },
@@ -116,7 +118,7 @@ class _VendorsScreenState extends State<VendorsScreen> {
                 }
 
                 if (store.vendors.isEmpty) {
-                  return const Center(child: Text('No vendors found'));
+                  return Center(child: Text(l.vendorsEmpty));
                 }
 
                 return RefreshIndicator(
@@ -138,6 +140,7 @@ class _VendorsScreenState extends State<VendorsScreen> {
   }
 
   Widget _buildRow(Vendor vendor) {
+    final l = AppLocalizations.of(context);
     final tile = VendorListTile(
       vendor: vendor,
       onTap: _canManage && vendor.status.isUnverified
@@ -157,13 +160,13 @@ class _VendorsScreenState extends State<VendorsScreen> {
         Colors.green.shade700,
         Icons.check,
         Alignment.centerLeft,
-        'Verify',
+        l.vendorActionVerify,
       ),
       secondaryBackground: _swipeBackground(
         Colors.red.shade700,
         Icons.block,
         Alignment.centerRight,
-        'Reject',
+        l.vendorActionReject,
       ),
       confirmDismiss: (direction) async {
         final verify = direction == DismissDirection.startToEnd;
@@ -174,8 +177,8 @@ class _VendorsScreenState extends State<VendorsScreen> {
           A11y.announce(
             context,
             ok
-                ? (verify ? 'Vendor verified' : 'Vendor rejected')
-                : 'Action failed',
+                ? (verify ? l.vendorVerified : l.vendorRejected)
+                : l.vendorActionFailed,
           );
         }
         // The list refetches on success, so consume the dismiss (return false)
@@ -212,6 +215,7 @@ class _VendorsScreenState extends State<VendorsScreen> {
   }
 
   void _showActions(Vendor vendor) {
+    final l = AppLocalizations.of(context);
     showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) {
@@ -224,19 +228,19 @@ class _VendorsScreenState extends State<VendorsScreen> {
                   vendor.name,
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
-                subtitle: const Text('Unverified vendor'),
+                subtitle: Text(l.vendorUnverifiedLabel),
               ),
               const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.check, color: Colors.green),
-                title: const Text('Verify'),
-                subtitle: const Text('Make eligible for payment'),
+                title: Text(l.vendorActionVerify),
+                subtitle: Text(l.vendorVerifyHint),
                 onTap: () => _runAction(sheetContext, vendor, verify: true),
               ),
               ListTile(
                 leading: Icon(Icons.block, color: Colors.red.shade700),
-                title: const Text('Reject'),
-                subtitle: const Text('Mark as invalid / duplicate'),
+                title: Text(l.vendorActionReject),
+                subtitle: Text(l.vendorRejectHint),
                 onTap: () => _runAction(sheetContext, vendor, verify: false),
               ),
             ],
@@ -252,21 +256,26 @@ class _VendorsScreenState extends State<VendorsScreen> {
     required bool verify,
   }) async {
     Navigator.of(sheetContext).pop();
+    final l = AppLocalizations.of(context);
     final store = VendorStore.instance;
     final ok = verify ? await store.verify(vendor.id) : await store.reject(vendor.id);
     if (!mounted) return;
     A11y.announce(
       context,
-      ok ? (verify ? 'Vendor verified' : 'Vendor rejected') : 'Action failed',
+      ok
+          ? (verify ? l.vendorVerified : l.vendorRejected)
+          : l.vendorActionFailed,
     );
   }
 
   Future<void> _syncErp() async {
+    final l = AppLocalizations.of(context);
     setState(() => _syncing = true);
     final message = await VendorStore.instance.syncErp();
     if (!mounted) return;
     setState(() => _syncing = false);
-    final text = message ?? 'ERP sync failed: ${VendorStore.instance.error}';
+    final text =
+        message ?? l.vendorSyncFailed(VendorStore.instance.error ?? '');
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     A11y.announce(context, text);
   }
@@ -292,15 +301,16 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
           const SizedBox(height: 12),
-          const Text('Could not load vendors'),
+          Text(l.vendorsLoadError),
           const SizedBox(height: 12),
-          FilledButton(onPressed: onRetry, child: const Text('Retry')),
+          FilledButton(onPressed: onRetry, child: Text(l.commonRetry)),
         ],
       ),
     );

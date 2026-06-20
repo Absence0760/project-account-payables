@@ -209,4 +209,168 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get invoicesColStatus => 'Status';
+
+  @override
+  String get notificationsTitle => 'Benachrichtigungen';
+
+  @override
+  String get notificationsMarkAllRead => 'Alle als gelesen markieren';
+
+  @override
+  String get notificationsMarkAllReadLabel =>
+      'Alle Benachrichtigungen als gelesen markieren';
+
+  @override
+  String get notificationsFilterUnread => 'Ungelesen';
+
+  @override
+  String get notificationsAllMarkedRead =>
+      'Alle Benachrichtigungen als gelesen markiert';
+
+  @override
+  String get notificationsCouldNotMarkAll =>
+      'Konnte nicht alle als gelesen markieren';
+
+  @override
+  String get notificationsEmptyUnread => 'Keine ungelesenen Benachrichtigungen';
+
+  @override
+  String get notificationsEmpty => 'Keine Benachrichtigungen';
+
+  @override
+  String get notificationsCaughtUp => 'Sie sind auf dem neuesten Stand';
+
+  @override
+  String get notificationsNothingYet => 'Hier ist noch nichts';
+
+  @override
+  String get notificationsLoadError =>
+      'Benachrichtigungen konnten nicht geladen werden';
+
+  @override
+  String get vendorsTitle => 'Lieferanten';
+
+  @override
+  String get vendorsSyncErp => 'Aus ERP synchronisieren';
+
+  @override
+  String get vendorsSyncErpLabel => 'Lieferanten aus ERP synchronisieren';
+
+  @override
+  String get vendorsSearchHint => 'Lieferanten suchen …';
+
+  @override
+  String get vendorsFilterUnverified => 'Ungeprüft';
+
+  @override
+  String get vendorsFilterActive => 'Aktiv';
+
+  @override
+  String get vendorsFilterInactive => 'Inaktiv';
+
+  @override
+  String get vendorsFilterRejected => 'Abgelehnt';
+
+  @override
+  String get vendorsEmpty => 'Keine Lieferanten gefunden';
+
+  @override
+  String get vendorsLoadError => 'Lieferanten konnten nicht geladen werden';
+
+  @override
+  String get vendorActionVerify => 'Bestätigen';
+
+  @override
+  String get vendorActionReject => 'Ablehnen';
+
+  @override
+  String get vendorUnverifiedLabel => 'Ungeprüfter Lieferant';
+
+  @override
+  String get vendorVerifyHint => 'Für Zahlung freigeben';
+
+  @override
+  String get vendorRejectHint => 'Als ungültig / Dublette markieren';
+
+  @override
+  String get vendorVerified => 'Lieferant bestätigt';
+
+  @override
+  String get vendorRejected => 'Lieferant abgelehnt';
+
+  @override
+  String get vendorActionFailed => 'Aktion fehlgeschlagen';
+
+  @override
+  String vendorSyncFailed(String error) {
+    return 'ERP-Synchronisierung fehlgeschlagen: $error';
+  }
+
+  @override
+  String get exceptionsTitle => 'Ausnahmen';
+
+  @override
+  String get exceptionsFilterOpen => 'Offen';
+
+  @override
+  String get exceptionsFilterEscalated => 'Eskaliert';
+
+  @override
+  String get exceptionsFilterResolved => 'Gelöst';
+
+  @override
+  String get exceptionsFilterDismissed => 'Verworfen';
+
+  @override
+  String get exceptionsEmpty => 'Keine Ausnahmen';
+
+  @override
+  String get exceptionsQueueClear => 'Die Ausnahmewarteschlange ist leer';
+
+  @override
+  String get exceptionActionResolve => 'Lösen';
+
+  @override
+  String get exceptionActionEscalate => 'Eskalieren';
+
+  @override
+  String get exceptionActionDismiss => 'Verwerfen';
+
+  @override
+  String get exceptionResolved => 'Ausnahme gelöst';
+
+  @override
+  String get exceptionEscalated => 'Ausnahme eskaliert';
+
+  @override
+  String get exceptionDismissed => 'Ausnahme verworfen';
+
+  @override
+  String get exceptionActionFailed => 'Aktion fehlgeschlagen';
+
+  @override
+  String get paymentsTitle => 'Zahlungen';
+
+  @override
+  String get paymentsEmpty => 'Keine Zahlungen';
+
+  @override
+  String paymentsErrorPrefix(String error) {
+    return 'Fehler: $error';
+  }
+
+  @override
+  String get paymentStatusPending => 'Ausstehend';
+
+  @override
+  String get paymentStatusProcessing => 'In Bearbeitung';
+
+  @override
+  String get paymentStatusCompleted => 'Abgeschlossen';
+
+  @override
+  String get paymentStatusFailed => 'Fehlgeschlagen';
+
+  @override
+  String get paymentStatusCancelled => 'Storniert';
 }

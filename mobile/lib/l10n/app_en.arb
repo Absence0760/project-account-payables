@@ -77,5 +77,71 @@
   "invoicesColVendor": "Vendor",
   "invoicesColAmount": "Amount",
   "invoicesColDueDate": "Due Date",
-  "invoicesColStatus": "Status"
+  "invoicesColStatus": "Status",
+
+  "notificationsTitle": "Notifications",
+  "notificationsMarkAllRead": "Mark all read",
+  "notificationsMarkAllReadLabel": "Mark all notifications read",
+  "notificationsFilterUnread": "Unread",
+  "notificationsAllMarkedRead": "All notifications marked read",
+  "notificationsCouldNotMarkAll": "Could not mark all read",
+  "notificationsEmptyUnread": "No unread notifications",
+  "notificationsEmpty": "No notifications",
+  "notificationsCaughtUp": "You're all caught up",
+  "notificationsNothingYet": "Nothing here yet",
+  "notificationsLoadError": "Couldn't load notifications",
+
+  "vendorsTitle": "Vendors",
+  "vendorsSyncErp": "Sync from ERP",
+  "vendorsSyncErpLabel": "Sync vendors from ERP",
+  "vendorsSearchHint": "Search vendors...",
+  "vendorsFilterUnverified": "Unverified",
+  "vendorsFilterActive": "Active",
+  "vendorsFilterInactive": "Inactive",
+  "vendorsFilterRejected": "Rejected",
+  "vendorsEmpty": "No vendors found",
+  "vendorsLoadError": "Could not load vendors",
+  "vendorActionVerify": "Verify",
+  "vendorActionReject": "Reject",
+  "vendorUnverifiedLabel": "Unverified vendor",
+  "vendorVerifyHint": "Make eligible for payment",
+  "vendorRejectHint": "Mark as invalid / duplicate",
+  "vendorVerified": "Vendor verified",
+  "vendorRejected": "Vendor rejected",
+  "vendorActionFailed": "Action failed",
+  "vendorSyncFailed": "ERP sync failed: {error}",
+  "@vendorSyncFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+
+  "exceptionsTitle": "Exceptions",
+  "exceptionsFilterOpen": "Open",
+  "exceptionsFilterEscalated": "Escalated",
+  "exceptionsFilterResolved": "Resolved",
+  "exceptionsFilterDismissed": "Dismissed",
+  "exceptionsEmpty": "No exceptions",
+  "exceptionsQueueClear": "The exception queue is clear",
+  "exceptionActionResolve": "Resolve",
+  "exceptionActionEscalate": "Escalate",
+  "exceptionActionDismiss": "Dismiss",
+  "exceptionResolved": "Exception resolved",
+  "exceptionEscalated": "Exception escalated",
+  "exceptionDismissed": "Exception dismissed",
+  "exceptionActionFailed": "Action failed",
+
+  "paymentsTitle": "Payments",
+  "paymentsEmpty": "No payments",
+  "paymentsErrorPrefix": "Error: {error}",
+  "@paymentsErrorPrefix": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "paymentStatusPending": "Pending",
+  "paymentStatusProcessing": "Processing",
+  "paymentStatusCompleted": "Completed",
+  "paymentStatusFailed": "Failed",
+  "paymentStatusCancelled": "Cancelled"
 }

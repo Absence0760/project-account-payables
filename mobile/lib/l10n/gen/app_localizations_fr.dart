@@ -209,4 +209,170 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get invoicesColStatus => 'Statut';
+
+  @override
+  String get notificationsTitle => 'Notifications';
+
+  @override
+  String get notificationsMarkAllRead => 'Tout marquer comme lu';
+
+  @override
+  String get notificationsMarkAllReadLabel =>
+      'Marquer toutes les notifications comme lues';
+
+  @override
+  String get notificationsFilterUnread => 'Non lues';
+
+  @override
+  String get notificationsAllMarkedRead =>
+      'Toutes les notifications marquées comme lues';
+
+  @override
+  String get notificationsCouldNotMarkAll =>
+      'Impossible de tout marquer comme lu';
+
+  @override
+  String get notificationsEmptyUnread => 'Aucune notification non lue';
+
+  @override
+  String get notificationsEmpty => 'Aucune notification';
+
+  @override
+  String get notificationsCaughtUp => 'Vous êtes à jour';
+
+  @override
+  String get notificationsNothingYet => 'Rien pour le moment';
+
+  @override
+  String get notificationsLoadError =>
+      'Impossible de charger les notifications';
+
+  @override
+  String get vendorsTitle => 'Fournisseurs';
+
+  @override
+  String get vendorsSyncErp => 'Synchroniser depuis l\'ERP';
+
+  @override
+  String get vendorsSyncErpLabel =>
+      'Synchroniser les fournisseurs depuis l\'ERP';
+
+  @override
+  String get vendorsSearchHint => 'Rechercher des fournisseurs…';
+
+  @override
+  String get vendorsFilterUnverified => 'Non vérifiés';
+
+  @override
+  String get vendorsFilterActive => 'Actifs';
+
+  @override
+  String get vendorsFilterInactive => 'Inactifs';
+
+  @override
+  String get vendorsFilterRejected => 'Rejetés';
+
+  @override
+  String get vendorsEmpty => 'Aucun fournisseur trouvé';
+
+  @override
+  String get vendorsLoadError => 'Impossible de charger les fournisseurs';
+
+  @override
+  String get vendorActionVerify => 'Vérifier';
+
+  @override
+  String get vendorActionReject => 'Rejeter';
+
+  @override
+  String get vendorUnverifiedLabel => 'Fournisseur non vérifié';
+
+  @override
+  String get vendorVerifyHint => 'Rendre éligible au paiement';
+
+  @override
+  String get vendorRejectHint => 'Marquer comme non valide / en double';
+
+  @override
+  String get vendorVerified => 'Fournisseur vérifié';
+
+  @override
+  String get vendorRejected => 'Fournisseur rejeté';
+
+  @override
+  String get vendorActionFailed => 'Échec de l\'action';
+
+  @override
+  String vendorSyncFailed(String error) {
+    return 'Échec de la synchronisation ERP : $error';
+  }
+
+  @override
+  String get exceptionsTitle => 'Exceptions';
+
+  @override
+  String get exceptionsFilterOpen => 'Ouvertes';
+
+  @override
+  String get exceptionsFilterEscalated => 'Escaladées';
+
+  @override
+  String get exceptionsFilterResolved => 'Résolues';
+
+  @override
+  String get exceptionsFilterDismissed => 'Ignorées';
+
+  @override
+  String get exceptionsEmpty => 'Aucune exception';
+
+  @override
+  String get exceptionsQueueClear =>
+      'La file d\'attente des exceptions est vide';
+
+  @override
+  String get exceptionActionResolve => 'Résoudre';
+
+  @override
+  String get exceptionActionEscalate => 'Escalader';
+
+  @override
+  String get exceptionActionDismiss => 'Ignorer';
+
+  @override
+  String get exceptionResolved => 'Exception résolue';
+
+  @override
+  String get exceptionEscalated => 'Exception escaladée';
+
+  @override
+  String get exceptionDismissed => 'Exception ignorée';
+
+  @override
+  String get exceptionActionFailed => 'Échec de l\'action';
+
+  @override
+  String get paymentsTitle => 'Paiements';
+
+  @override
+  String get paymentsEmpty => 'Aucun paiement';
+
+  @override
+  String paymentsErrorPrefix(String error) {
+    return 'Erreur : $error';
+  }
+
+  @override
+  String get paymentStatusPending => 'En attente';
+
+  @override
+  String get paymentStatusProcessing => 'En cours';
+
+  @override
+  String get paymentStatusCompleted => 'Terminé';
+
+  @override
+  String get paymentStatusFailed => 'Échoué';
+
+  @override
+  String get paymentStatusCancelled => 'Annulé';
 }
