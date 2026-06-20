@@ -2,14 +2,15 @@
 
 Advisory enrichment derived **deterministically** from each tenant's *own*
 historical invoice data. No external calls, no cloud key — runs on a laptop
-with `pnpm dev` and the mock adapters (local-first invariant). Three surfaces,
-two read-only endpoints, all suggestion-only / compute-on-read.
+with `pnpm dev` and the mock adapters (local-first invariant). Four surfaces,
+three read-only endpoints, all suggestion-only / compute-on-read.
 
 | Surface | What it does | Persists? |
 |---|---|---|
 | **Auto-fill** | Suggests the dominant historical `gl_account` / `cost_center` / `payment_terms` for a draft invoice's vendor | No — advisory |
 | **Price variance** | Flags draft line items whose unit price deviates from the vendor's per-item historical median | No — returned inline |
 | **Vendor scoring** | Accuracy + dispute (+ optional on-time) sub-scores → renormalized composite | No — compute-on-read |
+| **Vendor consolidation** | Clusters likely-duplicate / similar vendors so the master list can be deduped | No — advisory, never merges |
 
 Pure statistics live in `app/services/vendor_enrichment.py` (sync, DB-free,
 unit-testable); the SQL + response shaping live in `app/api/enrichment.py`. All
@@ -136,9 +137,62 @@ dashboard needs to *sort many vendors by score*, that is the trigger to add a
 cached `vendor_scores` column/table (deferred) behind a refresh writer — reusing
 the pure scorer unchanged.
 
+## Vendor consolidation (duplicate / similar vendor clusters)
+
+`find_consolidation_clusters(vendors) -> (list[VendorCluster], truncated)` in
+`app/services/vendor_consolidation.py`. Pure, sync, DB-free — the API layer
+(`app/api/enrichment.py`) pulls a lightweight vendor projection + per-vendor
+invoice counts and hands them in as `VendorRecord`s.
+
+Identifies CLUSTERS of likely-duplicate vendors so a steward can dedupe the
+master list. **Advisory only** — it suggests a canonical/primary candidate per
+cluster but NEVER merges or mutates anything (that auto-merge is a deferred
+follow-up below).
+
+### Evidence + clustering
+
+- Reuses the fuzzy primitives from **`services/vendor_matching.py`** (`_normalize`
+  — drops `Inc`/`LLC`/`Ltd`/… suffixes + punctuation; `_similarity` — Jaccard
+  token overlap, 0..1), not a reinvented matcher. So `"Acme Supplies Inc."` and
+  `"Acme Supplies, LLC"` normalize to the same token bag and cluster.
+- A pair clusters on **any** of (strongest first): same normalized `tax_id`
+  (score `1.0`, definitive), same normalized `code` (score `0.95`), or fuzzy
+  name similarity `>= NAME_SIMILARITY_THRESHOLD` (default `0.6`; score = the
+  similarity). A tax-id / code match clusters **regardless of name** — a typo'd
+  name is exactly the duplicate we want to catch.
+- Clustering is **transitive** (union-find): A~B by tax id and B~C by code put
+  all three in one cluster even if A and C share no direct evidence — they're
+  the same vendor seen three ways.
+- Only `active` / `unverified` vendors are scanned — consolidating the *live*
+  master list is the point; `inactive` / `rejected` rows are already handled.
+
+### Canonical pick (deterministic)
+
+Per cluster: **most invoice volume** wins; tie → **oldest** (lowest `age_rank`,
+the caller's `created_at asc` row index); final tie → lowest id (stable). The
+canonical member sorts first in `members`; the rest follow by invoice volume
+desc. Two runs over the same data return byte-identical output.
+
+### Performance bound (no silent O(n²))
+
+Vendors are first partitioned into **blocks** by a cheap key — exact normalized
+`tax_id`, exact normalized `code`, and the normalized name's **first token** —
+and the quadratic fuzzy comparison runs only *within* a block. Two vendors are
+compared only if they already share one of those keys, collapsing the worst case
+from N² to Σ(block size)². A hard `MAX_VENDORS` (5000) backstop skips clustering
+entirely above the cap (`truncated=true`, no clusters); `MAX_CLUSTERS` (200)
+caps the emitted clusters (strongest first, tail dropped → `truncated=true`).
+
+### PII
+
+A vendor's full `tax_id` never leaves the service or enters a response / log.
+The clustering hashes the **normalized** tax id internally to bucket and to
+decide "same tax id", but only a masked `***<last4>` (`mask_tax_id`) is emitted
+on each member.
+
 ## Endpoints
 
-Both are auth + RBAC gated and tenant-scoped (`get_tenant_db` + entity scope).
+All three are auth + RBAC gated and tenant-scoped (`get_tenant_db` + entity scope).
 
 ### `GET /api/enrichment/invoices/{invoice_id}/suggestions`
 Roles: `admin`, `ap_manager`, `ap_clerk`, `cfo` (clerks review drafts).
@@ -180,6 +234,35 @@ Roles: `admin`, `ap_manager`, `cfo` (managerial — clerk excluded).
 }
 ```
 
+### `GET /api/enrichment/vendors/consolidation-suggestions`
+Roles: `admin`, `ap_manager`, `cfo` (managerial data-stewardship view — clerk
+excluded). No path params — scans the whole (entity-scoped) vendor book.
+
+```json
+{
+  "clusters": [
+    {
+      "cluster_id": 1,
+      "canonical_vendor_id": "…",
+      "score": "1.00",
+      "reasons": ["names 0.93 similar", "same tax id"],
+      "members": [
+        {"vendor_id": "…", "name": "Acme Supplies Inc.", "code": "ACME",
+         "tax_id_masked": "***6789", "status": "active",
+         "invoice_count": 12, "is_canonical": true},
+        {"vendor_id": "…", "name": "Acme Supplies, LLC", "code": null,
+         "tax_id_masked": "***6789", "status": "unverified",
+         "invoice_count": 3, "is_canonical": false}
+      ]
+    }
+  ],
+  "vendor_count": 140,
+  "cluster_count": 1,
+  "truncated": false,
+  "generated_at": "2026-06-19T…Z"
+}
+```
+
 ## Config (org settings, all safe defaults — no key required)
 
 Optional overrides under `Organization.settings.enrichment` (merge-over-defaults;
@@ -203,6 +286,10 @@ unknown keys dropped, numeric coercion guarded — like `_adaptive_settings`):
 - **Cached `vendor_scores` table** for multi-vendor sorting (trigger: a
   sort-by-score dashboard); reuses the pure scorer behind a refresh writer.
 - **External enrichment** (D&B / Clearbit) — out of scope, violates local-first.
-- **Vendor consolidation / dedup** — basis is `services/vendor_matching.py`.
+- **Auto-merge of a consolidation cluster** — the consolidation endpoint is
+  advisory (suggests a canonical candidate, never mutates). An actual merge
+  (re-point invoices/POs/payments to the canonical vendor, retire the
+  duplicates, write an audit row, idempotent) is a heavier *write* path —
+  deferred. Trigger: a "Merge into canonical" action in the UI.
 - **Amount-deviation flagging** already shipped in
   `adaptive_workflows.detect_invoice_anomaly` — intentionally **not** duplicated.

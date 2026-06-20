@@ -758,6 +758,268 @@ async def test_score_accuracy_dedupes_multi_approval_invoice(realdb):
     assert "1 of 2" in acc["detail"]
 
 
+# ---------------------------------------------------------------------------
+# Vendor consolidation — pure clustering (no DB)
+# ---------------------------------------------------------------------------
+
+
+def _vrec(vid, name, *, code=None, tax_id=None, status="active", invoice_count=0, age_rank=0):
+    from app.services.vendor_consolidation import VendorRecord
+
+    return VendorRecord(
+        id=vid,
+        name=name,
+        code=code,
+        tax_id=tax_id,
+        status=status,
+        invoice_count=invoice_count,
+        age_rank=age_rank,
+    )
+
+
+def test_consolidation_same_tax_id_clusters():
+    from app.services.vendor_consolidation import find_consolidation_clusters
+
+    vendors = [
+        _vrec("v1", "Acme Industrial Inc", tax_id="12-3456789", invoice_count=10),
+        _vrec("v2", "Totally Different Name LLC", tax_id="123456789", invoice_count=2),
+        _vrec("v3", "Unrelated Co", tax_id="99-9999999", invoice_count=1),
+    ]
+    clusters, truncated = find_consolidation_clusters(vendors)
+    assert truncated is False
+    assert len(clusters) == 1
+    c = clusters[0]
+    assert {m.vendor_id for m in c.members} == {"v1", "v2"}
+    assert "same tax id" in c.reasons
+    assert c.score == Decimal("1.00")
+
+
+def test_consolidation_near_identical_names_cluster():
+    from app.services.vendor_consolidation import find_consolidation_clusters
+
+    vendors = [
+        _vrec("v1", "Acme Supplies Inc.", invoice_count=5),
+        _vrec("v2", "Acme Supplies, LLC", invoice_count=3),
+        _vrec("v3", "Globex Corporation", invoice_count=1),
+    ]
+    clusters, _ = find_consolidation_clusters(vendors)
+    assert len(clusters) == 1
+    c = clusters[0]
+    assert {m.vendor_id for m in c.members} == {"v1", "v2"}
+    assert any(r.startswith("names ") for r in c.reasons)
+
+
+def test_consolidation_distinct_vendors_no_cluster():
+    from app.services.vendor_consolidation import find_consolidation_clusters
+
+    vendors = [
+        _vrec("v1", "Acme Supplies", tax_id="11-1111111", code="ACME"),
+        _vrec("v2", "Globex Corporation", tax_id="22-2222222", code="GLBX"),
+        _vrec("v3", "Initech Systems", tax_id="33-3333333", code="INIT"),
+    ]
+    clusters, truncated = find_consolidation_clusters(vendors)
+    assert clusters == []
+    assert truncated is False
+
+
+def test_consolidation_canonical_is_highest_invoice_volume_deterministic():
+    from app.services.vendor_consolidation import find_consolidation_clusters
+
+    # v2 has the most invoices → canonical. Run twice → identical result.
+    vendors = [
+        _vrec("v1", "Acme Inc", tax_id="55-5555555", invoice_count=3, age_rank=0),
+        _vrec("v2", "Acme LLC", tax_id="555555555", invoice_count=20, age_rank=1),
+        _vrec("v3", "Acme Co", tax_id="5555-55555", invoice_count=1, age_rank=2),
+    ]
+    c1, _ = find_consolidation_clusters(vendors)
+    c2, _ = find_consolidation_clusters(vendors)
+    assert c1[0].canonical_vendor_id == "v2"
+    assert c1[0].members[0].is_canonical is True
+    assert c1[0].members[0].vendor_id == "v2"  # canonical sorts first
+    assert [m.vendor_id for m in c1[0].members] == [m.vendor_id for m in c2[0].members]
+
+
+def test_consolidation_canonical_tie_breaks_to_oldest():
+    from app.services.vendor_consolidation import find_consolidation_clusters
+
+    # Equal invoice volume → oldest (lowest age_rank) wins.
+    vendors = [
+        _vrec("vYoung", "Acme Inc", tax_id="77-7777777", invoice_count=4, age_rank=5),
+        _vrec("vOld", "Acme LLC", tax_id="777777777", invoice_count=4, age_rank=0),
+    ]
+    clusters, _ = find_consolidation_clusters(vendors)
+    assert clusters[0].canonical_vendor_id == "vOld"
+
+
+def test_consolidation_tax_id_masked_never_full():
+    from app.services.vendor_consolidation import (
+        find_consolidation_clusters,
+        mask_tax_id,
+    )
+
+    assert mask_tax_id("12-3456789") == "***6789"
+    assert mask_tax_id("ab") == "***"
+    assert mask_tax_id(None) is None
+
+    vendors = [
+        _vrec("v1", "Acme Inc", tax_id="12-3456789", invoice_count=2),
+        _vrec("v2", "Acme LLC", tax_id="123456789", invoice_count=1),
+    ]
+    clusters, _ = find_consolidation_clusters(vendors)
+    for m in clusters[0].members:
+        assert m.tax_id_masked == "***6789"
+    # The raw / normalized tax id never appears anywhere in the cluster repr.
+    assert "123456789" not in repr(clusters[0])
+    assert "12-3456789" not in repr(clusters[0])
+
+
+def test_consolidation_transitive_clustering():
+    from app.services.vendor_consolidation import find_consolidation_clusters
+
+    # A~B by tax id, B~C by code → all three in one cluster even though A and C
+    # share no direct evidence.
+    vendors = [
+        _vrec("A", "Acme Supplies", tax_id="88-8888888", invoice_count=1),
+        _vrec("B", "Acme Supplies", tax_id="888888888", code="SHARED", invoice_count=2),
+        _vrec("C", "Wildly Different Name", code="SHARED", invoice_count=1),
+    ]
+    clusters, _ = find_consolidation_clusters(vendors)
+    assert len(clusters) == 1
+    assert {m.vendor_id for m in clusters[0].members} == {"A", "B", "C"}
+
+
+# ---------------------------------------------------------------------------
+# Vendor consolidation — real-DB / API
+# ---------------------------------------------------------------------------
+
+
+async def test_consolidation_endpoint_clusters_duplicates(realdb):
+    from app.models.vendor import Vendor
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    async with mk() as s:
+        s.add_all(
+            [
+                Vendor(
+                    organization_id=org_id,
+                    name="Acme Supplies Inc.",
+                    tax_id="12-3456789",
+                    status="active",
+                ),
+                Vendor(
+                    organization_id=org_id,
+                    name="Acme Supplies LLC",
+                    tax_id="123456789",
+                    status="active",
+                ),
+                Vendor(organization_id=org_id, name="Globex Corporation", status="active"),
+            ]
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get("/api/enrichment/vendors/consolidation-suggestions")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["cluster_count"] == 1
+    assert data["truncated"] is False
+    cluster = data["clusters"][0]
+    assert len(cluster["members"]) == 2
+    assert "same tax id" in cluster["reasons"]
+    # Tax id is masked in the response, never full.
+    for m in cluster["members"]:
+        assert m["tax_id_masked"] == "***6789"
+    assert "123456789" not in r.text
+    assert "3456789" not in r.text.replace("***6789", "")
+
+
+async def test_consolidation_endpoint_canonical_pick(realdb):
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.vendor import Vendor
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    async with mk() as s:
+        v_big = Vendor(
+            organization_id=org_id, name="Beta Co Inc", tax_id="44-4444444", status="active"
+        )
+        v_small = Vendor(
+            organization_id=org_id, name="Beta Co LLC", tax_id="444444444", status="active"
+        )
+        s.add_all([v_big, v_small])
+        await s.commit()
+        await s.refresh(v_big)
+        await s.refresh(v_small)
+        # Give v_big more invoices → it should be canonical.
+        for i in range(3):
+            s.add(
+                Invoice(
+                    organization_id=org_id,
+                    invoice_number=f"BIG-{i}",
+                    vendor_name="Beta Co Inc",
+                    vendor_id=v_big.id,
+                    amount=Decimal("100.00"),
+                    status=InvoiceStatus.approved,
+                )
+            )
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                invoice_number="SMALL-0",
+                vendor_name="Beta Co LLC",
+                vendor_id=v_small.id,
+                amount=Decimal("100.00"),
+                status=InvoiceStatus.approved,
+            )
+        )
+        await s.commit()
+        big_id = str(v_big.id)
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get("/api/enrichment/vendors/consolidation-suggestions")
+    assert r.status_code == 200
+    cluster = r.json()["clusters"][0]
+    assert cluster["canonical_vendor_id"] == big_id
+    canonical = next(m for m in cluster["members"] if m["is_canonical"])
+    assert canonical["vendor_id"] == big_id
+    assert canonical["invoice_count"] == 3
+
+
+async def test_consolidation_endpoint_rbac_clerk_forbidden(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as client:
+        r = await client.get("/api/enrichment/vendors/consolidation-suggestions")
+    assert r.status_code == 403
+
+
+async def test_consolidation_endpoint_auth_required(realdb):
+    async with realdb.client(key="a", role=None) as client:
+        r = await client.get("/api/enrichment/vendors/consolidation-suggestions")
+    assert r.status_code == 401
+
+
+async def test_consolidation_endpoint_tenant_isolation(realdb):
+    """Tenant A's duplicate vendors must not appear when tenant B asks for its
+    own consolidation suggestions."""
+    from app.models.vendor import Vendor
+
+    mk_a = realdb.sessionmaker("a")
+    org_a = realdb.info("a").org_id
+    async with mk_a() as s:
+        s.add_all(
+            [
+                Vendor(organization_id=org_a, name="Dupe One Inc", tax_id="66-6666666"),
+                Vendor(organization_id=org_a, name="Dupe One LLC", tax_id="666666666"),
+            ]
+        )
+        await s.commit()
+
+    async with realdb.client(key="b", role="ap_manager") as client_b:
+        r = await client_b.get("/api/enrichment/vendors/consolidation-suggestions")
+    assert r.status_code == 200
+    assert "Dupe One" not in r.text
+
+
 async def test_score_dispute_subscore_counts_exceptions(realdb):
     """The dispute sub-score reflects real exception rows: a vendor with N
     invoices, M of which raised a vendor-facing exception, scores

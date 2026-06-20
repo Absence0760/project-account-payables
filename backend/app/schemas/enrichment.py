@@ -66,10 +66,44 @@ class VendorScoreResponse(BaseModel):
     computed_at: str
 
 
+# ---------------------------------------------------------------------------
+# Vendor consolidation (duplicate / similar vendor clusters)
+# ---------------------------------------------------------------------------
+
+
+class VendorClusterMemberOut(BaseModel):
+    vendor_id: str
+    name: str
+    code: str | None = None
+    tax_id_masked: str | None = None  # ***6789 — never the full tax id
+    status: str | None = None
+    invoice_count: int
+    is_canonical: bool
+
+
+class VendorClusterOut(BaseModel):
+    cluster_id: int
+    members: list[VendorClusterMemberOut]
+    canonical_vendor_id: str
+    score: str  # 0..1 strongest pairwise evidence, string-Decimal
+    reasons: list[str]
+
+
+class VendorConsolidationResponse(BaseModel):
+    clusters: list[VendorClusterOut]
+    vendor_count: int
+    cluster_count: int
+    truncated: bool  # tenant exceeded the bound, or clusters were capped
+    generated_at: str
+
+
 __all__ = [
     "FieldSuggestionOut",
     "PriceVarianceOut",
     "EnrichmentSuggestionsResponse",
     "SubScoreOut",
     "VendorScoreResponse",
+    "VendorClusterMemberOut",
+    "VendorClusterOut",
+    "VendorConsolidationResponse",
 ]

@@ -42,7 +42,12 @@ from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
 from app.schemas.enrichment import (
     EnrichmentSuggestionsResponse,
+    VendorConsolidationResponse,
     VendorScoreResponse,
+)
+from app.services.vendor_consolidation import (
+    VendorRecord,
+    find_consolidation_clusters,
 )
 from app.services.vendor_enrichment import (
     DISPUTE_EXCEPTION_TYPES,
@@ -60,6 +65,9 @@ router = APIRouter(prefix="/enrichment", tags=["enrichment"])
 # score is a managerial view and excludes the clerk.
 _SUGGEST_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK, ROLE_CFO)
 _SCORE_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
+# Vendor consolidation is a data-stewardship view (deduping the master vendor
+# list) — managerial, like the score; the clerk is excluded.
+_CONSOLIDATION_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 
 # Approved-or-beyond — a human-accepted coding/price baseline. Draft / rejected
 # invoices are unreviewed noise and excluded. Mirrors adaptive_workflows.
@@ -389,4 +397,106 @@ async def vendor_score(
             for s in score.sub_scores
         ],
         computed_at=datetime.now(UTC).isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/enrichment/vendors/consolidation-suggestions
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/vendors/consolidation-suggestions",
+    response_model=VendorConsolidationResponse,
+)
+async def vendor_consolidation_suggestions(
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),  # noqa: ARG001 — tenant chokepoint
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_CONSOLIDATION_ROLES)),
+):
+    """Scan the tenant's vendors and return clusters of likely-duplicate /
+    similar vendors (advisory — never merges or mutates anything).
+
+    Clustering reuses the fuzzy primitives in ``services/vendor_matching`` and
+    groups by exact tax id, exact code, and fuzzy name similarity. A canonical /
+    primary candidate is suggested per cluster (most invoice volume, tie →
+    oldest). Compute-on-read, no migration, no external calls, deterministic.
+
+    The pairwise comparison is bounded by blocking (tax id / code / first name
+    token) — see ``vendor_consolidation`` — so it never runs an unbounded O(n²)
+    over a large vendor book. Full ``tax_id`` is masked to ``***<last4>`` in the
+    response (PII invariant); the raw id never leaves the service.
+    """
+    # Lightweight vendor projection — only the columns the clustering needs. We
+    # exclude vendors already retired (``inactive`` / ``rejected``) — consolidating
+    # the *live* master list is the point; a rejected duplicate is already handled.
+    # Ordered by created_at asc so the row index is a deterministic age rank
+    # (lower = older) for the "oldest wins a tie" canonical pick.
+    vendor_q = apply_entity_scope(
+        select(
+            Vendor.id,
+            Vendor.name,
+            Vendor.code,
+            Vendor.tax_id,
+            Vendor.status,
+        )
+        .where(Vendor.status.in_(("active", "unverified")))
+        .order_by(Vendor.created_at.asc(), Vendor.id.asc()),
+        Vendor,
+        entity_id,
+    )
+    vendor_rows = (await db.execute(vendor_q)).all()
+
+    # Per-vendor invoice counts in one grouped query (cheap; keyed by vendor_id).
+    count_q = apply_entity_scope(
+        select(Invoice.vendor_id, func.count(Invoice.id))
+        .where(Invoice.vendor_id.is_not(None))
+        .group_by(Invoice.vendor_id),
+        Invoice,
+        entity_id,
+    )
+    counts = {vid: int(n) for vid, n in (await db.execute(count_q)).all()}
+
+    records = [
+        VendorRecord(
+            id=str(row.id),
+            name=row.name,
+            code=row.code,
+            tax_id=row.tax_id,
+            status=row.status,
+            invoice_count=counts.get(row.id, 0),
+            age_rank=idx,  # row order is created_at asc → lower = older
+        )
+        for idx, row in enumerate(vendor_rows)
+    ]
+
+    clusters, truncated = find_consolidation_clusters(records)
+
+    return VendorConsolidationResponse(
+        clusters=[
+            {
+                "cluster_id": c.cluster_id,
+                "canonical_vendor_id": c.canonical_vendor_id,
+                "score": str(c.score),
+                "reasons": c.reasons,
+                "members": [
+                    {
+                        "vendor_id": m.vendor_id,
+                        "name": m.name,
+                        "code": m.code,
+                        "tax_id_masked": m.tax_id_masked,
+                        "status": m.status,
+                        "invoice_count": m.invoice_count,
+                        "is_canonical": m.is_canonical,
+                    }
+                    for m in c.members
+                ],
+            }
+            for c in clusters
+        ],
+        vendor_count=len(records),
+        cluster_count=len(clusters),
+        truncated=truncated,
+        generated_at=datetime.now(UTC).isoformat(),
     )
