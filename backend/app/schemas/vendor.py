@@ -67,6 +67,7 @@ class VendorResponse(BaseModel):
     email: str | None
     phone: str | None
     address: str | None
+    website: str | None = None
     tax_id: str | None
     payment_terms: str | None
     accepts_virtual_cards: bool
@@ -116,6 +117,7 @@ class VendorResponse(BaseModel):
             email=v.email,
             phone=v.phone,
             address=v.address,
+            website=getattr(v, "website", None),
             tax_id=v.tax_id,
             payment_terms=v.payment_terms,
             accepts_virtual_cards=v.accepts_virtual_cards,

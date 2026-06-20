@@ -18,6 +18,10 @@ class Vendor(Base, EntityMixin, TimestampMixin):
     email: Mapped[str | None] = mapped_column(String(320))
     phone: Mapped[str | None] = mapped_column(String(50))
     address: Mapped[str | None] = mapped_column(String(500))
+    # Public company website. Nullable; may be populated by an AP steward
+    # applying an external-enrichment suggestion (migration 0061). PII-free
+    # display metadata — safe to log / show. See backend/docs/data-enrichment.md.
+    website: Mapped[str | None] = mapped_column(String(500))
     tax_id: Mapped[str | None] = mapped_column(String(50))
     payment_terms: Mapped[str | None] = mapped_column(String(100))
     bank_details: Mapped[dict | None] = mapped_column(JSONB)
