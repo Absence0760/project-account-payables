@@ -38,6 +38,7 @@ Deep-dive docs live in `backend/docs/`:
 | Audit-log summarization (invoice modal) | `docs/audit-summary.md` |
 | Email + in-app notifications | `docs/notifications.md` |
 | Email approval (approve/reject from the email, no login) | `docs/email-approval.md` |
+| Slack interactive approval (approve/reject from Slack buttons, no login) | `docs/slack-approval.md` |
 | Exception agents (autonomous resolution) | `docs/exception-agents.md` |
 | Adaptive AI workflows | `docs/adaptive-workflows.md` |
 | Data enrichment (auto-fill, price variance, vendor scoring) | `docs/data-enrichment.md` |
@@ -48,6 +49,7 @@ Deep-dive docs live in `backend/docs/`:
 | Retention policies (SOX records management) | `docs/retention.md` |
 | Privacy — GDPR/CCPA DSAR export + right-to-erasure | `docs/privacy.md` |
 | Public Developer API (API keys + `/api/v1`) | `docs/public-api.md` |
+| Platform billing & metering (plans / subscriptions / entitlements) | `docs/billing.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -404,7 +406,7 @@ class AmountMismatchResolver(ExceptionResolver):
     async def apply(self, db, *, exception, invoice, evaluation, actor_id) -> None: ...
 ```
 
-Registry by `exception_type` (`@register_exception_agent`). The `coordinator.run_agent` dispatches by exception type, gates auto-resolve on the org's `autonomy_level` → confidence threshold, and writes an append-only `AgentDecision` row every run; auto-resolves also write the DB-immutable `invoice.approved` audit row via `review.approve_invoice`. Registered: `amount_mismatch_v1` (real — `po_mismatch` amount variance), plus escalate-only stubs for `missing_data`, `duplicate`, `fraud_flag`. Local-first: the optional LLM rationale fails soft to a deterministic template with no key. See `docs/exception-agents.md`.
+Registry by `exception_type` (`@register_exception_agent`). The `coordinator.run_agent` dispatches by exception type, gates auto-resolve on the org's `autonomy_level` → confidence threshold, and writes an append-only `AgentDecision` row every run; auto-resolves also write the DB-immutable `invoice.approved` audit row via `review.approve_invoice`. `po_mismatch` is owned by a single registered **dispatcher** (`resolvers/po_mismatch.py`) that delegates to two real resolvers, disjoint by live match status: `amount_mismatch_v1` (status `matched` — amount variance, snap to PO total + approve) and `missing_po_v1` (status `no_po` — find the real PO by vendor + amount + date, link by `po_number`, approve; never adjusts the amount). Plus escalate-only stubs for `missing_data`, `duplicate`, `fraud_flag`. Local-first: the optional LLM rationale fails soft to a deterministic template with no key. See `docs/exception-agents.md`.
 
 ### PEPPOL adapters (`services/peppol_adapters/`)
 
@@ -454,6 +456,38 @@ parse reused from `e_invoice/_xml`). See `docs/procurement-catalogs.md`.
 | `AP_PUNCHOUT_RETURN_SIGNING_SECRET` | (empty) | HMAC key the supplier signs the cart-return POST with. No hardcoded fallback; committed `.env.development` sets a NON-secret dev value. |
 | `AP_PUNCHOUT_RETURN_MAX_BYTES` | `4194304` | Cart-return body cap (memory-exhaustion guard). |
 
+### Billing adapters (`services/billing_adapters/`)
+
+```python
+@register_billing_adapter("my_provider")
+class MyAdapter(BillingAdapter):
+    async def create_subscription(self, request: CreateSubscriptionRequest) -> ProviderSubscription: ...
+    async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription: ...
+    async def report_usage(self, report: UsageReport) -> None: ...
+    def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock` (in-process, deterministic, no network/credential — the
+**local-first default**), `stripe_billing` (skeleton — live key via sops, **fails
+closed** `BillingNotConfigured` without it; the provider API calls are documented
+`TODO` skeletons for the next slice, but `parse_webhook` IS implemented end-to-end
+with HMAC verify via `webhook_security`). Selection via
+`Organization.settings.billing.provider` → `AP_BILLING_PROVIDER` (default `mock`).
+This is the AP platform's OWN customer billing (plans / subscriptions /
+metering — control-plane, keyed by org), distinct from the AP money path the app
+runs for customers. Usage rollup off the existing `extraction_usage` /
+`card_rebates` meters lives in `services/billing/usage_rollup.py`; entitlement
+gating (`require_entitlement` / `require_api_entitlement` in `deps.py`, 402 on a
+plan miss) reads `services/billing/entitlements.py`. First slice — real Stripe
+wiring, dunning, and the plan-change UI are later. See `docs/billing.md`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AP_BILLING_PROVIDER` | `mock` | Billing adapter — `mock` \| `stripe_billing`. Per-org override `Organization.settings.billing.provider`. |
+| `AP_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing key — no hardcoded fallback; sops in deployed. Adapter fails closed without it. |
+| `AP_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook verification — no fallback; sops in deployed. |
+
 ## Webhook security (`services/webhook_security.py`)
 
 Every inbound webhook handler — payments, cards, ERP, email-intake, PEPPOL inbound — verifies the provider's HMAC over the raw request body and dedupes (by event id, or — for PEPPOL inbound — by the AS4 MessageId at the DB layer) before mutating state (project invariant #9). Shared helpers:
@@ -471,8 +505,9 @@ Per-tenant secrets:
 | `/api/erp/webhook/{erp_type}` | `Organization.settings.erp.webhook_signing_secret` |
 | `/api/peppol/inbound/{tenant_slug}` | `AP_PEPPOL_INBOUND_SIGNING_SECRET` (process-level HMAC key; verified by `peppol_receive.verify_inbound_signature`). Dedupe is the DB `uq_peppol_message_id` index, not Redis. |
 | `/api/catalogs/punchout/return/{tenant_slug}` | `AP_PUNCHOUT_RETURN_SIGNING_SECRET` (process-level HMAC key; verified in `catalogs._verify_return_signature`). Correlation is the BuyerCookie matched to a pending `PunchoutSession`. |
+| `/api/approvals/slack/interactivity` | `AP_SLACK_SIGNING_SECRET` (process-level HMAC key; verified in `slack_approvals._verify_slack_signature` over `v0:{X-Slack-Request-Timestamp}:{raw_body}`, with a `±AP_SLACK_REQUEST_MAX_AGE_SECONDS` replay window). Per-action dedupe is the single-use action-token `jti` in Redis (the email-approval mechanism), not `is_event_already_processed`. Returns an opaque 200 ack (Slack-friendly) on every path, not 204. See `docs/slack-approval.md`. |
 
-Every webhook handler returns **204 silently** on every rejection path (bad signature, unknown tenant, missing event id, unknown card / invoice / payment, disabled master switch, unparseable / malformed inbound document). Distinct 4xx responses would enumerate tenant slugs or card tokens. Tests: `backend/tests/test_webhook_security.py`, `tests/test_payment_webhook_security.py`, `tests/test_peppol_inbound.py`.
+Every webhook handler returns **204 silently** on every rejection path (bad signature, unknown tenant, missing event id, unknown card / invoice / payment, disabled master switch, unparseable / malformed inbound document) — except the Slack interactivity webhook, which returns an opaque **200 ack** on every path (Slack requires 2xx to acknowledge a button click; the ack text is identical across success and rejection, so it doesn't enumerate). Distinct 4xx responses would enumerate tenant slugs or card tokens. Tests: `backend/tests/test_webhook_security.py`, `tests/test_payment_webhook_security.py`, `tests/test_peppol_inbound.py`, `tests/test_slack_approvals.py`.
 
 ## Security utilities
 

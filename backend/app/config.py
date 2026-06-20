@@ -383,6 +383,18 @@ class Settings(BaseSettings):
     # app/models/api_key.py). See backend/docs/public-api.md.
     public_api_enabled: bool = True
 
+    # ---- Platform billing & metering -------------------------------------
+    # Billing provider adapter. `mock` (in-process, deterministic, no network /
+    # credential) is the local-first DEFAULT; `stripe_billing` is a fail-closed
+    # skeleton that needs a real key. Per-org override on
+    # `Organization.settings.billing.provider`. See backend/docs/billing.md.
+    billing_provider: str = "mock"  # "mock" (dev default) | "stripe_billing"
+    # Live Stripe Billing credentials — NO hardcoded fallback. Empty by default;
+    # the stripe_billing adapter fails closed without them. Real values arrive
+    # via sops (backend/.env.sops) in deployed envs, never committed plaintext.
+    billing_stripe_api_key: str = ""
+    billing_stripe_webhook_secret: str = ""
+
     # SAML 2.0 SSO (Service-Provider side). Additive, separate code path from
     # OIDC; like OIDC it is gated PER-TENANT via Organization.settings.sso
     # (protocol="saml") — there is no global on/off, so a fresh clone + pnpm dev
@@ -502,8 +514,25 @@ class Settings(BaseSettings):
     # envs set the real key via sops. See backend/docs/email-approval.md.
     email_action_signing_key: str = ""
     # Validity window of an email-approval link, in hours (default 7 days). A
-    # reviewer who acts after this re-authenticates in the app instead.
+    # reviewer who acts after this re-authenticates in the app instead. This TTL
+    # is shared by the Slack approval-button token (same primitive).
     email_action_ttl_hours: int = 168
+
+    # Slack interactive approval — the signing secret Slack signs every
+    # interactivity POST with (`X-Slack-Signature` = v0=HMAC-SHA256 over
+    # `v0:{X-Slack-Request-Timestamp}:{raw_body}`). Empty default → the feature
+    # is OFF: the inbound `/api/approvals/slack/interactivity` webhook rejects
+    # every request (fail-closed, no hardcoded fallback, mirroring the other
+    # webhook HMAC secrets). The committed .env.development sets a NON-secret dev
+    # value so the flow is exercisable in tests; deployed envs set the real
+    # Slack app signing secret via sops. The action token carried in the button
+    # value reuses `email_action_signing_key` (the `slack`-channel binding keeps
+    # it distinct from the email link). See backend/docs/slack-approval.md.
+    slack_signing_secret: str = ""
+    # Reject a Slack interactivity POST whose `X-Slack-Request-Timestamp` is more
+    # than this many seconds from now (replay-window guard; Slack's own
+    # recommendation is 5 minutes).
+    slack_request_max_age_seconds: int = 300
 
     # Retention policies (SOX records management). The enforcement sweep is a
     # long-lived loop (like contract renewal / qms sync) that finds records past

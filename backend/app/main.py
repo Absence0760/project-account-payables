@@ -15,6 +15,7 @@ from app.api import (
     auth,
     auth_saml,
     auth_sso,
+    billing,
     budgets,
     cards,
     catalogs,
@@ -52,6 +53,7 @@ from app.api import (
     retention,
     scim,
     signup,
+    slack_approvals,
     tax,
     tax_intl,
     vendor_risk,
@@ -312,6 +314,7 @@ app.include_router(payments.router, prefix="/api")
 app.include_router(signup.router, prefix="/api")
 app.include_router(auth_sso.router, prefix="/api")
 app.include_router(auth_saml.router, prefix="/api")
+app.include_router(billing.router, prefix="/api")
 app.include_router(scim.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")
@@ -320,6 +323,7 @@ app.include_router(portal.router, prefix="/api")
 app.include_router(email_intake.public_router, prefix="/api")
 app.include_router(email_intake.admin_router, prefix="/api")
 app.include_router(peppol_inbound.public_router, prefix="/api")
+app.include_router(slack_approvals.public_router, prefix="/api")
 app.include_router(catalogs.public_router, prefix="/api")
 app.include_router(tax.router, prefix="/api")
 app.include_router(tax_intl.router, prefix="/api")

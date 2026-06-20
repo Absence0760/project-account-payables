@@ -28,6 +28,7 @@ from app.api import (
     auth,
     auth_saml,
     auth_sso,
+    billing,
     budgets,
     cards,
     catalogs,
@@ -55,6 +56,7 @@ from app.api import (
     requisitions,
     scim,
     signup,
+    slack_approvals,
     tax,
     tax_intl,
     vendor_statement_recon,
@@ -142,6 +144,10 @@ NO_AUTH_REQUIRED = {
     # signed single-action token in the URL IS the credential (no JWT/session).
     ("GET", "/invoices/email-action/{token}"),
     ("POST", "/invoices/email-action/{token}/confirm"),
+    # slack_approvals.py — approve/reject from the Slack message buttons; gated by
+    # the Slack request signature (HMAC) + the signed single-use action token in
+    # the button value (no JWT/session). Public-by-design (Slack POSTs it).
+    ("POST", "/approvals/slack/interactivity"),
 }
 
 # Routers wired into the app at /api — same set as app/main.py.
@@ -155,6 +161,7 @@ ROUTERS = [
     auth.router,
     auth_saml.router,
     auth_sso.router,
+    billing.router,
     budgets.router,
     cards.router,
     catalogs.router,
@@ -184,6 +191,7 @@ ROUTERS = [
     requisitions.router,
     scim.router,
     signup.router,
+    slack_approvals.public_router,
     tax.router,
     tax_intl.router,
     vendor_statement_recon.router,

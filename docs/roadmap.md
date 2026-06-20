@@ -133,7 +133,7 @@ Current state: manual, specific, auto, and chain approval strategies. Amount-bas
 - [x] Parallel approvals — `parallel_mode: "any" | "all"`. `any` = `required_approvals` distinct users (default, legacy behaviour). `all` = every listed approver_id must approve.
 - [x] Escalation rules — `escalation_hours` + `escalation_to_user_ids` per level. Background sweeper (`services/approval_escalation.py`) appends the targets onto the level's `approver_ids` once the level's `entered_at` is older than `escalation_hours`. Idempotent. Toggleable via `AP_APPROVAL_ESCALATION_ENABLED`.
 - [x] Email approval — approve/reject directly from the assignment email without logging in. Per-recipient HMAC-signed, expiring, single-use token in the link (`services/email_action_token.py`); public GET confirm page → POST performs the action through the normal `services/review` path (segregation + CFO gate + thresholds + immutable audit row + approval signature all apply). Two-step click is prefetch-safe (GET never mutates). Single knob `AP_EMAIL_ACTION_SIGNING_KEY` (empty → off, fail-closed); local-first via console/Mailpit email. See `backend/docs/email-approval.md`.
-- [ ] Slack/Teams approval — approve/reject from Slack message buttons *(skipped — needs Slack/Teams app + webhook secret)*
+- [x] Slack approval — approve/reject from Slack Block Kit buttons, no login. `POST /api/approvals/slack/interactivity` verifies Slack's `v0=` request signature + a ±5min timestamp window, then the per-action HMAC token (reuses the email-approval `email_action_token` with a `channel="slack"` claim, single-use via the Redis `jti`), and performs the decision through `services/review` (segregation + CFO gate + thresholds + immutable audit + signature all apply). `AP_SLACK_SIGNING_SECRET` empty → fail-closed. **Teams interactivity deferred.** See `backend/docs/slack-approval.md`
 - [x] Approval matrix UI — `frontend/src/lib/components/ApprovalMatrixEditor.svelte` plugged into `/workflows/[id]` when `approver_strategy=chain`. Edits levels (name, amount range, parallel mode, approvers, routing rules, escalation hours + targets); persists through the existing `PATCH /api/workflows/{id}` path.
 
 **Competitors:** Coupa (matrix approval), Tipalti (parallel + Slack), Stampli (email/Slack), Airbase (Slack-native), Basware (conditional chains)
@@ -576,8 +576,8 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 
 **Medium priority — parity with web (see `mobile/CLAUDE.md` for full gap list):**
 - [ ] Invoice upload via file picker (PDF/PNG/JPG/TIFF support)
-- [ ] Invoice editing (change fields in detail screen)
-- [ ] Activity timeline in invoice detail (audit log)
+- [x] Invoice editing (change fields in detail screen) — edit sheet → `PATCH /api/invoices/{id}` (vendor/number/amount/PO/GL/description/due date; money + dates as string-Decimal), gated to admin/ap_manager/cfo on editable statuses
+- [x] Activity timeline in invoice detail (audit log) — `GET /api/invoices/{id}/audit-log` rendered as a timeline widget (actor, action, time, per-field before→after), with empty/loading/error states
 - [ ] PDF/image viewer for uploaded invoice files
 - [x] Exception queue (list, resolve, escalate, dismiss) — `ExceptionsScreen` + `ExceptionStore` over `GET /api/exceptions` + `POST /api/exceptions/{id}/resolve`, admin/ap_manager. Detail view / assign / bulk-resolve deferred
 - [ ] Vendor management (list, verify/reject, ERP sync)
@@ -618,7 +618,7 @@ AI agents that autonomously resolve common exceptions without human intervention
 
 - [x] Agent framework — registry + coordinator + autonomy thresholds (`services/exception_agents/`)
 - [x] Auto-resolve: small amount mismatches within tolerance (`amount_mismatch_v1`)
-- [ ] Auto-resolve: missing PO — match by vendor + amount + date range *(deferred — stub escalates)*
+- [x] Auto-resolve: missing PO — match by vendor + amount + date range — `missing_po_v1` resolver: finds the real PO by vendor (id/fuzzy ≥0.8) + amount (per-vendor/commodity tolerance) + date window, links by `po_number`, approves via `review` (never adjusts the amount); a registered `po_mismatch` **dispatcher** routes to `amount_mismatch_v1` (status `matched`) vs `missing_po_v1` (status `no_po`). Confidence-gated on autonomy; ambiguous/none → escalate; idempotent. Multi-PO split matching deferred
 - [ ] Auto-resolve: GL coding errors — correct based on historical patterns *(deferred)*
 - [x] Escalation rules — sub-threshold confidence routes to human (`escalated`)
 - [x] Agent decision log — `AgentDecision` table + `/api/exceptions/agent-decisions`
@@ -936,26 +936,28 @@ The backend is a rich REST surface, but it's framed as an internal contract — 
 ---
 
 ### Platform Billing & Metering
-**Status:** Planned
+**Status:** First slice shipped (model + rollup + adapter + entitlements + read endpoint); later slices planned.
 
-The product meters extraction usage (`ExtractionUsage`, `CardRebate`) but has no way to **bill** for the SaaS itself — plans, subscription state, usage rollups, invoices to customers. Needed before commercial launch beyond hand-managed contracts.
+The product meters extraction usage (`ExtractionUsage`, `CardRebate`) but had no way to **bill** for the SaaS itself — plans, subscription state, usage rollups, invoices to customers. Needed before commercial launch beyond hand-managed contracts. The first slice productizes the existing meters; live Stripe + dunning + the customer billing UI are next.
 
-- [ ] Plan / subscription model (control-plane) — tiers, per-seat + usage components, trial state; tie to org provisioning
-- [ ] Usage rollup — aggregate the existing `ExtractionUsage` (+ card rebates, payment volume, API calls) into billable meters per period
-- [ ] Stripe Billing integration via an adapter (mock default — local-first; live key via sops, fail-closed) for subscriptions + metered usage + dunning; webhook-driven state, HMAC-verified + deduped
-- [ ] Customer-facing billing surface — current plan, usage-to-date, invoices/receipts, payment method, plan changes
-- [ ] Entitlement gating — feature flags per plan enforced in `deps.py` alongside RBAC
+- [x] Plan / subscription model (control-plane) — `Plan` (tier, monthly price `Numeric`, per-seat + usage components JSON, feature entitlements JSON, trial_days) + `Subscription` (org FK, plan FK, status `trialing|active|past_due|canceled`, period + trial window, nullable `external_subscription_id`). Migration 0056 (control-plane, idempotent); both in `CONTROL_TABLES`. See `backend/docs/billing.md`
+- [x] Usage rollup — `services/billing/usage_rollup.py` aggregates `ExtractionUsage` (+ `CardRebate` total) into Decimal-exact billable meters per org/period (pure read, no mutation). Payment-volume + per-meter overage pricing are later slices
+- [x] Billing adapter family (`services/billing_adapters/`) — `mock` default (local-first, deterministic) + `stripe_billing` skeleton (live key via sops, **fail-closed**; `parse_webhook` implemented end-to-end with HMAC verify; the actual Stripe API calls are documented skeletons). Registry decorator + `get_billing_adapter()`; `AP_BILLING_PROVIDER` + per-org override. The webhook **route** (dedupe-by-event-id + 204-silent) and live API calls + dunning are later slices
+- [x] Entitlement gating — `require_entitlement` (JWT) / `require_api_entitlement` (API key) in `deps.py`, 402 on a plan miss, composes with `require_roles` / `require_api_scope`; wired onto the public `/api/v1` surface (`public_api` feature). Reads `services/billing/entitlements.py`
+- [x] Customer-facing read endpoint — `GET /api/billing/subscription` (admin/cfo): current plan + status + usage-to-date
+- [ ] Live Stripe Billing API calls (create/get subscription, report usage) + the inbound webhook route (HMAC-verified, deduped) + dunning / past-due automation + proration
+- [ ] Customer-facing billing surface (UI) — plan changes, invoices/receipts, payment method
 
 **Competitors:** standard SaaS monetization; the metering primitives (`ExtractionUsage`) already exist — this productizes them
 
 ---
 
 ### White-Label / Partner Branding
-**Status:** Planned
+**Status:** In progress (first slice: per-tenant brand config + frontend CSS-var theming shipped; custom domains, branded PDFs/emails, and reseller multi-tenant admin deferred)
 
 Per-tenant theming so resellers, banks, and ERP partners can offer the platform under their own brand — a common mid-market distribution channel and an enterprise procurement ask.
 
-- [ ] Per-tenant brand config — logo, color palette/theme tokens, product name, support + legal links (org settings + control-plane fields); the frontend already centralizes UI in `lib/components/` so theming threads through CSS custom properties
+- [x] Per-tenant brand config — logo, accent/theme tokens, product name, support + legal links on `Organization.settings.brand` (no migration), `GET/PUT /api/organization/branding` (admin mutate, audited, hex/URL-validated). Frontend `brand` rune store applies `--accent`/`--accent-strong` CSS custom properties on mount (org colors override the AA defaults only when set), logo + product name in the sidebar + `<title>`, edited from the Organization → Branding panel. See `docs/white-label.md`
 - [ ] Custom domain / subdomain support beyond `*.localhost` tenant routing (TLS + the existing `X-Tenant-Slug` resolution)
 - [ ] Branded outbound surfaces — emails (ties to the localized email-catalogue work), remittance/check PDFs, the supplier portal, and PDF/CSV exports carry the tenant's brand, not the platform's
 - [ ] Partner/reseller admin — a parent that manages multiple branded child tenants (relates to the deferred multi-entity / org-hierarchy work)
