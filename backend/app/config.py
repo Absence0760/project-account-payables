@@ -286,6 +286,16 @@ class Settings(BaseSettings):
     # silence notifications without a code change. Notification *send* is always
     # best-effort regardless of this flag (failures never break a transition).
     notifications_enabled: bool = True
+
+    # Outbound chat-notification adapter (Slack / Teams incoming-webhook posts
+    # of approval-lifecycle events). Platform default `mock` — local-first, no
+    # network, no Slack/Teams credential, so `pnpm dev` runs unchanged. Per-org
+    # override on `Organization.settings.chat_notifications.provider` (with the
+    # webhook URL + per-event toggles alongside it). `slack` / `teams` fail
+    # closed (no-op + PII-free warning) when no webhook URL is configured.
+    # See backend/docs/notifications.md § Chat notifications (Slack/Teams).
+    chat_notification_provider: str = "mock"  # "mock" (default) | "slack" | "teams"
+
     hcaptcha_secret: str = ""  # empty = skip captcha verification
     hcaptcha_sitekey: str = ""  # exposed to frontend via a public endpoint
     signup_rate_limit_per_hour: int = 5
@@ -366,6 +376,12 @@ class Settings(BaseSettings):
     # Hash (not reversible) of the per-tenant SCIM bearer token is what gets
     # stored. The plaintext token is shown to the admin ONCE on generation.
     scim_url_path: str = "/api/scim/v2"
+
+    # Public programmatic API (/api/v1, X-API-Key auth). On by default — the
+    # surface is auth-gated regardless; this is an org-platform kill switch.
+    # No secret here: API keys are minted per-org and stored hashed (see
+    # app/models/api_key.py). See backend/docs/public-api.md.
+    public_api_enabled: bool = True
 
     # SAML 2.0 SSO (Service-Provider side). Additive, separate code path from
     # OIDC; like OIDC it is gated PER-TENANT via Organization.settings.sso

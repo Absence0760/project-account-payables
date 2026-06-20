@@ -47,6 +47,7 @@ Deep-dive docs live in `backend/docs/`:
 | Digital signatures on approvals (SOX) | `docs/approval-signatures.md` |
 | Retention policies (SOX records management) | `docs/retention.md` |
 | Privacy — GDPR/CCPA DSAR export + right-to-erasure | `docs/privacy.md` |
+| Public Developer API (API keys + `/api/v1`) | `docs/public-api.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
@@ -564,6 +565,8 @@ Stored in `Organization.settings`:
              "default_expiry_days": 30, "webhook_signing_secret": "...", ... },
   "payments": { "provider", "credentials": { ... }, "webhook_secret": "...", "cfo_approval_above": Decimal },
   "mfa": { "required": true|false },
+  "chat_notifications": { "enabled": true|false, "provider": "slack"|"teams"|"mock",
+                          "webhook_url": "...", "events": { "invoice_approved": true, ... } },
   "sso": { ... },
   "fraud_rules": { ... },
   "exception_agents": { "autonomy_level": "conservative"|"balanced"|"aggressive", "amount_tolerance_pct": 2.5 }
