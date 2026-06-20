@@ -476,6 +476,7 @@ parse reused from `e_invoice/_xml`). See `docs/procurement-catalogs.md`.
 class MyAdapter(BillingAdapter):
     async def create_subscription(self, request: CreateSubscriptionRequest) -> ProviderSubscription: ...
     async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription: ...
+    async def list_invoices(self, *, customer_id, limit=24) -> list[ProviderInvoice]: ...
     async def report_usage(self, report: UsageReport) -> None: ...
     def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None: ...
     async def test_connection(self) -> bool: ...
@@ -486,7 +487,10 @@ Registered: `mock` (in-process, deterministic, no network/credential — the
 sops, **fails closed** `BillingNotConfigured` without it). Implemented:
 `ensure_customer` / `ensure_price` (per-org customer + per-plan recurring price,
 idempotent creates, minor-units via exact Decimal), `create_subscription` /
-`get_subscription`, `report_usage` (one Billing Meter Event per meter, exact
+`get_subscription`, `list_invoices` (the org's past invoices/receipts as
+`ProviderInvoice` DTOs — money as exact decimal string; base supplies a safe
+`[]` default, mock fabricates deterministic receipts, Stripe GETs
+`/v1/invoices`), `report_usage` (one Billing Meter Event per meter, exact
 decimal-string quantities), and `parse_webhook` (Stripe-Signature HMAC verify).
 Selection via `Organization.settings.billing.provider` → `AP_BILLING_PROVIDER`
 (default `mock`). This is the AP platform's OWN customer billing (plans /
@@ -500,8 +504,10 @@ money path the app runs for customers. Usage rollup off the existing
 `.plan_price_ids`, no migration), mid-period proration
 (`services/billing/proration.py`, pure Decimal, `ROUND_HALF_UP` 2 dp), and the
 plan-change endpoint (`POST /api/billing/change-plan`, admin/cfo, idempotent +
-audited) are shipped; payment-method + invoice-list UI are later. See
-`docs/billing.md`.
+audited), and the invoices/receipts list endpoint (`GET /api/billing/invoices`,
+admin/cfo, money as exact strings, graceful empty-list on no-customer /
+unconfigured) are shipped; the payment-method endpoint + the invoices/receipts
+UI (frontend track) are later. See `docs/billing.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

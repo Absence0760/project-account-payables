@@ -12,9 +12,12 @@ accounts-payable money path the app manages for customers.
 > report-usage API calls, the inbound HMAC-verified + deduped webhook route, the
 > dunning / past-due automation sweep, **per-org Stripe customer/price
 > provisioning (`ensure_customer` / `ensure_price` + the `provision_org_billing`
-> resolver that persists the ids on `settings.billing`), and mid-period
-> proration math + the `POST /api/billing/change-plan` endpoint.** **Deferred to
-> later slices:** payment-method / invoice-list endpoints.
+> resolver that persists the ids on `settings.billing`), mid-period
+> proration math + the `POST /api/billing/change-plan` endpoint, **and the
+> billing invoices / receipts list (`GET /api/billing/invoices` + the adapter
+> `list_invoices` capability).** **Deferred to later slices:** the
+> payment-method endpoint, and the frontend invoices/receipts UI (owned by the
+> frontend track).
 
 ## Where it lives (control plane)
 
@@ -67,15 +70,24 @@ Same registry/decorator/dispatcher pattern as the email / PEPPOL / QMS families.
 class MyAdapter(BillingAdapter):
     async def create_subscription(self, request: CreateSubscriptionRequest) -> ProviderSubscription: ...
     async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription: ...
+    async def list_invoices(self, *, customer_id, limit=24) -> list[ProviderInvoice]: ...
     async def report_usage(self, report: UsageReport) -> None: ...
     def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None: ...
     async def test_connection(self) -> bool: ...
 ```
 
+`list_invoices(customer_id=…, limit=24)` returns the org's past billing invoices
+/ receipts (newest first) as `ProviderInvoice` DTOs (`external_invoice_id`,
+`number`, `period`, `amount` — exact decimal **string** — `currency`, `status`
+`paid`/`open`/`void`, `hosted_url`, `created_at`). `customer_id is None` (org
+never provisioned at the provider) → `[]`. The `BillingAdapter` base supplies a
+safe default returning `[]`, so an adapter without a real billing back-end
+degrades gracefully rather than 500ing.
+
 | Adapter | Notes |
 |---------|-------|
-| `mock` (**default**) | In-process, deterministic, no network/credential. Synthetic `mock_sub_<org>` id; `report_usage` is a no-op; `parse_webhook` reads a dev JSON envelope. Local-first. |
-| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `AP_BILLING_STRIPE_API_KEY`. `ensure_customer` / `ensure_price` / `create_subscription` / `get_subscription` / `report_usage` are **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; every create sends an `Idempotency-Key` header so a retry can't duplicate; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `ensure_customer` resolve-or-creates the per-org Stripe `customer` (idempotency key `ap-customer-<org>`, sends only the org business name + an admin email — never bank/tax/PAN); `ensure_price` resolve-or-creates the per-plan recurring `price` (unit amount = the plan's monthly price in integer **minor units** via exact Decimal math, idempotency key `ap-price-<code>-<cents>-<cur>`). `create_subscription` consumes the resolved `stripe_customer_id` + `stripe_price_id` from config (the provisioning resolver injects them) → `BillingNotConfigured` if absent. A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body and maps Stripe statuses → our four-state lifecycle. |
+| `mock` (**default**) | In-process, deterministic, no network/credential. Synthetic `mock_sub_<org>` id; `report_usage` is a no-op; `parse_webhook` reads a dev JSON envelope; `list_invoices` fabricates a stable run of monthly `$49.00` receipts (newest `open`, the rest `paid`) keyed off the customer id, or `[]` when there's no customer. Local-first. |
+| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `AP_BILLING_STRIPE_API_KEY`. `ensure_customer` / `ensure_price` / `create_subscription` / `get_subscription` / `report_usage` are **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; every create sends an `Idempotency-Key` header so a retry can't duplicate; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `ensure_customer` resolve-or-creates the per-org Stripe `customer` (idempotency key `ap-customer-<org>`, sends only the org business name + an admin email — never bank/tax/PAN); `ensure_price` resolve-or-creates the per-plan recurring `price` (unit amount = the plan's monthly price in integer **minor units** via exact Decimal math, idempotency key `ap-price-<code>-<cents>-<cur>`). `create_subscription` consumes the resolved `stripe_customer_id` + `stripe_price_id` from config (the provisioning resolver injects them) → `BillingNotConfigured` if absent. A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body and maps Stripe statuses → our four-state lifecycle. `list_invoices` GETs `/v1/invoices?customer=<id>&limit=` (cap 100), normalizes each to `ProviderInvoice` (amount from the integer-minor-units `total` via exact Decimal → decimal **string**; `created`/`period_start` Unix → ISO/`YYYY-MM`; status map `draft`/`uncollectible`→`open`, `void`→`void`; `hosted_invoice_url` → `invoice_pdf` fallback) — fails closed without a key, returns `[]` for a `None` customer. |
 
 `get_billing_adapter(provider=None)` resolves: explicit arg → `AP_BILLING_PROVIDER`
 → `mock`. An unknown name falls back to `mock` (a bad config can't break read
@@ -286,8 +298,29 @@ period:
 
 `plan`/`subscription` are `null` when the org has no live subscription. Money is
 an exact decimal **string** (this is a billing surface — exactness is the point).
-Plan-change is now shipped (`POST /api/billing/change-plan`, above);
-payment-method and invoice-list endpoints are later slices.
+
+`GET /api/billing/invoices` (same `require_roles(admin, cfo)` gating) returns the
+org's past platform-billing invoices / receipts (newest first), sourced through
+the org's billing adapter's `list_invoices`:
+
+```json
+{
+  "provider": "mock",
+  "invoices": [
+    {"id": "mock_in_..._2026-06", "number": "MOCK-2026-06", "period": "2026-06",
+     "amount": "49.00", "currency": "USD", "status": "open",
+     "hosted_url": null, "created_at": "2026-06-01T00:00:00+00:00"}
+  ]
+}
+```
+
+The org's provider-side customer id is read from
+`Organization.settings.billing.stripe_customer_id` and passed to the adapter.
+**Graceful degradation:** an org never provisioned with the provider (no customer
+id), an unconfigured/unavailable provider (the live adapter fails closed without
+a key), or any provider error yields an **empty list** — never a 500. Money is an
+exact decimal **string**. The payment-method endpoint is a later slice; the
+frontend invoices/receipts UI is owned by the frontend track.
 
 ## Customer-facing UI (`frontend/src/routes/billing/`)
 
@@ -341,8 +374,12 @@ dashboard and never sees the tab.
 `backend/tests/test_billing.py` — adapter default + fallback, mock determinism,
 Stripe fail-closed + webhook HMAC verify/reject, entitlement allow/deny, rollup
 Decimal-exactness, the subscription endpoint (plan + status + usage, admin/cfo
-gating, null-plan case), and the `/api/v1` plan-gate (402 without `public_api`,
-200 with). The control-tables coverage test in
+gating, null-plan case), the invoices/receipts list (mock `list_invoices`
+determinism + amount-as-string, Stripe `list_invoices` shape against a mocked
+`httpx` transport + minor-units exactness + fail-closed-without-key + no-customer
+short-circuit, and `GET /api/billing/invoices` returning the list with money as
+exact strings, no-customer → empty list not 500, admin/cfo RBAC), and the
+`/api/v1` plan-gate (402 without `public_api`, 200 with). The control-tables coverage test in
 `tests/test_tenant_provisioning.py` includes `plans` + `subscriptions`.
 
 `backend/tests/test_billing_webhook.py` — the live-Stripe adapter calls
