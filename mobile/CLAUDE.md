@@ -37,7 +37,9 @@ mobile/
 │   │   ├── audit_entry.dart     # AuditEntry + AuditFieldChange (invoice activity timeline; details.changes diff)
 │   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states); isEditable gate mirrors backend IMMUTABLE_STATUSES
 │   │   ├── exception.dart       # ApException, ApExceptionStatus + ApExceptionSeverity enums
-│   │   └── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
+│   │   ├── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
+│   │   ├── payment_queue.dart   # PaymentQueueItem, PaymentSummary, PaymentRun, PaymentRunSelection (money as display strings — no client float math)
+│   │   └── vendor.dart          # Vendor, VendorStatus enum (active/unverified/inactive/rejected)
 │   ├── services/
 │   │   ├── biometric_service.dart  # Face ID / fingerprint via local_auth
 │   │   ├── camera_capture.dart     # Image picker (camera/gallery) + file picker (PDF/PNG/JPG/TIFF) + invoice upload
@@ -47,7 +49,9 @@ mobile/
 │   │   ├── auth_store.dart      # Auth state — login, logout, role checks
 │   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject (offline cached)
 │   │   ├── exception_store.dart # Exception list, filter, resolve/escalate/dismiss (offline cached)
-│   │   └── dashboard_store.dart # Dashboard KPI data (offline cached)
+│   │   ├── dashboard_store.dart # Dashboard KPI data (offline cached)
+│   │   ├── vendor_store.dart    # Vendor list, filter/search, verify/reject, ERP sync (offline cached)
+│   │   └── payment_queue_store.dart # Payment queue + summary + runs; per-row method selection; create/execute/cancel runs
 │   ├── screens/
 │   │   ├── login_screen.dart    # Tenant + email/password login
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
@@ -58,6 +62,8 @@ mobile/
 │   │   ├── exceptions_screen.dart # Exception queue — filter + swipe/sheet resolve/escalate/dismiss
 │   │   ├── capture_screen.dart   # Camera/gallery capture + file picker (PDF/PNG/JPG/TIFF) → upload → extract
 │   │   ├── payments_screen.dart  # Payment history
+│   │   ├── vendors_screen.dart   # Vendor management — list + search/status filters, swipe/sheet verify+reject (unverified only), ERP-sync app-bar action (all admin/ap_manager-gated)
+│   │   ├── payment_queue_screen.dart # Pay — Queue tab (select approved invoices + per-row method → Create Run) + Runs tab (execute/cancel drafts), KPI summary bar
 │   │   └── settings_screen.dart  # User profile, biometric toggle, logout
 │   └── widgets/
 │       ├── activity_timeline.dart # Invoice audit-log timeline (action label, actor, time, per-field before→after diff); empty state; one merged Semantics label per entry
@@ -67,7 +73,9 @@ mobile/
 │       ├── exception_status_badge.dart # Colored exception status chip (open/escalated/resolved/dismissed)
 │       ├── exception_list_tile.dart    # Exception row with type, invoice, severity, status
 │       ├── kpi_card.dart        # Dashboard metric card
-│       └── invoice_list_tile.dart # Invoice row with vendor, amount, status
+│       ├── invoice_list_tile.dart # Invoice row with vendor, amount, status
+│       ├── vendor_status_badge.dart # Colored vendor status chip (active/unverified/inactive/rejected)
+│       └── vendor_list_tile.dart # Vendor row with name, code/email, status, invoice count
 ├── test/                        # Unit and widget tests
 ├── ios/                         # Xcode project (auto-managed by Flutter)
 ├── android/                     # Gradle project (auto-managed by Flutter)
@@ -103,6 +111,8 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss) |
 | Payments | `GET /api/payments` |
+| Vendors | `GET /api/vendors` (status/search filters), `POST /api/vendors/{id}/verify`, `POST /api/vendors/{id}/reject`, `POST /api/vendors/sync-erp` (mutations admin/ap_manager) |
+| Pay (queue) | `GET /api/payments/queue`, `GET /api/payments/summary`, `GET /api/payments/runs/`, `POST /api/payments/runs` (create draft), `POST /api/payments/runs/{id}/execute`, `POST /api/payments/runs/{id}/cancel` (admin/ap_manager/cfo) |
 | Settings | Uses cached auth state |
 
 ## Role-based UI
@@ -115,6 +125,8 @@ Bottom navigation adapts based on user roles (same as web frontend):
 | Invoices | All roles |
 | Approvals | Admin, AP Manager |
 | Exceptions | Admin, AP Manager |
+| Vendors | Admin, AP Manager, CFO (verify/reject + ERP sync: Admin, AP Manager only) |
+| Pay | Admin, AP Manager, CFO |
 | Payments | Admin, AP Manager, CFO |
 | Settings | All roles |
 
@@ -130,6 +142,8 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Approvals tab with swipe-to-approve
 - Exception queue (list + status filter + resolve / escalate / dismiss via swipe + action sheet; admin / AP manager only)
 - Payment history list
+- Vendor management — `VendorsScreen` + `VendorStore` over `GET /api/vendors` with status filters + search; verify / reject an unverified vendor via swipe (verify ⟶ / reject ⟵) or the action sheet, and an ERP-sync app-bar action (`POST /api/vendors/sync-erp`). Read is admin/ap_manager/cfo; the mutating actions are gated to admin/ap_manager (mirrors `require_roles`) and simply hidden for CFO. Offline-cached list
+- Payment queue + runs — `PaymentQueueScreen` + `PaymentQueueStore`. Queue tab lists approved invoices (`GET /api/payments/queue`), each row a checkbox + per-row method picker; the selection creates a draft run (`POST /api/payments/runs`). Runs tab lists runs (`GET /api/payments/runs/`) and executes / cancels drafts. A KPI summary bar (total paid / pending / queue / card rebates) sits above both (`GET /api/payments/summary`). CFO-approval-required runs surface the gate before an execute attempt. Money is rendered as server-supplied display strings — the device never does float arithmetic on money (totals are server-computed)
 - Role-based bottom navigation
 - Settings (profile, tenant info, logout)
 - JWT in secure storage (iOS Keychain / Android Keystore)
@@ -154,10 +168,6 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Advanced search modal (vendor, PO, amount range, date range)
 - Invoice warnings/fraud flags display
 - ERP status display on invoice detail
-- Vendor management (list, verify/reject, ERP sync)
-- Payment queue (select invoices, choose method)
-- Payment runs (create/execute batches)
-- Payment summary cards (total paid, pending, rebates)
 - Workflow management (list, create, edit steps)
 - Organization settings (company, ERP config, extraction config)
 - Admin user management (create, edit, delete users, role assignment)
@@ -213,9 +223,10 @@ await expectLater(tester, meetsGuideline(textContrastGuideline));
 plus `find.bySemanticsLabel(...)` to confirm icon buttons expose labels. Covers
 the invoice list tile, KPI card, status badge, login screen, the capture action,
 the approvals approve/reject affordances, the exception list tile + exception
-status badge + exceptions screen (queue swipe/sheet actions), and the invoice
+status badge + exceptions screen (queue swipe/sheet actions), the invoice
 activity timeline + invoice edit-sheet (icon-only close/clear controls labelled,
-one merged announcement per timeline entry).
+one merged announcement per timeline entry), and the vendor list tile + vendor
+status badge (one merged row announcement; every status colour clears contrast).
 `textContrastGuideline` is strict
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.

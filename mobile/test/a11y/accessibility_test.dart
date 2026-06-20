@@ -10,6 +10,7 @@ import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
+import 'package:ap_mobile/models/vendor.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
 import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
@@ -24,6 +25,8 @@ import 'package:ap_mobile/widgets/invoice_edit_sheet.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
+import 'package:ap_mobile/widgets/vendor_list_tile.dart';
+import 'package:ap_mobile/widgets/vendor_status_badge.dart';
 
 // Regression guard mirroring the web axe pass: every key surface must clear
 // Flutter's built-in accessibility guidelines — minimum tap-target size
@@ -173,6 +176,54 @@ void main() {
         final handle = tester.ensureSemantics();
         await tester.pumpWidget(_host(StatusBadge(status: status)));
         await expectLater(tester, meetsGuideline(textContrastGuideline));
+        handle.dispose();
+      });
+    }
+  });
+
+  group('VendorListTile', () {
+    Vendor vendor() => Vendor(
+          id: 'v1',
+          name: 'Acme Supplies',
+          code: 'ACME',
+          email: 'ap@acme.com',
+          status: VendorStatus.unverified,
+          source: 'manual',
+          invoiceCount: 3,
+        );
+
+    testWidgets('meets tap-target, label and contrast guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        VendorListTile(vendor: vendor(), onTap: () {}),
+      ));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // One merged announcement leads with the vendor name + status.
+      expect(
+        find.bySemanticsLabel(RegExp(r'Acme Supplies.*Unverified.*invoices')),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+  });
+
+  group('VendorStatusBadge', () {
+    // Amber/red are the worst case for AA on the pale tint — guard each.
+    for (final status in VendorStatus.values) {
+      testWidgets('exposes label and clears contrast for ${status.value}',
+          (tester) async {
+        final handle = tester.ensureSemantics();
+        await tester.pumpWidget(_host(VendorStatusBadge(status: status)));
+        await expectLater(tester, meetsGuideline(textContrastGuideline));
+        expect(
+          find.bySemanticsLabel('Status: ${status.label}'),
+          findsOneWidget,
+        );
         handle.dispose();
       });
     }

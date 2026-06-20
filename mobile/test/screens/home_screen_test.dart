@@ -15,6 +15,8 @@ import 'package:ap_mobile/stores/contract_store.dart';
 import 'package:ap_mobile/stores/dashboard_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/stores/payment_queue_store.dart';
+import 'package:ap_mobile/stores/vendor_store.dart';
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -87,6 +89,29 @@ MockClient _homeClient(
     if (req.method == 'GET' && path == '/api/payments') {
       return _json({'payments': <Map<String, dynamic>>[]});
     }
+    if (req.method == 'GET' && path == '/api/vendors') {
+      return _json({'items': <Map<String, dynamic>>[]});
+    }
+    if (req.method == 'GET' && path == '/api/payments/queue') {
+      return _json({
+        'items': <Map<String, dynamic>>[],
+        'total': 0,
+        'total_amount': 0,
+        'total_savings': 0,
+      });
+    }
+    if (req.method == 'GET' && path == '/api/payments/summary') {
+      return _json({
+        'total_paid': 0,
+        'total_pending': 0,
+        'payment_count': 0,
+        'total_rebates': 0,
+        'queue_count': 0,
+      });
+    }
+    if (req.method == 'GET' && path == '/api/payments/runs/') {
+      return _json({'items': <Map<String, dynamic>>[], 'total': 0});
+    }
     if (req.method == 'GET' && path == '/api/contracts') {
       return _json({'items': <Map<String, dynamic>>[]});
     }
@@ -112,6 +137,8 @@ void main() {
     InvoiceStore.instance.debugReset();
     ContractStore.instance.debugReset();
     ExceptionStore.instance.debugReset();
+    VendorStore.instance.debugReset();
+    PaymentQueueStore.instance.debugReset();
     await OfflineStore.instance.clear();
     FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();
@@ -199,19 +226,28 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
-  testWidgets('cfo sees Payments but not Approvals (5 tabs)', (tester) async {
+  testWidgets('cfo sees Vendors / Pay / Payments but not Approvals',
+      (tester) async {
     await loginAs(['cfo']);
     await pumpHome(tester);
 
     expect(
       navLabels(tester),
-      ['Dashboard', 'Invoices', 'Contracts', 'Payments', 'Settings'],
+      [
+        'Dashboard',
+        'Invoices',
+        'Contracts',
+        'Vendors',
+        'Pay',
+        'Payments',
+        'Settings',
+      ],
     );
   });
 
   testWidgets(
-      'ap_manager sees all seven tabs including Approvals, Exceptions, '
-      'Payments', (tester) async {
+      'ap_manager sees all nine tabs including Approvals, Exceptions, '
+      'Vendors, Pay, Payments', (tester) async {
     await loginAs(['ap_manager']);
     await pumpHome(tester);
 
@@ -223,17 +259,19 @@ void main() {
         'Contracts',
         'Approvals',
         'Exceptions',
+        'Vendors',
+        'Pay',
         'Payments',
         'Settings',
       ],
     );
   });
 
-  testWidgets('admin sees all seven tabs', (tester) async {
+  testWidgets('admin sees all nine tabs', (tester) async {
     await loginAs(['admin']);
     await pumpHome(tester);
 
-    expect(navLabels(tester), hasLength(7));
+    expect(navLabels(tester), hasLength(9));
     expect(
       navLabels(tester),
       [
@@ -242,6 +280,8 @@ void main() {
         'Contracts',
         'Approvals',
         'Exceptions',
+        'Vendors',
+        'Pay',
         'Payments',
         'Settings',
       ],
@@ -268,7 +308,7 @@ void main() {
     await loginAs(['admin']);
     await pumpHome(tester);
 
-    // Move to the Settings tab (last item, index 6 for admin).
+    // Move to the Settings tab (last item, index 8 for admin).
     await tester.tap(navItem('Settings'));
     await tester.pump();
 
@@ -276,7 +316,7 @@ void main() {
       tester
           .widget<BottomNavigationBar>(find.byType(BottomNavigationBar))
           .currentIndex,
-      6,
+      8,
     );
     // IndexedStack keeps all children mounted; Settings renders the logged-in
     // user's email in its profile header.
