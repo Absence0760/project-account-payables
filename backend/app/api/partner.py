@@ -24,23 +24,55 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import ROLE_ADMIN, require_roles
 from app.api.organization import _resolve_brand
+from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.organization import BrandConfig
 from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.partner_link_token import build_link_code, verify_link_code
 from app.tenant import get_tenant
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/partner", tags=["partner"])
+
+# Redis key prefix for the single-use consume of a link code's jti. A redeemed
+# code can't be replayed (e.g. to re-adopt a child that was detached after the
+# first attach) — the jti is burned for the code's whole validity window.
+_LINK_CODE_CONSUMED_PREFIX = "partner:link_code:consumed:"
+
+
+async def _claim_link_code_jti(jti: str) -> bool:
+    """Atomically claim a link-code jti. True = first use (proceed); False =
+    already consumed. TTL matches the code validity so the key self-expires.
+
+    A Redis outage FAILS CLOSED (returns False → the redeem is rejected): a
+    consent handshake must not silently lose its single-use guarantee, so the
+    partner re-requests a fresh code rather than risk a replay. (Contrast the
+    /api/v1 rate limiter, which fails open — there availability beats the cap;
+    here integrity of the org-hierarchy link beats availability.)
+    """
+    try:
+        from app.redis import get_redis
+
+        r = await get_redis()
+        ttl = max(1, settings.partner_link_ttl_minutes * 60)
+        claimed = await r.set(f"{_LINK_CODE_CONSUMED_PREFIX}{jti}", "1", nx=True, ex=ttl)
+        return bool(claimed)
+    except Exception as exc:  # pragma: no cover - defensive, fail-closed
+        # PII-free: log only the exception class, never its message.
+        logger.warning(
+            "partner link-code jti claim failed (fail-closed): err=%s", type(exc).__name__
+        )
+        return False
 
 
 class ChildTenantSummary(BaseModel):
@@ -200,3 +232,216 @@ async def update_child_branding(
     )
 
     return body
+
+
+# ---------------------------------------------------------------------------
+# Provisioning the parent/child link — two-sided consent (attach + detach).
+#
+# Authorization model (the load-bearing privilege boundary): a partner must NOT
+# be able to unilaterally declare an arbitrary org its child — that would be a
+# cross-tenant takeover. So attach requires the prospective child's OWN admin to
+# first mint a short-lived, HMAC-signed *link code* (proof of consent); the
+# partner's admin then redeems that code to attach. The signature (key held by
+# the platform via sops/KMS) is what makes this safe — a partner can't forge a
+# code or aim it at an org that never consented. A child that already has a
+# parent can't be re-parented without an explicit detach (no silent takeover).
+# ---------------------------------------------------------------------------
+
+
+class LinkCodeResponse(BaseModel):
+    """The minted link code an org's admin hands to a prospective partner.
+
+    PII-free: the code is an opaque signed token over the child org id only (no
+    name/slug), plus a human-readable expiry hint so the issuer knows how long
+    the partner has to redeem it.
+    """
+
+    link_code: str
+    expires_in_minutes: int
+
+
+class AttachChildRequest(BaseModel):
+    """Redeem a child-issued link code to attach that child to the caller."""
+
+    link_code: str = Field(min_length=1, max_length=4096)
+
+
+@router.post("/link-code", response_model=LinkCodeResponse)
+async def mint_link_code(
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+) -> LinkCodeResponse:
+    """Mint a single-use link code so THIS org can be attached as a child.
+
+    Admin-only; the code is issued FOR the caller's own org (``org.id`` from the
+    ``get_tenant`` chokepoint — a swapped header / forged Host can't widen it).
+    Handing the code to a partner is the org's act of CONSENT to being adopted —
+    the partner can do nothing with it until then. The code carries only the
+    caller's org id under an HMAC signature; it expires in
+    ``AP_PARTNER_LINK_TTL_MINUTES`` and is burned on first redeem.
+
+    A 503 (feature off) when no signing key is configured — distinct from a 4xx
+    so the operator knows to set ``AP_PARTNER_LINK_SIGNING_KEY``, not that they
+    did something wrong. Issuing is audited (PII-free) into the org's own trail.
+    """
+    code = build_link_code(
+        child_org_id=org.id,
+        signing_key=settings.partner_link_signing_key,
+        ttl_minutes=settings.partner_link_ttl_minutes,
+    )
+    if code is None:
+        # No key → fail closed: the feature is not configured.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Partner linking is not enabled.",
+        )
+
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="partner.link_code_issued",
+        entity_type="organization",
+        entity_id=org.id,
+        details={"ttl_minutes": settings.partner_link_ttl_minutes},
+    )
+    return LinkCodeResponse(
+        link_code=code,
+        expires_in_minutes=settings.partner_link_ttl_minutes,
+    )
+
+
+@router.post("/children", response_model=ChildTenantSummary, status_code=status.HTTP_201_CREATED)
+async def attach_child(
+    body: AttachChildRequest,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+) -> ChildTenantSummary:
+    """Attach a consenting child tenant to the caller's partner org.
+
+    Admin-only. The privilege boundary: the only way to reach a child here is to
+    present a valid, unexpired, unconsumed link code that the CHILD's own admin
+    minted (``POST /api/partner/link-code``) — so a partner can never adopt an
+    org that didn't consent. The signature is verified first; an invalid /
+    expired / wrong-purpose code is one opaque 400 (no enumeration). The jti is
+    then claimed single-use in Redis (fail-closed) so a code can't be replayed.
+
+    Guards, in order:
+      * The signed code → the consenting child's org id (else opaque 400).
+      * Single-use claim on the jti (else 409 — already redeemed).
+      * The child org must exist (defensive 400 — the signed id is platform-
+        minted, so this only trips on a deleted org).
+      * **Re-parent guard**: a child already linked to a parent is 409 — no
+        silent takeover. Re-linking to the SAME caller is the idempotent no-op
+        (returns 201 with the summary), so a double-submit is safe.
+      * A partner can't adopt ITSELF (400) — a self-FK loop is nonsensical.
+
+    The link is the control-plane write ``child.parent_org_id = org.id``. It is
+    audited PII-free on BOTH trails: ``partner.child_attached`` on the partner's
+    (with the child org id) and ``partner.parent_linked`` on the child's (with
+    the partner org id) — so a SOX query against either tenant sees the change.
+    """
+    decoded = verify_link_code(body.link_code, settings.partner_link_signing_key)
+    if decoded is None:
+        # One opaque 400 for every bad-code path (disabled / forged / expired /
+        # wrong purpose) — never reveals which.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired link code.",
+        )
+
+    child_id = decoded.child_org_id
+
+    if child_id == org.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An organization cannot be its own partner.",
+        )
+
+    # Burn the single-use code BEFORE the mutation. If a later guard rejects the
+    # attach the code stays consumed — a rejected handshake doesn't get a free
+    # retry of the same code; the child re-issues. Fail-closed on a Redis blip.
+    if not await _claim_link_code_jti(decoded.jti):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This link code has already been used.",
+        )
+
+    child = await db.get(Organization, child_id)
+    if child is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired link code.",
+        )
+
+    # Re-parent guard. Idempotent if already OUR child; refuse if someone else's.
+    if child.parent_org_id is not None:
+        if child.parent_org_id == org.id:
+            return _child_summary(child)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That tenant is already linked to a partner.",
+        )
+
+    child.parent_org_id = org.id
+    await db.commit()
+
+    # Audit BOTH org trails, PII-free (org ids only — never names / slugs).
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="partner.child_attached",
+        entity_type="organization",
+        entity_id=child.id,
+        details={"child_org_id": str(child.id)},
+    )
+    await dispatch_auth_audit(
+        organization_id=child.id,
+        actor_id=user.id,
+        action="partner.parent_linked",
+        entity_type="organization",
+        entity_id=child.id,
+        details={"partner_org_id": str(org.id)},
+    )
+    return _child_summary(child)
+
+
+@router.delete("/children/{child_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def detach_child(
+    child_id: uuid.UUID,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+) -> None:
+    """Detach a child tenant from the caller's partner org.
+
+    Admin-only; scoped at the data layer to the caller's OWN children via
+    ``_resolve_child`` (``parent_org_id == org.id``), so a partner can only ever
+    detach a tenant it actually parents — a non-child / unknown id is the same
+    opaque 404 as everywhere on this surface (no enumeration). Sets
+    ``parent_org_id = NULL`` (back to standalone). Audited PII-free on BOTH
+    trails. Idempotent: ``_resolve_child`` only matches while the link exists, so
+    a second detach is a clean 404 (the link is already gone) — never a 500.
+    """
+    child = await _resolve_child(db, partner_id=org.id, child_id=child_id)
+
+    child.parent_org_id = None
+    await db.commit()
+
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="partner.child_detached",
+        entity_type="organization",
+        entity_id=child.id,
+        details={"child_org_id": str(child.id)},
+    )
+    await dispatch_auth_audit(
+        organization_id=child.id,
+        actor_id=user.id,
+        action="partner.parent_unlinked",
+        entity_type="organization",
+        entity_id=child.id,
+        details={"partner_org_id": str(org.id)},
+    )

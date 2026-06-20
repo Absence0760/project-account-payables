@@ -606,6 +606,24 @@ class Settings(BaseSettings):
     # recommendation is 5 minutes).
     slack_request_max_age_seconds: int = 300
 
+    # Partner / reseller link codes (white-label two-sided-consent attach). The
+    # HMAC-SHA256 key the platform signs a partner *link code* with: the
+    # prospective CHILD tenant's admin mints a short-lived code (proof of
+    # consent), and the PARTNER's admin redeems it to attach the child
+    # (`POST /api/partner/children`). The signature is what makes attach safe —
+    # a partner can't forge a code or point it at an org that didn't consent.
+    # Empty default → the feature is OFF: no link code can be minted and every
+    # redeem is rejected (fail-closed, no hardcoded fallback, mirroring the
+    # other HMAC secrets). The key's PRESENCE is the single on/off knob. The
+    # committed .env.development sets a NON-secret dev value so the flow is
+    # exercisable under `pnpm dev` / tests; deployed envs set the real key via
+    # sops. See docs/white-label.md § Partner / reseller admin.
+    partner_link_signing_key: str = ""
+    # Validity window of a partner link code, in minutes (default 30). Short by
+    # design: a link code is a one-shot, immediately-redeemed handshake between
+    # the child's admin and the partner's admin, not a long-lived invite.
+    partner_link_ttl_minutes: int = 30
+
     # Retention policies (SOX records management). The enforcement sweep is a
     # long-lived loop (like contract renewal / qms sync) that finds records past
     # their configured retention window and archives them via a privileged,
