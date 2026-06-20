@@ -341,9 +341,9 @@ surfaces). Tenant-scoped via `get_tenant_db` + `get_tenant`.
 **Advisory / suggestion-only — never overwrites.** The response carries the
 looked-up firmographics plus a per-field `suggestions` diff (where the provider's
 value differs from what we hold today); the enrichment path **never writes back
-onto the `Vendor` row**. Applying a suggestion is a separate, explicit step (a
-deferred follow-up — see below), mirroring the consolidation surface's
-"suggest a canonical, never merge" stance.
+onto the `Vendor` row**. Applying a suggestion is a separate, explicit step
+([`POST .../apply`](#post-apienrichmentvendorsvendor_idapply) below), mirroring
+the consolidation surface's "suggest a canonical, never merge" stance.
 
 **PII.** A vendor's raw `tax_id` is passed to a provider as a match key (an input
 only) but is **never echoed back** — only a masked `***<last4>` (`mask_tax_id`,
@@ -372,6 +372,56 @@ names only the missing `api_key`, never a secret).
 ```
 
 `annual_revenue` is a **string** on the wire (never a float — money invariant).
+
+### `POST /api/enrichment/vendors/{vendor_id}/apply`
+
+Roles: `admin`, `ap_manager`, `cfo` (the same managerial set as `enrich` —
+matches who can mutate vendors today). Tenant-scoped via `get_tenant_db` +
+`get_tenant`.
+
+Applies a steward-selected set of enrichment suggestions onto the `Vendor` row
+through an **audited write**. This is the explicit "apply" counterpart to the
+advisory `enrich` endpoint — the caller passes EXACTLY which fields to write
+(picked from the enrich diff), so the apply is **non-destructive**: only the
+named fields change, never a silent overwrite of everything.
+
+```json
+// request
+{ "fields": [
+    { "field": "address", "value": "1 Mock Plaza, Suite 100" },
+    { "field": "website", "value": "https://acmesupplies.example" }
+] }
+// response
+{
+  "vendor_id": "…",
+  "applied": {
+    "address": { "old": null, "new": "1 Mock Plaza, Suite 100" },
+    "website": { "old": null, "new": "https://acmesupplies.example" }
+  },
+  "vendor": { /* full VendorResponse after the write */ },
+  "applied_at": "2026-06-20T…Z"
+}
+```
+
+- **Applyable fields** (`APPLYABLE_FIELDS` in `api/enrichment.py`): `name`
+  (← provider `legal_name`), `address`, `website`. **`website` is a real column
+  as of migration 0061** (`vendors.website`, nullable `varchar(500)`,
+  tenant-scoped, fans out to every tenant DB) — until then the website
+  suggestion was surfaced but had nowhere to land.
+- **`tax_id` is NEVER applyable here.** A tax-id change is a fraud surface; it
+  must go through the existing **bank/tax change-request gate**
+  (`/api/vendors/change-requests/...`, AP-approval-staged), never an enrichment
+  auto-apply. A request naming `tax_id` (or any unknown / non-applyable field)
+  is rejected **422** (fail closed — the caller learns it didn't land rather
+  than having it silently dropped). `name` cannot be blanked (it's NOT NULL).
+- **Audited (invariant #3).** A genuine change writes a `vendor.updated`
+  `audit_log` row with the field-level before/after diff (via the same
+  `build_field_diff` the vendor PATCH uses) and `details.source =
+  "enrichment_apply"`. The applyable fields are PII-free, so the diff records
+  their literal old/new values.
+- **Idempotent.** Re-applying the same value produces no diff → no spurious
+  audit row (200 with an empty `applied` map). Driven by `build_field_diff`
+  emitting only genuinely-changed fields.
 
 ## Config (org settings, all safe defaults — no key required)
 
@@ -408,12 +458,14 @@ unknown keys dropped, numeric coercion guarded — like `_adaptive_settings`):
   adapter family with a deterministic `mock` default (local-first preserved) +
   fail-closed `dun_bradstreet` / `clearbit` skeletons. See
   [§ External enrichment](#external-enrichment-db--clearbit). Remaining:
-  - **Apply a suggestion** — the enrich endpoint is advisory (returns a
-    firmographics diff, never mutates the `Vendor` row). An explicit "apply this
-    suggested address / website" write path (audited, idempotent) is deferred.
-    Trigger: an "Apply" action in the vendor-detail UI. A `Vendor.website` column
-    would also be needed before the website suggestion can land (the model has no
-    website column today — the suggestion is surfaced but not yet applicable).
+  - ~~**Apply a suggestion**~~ — **DONE.**
+    [`POST /api/enrichment/vendors/{id}/apply`](#post-apienrichmentvendorsvendor_idapply)
+    writes a steward-selected set of fields (`name` / `address` / `website`)
+    onto the `Vendor` through an audited, idempotent, non-destructive path.
+    Migration 0061 added the `Vendor.website` column (tenant-scoped, fans out) so
+    the website suggestion can land. `tax_id` is intentionally excluded — it
+    goes through the bank/tax change-request gate, never an enrichment
+    auto-apply. Remaining: an "Apply" action in the vendor-detail UI (frontend).
   - **Live D&B / Clearbit calls** — the real adapters are working skeletons
     (request/response shapes match the published APIs) but need a live key wired
     via sops per-org before they call out; until then they fail closed.
