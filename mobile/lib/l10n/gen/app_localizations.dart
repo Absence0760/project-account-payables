@@ -1006,6 +1006,660 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{label}, currently {value}. Double tap to change.'**
   String advSearchDateFieldHint(String label, String value);
+
+  /// No description provided for @invoiceDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice Detail'**
+  String get invoiceDetailTitle;
+
+  /// No description provided for @invoiceDetailEdit.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit'**
+  String get invoiceDetailEdit;
+
+  /// No description provided for @invoiceDetailEditLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit invoice'**
+  String get invoiceDetailEditLabel;
+
+  /// No description provided for @invoiceDetailRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get invoiceDetailRetry;
+
+  /// No description provided for @invoiceDetailErrorPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Error: {error}'**
+  String invoiceDetailErrorPrefix(String error);
+
+  /// No description provided for @invoiceDetailNoChanges.
+  ///
+  /// In en, this message translates to:
+  /// **'No changes to save'**
+  String get invoiceDetailNoChanges;
+
+  /// No description provided for @invoiceDetailUpdated.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice updated'**
+  String get invoiceDetailUpdated;
+
+  /// No description provided for @invoiceDetailUpdateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save changes — please try again'**
+  String get invoiceDetailUpdateFailed;
+
+  /// No description provided for @invoiceDetailApproved.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice approved'**
+  String get invoiceDetailApproved;
+
+  /// No description provided for @invoiceDetailApproveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not approve invoice — please try again'**
+  String get invoiceDetailApproveFailed;
+
+  /// No description provided for @invoiceDetailRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice rejected'**
+  String get invoiceDetailRejected;
+
+  /// No description provided for @invoiceDetailRejectFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not reject invoice — please try again'**
+  String get invoiceDetailRejectFailed;
+
+  /// No description provided for @invoiceDetailRejectTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Reject Invoice'**
+  String get invoiceDetailRejectTitle;
+
+  /// No description provided for @invoiceDetailRejectReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Reason'**
+  String get invoiceDetailRejectReason;
+
+  /// No description provided for @invoiceDetailReject.
+  ///
+  /// In en, this message translates to:
+  /// **'Reject'**
+  String get invoiceDetailReject;
+
+  /// No description provided for @invoiceDetailApprove.
+  ///
+  /// In en, this message translates to:
+  /// **'Approve'**
+  String get invoiceDetailApprove;
+
+  /// No description provided for @invoiceDetailUnknownVendor.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown Vendor'**
+  String get invoiceDetailUnknownVendor;
+
+  /// No description provided for @invoiceDetailFieldInvoiceNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice #'**
+  String get invoiceDetailFieldInvoiceNumber;
+
+  /// No description provided for @invoiceDetailFieldPoNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'PO Number'**
+  String get invoiceDetailFieldPoNumber;
+
+  /// No description provided for @invoiceDetailFieldCurrency.
+  ///
+  /// In en, this message translates to:
+  /// **'Currency'**
+  String get invoiceDetailFieldCurrency;
+
+  /// No description provided for @invoiceDetailFieldInvoiceDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice Date'**
+  String get invoiceDetailFieldInvoiceDate;
+
+  /// No description provided for @invoiceDetailFieldDueDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Due Date'**
+  String get invoiceDetailFieldDueDate;
+
+  /// No description provided for @invoiceDetailFieldDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description'**
+  String get invoiceDetailFieldDescription;
+
+  /// No description provided for @invoiceDetailFieldGlAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'GL Account'**
+  String get invoiceDetailFieldGlAccount;
+
+  /// No description provided for @invoiceDetailFieldCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Created'**
+  String get invoiceDetailFieldCreated;
+
+  /// No description provided for @invoiceDetailActivity.
+  ///
+  /// In en, this message translates to:
+  /// **'Activity'**
+  String get invoiceDetailActivity;
+
+  /// No description provided for @invoiceDetailActivityError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load activity'**
+  String get invoiceDetailActivityError;
+
+  /// No description provided for @invoiceDetailFilePdfLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice PDF. Double tap to view full screen.'**
+  String get invoiceDetailFilePdfLabel;
+
+  /// No description provided for @invoiceDetailFileLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice file. Double tap to view full screen.'**
+  String get invoiceDetailFileLabel;
+
+  /// No description provided for @invoiceDetailTapToViewPdf.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to view PDF'**
+  String get invoiceDetailTapToViewPdf;
+
+  /// No description provided for @invoiceDetailTapToViewFile.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to view file'**
+  String get invoiceDetailTapToViewFile;
+
+  /// No description provided for @invoiceEditTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit Invoice'**
+  String get invoiceEditTitle;
+
+  /// No description provided for @invoiceEditClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close edit form'**
+  String get invoiceEditClose;
+
+  /// No description provided for @invoiceEditVendor.
+  ///
+  /// In en, this message translates to:
+  /// **'Vendor'**
+  String get invoiceEditVendor;
+
+  /// No description provided for @invoiceEditInvoiceNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice #'**
+  String get invoiceEditInvoiceNumber;
+
+  /// No description provided for @invoiceEditAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Amount'**
+  String get invoiceEditAmount;
+
+  /// No description provided for @invoiceEditPoNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'PO Number'**
+  String get invoiceEditPoNumber;
+
+  /// No description provided for @invoiceEditGlAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'GL Account'**
+  String get invoiceEditGlAccount;
+
+  /// No description provided for @invoiceEditDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description'**
+  String get invoiceEditDescription;
+
+  /// No description provided for @invoiceEditDueDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Due Date'**
+  String get invoiceEditDueDate;
+
+  /// No description provided for @invoiceEditNotSet.
+  ///
+  /// In en, this message translates to:
+  /// **'Not set'**
+  String get invoiceEditNotSet;
+
+  /// No description provided for @invoiceEditInvalidAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a valid amount (e.g. 1234.56)'**
+  String get invoiceEditInvalidAmount;
+
+  /// No description provided for @invoiceEditClearDueDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear due date'**
+  String get invoiceEditClearDueDate;
+
+  /// No description provided for @invoiceEditDueDateHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Due date, currently {value}. Double tap to change.'**
+  String invoiceEditDueDateHint(String value);
+
+  /// No description provided for @warningsSectionTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Warnings & fraud flags'**
+  String get warningsSectionTitle;
+
+  /// No description provided for @warningsPoMatchTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'PO Match'**
+  String get warningsPoMatchTitle;
+
+  /// No description provided for @warningsSeverityError.
+  ///
+  /// In en, this message translates to:
+  /// **'Error'**
+  String get warningsSeverityError;
+
+  /// No description provided for @warningsSeverityWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'Warning'**
+  String get warningsSeverityWarning;
+
+  /// No description provided for @warningsSeverityInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'Info'**
+  String get warningsSeverityInfo;
+
+  /// No description provided for @warningsPoLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'PO'**
+  String get warningsPoLabel;
+
+  /// No description provided for @warningsMatchLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{type} match'**
+  String warningsMatchLabel(String type);
+
+  /// No description provided for @warningsVarianceLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{value}% variance'**
+  String warningsVarianceLabel(String value);
+
+  /// No description provided for @erpStatusTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'ERP Status'**
+  String get erpStatusTitle;
+
+  /// No description provided for @erpStatusReference.
+  ///
+  /// In en, this message translates to:
+  /// **'ERP Reference'**
+  String get erpStatusReference;
+
+  /// No description provided for @erpStatusDocumentId.
+  ///
+  /// In en, this message translates to:
+  /// **'Document ID'**
+  String get erpStatusDocumentId;
+
+  /// No description provided for @erpStatusError.
+  ///
+  /// In en, this message translates to:
+  /// **'Error'**
+  String get erpStatusError;
+
+  /// No description provided for @erpStatusLastUpdate.
+  ///
+  /// In en, this message translates to:
+  /// **'Last update'**
+  String get erpStatusLastUpdate;
+
+  /// No description provided for @erpStatusStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get erpStatusStatus;
+
+  /// No description provided for @fileViewerPdfTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice PDF'**
+  String get fileViewerPdfTitle;
+
+  /// No description provided for @fileViewerImageTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice Image'**
+  String get fileViewerImageTitle;
+
+  /// No description provided for @fileViewerPdfError.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to load PDF'**
+  String get fileViewerPdfError;
+
+  /// No description provided for @fileViewerImageError.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to load image'**
+  String get fileViewerImageError;
+
+  /// No description provided for @fileViewerRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get fileViewerRetry;
+
+  /// No description provided for @timelineNoActivity.
+  ///
+  /// In en, this message translates to:
+  /// **'No activity yet'**
+  String get timelineNoActivity;
+
+  /// No description provided for @payTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Pay'**
+  String get payTitle;
+
+  /// No description provided for @payTabQueue.
+  ///
+  /// In en, this message translates to:
+  /// **'Queue'**
+  String get payTabQueue;
+
+  /// No description provided for @payTabRuns.
+  ///
+  /// In en, this message translates to:
+  /// **'Runs'**
+  String get payTabRuns;
+
+  /// No description provided for @paySummaryTotalPaid.
+  ///
+  /// In en, this message translates to:
+  /// **'Total Paid'**
+  String get paySummaryTotalPaid;
+
+  /// No description provided for @paySummaryPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get paySummaryPending;
+
+  /// No description provided for @paySummaryInQueue.
+  ///
+  /// In en, this message translates to:
+  /// **'In Queue'**
+  String get paySummaryInQueue;
+
+  /// No description provided for @paySummaryCardRebates.
+  ///
+  /// In en, this message translates to:
+  /// **'Card Rebates'**
+  String get paySummaryCardRebates;
+
+  /// No description provided for @paySummaryPaymentsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} payment} other {{count} payments}}'**
+  String paySummaryPaymentsSubtitle(int count);
+
+  /// No description provided for @payQueueEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No invoices awaiting payment'**
+  String get payQueueEmpty;
+
+  /// No description provided for @payQueueError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load the payment queue'**
+  String get payQueueError;
+
+  /// No description provided for @payQueueRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get payQueueRetry;
+
+  /// No description provided for @payQueueDue.
+  ///
+  /// In en, this message translates to:
+  /// **'Due {date}'**
+  String payQueueDue(String date);
+
+  /// No description provided for @payQueueNoDueDate.
+  ///
+  /// In en, this message translates to:
+  /// **'No due date'**
+  String get payQueueNoDueDate;
+
+  /// No description provided for @payQueueDiscount.
+  ///
+  /// In en, this message translates to:
+  /// **'discount {amount}'**
+  String payQueueDiscount(String amount);
+
+  /// No description provided for @payQueueOverdue.
+  ///
+  /// In en, this message translates to:
+  /// **'overdue'**
+  String get payQueueOverdue;
+
+  /// No description provided for @payQueueSelected.
+  ///
+  /// In en, this message translates to:
+  /// **'selected'**
+  String get payQueueSelected;
+
+  /// No description provided for @payMethodLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Payment method for {invoiceNumber}'**
+  String payMethodLabel(String invoiceNumber);
+
+  /// No description provided for @payMethodAch.
+  ///
+  /// In en, this message translates to:
+  /// **'ACH'**
+  String get payMethodAch;
+
+  /// No description provided for @payMethodWire.
+  ///
+  /// In en, this message translates to:
+  /// **'Wire'**
+  String get payMethodWire;
+
+  /// No description provided for @payMethodCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Check'**
+  String get payMethodCheck;
+
+  /// No description provided for @payMethodVirtualCard.
+  ///
+  /// In en, this message translates to:
+  /// **'Virtual Card'**
+  String get payMethodVirtualCard;
+
+  /// No description provided for @paySelectedCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} invoice selected} other {{count} invoices selected}}'**
+  String paySelectedCount(int count);
+
+  /// No description provided for @payClear.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear'**
+  String get payClear;
+
+  /// No description provided for @payCreateRun.
+  ///
+  /// In en, this message translates to:
+  /// **'Create Run'**
+  String get payCreateRun;
+
+  /// No description provided for @payCreateRunFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to create run: {error}'**
+  String payCreateRunFailed(String error);
+
+  /// No description provided for @payRunsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No payment runs'**
+  String get payRunsEmpty;
+
+  /// No description provided for @payRunSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} payment} other {{count} payments}} • {date}'**
+  String payRunSubtitle(int count, String date);
+
+  /// No description provided for @payRunCfoRequiredSuffix.
+  ///
+  /// In en, this message translates to:
+  /// **' • CFO approval required'**
+  String get payRunCfoRequiredSuffix;
+
+  /// No description provided for @payRunAnnounce.
+  ///
+  /// In en, this message translates to:
+  /// **'Run {amount}, {status}, {subtitle}'**
+  String payRunAnnounce(String amount, String status, String subtitle);
+
+  /// No description provided for @payRunActions.
+  ///
+  /// In en, this message translates to:
+  /// **'Run actions'**
+  String get payRunActions;
+
+  /// No description provided for @payRunActionExecute.
+  ///
+  /// In en, this message translates to:
+  /// **'Execute'**
+  String get payRunActionExecute;
+
+  /// No description provided for @payRunActionCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get payRunActionCancel;
+
+  /// No description provided for @payRunCfoBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'This run needs CFO approval before it can be executed.'**
+  String get payRunCfoBlocked;
+
+  /// No description provided for @payRunExecuteTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Execute payment run?'**
+  String get payRunExecuteTitle;
+
+  /// No description provided for @payRunExecuteBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This sends {amount} via the configured payment processor.'**
+  String payRunExecuteBody(String amount);
+
+  /// No description provided for @payRunExecuteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to execute: {error}'**
+  String payRunExecuteFailed(String error);
+
+  /// No description provided for @payRunCancelFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to cancel: {error}'**
+  String payRunCancelFailed(String error);
+
+  /// No description provided for @payRunStatusDraft.
+  ///
+  /// In en, this message translates to:
+  /// **'Draft'**
+  String get payRunStatusDraft;
+
+  /// No description provided for @payRunStatusCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed'**
+  String get payRunStatusCompleted;
+
+  /// No description provided for @payRunStatusSubmitted.
+  ///
+  /// In en, this message translates to:
+  /// **'Submitted'**
+  String get payRunStatusSubmitted;
+
+  /// No description provided for @payRunStatusPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Partial'**
+  String get payRunStatusPartial;
+
+  /// No description provided for @payRunStatusFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get payRunStatusFailed;
+
+  /// No description provided for @payRunStatusCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get payRunStatusCancelled;
+
+  /// No description provided for @payConfirmCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get payConfirmCancel;
+
+  /// No description provided for @payConfirmExecute.
+  ///
+  /// In en, this message translates to:
+  /// **'Execute'**
+  String get payConfirmExecute;
 }
 
 class _AppLocalizationsDelegate

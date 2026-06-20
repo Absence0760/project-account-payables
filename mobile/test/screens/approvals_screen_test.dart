@@ -8,10 +8,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
+
+/// Wraps the screen in a MaterialApp carrying the localization delegates so the
+/// localized `AppLocalizations.of(context)` resolves (defaults to English).
+Widget _localized() => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const ApprovalsScreen(),
+    );
 
 http.Response _list(List<Map<String, dynamic>> items) => http.Response(
       jsonEncode({'invoices': items}),
@@ -78,7 +87,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     // Let the post-frame callback fire and the store flip to loading.
     await tester.pump();
     await tester.pump();
@@ -97,7 +106,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.text('All caught up!'));
 
     expect(find.text('All caught up!'), findsOneWidget);
@@ -116,7 +125,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.text('All caught up!'));
 
     expect(find.text('All caught up!'), findsOneWidget);
@@ -133,7 +142,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.byType(InvoiceListTile));
 
     // Only the two ready_for_review rows render.
@@ -150,7 +159,7 @@ void main() {
       client: MockClient((req) async => _list([_invoiceJson('1')])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.byType(InvoiceListTile));
 
     expect(find.text('1 invoice pending'), findsOneWidget);
@@ -162,7 +171,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.text('All caught up!'));
 
     expect(
@@ -191,7 +200,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.byType(InvoiceListTile));
     expect(find.byType(InvoiceListTile), findsOneWidget);
 
@@ -225,7 +234,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+    await tester.pumpWidget(_localized());
     await _pumpUntil(tester, find.byType(InvoiceListTile));
 
     // Swipe right-to-left (endToStart) — confirmDismiss returns false.

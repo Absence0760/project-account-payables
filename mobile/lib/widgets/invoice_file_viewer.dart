@@ -4,6 +4,7 @@ import 'package:pdfx/pdfx.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/config.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 
 /// Renders an uploaded invoice file (image or PDF) full-screen.
 ///
@@ -37,7 +38,10 @@ class InvoiceFileViewer extends StatefulWidget {
 class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
   PdfController? _pdfController;
   bool _loading = true;
-  String? _error;
+  // True once the PDF byte-fetch / decode has failed. The user-facing message
+  // is resolved from AppLocalizations in build() — not here — because _loadPdf
+  // runs in initState, before the Localizations inherited widget is available.
+  bool _pdfError = false;
 
   bool get _isPdf => InvoiceFileViewer.isPdf(widget.fileUrl);
 
@@ -61,7 +65,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
   Future<void> _loadPdf() async {
     setState(() {
       _loading = true;
-      _error = null;
+      _pdfError = false;
     });
     try {
       // Fetch via the shared client so the auth + tenant headers are attached
@@ -80,7 +84,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
       debugPrint('[viewer] PDF load failed: $e');
       if (!mounted) return;
       setState(() {
-        _error = 'Unable to load PDF';
+        _pdfError = true;
         _loading = false;
       });
     }
@@ -88,22 +92,23 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        title: Text(_isPdf ? 'Invoice PDF' : 'Invoice Image'),
+        title: Text(_isPdf ? l.fileViewerPdfTitle : l.fileViewerImageTitle),
       ),
       backgroundColor: Colors.black,
-      body: _buildBody(),
+      body: _buildBody(l),
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildBody(AppLocalizations l) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null) {
+    if (_pdfError) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -111,7 +116,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
             Semantics(
               liveRegion: true,
               child: Text(
-                _error!,
+                l.fileViewerPdfError,
                 style: const TextStyle(color: Colors.white),
               ),
             ),
@@ -120,7 +125,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
               FilledButton.icon(
                 onPressed: _loadPdf,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
+                label: Text(l.fileViewerRetry),
               ),
           ],
         ),
@@ -140,10 +145,10 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
             if (progress == null) return child;
             return const Center(child: CircularProgressIndicator());
           },
-          errorBuilder: (_, _, _) => const Center(
+          errorBuilder: (_, _, _) => Center(
             child: Text(
-              'Unable to load image',
-              style: TextStyle(color: Colors.white),
+              l.fileViewerImageError,
+              style: const TextStyle(color: Colors.white),
             ),
           ),
         ),

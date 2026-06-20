@@ -175,6 +175,97 @@ void main() {
     expect(find.text('詳細検索'), findsOneWidget); // advSearchTitle
   });
 
+  testWidgets(
+      'the invoice-detail batch (detail / edit / warnings / ERP / file viewer) '
+      'switches with the locale', (tester) async {
+    // Guards the invoice-detail extraction batch. Proves the new keys
+    // re-localize live (not just that they parse), including a placeholder
+    // string (invoiceDetailErrorPrefix) and the variance placeholder
+    // (warningsVarianceLabel).
+    final probe = Builder(
+      builder: (context) {
+        final l = AppLocalizations.of(context);
+        return Scaffold(
+          body: Column(
+            children: [
+              Text(l.invoiceDetailTitle),
+              Text(l.invoiceDetailErrorPrefix('boom')),
+              Text(l.invoiceEditTitle),
+              Text(l.warningsSectionTitle),
+              Text(l.warningsVarianceLabel('+5.0')),
+              Text(l.erpStatusTitle),
+              Text(l.fileViewerPdfTitle),
+              Text(l.timelineNoActivity),
+            ],
+          ),
+        );
+      },
+    );
+
+    await LocaleStore.instance.setLocale(const Locale('en'));
+    await tester.pumpWidget(host(probe));
+    await tester.pump();
+    expect(find.text('Invoice Detail'), findsOneWidget); // invoiceDetailTitle
+    expect(find.text('Error: boom'), findsOneWidget); // placeholder
+    expect(find.text('Edit Invoice'), findsOneWidget); // invoiceEditTitle
+    expect(find.text('+5.0% variance'), findsOneWidget); // variance placeholder
+
+    await LocaleStore.instance.setLocale(const Locale('de'));
+    await tester.pump();
+    expect(find.text('Rechnungsdetails'), findsOneWidget); // invoiceDetailTitle
+    expect(find.text('Fehler: boom'), findsOneWidget); // placeholder
+    expect(find.text('ERP-Status'), findsOneWidget); // erpStatusTitle
+    expect(find.text('Invoice Detail'), findsNothing);
+
+    await LocaleStore.instance.setLocale(const Locale('ja'));
+    await tester.pump();
+    expect(find.text('請求書の詳細'), findsOneWidget); // invoiceDetailTitle
+    expect(find.text('まだアクティビティはありません'),
+        findsOneWidget); // timelineNoActivity
+  });
+
+  testWidgets(
+      'the payment-queue batch (Pay tabs / summary / runs) switches with '
+      'the locale', (tester) async {
+    // Guards the payment-queue extraction batch, including the plural
+    // (paySelectedCount) and a placeholder string (payRunExecuteFailed).
+    final probe = Builder(
+      builder: (context) {
+        final l = AppLocalizations.of(context);
+        return Scaffold(
+          body: Column(
+            children: [
+              Text(l.payTitle),
+              Text(l.payTabQueue),
+              Text(l.paySelectedCount(3)),
+              Text(l.payRunExecuteFailed('nope')),
+              Text(l.payMethodCheck),
+            ],
+          ),
+        );
+      },
+    );
+
+    await LocaleStore.instance.setLocale(const Locale('en'));
+    await tester.pumpWidget(host(probe));
+    await tester.pump();
+    expect(find.text('Pay'), findsOneWidget); // payTitle
+    expect(find.text('3 invoices selected'), findsOneWidget); // plural
+    expect(find.text('Failed to execute: nope'), findsOneWidget); // placeholder
+
+    await LocaleStore.instance.setLocale(const Locale('de'));
+    await tester.pump();
+    expect(find.text('Bezahlen'), findsOneWidget); // payTitle
+    expect(find.text('3 Rechnungen ausgewählt'), findsOneWidget); // plural
+    expect(find.text('Scheck'), findsOneWidget); // payMethodCheck
+    expect(find.text('Pay'), findsNothing);
+
+    await LocaleStore.instance.setLocale(const Locale('ja'));
+    await tester.pump();
+    expect(find.text('支払'), findsOneWidget); // payTitle
+    expect(find.text('3件の請求書を選択中'), findsOneWidget); // plural (other-only)
+  });
+
   testWidgets('the choice persists and reloads via init()', (tester) async {
     await LocaleStore.instance.setLocale(const Locale('fr'));
     expect(LocaleStore.tagOf(LocaleStore.instance.locale!), 'fr');

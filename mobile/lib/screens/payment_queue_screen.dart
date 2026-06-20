@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/payment.dart';
 import 'package:ap_mobile/models/payment_queue.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -19,6 +20,28 @@ String _money(String display) {
   final n = num.tryParse(display);
   return n == null ? display : _currencyFormat.format(n);
 }
+
+/// Localized label for a payment method (the model's `label` is English-only).
+String _methodLabel(AppLocalizations l, PaymentMethod m) => switch (m) {
+      PaymentMethod.ach => l.payMethodAch,
+      PaymentMethod.wire => l.payMethodWire,
+      PaymentMethod.check => l.payMethodCheck,
+      PaymentMethod.virtualCard => l.payMethodVirtualCard,
+    };
+
+/// Localized label for a payment-run status string. Unknown statuses fall back
+/// to the server-supplied value capitalized (mirrors the old behaviour).
+String _runStatusLabel(AppLocalizations l, String status) => switch (status) {
+      'draft' => l.payRunStatusDraft,
+      'completed' => l.payRunStatusCompleted,
+      'submitted' => l.payRunStatusSubmitted,
+      'partial' => l.payRunStatusPartial,
+      'failed' => l.payRunStatusFailed,
+      'cancelled' => l.payRunStatusCancelled,
+      _ => status.isEmpty
+          ? status
+          : status[0].toUpperCase() + status.substring(1),
+    };
 
 /// Payment queue + runs. Tab 1 lists approved invoices; the user ticks rows,
 /// picks a method per row, and creates a draft run. Tab 2 lists the runs and
@@ -56,14 +79,15 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pay'),
+        title: Text(l.payTitle),
         bottom: TabBar(
           controller: _tabs,
-          tabs: const [
-            Tab(text: 'Queue'),
-            Tab(text: 'Runs'),
+          tabs: [
+            Tab(text: l.payTabQueue),
+            Tab(text: l.payTabRuns),
           ],
         ),
       ),
@@ -89,6 +113,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     return ListenableBuilder(
       listenable: PaymentQueueStore.instance,
       builder: (context, _) {
+        final l = AppLocalizations.of(context);
         final s = PaymentQueueStore.instance.summary;
         if (s == null) return const SizedBox.shrink();
         return Padding(
@@ -102,26 +127,26 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
             childAspectRatio: 2.4,
             children: [
               KpiCard(
-                title: 'Total Paid',
+                title: l.paySummaryTotalPaid,
                 value: _money(s.totalPaidDisplay),
                 icon: Icons.check_circle,
                 color: Colors.green,
               ),
               KpiCard(
-                title: 'Pending',
+                title: l.paySummaryPending,
                 value: _money(s.totalPendingDisplay),
                 icon: Icons.hourglass_bottom,
                 color: Colors.orange,
               ),
               KpiCard(
-                title: 'In Queue',
+                title: l.paySummaryInQueue,
                 value: s.queueCount.toString(),
-                subtitle: '${s.paymentCount} payments',
+                subtitle: l.paySummaryPaymentsSubtitle(s.paymentCount),
                 icon: Icons.payments,
                 color: Colors.blue,
               ),
               KpiCard(
-                title: 'Card Rebates',
+                title: l.paySummaryCardRebates,
                 value: _money(s.totalRebatesDisplay),
                 icon: Icons.savings,
                 color: Colors.purple,
@@ -138,6 +163,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     return ListenableBuilder(
       listenable: PaymentQueueStore.instance,
       builder: (context, _) {
+        final l = AppLocalizations.of(context);
         final store = PaymentQueueStore.instance;
 
         if (store.loading && store.queue.isEmpty) {
@@ -147,7 +173,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
           return _errorState(store.error!, store.fetch);
         }
         if (store.queue.isEmpty) {
-          return const Center(child: Text('No invoices awaiting payment'));
+          return Center(child: Text(l.payQueueEmpty));
         }
 
         return Column(
@@ -171,24 +197,25 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Widget _queueRow(PaymentQueueItem item) {
+    final l = AppLocalizations.of(context);
     final store = PaymentQueueStore.instance;
     final selected = store.isSelected(item.id);
     final dueText = item.dueDate != null
-        ? 'Due ${_dateFormat.format(item.dueDate!)}'
-        : 'No due date';
+        ? l.payQueueDue(_dateFormat.format(item.dueDate!))
+        : l.payQueueNoDueDate;
 
     final subtitleParts = <String>[
       item.invoiceNumber,
       dueText,
       if (item.discountEligible && item.discountAmountDisplay != null)
-        'discount ${_money(item.discountAmountDisplay!)}',
+        l.payQueueDiscount(_money(item.discountAmountDisplay!)),
     ];
 
     return Semantics(
       label: '${item.vendorName}, ${_money(item.amountDisplay)}, '
           '${subtitleParts.join(', ')}'
-          '${item.isOverdue ? ', overdue' : ''}'
-          '${selected ? ', selected' : ''}',
+          '${item.isOverdue ? ', ${l.payQueueOverdue}' : ''}'
+          '${selected ? ', ${l.payQueueSelected}' : ''}',
       excludeSemantics: true,
       child: ListTile(
         leading: _canManage
@@ -244,9 +271,10 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Widget _methodDropdown(PaymentQueueItem item) {
+    final l = AppLocalizations.of(context);
     final store = PaymentQueueStore.instance;
     return Semantics(
-      label: 'Payment method for ${item.invoiceNumber}',
+      label: l.payMethodLabel(item.invoiceNumber),
       child: DropdownButton<PaymentMethod>(
         value: store.methodFor(item.id),
         isDense: true,
@@ -255,7 +283,8 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
             .map(
               (m) => DropdownMenuItem(
                 value: m,
-                child: Text(m.label, style: const TextStyle(fontSize: 13)),
+                child: Text(_methodLabel(l, m),
+                    style: const TextStyle(fontSize: 13)),
               ),
             )
             .toList(),
@@ -267,6 +296,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Widget _createRunBar(PaymentQueueStore store) {
+    final l = AppLocalizations.of(context);
     final count = store.selectedCount;
     return Material(
       elevation: 8,
@@ -278,19 +308,19 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
             children: [
               Expanded(
                 child: Text(
-                  '$count ${count == 1 ? 'invoice' : 'invoices'} selected',
+                  l.paySelectedCount(count),
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
               TextButton(
                 onPressed: _busy ? null : store.clearSelection,
-                child: const Text('Clear'),
+                child: Text(l.payClear),
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: _busy ? null : _createRun,
                 icon: const Icon(Icons.playlist_add_check),
-                label: const Text('Create Run'),
+                label: Text(l.payCreateRun),
               ),
             ],
           ),
@@ -300,13 +330,14 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Future<void> _createRun() async {
+    final l = AppLocalizations.of(context);
     setState(() => _busy = true);
     final message =
         await PaymentQueueStore.instance.createRunFromSelection();
     if (!mounted) return;
     setState(() => _busy = false);
-    final text =
-        message ?? 'Failed to create run: ${PaymentQueueStore.instance.error}';
+    final text = message ??
+        l.payCreateRunFailed('${PaymentQueueStore.instance.error}');
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     A11y.announce(context, text);
     if (message != null) _tabs.animateTo(1); // jump to Runs
@@ -317,14 +348,15 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
     return ListenableBuilder(
       listenable: PaymentQueueStore.instance,
       builder: (context, _) {
+        final l = AppLocalizations.of(context);
         final store = PaymentQueueStore.instance;
         if (store.runs.isEmpty) {
           return RefreshIndicator(
             onRefresh: store.fetchRuns,
             child: ListView(
-              children: const [
-                SizedBox(height: 120),
-                Center(child: Text('No payment runs')),
+              children: [
+                const SizedBox(height: 120),
+                Center(child: Text(l.payRunsEmpty)),
               ],
             ),
           );
@@ -342,12 +374,18 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Widget _runRow(PaymentRun run) {
+    final l = AppLocalizations.of(context);
     final subtitle =
-        '${run.paymentCount} ${run.paymentCount == 1 ? 'payment' : 'payments'} • '
-        '${_dateFormat.format(run.createdAt)}'
-        '${run.requiresCfoApproval && !run.cfoApproved ? ' • CFO approval required' : ''}';
+        l.payRunSubtitle(run.paymentCount, _dateFormat.format(run.createdAt)) +
+            (run.requiresCfoApproval && !run.cfoApproved
+                ? l.payRunCfoRequiredSuffix
+                : '');
     return Semantics(
-      label: 'Run ${_money(run.totalAmountDisplay)}, ${run.status}, $subtitle',
+      label: l.payRunAnnounce(
+        _money(run.totalAmountDisplay),
+        _runStatusLabel(l, run.status),
+        subtitle,
+      ),
       excludeSemantics: true,
       child: ListTile(
         title: Row(
@@ -370,13 +408,15 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
         ),
         trailing: _canManage && run.isExecutable
             ? Semantics(
-                label: 'Run actions',
+                label: l.payRunActions,
                 button: true,
                 child: PopupMenuButton<String>(
                   onSelected: (v) => _runMenuAction(run, v),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'execute', child: Text('Execute')),
-                    PopupMenuItem(value: 'cancel', child: Text('Cancel')),
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                        value: 'execute', child: Text(l.payRunActionExecute)),
+                    PopupMenuItem(
+                        value: 'cancel', child: Text(l.payRunActionCancel)),
                   ],
                 ),
               )
@@ -386,39 +426,39 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Future<void> _runMenuAction(PaymentRun run, String action) async {
+    final l = AppLocalizations.of(context);
     if (action == 'execute') {
       // CFO approval is a server-side gate; surface it before attempting.
       if (run.requiresCfoApproval && !run.cfoApproved) {
-        final text =
-            'This run needs CFO approval before it can be executed.';
+        final text = l.payRunCfoBlocked;
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(text)));
         A11y.announce(context, text);
         return;
       }
       final confirmed = await _confirm(
-        'Execute payment run?',
-        'This sends ${_money(run.totalAmountDisplay)} via the configured '
-            'payment processor.',
+        l.payRunExecuteTitle,
+        l.payRunExecuteBody(_money(run.totalAmountDisplay)),
       );
       if (confirmed != true) return;
       final message = await PaymentQueueStore.instance.executeRun(run.id);
       if (!mounted) return;
       final text = message ??
-          'Failed to execute: ${PaymentQueueStore.instance.error}';
+          l.payRunExecuteFailed('${PaymentQueueStore.instance.error}');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
       A11y.announce(context, text);
     } else {
       final message = await PaymentQueueStore.instance.cancelRun(run.id);
       if (!mounted) return;
-      final text =
-          message ?? 'Failed to cancel: ${PaymentQueueStore.instance.error}';
+      final text = message ??
+          l.payRunCancelFailed('${PaymentQueueStore.instance.error}');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
       A11y.announce(context, text);
     }
   }
 
   Future<bool?> _confirm(String title, String body) {
+    final l = AppLocalizations.of(context);
     return showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -427,11 +467,11 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
+            child: Text(l.payConfirmCancel),
           ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Execute'),
+            child: Text(l.payConfirmExecute),
           ),
         ],
       ),
@@ -439,6 +479,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Widget _runStatusChip(String status) {
+    final l = AppLocalizations.of(context);
     // Darkened foreground for AA contrast over the pale tint (≥4.5:1).
     final (color, textColor) = switch (status) {
       'draft' => (Colors.blueGrey, Colors.blueGrey.shade800),
@@ -449,9 +490,7 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
       'cancelled' => (Colors.grey, Colors.grey.shade800),
       _ => (Colors.grey, Colors.grey.shade800),
     };
-    final label = status.isEmpty
-        ? status
-        : status[0].toUpperCase() + status.substring(1);
+    final label = _runStatusLabel(l, status);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -470,15 +509,16 @@ class _PaymentQueueScreenState extends State<PaymentQueueScreen>
   }
 
   Widget _errorState(String message, Future<void> Function() onRetry) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
           const SizedBox(height: 12),
-          const Text('Could not load the payment queue'),
+          Text(l.payQueueError),
           const SizedBox(height: 12),
-          FilledButton(onPressed: onRetry, child: const Text('Retry')),
+          FilledButton(onPressed: onRetry, child: Text(l.payQueueRetry)),
         ],
       ),
     );

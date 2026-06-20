@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/invoice.dart';
 
@@ -80,34 +81,35 @@ class ErpStatusPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!visible) return const SizedBox.shrink();
+    final l = AppLocalizations.of(context);
     final info = erpInfo;
 
     final rows = <Widget>[];
     if (info?.erpReference != null && info!.erpReference!.isNotEmpty) {
-      rows.add(_kv('ERP Reference', info.erpReference!));
+      rows.add(_kv(l.erpStatusReference, info.erpReference!));
     }
     if (info?.erpDocumentId != null && info!.erpDocumentId!.isNotEmpty) {
-      rows.add(_kv('Document ID', info.erpDocumentId!));
+      rows.add(_kv(l.erpStatusDocumentId, info.erpDocumentId!));
     }
     if (info?.lastError != null && info!.lastError!.isNotEmpty) {
-      rows.add(_kv('Error', info.lastError!, error: true));
+      rows.add(_kv(l.erpStatusError, info.lastError!, error: true));
     }
     if (info != null) {
       final by = info.actor != null ? ' by ${info.actor}' : '';
-      rows.add(_kv('Last update',
+      rows.add(_kv(l.erpStatusLastUpdate,
           '${info.actionLabel}$by · ${_dateTimeFormat.format(info.time)}'));
     }
     if (rows.isEmpty) {
       // ERP-bound status but no audit detail yet (e.g. sending in flight).
-      rows.add(_kv('Status', invoice.status.label));
+      rows.add(_kv(l.erpStatusStatus, invoice.status.label));
     }
 
     // One merged announcement for the whole panel.
     final summary = [
-      'ERP status',
-      if (info?.erpReference != null) 'reference ${info!.erpReference}',
-      if (info?.erpDocumentId != null) 'document ${info!.erpDocumentId}',
-      if (info?.lastError != null) 'error ${info!.lastError}',
+      l.erpStatusTitle,
+      if (info?.erpReference != null) '${l.erpStatusReference} ${info!.erpReference}',
+      if (info?.erpDocumentId != null) '${l.erpStatusDocumentId} ${info!.erpDocumentId}',
+      if (info?.lastError != null) '${l.erpStatusError} ${info!.lastError}',
     ].join(', ');
 
     return Semantics(
@@ -129,7 +131,7 @@ class ErpStatusPanel extends StatelessWidget {
                 Icon(Icons.sync_alt, size: 18, color: Colors.indigo.shade700),
                 const SizedBox(width: 8),
                 Text(
-                  'ERP Status',
+                  l.erpStatusTitle,
                   style: TextStyle(
                     color: Colors.indigo.shade700,
                     fontSize: 14,

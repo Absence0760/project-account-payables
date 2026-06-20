@@ -498,4 +498,388 @@ class AppLocalizationsDe extends AppLocalizations {
   String advSearchDateFieldHint(String label, String value) {
     return '$label, aktuell $value. Zum Ändern doppeltippen.';
   }
+
+  @override
+  String get invoiceDetailTitle => 'Rechnungsdetails';
+
+  @override
+  String get invoiceDetailEdit => 'Bearbeiten';
+
+  @override
+  String get invoiceDetailEditLabel => 'Rechnung bearbeiten';
+
+  @override
+  String get invoiceDetailRetry => 'Erneut versuchen';
+
+  @override
+  String invoiceDetailErrorPrefix(String error) {
+    return 'Fehler: $error';
+  }
+
+  @override
+  String get invoiceDetailNoChanges => 'Keine Änderungen zu speichern';
+
+  @override
+  String get invoiceDetailUpdated => 'Rechnung aktualisiert';
+
+  @override
+  String get invoiceDetailUpdateFailed =>
+      'Änderungen konnten nicht gespeichert werden — bitte erneut versuchen';
+
+  @override
+  String get invoiceDetailApproved => 'Rechnung freigegeben';
+
+  @override
+  String get invoiceDetailApproveFailed =>
+      'Rechnung konnte nicht freigegeben werden — bitte erneut versuchen';
+
+  @override
+  String get invoiceDetailRejected => 'Rechnung abgelehnt';
+
+  @override
+  String get invoiceDetailRejectFailed =>
+      'Rechnung konnte nicht abgelehnt werden — bitte erneut versuchen';
+
+  @override
+  String get invoiceDetailRejectTitle => 'Rechnung ablehnen';
+
+  @override
+  String get invoiceDetailRejectReason => 'Grund';
+
+  @override
+  String get invoiceDetailReject => 'Ablehnen';
+
+  @override
+  String get invoiceDetailApprove => 'Freigeben';
+
+  @override
+  String get invoiceDetailUnknownVendor => 'Unbekannter Lieferant';
+
+  @override
+  String get invoiceDetailFieldInvoiceNumber => 'Rechnungs-Nr.';
+
+  @override
+  String get invoiceDetailFieldPoNumber => 'Bestellnummer';
+
+  @override
+  String get invoiceDetailFieldCurrency => 'Währung';
+
+  @override
+  String get invoiceDetailFieldInvoiceDate => 'Rechnungsdatum';
+
+  @override
+  String get invoiceDetailFieldDueDate => 'Fälligkeitsdatum';
+
+  @override
+  String get invoiceDetailFieldDescription => 'Beschreibung';
+
+  @override
+  String get invoiceDetailFieldGlAccount => 'Sachkonto';
+
+  @override
+  String get invoiceDetailFieldCreated => 'Erstellt';
+
+  @override
+  String get invoiceDetailActivity => 'Aktivität';
+
+  @override
+  String get invoiceDetailActivityError =>
+      'Aktivität konnte nicht geladen werden';
+
+  @override
+  String get invoiceDetailFilePdfLabel =>
+      'Rechnungs-PDF. Zum Anzeigen im Vollbild doppeltippen.';
+
+  @override
+  String get invoiceDetailFileLabel =>
+      'Rechnungsdatei. Zum Anzeigen im Vollbild doppeltippen.';
+
+  @override
+  String get invoiceDetailTapToViewPdf => 'Zum Anzeigen des PDFs tippen';
+
+  @override
+  String get invoiceDetailTapToViewFile => 'Zum Anzeigen der Datei tippen';
+
+  @override
+  String get invoiceEditTitle => 'Rechnung bearbeiten';
+
+  @override
+  String get invoiceEditClose => 'Bearbeitungsformular schließen';
+
+  @override
+  String get invoiceEditVendor => 'Lieferant';
+
+  @override
+  String get invoiceEditInvoiceNumber => 'Rechnungs-Nr.';
+
+  @override
+  String get invoiceEditAmount => 'Betrag';
+
+  @override
+  String get invoiceEditPoNumber => 'Bestellnummer';
+
+  @override
+  String get invoiceEditGlAccount => 'Sachkonto';
+
+  @override
+  String get invoiceEditDescription => 'Beschreibung';
+
+  @override
+  String get invoiceEditDueDate => 'Fälligkeitsdatum';
+
+  @override
+  String get invoiceEditNotSet => 'Nicht festgelegt';
+
+  @override
+  String get invoiceEditInvalidAmount =>
+      'Gültigen Betrag eingeben (z. B. 1234,56)';
+
+  @override
+  String get invoiceEditClearDueDate => 'Fälligkeitsdatum löschen';
+
+  @override
+  String invoiceEditDueDateHint(String value) {
+    return 'Fälligkeitsdatum, aktuell $value. Zum Ändern doppeltippen.';
+  }
+
+  @override
+  String get warningsSectionTitle => 'Warnungen & Betrugshinweise';
+
+  @override
+  String get warningsPoMatchTitle => 'Bestellabgleich';
+
+  @override
+  String get warningsSeverityError => 'Fehler';
+
+  @override
+  String get warningsSeverityWarning => 'Warnung';
+
+  @override
+  String get warningsSeverityInfo => 'Info';
+
+  @override
+  String get warningsPoLabel => 'Bestellung';
+
+  @override
+  String warningsMatchLabel(String type) {
+    return '$type-Abgleich';
+  }
+
+  @override
+  String warningsVarianceLabel(String value) {
+    return '$value % Abweichung';
+  }
+
+  @override
+  String get erpStatusTitle => 'ERP-Status';
+
+  @override
+  String get erpStatusReference => 'ERP-Referenz';
+
+  @override
+  String get erpStatusDocumentId => 'Dokument-ID';
+
+  @override
+  String get erpStatusError => 'Fehler';
+
+  @override
+  String get erpStatusLastUpdate => 'Letzte Aktualisierung';
+
+  @override
+  String get erpStatusStatus => 'Status';
+
+  @override
+  String get fileViewerPdfTitle => 'Rechnungs-PDF';
+
+  @override
+  String get fileViewerImageTitle => 'Rechnungsbild';
+
+  @override
+  String get fileViewerPdfError => 'PDF konnte nicht geladen werden';
+
+  @override
+  String get fileViewerImageError => 'Bild konnte nicht geladen werden';
+
+  @override
+  String get fileViewerRetry => 'Erneut versuchen';
+
+  @override
+  String get timelineNoActivity => 'Noch keine Aktivität';
+
+  @override
+  String get payTitle => 'Bezahlen';
+
+  @override
+  String get payTabQueue => 'Warteschlange';
+
+  @override
+  String get payTabRuns => 'Läufe';
+
+  @override
+  String get paySummaryTotalPaid => 'Gesamt bezahlt';
+
+  @override
+  String get paySummaryPending => 'Ausstehend';
+
+  @override
+  String get paySummaryInQueue => 'In Warteschlange';
+
+  @override
+  String get paySummaryCardRebates => 'Karten-Rückvergütungen';
+
+  @override
+  String paySummaryPaymentsSubtitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Zahlungen',
+      one: '$count Zahlung',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get payQueueEmpty => 'Keine Rechnungen zur Zahlung';
+
+  @override
+  String get payQueueError =>
+      'Zahlungswarteschlange konnte nicht geladen werden';
+
+  @override
+  String get payQueueRetry => 'Erneut versuchen';
+
+  @override
+  String payQueueDue(String date) {
+    return 'Fällig $date';
+  }
+
+  @override
+  String get payQueueNoDueDate => 'Kein Fälligkeitsdatum';
+
+  @override
+  String payQueueDiscount(String amount) {
+    return 'Rabatt $amount';
+  }
+
+  @override
+  String get payQueueOverdue => 'überfällig';
+
+  @override
+  String get payQueueSelected => 'ausgewählt';
+
+  @override
+  String payMethodLabel(String invoiceNumber) {
+    return 'Zahlungsmethode für $invoiceNumber';
+  }
+
+  @override
+  String get payMethodAch => 'ACH';
+
+  @override
+  String get payMethodWire => 'Überweisung';
+
+  @override
+  String get payMethodCheck => 'Scheck';
+
+  @override
+  String get payMethodVirtualCard => 'Virtuelle Karte';
+
+  @override
+  String paySelectedCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Rechnungen ausgewählt',
+      one: '$count Rechnung ausgewählt',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get payClear => 'Löschen';
+
+  @override
+  String get payCreateRun => 'Lauf erstellen';
+
+  @override
+  String payCreateRunFailed(String error) {
+    return 'Lauf konnte nicht erstellt werden: $error';
+  }
+
+  @override
+  String get payRunsEmpty => 'Keine Zahlungsläufe';
+
+  @override
+  String payRunSubtitle(int count, String date) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Zahlungen',
+      one: '$count Zahlung',
+    );
+    return '$_temp0 • $date';
+  }
+
+  @override
+  String get payRunCfoRequiredSuffix => ' • CFO-Freigabe erforderlich';
+
+  @override
+  String payRunAnnounce(String amount, String status, String subtitle) {
+    return 'Lauf $amount, $status, $subtitle';
+  }
+
+  @override
+  String get payRunActions => 'Lauf-Aktionen';
+
+  @override
+  String get payRunActionExecute => 'Ausführen';
+
+  @override
+  String get payRunActionCancel => 'Stornieren';
+
+  @override
+  String get payRunCfoBlocked =>
+      'Dieser Lauf benötigt eine CFO-Freigabe, bevor er ausgeführt werden kann.';
+
+  @override
+  String get payRunExecuteTitle => 'Zahlungslauf ausführen?';
+
+  @override
+  String payRunExecuteBody(String amount) {
+    return 'Dies sendet $amount über den konfigurierten Zahlungsdienstleister.';
+  }
+
+  @override
+  String payRunExecuteFailed(String error) {
+    return 'Ausführen fehlgeschlagen: $error';
+  }
+
+  @override
+  String payRunCancelFailed(String error) {
+    return 'Stornieren fehlgeschlagen: $error';
+  }
+
+  @override
+  String get payRunStatusDraft => 'Entwurf';
+
+  @override
+  String get payRunStatusCompleted => 'Abgeschlossen';
+
+  @override
+  String get payRunStatusSubmitted => 'Eingereicht';
+
+  @override
+  String get payRunStatusPartial => 'Teilweise';
+
+  @override
+  String get payRunStatusFailed => 'Fehlgeschlagen';
+
+  @override
+  String get payRunStatusCancelled => 'Storniert';
+
+  @override
+  String get payConfirmCancel => 'Abbrechen';
+
+  @override
+  String get payConfirmExecute => 'Ausführen';
 }
