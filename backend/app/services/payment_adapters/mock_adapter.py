@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.services.payment_adapters.base import (
+    BalanceResult,
     CorridorQuote,
     PaymentAdapter,
     PaymentPayload,
@@ -133,6 +134,26 @@ class MockPaymentAdapter(PaymentAdapter):
             failure_reason=payload.get("failure_reason"),
             occurred_at=datetime.now(UTC).isoformat(),
             raw=payload,
+        )
+
+    # Deterministic funding-account balance so the cash-position dashboard can
+    # auto-seed an opening balance in local dev with no real bank credential.
+    _DEFAULT_BALANCE = Decimal("250000.00")
+
+    async def get_balance(self) -> BalanceResult:
+        """Return a deterministic balance for local dev / tests.
+
+        Honors `self.config["balance"]` / `self.config["balance_currency"]` so a
+        test can inject a specific figure (or `available: false` to simulate a
+        processor without the capability) without subclassing."""
+        if self.config.get("balance_available") is False:
+            return BalanceResult(available=False, unavailable_reason="disabled_in_config")
+        raw = self.config.get("balance", self._DEFAULT_BALANCE)
+        return BalanceResult(
+            available=True,
+            amount=Decimal(str(raw)),
+            currency=self.config.get("balance_currency", "USD"),
+            account_ref="mock-operating",
         )
 
     async def test_connection(self) -> bool:

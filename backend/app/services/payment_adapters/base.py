@@ -133,6 +133,25 @@ class CorridorQuote:
 
 
 @dataclass
+class BalanceResult:
+    """Current available balance on the org's funding/operating account at the
+    processor, used to auto-seed the cash-position dashboard's opening balance.
+
+    `available` is the load-bearing field (mirrors `CorridorQuote`): an adapter
+    that can't report a balance — no bank link, no balance endpoint, transport
+    failure — returns ``BalanceResult(available=False, ...)`` and the caller
+    falls back to the org's bring-your-own opening balance. `amount` is exact
+    (`Decimal`, never float) and only meaningful when `available` is True.
+    """
+
+    available: bool
+    amount: Decimal = Decimal("0")
+    currency: str = "USD"
+    account_ref: str | None = None  # opaque account label for the UI — never a full account number
+    unavailable_reason: str | None = None
+
+
+@dataclass
 class WebhookEvent:
     """Normalised representation of a webhook from the processor.
 
@@ -202,6 +221,24 @@ class PaymentAdapter:
         outcome on the audit row.
         """
         return False
+
+    async def get_balance(self) -> BalanceResult:
+        """Report the current available balance on the org's funding account.
+
+        OPTIONAL capability — the default returns
+        ``BalanceResult(available=False, unavailable_reason="not_supported")``
+        so adapters that have no balance endpoint (or aren't bank-linked) are
+        unaffected and the caller transparently falls back to the manual
+        bring-your-own opening balance. Concrete adapters override this with a
+        live read against the processor (mock returns a deterministic figure so
+        local dev needs no real bank credential).
+
+        Best-effort by contract: implementations should catch transport
+        failures and return ``available=False`` rather than raise. The
+        cash-position endpoint also guards the call, so a balance fetch never
+        500s the dashboard.
+        """
+        return BalanceResult(available=False, unavailable_reason="not_supported")
 
     async def quote_payment(self, payload: PaymentPayload) -> CorridorQuote:
         """Return a price quote for this payment WITHOUT submitting it.
