@@ -7,6 +7,8 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import Tabs from '$lib/components/ui/Tabs.svelte';
+	import AgentDashboard from '$lib/components/exceptions/AgentDashboard.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 
@@ -53,6 +55,10 @@
 	let selectedIds = $state<Set<string>>(new Set());
 
 	let hasMore = $derived(exceptions.length < total);
+
+	// Top-level view: the operational queue vs the AI-agent dashboard. Persisted
+	// in the URL hash so a refresh / shared link keeps the tab.
+	let view = $state<'queue' | 'agents'>('queue');
 
 	let resolveTarget = $state<ExceptionItem | null>(null); // single-row resolve modal
 	let bulkResolveOpen = $state(false);                    // bulk-resolve modal
@@ -295,6 +301,22 @@
 </script>
 
 <PageHeader title="Exceptions">
+	<Tabs
+		tabs={[
+			{ key: 'queue', label: 'Queue', count: summary ? summary.open + summary.escalated : undefined },
+			{ key: 'agents', label: 'AI Agents' }
+		]}
+		bind:active={view}
+		ariaLabel="Exceptions views"
+		idPrefix="exc"
+	/>
+
+	{#if view === 'agents'}
+		<div id="exc-panel-agents" role="tabpanel" aria-labelledby="exc-tab-agents">
+			<AgentDashboard />
+		</div>
+	{:else}
+	<div id="exc-panel-queue" role="tabpanel" aria-labelledby="exc-tab-queue">
 	{#if summary}
 		<FilterChips chips={statusChips} bind:active={statusFilter} />
 
@@ -420,6 +442,8 @@
 		<div class="load-more-row">
 			<span class="load-more-end">Showing all {total} exception{total === 1 ? '' : 's'}</span>
 		</div>
+	{/if}
+	</div>
 	{/if}
 </PageHeader>
 
