@@ -21,6 +21,13 @@ export interface PartnerOverview {
 	children: ChildTenant[];
 }
 
+/** A single-use link code an org's admin mints so a partner can attach it.
+ *  Two-sided consent: handing this to a partner IS the act of consenting. */
+export interface LinkCode {
+	link_code: string;
+	expires_in_minutes: number;
+}
+
 /** A child tenant's white-label branding (same shape as the org's own brand). */
 export interface ChildBranding {
 	product_name: string;

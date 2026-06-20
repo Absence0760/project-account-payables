@@ -5,9 +5,17 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
-	import { getPartnerOverview, getChildBranding, updateChildBranding } from '$lib/api/partner';
+	import {
+		getPartnerOverview,
+		getChildBranding,
+		updateChildBranding,
+		mintLinkCode,
+		attachChild,
+		detachChild
+	} from '$lib/api/partner';
 	import type { ChildBranding, ChildTenant, PartnerOverview } from '$lib/types/partner';
 
 	// RBAC: the backend gates every /api/partner endpoint to admin only and 403s
@@ -32,7 +40,8 @@
 		{ label: 'Tenant' },
 		{ label: 'Slug' },
 		{ label: 'Plan' },
-		{ label: 'Brand name' }
+		{ label: 'Brand name' },
+		{ label: '', class: 'actions-col' }
 	];
 
 	async function load() {
@@ -125,14 +134,133 @@
 			saving = false;
 		}
 	}
+
+	// ── Link-code mint (this workspace consents to being a child) ──────────────
+	let mintedCode = $state<string | null>(null);
+	let mintExpiry = $state<number | null>(null);
+	let minting = $state(false);
+
+	async function mintCode() {
+		minting = true;
+		try {
+			const res = await mintLinkCode();
+			mintedCode = res.link_code;
+			mintExpiry = res.expires_in_minutes;
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Failed to mint link code', 'error');
+		} finally {
+			minting = false;
+		}
+	}
+
+	async function copyCode() {
+		if (!mintedCode) return;
+		try {
+			await navigator.clipboard.writeText(mintedCode);
+			toast('Link code copied', 'success');
+		} catch {
+			toast('Copy failed — select and copy the code manually', 'error');
+		}
+	}
+
+	// ── Attach a consenting child (redeem a code its admin minted) ─────────────
+	let showAttach = $state(false);
+	let attachCodeInput = $state('');
+	let attaching = $state(false);
+
+	function openAttach() {
+		attachCodeInput = '';
+		showAttach = true;
+	}
+
+	async function submitAttach() {
+		const code = attachCodeInput.trim();
+		if (!code) {
+			toast('Paste the link code the child tenant gave you', 'error');
+			return;
+		}
+		attaching = true;
+		try {
+			const child = await attachChild(code);
+			toast(`Attached ${child.name}`, 'success');
+			showAttach = false;
+			await load();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Failed to attach child', 'error');
+		} finally {
+			attaching = false;
+		}
+	}
+
+	// ── Detach a child (armed two-click confirm) ───────────────────────────────
+	let confirmDetachId = $state<string | null>(null);
+	let detaching = $state(false);
+
+	async function handleDetach(child: ChildTenant) {
+		if (confirmDetachId !== child.id) {
+			confirmDetachId = child.id;
+			return;
+		}
+		detaching = true;
+		try {
+			await detachChild(child.id);
+			toast(`Detached ${child.name}`, 'success');
+			confirmDetachId = null;
+			await load();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Failed to detach child', 'error');
+		} finally {
+			detaching = false;
+		}
+	}
 </script>
 
+<!-- Un-arm a pending Detach when clicking outside any row action. -->
+<svelte:window
+	onclick={(e) => {
+		if (confirmDetachId && !(e.target as HTMLElement)?.closest?.('.row-action')) {
+			confirmDetachId = null;
+		}
+	}}
+/>
+
 <PageHeader title="Partner Admin">
+	{#snippet actions()}
+		<button type="button" class="btn-primary" onclick={openAttach} data-testid="attach-child-btn">
+			+ Attach child
+		</button>
+	{/snippet}
+
 	<p class="page-hint">
 		Manage the branded child tenants this workspace administers as a partner / reseller. Each
 		child is a separate tenant whose white-label branding (product name, logo, accent colors) you
 		can view and push from here. You can only see and affect tenants linked to this workspace.
 	</p>
+
+	<!-- Link-code panel: this workspace consents to being attached AS a child. A
+	     partner then redeems the code to link us under their account. -->
+	<section class="link-code-panel" data-testid="link-code-panel">
+		<h2>Join a partner</h2>
+		<p class="panel-hint">
+			Want another workspace to manage this one as a partner / reseller? Generate a single-use
+			link code and give it to them — handing over the code is how you consent. They redeem it to
+			attach this workspace as their child. A code expires shortly and can be used once.
+		</p>
+		<div class="link-code-actions">
+			<button type="button" class="btn-cancel" onclick={mintCode} disabled={minting}>
+				{minting ? 'Generating…' : 'Generate link code'}
+			</button>
+		</div>
+		{#if mintedCode}
+			<div class="minted" data-testid="minted-link-code">
+				<code class="code-value">{mintedCode}</code>
+				<button type="button" class="btn-cancel copy-btn" onclick={copyCode}>Copy</button>
+				{#if mintExpiry !== null}
+					<span class="expiry">Expires in {mintExpiry} min</span>
+				{/if}
+			</div>
+		{/if}
+	</section>
 
 	{#if loading}
 		<p class="state" data-testid="partner-loading">Loading…</p>
@@ -169,6 +297,17 @@
 						<td class="mono">{child.slug}</td>
 						<td>{child.plan}</td>
 						<td>{child.product_name || '—'}</td>
+						<td class="actions">
+							<RowAction
+								variant="danger"
+								armed={confirmDetachId === child.id}
+								disabled={detaching}
+								onclick={() => handleDetach(child)}
+								ariaLabel={`Detach ${child.name}`}
+							>
+								{confirmDetachId === child.id ? 'Confirm detach' : 'Detach'}
+							</RowAction>
+						</td>
 					</tr>
 				{/each}
 			{/snippet}
@@ -241,6 +380,42 @@
 	{/if}
 </Modal>
 
+<!-- Attach a consenting child by redeeming the code its admin minted -->
+<Modal
+	open={showAttach}
+	ariaLabel="Attach child tenant"
+	title="Attach a child tenant"
+	width="sm"
+	onclose={() => (showAttach = false)}
+>
+	<form
+		onsubmit={(e) => {
+			e.preventDefault();
+			submitAttach();
+		}}
+	>
+		<p class="modal-hint">
+			Paste the single-use link code the child tenant's admin generated for you. They must have
+			generated it from their own Partner Admin page — that's their consent to being managed here.
+		</p>
+		<label>
+			<span>Link code <em class="required">*</em></span>
+			<input
+				type="text"
+				bind:value={attachCodeInput}
+				placeholder="paste the code…"
+				data-testid="attach-code-input"
+			/>
+		</label>
+		<div class="modal-footer">
+			<button type="button" class="btn-cancel" onclick={() => (showAttach = false)}>Cancel</button>
+			<button type="submit" class="btn-primary" disabled={attaching}>
+				{attaching ? 'Attaching…' : 'Attach'}
+			</button>
+		</div>
+	</form>
+</Modal>
+
 <style>
 	.page-hint {
 		margin: 0;
@@ -267,5 +442,59 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 0.75rem;
+	}
+
+	.link-code-panel {
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 1rem 1.25rem;
+		background: var(--surface);
+	}
+
+	.link-code-panel h2 {
+		margin: 0 0 0.25rem;
+		font-size: 1rem;
+	}
+
+	.panel-hint {
+		margin: 0 0 0.75rem;
+		color: var(--text-muted);
+		font-size: 0.82rem;
+		max-width: 640px;
+	}
+
+	.link-code-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+
+	.minted {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-top: 0.75rem;
+		flex-wrap: wrap;
+	}
+
+	.code-value {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.78rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0.4rem 0.6rem;
+		max-width: 100%;
+		overflow-wrap: anywhere;
+	}
+
+	.expiry {
+		color: var(--text-muted);
+		font-size: 0.78rem;
+	}
+
+	.modal-hint {
+		margin: 0 0 0.75rem;
+		color: var(--text-muted);
+		font-size: 0.82rem;
 	}
 </style>
