@@ -140,6 +140,11 @@ NO_AUTH_REQUIRED = {
     ("POST", "/portal/auth/mfa/challenge/email"),
     # portal.py — single-use card-reveal token; the URL token IS the credential
     ("GET", "/portal/cards/{token}"),
+    # portal.py — public-by-design white-label brand read for the (unauthenticated)
+    # supplier-portal login + authed portal pages. Tenant resolved by `get_tenant`
+    # (X-Tenant-Slug / custom-domain Host); returns only the non-sensitive
+    # `BrandConfig` fields. Mirrors /auth/sso/config. See docs/white-label.md.
+    ("GET", "/portal/branding"),
     # email_intake.py — webhook authenticated by HMAC + per-tenant token in address
     ("POST", "/email-intake/inbound/{provider}"),
     # peppol_inbound.py — inbound AS4 receive webhook; HMAC-verified, tenant in

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
+	import { portalBrand } from '$lib/stores/portalBrand.svelte';
 	import { goto } from '$app/navigation';
 
 	let email = $state('');
@@ -145,7 +146,10 @@
 		</form>
 	{:else}
 		<form class="login-card" onsubmit={handleSubmit}>
-			<h1>Supplier Portal</h1>
+			{#if portalBrand.logoUrl}
+				<img class="brand-logo" src={portalBrand.logoUrl} alt={portalBrand.productName} />
+			{/if}
+			<h1>{portalBrand.productName}</h1>
 			<p class="subtitle">Sign in to submit invoices and view payments</p>
 
 			<div role="alert" aria-live="assertive">
@@ -186,6 +190,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
+	}
+	.brand-logo {
+		height: 40px;
+		width: auto;
+		max-width: 200px;
+		object-fit: contain;
+		align-self: flex-start;
 	}
 	h1 {
 		margin: 0;

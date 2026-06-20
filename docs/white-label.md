@@ -96,6 +96,85 @@ an accent background clears WCAG 1.4.3 contrast. Orgs are encouraged (UI hint) t
 set a darker strong accent for the same reason, but the app does not enforce a
 contrast ratio on custom colors in this slice.
 
+## Supplier-portal theming
+
+The supplier portal (`/portal/*`) is a **separate surface** from the employee
+app — vendor users (`VendorUser`, JWT `typ=vendor`) authenticate against it with
+their own token (`portal_auth_token`), and the **login page is
+unauthenticated**. It now carries the tenant's white-label brand (accent colors
++ logo + product name + `<title>`) across the login page AND the authed portal
+pages, exactly as the main app does — so a supplier always sees the buyer's
+brand, never the platform default.
+
+### The auth-boundary problem — a public brand read
+
+The employee app reads `GET /api/organization/branding`, which is gated to
+authenticated org **users** (employees). Vendor users are a *different identity*,
+and the portal login is unauthenticated, so neither that endpoint nor a JWT is
+available to theme the portal. The portal therefore reads a dedicated,
+**public-by-design** endpoint:
+
+`GET /api/portal/branding` (`app/api/portal.py`) — returns the resolved tenant's
+`BrandConfig`. Documented public (like the SSO `GET /api/auth/sso/config`
+endpoint, and listed in `tests/test_rbac.py::NO_AUTH_REQUIRED`):
+
+- **Tenant resolution rides the existing chokepoint.** It depends on
+  `app.tenant.get_tenant` — the same `X-Tenant-Slug` header / custom-domain
+  `Host` resolver every other portal route uses. One tenant's host can never
+  return another's brand. Unauthenticated requests are exempt from
+  `get_tenant`'s JWT `org`-claim cross-check by design (the cross-check only
+  fires for an *employee* token), so the public read works on the login page.
+- **Whitelisted fields only — structurally.** The response model **is**
+  `BrandConfig`, which carries exactly the six non-sensitive, already-DOM-safe
+  white-label fields (`product_name`, `logo_url`, `accent_color`,
+  `accent_strong_color`, `support_url`, `legal_url`). No org settings, secrets
+  (payment/ERP webhook secrets, extraction/SSO keys), or any other field can
+  leak through it — a leakage test asserts the response key-set equals the
+  `BrandConfig` whitelist. There is no enumeration surface: the resolver returns
+  the one tenant the request already targets, and an unknown tenant is the same
+  `404` as everywhere else.
+- **Fail-soft.** It reuses `organization._resolve_brand` (the same validated
+  parse the admin read/write path uses). The stored values were validated on
+  write; a persisted-but-now-invalid block is re-validated here and falls back
+  to all-empty (= platform defaults), so the portal always themes and never
+  500s. No migration — brand lives in `Organization.settings.brand` JSONB.
+
+### Frontend — the portal brand store
+
+`frontend/src/lib/stores/portalBrand.svelte.ts` is the portal counterpart of the
+employee `brand` store. It reads the public `GET /api/portal/branding` over
+`portalApi` (rather than the JWT-gated `api`), and shares the **pure** theming
+helpers (`brandThemeVars`, `isValidHexColor`) with the employee store via
+`brandTheme.ts` — the accent-application + fallback logic is never duplicated.
+
+The portal layout (`frontend/src/routes/portal/+layout.svelte`) runs an
+`$effect` that calls `portalBrand.ensureLoadedAndApply()` once a tenant is
+resolved (gated only on the tenant, not on auth, so it runs on the login page).
+`applyTheme()` writes `--accent` / `--accent-strong` onto
+`document.documentElement` only for valid configured colors (an unset/malformed
+color leaves the AA-passing `app.css` token standing). The portal header renders
+the tenant logo (when set) + product name; the `<title>` is
+`{productName} — Supplier Portal`; and the login card
+(`frontend/src/routes/portal/login/+page.svelte`) shows the logo + product-name
+heading. Fail-soft: any fetch failure degrades to the platform default theme.
+
+The brand is keyed to the **tenant** (subdomain/Host), not the session, so
+logout does not reset it — the login page the supplier lands on keeps the
+buyer's theme.
+
+### Tests
+
+- Backend: `backend/tests/test_portal_branding.py` (realdb) — the public read is
+  anonymous-accessible; returns ONLY the `BrandConfig` whitelist (the leakage
+  guard, with sensitive `payments`/`extraction`/`sso` settings present in the
+  org row to prove they never surface); fail-soft empty when unset; tolerates a
+  malformed persisted brand block (no 500); and is tenant-scoped (tenant A's
+  request never returns B's brand).
+- Frontend: `frontend/tests-e2e/portal/branding.spec.ts` — sets a known brand
+  via the admin `PUT /api/organization/branding` then asserts the portal login
+  applies the accent (`--accent`/`--accent-strong` on `<html>`) + the
+  product-name heading + `<title>` + the logo `<img>`.
+
 ## Branded outbound surfaces (PDFs + emails)
 
 All outbound surfaces resolve brand through **one** helper —

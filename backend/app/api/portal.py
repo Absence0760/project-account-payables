@@ -31,12 +31,14 @@ from app.api.portal_deps import get_current_vendor_user
 from app.database import get_control_db
 from app.models.discount import OFFER_STATUS_OFFERED, DiscountOffer
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
+from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.procurement import POLineItem, PurchaseOrder
 from app.models.supplier_chat import ChatAuthorRole, ChatThreadStatus, SupplierChatMessage
 from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
 from app.models.vendor_user import VendorUser
+from app.schemas.organization import BrandConfig
 from app.schemas.portal import (
     TAX_FORM_TYPES,
     PortalAcceptOfferRequest,
@@ -89,7 +91,7 @@ from app.services.workflow_engine import (
     is_step_enabled,
     transition_invoice,
 )
-from app.tenant import get_tenant_db
+from app.tenant import get_tenant, get_tenant_db
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,43 @@ router = APIRouter(prefix="/portal", tags=["portal"])
 def _last4(value: str | None) -> str | None:
     s = (value or "").strip()
     return s[-4:] if len(s) >= 4 else None
+
+
+# ---------- Branding (public-by-design) ----------
+
+
+@router.get("/branding", response_model=BrandConfig)
+async def portal_branding(org: Organization = Depends(get_tenant)):
+    """Return the resolved tenant's white-label branding for the supplier portal.
+
+    **Public-by-design** (documented, like the SSO `/auth/sso/config` endpoint):
+    the supplier-portal *login* page is unauthenticated, and portal users are
+    `VendorUser` (a different identity from employee `User`s), so neither the
+    employee-gated `GET /api/organization/branding` nor a JWT is available here.
+    The tenant is resolved by the existing `get_tenant` chokepoint — the same
+    `X-Tenant-Slug` header / custom-domain `Host` resolver the rest of the portal
+    uses — so one tenant's host never returns another's brand. Unauthenticated
+    requests are exempt from `get_tenant`'s JWT cross-check by design.
+
+    Safe to be public: the response model is `BrandConfig`, which carries ONLY
+    the six non-sensitive, already-DOM-safe white-label fields (product name,
+    logo URL, accent hex colors, support/legal URLs). No org settings, secrets,
+    or other-tenant data can structurally leak through it, and there is no
+    enumeration surface — the resolver returns the one tenant the request
+    already targets. An unset / malformed brand block degrades to all-empty
+    (= platform defaults), so the portal always themes (fail-soft).
+
+    Reuses `organization._resolve_brand`, the same validated parse the admin
+    read/write path uses; the stored values were validated on write, and a
+    persisted-but-now-invalid block is re-validated here and falls back to
+    empty — never raising.
+    """
+    # Imported lazily to avoid importing the whole organization router (and its
+    # heavy deps) at portal-module import time; `_resolve_brand` is a small pure
+    # helper that re-validates `settings.brand` into a `BrandConfig`.
+    from app.api.organization import _resolve_brand
+
+    return _resolve_brand(org)
 
 
 # ---------- Invoices ----------
