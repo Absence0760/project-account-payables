@@ -9,17 +9,28 @@ final _currencyFormat = NumberFormat.currency(symbol: '\$');
 class InvoiceListTile extends StatelessWidget {
   final Invoice invoice;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+
+  /// Multi-select mode — when true a leading checkbox is shown and the row
+  /// tint reflects [selected]. Defaults off so existing call sites are
+  /// unaffected.
+  final bool selectionMode;
+  final bool selected;
 
   const InvoiceListTile({
     super.key,
     required this.invoice,
     this.onTap,
+    this.onLongPress,
+    this.selectionMode = false,
+    this.selected = false,
   });
 
   // A single, sensible screen-reader announcement for the whole row, instead
   // of letting the reader walk 4-5 disjoint Text spans (WCAG 1.3.1 / 4.1.2).
   String get _semanticLabel {
     final parts = <String>[
+      if (selectionMode) selected ? 'Selected' : 'Not selected',
       invoice.vendorName ?? 'Unknown Vendor',
       if (invoice.amount != null) _currencyFormat.format(invoice.amount),
       if (invoice.invoiceNumber != null) 'invoice ${invoice.invoiceNumber}',
@@ -34,10 +45,12 @@ class InvoiceListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Merge the inner spans into one announcement; the row stays a single
-    // focusable button for assistive tech when it's tappable.
+    // focusable button for assistive tech when it's tappable. In selection
+    // mode it reads as a checkbox toggle.
     return Semantics(
       label: _semanticLabel,
-      button: onTap != null,
+      button: onTap != null && !selectionMode,
+      checked: selectionMode ? selected : null,
       excludeSemantics: true,
       child: _buildTile(),
     );
@@ -47,6 +60,18 @@ class InvoiceListTile extends StatelessWidget {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       onTap: onTap,
+      onLongPress: onLongPress,
+      selected: selectionMode && selected,
+      selectedTileColor: Colors.blue.withValues(alpha: 0.08),
+      leading: selectionMode
+          ? Checkbox(
+              value: selected,
+              // The whole row handles the toggle (onTap); keep the box in sync
+              // but route the gesture through the row so the tap target is full
+              // width (≥48dp) and one announcement covers it.
+              onChanged: onTap == null ? null : (_) => onTap!(),
+            )
+          : null,
       title: Row(
         children: [
           Expanded(

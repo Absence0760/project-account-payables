@@ -52,8 +52,10 @@ mobile/
 │   │   ├── offline_store.dart      # SQLite cache for offline viewing
 │   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications
 │   ├── stores/
-│   │   ├── auth_store.dart      # Auth state — login, logout, role checks
-│   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject (offline cached)
+│   │   ├── auth_store.dart      # Auth state — login, logout, role checks (incl. canBulkEditInvoices + isOrgAdmin gates)
+│   │   ├── admin_user_store.dart # Admin user management — users + roles, set-roles / activate-deactivate (admin-only, not offline-cached)
+│   │   ├── org_settings_store.dart # Organization settings — load + save the safe subset (company + invoice defaults; admin-only, not offline-cached)
+│   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject + multi-select bulk delete/status (offline cached)
 │   │   ├── exception_store.dart # Exception list, filter, resolve/escalate/dismiss (offline cached)
 │   │   ├── notification_store.dart # In-app notification center — list (All/Unread filter), unread badge count, optimistic mark-read + read-all (offline cached)
 │   │   ├── dashboard_store.dart # Dashboard KPI data (offline cached)
@@ -66,7 +68,9 @@ mobile/
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
 │   │   ├── dashboard_screen.dart # KPIs, aging, top vendors (app-bar: CashFlowButton + NotificationBell)
 │   │   ├── cash_flow_screen.dart # Predictive cash-flow forecast (CFO/admin) — KPI summary (opening/projected-end balance, committed/pending outflow), per-period forecast + running cash-position list, low-balance alert, 30/60/90-day horizon chips, pull-to-refresh
-│   │   ├── invoices_screen.dart  # Invoice list with search + status filters + advanced-search (tune) action + camera button
+│   │   ├── invoices_screen.dart  # Invoice list — search + status filters + advanced-search (tune) + camera + multi-select bulk delete/status (admin/ap_manager/cfo)
+│   │   ├── admin_users_screen.dart # Admin — user management: list/search users, edit roles (system roles), activate/deactivate (admin-only)
+│   │   ├── org_settings_screen.dart # Admin — organization settings: company profile + invoice defaults form (admin-only; ERP/payment/SSO secrets NOT surfaced)
 │   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + warnings/fraud + PO match + ERP status + activity timeline + file preview (image thumbnail / PDF card) → full viewer
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
 │   │   ├── exceptions_screen.dart # Exception queue — filter + swipe/sheet resolve/escalate/dismiss
@@ -78,6 +82,7 @@ mobile/
 │   │   └── settings_screen.dart  # User profile, biometric toggle, logout
 │   └── widgets/
 │       ├── activity_timeline.dart # Invoice audit-log timeline (action label, actor, time, per-field before→after diff); empty state; one merged Semantics label per entry
+│       ├── bulk_action_bar.dart  # Bottom bar shown in invoice multi-select mode — selected count + bulk status-change / delete actions (reusable shape)
 │       ├── advanced_search_sheet.dart # Modal bottom-sheet advanced search (vendor, PO, amount range, due-date range); seeded from live filters; min≤max + decimal validation; returns InvoiceSearchFilters (Apply) / empty (Clear) / null (dismiss)
 │       ├── invoice_warnings_panel.dart # Detail-screen warnings/fraud flags (severity-coloured) + PO-match panel (match type, status, variance %, issues); one merged Semantics label per warning
 │       ├── erp_status_panel.dart # Detail-screen ERP status — ErpInfo.fromAuditLog derives ERP reference / document id / send error from the audit log; shown for ERP-bound + ERP-failed statuses
@@ -124,7 +129,9 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Login | `POST /api/auth/login`, `GET /api/auth/me` |
 | Dashboard | `GET /api/dashboard` |
 | Cash Flow | `GET /api/analytics/cashflow_forecast` + `GET /api/analytics/cash_position` (both `horizon_days` + `granularity`; CFO/admin) |
-| Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`) |
+| Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`); bulk ops `POST /api/invoices/bulk/delete` + `POST /api/invoices/bulk/status` (admin/ap_manager/cfo) |
+| Admin — User Management | `GET /api/admin/users` (`search`/paginated), `GET /api/admin/roles`, `PATCH /api/admin/users/{id}` (`role_names` / `is_active`) — admin only |
+| Admin — Organization Settings | `GET /api/organization`, `PATCH /api/organization` (`{name, settings:{company, invoice_defaults}}` — shallow-merged; admin only) |
 | Invoice Detail | `GET /api/invoices/{id}` (carries `warnings` + `po_match`), `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline + ERP-status derivation, any authenticated role) |
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss) |
@@ -148,6 +155,14 @@ Bottom navigation adapts based on user roles (same as web frontend):
 | Pay | Admin, AP Manager, CFO |
 | Payments | Admin, AP Manager, CFO |
 | Settings | All roles |
+
+The **admin surfaces** (User Management + Organization Settings) are not
+bottom-nav tabs — they live under a **Settings → Administration** section that
+renders only for admins (`AuthStore.isOrgAdmin`), mirroring the backend
+`require_roles(ROLE_ADMIN)` on `/api/admin/*` + `PATCH /api/organization`. The
+**invoice bulk-ops** affordance (multi-select toggle + long-press) shows only
+for `canBulkEditInvoices` (admin/ap_manager/cfo), matching the bulk endpoints'
+gate; clerks never see it.
 
 The **notification center** is not a bottom-nav tab — it's reached from the
 `NotificationBell` app-bar action (with a live unread `Badge`) in the Dashboard
@@ -202,11 +217,25 @@ everyone else.
 - **MFA** — `AuthStore.login()` only handles `TokenResponse`; if the backend returns `MFAChallengeResponse` (when `AP_MFA_ENABLED=true` and the user is enrolled or org-enforced), login throws. Mobile users can still sign in when MFA is off, but tenants with enforcement need a mobile MFA flow + a `/profile` enrollment screen.
 - **Org Security settings** — the web `/organization` page exposes the `mfa.required` toggle; mobile has no equivalent.
 - **OIDC SSO** — `Sign in with Okta/Microsoft` button is web-only.
-- Workflow management (list, create, edit steps)
-- Organization settings (company, ERP config, extraction config)
-- Admin user management (create, edit, delete users, role assignment)
-- Bulk operations (select multiple, delete, status change)
-- Export (CSV, JSON, XML)
+- Workflow management (list, create, edit steps) — not yet on mobile.
+- Export (CSV, JSON, XML) — the backend `POST /api/invoices/bulk/export` exists
+  and the bulk-select UI is now in place, but mobile doesn't yet trigger a file
+  download/share. A natural follow-up to the bulk-ops work.
+
+**Admin parity (now shipped on mobile):**
+- **Bulk operations** — invoice multi-select (long-press or the checklist
+  app-bar action) + bulk delete / bulk status-change over `POST
+  /api/invoices/bulk/{delete,status}`; gated to admin/ap_manager/cfo; the
+  backend skips immutable-status rows and the result snackbar reports
+  deleted/updated + skipped counts.
+- **Admin user management** — `AdminUsersScreen` over `/api/admin/*`: list/search
+  users, edit a user's roles (system roles only — custom roles confer no access
+  today), activate/deactivate. Admin-only; reached from Settings → Administration.
+- **Organization settings** — `OrgSettingsScreen` reads + edits the safe subset
+  the web app exposes (company profile + invoice defaults) via `GET/PATCH
+  /api/organization`. ERP credentials, payment/webhook secrets, extraction keys
+  and SSO are deliberately NOT surfaced. Admin-only; the company `logo_url` set
+  on web is carried through unedited so a save doesn't drop it.
 
 ## Accessibility (WCAG 2.2 AA equivalent)
 
@@ -272,7 +301,14 @@ label carrying the live unread count, e.g. "Notifications, 3 unread"; the
 and the cash-flow forecast (the `CashFlowScreen` with a breached period — the
 low-balance alert exposes one merged "Low balance alert …" announcement, and the
 red projected-end / breached-closing money + alert copy all clear contrast at
-AA via `.shade900`).
+AA via `.shade900`), the invoice list tile in **selection mode** (exposes a
+`checked` state + keeps its tap target) and the `BulkActionBar` (labelled count +
+actions, contrast), and the two admin screens — `AdminUsersScreen` (a
+deactivated row merges into one announcement carrying "inactive" so the Inactive
+badge isn't an unlabelled colour cue; the in-app-bar Material `SearchBar` is a
+24px framework field exempt from the whole-screen tap-target sweep, same as the
+invoices/vendors screens) and `OrgSettingsScreen` (form fields meet tap-target +
+label + contrast).
 `textContrastGuideline` is strict
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.

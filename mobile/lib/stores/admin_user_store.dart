@@ -1,0 +1,91 @@
+import 'package:flutter/foundation.dart';
+
+import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/models/admin_user.dart';
+
+/// Admin user-management state — the org's users + the available roles, plus
+/// role-assignment and activate/deactivate mutators. Admin-only (mirrors the
+/// backend `require_roles(ROLE_ADMIN)` on `/api/admin/*`). Not offline-cached:
+/// a privileged control-plane read where stale data would be misleading
+/// (mirrors `CashFlowStore`).
+class AdminUserStore extends ChangeNotifier {
+  static final AdminUserStore instance = AdminUserStore._();
+  AdminUserStore._();
+
+  List<AdminUser> _users = [];
+  List<AdminRole> _roles = [];
+  bool _loading = false;
+  String? _error;
+  String? _searchQuery;
+
+  List<AdminUser> get users => _users;
+  List<AdminRole> get roles => _roles;
+  bool get loading => _loading;
+  String? get error => _error;
+  String? get searchQuery => _searchQuery;
+
+  /// The four system role names (admin/ap_manager/ap_clerk/cfo). The role
+  /// editor offers only these — custom roles confer no access today, so
+  /// assigning them on mobile would mislead (see backend admin.py note).
+  List<String> get systemRoleNames =>
+      _roles.where((r) => r.isSystem).map((r) => r.name).toList();
+
+  @visibleForTesting
+  void debugReset() {
+    _users = [];
+    _roles = [];
+    _loading = false;
+    _error = null;
+    _searchQuery = null;
+  }
+
+  void setSearch(String? query) {
+    _searchQuery = (query == null || query.isEmpty) ? null : query;
+    fetch();
+  }
+
+  Future<void> fetch() async {
+    _loading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      // Roles rarely change; fetch them alongside the users so the role editor
+      // always has the current list. Both are small admin reads.
+      final results = await Future.wait([
+        AdminApi.listUsers(search: _searchQuery),
+        AdminApi.listRoles(),
+      ]);
+      _users = results[0] as List<AdminUser>;
+      _roles = results[1] as List<AdminRole>;
+      _loading = false;
+      notifyListeners();
+    } catch (e) {
+      _users = [];
+      _loading = false;
+      _error = e.toString();
+      notifyListeners();
+    }
+  }
+
+  /// Replace [user]'s role set, then refetch. Returns true on success; records
+  /// the error and returns false otherwise.
+  Future<bool> setRoles(String userId, List<String> roleNames) =>
+      _act(() => AdminApi.setRoles(userId, roleNames));
+
+  /// Activate / deactivate [user], then refetch.
+  Future<bool> setActive(String userId, bool active) =>
+      _act(() => AdminApi.setActive(userId, active));
+
+  Future<bool> _act(Future<AdminUser> Function() action) async {
+    try {
+      await action();
+      await fetch();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+}
