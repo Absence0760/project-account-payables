@@ -35,6 +35,7 @@ DEFAULT_FRAUD_RULES: dict = {
     "rush_payment_enabled": True,
     "new_vendor_large_enabled": True,
     "personal_email_enabled": True,
+    "price_variance_enabled": True,  # per-vendor line-item price deviation
     "llm_anomaly_enabled": False,  # opt-in: costs an LLM call per invoice
     # Threshold knobs. Whatever the org sets here drives the warning.
     "round_amount_min": "1000",  # amounts >= this AND an even multiple of 100 flag
@@ -404,6 +405,14 @@ async def refresh_warnings(
     ):
         await _refresh_recurring_variance(db, invoice, warnings)
 
+    # Line-item price variance — flag draft line items whose unit price deviates
+    # from this vendor's per-item historical median beyond tolerance, reusing the
+    # pure `vendor_enrichment.detect_price_variance` computation. Raises a single
+    # de-duped `price_variance` exception covering all flagged lines. Gated by the
+    # `price_variance_enabled` fraud rule; skip un-extracted drafts (no lines yet).
+    if cfg["price_variance_enabled"] and invoice.vendor_id and _status_str(invoice.status) != "new":
+        await _refresh_price_variance(db, invoice, warnings, org_settings)
+
     # Reporting-currency conversion — lock the invoice's amount into the org's
     # reporting (base) currency so multi-currency analytics roll up correctly.
     # The rate is snapshotted on the row (see currency_conversion) and never
@@ -448,6 +457,163 @@ async def _refresh_recurring_variance(
             warnings.append(flag)
     except Exception:  # noqa: BLE001 — best-effort; never break the save path
         logger.warning("recurring-variance check failed for invoice; skipped")
+
+
+def _price_variance_settings(org_settings: dict | None) -> dict:
+    """Resolve the price-variance tolerance knobs from ``settings.enrichment``.
+
+    Reuses the same ``enrichment`` settings block (and the same defaults) as the
+    read-only ``/api/enrichment`` suggestions endpoint so the persisted warning
+    and the inline advisory agree. Unknown keys are ignored and bad values fall
+    back to the constant default — never raises."""
+    from app.services.vendor_enrichment import (
+        PRICE_ESCALATE_PCT,
+        PRICE_MIN_HISTORY,
+        PRICE_TOLERANCE_PCT,
+    )
+
+    overrides = (org_settings or {}).get("enrichment") or {}
+    out = {
+        "tolerance_pct": PRICE_TOLERANCE_PCT,
+        "escalate_pct": PRICE_ESCALATE_PCT,
+        "min_history": PRICE_MIN_HISTORY,
+    }
+    for src, dst, coerce in (
+        ("price_tolerance_pct", "tolerance_pct", lambda v: Decimal(str(v))),
+        ("price_escalate_pct", "escalate_pct", lambda v: Decimal(str(v))),
+        ("price_min_history", "min_history", int),
+    ):
+        if src in overrides:
+            try:
+                out[dst] = coerce(overrides[src])
+            except (TypeError, ValueError, ArithmeticError):
+                pass
+    return out
+
+
+async def _refresh_price_variance(
+    db: AsyncSession,
+    invoice: Invoice,
+    warnings: list[dict],
+    org_settings: dict | None,
+) -> None:
+    """Append ``price_variance`` warnings for draft line items whose unit price
+    deviates from this vendor's per-item historical median beyond tolerance, and
+    raise one de-duped ``price_variance`` exception covering them.
+
+    Reuses the pure ``vendor_enrichment.detect_price_variance`` math (no
+    re-implementation). The baseline is built from this vendor's approved-or-beyond
+    invoice line items (same set the ``/api/enrichment`` advisory endpoint uses),
+    keyed per ``(item, currency)`` so a multi-currency vendor is never cross-judged.
+
+    Best-effort: any failure here is swallowed (logged, PII-free) — a price-variance
+    check must never break saving an invoice. Mutates ``warnings`` in place."""
+    try:
+        from app.models.invoice import InvoiceLineItem
+        from app.services.vendor_enrichment import (
+            PRICE_HISTORY_LIMIT,
+            detect_price_variance,
+        )
+
+        cfg = _price_variance_settings(org_settings)
+
+        # Draft (this invoice's) line items, in line order. The draft's own
+        # currency tags every line so it's compared only against same-currency
+        # history (matches the enrichment endpoint).
+        draft_q = (
+            select(
+                InvoiceLineItem.item_code,
+                InvoiceLineItem.description,
+                InvoiceLineItem.unit_price,
+            )
+            .where(InvoiceLineItem.invoice_id == invoice.id)
+            .order_by(
+                InvoiceLineItem.line_number.asc().nulls_last(),
+                InvoiceLineItem.id.asc(),
+            )
+        )
+        draft_lines = [
+            {**dict(r._mapping), "currency": invoice.currency}
+            for r in (await db.execute(draft_q)).all()
+        ]
+        if not draft_lines:
+            return
+
+        # This vendor's approved-or-beyond historical line items (+ each line's
+        # invoice currency), excluding this invoice. Bounded by PRICE_HISTORY_LIMIT.
+        hist_q = (
+            select(
+                InvoiceLineItem.item_code,
+                InvoiceLineItem.description,
+                InvoiceLineItem.unit_price,
+                Invoice.currency,
+            )
+            .join(Invoice, Invoice.id == InvoiceLineItem.invoice_id)
+            .where(
+                Invoice.vendor_id == invoice.vendor_id,
+                Invoice.id != invoice.id,
+                Invoice.status.in_(
+                    [
+                        InvoiceStatus.approved.value,
+                        InvoiceStatus.sending_to_erp.value,
+                        InvoiceStatus.sent_to_erp.value,
+                        InvoiceStatus.posted_in_erp.value,
+                        InvoiceStatus.payment_scheduled.value,
+                        InvoiceStatus.paid.value,
+                        InvoiceStatus.done.value,
+                    ]
+                ),
+                InvoiceLineItem.unit_price.isnot(None),
+            )
+            .order_by(Invoice.created_at.desc())
+            .limit(PRICE_HISTORY_LIMIT)
+        )
+        history_lines = [dict(r._mapping) for r in (await db.execute(hist_q)).all()]
+
+        flags = detect_price_variance(
+            draft_lines,
+            history_lines,
+            tolerance_pct=cfg["tolerance_pct"],
+            escalate_pct=cfg["escalate_pct"],
+            min_history=cfg["min_history"],
+        )
+        if not flags:
+            return
+
+        for f in flags:
+            label = f.description or f.item_key
+            warnings.append(
+                {
+                    "type": "price_variance",
+                    "severity": f.severity,
+                    "message": (
+                        f"Unit price {f.delta_pct:+.1f}% {f.direction} this vendor's "
+                        f"baseline for {label} (${f.current_unit_price} vs "
+                        f"${f.baseline_unit_price})"
+                    ),
+                }
+            )
+
+        # One exception covers all flagged lines; severity escalates if any line
+        # cleared the escalate threshold ("warning"), else "info".
+        worst = "warning" if any(f.severity == "warning" for f in flags) else "info"
+        summary = "; ".join(
+            (
+                f"{(f.description or f.item_key)}: {f.delta_pct:+.1f}% "
+                f"(${f.current_unit_price} vs ${f.baseline_unit_price})"
+            )
+            for f in flags
+        )
+        await _ensure_exception(
+            db,
+            invoice,
+            "price_variance",
+            worst,
+            f"Line-item price variance vs vendor history — {summary}",
+            org_settings=org_settings,
+        )
+    except Exception:  # noqa: BLE001 — best-effort; never break the save path
+        logger.warning("price-variance check failed for invoice; skipped")
 
 
 async def _refresh_reporting_amount(invoice: Invoice, org_settings: dict | None) -> None:
