@@ -162,6 +162,26 @@ class ApiClient {
     return _handleResponse(response);
   }
 
+  /// Fetch a file's raw bytes (auth + tenant headers attached) via the
+  /// swappable HTTP client. [path] is API-relative (e.g.
+  /// `/api/invoices/file/{key}`). Used by the invoice file viewer to load a PDF
+  /// the native engine can't fetch with custom headers. A 401 clears the
+  /// session; any other non-2xx throws an [ApiException].
+  Future<Uint8List> getBytes(String path) async {
+    final uri = Uri.parse('${AppConfig.apiBaseUrl}$path');
+    final response = await _http
+        .get(uri, headers: authHeaders)
+        .timeout(const Duration(seconds: 30));
+    if (response.statusCode == 401) {
+      await clearSession();
+      throw ApiException(401, 'Unauthorized');
+    }
+    if (response.statusCode >= 400) {
+      throw ApiException(response.statusCode, 'Failed to load file');
+    }
+    return response.bodyBytes;
+  }
+
   Future<void> delete(String path) async {
     final response = await _http.delete(_uri(path), headers: _headers);
     if (response.statusCode >= 400) {

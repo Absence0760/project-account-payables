@@ -658,6 +658,53 @@ void main() {
     expect(find.text('No activity yet'), findsOneWidget);
   });
 
+  testWidgets('shows a PDF preview card when the file is a PDF', (tester) async {
+    await _arrange(_detailClient(_invoiceJson(
+      '1',
+      fileUrl: '/api/invoices/file/k/scan.pdf',
+    )));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Tap to view PDF'));
+
+    // The PDF can't render as a bitmap inline — a labelled card invites the
+    // full viewer instead of an Image.network attempt that would error.
+    expect(find.text('Tap to view PDF'), findsOneWidget);
+    expect(find.byIcon(Icons.picture_as_pdf), findsOneWidget);
+  });
+
+  testWidgets('shows an image preview (not the PDF card) for an image file',
+      (tester) async {
+    await _arrange(_detailClient(_invoiceJson(
+      '1',
+      fileUrl: '/api/invoices/file/k/photo.png',
+    )));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.text('Tap to view PDF'), findsNothing);
+    // The image path renders an Image (network) widget in the preview tile.
+    expect(find.byType(Image), findsWidgets);
+  });
+
+  testWidgets('renders no file preview when the invoice has no file',
+      (tester) async {
+    await _arrange(_detailClient(_invoiceJson('1', fileUrl: null)));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.text('Tap to view PDF'), findsNothing);
+    expect(find.text('Tap to view file'), findsNothing);
+  });
+
   testWidgets('cancelling the reject dialog posts nothing', (tester) async {
     var rejectCalls = 0;
     final client = _detailClient(
