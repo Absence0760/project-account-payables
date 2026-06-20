@@ -176,8 +176,9 @@ void main() {
     ApiClient().debugConfigure(
       client: _homeClient(roles, invoices: invoices),
     );
-    final ok = await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
-    expect(ok, isTrue);
+    final result =
+        await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+    expect(result.isSuccess, isTrue);
   }
 
   /// The labels of the bottom-nav items, in order. Reading the nav model

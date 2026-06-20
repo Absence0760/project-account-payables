@@ -15,12 +15,46 @@ import 'package:ap_mobile/models/vendor.dart';
 class AuthApi {
   static final _api = ApiClient();
 
-  static Future<String> login(String email, String password) async {
-    final data = await _api.post('/auth/login', {
+  /// `POST /api/auth/login`. Returns the raw response, which is EITHER a
+  /// `TokenResponse` (`{access_token, ...}`) on a clean login OR an
+  /// `MFAChallengeResponse` (`{mfa_required: true, mfa_challenge_token, ...}`)
+  /// when a second factor is required. The caller (`AuthStore.login`) branches
+  /// on `mfa_required` — see `MFAChallenge.isChallenge`.
+  static Future<Map<String, dynamic>> login(
+    String email,
+    String password,
+  ) async {
+    return _api.post('/auth/login', {
       'email': email,
       'password': password,
     });
+  }
+
+  /// `POST /api/auth/mfa/verify` — trade the login-issued challenge token + a
+  /// valid code for a real access token. [method] is `totp` or `email`.
+  /// Returns the `{access_token, ...}` JWT on success; throws an [ApiException]
+  /// (401 on a bad/expired code) otherwise.
+  static Future<String> verifyMfa({
+    required String challengeToken,
+    required String code,
+    required String method,
+  }) async {
+    final data = await _api.post('/auth/mfa/verify', {
+      'challenge_token': challengeToken,
+      'code': code,
+      'method': method,
+    });
     return data['access_token'] as String;
+  }
+
+  /// `POST /api/auth/mfa/challenge/email` — ask the backend to generate + email
+  /// a one-time code (the email-OTP backup factor). The challenge token proves
+  /// the password was already accepted, so codes aren't emailed to randoms.
+  /// 204 on success.
+  static Future<void> requestEmailOtp(String challengeToken) async {
+    await _api.post('/auth/mfa/challenge/email', {
+      'challenge_token': challengeToken,
+    });
   }
 
   static Future<User> me() async {

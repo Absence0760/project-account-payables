@@ -68,8 +68,9 @@ Future<void> _pumpUntil(WidgetTester tester, Finder finder) async {
 /// resets the session, so login must run after the client is installed.
 Future<void> _arrange(MockClient client) async {
   ApiClient().debugConfigure(client: client);
-  final ok = await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
-  expect(ok, isTrue, reason: 'login fixture should succeed');
+  final result =
+      await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+  expect(result.isSuccess, isTrue, reason: 'login fixture should succeed');
 }
 
 /// A MockClient covering auth + a single invoice detail GET returning [invoice].

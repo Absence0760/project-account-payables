@@ -48,8 +48,8 @@ void main() {
 
   Future<void> loginAs(List<String> roles) async {
     ApiClient().debugConfigure(client: _happyClient(roles));
-    final ok = await store.login('demo@acme.com', 'demo', 'acme');
-    expect(ok, isTrue);
+    final result = await store.login('demo@acme.com', 'demo', 'acme');
+    expect(result.isSuccess, isTrue);
   }
 
   group('login', () {
@@ -72,9 +72,10 @@ void main() {
         client: MockClient((req) async => http.Response('bad creds', 401)),
       );
 
-      final ok = await store.login('demo@acme.com', 'wrong', 'acme');
+      final result = await store.login('demo@acme.com', 'wrong', 'acme');
 
-      expect(ok, isFalse);
+      expect(result.isSuccess, isFalse);
+      expect(result.outcome, LoginOutcome.failure);
       expect(store.error, 'Invalid credentials');
       expect(store.loading, isFalse);
     });
@@ -84,9 +85,9 @@ void main() {
         client: MockClient((req) async => throw Exception('network down')),
       );
 
-      final ok = await store.login('demo@acme.com', 'demo', 'acme');
+      final result = await store.login('demo@acme.com', 'demo', 'acme');
 
-      expect(ok, isFalse);
+      expect(result.isSuccess, isFalse);
       expect(store.error, startsWith('Connection failed'));
     });
 
@@ -153,6 +154,115 @@ void main() {
 
       expect(store.loggedIn, isFalse);
       expect(store.user, isNull);
+    });
+  });
+
+  group('MFA challenge login', () {
+    test('login returns mfaRequired (no token, no user) on a challenge',
+        () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.url.path == '/api/auth/login') {
+            return _json({
+              'mfa_required': true,
+              'mfa_challenge_token': 'chal-abc',
+              'methods': ['totp', 'email'],
+              'must_enroll': false,
+            });
+          }
+          // /me must NOT be called before the second factor clears.
+          return http.Response('unexpected ${req.url.path}', 500);
+        }),
+      );
+
+      final result = await store.login('demo@acme.com', 'demo', 'acme');
+
+      expect(result.outcome, LoginOutcome.mfaRequired);
+      expect(result.challenge, isNotNull);
+      expect(result.challenge!.challengeToken, 'chal-abc');
+      expect(result.challenge!.supportsTotp, isTrue);
+      expect(result.challenge!.supportsEmail, isTrue);
+      // Critically: no token stored, not yet logged in.
+      expect(ApiClient().hasToken, isFalse);
+      expect(store.loggedIn, isFalse);
+      expect(store.loading, isFalse);
+    });
+
+    test('completeMfa trades the code for a token and loads the user',
+        () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          final path = req.url.path;
+          if (req.method == 'POST' && path == '/api/auth/mfa/verify') {
+            return _json({'access_token': 'real-tok'});
+          }
+          if (req.method == 'GET' && path == '/api/auth/me') {
+            return _json(_meBody(['admin']));
+          }
+          return http.Response('not found', 404);
+        }),
+      );
+      await ApiClient().setTenant('acme');
+
+      final result = await store.completeMfa(
+        challengeToken: 'chal-abc',
+        code: '123456',
+        method: 'totp',
+      );
+
+      expect(result.isSuccess, isTrue);
+      expect(store.loggedIn, isTrue);
+      expect(store.user?.email, 'demo@acme.com');
+      expect(ApiClient().hasToken, isTrue);
+      expect(store.error, isNull);
+    });
+
+    test('completeMfa surfaces a friendly error on a bad/expired code (401)',
+        () async {
+      // AuthStore is a singleton; clear any user a prior test left behind so
+      // the `loggedIn == false` assertion reflects THIS flow, not leaked state.
+      await store.logout();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.url.path == '/api/auth/mfa/verify') {
+            return http.Response('invalid', 401);
+          }
+          return http.Response('not found', 404);
+        }),
+      );
+      await ApiClient().setTenant('acme');
+
+      final result = await store.completeMfa(
+        challengeToken: 'chal-abc',
+        code: '000000',
+        method: 'totp',
+      );
+
+      expect(result.isSuccess, isFalse);
+      expect(result.outcome, LoginOutcome.failure);
+      expect(store.error, contains('Invalid or expired code'));
+      expect(store.loggedIn, isFalse);
+      expect(ApiClient().hasToken, isFalse);
+    });
+
+    test('requestEmailOtp posts the challenge token and returns true on 204',
+        () async {
+      var hit = false;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.url.path == '/api/auth/mfa/challenge/email') {
+            hit = true;
+            return http.Response('', 204);
+          }
+          return http.Response('not found', 404);
+        }),
+      );
+      await ApiClient().setTenant('acme');
+
+      final ok = await store.requestEmailOtp('chal-abc');
+
+      expect(ok, isTrue);
+      expect(hit, isTrue);
     });
   });
 }

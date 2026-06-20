@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/screens/home_screen.dart';
+import 'package:ap_mobile/screens/mfa_screen.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
 
@@ -29,24 +30,33 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final success = await AuthStore.instance.login(
+    final result = await AuthStore.instance.login(
       _emailController.text.trim(),
       _passwordController.text,
       _tenantController.text.trim(),
     );
 
     if (!mounted) return;
-    if (success) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
-    } else {
-      // Live-region announce the failure so screen-reader users hear it
-      // without re-scanning the form (WCAG 4.1.3).
-      final error = AuthStore.instance.error;
-      if (error != null) {
-        A11y.announce(context, error);
-      }
+    switch (result.outcome) {
+      case LoginOutcome.success:
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+        );
+      case LoginOutcome.mfaRequired:
+        // Password accepted; route to the second-factor code-entry screen.
+        // No token is stored yet — the MFA verify mints it.
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => MfaScreen(challenge: result.challenge!),
+          ),
+        );
+      case LoginOutcome.failure:
+        // Live-region announce the failure so screen-reader users hear it
+        // without re-scanning the form (WCAG 4.1.3).
+        final error = AuthStore.instance.error;
+        if (error != null) {
+          A11y.announce(context, error);
+        }
     }
   }
 

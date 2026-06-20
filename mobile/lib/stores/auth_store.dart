@@ -2,7 +2,34 @@ import 'package:flutter/foundation.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/models/mfa_challenge.dart';
 import 'package:ap_mobile/models/user.dart';
+
+/// Outcome of [AuthStore.login] / [AuthStore.completeMfa].
+enum LoginOutcome {
+  /// Fully signed in — a real access token is stored and the user is loaded.
+  success,
+
+  /// Password accepted but a second factor is required. [LoginResult.challenge]
+  /// carries the challenge token + offered methods; the UI routes to the MFA
+  /// code-entry screen.
+  mfaRequired,
+
+  /// Login failed (bad credentials, transport error, etc.). [AuthStore.error]
+  /// holds the user-facing message.
+  failure,
+}
+
+/// The result of a login attempt. [challenge] is non-null only when
+/// [outcome] is [LoginOutcome.mfaRequired].
+class LoginResult {
+  final LoginOutcome outcome;
+  final MFAChallenge? challenge;
+
+  const LoginResult(this.outcome, [this.challenge]);
+
+  bool get isSuccess => outcome == LoginOutcome.success;
+}
 
 class AuthStore extends ChangeNotifier {
   static final AuthStore instance = AuthStore._();
@@ -59,27 +86,106 @@ class AuthStore extends ChangeNotifier {
     }
   }
 
-  Future<bool> login(String email, String password, String tenant) async {
+  /// Password login. On a clean login this stores the JWT and loads the user
+  /// ([LoginOutcome.success]). When the backend returns an MFA challenge
+  /// instead of a token, NO token is stored and the result carries the
+  /// [MFAChallenge] so the UI can route to the code-entry screen
+  /// ([LoginOutcome.mfaRequired]). Errors set [error] and return
+  /// [LoginOutcome.failure].
+  Future<LoginResult> login(String email, String password, String tenant) async {
     _loading = true;
     _error = null;
     notifyListeners();
 
     try {
       await ApiClient().setTenant(tenant);
-      final token = await AuthApi.login(email, password);
-      await ApiClient().setToken(token);
-      _user = await AuthApi.me();
+      final data = await AuthApi.login(email, password);
+
+      // MFA challenge — the password was accepted but a second factor is
+      // required. Don't store a token; hand the challenge back to the UI.
+      if (MFAChallenge.isChallenge(data)) {
+        _loading = false;
+        notifyListeners();
+        return LoginResult(
+          LoginOutcome.mfaRequired,
+          MFAChallenge.fromJson(data),
+        );
+      }
+
+      await _finishAuth(data['access_token'] as String);
       _loading = false;
       notifyListeners();
-      return true;
+      return const LoginResult(LoginOutcome.success);
     } catch (e) {
       _loading = false;
       _error = e is ApiException
           ? 'Invalid credentials'
           : 'Connection failed: $e';
       notifyListeners();
+      return const LoginResult(LoginOutcome.failure);
+    }
+  }
+
+  /// Complete the MFA step: trade the challenge token + a code for the real
+  /// access token via `POST /api/auth/mfa/verify`, then load the user — exactly
+  /// the same token-storage tail as the no-MFA login path. [method] is `totp`
+  /// or `email`. A wrong / expired code surfaces a friendly [error] and returns
+  /// [LoginOutcome.failure] (the UI keeps the user on the code screen to retry).
+  Future<LoginResult> completeMfa({
+    required String challengeToken,
+    required String code,
+    required String method,
+  }) async {
+    _loading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final token = await AuthApi.verifyMfa(
+        challengeToken: challengeToken,
+        code: code,
+        method: method,
+      );
+      await _finishAuth(token);
+      _loading = false;
+      notifyListeners();
+      return const LoginResult(LoginOutcome.success);
+    } catch (e) {
+      _loading = false;
+      // 401 = wrong/expired code or a stale challenge. Anything else is a
+      // transport problem. Neither leaks why (no enumeration).
+      _error = e is ApiException
+          ? (e.statusCode == 401
+              ? 'Invalid or expired code. Please try again.'
+              : 'Could not verify the code. Please try again.')
+          : 'Connection failed: $e';
+      notifyListeners();
+      return const LoginResult(LoginOutcome.failure);
+    }
+  }
+
+  /// Ask the backend to email a one-time code (email-OTP backup factor).
+  /// Returns true on success; on failure sets [error] and returns false so the
+  /// code screen can show a retry affordance.
+  Future<bool> requestEmailOtp(String challengeToken) async {
+    _error = null;
+    try {
+      await AuthApi.requestEmailOtp(challengeToken);
+      return true;
+    } catch (e) {
+      _error = e is ApiException
+          ? 'Could not send the email code. Please try again.'
+          : 'Connection failed: $e';
+      notifyListeners();
       return false;
     }
+  }
+
+  /// Shared token-storage tail for both the no-MFA login and the post-MFA
+  /// verify paths: persist the JWT to secure storage and load the profile.
+  Future<void> _finishAuth(String token) async {
+    await ApiClient().setToken(token);
+    _user = await AuthApi.me();
   }
 
   Future<void> logout() async {
