@@ -250,6 +250,7 @@
 
 	$effect(() => {
 		loadOrg();
+		loadCustomDomains();
 	});
 
 	async function loadOrg() {
@@ -667,7 +668,108 @@
 			savingBranding = false;
 		}
 	}
+
+	// ── Custom domains (white-label vanity hostnames) ───────────────────
+	// Manages settings.brand.custom_domains — the list the backend resolver
+	// matches an inbound Host against (with the JWT org-claim cross-check still
+	// gating access). See docs/white-label.md § Custom domains.
+	let customDomains = $state<string[]>([]);
+	let newDomain = $state('');
+	let loadingDomains = $state(true);
+	let domainsError = $state('');
+	let savingDomains = $state(false);
+	// The host being removed is armed for a confirm-on-second-click.
+	let confirmRemoveDomain = $state<string | null>(null);
+
+	// Mirror of the backend normalize_custom_domain: bare, lowercase hostname,
+	// no scheme / path / port / spaces. Returns null when there's nothing usable.
+	function normalizeDomain(raw: string): string | null {
+		let h = (raw || '').trim().toLowerCase();
+		if (!h) return null;
+		if (h.startsWith('[')) return null; // IPv6 literal — never a custom domain
+		// Strip a scheme if the user pasted a full URL.
+		h = h.replace(/^https?:\/\//, '');
+		// Drop a path/query and a :port suffix.
+		h = h.split('/')[0].split('?')[0].split(':')[0];
+		if (!h || h.includes(' ')) return null;
+		// Must look like a dotted hostname (label.label…), not a bare word.
+		if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(h)) {
+			return null;
+		}
+		return h;
+	}
+
+	async function loadCustomDomains() {
+		loadingDomains = true;
+		domainsError = '';
+		try {
+			const data = await api.get<{ custom_domains: string[] }>(
+				'/api/organization/branding/custom-domains'
+			);
+			customDomains = data.custom_domains ?? [];
+		} catch (err) {
+			domainsError = err instanceof Error ? err.message : 'Failed to load custom domains';
+		} finally {
+			loadingDomains = false;
+		}
+	}
+
+	// PUT replaces the whole list (the backend endpoint is a full replace),
+	// re-reads the normalized result, and refreshes local state.
+	async function saveCustomDomains(next: string[]) {
+		savingDomains = true;
+		try {
+			const data = await api.put<{ custom_domains: string[] }>(
+				'/api/organization/branding/custom-domains',
+				{ custom_domains: next }
+			);
+			customDomains = data.custom_domains ?? [];
+			return true;
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to save custom domains', 'error');
+			return false;
+		} finally {
+			savingDomains = false;
+		}
+	}
+
+	async function addCustomDomain() {
+		const host = normalizeDomain(newDomain);
+		if (!host) {
+			toast('Enter a valid hostname like ap.acmecorp.com', 'error');
+			return;
+		}
+		if (customDomains.includes(host)) {
+			toast('That domain is already registered', 'error');
+			return;
+		}
+		const ok = await saveCustomDomains([...customDomains, host]);
+		if (ok) {
+			newDomain = '';
+			toast('Custom domain added', 'success');
+		}
+	}
+
+	async function removeCustomDomain(host: string) {
+		// Two-click arm/confirm so a stray click can't drop a live domain.
+		if (confirmRemoveDomain !== host) {
+			confirmRemoveDomain = host;
+			return;
+		}
+		confirmRemoveDomain = null;
+		const ok = await saveCustomDomains(customDomains.filter((d) => d !== host));
+		if (ok) toast('Custom domain removed', 'success');
+	}
 </script>
+
+<svelte:window
+	onclick={(e) => {
+		// Un-arm a pending domain-remove confirm when clicking elsewhere.
+		if (confirmRemoveDomain && !(e.target as HTMLElement)?.closest?.('.domain-remove')) {
+			confirmRemoveDomain = null;
+		}
+	}}
+/>
 
 <PageHeader title="Organization">
 	{#if org}
@@ -833,6 +935,68 @@
 						{savingBranding ? 'Saving...' : 'Save Branding'}
 					</button>
 				</div>
+			</section>
+
+			<section class="card">
+				<h2>Custom Domains</h2>
+				<p class="card-hint">
+					Serve the app under your own vanity hostname (e.g.
+					<code>ap.acmecorp.com</code>) in addition to your
+					<code>{org?.slug ?? 'tenant'}</code> subdomain. You are responsible for the
+					DNS (CNAME to the platform) and TLS certificate — registering a host here
+					only tells the platform which tenant that host belongs to. A host already
+					claimed by another tenant is rejected.
+				</p>
+
+				{#if loadingDomains}
+					<p class="card-hint">Loading custom domains…</p>
+				{:else if domainsError}
+					<p class="domain-error" role="alert">{domainsError}</p>
+				{:else}
+					{#if customDomains.length === 0}
+						<p class="card-hint domain-empty">No custom domains registered.</p>
+					{:else}
+						<ul class="domain-list">
+							{#each customDomains as host (host)}
+								<li class="domain-row">
+									<span class="domain-name mono">{host}</span>
+									<span class="domain-remove">
+										<button
+											type="button"
+											class="btn-remove-domain"
+											class:armed={confirmRemoveDomain === host}
+											disabled={savingDomains}
+											aria-label={`Remove custom domain ${host}`}
+											onclick={() => removeCustomDomain(host)}
+										>
+											{confirmRemoveDomain === host ? 'Confirm remove' : 'Remove'}
+										</button>
+									</span>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+
+					<form
+						class="domain-add"
+						onsubmit={(e) => {
+							e.preventDefault();
+							addCustomDomain();
+						}}
+					>
+						<input
+							type="text"
+							bind:value={newDomain}
+							placeholder="ap.acmecorp.com"
+							aria-label="New custom domain"
+							autocomplete="off"
+							spellcheck="false"
+						/>
+						<button type="submit" class="btn-save-section" disabled={savingDomains}>
+							{savingDomains ? 'Saving…' : 'Add domain'}
+						</button>
+					</form>
+				{/if}
 			</section>
 
 			<section class="card">
@@ -1567,6 +1731,75 @@
 
 	.color-field input[type='text'] {
 		flex: 1;
+	}
+
+	/* Custom domains */
+	.domain-list {
+		list-style: none;
+		margin: 4px 0 16px;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.domain-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 8px 12px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+	}
+
+	.domain-name {
+		font-size: 0.9rem;
+		word-break: break-all;
+	}
+
+	.btn-remove-domain {
+		flex-shrink: 0;
+		padding: 4px 12px;
+		font-size: 0.82rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: transparent;
+		color: var(--text);
+		cursor: pointer;
+	}
+
+	.btn-remove-domain:hover:not(:disabled),
+	.btn-remove-domain.armed {
+		border-color: var(--danger, #e5484d);
+		color: #fff;
+		background: var(--danger, #e5484d);
+	}
+
+	.btn-remove-domain:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.domain-add {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.domain-add input {
+		flex: 1;
+	}
+
+	.domain-error {
+		color: var(--danger, #e5484d);
+		font-size: 0.88rem;
+		margin: 4px 0 12px;
+	}
+
+	.domain-empty {
+		margin-bottom: 12px;
 	}
 
 	input,
