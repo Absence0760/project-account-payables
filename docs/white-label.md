@@ -353,9 +353,10 @@ its parent; NULL = a standalone tenant.
 
 A "partner" is **derived, not flagged** — it is simply any org referenced as a
 `parent_org_id` by ≥ 1 child. There is no separate `is_partner` column an admin
-could flip to claim children it didn't actually parent. `parent_org_id` is
-populated out of band (provisioning / an operator link step); this slice manages
-the *administration* surface, not the creation of the link.
+could flip to claim children it didn't actually parent. The link is now
+**created in-app** via the provisioning flow below (no raw DB statement needed) —
+see *Provisioning the link* — guarded so a partner can only attach a tenant that
+explicitly consented.
 
 The migration is control-plane-only (gated on the `organizations` table
 existing, exactly like `0062`/`0055`) — it does **not** fan out to tenant DBs;
@@ -387,6 +388,52 @@ hostnames). Audited into the **child's** tenant trail as
 `organization.branding_updated` with `via: "partner"` + the acting
 `partner_org_id` — **PII-free** (which fields are now set, booleans only; never a
 raw value).
+
+### Provisioning the link — two-sided consent (attach + detach)
+
+The partner surface now **creates** the parent/child link, not just administers
+an existing one. Three more admin-only endpoints
+(`require_roles(ROLE_ADMIN)`, JWT-gated via `get_tenant`):
+
+`POST /api/partner/link-code` — mint a **single-use link code** FOR the caller's
+**own** org. Handing that code to a prospective partner IS the act of consenting
+to be adopted. Returns `{link_code, expires_in_minutes}`. The code is an HMAC-
+signed token (`backend/app/services/partner_link_token.py`, pure, modelled on the
+email-action token) over the caller's org id only — **no name/slug/PII** — with a
+short TTL (`AP_PARTNER_LINK_TTL_MINUTES`, default 30). A **503** when no signing
+key is configured (feature off). Issuing is audited PII-free
+(`partner.link_code_issued`).
+
+`POST /api/partner/children` — the partner's admin **redeems** a child-issued
+code to attach that child. The signature is verified first (an invalid / expired
+/ wrong-purpose / cross-key code is one opaque **400** — no enumeration), then the
+`jti` is claimed **single-use** in Redis (fail-closed — a Redis blip rejects
+rather than risk a replay). Guards: a child already linked to a parent is a **409**
+(no silent takeover; re-linking to the *same* partner is the idempotent no-op,
+201), and an org can't adopt itself (400). On success `child.parent_org_id` is
+set and the change is audited on **both** trails (`partner.child_attached` on the
+partner's, `partner.parent_linked` on the child's — org ids only).
+
+`DELETE /api/partner/children/{child_id}` — detach a child (back to standalone,
+`parent_org_id = NULL`). Scoped at the data layer to the caller's own children
+via `_resolve_child` (a non-child / unknown id is the same opaque **404**).
+Idempotent (a second detach is a clean 404 — the link is already gone). Audited
+on both trails (`partner.child_detached` / `partner.parent_unlinked`).
+
+**Why this authorization model is safe (the privilege boundary).** The hard
+question attach poses: who may declare org X a child of partner P? Letting any
+partner admin unilaterally adopt an arbitrary org would be a cross-tenant
+takeover. There is also **no platform-operator / superuser identity** in this
+app — every user is org-scoped — so a pure "operator grants the link" path has no
+actor to run it. The durable answer is **two-sided consent**: the prospective
+child's *own* admin must first mint a link code (proof of consent); the partner's
+admin then redeems it. Because the platform holds the signing key (sops + KMS in
+deployed envs; a NON-secret value committed in `.env.development`), a partner
+**cannot forge a code or aim it at an org that never consented** — an attach with
+no/garbage/forged code is rejected and no link is created. The key's presence is
+the single on/off knob (`AP_PARTNER_LINK_SIGNING_KEY`), fail-closed with no
+hardcoded fallback. The link is a control-plane write only; no migration was
+needed (the `parent_org_id` column already exists).
 
 ### Trust model — isolation at the data layer
 
@@ -421,6 +468,12 @@ hex/URL validation as the org's own Branding panel, saving via `PUT
 "not a partner" state. API client: `frontend/src/lib/api/partner.ts` (types in
 `frontend/src/lib/types/partner.ts`). Built from the shared `ui/` components.
 
+The page also carries the **provisioning** affordances: a **Generate link code**
+panel ("Join a partner" — this workspace consenting to *be* a child; copies the
+minted code), an **+ Attach child** toolbar button opening a `Modal` to paste a
+child-issued code (`POST /api/partner/children`), and an armed two-click
+**Detach** `RowAction` per child row (`DELETE /api/partner/children/{id}`).
+
 ### Tests
 
 - Backend: `backend/tests/test_partner_admin.py` (realdb) — overview lists ONLY
@@ -430,10 +483,19 @@ hex/URL validation as the org's own Branding panel, saving via `PUT
   (`via:partner`, raw value never echoed), and preserves the child's
   `custom_domains`; **the isolation headline** — a non-child org id is an opaque
   404 on both read and write, and the non-child's brand is untouched.
-- Frontend: `frontend/tests-e2e/admin/partner.spec.ts` — admin reaches the page
-  and a standalone org shows the not-a-partner state (real backend GET); a
-  non-child org id is an opaque 404 (read + write); a clerk is redirected and the
-  API 403s them.
+- Backend (provisioning): `backend/tests/test_partner_link_token.py` (pure —
+  build/verify round-trip, fail-closed on empty key, forgery/tamper rejection,
+  purpose binding, expiry) + `backend/tests/test_partner_link_provisioning.py`
+  (realdb — mint admin-only/fail-closed; attach with a consenting code links +
+  audits both trails PII-free; **the authorization headline**: attach with no /
+  garbage / cross-key-forged code is rejected and NO link is created; single-use
+  replay → 409; re-parent guard → 409 with same-partner idempotent no-op; detach
+  unlinks + audits, non-child opaque 404, admin-only).
+- Frontend: `frontend/tests-e2e/admin/partner.spec.ts` (branding admin surface) +
+  `frontend/tests-e2e/admin/partner-provisioning.spec.ts` — admin sees the
+  attach + link-code affordances and mints a code; the authorization boundary
+  (a garbage code is an opaque 400, no link created; a self-mint can't self-
+  attach); a clerk is 403'd on mint + attach.
 
 ## Deferred to later slices
 
@@ -441,11 +503,13 @@ hex/URL validation as the org's own Branding panel, saving via `PUT
   registered custom domain (the app-side `custom_domains` admin UI + endpoint
   pair shipped — see *Managing the list* above; the infra automation that issues
   the ACM cert and wires the CNAME is a separate, infra-owned slice).
-- **Provisioning the parent/child link** — the partner-admin surface
-  (`/api/partner`) administers existing `parent_org_id` links but does not yet
-  *create* them. A future slice adds an operator/partner flow to attach a child
-  tenant to a partner (and the self-service "create a child tenant under my
-  partner account" path), guarded so a partner can only attach tenants it is
-  entitled to. Trigger: when reseller onboarding needs partners to add children
-  without an operator running a DB statement. Until then the link is set out of
-  band (provisioning / a one-off operator step).
+- **Self-service "create a *new* child tenant under my partner account"** — the
+  attach/detach provisioning of *existing* tenants shipped (two-sided consent
+  link codes, above). What remains is letting a partner spin up a brand-new
+  tenant already parented to it in one step (a thin wrapper over
+  `services/tenant_provisioning.provision_tenant` that stamps `parent_org_id` +
+  audits, reusing the same admin gate). Trigger: when reseller onboarding needs
+  partners to provision net-new branded tenants, not only adopt existing ones.
+  Until then a new tenant is created via the normal signup / `create_tenant.py`
+  path and then attached with a link code. Tracked as a follow-up — confirm
+  before opening the ticket.
