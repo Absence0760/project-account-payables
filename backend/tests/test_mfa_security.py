@@ -375,9 +375,12 @@ async def test_org_required_mfa_does_not_short_circuit_to_access_token(fake_redi
     result_user.scalar_one_or_none = MagicMock(return_value=user)
     result_org = MagicMock()
     result_org.scalar_one_or_none = MagicMock(return_value=org)
+    # Passkey lookup (added by the WebAuthn factor) — this user has none.
+    result_passkeys = MagicMock()
+    result_passkeys.scalars.return_value.all.return_value = []
     db = AsyncMock()
-    # First execute → user lookup; second → org lookup
-    db.execute = AsyncMock(side_effect=[result_user, result_org])
+    # First execute → user lookup; second → org lookup; third → passkey lookup
+    db.execute = AsyncMock(side_effect=[result_user, result_org, result_passkeys])
 
     request = MagicMock()
     request.client = SimpleNamespace(host="127.0.0.1")

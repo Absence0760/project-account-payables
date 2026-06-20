@@ -1,5 +1,7 @@
 """Auth endpoints — login (with optional MFA challenge), MFA enroll/verify, logout, profile."""
 
+import json
+import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -16,6 +18,7 @@ from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
+from app.models.webauthn_credential import WebAuthnCredential
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -28,8 +31,14 @@ from app.schemas.auth import (
     TokenResponse,
     UpdateProfileRequest,
     UserResponse,
+    WebAuthnAuthFinishRequest,
+    WebAuthnAuthStartRequest,
+    WebAuthnAuthStartResponse,
+    WebAuthnCredentialResponse,
+    WebAuthnRegisterFinishRequest,
+    WebAuthnRegisterStartResponse,
 )
-from app.services import mfa
+from app.services import mfa, webauthn
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.email_adapters import (
     EmailMessage,
@@ -56,6 +65,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def _load_user_org(db: AsyncSession, org_id) -> Organization | None:
     result = await db.execute(select(Organization).where(Organization.id == org_id))
     return result.scalar_one_or_none()
+
+
+async def _user_passkeys(db: AsyncSession, user_id) -> list[WebAuthnCredential]:
+    """All registered passkeys for a user (control-plane). Empty list = none."""
+    result = await db.execute(
+        select(WebAuthnCredential).where(WebAuthnCredential.user_id == user_id)
+    )
+    return list(result.scalars().all())
 
 
 def _user_response(user: User, org: Organization | None = None) -> UserResponse:
@@ -163,8 +180,11 @@ async def login(
 
     # MFA gate. The master switch (`AP_MFA_ENABLED`) wins — if MFA is off
     # at the platform level, we skip even when an individual user is enrolled.
-    # This keeps local-dev login painless.
-    if settings.mfa_enabled and (user.mfa_enabled or org_required):
+    # This keeps local-dev login painless. A user who enrolled ONLY a passkey
+    # (no TOTP) still has a second factor, so a registered credential also
+    # trips the gate.
+    passkeys = await _user_passkeys(db, user.id) if settings.mfa_enabled else []
+    if settings.mfa_enabled and (user.mfa_enabled or org_required or passkeys):
         challenge_token = mfa.create_challenge_token(user.id)
         # If the org enforces MFA but the user hasn't enrolled, only `email`
         # is offered as a method — and the verify path returns an "enroll
@@ -172,6 +192,11 @@ async def login(
         methods = []
         if user.mfa_enabled:
             methods.append("totp")
+        # Passkeys (WebAuthn) are a separate factor — offered whenever the user
+        # has at least one registered credential, independent of TOTP. This is
+        # the additive passkey login path; TOTP/email remain unchanged.
+        if passkeys:
+            methods.append("passkey")
         # Email backup is always available as long as the account has an email
         # (which they all do — it's the login identifier). For an unenrolled
         # user under org-enforcement we still offer email so they can prove
@@ -378,6 +403,245 @@ async def disable_mfa(
     user.mfa_enrolled_at = None
     await db.commit()
     return _user_response(user, org)
+
+
+# ---------------------------------------------------------------------------
+# WebAuthn / passkeys — additional MFA factor (separate code path from TOTP)
+# ---------------------------------------------------------------------------
+
+
+def _credential_to_response(c: WebAuthnCredential) -> WebAuthnCredentialResponse:
+    return WebAuthnCredentialResponse(
+        id=str(c.id),
+        name=c.name,
+        transports=c.transports,
+        created_at=c.created_at.isoformat() if c.created_at else None,
+        last_used_at=c.last_used_at.isoformat() if c.last_used_at else None,
+    )
+
+
+@router.post("/mfa/passkey/register", response_model=WebAuthnRegisterStartResponse)
+async def passkey_register_start(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Begin passkey enrollment — mint WebAuthn registration options. The
+    browser feeds ``options`` to ``navigator.credentials.create()``."""
+    if not settings.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
+    existing = await _user_passkeys(db, user.id)
+    options_json = await webauthn.begin_registration(
+        user_id=user.id,
+        user_name=user.email,
+        user_display_name=user.full_name or user.email,
+        existing_credential_ids=[c.credential_id for c in existing],
+    )
+    return WebAuthnRegisterStartResponse(options=json.loads(options_json))
+
+
+@router.post("/mfa/passkey/register/verify", response_model=WebAuthnCredentialResponse)
+async def passkey_register_finish(
+    body: WebAuthnRegisterFinishRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Verify the browser's ``create()`` response and persist the passkey."""
+    if not settings.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
+    try:
+        fields = await webauthn.finish_registration(
+            user_id=user.id,
+            credential_json=json.dumps(body.credential),
+        )
+    except webauthn.WebAuthnError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    cred = WebAuthnCredential(
+        user_id=user.id,
+        credential_id=fields["credential_id"],
+        public_key=fields["public_key"],
+        sign_count=fields["sign_count"],
+        transports=fields["transports"],
+        name=body.name or "Passkey",
+    )
+    db.add(cred)
+    await db.commit()
+    await db.refresh(cred)
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.mfa.passkey.registered",
+        entity_id=user.id,
+        details={"name": cred.name},
+    )
+    return _credential_to_response(cred)
+
+
+@router.get("/mfa/passkey", response_model=list[WebAuthnCredentialResponse])
+async def passkey_list(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """List this account's registered passkeys (metadata only)."""
+    creds = await _user_passkeys(db, user.id)
+    return [_credential_to_response(c) for c in creds]
+
+
+@router.delete("/mfa/passkey/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def passkey_delete(
+    credential_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Remove one passkey. If the org enforces MFA, the last surviving second
+    factor (passkey or TOTP) can't be stripped off."""
+    try:
+        cred_uuid = uuid.UUID(credential_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Passkey not found") from exc
+    result = await db.execute(
+        select(WebAuthnCredential).where(
+            WebAuthnCredential.id == cred_uuid,
+            WebAuthnCredential.user_id == user.id,
+        )
+    )
+    cred = result.scalar_one_or_none()
+    if not cred:
+        raise HTTPException(status_code=404, detail="Passkey not found")
+
+    org = await _load_user_org(db, user.organization_id)
+    if mfa.org_requires_mfa(org.settings if org else None):
+        # Don't let the user delete their last second factor under enforcement.
+        remaining = await _user_passkeys(db, user.id)
+        other_factor = user.mfa_enabled or len(remaining) > 1
+        if not other_factor:
+            raise HTTPException(
+                status_code=400,
+                detail="Your organization requires MFA — keep at least one factor.",
+            )
+
+    await db.delete(cred)
+    await db.commit()
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.mfa.passkey.removed",
+        entity_id=user.id,
+        details={"name": cred.name},
+    )
+
+
+@router.post("/mfa/passkey/authenticate", response_model=WebAuthnAuthStartResponse)
+async def passkey_authenticate_start(
+    body: WebAuthnAuthStartRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Begin a passkey LOGIN challenge. The ``challenge_token`` from /login
+    proves the password was already accepted, so we only mint options for that
+    user's registered credentials."""
+    await check_rate_limit("auth_mfa_passkey", request, limit=10, window_seconds=60)
+    if not settings.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is disabled")
+    try:
+        user_id = mfa.decode_challenge_token(body.challenge_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    creds = await _user_passkeys(db, user_id)
+    if not creds:
+        # No passkeys registered — opaque error (don't enumerate factors).
+        raise HTTPException(status_code=400, detail="No passkey registered")
+    options_json = await webauthn.begin_authentication(
+        user_id=user_id,
+        credentials=[{"credential_id": c.credential_id, "transports": c.transports} for c in creds],
+    )
+    return WebAuthnAuthStartResponse(options=json.loads(options_json))
+
+
+@router.post("/mfa/passkey/authenticate/verify", response_model=TokenResponse)
+async def passkey_authenticate_finish(
+    body: WebAuthnAuthFinishRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Verify a passkey assertion and mint the real access token. The login
+    counterpart of /mfa/verify, but for the passkey factor."""
+    await check_rate_limit("auth_mfa_passkey", request, limit=10, window_seconds=60)
+    ip = _client_ip(request)
+    if not settings.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is disabled")
+    try:
+        user_id = mfa.decode_challenge_token(body.challenge_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Invalid challenge")
+
+    credential_json = json.dumps(body.credential)
+    presented_id = webauthn.extract_credential_id(credential_json)
+    cred = None
+    if presented_id:
+        result = await db.execute(
+            select(WebAuthnCredential).where(
+                WebAuthnCredential.user_id == user_id,
+                WebAuthnCredential.credential_id == presented_id,
+            )
+        )
+        cred = result.scalar_one_or_none()
+    if not cred:
+        await dispatch_auth_audit(
+            organization_id=user.organization_id,
+            actor_id=user.id,
+            action="auth.mfa.verify.failure",
+            entity_id=user.id,
+            details={"method": "passkey", "ip": ip},
+        )
+        raise HTTPException(status_code=401, detail="Invalid passkey")
+
+    try:
+        new_sign_count = await webauthn.finish_authentication(
+            user_id=user_id,
+            credential_json=credential_json,
+            stored_public_key=cred.public_key,
+            stored_sign_count=cred.sign_count,
+        )
+    except webauthn.WebAuthnError as exc:
+        await dispatch_auth_audit(
+            organization_id=user.organization_id,
+            actor_id=user.id,
+            action="auth.mfa.verify.failure",
+            entity_id=user.id,
+            details={"method": "passkey", "ip": ip},
+        )
+        raise HTTPException(status_code=401, detail="Invalid passkey") from exc
+
+    cred.sign_count = new_sign_count
+    cred.last_used_at = datetime.now(UTC)
+    await db.commit()
+
+    token, jti = create_access_token_with_jti(user.id, user.organization_id)
+    await register_session(user.id, jti)
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.mfa.verify.success",
+        entity_id=user.id,
+        details={"method": "passkey", "ip": ip},
+    )
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.login.success",
+        entity_id=user.id,
+        details={"ip": ip, "method": "password+mfa:passkey"},
+    )
+    return TokenResponse(
+        access_token=token,
+        must_change_password=user.must_change_password,
+    )
 
 
 # ---------------------------------------------------------------------------

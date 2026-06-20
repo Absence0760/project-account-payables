@@ -1,0 +1,258 @@
+"""Passkey (WebAuthn) endpoint security + full register/authenticate flow.
+
+`test_webauthn.py` covers the service mechanics against a software
+authenticator; this file pins the *endpoint* contract, calling the route
+handlers in `app/api/auth.py` directly with fake DBs (the same style as
+`test_mfa_enrollment_security.py`):
+
+  - Master switch off ⇒ register / register-verify / authenticate-start all 400
+  - The login challenge offers `passkey` only when the user has a credential
+  - A full register → authenticate round-trip through the real endpoints mints
+    an access token (the assertion is produced by the in-test software
+    authenticator from `test_webauthn.py`)
+  - A wrong/unknown credential id at authenticate-verify ⇒ 401 (opaque)
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+
+from tests.test_webauthn import RP_ID, SoftAuthenticator, _challenge_from_options
+
+
+def _fake_user(*, mfa_enabled: bool = False):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        email="user@acme.test",
+        full_name="Test User",
+        organization_id=uuid.uuid4(),
+        is_active=True,
+        hashed_password="x",
+        mfa_secret=None,
+        mfa_enabled=mfa_enabled,
+        mfa_enrolled_at=None,
+        must_change_password=False,
+        roles=[],
+    )
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.store: dict[str, bytes] = {}
+
+    async def setex(self, key, ttl, value):  # noqa: ARG002
+        self.store[key] = value if isinstance(value, bytes) else value.encode()
+
+    async def get(self, key):
+        return self.store.get(key)
+
+    async def delete(self, key):
+        self.store.pop(key, None)
+
+
+@pytest.fixture(autouse=True)
+def _pin_settings_and_redis(monkeypatch):
+    from app.services import webauthn
+
+    monkeypatch.setattr(webauthn.settings, "webauthn_rp_id", RP_ID)
+    monkeypatch.setattr(webauthn.settings, "webauthn_origins", "http://localhost:7777")
+    monkeypatch.setattr(webauthn.settings, "webauthn_challenge_ttl_seconds", 300)
+    fake = _FakeRedis()
+
+    async def _get_redis():
+        return fake
+
+    monkeypatch.setattr("app.services.webauthn.get_redis", _get_redis)
+    return fake
+
+
+# ---------------------------------------------------------------------------
+# Master-switch gating
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_passkey_register_refused_when_master_switch_off():
+    from app.api.auth import passkey_register_start
+
+    db = AsyncMock()
+    with patch("app.api.auth.settings.mfa_enabled", False):
+        with pytest.raises(HTTPException) as exc:
+            await passkey_register_start(user=_fake_user(), db=db)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_passkey_authenticate_start_refused_when_master_switch_off():
+    from app.api.auth import passkey_authenticate_start
+    from app.schemas.auth import WebAuthnAuthStartRequest
+
+    db = AsyncMock()
+    req = SimpleNamespace(client=SimpleNamespace(host="1.2.3.4"))
+    with (
+        patch("app.api.auth.settings.mfa_enabled", False),
+        patch("app.api.auth.check_rate_limit", new=AsyncMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await passkey_authenticate_start(
+                body=WebAuthnAuthStartRequest(challenge_token="t"), request=req, db=db
+            )
+    assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Full register → authenticate round-trip through the endpoints
+# ---------------------------------------------------------------------------
+
+
+class _RegDB:
+    """Records the WebAuthnCredential added on register-verify."""
+
+    def __init__(self, existing=None):
+        self.added = []
+        self._existing = existing or []
+
+    async def execute(self, *_a, **_k):
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = self._existing
+        result.scalar_one_or_none.return_value = self._existing[0] if self._existing else None
+        return result
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def commit(self):
+        pass
+
+    async def refresh(self, obj):
+        # Stamp the server-default-ish fields the response reads.
+        if getattr(obj, "id", None) is None:
+            obj.id = uuid.uuid4()
+        obj.created_at = None
+        obj.last_used_at = None
+
+
+@pytest.mark.asyncio
+async def test_full_passkey_register_then_authenticate(_pin_settings_and_redis):
+    from app.api import auth as auth_mod
+    from app.schemas.auth import (
+        WebAuthnAuthFinishRequest,
+        WebAuthnAuthStartRequest,
+        WebAuthnRegisterFinishRequest,
+    )
+    from app.services import mfa
+
+    user = _fake_user()
+    db = _RegDB()
+    soft = SoftAuthenticator()
+
+    audit = AsyncMock()
+    rate = AsyncMock()
+    session_reg = AsyncMock()
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.dispatch_auth_audit", new=audit),
+        patch("app.api.auth.check_rate_limit", new=rate),
+        patch("app.api.auth.register_session", new=session_reg),
+        patch("app.api.auth.create_access_token_with_jti", return_value=("TOKEN", "JTI")),
+    ):
+        # 1. register start → options + challenge stashed
+        start = await auth_mod.passkey_register_start(user=user, db=db)
+        reg_response = soft.create(start.options["challenge"])
+
+        # 2. register verify → persists the credential
+        cred_meta = await auth_mod.passkey_register_finish(
+            body=WebAuthnRegisterFinishRequest(
+                credential=json.loads(reg_response), name="My Key"
+            ),
+            user=user,
+            db=db,
+        )
+        assert cred_meta.name == "My Key"
+        assert len(db.added) == 1
+        stored = db.added[0]
+
+        # The user now "has" this passkey — wire a DB that returns it.
+        auth_db = _RegDB(existing=[stored])
+        # decode_challenge_token needs a real token for this user
+        challenge_token = mfa.create_challenge_token(user.id)
+
+        # 3. authenticate start → options for the stored credential
+        auth_start = await auth_mod.passkey_authenticate_start(
+            body=WebAuthnAuthStartRequest(challenge_token=challenge_token),
+            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+            db=auth_db,
+        )
+        assertion = soft.get(_challenge_from_options(json.dumps(auth_start.options)))
+
+        # The authenticate-verify path looks the user up by id, then the cred.
+        verify_db = _AuthVerifyDB(user=user, cred=stored)
+        token = await auth_mod.passkey_authenticate_finish(
+            body=WebAuthnAuthFinishRequest(
+                challenge_token=challenge_token, credential=json.loads(assertion)
+            ),
+            request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+            db=verify_db,
+        )
+
+    assert token.access_token == "TOKEN"
+    # Counter advanced + last_used stamped on the credential
+    assert stored.sign_count == 1
+    assert stored.last_used_at is not None
+    session_reg.assert_awaited()
+
+
+class _AuthVerifyDB:
+    """First execute() resolves the User; second resolves the credential."""
+
+    def __init__(self, user, cred):
+        self._user = user
+        self._cred = cred
+        self._calls = 0
+
+    async def execute(self, *_a, **_k):
+        self._calls += 1
+        result = MagicMock()
+        if self._calls == 1:
+            result.scalar_one_or_none.return_value = self._user
+        else:
+            result.scalar_one_or_none.return_value = self._cred
+        return result
+
+    async def commit(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_authenticate_verify_unknown_credential_is_401(_pin_settings_and_redis):
+    from app.api import auth as auth_mod
+    from app.schemas.auth import WebAuthnAuthFinishRequest
+    from app.services import mfa
+
+    user = _fake_user()
+    challenge_token = mfa.create_challenge_token(user.id)
+    # DB returns the user but NO matching credential.
+    db = _AuthVerifyDB(user=user, cred=None)
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.dispatch_auth_audit", new=AsyncMock()),
+        patch("app.api.auth.check_rate_limit", new=AsyncMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.passkey_authenticate_finish(
+                body=WebAuthnAuthFinishRequest(
+                    challenge_token=challenge_token,
+                    credential={"id": "deadbeef", "rawId": "deadbeef", "response": {}},
+                ),
+                request=SimpleNamespace(client=SimpleNamespace(host="1.2.3.4")),
+                db=db,
+            )
+    assert exc.value.status_code == 401
