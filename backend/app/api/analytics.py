@@ -20,10 +20,13 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO, require_roles
+from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentSchedule
@@ -44,6 +47,13 @@ from app.services.analytics import (
     compute_working_capital_impact,
     detect_threshold_breaches,
     value_received_goods,
+)
+from app.services.audit_dispatch import dispatch_auth_audit
+from app.services.cashflow import (
+    CashThresholds,
+    fetch_provider_balance,
+    resolve_cash_thresholds,
+    store_cash_thresholds,
 )
 from app.services.currency_conversion import (
     compute_unrealized_fx_gain_loss,
@@ -274,6 +284,7 @@ async def get_cash_position(
     horizon_days: int = Query(90, ge=7, le=730),
     opening_balance: str | None = Query(None),
     min_balance_threshold: str | None = Query(None),
+    seed_balance: bool = Query(True),
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
@@ -283,11 +294,20 @@ async def get_cash_position(
     period-by-period minus scheduled AP outflows, flagging periods that
     close below `min_balance_threshold`.
 
-    The opening balance is a bring-your-own input (this is AP-only — we
-    don't hold a banking integration): the `opening_balance` query param
-    wins, else `Organization.settings.cashflow.opening_balance`, else
-    `0` with `opening_balance_source: "none"` so the UI prompts for one.
-    Inflows (receivables) aren't modelled — `closing = opening - outflow`."""
+    Opening-balance resolution (first hit wins):
+      1. `opening_balance` query param (explicit BYO override) → `"query"`.
+      2. Auto-sync from the org's configured payment/banking provider when its
+         adapter supports the optional `get_balance` capability (the `mock`
+         adapter returns a deterministic figure for local dev) → `"provider"`.
+         Best-effort: a fetch failure / unsupported adapter silently falls
+         through. Pass `seed_balance=false` to skip the provider call.
+      3. Persisted `Organization.settings.cashflow.opening_balance` → `"settings"`.
+      4. `0` with `opening_balance_source: "none"` so the UI prompts for one.
+
+    The alert threshold is the `min_balance_threshold` query param when supplied,
+    else the org's persisted `settings.cashflow.min_balance_threshold` (managed
+    via `GET/PUT /api/analytics/cash-position-settings`). Inflows (receivables)
+    aren't modelled — `closing = opening - outflow`."""
     today = date.today()
     rows = await _commitment_rows(
         db, today=today, horizon_days=horizon_days, include_pending=True, entity_id=entity_id
@@ -296,6 +316,19 @@ async def get_cash_position(
 
     opening = _parse_decimal_param(opening_balance, "opening_balance")
     source = "query"
+    balance_currency: str | None = None
+    payments_config = (org.settings or {}).get("payments")
+    if opening is None and seed_balance and payments_config:
+        # Auto-sync: pull the live funding-account balance from the configured
+        # provider when its adapter supports it. Best-effort — None on any
+        # failure / unsupported adapter, so we fall through to the manual chain.
+        # Skipped entirely when the org has configured no payments provider (a
+        # bare clone shouldn't fabricate a balance from the mock fallback).
+        provider_balance = await fetch_provider_balance(payments_config)
+        if provider_balance is not None:
+            opening = provider_balance.amount
+            balance_currency = provider_balance.currency
+            source = "provider"
     if opening is None:
         settings_balance = (org.settings or {}).get("cashflow", {}).get("opening_balance")
         if settings_balance is not None:
@@ -306,6 +339,9 @@ async def get_cash_position(
         source = "none"
 
     threshold = _parse_decimal_param(min_balance_threshold, "min_balance_threshold")
+    if threshold is None:
+        # No per-request override → fall back to the org's persisted threshold.
+        threshold = resolve_cash_thresholds(org.settings).min_balance_threshold
     position = compute_cash_position(opening, periods, min_balance_threshold=threshold)
     breaches = (
         detect_threshold_breaches(position, min_balance_threshold=threshold)
@@ -317,6 +353,7 @@ async def get_cash_position(
         "horizon_days": horizon_days,
         "opening_balance": float(opening),
         "opening_balance_source": source,
+        "opening_balance_currency": balance_currency,
         "threshold": float(threshold) if threshold is not None else None,
         "periods": [
             {
@@ -342,6 +379,87 @@ async def get_cash_position(
             for b in breaches
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# /api/analytics/cash-position-settings — persisted alert thresholds
+# ---------------------------------------------------------------------------
+
+
+class CashThresholdSettings(BaseModel):
+    """Per-org persisted cash-position alert thresholds.
+
+    `min_balance_threshold` is the low-balance warning level (exact `Decimal`,
+    serialised as a JSON string so it never round-trips through a float).
+    `null` means "no persisted threshold"."""
+
+    min_balance_threshold: Decimal | None = None
+
+    @field_validator("min_balance_threshold")
+    @classmethod
+    def _non_negative(cls, v: Decimal | None) -> Decimal | None:
+        if v is not None and v < 0:
+            raise ValueError("min_balance_threshold must be >= 0")
+        return v
+
+
+def _threshold_response(thresholds: CashThresholds) -> dict:
+    """Serialise persisted thresholds as JSON strings (money never as float)."""
+    return {
+        "min_balance_threshold": (
+            str(thresholds.min_balance_threshold)
+            if thresholds.min_balance_threshold is not None
+            else None
+        ),
+    }
+
+
+@router.get("/cash-position-settings")
+async def get_cash_position_settings(
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_CFO_ROLES)),
+):
+    """Return this org's persisted cash-position alert thresholds.
+
+    Read-gated to the same CFO + admin surface as the cash-position view. The
+    cash-position endpoint reads `min_balance_threshold` from here whenever the
+    request doesn't pass its own override."""
+    return _threshold_response(resolve_cash_thresholds(org.settings))
+
+
+@router.put("/cash-position-settings")
+async def update_cash_position_settings(
+    body: CashThresholdSettings,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(*_CFO_ROLES)),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Persist this org's cash-position alert thresholds on
+    `Organization.settings.cashflow` (JSON — no migration). CFO + admin; audited.
+
+    Money is stored as a JSON string (never a float) and preserves any other
+    keys already on the `cashflow` block (e.g. a manually set `opening_balance`).
+    Audit details record the new threshold only — no PII."""
+    thresholds = CashThresholds(min_balance_threshold=body.min_balance_threshold)
+    org.settings = store_cash_thresholds(org.settings, thresholds)
+    # Mutating nested JSONB in-place doesn't mark the column dirty on its own.
+    flag_modified(org, "settings")
+    await db.commit()
+
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="organization.cash_thresholds_updated",
+        entity_id=org.id,
+        details={
+            "min_balance_threshold": (
+                str(thresholds.min_balance_threshold)
+                if thresholds.min_balance_threshold is not None
+                else None
+            ),
+        },
+    )
+    return _threshold_response(thresholds)
 
 
 # ---------------------------------------------------------------------------
