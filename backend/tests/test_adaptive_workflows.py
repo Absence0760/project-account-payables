@@ -30,6 +30,7 @@ from app.services.adaptive_workflows import (
     derive_suggestions,
     detect_invoice_anomaly,
     recommend_approvers,
+    recommend_auto_approve_threshold,
 )
 
 # ---------------------------------------------------------------------------
@@ -219,6 +220,117 @@ def test_derive_no_suggestion_when_any_modification():
     ]
     s = derive_suggestions(compute_vendor_patterns(clean))[0]
     assert "20/20 invoices approved unmodified" in s.title
+
+
+# ---------------------------------------------------------------------------
+# Auto-approve threshold recommendation — pure-function tests
+# ---------------------------------------------------------------------------
+
+
+def _clean_vendor_patterns(specs):
+    """Build vendor patterns from (vendor_id, max_amount, n) tuples — each a
+    spotless history (0 rejections, all unmodified)."""
+    rows = []
+    for vid, max_amt, n in specs:
+        for i in range(n):
+            # Make the LAST invoice the max so max_approved_amount == max_amt.
+            amt = str(max_amt) if i == n - 1 else "100"
+            rows.append(
+                _decision(vendor_id=vid, vendor_name=f"V-{vid}", amount=amt, unmodified=True)
+            )
+    return compute_vendor_patterns(rows)
+
+
+def test_threshold_recommend_raises_from_zero():
+    # 3 clean vendors, max clean amount 5150 → round up to 5500; current 0 →
+    # first raise uses the absolute cap only.
+    pats = _clean_vendor_patterns([("A", 5150, 12), ("B", 3000, 12), ("C", 1000, 12)])
+    rec = recommend_auto_approve_threshold(pats, current_threshold=Decimal("0"))
+    assert rec.should_raise is True
+    assert rec.reason_code == "ok"
+    assert rec.recommended_threshold == Decimal("5500.00")
+    assert rec.qualifying_vendor_count == 3
+    assert rec.total_clean_invoices == 36
+    assert len(rec.evidence) == 3
+    # Affects-new-invoices caveat surfaces in the rationale.
+    assert "NEW invoices" in rec.rationale
+
+
+def test_threshold_refuses_insufficient_vendors():
+    # Only 2 qualifying vendors (< min 3) → refuse.
+    pats = _clean_vendor_patterns([("A", 9000, 12), ("B", 4000, 12)])
+    rec = recommend_auto_approve_threshold(pats, current_threshold=Decimal("0"))
+    assert rec.should_raise is False
+    assert rec.reason_code == "insufficient_evidence"
+    assert rec.recommended_threshold == rec.current_threshold == Decimal("0.00")
+    assert rec.qualifying_vendor_count == 2
+
+
+def test_threshold_never_lowers():
+    # Evidence supports only 5500 but the org is already at 8000 → no change.
+    pats = _clean_vendor_patterns([("A", 5150, 12), ("B", 3000, 12), ("C", 1000, 12)])
+    rec = recommend_auto_approve_threshold(pats, current_threshold=Decimal("8000"))
+    assert rec.should_raise is False
+    assert rec.reason_code == "no_increase"
+    assert rec.recommended_threshold == Decimal("8000.00")  # never below current
+
+
+def test_threshold_relative_cap_clamps_raise():
+    # current 1000, max_raise_multiple 2.0 → relative cap 2000. Evidence supports
+    # 9000 but the raise is clamped to the cap, and still raises.
+    pats = _clean_vendor_patterns([("A", 9000, 12), ("B", 8000, 12), ("C", 7000, 12)])
+    rec = recommend_auto_approve_threshold(
+        pats, current_threshold=Decimal("1000"), max_raise_multiple=Decimal("2.0")
+    )
+    assert rec.should_raise is True
+    assert rec.reason_code == "at_cap"
+    assert rec.recommended_threshold == Decimal("2000.00")
+    assert rec.cap_threshold == Decimal("2000.00")
+    assert "capped" in rec.rationale
+
+
+def test_threshold_absolute_cap_clamps_first_raise():
+    # current 0 → absolute cap only. absolute_cap 6000, evidence supports 9000.
+    pats = _clean_vendor_patterns([("A", 9000, 12), ("B", 8000, 12), ("C", 7000, 12)])
+    rec = recommend_auto_approve_threshold(
+        pats, current_threshold=Decimal("0"), absolute_cap=Decimal("6000")
+    )
+    assert rec.should_raise is True
+    assert rec.reason_code == "at_cap"
+    assert rec.recommended_threshold == Decimal("6000.00")
+
+
+def test_threshold_modifications_disqualify_vendor():
+    # A vendor with one corrected approval is NOT clean evidence — mirrors the
+    # absolute gate in derive_suggestions. A + B are clean; C has one corrected
+    # approval, so only 2 of 3 qualify (< min 3 vendors) → refuse.
+    rows = []
+    for vid, max_amt, n in (("A", 5000, 12), ("B", 4000, 12)):
+        for i in range(n):
+            rows.append(
+                _decision(
+                    vendor_id=vid,
+                    vendor_name=f"V-{vid}",
+                    amount=str(max_amt) if i == n - 1 else "100",
+                    unmodified=True,
+                )
+            )
+    for i in range(12):
+        rows.append(
+            _decision(
+                vendor_id="C",
+                vendor_name="V-C",
+                amount="3000",
+                unmodified=(i != 0),  # one corrected approval
+            )
+        )
+    rec = recommend_auto_approve_threshold(
+        compute_vendor_patterns(rows), current_threshold=Decimal("0")
+    )
+    # Only A + B qualify (2 < 3) → refuse.
+    assert rec.should_raise is False
+    assert rec.reason_code == "insufficient_evidence"
+    assert rec.qualifying_vendor_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -917,3 +1029,357 @@ async def test_tenant_isolation(realdb):
         assert all(v["vendor_name"] != "Acme Cleaning" for v in data["vendors"])
         suggestions = (await client_b.get("/api/adaptive/suggestions")).json()["suggestions"]
         assert suggestions == []
+
+
+# ---------------------------------------------------------------------------
+# Auto-approve threshold — recommend (GET) + apply (POST) real-DB tests
+# ---------------------------------------------------------------------------
+
+
+async def _set_adaptive_min_history(realdb, org_id, n):
+    """Lower the org's suggestion_min_history so the threshold tests seed a small
+    number of clean invoices (keeps the realdb connection churn down)."""
+    from sqlalchemy import select
+
+    from app.models.organization import Organization
+
+    async with realdb.control_sessionmaker()() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        settings = dict(org.settings or {})
+        settings["adaptive"] = {**settings.get("adaptive", {}), "suggestion_min_history": n}
+        org.settings = settings
+        await s.commit()
+
+
+async def _seed_active_workflow(mk, org_id, *, auto_approve_below=None):
+    """An active workflow definition with an approval step. Returns its id."""
+    from app.models.workflow import WorkflowDefinition
+
+    approval_config: dict = {
+        "required": True,
+        "approver_strategy": "manual",
+        "require_segregation": True,
+    }
+    if auto_approve_below is not None:
+        approval_config["auto_approve_below"] = auto_approve_below
+    wf_id = uuid.uuid4()
+    async with mk() as s:
+        defn = WorkflowDefinition(
+            id=wf_id,
+            organization_id=org_id,
+            name="Default",
+            steps_config={
+                "steps": [
+                    {"number": 1, "type": "extraction", "name": "Extract", "config": {}},
+                    {
+                        "number": 2,
+                        "type": "approval",
+                        "name": "Manager Approval",
+                        "config": approval_config,
+                    },
+                ]
+            },
+            is_active=True,
+            is_default=True,
+        )
+        s.add(defn)
+        await s.commit()
+        return wf_id
+
+
+async def _seed_clean_vendors(mk, org_id, actor_id, specs):
+    """Seed several spotless-history vendors in a SINGLE session/commit.
+
+    specs = [(vendor_name, amount, n)]. One bulk commit keeps the realdb
+    connection churn low (the per-invoice-commit `_seed_approved_vendor` pattern,
+    multiplied across vendors, trips the documented teardown flake). Each invoice
+    gets the matching `ready_for_review` clock-start + `invoice.approved` audit
+    rows the decision-row query reads."""
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.vendor import Vendor
+    from app.models.workflow import AuditLog
+
+    base = datetime.now(UTC) - timedelta(days=60)
+    async with mk() as s:
+        n_seq = 0
+        for name, amount, n in specs:
+            vendor = Vendor(organization_id=org_id, name=name, status="active")
+            s.add(vendor)
+            await s.flush()
+            for i in range(n):
+                inv = Invoice(
+                    organization_id=org_id,
+                    invoice_number=f"CLEAN-{n_seq}",
+                    vendor_name=name,
+                    vendor_id=vendor.id,
+                    amount=Decimal(str(amount)),
+                    status=InvoiceStatus.approved,
+                )
+                s.add(inv)
+                await s.flush()
+                ready_at = base + timedelta(hours=n_seq)
+                s.add(
+                    AuditLog(
+                        organization_id=org_id,
+                        actor_id=None,
+                        action="invoice.status_changed",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details={"new_status": "ready_for_review"},
+                        created_at=ready_at,
+                    )
+                )
+                s.add(
+                    AuditLog(
+                        organization_id=org_id,
+                        actor_id=actor_id,
+                        action="invoice.approved",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details=None,  # unmodified → clean history
+                        created_at=ready_at + timedelta(hours=1),
+                    )
+                )
+                n_seq += 1
+        await s.commit()
+
+
+async def test_threshold_recommendation_endpoint(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    wf_id = await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+
+    async with realdb.client(key="a", role="cfo") as client:  # read role
+        r = await client.get("/api/adaptive/threshold-recommendation")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["should_raise"] is True
+    assert data["reason_code"] == "ok"
+    assert data["recommended_threshold"] == "5000.00"
+    assert data["current_threshold"] == "0.00"  # quantized by the recommendation
+    assert data["qualifying_vendor_count"] == 3
+    assert data["workflow_id"] == str(wf_id)
+    assert isinstance(data["evidence"], list) and len(data["evidence"]) == 3
+
+
+async def test_threshold_apply_writes_through_audited_patch_path(realdb):
+    """The apply path raises auto_approve_below on the active definition AND
+    lands a WorkflowVersion snapshot + audit rows — exactly the manual PATCH
+    path's side effects (the threshold change is versioned + auditable)."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowVersion
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    wf_id = await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/adaptive/threshold-recommendation/apply", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is True
+    assert body["previous_threshold"] == "0"
+    assert body["new_threshold"] == "5000.00"
+    assert body["version_number"] is not None
+
+    async with mk() as s:
+        # The threshold is written onto the approval step.
+        defn = (
+            await s.execute(select(WorkflowDefinition).where(WorkflowDefinition.id == wf_id))
+        ).scalar_one()
+        approval = next(st for st in defn.steps_config["steps"] if st["type"] == "approval")
+        assert approval["config"]["auto_approve_below"] == 5000.0
+
+        # A WorkflowVersion snapshot of the PRIOR config was written.
+        versions = (
+            (await s.execute(select(WorkflowVersion).where(WorkflowVersion.definition_id == wf_id)))
+            .scalars()
+            .all()
+        )
+        assert len(versions) == 1
+        prior_approval = next(
+            st for st in versions[0].steps_config["steps"] if st["type"] == "approval"
+        )
+        assert "auto_approve_below" not in prior_approval["config"]  # the prior (unset) state
+
+        # The audited PATCH path's version_snapshot row + the threshold-specific
+        # row both land against the definition.
+        actions = {
+            row.action
+            for row in (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_type == "workflow_definition",
+                        AuditLog.entity_id == wf_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        assert "workflow.version_snapshot" in actions
+        assert "workflow.auto_approve_threshold_raised" in actions
+
+
+async def test_threshold_apply_noop_on_insufficient_evidence(realdb):
+    """Too few clean vendors → applied=false, no version snapshot, no audit row."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog, WorkflowVersion
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    wf_id = await _seed_active_workflow(mk, org_id)
+    # Only 2 clean vendors (< min 3).
+    await _seed_clean_vendors(mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3)])
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/adaptive/threshold-recommendation/apply", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["applied"] is False
+    assert body["reason_code"] == "insufficient_evidence"
+    assert body["new_threshold"] == body["previous_threshold"] == "0"
+
+    async with mk() as s:
+        versions = (
+            (await s.execute(select(WorkflowVersion).where(WorkflowVersion.definition_id == wf_id)))
+            .scalars()
+            .all()
+        )
+        assert versions == []  # no snapshot for a non-change
+        rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_type == "workflow_definition",
+                        AuditLog.entity_id == wf_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == []
+
+
+async def test_threshold_apply_idempotent(realdb):
+    """A second apply after the threshold is already at the recommended level is
+    a no-op (no_increase) — no extra version snapshot."""
+    from sqlalchemy import select
+
+    from app.models.workflow import WorkflowVersion
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    wf_id = await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    path = "/api/adaptive/threshold-recommendation/apply"
+
+    async with realdb.client(key="a", role="admin") as client:
+        first = await client.post(path, json={})
+        assert first.json()["applied"] is True
+        second = await client.post(path, json={})
+        assert second.status_code == 200
+        assert second.json()["applied"] is False
+        assert second.json()["reason_code"] == "no_increase"
+
+    async with mk() as s:
+        versions = (
+            (await s.execute(select(WorkflowVersion).where(WorkflowVersion.definition_id == wf_id)))
+            .scalars()
+            .all()
+        )
+        # Exactly one snapshot — the second (no-op) apply added none.
+        assert len(versions) == 1
+
+
+async def test_threshold_apply_stale_guard_409(realdb):
+    """expected_recommended_threshold that no longer matches → 409, no write."""
+    from sqlalchemy import select
+
+    from app.models.workflow import WorkflowVersion
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    wf_id = await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post(
+            "/api/adaptive/threshold-recommendation/apply",
+            json={"expected_recommended_threshold": "9999.00"},
+        )
+    assert r.status_code == 409
+
+    async with mk() as s:
+        versions = (
+            (await s.execute(select(WorkflowVersion).where(WorkflowVersion.definition_id == wf_id)))
+            .scalars()
+            .all()
+        )
+        assert versions == []  # nothing written on the stale-guard reject
+
+
+async def test_threshold_apply_rbac_and_auth(realdb):
+    """Apply is admin-only (matches workflow-definition edit). CFO/clerk read the
+    recommendation but cannot apply it; anon is 401."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    path = "/api/adaptive/threshold-recommendation/apply"
+
+    async with realdb.client(key="a", role=None) as anon:
+        assert (await anon.post(path, json={})).status_code == 401
+    async with realdb.client(key="a", role="ap_clerk") as clerk:
+        assert (await clerk.post(path, json={})).status_code == 403
+    # ap_manager can edit reviewers but NOT workflow definitions → 403 on apply.
+    async with realdb.client(key="a", role="ap_manager") as mgr:
+        assert (await mgr.post(path, json={})).status_code == 403
+    async with realdb.client(key="a", role="cfo") as cfo:
+        # CFO reads the recommendation fine...
+        assert (await cfo.get("/api/adaptive/threshold-recommendation")).status_code == 200
+        # ...but cannot apply it.
+        assert (await cfo.post(path, json={})).status_code == 403
+    async with realdb.client(key="a", role="admin") as admin:
+        assert (await admin.post(path, json={})).status_code == 200
+
+
+async def test_threshold_apply_409_no_workflow(realdb):
+    """Apply with no workflow definition at all → 409."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/adaptive/threshold-recommendation/apply", json={})
+    assert r.status_code == 409
