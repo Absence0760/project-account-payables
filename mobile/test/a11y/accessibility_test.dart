@@ -19,10 +19,13 @@ import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/widgets/activity_timeline.dart';
+import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
+import 'package:ap_mobile/widgets/erp_status_panel.dart';
 import 'package:ap_mobile/widgets/exception_list_tile.dart';
 import 'package:ap_mobile/widgets/exception_status_badge.dart';
 import 'package:ap_mobile/widgets/invoice_edit_sheet.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
+import 'package:ap_mobile/widgets/invoice_warnings_panel.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
 import 'package:ap_mobile/widgets/vendor_list_tile.dart';
@@ -291,6 +294,90 @@ void main() {
       await expectLater(tester, meetsGuideline(textContrastGuideline));
       // The icon-only close + date-clear controls announce their purpose.
       expect(find.bySemanticsLabel('Close edit form'), findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('InvoiceWarningsPanel', () {
+    testWidgets('clears contrast and merges each warning into one label',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        const InvoiceWarningsPanel(
+          warnings: [
+            InvoiceWarning(
+              type: 'missing_field',
+              severity: WarningSeverity.error,
+              message: 'Missing vendor name',
+            ),
+            InvoiceWarning(
+              type: 'duplicate',
+              severity: WarningSeverity.warning,
+              message: 'Duplicate invoice number',
+            ),
+          ],
+          poMatch: PoMatch(
+            matchType: '3-way',
+            status: 'mismatch',
+            variancePct: 12.5,
+            withinTolerance: false,
+            issues: ['Amount variance'],
+          ),
+        ),
+      ));
+
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      expect(find.bySemanticsLabel('Error: Missing vendor name'),
+          findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('ErpStatusPanel', () {
+    Invoice erpInvoice() => Invoice(
+          id: 'inv1',
+          invoiceNumber: 'INV-001',
+          vendorName: 'Acme',
+          amount: 100,
+          currency: 'USD',
+          status: InvoiceStatus.failed,
+          createdAt: DateTime(2026, 1, 1),
+        );
+
+    testWidgets('clears contrast with an error row', (tester) async {
+      final handle = tester.ensureSemantics();
+      final info = ErpInfo.fromAuditLog([
+        AuditEntry(
+          id: 'a1',
+          actorName: 'Demo User',
+          action: 'invoice.erp_failed',
+          details: const {'error': 'Connection refused'},
+          createdAt: DateTime(2026, 1, 2),
+        ),
+      ]);
+      await tester.pumpWidget(_host(
+        ErpStatusPanel(invoice: erpInvoice(), erpInfo: info),
+      ));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+
+  group('AdvancedSearchSheet', () {
+    testWidgets('meets tap-target, label and contrast guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        const AdvancedSearchSheet(initial: InvoiceSearchFilters.empty),
+      ));
+      await tester.pump();
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // The icon-only close control announces its purpose.
+      expect(find.bySemanticsLabel('Close advanced search'), findsOneWidget);
       handle.dispose();
     });
   });
