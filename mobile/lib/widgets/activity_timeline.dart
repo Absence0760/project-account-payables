@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 
 final _timelineDateFormat = DateFormat('MMM d, yyyy • h:mm a');
@@ -31,7 +32,7 @@ class ActivityTimeline extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Text(
-              'No activity yet',
+              AppLocalizations.of(context).timelineNoActivity,
               style: TextStyle(color: Colors.grey.shade700),
             ),
           ],

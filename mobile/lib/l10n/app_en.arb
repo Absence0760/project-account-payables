@@ -213,5 +213,199 @@
       "label": { "type": "String" },
       "value": { "type": "String" }
     }
-  }
+  },
+
+  "invoiceDetailTitle": "Invoice Detail",
+  "invoiceDetailEdit": "Edit",
+  "invoiceDetailEditLabel": "Edit invoice",
+  "invoiceDetailRetry": "Retry",
+  "invoiceDetailErrorPrefix": "Error: {error}",
+  "@invoiceDetailErrorPrefix": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "invoiceDetailNoChanges": "No changes to save",
+  "invoiceDetailUpdated": "Invoice updated",
+  "invoiceDetailUpdateFailed": "Could not save changes — please try again",
+  "invoiceDetailApproved": "Invoice approved",
+  "invoiceDetailApproveFailed": "Could not approve invoice — please try again",
+  "invoiceDetailRejected": "Invoice rejected",
+  "invoiceDetailRejectFailed": "Could not reject invoice — please try again",
+  "invoiceDetailRejectTitle": "Reject Invoice",
+  "invoiceDetailRejectReason": "Reason",
+  "invoiceDetailReject": "Reject",
+  "invoiceDetailApprove": "Approve",
+  "invoiceDetailUnknownVendor": "Unknown Vendor",
+  "invoiceDetailFieldInvoiceNumber": "Invoice #",
+  "invoiceDetailFieldPoNumber": "PO Number",
+  "invoiceDetailFieldCurrency": "Currency",
+  "invoiceDetailFieldInvoiceDate": "Invoice Date",
+  "invoiceDetailFieldDueDate": "Due Date",
+  "invoiceDetailFieldDescription": "Description",
+  "invoiceDetailFieldGlAccount": "GL Account",
+  "invoiceDetailFieldCreated": "Created",
+  "invoiceDetailActivity": "Activity",
+  "invoiceDetailActivityError": "Could not load activity",
+  "invoiceDetailFilePdfLabel": "Invoice PDF. Double tap to view full screen.",
+  "invoiceDetailFileLabel": "Invoice file. Double tap to view full screen.",
+  "invoiceDetailTapToViewPdf": "Tap to view PDF",
+  "invoiceDetailTapToViewFile": "Tap to view file",
+
+  "invoiceEditTitle": "Edit Invoice",
+  "invoiceEditClose": "Close edit form",
+  "invoiceEditVendor": "Vendor",
+  "invoiceEditInvoiceNumber": "Invoice #",
+  "invoiceEditAmount": "Amount",
+  "invoiceEditPoNumber": "PO Number",
+  "invoiceEditGlAccount": "GL Account",
+  "invoiceEditDescription": "Description",
+  "invoiceEditDueDate": "Due Date",
+  "invoiceEditNotSet": "Not set",
+  "invoiceEditInvalidAmount": "Enter a valid amount (e.g. 1234.56)",
+  "invoiceEditClearDueDate": "Clear due date",
+  "invoiceEditDueDateHint": "Due date, currently {value}. Double tap to change.",
+  "@invoiceEditDueDateHint": {
+    "placeholders": {
+      "value": { "type": "String" }
+    }
+  },
+
+  "warningsSectionTitle": "Warnings & fraud flags",
+  "warningsPoMatchTitle": "PO Match",
+  "warningsSeverityError": "Error",
+  "warningsSeverityWarning": "Warning",
+  "warningsSeverityInfo": "Info",
+  "warningsPoLabel": "PO",
+  "warningsMatchLabel": "{type} match",
+  "@warningsMatchLabel": {
+    "placeholders": {
+      "type": { "type": "String" }
+    }
+  },
+  "warningsVarianceLabel": "{value}% variance",
+  "@warningsVarianceLabel": {
+    "placeholders": {
+      "value": { "type": "String" }
+    }
+  },
+
+  "erpStatusTitle": "ERP Status",
+  "erpStatusReference": "ERP Reference",
+  "erpStatusDocumentId": "Document ID",
+  "erpStatusError": "Error",
+  "erpStatusLastUpdate": "Last update",
+  "erpStatusStatus": "Status",
+
+  "fileViewerPdfTitle": "Invoice PDF",
+  "fileViewerImageTitle": "Invoice Image",
+  "fileViewerPdfError": "Unable to load PDF",
+  "fileViewerImageError": "Unable to load image",
+  "fileViewerRetry": "Retry",
+
+  "timelineNoActivity": "No activity yet",
+
+  "payTitle": "Pay",
+  "payTabQueue": "Queue",
+  "payTabRuns": "Runs",
+  "paySummaryTotalPaid": "Total Paid",
+  "paySummaryPending": "Pending",
+  "paySummaryInQueue": "In Queue",
+  "paySummaryCardRebates": "Card Rebates",
+  "paySummaryPaymentsSubtitle": "{count, plural, one {{count} payment} other {{count} payments}}",
+  "@paySummaryPaymentsSubtitle": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "payQueueEmpty": "No invoices awaiting payment",
+  "payQueueError": "Could not load the payment queue",
+  "payQueueRetry": "Retry",
+  "payQueueDue": "Due {date}",
+  "@payQueueDue": {
+    "placeholders": {
+      "date": { "type": "String" }
+    }
+  },
+  "payQueueNoDueDate": "No due date",
+  "payQueueDiscount": "discount {amount}",
+  "@payQueueDiscount": {
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
+  "payQueueOverdue": "overdue",
+  "payQueueSelected": "selected",
+  "payMethodLabel": "Payment method for {invoiceNumber}",
+  "@payMethodLabel": {
+    "placeholders": {
+      "invoiceNumber": { "type": "String" }
+    }
+  },
+  "payMethodAch": "ACH",
+  "payMethodWire": "Wire",
+  "payMethodCheck": "Check",
+  "payMethodVirtualCard": "Virtual Card",
+  "paySelectedCount": "{count, plural, one {{count} invoice selected} other {{count} invoices selected}}",
+  "@paySelectedCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "payClear": "Clear",
+  "payCreateRun": "Create Run",
+  "payCreateRunFailed": "Failed to create run: {error}",
+  "@payCreateRunFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "payRunsEmpty": "No payment runs",
+  "payRunSubtitle": "{count, plural, one {{count} payment} other {{count} payments}} • {date}",
+  "@payRunSubtitle": {
+    "placeholders": {
+      "count": { "type": "int" },
+      "date": { "type": "String" }
+    }
+  },
+  "payRunCfoRequiredSuffix": " • CFO approval required",
+  "payRunAnnounce": "Run {amount}, {status}, {subtitle}",
+  "@payRunAnnounce": {
+    "placeholders": {
+      "amount": { "type": "String" },
+      "status": { "type": "String" },
+      "subtitle": { "type": "String" }
+    }
+  },
+  "payRunActions": "Run actions",
+  "payRunActionExecute": "Execute",
+  "payRunActionCancel": "Cancel",
+  "payRunCfoBlocked": "This run needs CFO approval before it can be executed.",
+  "payRunExecuteTitle": "Execute payment run?",
+  "payRunExecuteBody": "This sends {amount} via the configured payment processor.",
+  "@payRunExecuteBody": {
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
+  "payRunExecuteFailed": "Failed to execute: {error}",
+  "@payRunExecuteFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "payRunCancelFailed": "Failed to cancel: {error}",
+  "@payRunCancelFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "payRunStatusDraft": "Draft",
+  "payRunStatusCompleted": "Completed",
+  "payRunStatusSubmitted": "Submitted",
+  "payRunStatusPartial": "Partial",
+  "payRunStatusFailed": "Failed",
+  "payRunStatusCancelled": "Cancelled",
+  "payConfirmCancel": "Cancel",
+  "payConfirmExecute": "Execute"
 }

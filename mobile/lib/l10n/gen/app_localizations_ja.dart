@@ -487,4 +487,376 @@ class AppLocalizationsJa extends AppLocalizations {
   String advSearchDateFieldHint(String label, String value) {
     return '$label、現在 $value。ダブルタップで変更します。';
   }
+
+  @override
+  String get invoiceDetailTitle => '請求書の詳細';
+
+  @override
+  String get invoiceDetailEdit => '編集';
+
+  @override
+  String get invoiceDetailEditLabel => '請求書を編集';
+
+  @override
+  String get invoiceDetailRetry => '再試行';
+
+  @override
+  String invoiceDetailErrorPrefix(String error) {
+    return 'エラー: $error';
+  }
+
+  @override
+  String get invoiceDetailNoChanges => '保存する変更はありません';
+
+  @override
+  String get invoiceDetailUpdated => '請求書を更新しました';
+
+  @override
+  String get invoiceDetailUpdateFailed => '変更を保存できませんでした。もう一度お試しください';
+
+  @override
+  String get invoiceDetailApproved => '請求書を承認しました';
+
+  @override
+  String get invoiceDetailApproveFailed => '請求書を承認できませんでした。もう一度お試しください';
+
+  @override
+  String get invoiceDetailRejected => '請求書を却下しました';
+
+  @override
+  String get invoiceDetailRejectFailed => '請求書を却下できませんでした。もう一度お試しください';
+
+  @override
+  String get invoiceDetailRejectTitle => '請求書を却下';
+
+  @override
+  String get invoiceDetailRejectReason => '理由';
+
+  @override
+  String get invoiceDetailReject => '却下';
+
+  @override
+  String get invoiceDetailApprove => '承認';
+
+  @override
+  String get invoiceDetailUnknownVendor => '不明な取引先';
+
+  @override
+  String get invoiceDetailFieldInvoiceNumber => '請求書番号';
+
+  @override
+  String get invoiceDetailFieldPoNumber => '発注番号';
+
+  @override
+  String get invoiceDetailFieldCurrency => '通貨';
+
+  @override
+  String get invoiceDetailFieldInvoiceDate => '請求日';
+
+  @override
+  String get invoiceDetailFieldDueDate => '支払期日';
+
+  @override
+  String get invoiceDetailFieldDescription => '説明';
+
+  @override
+  String get invoiceDetailFieldGlAccount => '勘定科目';
+
+  @override
+  String get invoiceDetailFieldCreated => '作成日';
+
+  @override
+  String get invoiceDetailActivity => 'アクティビティ';
+
+  @override
+  String get invoiceDetailActivityError => 'アクティビティを読み込めませんでした';
+
+  @override
+  String get invoiceDetailFilePdfLabel => '請求書PDF。ダブルタップで全画面表示します。';
+
+  @override
+  String get invoiceDetailFileLabel => '請求書ファイル。ダブルタップで全画面表示します。';
+
+  @override
+  String get invoiceDetailTapToViewPdf => 'タップしてPDFを表示';
+
+  @override
+  String get invoiceDetailTapToViewFile => 'タップしてファイルを表示';
+
+  @override
+  String get invoiceEditTitle => '請求書を編集';
+
+  @override
+  String get invoiceEditClose => '編集フォームを閉じる';
+
+  @override
+  String get invoiceEditVendor => '取引先';
+
+  @override
+  String get invoiceEditInvoiceNumber => '請求書番号';
+
+  @override
+  String get invoiceEditAmount => '金額';
+
+  @override
+  String get invoiceEditPoNumber => '発注番号';
+
+  @override
+  String get invoiceEditGlAccount => '勘定科目';
+
+  @override
+  String get invoiceEditDescription => '説明';
+
+  @override
+  String get invoiceEditDueDate => '支払期日';
+
+  @override
+  String get invoiceEditNotSet => '未設定';
+
+  @override
+  String get invoiceEditInvalidAmount => '有効な金額を入力してください（例: 1234.56）';
+
+  @override
+  String get invoiceEditClearDueDate => '支払期日をクリア';
+
+  @override
+  String invoiceEditDueDateHint(String value) {
+    return '支払期日、現在 $value。ダブルタップで変更します。';
+  }
+
+  @override
+  String get warningsSectionTitle => '警告と不正フラグ';
+
+  @override
+  String get warningsPoMatchTitle => '発注照合';
+
+  @override
+  String get warningsSeverityError => 'エラー';
+
+  @override
+  String get warningsSeverityWarning => '警告';
+
+  @override
+  String get warningsSeverityInfo => '情報';
+
+  @override
+  String get warningsPoLabel => '発注';
+
+  @override
+  String warningsMatchLabel(String type) {
+    return '$type照合';
+  }
+
+  @override
+  String warningsVarianceLabel(String value) {
+    return '$value% の差異';
+  }
+
+  @override
+  String get erpStatusTitle => 'ERPステータス';
+
+  @override
+  String get erpStatusReference => 'ERP参照番号';
+
+  @override
+  String get erpStatusDocumentId => 'ドキュメントID';
+
+  @override
+  String get erpStatusError => 'エラー';
+
+  @override
+  String get erpStatusLastUpdate => '最終更新';
+
+  @override
+  String get erpStatusStatus => 'ステータス';
+
+  @override
+  String get fileViewerPdfTitle => '請求書PDF';
+
+  @override
+  String get fileViewerImageTitle => '請求書画像';
+
+  @override
+  String get fileViewerPdfError => 'PDFを読み込めませんでした';
+
+  @override
+  String get fileViewerImageError => '画像を読み込めませんでした';
+
+  @override
+  String get fileViewerRetry => '再試行';
+
+  @override
+  String get timelineNoActivity => 'まだアクティビティはありません';
+
+  @override
+  String get payTitle => '支払';
+
+  @override
+  String get payTabQueue => 'キュー';
+
+  @override
+  String get payTabRuns => '実行';
+
+  @override
+  String get paySummaryTotalPaid => '支払合計';
+
+  @override
+  String get paySummaryPending => '保留中';
+
+  @override
+  String get paySummaryInQueue => 'キュー内';
+
+  @override
+  String get paySummaryCardRebates => 'カードリベート';
+
+  @override
+  String paySummaryPaymentsSubtitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count件の支払',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get payQueueEmpty => '支払待ちの請求書はありません';
+
+  @override
+  String get payQueueError => '支払キューを読み込めませんでした';
+
+  @override
+  String get payQueueRetry => '再試行';
+
+  @override
+  String payQueueDue(String date) {
+    return '期日 $date';
+  }
+
+  @override
+  String get payQueueNoDueDate => '支払期日なし';
+
+  @override
+  String payQueueDiscount(String amount) {
+    return '割引 $amount';
+  }
+
+  @override
+  String get payQueueOverdue => '期限超過';
+
+  @override
+  String get payQueueSelected => '選択済み';
+
+  @override
+  String payMethodLabel(String invoiceNumber) {
+    return '$invoiceNumber の支払方法';
+  }
+
+  @override
+  String get payMethodAch => 'ACH';
+
+  @override
+  String get payMethodWire => '電信送金';
+
+  @override
+  String get payMethodCheck => '小切手';
+
+  @override
+  String get payMethodVirtualCard => 'バーチャルカード';
+
+  @override
+  String paySelectedCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count件の請求書を選択中',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get payClear => 'クリア';
+
+  @override
+  String get payCreateRun => '実行を作成';
+
+  @override
+  String payCreateRunFailed(String error) {
+    return '実行の作成に失敗しました: $error';
+  }
+
+  @override
+  String get payRunsEmpty => '支払実行はありません';
+
+  @override
+  String payRunSubtitle(int count, String date) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count件の支払',
+    );
+    return '$_temp0 • $date';
+  }
+
+  @override
+  String get payRunCfoRequiredSuffix => ' • CFOの承認が必要';
+
+  @override
+  String payRunAnnounce(String amount, String status, String subtitle) {
+    return '実行 $amount、$status、$subtitle';
+  }
+
+  @override
+  String get payRunActions => '実行アクション';
+
+  @override
+  String get payRunActionExecute => '実行';
+
+  @override
+  String get payRunActionCancel => 'キャンセル';
+
+  @override
+  String get payRunCfoBlocked => 'この実行を行うにはCFOの承認が必要です。';
+
+  @override
+  String get payRunExecuteTitle => '支払実行を行いますか？';
+
+  @override
+  String payRunExecuteBody(String amount) {
+    return '設定された決済プロセッサーを通じて $amount を送金します。';
+  }
+
+  @override
+  String payRunExecuteFailed(String error) {
+    return '実行に失敗しました: $error';
+  }
+
+  @override
+  String payRunCancelFailed(String error) {
+    return 'キャンセルに失敗しました: $error';
+  }
+
+  @override
+  String get payRunStatusDraft => '下書き';
+
+  @override
+  String get payRunStatusCompleted => '完了';
+
+  @override
+  String get payRunStatusSubmitted => '送信済み';
+
+  @override
+  String get payRunStatusPartial => '一部';
+
+  @override
+  String get payRunStatusFailed => '失敗';
+
+  @override
+  String get payRunStatusCancelled => 'キャンセル済み';
+
+  @override
+  String get payConfirmCancel => 'キャンセル';
+
+  @override
+  String get payConfirmExecute => '実行';
 }

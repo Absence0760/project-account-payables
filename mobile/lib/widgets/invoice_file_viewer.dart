@@ -4,6 +4,7 @@ import 'package:pdfx/pdfx.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/config.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 
 /// Renders an uploaded invoice file (image or PDF) full-screen.
 ///
@@ -59,6 +60,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
   }
 
   Future<void> _loadPdf() async {
+    final l = AppLocalizations.of(context);
     setState(() {
       _loading = true;
       _error = null;
@@ -80,7 +82,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
       debugPrint('[viewer] PDF load failed: $e');
       if (!mounted) return;
       setState(() {
-        _error = 'Unable to load PDF';
+        _error = l.fileViewerPdfError;
         _loading = false;
       });
     }
@@ -88,18 +90,19 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        title: Text(_isPdf ? 'Invoice PDF' : 'Invoice Image'),
+        title: Text(_isPdf ? l.fileViewerPdfTitle : l.fileViewerImageTitle),
       ),
       backgroundColor: Colors.black,
-      body: _buildBody(),
+      body: _buildBody(l),
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildBody(AppLocalizations l) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -120,7 +123,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
               FilledButton.icon(
                 onPressed: _loadPdf,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
+                label: Text(l.fileViewerRetry),
               ),
           ],
         ),
@@ -140,10 +143,10 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
             if (progress == null) return child;
             return const Center(child: CircularProgressIndicator());
           },
-          errorBuilder: (_, _, _) => const Center(
+          errorBuilder: (_, _, _) => Center(
             child: Text(
-              'Unable to load image',
-              style: TextStyle(color: Colors.white),
+              l.fileViewerImageError,
+              style: const TextStyle(color: Colors.white),
             ),
           ),
         ),

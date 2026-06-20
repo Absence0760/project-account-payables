@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/invoice.dart';
 
 /// Detail-screen panel that surfaces an invoice's warnings / fraud flags and
@@ -18,6 +19,7 @@ class InvoiceWarningsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final hasPoMatch = poMatch != null && !poMatch!.isNoPo;
     if (warnings.isEmpty && !hasPoMatch) return const SizedBox.shrink();
 
@@ -25,7 +27,7 @@ class InvoiceWarningsPanel extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (warnings.isNotEmpty) ...[
-          const _SectionTitle('Warnings & fraud flags'),
+          _SectionTitle(l.warningsSectionTitle),
           const SizedBox(height: 8),
           for (final w in warnings) ...[
             _WarningTile(warning: w),
@@ -34,7 +36,7 @@ class InvoiceWarningsPanel extends StatelessWidget {
         ],
         if (hasPoMatch) ...[
           if (warnings.isNotEmpty) const SizedBox(height: 8),
-          const _SectionTitle('PO Match'),
+          _SectionTitle(l.warningsPoMatchTitle),
           const SizedBox(height: 8),
           _PoMatchTile(match: poMatch!),
         ],
@@ -58,7 +60,7 @@ class _SectionTitle extends StatelessWidget {
 
 /// Colour + foreground for a severity, calibrated like `StatusBadge` so the
 /// text clears WCAG 1.4.3 (≥4.5:1) over the 0.12-alpha tint.
-({Color tint, Color fg, IconData icon, String label}) _severityStyle(
+({Color tint, Color fg, IconData icon}) _severityStyle(
   WarningSeverity s,
 ) {
   return switch (s) {
@@ -66,23 +68,27 @@ class _SectionTitle extends StatelessWidget {
         tint: Colors.red,
         fg: Colors.red.shade900,
         icon: Icons.error_outline,
-        label: 'Error',
       ),
     WarningSeverity.warning => (
         tint: Colors.orange,
         // brown.shade800 reads as deep amber and clears AA at the small size.
         fg: Colors.brown.shade800,
         icon: Icons.warning_amber_outlined,
-        label: 'Warning',
       ),
     WarningSeverity.info => (
         tint: Colors.blue,
         fg: Colors.blue.shade800,
         icon: Icons.info_outline,
-        label: 'Info',
       ),
   };
 }
+
+/// Localized label for a warning severity (drives the merged announcement).
+String _severityLabel(AppLocalizations l, WarningSeverity s) => switch (s) {
+      WarningSeverity.error => l.warningsSeverityError,
+      WarningSeverity.warning => l.warningsSeverityWarning,
+      WarningSeverity.info => l.warningsSeverityInfo,
+    };
 
 class _WarningTile extends StatelessWidget {
   final InvoiceWarning warning;
@@ -90,11 +96,12 @@ class _WarningTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final style = _severityStyle(warning.severity);
     // One merged announcement per warning ("Error: Missing vendor name")
     // instead of an icon glyph + two disjoint text spans (WCAG 1.3.1 / 4.1.2).
     return Semantics(
-      label: '${style.label}: ${warning.message}',
+      label: '${_severityLabel(l, warning.severity)}: ${warning.message}',
       excludeSemantics: true,
       child: Container(
         width: double.infinity,
@@ -146,14 +153,16 @@ class _PoMatchTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final style = _style;
     final variance = match.variancePct;
     final varianceText = variance != null
-        ? '${variance >= 0 ? '+' : ''}${variance.toStringAsFixed(1)}% variance'
+        ? l.warningsVarianceLabel(
+            '${variance >= 0 ? '+' : ''}${variance.toStringAsFixed(1)}')
         : null;
 
     final summary = [
-      '${match.matchType} match',
+      l.warningsMatchLabel(match.matchType),
       match.statusLabel,
       ?varianceText,
     ].join(', ');
@@ -176,7 +185,9 @@ class _PoMatchTile extends StatelessWidget {
             Row(
               children: [
                 Text(
-                  match.matchType == 'none' ? 'PO' : '${match.matchType} match',
+                  match.matchType == 'none'
+                      ? l.warningsPoLabel
+                      : l.warningsMatchLabel(match.matchType),
                   style: TextStyle(
                     color: style.fg,
                     fontSize: 13,

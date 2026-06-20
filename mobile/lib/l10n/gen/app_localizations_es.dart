@@ -498,4 +498,386 @@ class AppLocalizationsEs extends AppLocalizations {
   String advSearchDateFieldHint(String label, String value) {
     return '$label, actualmente $value. Toca dos veces para cambiar.';
   }
+
+  @override
+  String get invoiceDetailTitle => 'Detalle de la factura';
+
+  @override
+  String get invoiceDetailEdit => 'Editar';
+
+  @override
+  String get invoiceDetailEditLabel => 'Editar factura';
+
+  @override
+  String get invoiceDetailRetry => 'Reintentar';
+
+  @override
+  String invoiceDetailErrorPrefix(String error) {
+    return 'Error: $error';
+  }
+
+  @override
+  String get invoiceDetailNoChanges => 'No hay cambios que guardar';
+
+  @override
+  String get invoiceDetailUpdated => 'Factura actualizada';
+
+  @override
+  String get invoiceDetailUpdateFailed =>
+      'No se pudieron guardar los cambios — inténtalo de nuevo';
+
+  @override
+  String get invoiceDetailApproved => 'Factura aprobada';
+
+  @override
+  String get invoiceDetailApproveFailed =>
+      'No se pudo aprobar la factura — inténtalo de nuevo';
+
+  @override
+  String get invoiceDetailRejected => 'Factura rechazada';
+
+  @override
+  String get invoiceDetailRejectFailed =>
+      'No se pudo rechazar la factura — inténtalo de nuevo';
+
+  @override
+  String get invoiceDetailRejectTitle => 'Rechazar factura';
+
+  @override
+  String get invoiceDetailRejectReason => 'Motivo';
+
+  @override
+  String get invoiceDetailReject => 'Rechazar';
+
+  @override
+  String get invoiceDetailApprove => 'Aprobar';
+
+  @override
+  String get invoiceDetailUnknownVendor => 'Proveedor desconocido';
+
+  @override
+  String get invoiceDetailFieldInvoiceNumber => 'N.º de factura';
+
+  @override
+  String get invoiceDetailFieldPoNumber => 'N.º de pedido';
+
+  @override
+  String get invoiceDetailFieldCurrency => 'Moneda';
+
+  @override
+  String get invoiceDetailFieldInvoiceDate => 'Fecha de factura';
+
+  @override
+  String get invoiceDetailFieldDueDate => 'Fecha de vencimiento';
+
+  @override
+  String get invoiceDetailFieldDescription => 'Descripción';
+
+  @override
+  String get invoiceDetailFieldGlAccount => 'Cuenta contable';
+
+  @override
+  String get invoiceDetailFieldCreated => 'Creada';
+
+  @override
+  String get invoiceDetailActivity => 'Actividad';
+
+  @override
+  String get invoiceDetailActivityError => 'No se pudo cargar la actividad';
+
+  @override
+  String get invoiceDetailFilePdfLabel =>
+      'PDF de la factura. Toca dos veces para ver a pantalla completa.';
+
+  @override
+  String get invoiceDetailFileLabel =>
+      'Archivo de la factura. Toca dos veces para ver a pantalla completa.';
+
+  @override
+  String get invoiceDetailTapToViewPdf => 'Toca para ver el PDF';
+
+  @override
+  String get invoiceDetailTapToViewFile => 'Toca para ver el archivo';
+
+  @override
+  String get invoiceEditTitle => 'Editar factura';
+
+  @override
+  String get invoiceEditClose => 'Cerrar el formulario de edición';
+
+  @override
+  String get invoiceEditVendor => 'Proveedor';
+
+  @override
+  String get invoiceEditInvoiceNumber => 'N.º de factura';
+
+  @override
+  String get invoiceEditAmount => 'Importe';
+
+  @override
+  String get invoiceEditPoNumber => 'N.º de pedido';
+
+  @override
+  String get invoiceEditGlAccount => 'Cuenta contable';
+
+  @override
+  String get invoiceEditDescription => 'Descripción';
+
+  @override
+  String get invoiceEditDueDate => 'Fecha de vencimiento';
+
+  @override
+  String get invoiceEditNotSet => 'Sin definir';
+
+  @override
+  String get invoiceEditInvalidAmount =>
+      'Introduce un importe válido (p. ej. 1234,56)';
+
+  @override
+  String get invoiceEditClearDueDate => 'Borrar fecha de vencimiento';
+
+  @override
+  String invoiceEditDueDateHint(String value) {
+    return 'Fecha de vencimiento, actualmente $value. Toca dos veces para cambiar.';
+  }
+
+  @override
+  String get warningsSectionTitle => 'Avisos y alertas de fraude';
+
+  @override
+  String get warningsPoMatchTitle => 'Conciliación de pedido';
+
+  @override
+  String get warningsSeverityError => 'Error';
+
+  @override
+  String get warningsSeverityWarning => 'Aviso';
+
+  @override
+  String get warningsSeverityInfo => 'Información';
+
+  @override
+  String get warningsPoLabel => 'Pedido';
+
+  @override
+  String warningsMatchLabel(String type) {
+    return 'Conciliación $type';
+  }
+
+  @override
+  String warningsVarianceLabel(String value) {
+    return '$value % de variación';
+  }
+
+  @override
+  String get erpStatusTitle => 'Estado del ERP';
+
+  @override
+  String get erpStatusReference => 'Referencia del ERP';
+
+  @override
+  String get erpStatusDocumentId => 'ID de documento';
+
+  @override
+  String get erpStatusError => 'Error';
+
+  @override
+  String get erpStatusLastUpdate => 'Última actualización';
+
+  @override
+  String get erpStatusStatus => 'Estado';
+
+  @override
+  String get fileViewerPdfTitle => 'PDF de la factura';
+
+  @override
+  String get fileViewerImageTitle => 'Imagen de la factura';
+
+  @override
+  String get fileViewerPdfError => 'No se pudo cargar el PDF';
+
+  @override
+  String get fileViewerImageError => 'No se pudo cargar la imagen';
+
+  @override
+  String get fileViewerRetry => 'Reintentar';
+
+  @override
+  String get timelineNoActivity => 'Aún no hay actividad';
+
+  @override
+  String get payTitle => 'Pagar';
+
+  @override
+  String get payTabQueue => 'Cola';
+
+  @override
+  String get payTabRuns => 'Lotes';
+
+  @override
+  String get paySummaryTotalPaid => 'Total pagado';
+
+  @override
+  String get paySummaryPending => 'Pendiente';
+
+  @override
+  String get paySummaryInQueue => 'En cola';
+
+  @override
+  String get paySummaryCardRebates => 'Reembolsos de tarjeta';
+
+  @override
+  String paySummaryPaymentsSubtitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count pagos',
+      one: '$count pago',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get payQueueEmpty => 'No hay facturas pendientes de pago';
+
+  @override
+  String get payQueueError => 'No se pudo cargar la cola de pagos';
+
+  @override
+  String get payQueueRetry => 'Reintentar';
+
+  @override
+  String payQueueDue(String date) {
+    return 'Vence $date';
+  }
+
+  @override
+  String get payQueueNoDueDate => 'Sin fecha de vencimiento';
+
+  @override
+  String payQueueDiscount(String amount) {
+    return 'descuento $amount';
+  }
+
+  @override
+  String get payQueueOverdue => 'vencida';
+
+  @override
+  String get payQueueSelected => 'seleccionada';
+
+  @override
+  String payMethodLabel(String invoiceNumber) {
+    return 'Método de pago para $invoiceNumber';
+  }
+
+  @override
+  String get payMethodAch => 'ACH';
+
+  @override
+  String get payMethodWire => 'Transferencia';
+
+  @override
+  String get payMethodCheck => 'Cheque';
+
+  @override
+  String get payMethodVirtualCard => 'Tarjeta virtual';
+
+  @override
+  String paySelectedCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count facturas seleccionadas',
+      one: '$count factura seleccionada',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get payClear => 'Borrar';
+
+  @override
+  String get payCreateRun => 'Crear lote';
+
+  @override
+  String payCreateRunFailed(String error) {
+    return 'No se pudo crear el lote: $error';
+  }
+
+  @override
+  String get payRunsEmpty => 'No hay lotes de pago';
+
+  @override
+  String payRunSubtitle(int count, String date) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count pagos',
+      one: '$count pago',
+    );
+    return '$_temp0 • $date';
+  }
+
+  @override
+  String get payRunCfoRequiredSuffix => ' • Se requiere aprobación del CFO';
+
+  @override
+  String payRunAnnounce(String amount, String status, String subtitle) {
+    return 'Lote $amount, $status, $subtitle';
+  }
+
+  @override
+  String get payRunActions => 'Acciones del lote';
+
+  @override
+  String get payRunActionExecute => 'Ejecutar';
+
+  @override
+  String get payRunActionCancel => 'Cancelar';
+
+  @override
+  String get payRunCfoBlocked =>
+      'Este lote necesita la aprobación del CFO antes de poder ejecutarse.';
+
+  @override
+  String get payRunExecuteTitle => '¿Ejecutar el lote de pago?';
+
+  @override
+  String payRunExecuteBody(String amount) {
+    return 'Esto envía $amount mediante el procesador de pagos configurado.';
+  }
+
+  @override
+  String payRunExecuteFailed(String error) {
+    return 'Error al ejecutar: $error';
+  }
+
+  @override
+  String payRunCancelFailed(String error) {
+    return 'Error al cancelar: $error';
+  }
+
+  @override
+  String get payRunStatusDraft => 'Borrador';
+
+  @override
+  String get payRunStatusCompleted => 'Completado';
+
+  @override
+  String get payRunStatusSubmitted => 'Enviado';
+
+  @override
+  String get payRunStatusPartial => 'Parcial';
+
+  @override
+  String get payRunStatusFailed => 'Fallido';
+
+  @override
+  String get payRunStatusCancelled => 'Cancelado';
+
+  @override
+  String get payConfirmCancel => 'Cancelar';
+
+  @override
+  String get payConfirmExecute => 'Ejecutar';
 }

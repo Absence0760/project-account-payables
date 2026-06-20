@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -92,10 +93,11 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   Future<void> _edit() async {
     final inv = _invoice;
     if (inv == null || _submitting) return;
+    final l = AppLocalizations.of(context);
     final changes = await showInvoiceEditSheet(context, inv);
     if (changes == null || !mounted) return; // cancelled / dismissed
     if (changes.isEmpty) {
-      _showSnack('No changes to save');
+      _showSnack(l.invoiceDetailNoChanges);
       return;
     }
 
@@ -107,9 +109,9 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
         // Reflect the edit + the new `invoice.edited` audit row.
         await _load();
         await _loadActivity();
-        _showSnack('Invoice updated');
+        _showSnack(l.invoiceDetailUpdated);
       } else {
-        _showSnack('Could not save changes — please try again');
+        _showSnack(l.invoiceDetailUpdateFailed);
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -118,15 +120,16 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
 
   Future<void> _approve() async {
     if (_submitting) return;
+    final l = AppLocalizations.of(context);
     setState(() => _submitting = true);
     try {
       final success = await InvoiceStore.instance.approve(widget.invoiceId);
       if (!mounted) return;
       if (success) {
         await _load();
-        _showSnack('Invoice approved');
+        _showSnack(l.invoiceDetailApproved);
       } else {
-        _showSnack('Could not approve invoice — please try again');
+        _showSnack(l.invoiceDetailApproveFailed);
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -134,28 +137,29 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   }
 
   Future<void> _reject() async {
+    final l = AppLocalizations.of(context);
     final reason = await showDialog<String>(
       context: context,
       builder: (context) {
         final controller = TextEditingController();
         return AlertDialog(
-          title: const Text('Reject Invoice'),
+          title: Text(l.invoiceDetailRejectTitle),
           content: TextField(
             controller: controller,
-            decoration: const InputDecoration(
-              labelText: 'Reason',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: l.invoiceDetailRejectReason,
+              border: const OutlineInputBorder(),
             ),
             maxLines: 3,
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+              child: Text(l.commonCancel),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, controller.text),
-              child: const Text('Reject'),
+              child: Text(l.invoiceDetailReject),
             ),
           ],
         );
@@ -171,9 +175,9 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       if (!mounted) return;
       if (success) {
         await _load();
-        _showSnack('Invoice rejected');
+        _showSnack(l.invoiceDetailRejected);
       } else {
-        _showSnack('Could not reject invoice — please try again');
+        _showSnack(l.invoiceDetailRejectFailed);
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -199,16 +203,17 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Invoice Detail'),
+        title: Text(l.invoiceDetailTitle),
         actions: [
           if (_canEdit)
             Semantics(
-              label: 'Edit invoice',
+              label: l.invoiceDetailEditLabel,
               button: true,
               child: IconButton(
-                tooltip: 'Edit',
+                tooltip: l.invoiceDetailEdit,
                 icon: const Icon(Icons.edit),
                 onPressed: _submitting ? null : _edit,
               ),
@@ -225,18 +230,20 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   }
 
   Widget _buildError() {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.error_outline, size: 48, color: Colors.red.shade400),
           const SizedBox(height: 12),
-          Text('Error: $_error', textAlign: TextAlign.center),
+          Text(l.invoiceDetailErrorPrefix(_error ?? ''),
+              textAlign: TextAlign.center),
           const SizedBox(height: 16),
           FilledButton.icon(
             onPressed: _load,
             icon: const Icon(Icons.refresh),
-            label: const Text('Retry'),
+            label: Text(l.invoiceDetailRetry),
           ),
         ],
       ),
@@ -250,6 +257,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
 
   Widget _buildDetail() {
     final inv = _invoice!;
+    final l = AppLocalizations.of(context);
     return RefreshIndicator(
       onRefresh: _refreshAll,
       child: ListView(
@@ -260,7 +268,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             children: [
               Expanded(
                 child: Text(
-                  inv.vendorName ?? 'Unknown Vendor',
+                  inv.vendorName ?? l.invoiceDetailUnknownVendor,
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
@@ -300,23 +308,23 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           const SizedBox(height: 24),
 
           // Details
-          _detailRow('Invoice #', inv.invoiceNumber),
-          _detailRow('PO Number', inv.poNumber),
-          _detailRow('Currency', inv.currency),
+          _detailRow(l.invoiceDetailFieldInvoiceNumber, inv.invoiceNumber),
+          _detailRow(l.invoiceDetailFieldPoNumber, inv.poNumber),
+          _detailRow(l.invoiceDetailFieldCurrency, inv.currency),
           _detailRow(
-            'Invoice Date',
+            l.invoiceDetailFieldInvoiceDate,
             inv.invoiceDate != null
                 ? _dateFormat.format(inv.invoiceDate!)
                 : null,
           ),
           _detailRow(
-            'Due Date',
+            l.invoiceDetailFieldDueDate,
             inv.dueDate != null ? _dateFormat.format(inv.dueDate!) : null,
           ),
-          _detailRow('Description', inv.description),
-          _detailRow('GL Account', inv.glAccount),
+          _detailRow(l.invoiceDetailFieldDescription, inv.description),
+          _detailRow(l.invoiceDetailFieldGlAccount, inv.glAccount),
           _detailRow(
-            'Created',
+            l.invoiceDetailFieldCreated,
             _dateFormat.format(inv.createdAt),
           ),
 
@@ -342,9 +350,9 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           const SizedBox(height: 24),
           const Divider(),
           const SizedBox(height: 8),
-          const Text(
-            'Activity',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          Text(
+            l.invoiceDetailActivity,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
           _buildActivity(),
@@ -360,6 +368,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
         child: Center(child: CircularProgressIndicator()),
       );
     }
+    final l = AppLocalizations.of(context);
     if (_activityError != null) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -367,14 +376,14 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           children: [
             Expanded(
               child: Text(
-                'Could not load activity',
+                l.invoiceDetailActivityError,
                 style: TextStyle(color: Colors.grey.shade700),
               ),
             ),
             TextButton.icon(
               onPressed: _loadActivity,
               icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('Retry'),
+              label: Text(l.invoiceDetailRetry),
             ),
           ],
         ),
@@ -410,11 +419,10 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   /// PDFs (which can't render via [Image.network]). Tapping either opens the
   /// full [InvoiceFileViewer].
   Widget _buildFilePreview(String fileUrl) {
+    final l = AppLocalizations.of(context);
     final isPdf = InvoiceFileViewer.isPdf(fileUrl);
     return Semantics(
-      label: isPdf
-          ? 'Invoice PDF. Double tap to view full screen.'
-          : 'Invoice file. Double tap to view full screen.',
+      label: isPdf ? l.invoiceDetailFilePdfLabel : l.invoiceDetailFileLabel,
       button: true,
       child: GestureDetector(
         onTap: () => _openViewer(context, fileUrl),
@@ -436,7 +444,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
                           size: 40, color: Colors.redAccent),
                       const SizedBox(height: 8),
                       Text(
-                        'Tap to view PDF',
+                        l.invoiceDetailTapToViewPdf,
                         style: TextStyle(color: Colors.grey.shade700),
                       ),
                     ],
@@ -455,7 +463,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
                             size: 40, color: Colors.grey.shade400),
                         const SizedBox(height: 8),
                         Text(
-                          'Tap to view file',
+                          l.invoiceDetailTapToViewFile,
                           style: TextStyle(color: Colors.grey.shade700),
                         ),
                       ],
@@ -480,6 +488,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     if (inv == null) return null;
     if (!inv.status.isActionable) return null;
     if (!AuthStore.instance.canApprove) return null;
+    final l = AppLocalizations.of(context);
 
     return SafeArea(
       child: Padding(
@@ -491,7 +500,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
                 onPressed: _submitting ? null : _reject,
                 icon: Icon(Icons.close, color: Colors.red.shade700),
                 label: Text(
-                  'Reject',
+                  l.invoiceDetailReject,
                   // shade700 keeps the destructive label at AA contrast.
                   style: TextStyle(color: Colors.red.shade700),
                 ),
@@ -506,7 +515,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
               child: FilledButton.icon(
                 onPressed: _submitting ? null : _approve,
                 icon: const Icon(Icons.check),
-                label: const Text('Approve'),
+                label: Text(l.invoiceDetailApprove),
                 style: FilledButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   backgroundColor: Colors.green,

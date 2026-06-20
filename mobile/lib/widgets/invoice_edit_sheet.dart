@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/invoice.dart';
 
 final _editDateFormat = DateFormat('MMM d, yyyy');
@@ -74,7 +75,7 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
     // Accept only a plain non-negative decimal — this string is sent verbatim
     // to the backend Decimal, so reject anything that isn't a clean number.
     if (!RegExp(r'^\d+(\.\d+)?$').hasMatch(v)) {
-      return 'Enter a valid amount (e.g. 1234.56)';
+      return AppLocalizations.of(context).invoiceEditInvalidAmount;
     }
     return null;
   }
@@ -140,6 +141,7 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     return Padding(
       // Lift the sheet above the keyboard.
@@ -155,20 +157,20 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
               children: [
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        'Edit Invoice',
-                        style: TextStyle(
+                        l.invoiceEditTitle,
+                        style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                     ),
                     Semantics(
-                      label: 'Close edit form',
+                      label: l.invoiceEditClose,
                       button: true,
                       child: IconButton(
-                        tooltip: 'Close',
+                        tooltip: l.commonClose,
                         icon: const Icon(Icons.close),
                         onPressed: () => Navigator.of(context).pop(),
                       ),
@@ -176,11 +178,12 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                _field(_vendor, 'Vendor', textInputAction: TextInputAction.next),
-                _field(_invoiceNumber, 'Invoice #'),
+                _field(_vendor, l.invoiceEditVendor,
+                    textInputAction: TextInputAction.next),
+                _field(_invoiceNumber, l.invoiceEditInvoiceNumber),
                 _field(
                   _amount,
-                  'Amount',
+                  l.invoiceEditAmount,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   inputFormatters: [
@@ -188,9 +191,9 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
                   ],
                   validator: _validateAmount,
                 ),
-                _field(_poNumber, 'PO Number'),
-                _field(_glAccount, 'GL Account'),
-                _field(_description, 'Description', maxLines: 3),
+                _field(_poNumber, l.invoiceEditPoNumber),
+                _field(_glAccount, l.invoiceEditGlAccount),
+                _field(_description, l.invoiceEditDescription, maxLines: 3),
                 const SizedBox(height: 8),
                 _dueDateField(),
                 const SizedBox(height: 20),
@@ -202,7 +205,7 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
                         style: OutlinedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
-                        child: const Text('Cancel'),
+                        child: Text(l.commonCancel),
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -212,7 +215,7 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
                         style: FilledButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
-                        child: const Text('Save'),
+                        child: Text(l.commonSave),
                       ),
                     ),
                   ],
@@ -252,27 +255,29 @@ class _InvoiceEditSheetState extends State<InvoiceEditSheet> {
   }
 
   Widget _dueDateField() {
-    final label =
-        _dueDate != null ? _editDateFormat.format(_dueDate!) : 'Not set';
+    final l = AppLocalizations.of(context);
+    final label = _dueDate != null
+        ? _editDateFormat.format(_dueDate!)
+        : l.invoiceEditNotSet;
     return Semantics(
-      label: 'Due date, currently $label. Double tap to change.',
+      label: l.invoiceEditDueDateHint(label),
       button: true,
       child: InkWell(
         onTap: _pickDueDate,
         child: InputDecorator(
-          decoration: const InputDecoration(
-            labelText: 'Due Date',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            labelText: l.invoiceEditDueDate,
+            border: const OutlineInputBorder(),
           ),
           child: Row(
             children: [
               Expanded(child: Text(label)),
               if (_dueDate != null)
                 Semantics(
-                  label: 'Clear due date',
+                  label: l.invoiceEditClearDueDate,
                   button: true,
                   child: IconButton(
-                    tooltip: 'Clear',
+                    tooltip: l.commonClear,
                     icon: const Icon(Icons.clear, size: 18),
                     onPressed: () => setState(() => _dueDate = null),
                   ),
