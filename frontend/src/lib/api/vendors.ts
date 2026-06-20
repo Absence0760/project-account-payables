@@ -7,7 +7,10 @@ import type {
 	SanctionsCheck,
 	ScreeningReviewItem,
 	VendorRisk,
-	RiskSummaryBucket
+	RiskSummaryBucket,
+	EnrichmentApplyField,
+	VendorEnrichmentResponse,
+	VendorEnrichmentApplyResponse
 } from '$lib/types/vendor';
 
 // Manual re-screen of a vendor against the sanctions provider. admin / ap_manager.
@@ -46,4 +49,23 @@ export function recomputeVendorRisk(id: string): Promise<VendorRisk> {
 // Risk-level distribution across vendors.
 export function getRiskSummary(): Promise<RiskSummaryBucket[]> {
 	return api.get<RiskSummaryBucket[]>('/api/vendors/risk/summary');
+}
+
+// External firmographics enrichment (D&B / Clearbit / mock). Advisory only —
+// returns the looked-up firmographics + a per-field suggestion diff; nothing is
+// written back. admin / ap_manager / cfo (the backend `_ENRICH_ROLES`).
+export function enrichVendor(id: string): Promise<VendorEnrichmentResponse> {
+	return api.post<VendorEnrichmentResponse>(`/api/enrichment/vendors/${id}/enrich`, {});
+}
+
+// Apply a steward-selected subset of enrichment suggestions onto the vendor.
+// Non-destructive (only the named fields change) + idempotent + audited.
+// `tax_id` is never applyable here — only `name` / `address` / `website`.
+export function applyVendorEnrichment(
+	id: string,
+	fields: EnrichmentApplyField[]
+): Promise<VendorEnrichmentApplyResponse> {
+	return api.post<VendorEnrichmentApplyResponse>(`/api/enrichment/vendors/${id}/apply`, {
+		fields
+	});
 }

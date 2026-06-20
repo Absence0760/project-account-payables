@@ -16,13 +16,17 @@
 		getScreeningHistory,
 		blockVendor,
 		unblockVendor,
-		recomputeVendorRisk
+		recomputeVendorRisk,
+		enrichVendor,
+		applyVendorEnrichment
 	} from '$lib/api/vendors';
 	import {
 		RISK_LEVEL_LABELS,
+		ENRICHABLE_FIELD_LABELS,
 		type Vendor,
 		type SanctionsCheck,
-		type ScreeningStatus
+		type ScreeningStatus,
+		type EnrichmentFieldSuggestion
 	} from '$lib/types/vendor';
 
 	const SCREENING_RESULTS: ScreeningStatus[] = ['unscreened', 'clear', 'review', 'match'];
@@ -49,6 +53,9 @@
 	// Block/unblock moved to the granular permission so an org can split it from
 	// the rest of vendor management. Defaults to admin/ap_manager (unchanged).
 	const canBlock = $derived(auth.can(PERM_VENDOR_BLOCK));
+	// External enrichment + apply is admin | ap_manager | cfo (backend
+	// `_ENRICH_ROLES`). isManager = admin|ap_manager, isCfo = admin|cfo.
+	const canEnrich = $derived(auth.isManager || auth.isCfo);
 
 	let history = $state<SanctionsCheck[]>([]);
 	let loadingHistory = $state(true);
@@ -127,6 +134,76 @@
 			busy = '';
 		}
 	}
+
+	// --- External enrichment (advisory firmographics + steward apply) ---------
+	// `enrichRun` holds the last enrich result; `selected` is the steward's
+	// per-field pick (defaults to all suggested fields checked). `enriched`
+	// tracks that an enrich call has returned (so we can show an explicit
+	// "no suggestions" empty state distinct from "not yet run").
+	let enrichSuggestions = $state<EnrichmentFieldSuggestion[]>([]);
+	let enriched = $state(false);
+	let selected = $state<Set<string>>(new Set());
+
+	function truncate(v: string | null): string {
+		if (!v) return '—';
+		return v.length > 80 ? v.slice(0, 79) + '…' : v;
+	}
+
+	async function runEnrich() {
+		busy = 'enrich';
+		try {
+			const res = await enrichVendor(vendor.id);
+			enrichSuggestions = res.suggestions;
+			// Pre-check every suggested field — the steward unchecks what they
+			// don't want. Nothing is applied until they hit "Apply selected".
+			selected = new Set(res.suggestions.map((s) => s.field));
+			enriched = true;
+			if (!res.firmographics.matched) {
+				toast('No external match found for this vendor', 'info');
+			} else if (res.suggestions.length === 0) {
+				toast('Vendor already matches the external source', 'info');
+			}
+		} catch (err) {
+			toast(errMsg(err, 'Enrichment failed'), 'error');
+		} finally {
+			busy = '';
+		}
+	}
+
+	function toggleField(field: string) {
+		const next = new Set(selected);
+		if (next.has(field)) next.delete(field);
+		else next.add(field);
+		selected = next;
+	}
+
+	async function applySelected() {
+		const fields = enrichSuggestions
+			.filter((s) => selected.has(s.field))
+			.map((s) => ({ field: s.field, value: s.suggested_value }));
+		if (fields.length === 0) return;
+		busy = 'apply';
+		try {
+			const res = await applyVendorEnrichment(vendor.id, fields);
+			onupdated(res.vendor);
+			const count = Object.keys(res.applied).length;
+			toast(
+				count > 0
+					? `Applied ${count} field${count === 1 ? '' : 's'} to the vendor`
+					: 'No changes to apply (already up to date)',
+				'success'
+			);
+			// Clear the diff — the applied values are now the vendor's current
+			// values, so the previous suggestions are stale.
+			enrichSuggestions = [];
+			selected = new Set();
+			enriched = false;
+		} catch (err) {
+			toast(errMsg(err, 'Apply failed'), 'error');
+		} finally {
+			busy = '';
+		}
+	}
 </script>
 
 <Modal open ariaLabel="Vendor screening and risk" width="lg" {onclose}>
@@ -196,6 +273,67 @@
 			{/if}
 		</div>
 	</section>
+
+	{#if canEnrich}
+		<section class="panel">
+			<h3>External enrichment</h3>
+			<p class="hint muted">
+				Look up this vendor's firmographics from an external source (D&amp;B / Clearbit). Nothing
+				is changed automatically — review the suggestions below and choose which to apply. Tax ID
+				is never applied here; it goes through the bank/tax change-request gate.
+			</p>
+
+			<div class="actions-row">
+				<RowAction onclick={runEnrich} disabled={busy !== ''}>
+					{busy === 'enrich' ? 'Looking up…' : 'Enrich from external source'}
+				</RowAction>
+			</div>
+
+			{#if enriched}
+				{#if enrichSuggestions.length === 0}
+					<p class="muted enrich-empty">No suggested changes — the vendor already matches.</p>
+				{:else}
+					<table class="enrich-diff">
+						<thead>
+							<tr>
+								<th class="enrich-pick"><span class="visually-hidden">Apply</span></th>
+								<th>Field</th>
+								<th>Current</th>
+								<th>Suggested</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each enrichSuggestions as s (s.field)}
+								<tr>
+									<td class="enrich-pick">
+										<input
+											type="checkbox"
+											checked={selected.has(s.field)}
+											onchange={() => toggleField(s.field)}
+											aria-label={`Apply ${ENRICHABLE_FIELD_LABELS[s.field]}`}
+										/>
+									</td>
+									<td>{ENRICHABLE_FIELD_LABELS[s.field]}</td>
+									<td class="enrich-current muted" title={s.current_value ?? ''}>
+										{truncate(s.current_value)}
+									</td>
+									<td class="enrich-suggested" title={s.suggested_value ?? ''}>
+										{truncate(s.suggested_value)}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+
+					<div class="actions-row">
+						<RowAction onclick={applySelected} disabled={busy !== '' || selected.size === 0}>
+							{busy === 'apply' ? 'Applying…' : `Apply selected (${selected.size})`}
+						</RowAction>
+					</div>
+				{/if}
+			{/if}
+		</section>
+	{/if}
 
 	<section class="panel">
 		<h3>Screening history</h3>
@@ -276,6 +414,63 @@
 		align-items: center;
 		gap: 8px;
 		margin-top: 14px;
+	}
+	.hint {
+		font-size: 0.8rem;
+		line-height: 1.4;
+		margin: 0;
+	}
+	.enrich-empty {
+		margin-top: 12px;
+		font-size: 0.85rem;
+	}
+	.enrich-diff {
+		width: 100%;
+		border-collapse: collapse;
+		margin-top: 12px;
+		font-size: 0.82rem;
+	}
+	.enrich-diff th {
+		text-align: left;
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		padding: 4px 10px 6px;
+		border-bottom: 1px solid var(--border);
+	}
+	.enrich-diff td {
+		padding: 8px 10px;
+		border-bottom: 1px solid var(--border);
+		vertical-align: top;
+	}
+	.enrich-diff tr:last-child td {
+		border-bottom: none;
+	}
+	.enrich-pick {
+		width: 36px;
+		text-align: center;
+	}
+	.enrich-current {
+		max-width: 220px;
+		word-break: break-word;
+	}
+	.enrich-suggested {
+		max-width: 240px;
+		word-break: break-word;
+		font-weight: 500;
+	}
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 	.timeline {
 		list-style: none;
