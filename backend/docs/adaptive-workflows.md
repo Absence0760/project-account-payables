@@ -327,7 +327,7 @@ shaping in `api/workflow_experiments.py`.
 > config an invoice runs under* and reads metrics back. It funds nothing; the
 > CFO-gated payment run is unchanged.
 
-### Model — `WorkflowExperiment` (tenant-scoped, migration 0062)
+### Model — `WorkflowExperiment` (tenant-scoped, migration 0064)
 
 | Field | Meaning |
 |---|---|
@@ -511,7 +511,7 @@ not apply.
   deterministic metrics; assignment freezes a variant config onto the invoice's
   snapshot at creation; the results endpoint calls a winner past a minimum
   sample. `/api/experiments` + `services/workflow_experiments*.py` + migration
-  0062 + the `/experiments` frontend surface.
+  0064 + the `/experiments` frontend surface.
 - **Model-retraining feedback loop.**
 - **LLM phrasing** of suggestion text — if added, must fail soft to the template
   with no key (mirror `services/audit_summary.py`).

@@ -502,7 +502,7 @@ Disable requires password re-entry — a stolen session shouldn't be able to sil
 |---|---|---|
 | `User.mfa_secret` (base32) | control-plane DB | Per-user, durable, written once at enrollment. |
 | `User.mfa_enabled`, `mfa_enrolled_at` | control-plane DB | Drives login-flow decisions. |
-| `WebAuthnCredential` rows (credential id, COSE public key, sign counter) | control-plane DB (`webauthn_credentials`, migration 0062) | One row per registered passkey, keyed by `user_id` (control-plane, never tenant-fanned). Not secret in the password sense; never logged. |
+| `WebAuthnCredential` rows (credential id, COSE public key, sign counter) | control-plane DB (`webauthn_credentials`, migration 0063) | One row per registered passkey, keyed by `user_id` (control-plane, never tenant-fanned). Not secret in the password sense; never logged. |
 | `Organization.settings.mfa.required` | control-plane DB (JSONB) | Org-wide policy; lives next to other settings. |
 | Email-OTP hash | Redis (`mfa:email_otp:<user_id>`) | Short-lived, single-use, no need to persist. |
 | WebAuthn ceremony challenge | Redis (`webauthn:{reg,auth}_challenge:<user_id>`) | Short-lived, single-use; the verify call rejects an attacker-chosen challenge. |

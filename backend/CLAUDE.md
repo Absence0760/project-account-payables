@@ -149,7 +149,7 @@ backend/
    - `User` — email, full_name, hashed_password, sso_provider/id, mfa_secret/enabled/enrolled_at, must_change_password, notification_prefs (JSONB — per-user email/in-app channel prefs, user-global), organization_id
    - `Role` — name (admin, ap_manager, ap_clerk, cfo)
    - `UserRole` — junction table
-   - `WebAuthnCredential` — registered passkey (credential_id, public_key, sign_count, transports) per `user_id`; the WebAuthn second factor (migration 0062)
+   - `WebAuthnCredential` — registered passkey (credential_id, public_key, sign_count, transports) per `user_id`; the WebAuthn second factor (migration 0063)
    - `ExtractionUsage` — billing: invoice_id, provider, program_type, period
    - `CardRebate` — virtual_card_id, amount, rate, status, period
 
@@ -172,7 +172,7 @@ backend/
    - `WorkflowDefinition` — name, steps_config (JSONB), is_active, is_default
    - `WorkflowInstance` — definition_id, invoice_id, current_step, state, steps_config_snapshot (JSONB)
    - `WorkflowStep` — instance_id, step_number, step_type, assigned_to, action, completed_at
-   - `WorkflowExperiment` — A/B test of two workflow-rule configs (`config_a`/`config_b` JSONB) on one `workflow_definition_id`; `split_a_pct`, `primary_metric`, `min_sample_per_variant`, `status` (draft/running/concluded), `assignments` (JSONB `{invoice_id: "A"|"B"}`). Assigned at invoice creation (deterministic stable hash, freezes the variant config onto the instance snapshot); migration 0062. See `docs/adaptive-workflows.md` § A/B testing
+   - `WorkflowExperiment` — A/B test of two workflow-rule configs (`config_a`/`config_b` JSONB) on one `workflow_definition_id`; `split_a_pct`, `primary_metric`, `min_sample_per_variant`, `status` (draft/running/concluded), `assignments` (JSONB `{invoice_id: "A"|"B"}`). Assigned at invoice creation (deterministic stable hash, freezes the variant config onto the instance snapshot); migration 0064. See `docs/adaptive-workflows.md` § A/B testing
    - `AuditLog` — actor_id, action, entity_type, entity_id, details (JSONB)
    - `Exception` — invoice_id, exception_type, severity, status (open/resolved/escalated/dismissed)
    - `CreditMemo` — vendor_id, original_invoice_id, amount, status (open/applied/voided)
@@ -596,7 +596,7 @@ user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER))
 
 - TOTP (pyotp) + email-OTP backup + **WebAuthn/passkeys** (`py_webauthn`). Master switch `AP_MFA_ENABLED` (default `false` for local dev) gates all three.
 - Per-user TOTP secret on `User.mfa_secret`; org-wide enforcement via `Organization.settings.mfa.required`.
-- **Passkeys are a separate code path** (`services/webauthn.py`), additive + opt-in. Credentials live in the control-plane `webauthn_credentials` table (`WebAuthnCredential`, migration 0062, in `CONTROL_TABLES`) — one row per registered authenticator, keyed by `user_id`. Register/list/delete + authenticate endpoints under `/api/auth/mfa/passkey/*`; the authenticate ceremony is gated by the login-issued MFA challenge token (public, pre-access-token), register/list/delete require JWT. The per-ceremony challenge is stashed single-use in Redis (`webauthn:{reg,auth}_challenge:<user_id>`); the signature counter is verified + bumped (clone-detection). RP ID / origins configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`; dev defaults `localhost` / `http://localhost:7777`). Public key + counter are not secret in the password sense and never logged.
+- **Passkeys are a separate code path** (`services/webauthn.py`), additive + opt-in. Credentials live in the control-plane `webauthn_credentials` table (`WebAuthnCredential`, migration 0063, in `CONTROL_TABLES`) — one row per registered authenticator, keyed by `user_id`. Register/list/delete + authenticate endpoints under `/api/auth/mfa/passkey/*`; the authenticate ceremony is gated by the login-issued MFA challenge token (public, pre-access-token), register/list/delete require JWT. The per-ceremony challenge is stashed single-use in Redis (`webauthn:{reg,auth}_challenge:<user_id>`); the signature counter is verified + bumped (clone-detection). RP ID / origins configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`; dev defaults `localhost` / `http://localhost:7777`). Public key + counter are not secret in the password sense and never logged.
 - Login returns either `TokenResponse` or `MFAChallengeResponse`. Challenge token is a short-lived JWT with `typ: mfa_challenge` — verified at `POST /api/auth/mfa/verify` (totp/email) or the passkey authenticate endpoints. `methods` lists the offered factors (`totp` / `passkey` / `email`); a passkey-only user trips the gate.
 - Email-OTP hashes live in Redis (`mfa:email_otp:<user_id>`), short TTL, single-use.
 - SSO sign-in skips our MFA challenge — IdPs handle their own MFA.
