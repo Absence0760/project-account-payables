@@ -41,6 +41,7 @@ export const messages = {
 	'nav.roles': 'Funções',
 	'nav.auditTrail': 'Trilha de auditoria',
 	'nav.workflows': 'Fluxos de trabalho',
+	'nav.apiKeys': 'Chaves de API',
 
 	// App shell / sidebar
 	'shell.appName': 'Account Payables',

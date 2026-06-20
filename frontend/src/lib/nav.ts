@@ -116,6 +116,8 @@ export const NAV: NavEntry[] = [
 			{ label: 'Roles', labelKey: 'nav.roles', href: '/admin?tab=roles', roles: ['admin'] },
 			{ label: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', roles: ['admin', 'cfo'] },
 			{ label: 'Workflows', labelKey: 'nav.workflows', href: '/workflows', roles: ['admin'] },
+			// Developer-API key management — admin only (the backend 403s the rest).
+			{ label: 'API Keys', labelKey: 'nav.apiKeys', href: '/admin/api-keys', roles: ['admin'] },
 		],
 	},
 ];
