@@ -7,10 +7,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
+
+// Wraps a screen with the localization delegates it now needs. No explicit
+// `locale` → defaults to `en`, so the English assertions below still hold.
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _list(List<Map<String, dynamic>> items) => http.Response(
       jsonEncode({'invoices': items}),
@@ -66,7 +75,7 @@ void main() {
       client: MockClient((req) async => gate.future),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     // One pump runs the post-frame fetch; the store flips loading=true.
     await tester.pump();
 
@@ -87,7 +96,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.byType(InvoiceListTile));
 
     expect(find.byType(InvoiceListTile), findsNWidgets(2));
@@ -102,7 +111,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.text('No invoices found'));
 
     expect(find.text('No invoices found'), findsOneWidget);
@@ -115,7 +124,7 @@ void main() {
       client: MockClient((req) async => throw Exception('offline')),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.text('No invoices found'));
 
     // No cached rows exist, so the store ends with an empty list + error set,
@@ -131,7 +140,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.text('No invoices found'));
 
     expect(find.byType(SearchBar), findsOneWidget);
@@ -154,7 +163,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.text('No invoices found'));
 
     await tester.tap(find.byIcon(Icons.tune));
@@ -175,7 +184,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.text('No invoices found'));
 
     final allChip = tester.widget<FilterChip>(
@@ -195,7 +204,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.text('No invoices found'));
 
     await tester.tap(find.widgetWithText(FilterChip, 'Approved'));
@@ -217,7 +226,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.text('No invoices found'));
 
     await tester.enterText(find.byType(SearchBar), 'acme');
@@ -241,7 +250,7 @@ void main() {
       client: MockClient((req) async => throw Exception('offline')),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
     await _pumpUntil(tester, find.byType(InvoiceListTile));
 
     expect(find.byType(InvoiceListTile), findsOneWidget);

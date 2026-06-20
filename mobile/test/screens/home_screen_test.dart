@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/home_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -200,7 +201,11 @@ void main() {
   /// Pumps bounded fixed frames until the home nav is mounted and every child
   /// loader has resolved — never pumpAndSettle (the spinners animate forever).
   Future<void> pumpHome(WidgetTester tester) async {
-    await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
+    await tester.pumpWidget(MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const HomeScreen(),
+    ));
     for (var i = 0;
         i < 30 &&
             find.byType(CircularProgressIndicator).evaluate().isNotEmpty;

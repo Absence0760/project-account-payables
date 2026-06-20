@@ -7,10 +7,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/dashboard_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/dashboard_store.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
+
+// Wraps a screen with the localization delegates it now needs. No explicit
+// `locale` → defaults to `en`, so the English assertions below still hold.
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -93,7 +102,7 @@ void main() {
       client: MockClient((req) async => gate.future),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     // One frame to run the post-frame fetch + rebuild into loading.
     await tester.pump();
     await tester.pump();
@@ -112,7 +121,7 @@ void main() {
       client: MockClient((req) async => throw Exception('offline')),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     await _pumpUntil(tester, find.text('Retry'));
 
     expect(find.textContaining('Error:'), findsOneWidget);
@@ -132,7 +141,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     await _pumpUntil(tester, find.text('Retry'));
     expect(find.widgetWithText(FilledButton, 'Retry'), findsOneWidget);
 
@@ -156,7 +165,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     await _pumpUntil(tester, find.byType(KpiCard));
 
     // Four KPI cards: Total Invoices, Upcoming, For Review, Approved.
@@ -199,7 +208,7 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     // Wait for THIS fetch to land (a leaky prior `_data` could otherwise show
     // stale cards first) by keying on a vendor unique to this payload.
     await _pumpUntil(tester, find.text('PipelineMarker'));
@@ -225,7 +234,7 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     // Key on a vendor unique to this payload so we assert against the fresh
     // fetch, not a leaky prior `_data`.
     await _pumpUntil(tester, find.text('Vendor 0'));
@@ -254,7 +263,7 @@ void main() {
       client: MockClient((req) async => throw Exception('offline')),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     // Wait for the in-screen refetch to fail over to cache (which flips
     // fromCache and surfaces the banner) — not just for the KPI cards, which
     // the primed live data already rendered.
@@ -274,7 +283,7 @@ void main() {
       client: MockClient((req) async => _json(_dashboardJson())),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pumpWidget(_localized(const DashboardScreen()));
     await _pumpUntil(tester, find.byType(KpiCard));
 
     expect(find.textContaining('Showing cached data'), findsNothing);

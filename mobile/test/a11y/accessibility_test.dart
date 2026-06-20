@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
@@ -36,7 +37,11 @@ import 'package:ap_mobile/widgets/vendor_status_badge.dart';
 // (WCAG 2.5.8), labelled tappables (WCAG 4.1.2 / 1.1.1) and text contrast
 // (WCAG 1.4.3). Run with `flutter test test/a11y/`.
 
-Widget _host(Widget child) => MaterialApp(home: Scaffold(body: child));
+Widget _host(Widget child) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: Scaffold(body: child),
+    );
 
 Invoice _invoice() => Invoice(
       id: 'inv1',
@@ -436,7 +441,11 @@ void main() {
         client: MockClient((req) async => _list([])),
       );
 
-      await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+      await tester.pumpWidget(MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: const InvoicesScreen(),
+      ));
       await tester.pump();
 
       expect(find.bySemanticsLabel('Capture invoice'), findsOneWidget);

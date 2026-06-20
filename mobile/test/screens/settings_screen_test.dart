@@ -9,6 +9,7 @@ import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/config.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/screens/settings_screen.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -110,7 +111,14 @@ void main() {
     AppConfig.tenantSlug = null;
   });
 
-  Widget wrap() => const MaterialApp(home: SettingsScreen());
+  // Localization delegates are required now that the screen reads
+  // AppLocalizations; with no explicit `locale` the default is `en`, so the
+  // existing English assertions below still hold.
+  Widget wrap() => const MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: SettingsScreen(),
+      );
 
   testWidgets('renders the logged-in user name, email and role chips',
       (tester) async {
@@ -198,6 +206,13 @@ void main() {
     await tester.pumpWidget(wrap());
     await tester.pump();
 
+    // The language picker added a row, so Sign Out sits below the 600px test
+    // viewport in the ListView — scroll it into view before asserting.
+    await tester.scrollUntilVisible(
+      find.widgetWithText(ListTile, 'Sign Out'),
+      200,
+    );
+
     expect(find.widgetWithText(ListTile, 'Sign Out'), findsOneWidget);
     expect(find.byIcon(Icons.logout), findsOneWidget);
   });
@@ -210,6 +225,10 @@ void main() {
     await tester.pumpWidget(wrap());
     await tester.pump();
 
+    await tester.scrollUntilVisible(
+      find.widgetWithText(ListTile, 'Sign Out'),
+      200,
+    );
     await tester.tap(find.widgetWithText(ListTile, 'Sign Out'));
     await tester.pumpAndSettle();
 
