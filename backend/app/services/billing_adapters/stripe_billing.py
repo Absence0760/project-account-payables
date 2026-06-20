@@ -16,8 +16,12 @@ requires it now.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+
+import httpx
 
 from app.services.billing_adapters.base import (
     BillingAdapter,
@@ -27,13 +31,22 @@ from app.services.billing_adapters.base import (
     UsageReport,
 )
 from app.services.billing_adapters.dispatcher import register_billing_adapter
-from app.services.webhook_security import extract_signature_header, verify_hmac_sha256
+from app.services.webhook_security import extract_signature_header
 
 logger = logging.getLogger(__name__)
+
+# Default Stripe REST base. The dispatcher injects an override into config
+# (AP_BILLING_STRIPE_API_BASE) so a sandbox / test can repoint it; this constant
+# is only the last-resort fallback when config carries no value.
+_DEFAULT_API_BASE = "https://api.stripe.com"
 
 
 class BillingNotConfigured(RuntimeError):
     """Raised when the Stripe adapter is selected without a configured key."""
+
+
+class BillingProviderError(RuntimeError):
+    """Raised when Stripe returns a non-2xx for a configured request."""
 
 
 # Map Stripe subscription statuses → our four-state lifecycle. ``incomplete`` /
@@ -61,29 +74,151 @@ class StripeBillingAdapter(BillingAdapter):
     def _webhook_secret(self) -> str:
         return (self.config or {}).get("stripe_webhook_secret") or ""
 
+    @property
+    def _api_base(self) -> str:
+        return (self.config or {}).get("stripe_api_base") or _DEFAULT_API_BASE
+
+    @property
+    def _timeout(self) -> float:
+        return float((self.config or {}).get("timeout_seconds", 15.0))
+
     def _require_key(self) -> None:
         if not self._api_key:
             # Fail closed — never proceed against Stripe without a key.
             raise BillingNotConfigured("Stripe billing is not configured (no API key)")
 
-    async def create_subscription(
-        self, request: CreateSubscriptionRequest
-    ) -> ProviderSubscription:
+    def _client(self) -> httpx.AsyncClient:
+        """An authenticated client for the Stripe REST API.
+
+        Stripe authenticates with the secret key as HTTP Basic username (no
+        password) and consumes ``application/x-www-form-urlencoded`` bodies.
+        Factored out so unit tests can patch ``StripeBillingAdapter._client``
+        with a transport that serves canned responses (no network).
+        """
+        return httpx.AsyncClient(
+            base_url=self._api_base,
+            auth=(self._api_key, ""),
+            timeout=self._timeout,
+        )
+
+    async def create_subscription(self, request: CreateSubscriptionRequest) -> ProviderSubscription:
+        """Create a subscription at Stripe and normalize the result.
+
+        Expects the provider-side ``customer`` id and ``price`` id to have been
+        resolved upstream and passed via the request's idempotency context; in
+        this wiring they ride in ``config`` (the caller injects the per-org
+        Stripe customer + the plan's Stripe price id). The ``Idempotency-Key``
+        header makes a retried create safe — Stripe returns the original
+        subscription rather than a duplicate.
+        """
         self._require_key()
-        # TODO(jared): later slice — stripe.Subscription.create(...) with the
-        # org's customer id, the plan's price id, trial_period_days, and the
-        # idempotency_key header. Map the returned status via _STATUS_MAP.
-        raise NotImplementedError("Stripe create_subscription is a later slice")
+        customer = (self.config or {}).get("stripe_customer_id")
+        price = (self.config or {}).get("stripe_price_id")
+        if not customer or not price:
+            raise BillingNotConfigured(
+                "Stripe create_subscription requires stripe_customer_id + stripe_price_id"
+            )
+        form: dict[str, str] = {
+            "customer": str(customer),
+            "items[0][price]": str(price),
+        }
+        if request.trial_days > 0:
+            form["trial_period_days"] = str(request.trial_days)
+        request_headers = {}
+        if request.idempotency_key:
+            request_headers["Idempotency-Key"] = request.idempotency_key
+        async with self._client() as client:
+            resp = await client.post("/v1/subscriptions", data=form, headers=request_headers)
+        payload = self._json_or_raise(resp, "create_subscription")
+        return ProviderSubscription(
+            external_subscription_id=str(payload["id"]),
+            status=_STATUS_MAP.get(payload.get("status", ""), "past_due"),
+            plan_code=request.plan_code,
+        )
 
     async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription:
         self._require_key()
-        # TODO(jared): later slice — stripe.Subscription.retrieve(external_subscription_id).
-        raise NotImplementedError("Stripe get_subscription is a later slice")
+        async with self._client() as client:
+            resp = await client.get(f"/v1/subscriptions/{external_subscription_id}")
+        payload = self._json_or_raise(resp, "get_subscription")
+        return ProviderSubscription(
+            external_subscription_id=str(payload["id"]),
+            status=_STATUS_MAP.get(payload.get("status", ""), "past_due"),
+            plan_code="",
+        )
 
     async def report_usage(self, report: UsageReport) -> None:
+        """Report per-meter usage to Stripe via the Billing Meter Events API.
+
+        One meter event per meter in the rollup. Quantities are exact decimal
+        strings end-to-end (never float) — Stripe accepts a string ``value``.
+        The org id is sent as the meter-event ``stripe_customer_id`` payload key
+        so Stripe attributes the usage to the right customer.
+        """
         self._require_key()
-        # TODO(jared): later slice — stripe.billing.MeterEvent / usage records per meter.
-        raise NotImplementedError("Stripe report_usage is a later slice")
+        if not report.meters:
+            return
+        customer = (self.config or {}).get("stripe_customer_id")
+        if not customer:
+            raise BillingNotConfigured("Stripe report_usage requires stripe_customer_id")
+        async with self._client() as client:
+            for meter_name, value in report.meters.items():
+                form = {
+                    "event_name": meter_name,
+                    "payload[stripe_customer_id]": str(customer),
+                    "payload[value]": str(value),
+                    "identifier": f"{report.organization_id}:{report.period}:{meter_name}",
+                }
+                resp = await client.post("/v1/billing/meter_events", data=form)
+                self._json_or_raise(resp, "report_usage")
+
+    @staticmethod
+    def _json_or_raise(resp: httpx.Response, op: str) -> dict:
+        """Parse a Stripe JSON response or raise a PII-free provider error."""
+        if resp.status_code >= 400:
+            # PII-free: status code + op only — never echo the body (it can
+            # contain customer detail).
+            raise BillingProviderError(f"Stripe {op} failed: HTTP {resp.status_code}")
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise BillingProviderError(f"Stripe {op} returned non-JSON") from exc
+
+    def _verify_stripe_signature(self, raw_header: str | None, body: bytes) -> bool:
+        """Verify Stripe's ``Stripe-Signature`` scheme (not a bare body HMAC).
+
+        The header is ``t=<unix_ts>,v1=<hex>[,v1=<hex>...]`` and the signed
+        payload is ``f"{t}.{body}"`` (HMAC-SHA256 with the endpoint signing
+        secret). We recompute that and constant-time-compare against each
+        provided ``v1`` digest. Fail-closed: empty secret, missing/garbled
+        header, or no match → ``False``.
+
+        (``webhook_security.verify_hmac_sha256`` can't be reused directly here —
+        it HMACs the body alone, whereas Stripe signs the timestamp-prefixed
+        payload. Reusing it would always reject a real Stripe event.)
+        """
+        if not self._webhook_secret or not raw_header:
+            return False
+        timestamp: str | None = None
+        v1_signatures: list[str] = []
+        for part in raw_header.split(","):
+            key, _, value = part.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key == "t":
+                timestamp = value
+            elif key == "v1" and value:
+                v1_signatures.append(value)
+        if not timestamp or not v1_signatures:
+            return False
+        try:
+            signed_payload = b"%s.%s" % (timestamp.encode("utf-8"), body)
+            expected = hmac.new(
+                self._webhook_secret.encode("utf-8"), signed_payload, hashlib.sha256
+            ).hexdigest()
+        except Exception:  # noqa: BLE001 — malformed input must fail closed
+            return False
+        return any(hmac.compare_digest(expected, sig) for sig in v1_signatures)
 
     def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None:
         """Verify the Stripe-Signature HMAC over the raw body and normalize.
@@ -93,7 +228,7 @@ class StripeBillingAdapter(BillingAdapter):
         ``webhook_security.is_event_already_processed``.
         """
         signature = extract_signature_header(headers, "Stripe-Signature", "stripe-signature")
-        if not verify_hmac_sha256(self._webhook_secret, body, signature):
+        if not self._verify_stripe_signature(signature, body):
             return None
         try:
             payload = json.loads(body.decode("utf-8"))

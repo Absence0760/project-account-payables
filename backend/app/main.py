@@ -16,6 +16,7 @@ from app.api import (
     auth_saml,
     auth_sso,
     billing,
+    billing_webhook,
     budgets,
     cards,
     catalogs,
@@ -96,6 +97,7 @@ async def lifespan(app: FastAPI):
 
     from app.services.approval_escalation import run_escalation_loop
     from app.services.audit_log_shipper import run_shipper_loop
+    from app.services.billing.dunning_sweep import run_dunning_loop
     from app.services.contract_renewal import run_renewal_loop
     from app.services.discount_auto_trigger import run_discount_optimization_loop
     from app.services.extraction_reaper import run_reaper_loop
@@ -117,6 +119,7 @@ async def lifespan(app: FastAPI):
     retention_task: asyncio.Task | None = None
     recurring_task: asyncio.Task | None = None
     webhooks_task: asyncio.Task | None = None
+    dunning_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -169,6 +172,11 @@ async def lifespan(app: FastAPI):
         webhooks_task = asyncio.create_task(
             run_webhook_delivery_loop(), name="webhook-delivery"
         )
+    # Billing dunning / past-due automation sweep. Disabled by default; flip
+    # AP_BILLING_DUNNING_ENABLED on in deployed envs. Only cancels subscriptions
+    # overdue past the grace window — never moves money (see dunning_sweep).
+    if settings.billing_dunning_enabled:
+        dunning_task = asyncio.create_task(run_dunning_loop(), name="billing-dunning")
 
     try:
         yield
@@ -185,6 +193,7 @@ async def lifespan(app: FastAPI):
             retention_task,
             recurring_task,
             webhooks_task,
+            dunning_task,
         ):
             if task is not None:
                 task.cancel()
@@ -330,6 +339,7 @@ app.include_router(signup.router, prefix="/api")
 app.include_router(auth_sso.router, prefix="/api")
 app.include_router(auth_saml.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
+app.include_router(billing_webhook.public_router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
 app.include_router(scim.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")

@@ -41,6 +41,7 @@ def get_billing_adapter(provider: str | None = None) -> BillingAdapter:
     config = {
         "stripe_api_key": settings.billing_stripe_api_key,
         "stripe_webhook_secret": settings.billing_stripe_webhook_secret,
+        "stripe_api_base": settings.billing_stripe_api_base,
     }
     return adapter_cls(config)
 

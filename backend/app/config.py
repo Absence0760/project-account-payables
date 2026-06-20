@@ -415,6 +415,25 @@ class Settings(BaseSettings):
     # via sops (backend/.env.sops) in deployed envs, never committed plaintext.
     billing_stripe_api_key: str = ""
     billing_stripe_webhook_secret: str = ""
+    # Live Stripe Billing API base URL — overridable so tests / a sandbox can
+    # point the adapter at a mock server. The adapter still fails closed without
+    # an API key regardless of this value.
+    billing_stripe_api_base: str = "https://api.stripe.com"
+    # Master switch for the INBOUND billing webhook route
+    # (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound
+    # billing integration), flipped ON in deployed envs alongside the live
+    # provider. The route is HMAC-gated regardless; when off it 204s silently.
+    billing_webhook_enabled: bool = False
+    # Master switch for the dunning / past-due automation sweep. OFF by default
+    # (mirrors the other background sweeps); flip on in deployed envs. The sweep
+    # only flags subscriptions overdue past the grace window as `canceled` and
+    # writes an audit row — it NEVER moves money.
+    billing_dunning_enabled: bool = False
+    billing_dunning_interval_seconds: int = 3600
+    # Grace window (days) a subscription may sit `past_due` before the dunning
+    # sweep cancels it. Stripe's own retry schedule normally drives the status
+    # via webhooks; this is the backstop when a provider webhook never arrives.
+    billing_dunning_grace_days: int = 14
 
     # SAML 2.0 SSO (Service-Provider side). Additive, separate code path from
     # OIDC; like OIDC it is gated PER-TENANT via Organization.settings.sso
