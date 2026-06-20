@@ -68,6 +68,7 @@ from app.models.vendor_statement_recon import (
 from app.models.vendor_user import VendorUser
 from app.models.webhook import WebhookDelivery, WebhookSubscription
 from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, WorkflowStep
+from app.models.workflow_experiment import WorkflowExperiment
 
 __all__ = [
     "Base",
@@ -119,6 +120,7 @@ __all__ = [
     "APException",
     "AgentDecision",
     "WorkflowSuggestion",
+    "WorkflowExperiment",
     "CreditMemo",
     "DataSubjectRequest",
     "DiscountOffer",
