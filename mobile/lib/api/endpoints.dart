@@ -1,5 +1,6 @@
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
+import 'package:ap_mobile/models/cash_flow.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
@@ -269,6 +270,37 @@ class DashboardApi {
   static Future<DashboardData> get() async {
     final data = await _api.get('/dashboard');
     return DashboardData.fromJson(data);
+  }
+}
+
+/// Predictive cash-flow forecasting (CFO / admin) — combines the two
+/// read-only analytics endpoints into one [CashFlowData]:
+///   - `GET /api/analytics/cashflow_forecast` (projected AP outflows per period)
+///   - `GET /api/analytics/cash_position` (running balance + low-balance alert)
+///
+/// Both share `granularity` + `horizon_days`; we fetch them with the same
+/// horizon so the forecast periods and the running-balance periods line up.
+/// Money arrives as JSON numbers (the backend `float(...)`s the dicts) and is
+/// carried straight through as display strings — never summed on the device.
+class CashFlowApi {
+  static final _api = ApiClient();
+
+  /// Fetch the forecast + cash position for the given [horizonDays].
+  /// [granularity] is one of `day` | `week` | `month` (backend default
+  /// `week`). The cash-position call lets the backend resolve the opening
+  /// balance (provider auto-sync / persisted setting / 0) and the alert
+  /// threshold from the org's persisted `cash-position-settings`.
+  static Future<CashFlowData> get({
+    int horizonDays = 90,
+    String granularity = 'week',
+  }) async {
+    final params = <String, String>{
+      'horizon_days': horizonDays.toString(),
+      'granularity': granularity,
+    };
+    final forecast = await _api.get('/analytics/cashflow_forecast', params);
+    final position = await _api.get('/analytics/cash_position', params);
+    return CashFlowData.fromJson(forecast: forecast, position: position);
   }
 }
 

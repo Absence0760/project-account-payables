@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/stores/dashboard_store.dart';
+import 'package:ap_mobile/widgets/cash_flow_button.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
 import 'package:ap_mobile/widgets/notification_bell.dart';
 
@@ -31,7 +32,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(l.dashboardTitle),
-        actions: const [NotificationBell()],
+        actions: const [CashFlowButton(), NotificationBell()],
       ),
       body: ListenableBuilder(
         listenable: DashboardStore.instance,

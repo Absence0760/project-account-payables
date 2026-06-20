@@ -57,13 +57,15 @@ mobile/
 │   │   ├── exception_store.dart # Exception list, filter, resolve/escalate/dismiss (offline cached)
 │   │   ├── notification_store.dart # In-app notification center — list (All/Unread filter), unread badge count, optimistic mark-read + read-all (offline cached)
 │   │   ├── dashboard_store.dart # Dashboard KPI data (offline cached)
+│   │   ├── cash_flow_store.dart # Predictive cash-flow forecast + cash position (CFO/admin); 30/60/90-day horizon; not offline-cached (privileged fast-moving read)
 │   │   ├── locale_store.dart    # Per-device display-language choice (i18n) → MaterialApp.locale; persisted via secure storage, never account-roamed
 │   │   ├── vendor_store.dart    # Vendor list, filter/search, verify/reject, ERP sync (offline cached)
 │   │   └── payment_queue_store.dart # Payment queue + summary + runs; per-row method selection; create/execute/cancel runs
 │   ├── screens/
 │   │   ├── login_screen.dart    # Tenant + email/password login
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
-│   │   ├── dashboard_screen.dart # KPIs, aging, top vendors
+│   │   ├── dashboard_screen.dart # KPIs, aging, top vendors (app-bar: CashFlowButton + NotificationBell)
+│   │   ├── cash_flow_screen.dart # Predictive cash-flow forecast (CFO/admin) — KPI summary (opening/projected-end balance, committed/pending outflow), per-period forecast + running cash-position list, low-balance alert, 30/60/90-day horizon chips, pull-to-refresh
 │   │   ├── invoices_screen.dart  # Invoice list with search + status filters + advanced-search (tune) action + camera button
 │   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + warnings/fraud + PO match + ERP status + activity timeline + file preview (image thumbnail / PDF card) → full viewer
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
@@ -87,6 +89,7 @@ mobile/
 │       ├── notification_list_tile.dart # Notification row — unread dot, title, body, event label + relative time; one merged Semantics label
 │       ├── notification_bell.dart      # App-bar bell action with a live unread Badge → opens NotificationsScreen (in the Dashboard app bar; visible to all roles)
 │       ├── kpi_card.dart        # Dashboard metric card
+│       ├── cash_flow_button.dart # Dashboard app-bar action → CashFlowScreen; gated to CFO/admin (renders nothing otherwise; mirrors backend _CFO_ROLES)
 │       ├── invoice_list_tile.dart # Invoice row with vendor, amount, status
 │       ├── vendor_status_badge.dart # Colored vendor status chip (active/unverified/inactive/rejected)
 │       └── vendor_list_tile.dart # Vendor row with name, code/email, status, invoice count
@@ -120,6 +123,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 |--------|-----------|
 | Login | `POST /api/auth/login`, `GET /api/auth/me` |
 | Dashboard | `GET /api/dashboard` |
+| Cash Flow | `GET /api/analytics/cashflow_forecast` + `GET /api/analytics/cash_position` (both `horizon_days` + `granularity`; CFO/admin) |
 | Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`) |
 | Invoice Detail | `GET /api/invoices/{id}` (carries `warnings` + `po_match`), `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline + ERP-status derivation, any authenticated role) |
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
@@ -150,6 +154,14 @@ The **notification center** is not a bottom-nav tab — it's reached from the
 app bar, so it's available to **all roles** (notifications are per-user, not
 role-gated; the backend scopes the list to the caller via `require_roles(*ALL_ROLES)`).
 
+The **cash-flow forecast** is likewise not a bottom-nav tab — it's reached from
+the `CashFlowButton` app-bar action (chart icon) in the Dashboard app bar,
+visible only to **CFO + admin** (`AuthStore.canViewCashFlow`, mirroring the
+backend `_CFO_ROLES = (admin, cfo)` gate on `/api/analytics/cashflow_forecast`
++ `/cash_position`). `ap_manager` is deliberately excluded — it's a privileged
+CFO surface, not the operational dashboard. The button renders nothing for
+everyone else.
+
 ## Feature status
 
 **Done:**
@@ -166,6 +178,7 @@ role-gated; the backend scopes the list to the caller via `require_roles(*ALL_RO
 - Exception queue (list + status filter + resolve / escalate / dismiss via swipe + action sheet; admin / AP manager only)
 - In-app notification center — `NotificationsScreen` + `NotificationStore` over `GET /api/notifications` (+ `unread-count` / `{id}/read` / `read-all`). Reached from the `NotificationBell` app-bar action (live unread `Badge`) in the Dashboard app bar (all roles). All / Unread filter chips; tapping a row marks it read (optimistic — flips the row + decrements the badge instantly, reconciles via refetch on failure) and deep-links to the invoice detail when the row is an `invoice` with an `entity_id` (other entity types e.g. `contract` just mark read — no mobile detail yet); mark-all-read app-bar action shown only while something is unread; offline-cached list + empty / loading / error (Retry) states. The email/in-app backend (Priority 8) serves mobile with no new endpoints
 - Payment history list
+- Predictive cash-flow forecast (CFO/admin) — `CashFlowScreen` + `CashFlowStore` combine `GET /api/analytics/cashflow_forecast` + `GET /api/analytics/cash_position` (same `horizon_days` + `granularity` so the two legs line up). A KPI summary (opening balance + its source, projected end balance — red when a breach is projected, total committed vs pending outflow over the horizon), a low-balance alert banner when the cash position breaches the org's persisted threshold (names the worst period + shortfall), a per-period forecast list (scheduled / committed / pending + invoice count) and a running cash-position list (period closing balance, breached rows flagged red). 30 / 60 / 90-day horizon chips (`CashFlowStore.setHorizon`), pull-to-refresh, loading / error (Retry) / empty states. Reached from the `CashFlowButton` Dashboard app-bar action (CFO/admin only). **Money is rendered from server-supplied display strings — the device never does float arithmetic on currency** (every total, opening/closing balance and shortfall is server-computed; mirrors the payment-queue invariant). Not offline-cached (privileged, fast-moving CFO read)
 - Vendor management — `VendorsScreen` + `VendorStore` over `GET /api/vendors` with status filters + search; verify / reject an unverified vendor via swipe (verify ⟶ / reject ⟵) or the action sheet, and an ERP-sync app-bar action (`POST /api/vendors/sync-erp`). Read is admin/ap_manager/cfo; the mutating actions are gated to admin/ap_manager (mirrors `require_roles`) and simply hidden for CFO. Offline-cached list
 - Payment queue + runs — `PaymentQueueScreen` + `PaymentQueueStore`. Queue tab lists approved invoices (`GET /api/payments/queue`), each row a checkbox + per-row method picker; the selection creates a draft run (`POST /api/payments/runs`). Runs tab lists runs (`GET /api/payments/runs/`) and executes / cancels drafts. A KPI summary bar (total paid / pending / queue / card rebates) sits above both (`GET /api/payments/summary`). CFO-approval-required runs surface the gate before an execute attempt. Money is rendered as server-supplied display strings — the device never does float arithmetic on money (totals are server-computed)
 - Role-based bottom navigation
@@ -255,7 +268,11 @@ controls, tap-target + contrast), and the notification center (the
 `NotificationListTile` — one merged "Unread, <event>, <title>, …" announcement
 that also clears contrast on a read row; the `NotificationBell` — accessible
 label carrying the live unread count, e.g. "Notifications, 3 unread"; the
-`NotificationsScreen` — labelled mark-all-read action + tap-target/contrast).
+`NotificationsScreen` — labelled mark-all-read action + tap-target/contrast),
+and the cash-flow forecast (the `CashFlowScreen` with a breached period — the
+low-balance alert exposes one merged "Low balance alert …" announcement, and the
+red projected-end / breached-closing money + alert copy all clear contrast at
+AA via `.shade900`).
 `textContrastGuideline` is strict
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.

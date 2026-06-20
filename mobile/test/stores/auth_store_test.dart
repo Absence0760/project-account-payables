@@ -129,6 +129,19 @@ void main() {
       expect(store.canViewPayments, isFalse);
       expect(store.isClerkOnly, isTrue);
     });
+
+    test('cash flow forecast is admin/cfo only (mirrors backend _CFO_ROLES)',
+        () async {
+      await loginAs(['admin']);
+      expect(store.canViewCashFlow, isTrue);
+      await loginAs(['cfo']);
+      expect(store.canViewCashFlow, isTrue);
+      // ap_manager is deliberately excluded — it's a privileged CFO surface.
+      await loginAs(['ap_manager']);
+      expect(store.canViewCashFlow, isFalse);
+      await loginAs(['ap_clerk']);
+      expect(store.canViewCashFlow, isFalse);
+    });
   });
 
   group('logout', () {

@@ -34,6 +34,10 @@ class AuthStore extends ChangeNotifier {
   // Invoice field editing — mirrors the backend PATCH /api/invoices/{id} gate
   // (admin / ap_manager / cfo). Clerks are read-only here.
   bool get canEditInvoice => isAdmin || isManager || isCfo;
+  // Predictive cash-flow forecast — mirrors the backend analytics gate
+  // (_CFO_ROLES = admin, cfo on /analytics/cashflow_forecast + /cash_position).
+  // Note: ap_manager is deliberately excluded (it's a privileged CFO surface).
+  bool get canViewCashFlow => isAdmin || isCfo;
 
   Future<bool> init() async {
     await ApiClient().init();

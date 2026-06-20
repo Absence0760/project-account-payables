@@ -1,0 +1,193 @@
+import 'package:ap_mobile/models/payment_queue.dart' show moneyToDisplay;
+
+/// Cash-flow forecast + cash-position data for the CFO screen, from
+/// `GET /api/analytics/cashflow_forecast` and `GET /api/analytics/cash_position`.
+///
+/// The backend serialises these dict responses with `float(...)`, so money
+/// arrives as JSON numbers. We keep every money field as a **display string**
+/// via [moneyToDisplay] and NEVER do client-side float arithmetic on currency
+/// — every total the screen shows is server-computed (forecast `totals`,
+/// cash-position `opening`/`closing`, breach `shortfall`). This mirrors the
+/// payment-queue "money as string, never client float math" invariant.
+
+/// One bucketed forecast period from `cashflow_forecast.periods[]`.
+class CashFlowForecastPeriod {
+  final String period;
+  final String scheduledAmountDisplay;
+  final String committedAmountDisplay;
+  final String pendingAmountDisplay;
+  final String discountEligibleAmountDisplay;
+  final int count;
+
+  CashFlowForecastPeriod({
+    required this.period,
+    required this.scheduledAmountDisplay,
+    required this.committedAmountDisplay,
+    required this.pendingAmountDisplay,
+    required this.discountEligibleAmountDisplay,
+    required this.count,
+  });
+
+  factory CashFlowForecastPeriod.fromJson(Map<String, dynamic> json) {
+    return CashFlowForecastPeriod(
+      period: json['period'] as String? ?? '',
+      scheduledAmountDisplay: moneyToDisplay(json['scheduled_amount']),
+      committedAmountDisplay: moneyToDisplay(json['committed_amount']),
+      pendingAmountDisplay: moneyToDisplay(json['pending_amount']),
+      discountEligibleAmountDisplay:
+          moneyToDisplay(json['discount_eligible_amount']),
+      count: (json['count'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// `cashflow_forecast.totals` — the horizon-wide rollup, server-computed.
+class CashFlowForecastTotals {
+  final String scheduledAmountDisplay;
+  final String committedAmountDisplay;
+  final String pendingAmountDisplay;
+  final String discountEligibleAmountDisplay;
+  final int count;
+
+  CashFlowForecastTotals({
+    required this.scheduledAmountDisplay,
+    required this.committedAmountDisplay,
+    required this.pendingAmountDisplay,
+    required this.discountEligibleAmountDisplay,
+    required this.count,
+  });
+
+  factory CashFlowForecastTotals.fromJson(Map<String, dynamic> json) {
+    return CashFlowForecastTotals(
+      scheduledAmountDisplay: moneyToDisplay(json['scheduled_amount']),
+      committedAmountDisplay: moneyToDisplay(json['committed_amount']),
+      pendingAmountDisplay: moneyToDisplay(json['pending_amount']),
+      discountEligibleAmountDisplay:
+          moneyToDisplay(json['discount_eligible_amount']),
+      count: (json['count'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// One running-balance period from `cash_position.periods[]`.
+class CashPositionPeriod {
+  final String period;
+  final String openingDisplay;
+  final String outflowDisplay;
+  final String closingDisplay;
+  final bool belowThreshold;
+
+  CashPositionPeriod({
+    required this.period,
+    required this.openingDisplay,
+    required this.outflowDisplay,
+    required this.closingDisplay,
+    required this.belowThreshold,
+  });
+
+  factory CashPositionPeriod.fromJson(Map<String, dynamic> json) {
+    return CashPositionPeriod(
+      period: json['period'] as String? ?? '',
+      openingDisplay: moneyToDisplay(json['opening']),
+      outflowDisplay: moneyToDisplay(json['outflow']),
+      closingDisplay: moneyToDisplay(json['closing']),
+      belowThreshold: json['below_threshold'] as bool? ?? false,
+    );
+  }
+}
+
+/// One low-balance breach from `cash_position.breaches[]`.
+class CashPositionBreach {
+  final String period;
+  final String closingDisplay;
+  final String shortfallDisplay;
+
+  CashPositionBreach({
+    required this.period,
+    required this.closingDisplay,
+    required this.shortfallDisplay,
+  });
+
+  factory CashPositionBreach.fromJson(Map<String, dynamic> json) {
+    return CashPositionBreach(
+      period: json['period'] as String? ?? '',
+      closingDisplay: moneyToDisplay(json['closing']),
+      shortfallDisplay: moneyToDisplay(json['shortfall']),
+    );
+  }
+}
+
+/// The combined payload the [CashFlowStore] builds from the two endpoints.
+class CashFlowData {
+  final int horizonDays;
+  final String granularity;
+
+  // Forecast leg.
+  final List<CashFlowForecastPeriod> forecastPeriods;
+  final CashFlowForecastTotals totals;
+
+  // Cash-position leg.
+  final String openingBalanceDisplay;
+  final String openingBalanceSource;
+  final String? thresholdDisplay;
+  final List<CashPositionPeriod> positionPeriods;
+  final List<CashPositionBreach> breaches;
+
+  CashFlowData({
+    required this.horizonDays,
+    required this.granularity,
+    required this.forecastPeriods,
+    required this.totals,
+    required this.openingBalanceDisplay,
+    required this.openingBalanceSource,
+    this.thresholdDisplay,
+    required this.positionPeriods,
+    required this.breaches,
+  });
+
+  /// The projected end balance is the closing balance of the LAST position
+  /// period (server-computed); empty horizon falls back to the opening balance.
+  String get projectedEndBalanceDisplay => positionPeriods.isEmpty
+      ? openingBalanceDisplay
+      : positionPeriods.last.closingDisplay;
+
+  bool get hasBreach => breaches.isNotEmpty;
+
+  factory CashFlowData.fromJson({
+    required Map<String, dynamic> forecast,
+    required Map<String, dynamic> position,
+  }) {
+    final forecastPeriods = (forecast['periods'] as List<dynamic>?)
+            ?.map((p) =>
+                CashFlowForecastPeriod.fromJson(p as Map<String, dynamic>))
+            .toList() ??
+        [];
+    final positionPeriods = (position['periods'] as List<dynamic>?)
+            ?.map(
+                (p) => CashPositionPeriod.fromJson(p as Map<String, dynamic>))
+            .toList() ??
+        [];
+    final breaches = (position['breaches'] as List<dynamic>?)
+            ?.map(
+                (b) => CashPositionBreach.fromJson(b as Map<String, dynamic>))
+            .toList() ??
+        [];
+
+    return CashFlowData(
+      horizonDays: (forecast['horizon_days'] as num?)?.toInt() ?? 0,
+      granularity: forecast['granularity'] as String? ?? 'week',
+      forecastPeriods: forecastPeriods,
+      totals: CashFlowForecastTotals.fromJson(
+        forecast['totals'] as Map<String, dynamic>? ?? {},
+      ),
+      openingBalanceDisplay: moneyToDisplay(position['opening_balance']),
+      openingBalanceSource:
+          position['opening_balance_source'] as String? ?? 'none',
+      thresholdDisplay: position['threshold'] == null
+          ? null
+          : moneyToDisplay(position['threshold']),
+      positionPeriods: positionPeriods,
+      breaches: breaches,
+    );
+  }
+}

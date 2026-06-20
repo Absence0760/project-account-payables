@@ -14,11 +14,13 @@ import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/models/notification.dart';
 import 'package:ap_mobile/models/vendor.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
+import 'package:ap_mobile/screens/cash_flow_screen.dart';
 import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/screens/notifications_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/stores/cash_flow_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/stores/notification_store.dart';
@@ -704,6 +706,88 @@ void main() {
       await expectLater(tester, meetsGuideline(textContrastGuideline));
       // The mark-all-read action announces its purpose (WCAG 4.1.2).
       expect(find.bySemanticsLabel('Mark all notifications read'),
+          findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('CashFlowScreen', () {
+    setUp(() {
+      CashFlowStore.instance.debugReset();
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('the loaded forecast (with a breach) meets tap-target + '
+        'label + contrast', (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.url.path.endsWith('/analytics/cashflow_forecast')) {
+            return http.Response(
+              jsonEncode({
+                'granularity': 'week',
+                'horizon_days': 90,
+                'periods': [
+                  {
+                    'period': '2026-W26',
+                    'scheduled_amount': 3000.0,
+                    'committed_amount': 2000.0,
+                    'pending_amount': 1000.0,
+                    'discount_eligible_amount': 0.0,
+                    'count': 4,
+                  },
+                ],
+                'totals': {
+                  'scheduled_amount': 3000.0,
+                  'committed_amount': 2000.0,
+                  'pending_amount': 1000.0,
+                  'discount_eligible_amount': 0.0,
+                  'count': 4,
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          // cash_position with a breached period (exercises the red contrast).
+          return http.Response(
+            jsonEncode({
+              'granularity': 'week',
+              'horizon_days': 90,
+              'opening_balance': 6000.0,
+              'opening_balance_source': 'settings',
+              'threshold': 5000.0,
+              'periods': [
+                {
+                  'period': '2026-W26',
+                  'opening': 6000.0,
+                  'outflow': 4000.0,
+                  'inflow': 0.0,
+                  'closing': 2000.0,
+                  'below_threshold': true,
+                },
+              ],
+              'breaches': [
+                {'period': '2026-W26', 'closing': 2000.0, 'shortfall': 3000.0},
+              ],
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await tester.pumpWidget(_host(const CashFlowScreen()));
+      await _pumpUntil(tester, find.byType(KpiCard));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // Catches sub-AA red/grey money + alert text (textContrastGuideline is
+      // strict — it caught earlier muted-grey defects in this suite).
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // The low-balance alert exposes one merged announcement (WCAG 1.3.1).
+      expect(find.bySemanticsLabel(RegExp('^Low balance alert')),
           findsOneWidget);
       handle.dispose();
     });
