@@ -8,12 +8,14 @@ product name, logo, and accent colors. Shipped so far:
 2. **Branded outbound surfaces** — the generated PDFs (remittance,
    1099 working copy, SOX audit report) and outbound transactional emails carry
    the tenant's product name + logo + accent, not the platform's.
-3. **Custom domains** (this slice) — a tenant can be served on its own vanity
+3. **Custom domains** — a tenant can be served on its own vanity
    hostname (`ap.acmecorp.com`) and have the backend resolve it to the right
    tenant, in addition to the `*.localhost` subdomain / `X-Tenant-Slug`
    mechanism. See [Custom domains](#custom-domains-vanity-hostnames) below.
-
-Reseller / partner multi-tenant admin is a later slice (see `docs/roadmap.md`).
+4. **Partner / reseller admin** (this slice) — a partner (reseller) org can
+   administer a set of branded **child** tenants: list them, read each child's
+   branding, and push branding to a child. See
+   [Partner / reseller admin](#partner--reseller-admin) below.
 
 ## What it covers
 
@@ -336,11 +338,114 @@ branding save preserves `custom_domains`.
 adding a host through the UI round-trips through GET; removing one (armed
 confirm) drops it; an invalid hostname surfaces an inline error and fires no PUT.
 
+## Partner / reseller admin
+
+A **partner** (reseller) org administers a set of branded **child** tenants —
+white-labeling a workspace and then operating its sub-tenants' branding under
+one parent account. This is the "one partner manages many branded tenants" ask.
+
+### The relationship — a control-plane self-FK
+
+Orgs live in the **control plane**, so the parent/child link is a nullable
+self-referential FK on `Organization`: **`parent_org_id`** (migration `0065`,
+control-plane-only). When set, that org is a branded **child** administered by
+its parent; NULL = a standalone tenant.
+
+A "partner" is **derived, not flagged** — it is simply any org referenced as a
+`parent_org_id` by ≥ 1 child. There is no separate `is_partner` column an admin
+could flip to claim children it didn't actually parent. `parent_org_id` is
+populated out of band (provisioning / an operator link step); this slice manages
+the *administration* surface, not the creation of the link.
+
+The migration is control-plane-only (gated on the `organizations` table
+existing, exactly like `0062`/`0055`) — it does **not** fan out to tenant DBs;
+`organizations` never exists in a tenant DB. The FK uses `ON DELETE SET NULL`, so
+deleting a partner org orphans its children back to standalone rather than
+cascading a delete.
+
+### Backend — `/api/partner` (`backend/app/api/partner.py`)
+
+Three admin-only (`require_roles(ROLE_ADMIN)`), JWT-gated endpoints on the
+control-plane `organizations` table:
+
+`GET /api/partner` — the caller's partner overview: its identity + the child
+tenants it administers (`PartnerOverview` → `is_partner` + `children[]`, each
+carrying id / name / slug / plan / the child's resolved white-label
+`product_name`). A standalone org gets `is_partner: false` + an empty list (a
+state the UI renders, not an error).
+
+`GET /api/partner/children/{child_id}/branding` — read one child's `BrandConfig`
+(reuses `organization._resolve_brand`, tolerant of a missing/malformed block →
+platform defaults).
+
+`PUT /api/partner/children/{child_id}/branding` — push a child's branding.
+Pydantic validates the payload (hex colors, http(s) URLs); the write lands on the
+**child** org's `settings.brand` (control plane) and **preserves**
+`custom_domains` (the same carry-forward the child's own `PUT
+/api/organization/branding` does, so a partner save can't wipe the child's vanity
+hostnames). Audited into the **child's** tenant trail as
+`organization.branding_updated` with `via: "partner"` + the acting
+`partner_org_id` — **PII-free** (which fields are now set, booleans only; never a
+raw value).
+
+### Trust model — isolation at the data layer
+
+This is the load-bearing point and it composes with the existing tenant-isolation
+invariant:
+
+- The caller's org is resolved by the standard **`get_tenant`** chokepoint, which
+  cross-checks the JWT `org` claim against the resolved tenant — so a partner
+  admin authenticates as, and can only act as, *their own* partner org. A
+  swapped `X-Tenant-Slug` or forged `Host` can't widen that (same guard as
+  everywhere else).
+- EVERY child query is then scoped at the data layer:
+  `Organization.parent_org_id == <caller org id>` (in
+  `partner._resolve_child`'s WHERE clause, not in post-hoc app code). A partner
+  can never read or mutate an org it didn't parent.
+- A non-child (or unknown) `child_id` is the **same opaque 404** as a missing
+  one — no cross-tenant enumeration of org ids.
+
+So a partner holding org A's JWT pointing at org B's id gets a `404`; only orgs
+whose `parent_org_id` is A are reachable. Branding pushed to a child is audited in
+*that child's* trail, attributable to the partner.
+
+### Frontend — `/admin/partner`
+
+The **Partner Admin** page (`frontend/src/routes/admin/partner/+page.svelte`,
+under the Settings nav group, admin-gated — non-admins redirect to `/`, the
+backend 403s them regardless). Lists the partner's child tenants (`DataTable`,
+clickable rows) and opens a `Modal` to view/edit a child's brand (product name,
+logo URL, two accent colors, support + legal URLs) with the same client-side
+hex/URL validation as the org's own Branding panel, saving via `PUT
+/api/partner/children/{id}/branding`. A standalone org renders the empty
+"not a partner" state. API client: `frontend/src/lib/api/partner.ts` (types in
+`frontend/src/lib/types/partner.ts`). Built from the shared `ui/` components.
+
+### Tests
+
+- Backend: `backend/tests/test_partner_admin.py` (realdb) — overview lists ONLY
+  the caller's own children; a standalone org is `is_partner:false` + empty;
+  admin-only (403 for a manager) + 401 unauth; read + push a child's branding;
+  push persists to the child's row, audits the child's trail PII-free
+  (`via:partner`, raw value never echoed), and preserves the child's
+  `custom_domains`; **the isolation headline** — a non-child org id is an opaque
+  404 on both read and write, and the non-child's brand is untouched.
+- Frontend: `frontend/tests-e2e/admin/partner.spec.ts` — admin reaches the page
+  and a standalone org shows the not-a-partner state (real backend GET); a
+  non-child org id is an opaque 404 (read + write); a clerk is redirected and the
+  API 403s them.
+
 ## Deferred to later slices
 
 - The operational runbook for the TLS-cert + DNS provisioning that pairs with a
   registered custom domain (the app-side `custom_domains` admin UI + endpoint
   pair shipped — see *Managing the list* above; the infra automation that issues
   the ACM cert and wires the CNAME is a separate, infra-owned slice).
-- Reseller / partner multi-tenant admin (one partner managing many tenants'
-  branding).
+- **Provisioning the parent/child link** — the partner-admin surface
+  (`/api/partner`) administers existing `parent_org_id` links but does not yet
+  *create* them. A future slice adds an operator/partner flow to attach a child
+  tenant to a partner (and the self-service "create a child tenant under my
+  partner account" path), guarded so a partner can only attach tenants it is
+  entitled to. Trigger: when reseller onboarding needs partners to add children
+  without an operator running a DB statement. Until then the link is set out of
+  band (provisioning / a one-off operator step).

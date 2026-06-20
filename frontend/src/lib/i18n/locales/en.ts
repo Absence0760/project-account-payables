@@ -51,6 +51,7 @@ export const en = {
 	'nav.workflows': 'Workflows',
 	'nav.experiments': 'Experiments',
 	'nav.apiKeys': 'API Keys',
+	'nav.partner': 'Partner Admin',
 
 	// App shell / sidebar (Sidebar.svelte, +layout.svelte)
 	'shell.appName': 'Account Payables',

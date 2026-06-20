@@ -73,18 +73,26 @@ async def dispatch_auth_audit(
     actor_id: uuid.UUID | None,
     action: str,
     entity_id: uuid.UUID | None = None,
+    entity_type: str = "auth",
     details: dict | None = None,
 ) -> None:
-    """Write an auth-event audit entry into the tenant audit_log.
+    """Write a control-plane-originated audit entry into the tenant audit_log.
 
-    Auth endpoints run on the control-plane session but the AuditLog table
+    Some endpoints run on the control-plane session but the AuditLog table
     lives on the tenant DB. This helper resolves the tenant DB from the
     organization_id and opens its own short-lived session to write the row.
 
-    Any exception is caught + logged at WARNING so auth itself never fails
-    because of an audit-infrastructure blip (Redis blocklist degrades the
-    same way). SOC 2 wants auth hardened *and* observable — but auth
-    available first.
+    ``entity_type`` defaults to ``"auth"`` (its original, auth-event use), but
+    callers writing a domain event from a control-plane session can pass the
+    matching type — e.g. ``"organization"`` for a branding mutation — so the
+    trail is queryable consistently regardless of which write path produced the
+    row (a SOX auditor filtering on ``entity_type`` sees every
+    ``organization.*`` change, not only the ones written via ``dispatch_audit``).
+
+    Any exception is caught + logged at WARNING so the calling endpoint never
+    fails because of an audit-infrastructure blip (Redis blocklist degrades the
+    same way). SOC 2 wants writes hardened *and* observable — but available
+    first.
     """
     correlation_id = uuid.uuid4()
     # AuditLog.entity_id is nullable, but most writers pass one. Fall back to
@@ -99,7 +107,7 @@ async def dispatch_auth_audit(
                 organization_id=organization_id,
                 actor_id=actor_id,
                 action=action,
-                entity_type="auth",
+                entity_type=entity_type,
                 entity_id=_entity_id,
                 details=details,
             )
@@ -120,7 +128,7 @@ async def dispatch_auth_audit(
                     organization_id=organization_id,
                     actor_id=actor_id,
                     action=action,
-                    entity_type="auth",
+                    entity_type=entity_type,
                     entity_id=_entity_id,
                     details=details,
                 )

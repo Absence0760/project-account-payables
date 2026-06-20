@@ -43,6 +43,7 @@ export const messages = {
 	'nav.workflows': 'Fluxos de trabalho',
 	'nav.experiments': 'Experimentos',
 	'nav.apiKeys': 'Chaves de API',
+	'nav.partner': 'Admin. de parceiros',
 
 	// App shell / sidebar
 	'shell.appName': 'Account Payables',

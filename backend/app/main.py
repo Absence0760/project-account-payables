@@ -42,6 +42,7 @@ from app.api import (
     invoices,
     notifications,
     organization,
+    partner,
     payments,
     peppol_inbound,
     portal,
@@ -333,6 +334,7 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(organization.router, prefix="/api")
+app.include_router(partner.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(signup.router, prefix="/api")
 app.include_router(auth_sso.router, prefix="/api")
