@@ -205,12 +205,76 @@ this blob; the `/profile` page renders the per-event toggle grid.
 
 ## Templates & PII
 
-`services/notification_templates.py::render(event_type, InvoiceContext)` returns
-`(title, body_text, body_html)`. Templates reference **only** invoice number,
-vendor name, amount (rendered exactly from the `Decimal`), currency, and an
-optional rejection reason — never bank details, tax IDs, full addresses, or
+`services/notification_templates.py::render(event_type, InvoiceContext, *, locale=None)`
+returns `(title, body_text, body_html)`. Templates reference **only** invoice
+number, vendor name, amount (rendered exactly from the `Decimal`), currency, and
+an optional rejection reason — never bank details, tax IDs, full addresses, or
 payment-method numbers. Email-send failures log the event type + nothing else
-(never the recipient address).
+(never the recipient address). The copy strings live in the per-locale **email
+catalogue** (`render` pulls them keyed by `notif.<event>.{title,body}` — see §
+Localized email); `locale=None` is English, which the **in-app** notification
+center always uses (the locale pref drives email only).
+
+## Localized email
+
+Outbound transactional email renders server-side, so the recipient's language is
+carried by a DB-synced, account-level `locale` preference — "what language to
+email this person in". It is **separate** from the frontend's per-device UI
+locale picker (`frontend/src/lib/i18n/`): the DB pref is written from the UI and
+read by the **email-render path only**, and is **never** returned to drive in-app
+UI.
+
+**Where the pref lives** (nullable; NULL → English fallback):
+
+- `User.locale` — control plane (AP employees). Set via `PATCH /api/auth/me`
+  (`{"locale": "<loc>"}` — supported value sets it, `""` clears it → English, an
+  unknown value 422s). Surfaced on `GET/PATCH /api/auth/me` (`UserResponse.locale`).
+- `VendorUser.locale` — tenant-scoped (supplier-portal users). Set via
+  `PATCH /api/portal/auth/me`, same validation. Surfaced on the portal me-route.
+
+Both added by migration **`0059_email_locale_pref`** — a single, existence-guarded
+revision that runs on BOTH the control DB (adds `users.locale`) and every tenant
+DB (adds `vendor_users.locale`); each `ADD COLUMN IF NOT EXISTS` is gated on its
+table existing, so the same revision is safe on both. **Fan-out**: control DB via
+`alembic upgrade head`; every existing tenant via
+`python scripts/migrate_all_tenants.py` (or `AP_MIGRATE_TENANT=ap_<slug> alembic
+upgrade head`); fresh tenants get the column from `create_all` in
+`tenant_provisioning` (the model field). Nullable + reversible.
+
+**The catalogue** — `app/services/email_adapters/email_catalogue.py`:
+
+- `SUPPORTED_EMAIL_LOCALES = (en, de, fr, es, pt-BR, ja)` — the same six as
+  web/mobile. `DEFAULT_LOCALE = "en"`.
+- `normalize_locale(locale)` — coerces any value (case / `_`-vs-`-` / base
+  language like `pt` → `pt-BR`, `de-AT` → `de`) to a supported locale; unknown /
+  `None` → `"en"`. Never raises. Used at the **render** path.
+- `is_supported_locale(locale)` — STRICT exact-match (no coercion). Used at the
+  **write** path so a stored preference is always a canonical locale.
+- `translate(key, locale, /, **params)` — per-key resolution: requested locale →
+  English → raw key (so a missing key is visible, never empty / a crash).
+  `{placeholder}` tokens are filled from `params`; a missing param leaves the
+  literal token rather than raising. **English is the always-present fallback** —
+  a non-English catalogue may translate a subset; any untranslated key resolves
+  to the English string.
+
+**Only copy is localized.** Deep links, brand chrome (the adapter's
+`apply_brand` header/footer), money amounts, invoice numbers, and vendor names
+are interpolated as `{placeholder}` tokens — a translation can reorder them but
+can't drop or distort them (the parity test asserts the placeholder set matches
+English exactly per key).
+
+**Surfaces covered:**
+
+| Surface | Locale source |
+|---|---|
+| Invoice notifications → employees (`notification_dispatch.notify_event`) | per-recipient `User.locale`; re-rendered per email recipient (the in-app row stays English) |
+| Invoice notifications → suppliers (`vendor_notifications.notify_vendor_of_invoice_event`) | per-recipient `VendorUser.locale`; rendered per portal user |
+| Signup verification + welcome emails (`api/signup.py`) | optional `locale` on `POST /api/signup/start`, normalized + stashed in `EmailVerification.meta`, reused by the welcome email at `/complete` |
+| Supplier-chat portal-link email (`supplier_chat.notify_supplier_of_ap_message`) | catalogue-routed, English default — the recipient is the `Vendor` contact address, not an identified `VendorUser`, so there's no per-user locale to read |
+
+**Deferred (frontend track):** the language-picker → backend write. The backend
+endpoints + persistence are in place; the frontend profile/portal picker calling
+`PATCH .../me` with the chosen locale is owned by the frontend i18n track.
 
 ## In-app data model
 
@@ -255,6 +319,15 @@ user's row returns the same 404 as a missing row — no enumeration.
 ## Tests
 
 - `tests/test_notification_templates.py` — content + PII safety (pure).
+- `tests/test_email_catalogue.py` — email-catalogue parity (every locale resolves
+  every key, no empty strings, placeholder-faithful vs English), English fallback
+  on a missing key / unknown locale, `normalize_locale` / `is_supported_locale`,
+  and `render(locale=…)` producing non-English copy while keeping the
+  number/vendor/exact-money identical + PII-free (all pure).
+- `tests/test_locale_pref_endpoints.py` — set-locale endpoints (employee
+  `PATCH /api/auth/me` + supplier `PATCH /api/portal/auth/me`): persists a valid
+  locale, rejects unknown (422), clears on `""`, omitting leaves it untouched,
+  auth enforced; per-recipient persistence to the right DB (real DB).
 - `tests/test_notification_dispatch.py` — recipient mapping per event,
   preference gating (in-app/email suppression), email-failure isolation (the
   transition + audit row survive), kill switch (real DB).
