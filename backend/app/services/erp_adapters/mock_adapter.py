@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import date
 from decimal import Decimal
 
 from app.services.erp_adapters.base import (
@@ -25,6 +26,7 @@ _MOCK_POS: list[PoPayload] = [
         vendor_name="Office Supplies Co",
         total=Decimal("2500.00"),
         status="open",
+        expected_delivery_date=date(2024, 6, 15),
         line_items=[
             PoLinePayload(
                 description="Printer paper - bulk",
@@ -51,6 +53,7 @@ _MOCK_POS: list[PoPayload] = [
         vendor_name="Cloud Services Inc",
         total=Decimal("15000.00"),
         status="open",
+        expected_delivery_date=date(2024, 7, 1),
         line_items=[
             PoLinePayload(
                 description="Annual SaaS license",
@@ -71,6 +74,9 @@ _MOCK_POS: list[PoPayload] = [
         vendor_name="Tech Hardware Corp",
         total=Decimal("24000.00"),
         status="open",
+        # Deliberately no expected_delivery_date — a real ERP often omits the
+        # promised date, so the catalogue keeps one PO without it to exercise
+        # the "leave None, don't fabricate" branch end-to-end.
         line_items=[
             PoLinePayload(
                 description="Laptop Model X Pro",
@@ -236,6 +242,7 @@ class MockAdapter(ErpAdapter):
                 vendor_name=p.vendor_name,
                 total=p.total,
                 status=p.status,
+                expected_delivery_date=p.expected_delivery_date,
                 line_items=[
                     PoLinePayload(
                         description=li.description,

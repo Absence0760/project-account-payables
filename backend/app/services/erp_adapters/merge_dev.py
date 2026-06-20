@@ -1,5 +1,6 @@
 """Merge.dev unified API adapter — one integration for all ERPs."""
 
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -23,6 +24,29 @@ def _to_decimal(v) -> Decimal | None:
         return Decimal(str(v))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def _to_date(v) -> date | None:
+    """Parse a Merge.dev date field (ISO ``YYYY-MM-DD`` or full ISO datetime)
+    into a ``date``. Returns None for anything unparseable — never fabricates a
+    date and never raises, so a malformed upstream value just leaves the PO's
+    expected delivery date empty rather than breaking the whole sync."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(s[:10])
+        except ValueError:
+            return None
 
 
 # Merge.dev's PO status enum → our internal vocabulary. Anything not
@@ -287,11 +311,21 @@ def _merge_po_to_payload(raw: dict) -> PoPayload:
 
     total = _to_decimal(raw.get("total_amount")) or Decimal("0")
 
+    # Merge.dev exposes the promised delivery date under a few names depending
+    # on the upstream ERP; map the first that's present, else leave it None
+    # (no fabrication — the real adapter only carries what the ERP supplied).
+    expected_delivery_date = _to_date(
+        raw.get("delivery_date")
+        or raw.get("expected_delivery_date")
+        or raw.get("requested_delivery_date")
+    )
+
     return PoPayload(
         po_number=raw.get("number") or raw.get("transaction_number") or raw.get("id") or "UNKNOWN",
         vendor_name=vendor_name,
         total=total,
         status=status,
+        expected_delivery_date=expected_delivery_date,
         line_items=line_items,
     )
 

@@ -186,6 +186,7 @@ async def sync_pos_from_erp(
 
     created = 0
     skipped = 0
+    updated = 0
     for erp_po in erp_pos:
         existing = await db.execute(
             select(PurchaseOrder).where(
@@ -193,8 +194,23 @@ async def sync_pos_from_erp(
                 PurchaseOrder.organization_id == org_id,
             )
         )
-        if existing.scalar_one_or_none():
-            skipped += 1
+        existing_po = existing.scalar_one_or_none()
+        if existing_po is not None:
+            # Back-fill the ERP's promised delivery date onto an existing PO,
+            # but only when the ERP actually supplies one AND the PO doesn't
+            # already carry a date. Precedence: a date already on the row
+            # (human-set via the model/API, or a prior sync) WINS — the sync
+            # never clobbers it, and a None payload never erases it. This keeps
+            # the existing-PO branch otherwise idempotent (the rest of the row
+            # is left untouched, matching the prior skip behaviour).
+            if (
+                erp_po.expected_delivery_date is not None
+                and existing_po.expected_delivery_date is None
+            ):
+                existing_po.expected_delivery_date = erp_po.expected_delivery_date
+                updated += 1
+            else:
+                skipped += 1
             continue
 
         vendor_id = vendor_map.get(erp_po.vendor_name.lower()) if erp_po.vendor_name else None
@@ -204,6 +220,9 @@ async def sync_pos_from_erp(
             vendor_id=vendor_id,
             total=erp_po.total,
             status=erp_po.status,
+            # Populate the promised delivery date straight from the ERP payload
+            # (None when the ERP didn't supply one — never fabricated).
+            expected_delivery_date=erp_po.expected_delivery_date,
             organization_id=org_id,
             entity_id=entity_id,
         )
@@ -226,8 +245,11 @@ async def sync_pos_from_erp(
     await db.commit()
     return {
         "success": True,
-        "message": f"Synced {created} new POs, {skipped} already exist",
+        "message": (
+            f"Synced {created} new POs, updated {updated}, {skipped} already exist"
+        ),
         "created": created,
+        "updated": updated,
         "skipped": skipped,
         "adapter": adapter.erp_type,
     }
