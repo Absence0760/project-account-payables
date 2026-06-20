@@ -255,6 +255,11 @@ def _card_row(provider_card_id: str):
         charged_at=None,
         merchant_name=None,
         organization_id=uuid.uuid4(),
+        # The webhook writes a `card.charged`/`card.settled` audit row that reads
+        # these fields — the fake card must provide them, or the handler's audit
+        # call raises and rolls back instead of committing.
+        correlation_id=uuid.uuid4(),
+        last_four="4242",
     )
 
 
