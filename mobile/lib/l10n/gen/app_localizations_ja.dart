@@ -859,4 +859,279 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get payConfirmExecute => '実行';
+
+  @override
+  String get loginAppName => 'Better AP';
+
+  @override
+  String get loginTagline => '買掛金管理をシンプルに';
+
+  @override
+  String get loginTenant => 'テナント';
+
+  @override
+  String get loginEmail => 'メールアドレス';
+
+  @override
+  String get loginPassword => 'パスワード';
+
+  @override
+  String get loginShowPassword => 'パスワードを表示';
+
+  @override
+  String get loginHidePassword => 'パスワードを非表示';
+
+  @override
+  String get loginRequired => '必須';
+
+  @override
+  String get loginSignIn => 'サインイン';
+
+  @override
+  String get mfaTitle => '二要素認証';
+
+  @override
+  String get mfaHeading => '本人確認';
+
+  @override
+  String get mfaPromptEmail => 'メールで送信した6桁のコードを入力してください。';
+
+  @override
+  String get mfaPromptTotp => '認証アプリの6桁のコードを入力してください。';
+
+  @override
+  String get mfaEnforcedNotice =>
+      '組織で二要素認証が必須となっています。今はメールコードで認証し、後でWebアプリで認証アプリの設定を完了してください。';
+
+  @override
+  String get mfaCode => 'コード';
+
+  @override
+  String get mfaCodeRequired => '必須';
+
+  @override
+  String get mfaCodeTooShort => '6桁以上入力してください';
+
+  @override
+  String get mfaVerify => '確認';
+
+  @override
+  String get mfaSending => '送信中…';
+
+  @override
+  String get mfaResendEmailCode => 'メールコードを再送信';
+
+  @override
+  String get mfaSendEmailCode => 'メールコードを送信';
+
+  @override
+  String get mfaUseEmailInstead => '代わりにメールコードを使用';
+
+  @override
+  String get mfaUseAuthenticatorInstead => '代わりに認証アプリを使用';
+
+  @override
+  String get mfaEmailedAnnounce => 'サインインコードをメールで送信しました。';
+
+  @override
+  String get adminUsersTitle => 'ユーザー管理';
+
+  @override
+  String get adminUsersSearchHint => '名前またはメールで検索';
+
+  @override
+  String get adminUsersEmpty => 'ユーザーが見つかりません';
+
+  @override
+  String get adminUsersLoadError => 'ユーザーを読み込めませんでした';
+
+  @override
+  String get adminUsersEditRoles => 'ロールを編集';
+
+  @override
+  String get adminUsersNoRoles => 'ロールなし';
+
+  @override
+  String get adminUsersDeactivate => 'ユーザーを無効化';
+
+  @override
+  String get adminUsersActivate => 'ユーザーを有効化';
+
+  @override
+  String get adminUsersCannotDeactivateSelf => '自分のアカウントは無効化できません';
+
+  @override
+  String get adminUsersDeactivateHint => 'サインアウトさせ、サインインをブロックします';
+
+  @override
+  String get adminUsersActivateHint => 'サインインアクセスを復元します';
+
+  @override
+  String get adminUsersRoleActive => '有効';
+
+  @override
+  String get adminUsersRoleInactive => '無効';
+
+  @override
+  String get adminUsersInactiveBadge => '無効';
+
+  @override
+  String adminUsersRolesUpdated(String name) {
+    return '$name のロールを更新しました';
+  }
+
+  @override
+  String adminUsersRolesUpdateFailed(String error) {
+    return 'ロールの更新に失敗しました: $error';
+  }
+
+  @override
+  String adminUsersActivated(String name) {
+    return '$name を有効化しました';
+  }
+
+  @override
+  String adminUsersDeactivated(String name) {
+    return '$name を無効化しました';
+  }
+
+  @override
+  String adminUsersUpdateFailed(String name, String error) {
+    return '$name の更新に失敗しました: $error';
+  }
+
+  @override
+  String get orgSettingsTitle => '組織設定';
+
+  @override
+  String get orgSettingsNoSettings => '設定がありません';
+
+  @override
+  String get orgSettingsLoadError => '設定を読み込めませんでした';
+
+  @override
+  String get orgSettingsSectionCompany => '会社';
+
+  @override
+  String get orgSettingsSectionInvoiceDefaults => '請求書のデフォルト';
+
+  @override
+  String get orgSettingsName => '組織名';
+
+  @override
+  String get orgSettingsAddress => '住所';
+
+  @override
+  String get orgSettingsPhone => '電話番号';
+
+  @override
+  String get orgSettingsWebsite => 'ウェブサイト';
+
+  @override
+  String get orgSettingsTaxId => '税務ID';
+
+  @override
+  String get orgSettingsCurrency => 'デフォルト通貨';
+
+  @override
+  String get orgSettingsPaymentTerms => '支払条件';
+
+  @override
+  String get orgSettingsNumberPrefix => '請求書番号のプレフィックス';
+
+  @override
+  String get orgSettingsGlAccount => 'デフォルトの総勘定元帳アカウント';
+
+  @override
+  String get orgSettingsCostCenter => 'デフォルトのコストセンター';
+
+  @override
+  String get orgSettingsSave => '変更を保存';
+
+  @override
+  String get orgSettingsSaving => '保存中…';
+
+  @override
+  String orgSettingsFieldRequired(String label) {
+    return '$label は必須です';
+  }
+
+  @override
+  String get orgSettingsSaved => '組織設定を保存しました';
+
+  @override
+  String orgSettingsSaveFailed(String error) {
+    return '保存に失敗しました: $error';
+  }
+
+  @override
+  String get workflowsTitle => 'ワークフロー';
+
+  @override
+  String get workflowsEmpty => 'ワークフローが見つかりません';
+
+  @override
+  String get workflowsLoadError => 'ワークフローを読み込めませんでした';
+
+  @override
+  String get workflowsStatusActive => '有効';
+
+  @override
+  String get workflowsStatusInactive => '無効';
+
+  @override
+  String get workflowsDefault => 'デフォルト';
+
+  @override
+  String workflowsStepCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$countステップ',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get workflowDetailFallbackTitle => 'ワークフロー';
+
+  @override
+  String get workflowDetailLoadError => 'ワークフローを読み込めませんでした';
+
+  @override
+  String get workflowDetailNoSteps => 'このワークフローにはステップがありません。';
+
+  @override
+  String get workflowDetailDefaultWorkflow => 'デフォルトのワークフロー';
+
+  @override
+  String workflowDetailStepNumber(int number) {
+    return 'ステップ $number';
+  }
+
+  @override
+  String get workflowDetailStepEnabled => '有効';
+
+  @override
+  String get workflowDetailStepDisabled => '無効';
+
+  @override
+  String workflowDetailApproverCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '承認者$count人',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String workflowDetailDelaySummary(String hours) {
+    return '遅延 $hours 時間';
+  }
+
+  @override
+  String workflowDetailConditionSummary(String field) {
+    return '$field で';
+  }
 }

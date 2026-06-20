@@ -266,6 +266,58 @@ void main() {
     expect(find.text('3件の請求書を選択中'), findsOneWidget); // plural (other-only)
   });
 
+  testWidgets(
+      'the login / admin / org-settings / workflows batch switches with '
+      'the locale', (tester) async {
+    // Guards the round-3 extraction batch (login + MFA + admin users + org
+    // settings + workflows). Proves the new keys re-localize live, including a
+    // plural (workflowsStepCount) and a placeholder string (orgSettingsSaveFailed
+    // + adminUsersActivated + workflowDetailStepNumber).
+    final probe = Builder(
+      builder: (context) {
+        final l = AppLocalizations.of(context);
+        return Scaffold(
+          body: Column(
+            children: [
+              Text(l.loginSignIn),
+              Text(l.mfaVerify),
+              Text(l.adminUsersTitle),
+              Text(l.adminUsersActivated('Sam')),
+              Text(l.orgSettingsSave),
+              Text(l.orgSettingsSaveFailed('boom')),
+              Text(l.workflowsTitle),
+              Text(l.workflowsStepCount(2)),
+              Text(l.workflowDetailStepNumber(1)),
+            ],
+          ),
+        );
+      },
+    );
+
+    await LocaleStore.instance.setLocale(const Locale('en'));
+    await tester.pumpWidget(host(probe));
+    await tester.pump();
+    expect(find.text('Sign In'), findsOneWidget); // loginSignIn
+    expect(find.text('User Management'), findsOneWidget); // adminUsersTitle
+    expect(find.text('Activated Sam'), findsOneWidget); // placeholder
+    expect(find.text('Failed to save: boom'), findsOneWidget); // placeholder
+    expect(find.text('2 steps'), findsOneWidget); // plural
+    expect(find.text('Step 1'), findsOneWidget); // placeholder
+
+    await LocaleStore.instance.setLocale(const Locale('de'));
+    await tester.pump();
+    expect(find.text('Anmelden'), findsOneWidget); // loginSignIn
+    expect(find.text('Benutzerverwaltung'), findsOneWidget); // adminUsersTitle
+    expect(find.text('Workflows'), findsOneWidget); // workflowsTitle
+    expect(find.text('2 Schritte'), findsOneWidget); // plural
+    expect(find.text('Sign In'), findsNothing);
+
+    await LocaleStore.instance.setLocale(const Locale('ja'));
+    await tester.pump();
+    expect(find.text('サインイン'), findsOneWidget); // loginSignIn
+    expect(find.text('2ステップ'), findsOneWidget); // plural (other-only)
+  });
+
   testWidgets('the choice persists and reloads via init()', (tester) async {
     await LocaleStore.instance.setLocale(const Locale('fr'));
     expect(LocaleStore.tagOf(LocaleStore.instance.locale!), 'fr');

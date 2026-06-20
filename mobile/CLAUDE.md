@@ -421,12 +421,27 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   screen (`payment_queue_screen` — Pay tabs, KPI summary bar, per-row method
   dropdown via a localized `_methodLabel`, the selected-count + payments-count
   plurals, create/execute/cancel controls + confirm dialogs, run-status chip via
-  a localized `_runStatusLabel`, and the CFO-approval gate message). Mirrors what
-  the web extracted. The rest of the app (login) stays
-  hardcoded English until its extraction slice — an un-extracted literal simply
-  stays English (the same incremental path as web), and data-driven enum/status
-  maps that live in shared badge widgets (`status_badge`, `vendor_status_badge`,
-  `exception_status_badge`) are left English until their own turn. To extract a
+  a localized `_runStatusLabel`, and the CFO-approval gate message), the **login**
+  + **MFA** screens (`login_screen` — brand/tagline, tenant/email/password fields,
+  show/hide-password labels, validation + Sign In; `mfa_screen` — title/heading,
+  email vs TOTP prompts, org-enforcement notice, code field + validation, Verify,
+  the email-OTP send/resend affordances + the emailed-code live-region
+  announcement — resolved before the async gap, honouring the initState gotcha),
+  the two **admin** screens (`admin_users_screen` — search hint, action sheet
+  (edit-roles / activate-deactivate + hints), the role-editor, the Inactive badge
+  + row a11y label, and the role-update / activate / deactivate toast placeholders;
+  `org_settings_screen` — Company + Invoice-defaults section headers + every field
+  label, the required-field validator placeholder, Save changes / Saving, and the
+  saved / save-failed toasts), and the read-only **workflows** screens
+  (`workflows_screen` — title, empty/error states, the `Active`/`Inactive`
+  `WorkflowStatusBadge` (shared with the detail screen), the `Default` pill, and
+  the `workflowsStepCount` plural; `workflow_detail_screen` — fallback title,
+  load-error/no-steps states, default-workflow note, per-step
+  number/enabled/disabled labels + the approver-count plural and delay/condition
+  config-summary placeholders). Mirrors what the web extracted. Data-driven
+  enum/status maps that live in shared badge widgets (`status_badge`,
+  `vendor_status_badge`, `exception_status_badge`) plus the `WorkflowStepConfig`
+  `typeLabel` are left English until their own turn. To extract a
   string: add a flat camelCase key + value to `app_en.arb`, translate it in
   every other ARB, run `flutter gen-l10n`, and replace the literal with
   `l.<key>`. Any test that pumps a now-localized screen must wrap it in a
@@ -443,9 +458,12 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   locale (the notifications/vendors/exceptions/payments batch, the
   approvals/capture/advanced-search batch, the invoice-detail batch
   (detail/edit/warnings/ERP/file-viewer, incl. the `invoiceDetailErrorPrefix` +
-  `warningsVarianceLabel` placeholders) and the payment-queue batch (Pay
+  `warningsVarianceLabel` placeholders), the payment-queue batch (Pay
   tabs/summary/runs, incl. the `paySelectedCount` plural + `payRunExecuteFailed`
-  placeholder)). When a screen or shared sub-widget is localized, every existing
+  placeholder), and the login / admin / org-settings / workflows batch (incl. the
+  `workflowsStepCount` plural + `orgSettingsSaveFailed` / `adminUsersActivated` /
+  `workflowDetailStepNumber` placeholders)). When a screen or shared sub-widget is
+  localized, every existing
   widget/screen test that pumps it must wrap the subject in a `MaterialApp`
   carrying `AppLocalizations.localizationsDelegates` + `supportedLocales` (a
   `_localized` / `_host` / `_screenHost` helper), or `AppLocalizations.of`

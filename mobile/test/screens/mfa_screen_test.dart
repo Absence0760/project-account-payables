@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/mfa_challenge.dart';
 import 'package:ap_mobile/screens/mfa_screen.dart';
 
@@ -22,7 +23,11 @@ void main() {
 
   Future<void> pump(WidgetTester tester, {MFAChallenge? challenge}) async {
     await tester.pumpWidget(
-      MaterialApp(home: MfaScreen(challenge: challenge ?? _totpAndEmail)),
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: MfaScreen(challenge: challenge ?? _totpAndEmail),
+      ),
     );
   }
 

@@ -873,4 +873,283 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get payConfirmExecute => 'Execute';
+
+  @override
+  String get loginAppName => 'Better AP';
+
+  @override
+  String get loginTagline => 'Accounts Payable, Made Simple';
+
+  @override
+  String get loginTenant => 'Tenant';
+
+  @override
+  String get loginEmail => 'Email';
+
+  @override
+  String get loginPassword => 'Password';
+
+  @override
+  String get loginShowPassword => 'Show password';
+
+  @override
+  String get loginHidePassword => 'Hide password';
+
+  @override
+  String get loginRequired => 'Required';
+
+  @override
+  String get loginSignIn => 'Sign In';
+
+  @override
+  String get mfaTitle => 'Two-factor authentication';
+
+  @override
+  String get mfaHeading => 'Verify it\'s you';
+
+  @override
+  String get mfaPromptEmail => 'Enter the 6-digit code we emailed you.';
+
+  @override
+  String get mfaPromptTotp =>
+      'Enter the 6-digit code from your authenticator app.';
+
+  @override
+  String get mfaEnforcedNotice =>
+      'Your organization requires two-factor authentication. Verify with an email code now, then finish setting up an authenticator app in the web app.';
+
+  @override
+  String get mfaCode => 'Code';
+
+  @override
+  String get mfaCodeRequired => 'Required';
+
+  @override
+  String get mfaCodeTooShort => 'Enter at least 6 digits';
+
+  @override
+  String get mfaVerify => 'Verify';
+
+  @override
+  String get mfaSending => 'Sending…';
+
+  @override
+  String get mfaResendEmailCode => 'Resend email code';
+
+  @override
+  String get mfaSendEmailCode => 'Send email code';
+
+  @override
+  String get mfaUseEmailInstead => 'Use an email code instead';
+
+  @override
+  String get mfaUseAuthenticatorInstead => 'Use authenticator app instead';
+
+  @override
+  String get mfaEmailedAnnounce => 'A sign-in code was emailed to you.';
+
+  @override
+  String get adminUsersTitle => 'User Management';
+
+  @override
+  String get adminUsersSearchHint => 'Search by name or email';
+
+  @override
+  String get adminUsersEmpty => 'No users found';
+
+  @override
+  String get adminUsersLoadError => 'Could not load users';
+
+  @override
+  String get adminUsersEditRoles => 'Edit roles';
+
+  @override
+  String get adminUsersNoRoles => 'No roles';
+
+  @override
+  String get adminUsersDeactivate => 'Deactivate user';
+
+  @override
+  String get adminUsersActivate => 'Activate user';
+
+  @override
+  String get adminUsersCannotDeactivateSelf =>
+      'You can\'t deactivate your own account';
+
+  @override
+  String get adminUsersDeactivateHint => 'Signs them out and blocks sign-in';
+
+  @override
+  String get adminUsersActivateHint => 'Restores sign-in access';
+
+  @override
+  String get adminUsersRoleActive => 'active';
+
+  @override
+  String get adminUsersRoleInactive => 'inactive';
+
+  @override
+  String get adminUsersInactiveBadge => 'Inactive';
+
+  @override
+  String adminUsersRolesUpdated(String name) {
+    return 'Updated roles for $name';
+  }
+
+  @override
+  String adminUsersRolesUpdateFailed(String error) {
+    return 'Failed to update roles: $error';
+  }
+
+  @override
+  String adminUsersActivated(String name) {
+    return 'Activated $name';
+  }
+
+  @override
+  String adminUsersDeactivated(String name) {
+    return 'Deactivated $name';
+  }
+
+  @override
+  String adminUsersUpdateFailed(String name, String error) {
+    return 'Failed to update $name: $error';
+  }
+
+  @override
+  String get orgSettingsTitle => 'Organization Settings';
+
+  @override
+  String get orgSettingsNoSettings => 'No settings';
+
+  @override
+  String get orgSettingsLoadError => 'Could not load settings';
+
+  @override
+  String get orgSettingsSectionCompany => 'Company';
+
+  @override
+  String get orgSettingsSectionInvoiceDefaults => 'Invoice defaults';
+
+  @override
+  String get orgSettingsName => 'Organization name';
+
+  @override
+  String get orgSettingsAddress => 'Address';
+
+  @override
+  String get orgSettingsPhone => 'Phone';
+
+  @override
+  String get orgSettingsWebsite => 'Website';
+
+  @override
+  String get orgSettingsTaxId => 'Tax ID';
+
+  @override
+  String get orgSettingsCurrency => 'Default currency';
+
+  @override
+  String get orgSettingsPaymentTerms => 'Payment terms';
+
+  @override
+  String get orgSettingsNumberPrefix => 'Invoice number prefix';
+
+  @override
+  String get orgSettingsGlAccount => 'Default GL account';
+
+  @override
+  String get orgSettingsCostCenter => 'Default cost center';
+
+  @override
+  String get orgSettingsSave => 'Save changes';
+
+  @override
+  String get orgSettingsSaving => 'Saving…';
+
+  @override
+  String orgSettingsFieldRequired(String label) {
+    return '$label is required';
+  }
+
+  @override
+  String get orgSettingsSaved => 'Organization settings saved';
+
+  @override
+  String orgSettingsSaveFailed(String error) {
+    return 'Failed to save: $error';
+  }
+
+  @override
+  String get workflowsTitle => 'Workflows';
+
+  @override
+  String get workflowsEmpty => 'No workflows found';
+
+  @override
+  String get workflowsLoadError => 'Could not load workflows';
+
+  @override
+  String get workflowsStatusActive => 'Active';
+
+  @override
+  String get workflowsStatusInactive => 'Inactive';
+
+  @override
+  String get workflowsDefault => 'Default';
+
+  @override
+  String workflowsStepCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count steps',
+      one: '$count step',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get workflowDetailFallbackTitle => 'Workflow';
+
+  @override
+  String get workflowDetailLoadError => 'Could not load workflow';
+
+  @override
+  String get workflowDetailNoSteps => 'This workflow has no steps.';
+
+  @override
+  String get workflowDetailDefaultWorkflow => 'Default workflow';
+
+  @override
+  String workflowDetailStepNumber(int number) {
+    return 'Step $number';
+  }
+
+  @override
+  String get workflowDetailStepEnabled => 'Enabled';
+
+  @override
+  String get workflowDetailStepDisabled => 'Disabled';
+
+  @override
+  String workflowDetailApproverCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count approvers',
+      one: '$count approver',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String workflowDetailDelaySummary(String hours) {
+    return 'Delay $hours h';
+  }
+
+  @override
+  String workflowDetailConditionSummary(String field) {
+    return 'On $field';
+  }
 }
