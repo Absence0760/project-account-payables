@@ -67,6 +67,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
+	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	// Policy CRUD + report/pre-approval approve/reject = admin | ap_manager.
@@ -90,21 +91,21 @@
 	let bulkGl = $state('');
 	let bulkBusy = $state(false);
 
-	const STATUS_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const STATUS_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...EXPENSE_STATUSES.map((s) => ({ key: s, label: EXPENSE_STATUS_LABELS[s] }))
-	];
+	]);
 
-	const COLUMNS = [
+	const COLUMNS = $derived([
 		{ label: '', class: 'checkbox-col' },
-		{ label: 'Date' },
-		{ label: 'Merchant' },
-		{ label: 'Category' },
-		{ label: 'GL' },
-		{ label: 'Amount', class: 'right' },
-		{ label: 'Status' },
+		{ label: m('expenses.col.date') },
+		{ label: m('expenses.col.merchant') },
+		{ label: m('expenses.col.category') },
+		{ label: m('expenses.col.gl') },
+		{ label: m('expenses.col.amount'), class: 'right' },
+		{ label: m('expenses.col.status') },
 		{ label: '', class: 'actions-col' }
-	];
+	]);
 
 	// Client-side search: the list endpoint filters by status server-side; the
 	// merchant/category text search is applied to the loaded page here.
@@ -206,12 +207,12 @@
 		bulkBusy = true;
 		try {
 			const res = await bulkGlCode([...selected], bulkGl || null);
-			toast(`GL coded ${res.updated} expense${res.updated === 1 ? '' : 's'}`, 'success');
+			toast(m('expenses.toast.glCoded', { n: res.updated }), 'success');
 			selected = new Set();
 			bulkGl = '';
 			await expenseStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method, routes through api client
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Bulk GL code failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.toast.bulkGlFailed'), 'error');
 		} finally {
 			bulkBusy = false;
 		}
@@ -222,9 +223,9 @@
 		try {
 			await apiDeleteExpense(id);
 			expenseStore.remove(id);
-			toast('Expense deleted', 'success');
+			toast(m('expenses.toast.deleted'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.toast.deleteFailed'), 'error');
 		} finally {
 			confirmDeleteId = null;
 		}
@@ -316,14 +317,14 @@
 				currency: orgCurrency.currency,
 				notes: null
 			});
-			toast('Report created', 'success');
+			toast(m('expenses.reports.toast.created'), 'success');
 			showNewReport = false;
 			newReportNumber = '';
 			newReportTitle = '';
 			await loadReports();
 			await openReport(created);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Create failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.createFailed'), 'error');
 		} finally {
 			reportBusy = false;
 		}
@@ -336,11 +337,11 @@
 			const updated = await attachExpenses(activeReport.id, [attachId.trim()], false);
 			activeReport = updated;
 			attachId = '';
-			toast('Expense attached', 'success');
+			toast(m('expenses.reports.toast.attached'), 'success');
 			await refreshSummary();
 			await loadReports();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Attach failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.attachFailed'), 'error');
 		} finally {
 			reportBusy = false;
 		}
@@ -352,11 +353,11 @@
 		try {
 			const updated = await attachExpenses(activeReport.id, [expenseId], true);
 			activeReport = updated;
-			toast('Expense detached', 'success');
+			toast(m('expenses.reports.toast.detached'), 'success');
 			await refreshSummary();
 			await loadReports();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Detach failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.detachFailed'), 'error');
 		} finally {
 			reportBusy = false;
 		}
@@ -377,15 +378,15 @@
 			const result = await apiSubmitReport(activeReport.id);
 			if (result.ok) {
 				activeReport = result.report;
-				toast('Report submitted', 'success');
+				toast(m('expenses.reports.toast.submitted'), 'success');
 				await refreshSummary();
 				await loadReports();
 			} else {
 				submitViolations = result.violations;
-				toast(result.message || 'Submit blocked by policy.', 'warning');
+				toast(result.message || m('expenses.reports.toast.submitBlocked'), 'warning');
 			}
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Submit failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.submitFailed'), 'error');
 		} finally {
 			reportBusy = false;
 		}
@@ -397,11 +398,11 @@
 		try {
 			const updated = await approveReport(activeReport.id);
 			activeReport = updated;
-			toast('Report approved', 'success');
+			toast(m('expenses.reports.toast.approved'), 'success');
 			await refreshSummary();
 			await loadReports();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.approveFailed'), 'error');
 		} finally {
 			reportBusy = false;
 		}
@@ -418,11 +419,11 @@
 			activeReport = updated;
 			showReject = false;
 			rejectReason = '';
-			toast('Report rejected', 'success');
+			toast(m('expenses.reports.toast.rejected'), 'success');
 			await refreshSummary();
 			await loadReports();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.rejectFailed'), 'error');
 		} finally {
 			reportBusy = false;
 		}
@@ -465,7 +466,7 @@
 		try {
 			policies = await listPolicies();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load policies', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.policies.toast.loadFailed'), 'error');
 		} finally {
 			policiesLoading = false;
 		}
@@ -485,9 +486,9 @@
 		try {
 			await apiDeletePolicy(id);
 			policies = policies.filter((p) => p.id !== id);
-			toast('Policy deleted', 'success');
+			toast(m('expenses.policies.toast.deleted'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.toast.deleteFailed'), 'error');
 		} finally {
 			confirmDeletePolicyId = null;
 		}
@@ -505,13 +506,13 @@
 	let paJustification = $state('');
 	let paRejectArmedId = $state<string | null>(null);
 
-	const PREAPPROVAL_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const PREAPPROVAL_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...EXPENSE_PREAPPROVAL_STATUSES.map((s) => ({
 			key: s,
 			label: EXPENSE_PREAPPROVAL_STATUS_LABELS[s]
 		}))
-	];
+	]);
 
 	async function loadPreapprovals() {
 		preapprovalsLoading = true;
@@ -519,7 +520,7 @@
 			const params = preapprovalStatus !== 'all' ? { status: preapprovalStatus } : {};
 			preapprovals = await listPreapprovals(params);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load pre-approvals', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.preapprovals.toast.loadFailed'), 'error');
 		} finally {
 			preapprovalsLoading = false;
 		}
@@ -550,7 +551,7 @@
 				category: paCategory.trim() || null,
 				justification: paJustification.trim() || null
 			});
-			toast('Pre-approval request created', 'success');
+			toast(m('expenses.preapprovals.toast.created'), 'success');
 			showNewPreapproval = false;
 			paTitle = '';
 			paAmount = null;
@@ -558,7 +559,7 @@
 			paJustification = '';
 			await loadPreapprovals();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Create failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.createFailed'), 'error');
 		} finally {
 			paBusy = false;
 		}
@@ -576,9 +577,9 @@
 		try {
 			const updated = await approvePreapproval(pa.id);
 			preapprovals = preapprovals.map((p) => (p.id === pa.id ? updated : p));
-			toast('Pre-approval approved', 'success');
+			toast(m('expenses.preapprovals.toast.approved'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.approveFailed'), 'error');
 		}
 	}
 
@@ -586,9 +587,9 @@
 		try {
 			const updated = await rejectPreapproval(pa.id);
 			preapprovals = preapprovals.map((p) => (p.id === pa.id ? updated : p));
-			toast('Pre-approval rejected', 'success');
+			toast(m('expenses.preapprovals.toast.rejected'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.reports.toast.rejectFailed'), 'error');
 		} finally {
 			paRejectArmedId = null;
 		}
@@ -607,10 +608,10 @@
 	let matchSuggestions = $state<CardMatchSuggestion[]>([]);
 	let matchLoading = $state(false);
 
-	const RECON_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const RECON_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...RECONCILIATION_STATUSES.map((s) => ({ key: s, label: RECONCILIATION_STATUS_LABELS[s] }))
-	];
+	]);
 
 	const unmatchedCount = $derived(
 		cardTxns.filter((t) => t.reconciliation_status === 'unmatched').length
@@ -627,7 +628,7 @@
 			cardTxns = res.items;
 			cardsTotal = res.total;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load card transactions', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.loadFailed'), 'error');
 		} finally {
 			cardsLoading = false;
 		}
@@ -651,15 +652,15 @@
 		try {
 			const result = await importCardCsv(file);
 			toast(
-				`Imported ${result.imported} transaction${result.imported === 1 ? '' : 's'}` +
+				m('expenses.cards.toast.imported', { n: result.imported }) +
 					(result.skipped
-						? ` (${result.skipped} duplicate${result.skipped === 1 ? '' : 's'} skipped)`
+						? m('expenses.cards.toast.importedSkipped', { n: result.skipped })
 						: ''),
 				result.imported > 0 ? 'success' : 'info'
 			);
 			await loadCardTxns();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Import failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.importFailed'), 'error');
 		} finally {
 			cardBusy = false;
 			input.value = ''; // allow re-pick of the same file
@@ -671,13 +672,13 @@
 		try {
 			const res = await syncVirtualCards();
 			toast(
-				`Synced ${res.created} virtual-card transaction${res.created === 1 ? '' : 's'}` +
-					(res.skipped ? ` (${res.skipped} already imported)` : ''),
+				m('expenses.cards.toast.synced', { n: res.created }) +
+					(res.skipped ? m('expenses.cards.toast.syncedSkipped', { n: res.skipped }) : ''),
 				'success'
 			);
 			await loadCardTxns();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Sync failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.syncFailed'), 'error');
 		} finally {
 			cardBusy = false;
 		}
@@ -690,7 +691,7 @@
 		try {
 			matchSuggestions = await cardMatchSuggestions(txn.id);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load suggestions', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.suggestionsFailed'), 'error');
 		} finally {
 			matchLoading = false;
 		}
@@ -706,11 +707,11 @@
 		cardBusy = true;
 		try {
 			await matchCardTxn(matchTxn.id, expenseId);
-			toast('Transaction matched', 'success');
+			toast(m('expenses.cards.toast.matched'), 'success');
 			closeMatchPicker();
 			await loadCardTxns();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Match failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.matchFailed'), 'error');
 		} finally {
 			cardBusy = false;
 		}
@@ -720,10 +721,10 @@
 		cardBusy = true;
 		try {
 			await createExpenseFromCard(txn.id);
-			toast('Expense created and matched', 'success');
+			toast(m('expenses.cards.toast.expenseCreated'), 'success');
 			await loadCardTxns();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Create expense failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.createExpenseFailed'), 'error');
 		} finally {
 			cardBusy = false;
 		}
@@ -733,10 +734,10 @@
 		cardBusy = true;
 		try {
 			await ignoreCardTxn(txn.id);
-			toast('Transaction ignored', 'success');
+			toast(m('expenses.cards.toast.ignored'), 'success');
 			await loadCardTxns();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Ignore failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.ignoreFailed'), 'error');
 		} finally {
 			cardBusy = false;
 		}
@@ -746,10 +747,10 @@
 		cardBusy = true;
 		try {
 			await unmatchCardTxn(txn.id);
-			toast('Transaction unmatched', 'success');
+			toast(m('expenses.cards.toast.unmatched'), 'success');
 			await loadCardTxns();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Unmatch failed', 'error');
+			toast(err instanceof Error ? err.message : m('expenses.cards.toast.unmatchFailed'), 'error');
 		} finally {
 			cardBusy = false;
 		}
@@ -758,77 +759,77 @@
 
 <svelte:window onclick={onWindowClick} />
 
-<PageHeader title="Expenses">
+<PageHeader title={m('expenses.title')}>
 	{#snippet actions()}
 		{#if tab === 'expenses'}
-			<button class="btn-secondary" onclick={() => exportExpensesCsv(buildParams())}>Export CSV</button>
+			<button class="btn-secondary" onclick={() => exportExpensesCsv(buildParams())}>{m('expenses.action.exportCsv')}</button>
 			{#if canCreate}
-				<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Expense</button>
+				<button class="btn-primary" onclick={() => (showCreate = true)}>{m('expenses.action.newExpense')}</button>
 			{/if}
 		{:else if tab === 'reports'}
 			{#if canCreate}
-				<button class="btn-primary" onclick={() => (showNewReport = true)}>+ New Report</button>
+				<button class="btn-primary" onclick={() => (showNewReport = true)}>{m('expenses.action.newReport')}</button>
 			{/if}
 		{:else if tab === 'policies'}
 			{#if canManagePolicies}
-				<button class="btn-primary" onclick={() => (showPolicyCreate = true)}>+ New Policy</button>
+				<button class="btn-primary" onclick={() => (showPolicyCreate = true)}>{m('expenses.action.newPolicy')}</button>
 			{/if}
 		{:else if tab === 'preapprovals'}
 			{#if canCreate}
-				<button class="btn-primary" onclick={() => (showNewPreapproval = true)}>+ New Request</button>
+				<button class="btn-primary" onclick={() => (showNewPreapproval = true)}>{m('expenses.action.newRequest')}</button>
 			{/if}
 		{:else if tab === 'cards'}
 			{#if canManagePolicies}
 				<input type="file" accept=".csv" bind:this={cardFileInput} onchange={handleCardCsv} hidden />
-				<button class="btn-secondary" disabled={cardBusy} onclick={() => cardFileInput?.click()}>Import CSV</button>
-				<button class="btn-secondary" disabled={cardBusy} onclick={handleSyncVirtualCards}>Sync virtual cards</button>
+				<button class="btn-secondary" disabled={cardBusy} onclick={() => cardFileInput?.click()}>{m('expenses.action.importCsv')}</button>
+				<button class="btn-secondary" disabled={cardBusy} onclick={handleSyncVirtualCards}>{m('expenses.action.syncCards')}</button>
 			{/if}
 		{/if}
 	{/snippet}
 
 	<div class="tab-row">
-		<button class="tab" class:active={tab === 'expenses'} onclick={() => switchTab('expenses')}>Expenses</button>
-		<button class="tab" class:active={tab === 'reports'} onclick={() => switchTab('reports')}>Reports</button>
+		<button class="tab" class:active={tab === 'expenses'} onclick={() => switchTab('expenses')}>{m('expenses.tab.expenses')}</button>
+		<button class="tab" class:active={tab === 'reports'} onclick={() => switchTab('reports')}>{m('expenses.tab.reports')}</button>
 		{#if canManagePolicies}
-			<button class="tab" class:active={tab === 'policies'} onclick={() => switchTab('policies')}>Policies</button>
+			<button class="tab" class:active={tab === 'policies'} onclick={() => switchTab('policies')}>{m('expenses.tab.policies')}</button>
 		{/if}
-		<button class="tab" class:active={tab === 'preapprovals'} onclick={() => switchTab('preapprovals')}>Pre-approvals</button>
-		<button class="tab" class:active={tab === 'cards'} onclick={() => switchTab('cards')}>Cards</button>
+		<button class="tab" class:active={tab === 'preapprovals'} onclick={() => switchTab('preapprovals')}>{m('expenses.tab.preapprovals')}</button>
+		<button class="tab" class:active={tab === 'cards'} onclick={() => switchTab('cards')}>{m('expenses.tab.cards')}</button>
 	</div>
 
 	{#if tab === 'expenses'}
 		<div class="kpi-row">
-			<KpiCard value={formatMoney(periodTotal, { currency: orgCurrency.currency })} label="Period total" />
-			<KpiCard value={expenseStore.total} label="Expenses" />
-			<KpiCard value={pendingCount} label="Pending" highlight={pendingCount ? 'red' : null} />
+			<KpiCard value={formatMoney(periodTotal, { currency: orgCurrency.currency })} label={m('expenses.kpi.periodTotal')} />
+			<KpiCard value={expenseStore.total} label={m('expenses.kpi.expenses')} />
+			<KpiCard value={pendingCount} label={m('expenses.kpi.pending')} highlight={pendingCount ? 'red' : null} />
 		</div>
 
 		<div class="filter-row">
-			<SearchBox bind:value={search} placeholder="Search expenses..." ariaLabel="Search expenses" />
+			<SearchBox bind:value={search} placeholder={m('expenses.search.placeholder')} ariaLabel={m('expenses.search.aria')} />
 			<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 		</div>
 
 		<DataTable
 			columns={COLUMNS}
 			isEmpty={visibleExpenses.length === 0}
-			empty={expenseStore.loading ? 'Loading…' : 'No expenses match your filters.'}
+			empty={expenseStore.loading ? m('expenses.loading') : m('expenses.empty')}
 		>
 			{#snippet header()}
 				<tr>
 					<th class="checkbox-col">
 						<input
 							type="checkbox"
-							aria-label="Select all expenses"
+							aria-label={m('expenses.selectAllAria')}
 							checked={visibleExpenses.length > 0 && selected.size === visibleExpenses.length}
 							onchange={toggleSelectAll}
 						/>
 					</th>
-					<th>Date</th>
-					<th>Merchant</th>
-					<th>Category</th>
-					<th>Method</th>
-					<th class="right">Amount</th>
-					<th>Status</th>
+					<th>{m('expenses.col.date')}</th>
+					<th>{m('expenses.col.merchant')}</th>
+					<th>{m('expenses.col.category')}</th>
+					<th>{m('expenses.col.method')}</th>
+					<th class="right">{m('expenses.col.amount')}</th>
+					<th>{m('expenses.col.status')}</th>
 					<th class="actions-col"></th>
 				</tr>
 			{/snippet}
@@ -844,14 +845,14 @@
 						<td class="checkbox-col">
 							<input
 								type="checkbox"
-								aria-label={`Select expense ${exp.merchant ?? exp.id}`}
+								aria-label={m('expenses.selectAria', { name: exp.merchant ?? exp.id })}
 								checked={selected.has(exp.id)}
 								onchange={() => toggleSelect(exp.id)}
 							/>
 						</td>
 						<td class="muted">{formatDate(exp.expense_date)}</td>
 						<td>
-							<RowLink onclick={() => (editing = exp)} ariaLabel={`Edit expense ${exp.merchant ?? exp.id}`}>
+							<RowLink onclick={() => (editing = exp)} ariaLabel={m('expenses.row.editAria', { name: exp.merchant ?? exp.id })}>
 								{exp.merchant ?? '—'}
 							</RowLink>
 						</td>
@@ -875,7 +876,7 @@
 										else confirmDeleteId = exp.id;
 									}}
 								>
-									{confirmDeleteId === exp.id ? 'Confirm' : 'Delete'}
+									{confirmDeleteId === exp.id ? m('expenses.row.confirm') : m('expenses.row.delete')}
 								</RowAction>
 							{/if}
 						</td>
@@ -887,12 +888,12 @@
 		{#if expenseStore.hasMore}
 			<div class="load-more-row">
 				<button class="btn-load-more" onclick={() => expenseStore.loadMore()} disabled={expenseStore.loading}>
-					{expenseStore.loading ? 'Loading…' : `Load more (${expenseStore.all.length} of ${expenseStore.total})`}
+					{expenseStore.loading ? m('expenses.loading') : m('expenses.loadMore', { shown: expenseStore.all.length, total: expenseStore.total })}
 				</button>
 			</div>
 		{:else if expenseStore.total > 0}
 			<div class="load-more-row">
-				<span class="load-more-end">Showing all {expenseStore.total} expense{expenseStore.total === 1 ? '' : 's'}</span>
+				<span class="load-more-end">{m('expenses.showingAll', { total: expenseStore.total })}</span>
 			</div>
 		{/if}
 	{:else if tab === 'reports'}
@@ -900,26 +901,26 @@
 		{#if activeReport}
 			<div class="report-detail">
 				<div class="report-detail-head">
-					<button class="btn-back" onclick={closeReport}>← All reports</button>
+					<button class="btn-back" onclick={closeReport}>{m('expenses.reports.back')}</button>
 					<div class="report-title-block">
 						<h2>{activeReport.report_number}</h2>
 						<span class="badge {activeReport.status}">{EXPENSE_REPORT_STATUS_LABELS[activeReport.status as keyof typeof EXPENSE_REPORT_STATUS_LABELS] ?? activeReport.status}</span>
 					</div>
 					<div class="report-detail-actions">
-						<button class="btn-secondary" onclick={exportReportCsv}>Export CSV</button>
+						<button class="btn-secondary" onclick={exportReportCsv}>{m('expenses.reports.exportCsv')}</button>
 						{#if canCreate && activeReport.status === 'draft'}
-							<button class="btn-primary" disabled={reportBusy} onclick={submitReport}>Submit</button>
+							<button class="btn-primary" disabled={reportBusy} onclick={submitReport}>{m('expenses.reports.submit')}</button>
 						{/if}
 						{#if canDecideReport(activeReport)}
-							<button class="btn-primary" disabled={reportBusy} onclick={approveActiveReport}>Approve</button>
-							<button class="btn-secondary danger" disabled={reportBusy} onclick={() => (showReject = true)}>Reject</button>
+							<button class="btn-primary" disabled={reportBusy} onclick={approveActiveReport}>{m('expenses.reports.approve')}</button>
+							<button class="btn-secondary danger" disabled={reportBusy} onclick={() => (showReject = true)}>{m('expenses.reports.reject')}</button>
 						{/if}
 					</div>
 				</div>
 
 				{#if submitViolations.length}
 					<div class="violation-panel">
-						<strong>Submit blocked — resolve these policy violations:</strong>
+						<strong>{m('expenses.reports.submitBlocked')}</strong>
 						<ul>
 							{#each submitViolations as v (v.code + (v.policy_id ?? ''))}
 								<li>{v.message}</li>
@@ -932,20 +933,20 @@
 					<div class="reject-row">
 						<input
 							type="text"
-							placeholder="Reason for rejection (optional)"
+							placeholder={m('expenses.reports.rejectPlaceholder')}
 							bind:value={rejectReason}
-							aria-label="Rejection reason"
+							aria-label={m('expenses.reports.rejectAria')}
 						/>
-						<button class="btn-secondary danger" disabled={reportBusy} onclick={rejectActiveReport}>Confirm reject</button>
-						<button class="btn-secondary" disabled={reportBusy} onclick={() => { showReject = false; rejectReason = ''; }}>Cancel</button>
+						<button class="btn-secondary danger" disabled={reportBusy} onclick={rejectActiveReport}>{m('expenses.reports.confirmReject')}</button>
+						<button class="btn-secondary" disabled={reportBusy} onclick={() => { showReject = false; rejectReason = ''; }}>{m('expenses.reports.cancel')}</button>
 					</div>
 				{/if}
 
 				{#if activeSummary}
 					<div class="kpi-row">
-						<KpiCard value={formatMoney(activeSummary.total, { currency: activeReport.currency })} label="Total" />
-						<KpiCard value={activeSummary.count} label="Expenses" />
-						<KpiCard value={activeSummary.by_category.length} label="Categories" />
+						<KpiCard value={formatMoney(activeSummary.total, { currency: activeReport.currency })} label={m('expenses.reports.total')} />
+						<KpiCard value={activeSummary.count} label={m('expenses.reports.expenses')} />
+						<KpiCard value={activeSummary.by_category.length} label={m('expenses.reports.categories')} />
 					</div>
 				{/if}
 
@@ -953,25 +954,25 @@
 					<div class="attach-row">
 						<input
 							type="text"
-							placeholder="Expense ID to attach"
+							placeholder={m('expenses.reports.attachPlaceholder')}
 							bind:value={attachId}
-							aria-label="Expense ID to attach"
+							aria-label={m('expenses.reports.attachAria')}
 						/>
-						<button class="btn-secondary" disabled={reportBusy || !attachId.trim()} onclick={attachToReport}>Attach</button>
+						<button class="btn-secondary" disabled={reportBusy || !attachId.trim()} onclick={attachToReport}>{m('expenses.reports.attach')}</button>
 					</div>
 				{/if}
 
 				<DataTable
 					columns={[
-						{ label: 'Date' },
-						{ label: 'Merchant' },
-						{ label: 'Category' },
-						{ label: 'Amount', class: 'right' },
-						{ label: 'Status' },
+						{ label: m('expenses.reports.col.date') },
+						{ label: m('expenses.reports.col.merchant') },
+						{ label: m('expenses.reports.col.category') },
+						{ label: m('expenses.reports.col.amount'), class: 'right' },
+						{ label: m('expenses.reports.col.status') },
 						{ label: '', class: 'actions-col' }
 					]}
 					isEmpty={activeReport.expenses.length === 0}
-					empty="No expenses on this report."
+					empty={m('expenses.reports.emptyExpenses')}
 				>
 					{#snippet body()}
 						{#each activeReport?.expenses ?? [] as exp (exp.id)}
@@ -988,7 +989,7 @@
 								</td>
 								<td class="actions">
 									{#if canCreate && activeReport?.status === 'draft'}
-										<RowAction variant="default" onclick={() => detachFromReport(exp.id)}>Detach</RowAction>
+										<RowAction variant="default" onclick={() => detachFromReport(exp.id)}>{m('expenses.reports.detach')}</RowAction>
 									{/if}
 								</td>
 							</tr>
@@ -999,19 +1000,19 @@
 		{:else}
 			<DataTable
 				columns={[
-					{ label: 'Report #' },
-					{ label: 'Title' },
-					{ label: 'Status' },
-					{ label: 'Total', class: 'right' }
+					{ label: m('expenses.reports.col.reportNumber') },
+					{ label: m('expenses.reports.col.title') },
+					{ label: m('expenses.reports.col.status') },
+					{ label: m('expenses.reports.col.total'), class: 'right' }
 				]}
 				isEmpty={reports.length === 0}
-				empty={reportsLoading ? 'Loading…' : 'No expense reports yet.'}
+				empty={reportsLoading ? m('expenses.loading') : m('expenses.reports.empty')}
 			>
 				{#snippet body()}
 					{#each reports as r (r.id)}
 						<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) openReport(r); }}>
 							<td class="mono">
-								<RowLink onclick={() => openReport(r)} ariaLabel={`Open report ${r.report_number}`}>
+								<RowLink onclick={() => openReport(r)} ariaLabel={m('expenses.reports.openAria', { number: r.report_number })}>
 									{r.report_number}
 								</RowLink>
 							</td>
@@ -1024,7 +1025,7 @@
 			</DataTable>
 			{#if reportsTotal > 0}
 				<div class="load-more-row">
-					<span class="load-more-end">Showing all {reportsTotal} report{reportsTotal === 1 ? '' : 's'}</span>
+					<span class="load-more-end">{m('expenses.reports.showingAll', { total: reportsTotal })}</span>
 				</div>
 			{/if}
 		{/if}
@@ -1032,30 +1033,30 @@
 		<!-- ===================== Policies tab ===================== -->
 		<DataTable
 			columns={[
-				{ label: 'Name' },
-				{ label: 'Category' },
-				{ label: 'Limit', class: 'right' },
-				{ label: 'Receipt >', class: 'right' },
-				{ label: 'Pre-appr >', class: 'right' },
-				{ label: 'Active' },
+				{ label: m('expenses.policies.col.name') },
+				{ label: m('expenses.policies.col.category') },
+				{ label: m('expenses.policies.col.limit'), class: 'right' },
+				{ label: m('expenses.policies.col.receiptAbove'), class: 'right' },
+				{ label: m('expenses.policies.col.preapprAbove'), class: 'right' },
+				{ label: m('expenses.policies.col.active') },
 				{ label: '', class: 'actions-col' }
 			]}
 			isEmpty={policies.length === 0}
-			empty={policiesLoading ? 'Loading…' : 'No expense policies yet.'}
+			empty={policiesLoading ? m('expenses.loading') : m('expenses.policies.empty')}
 		>
 			{#snippet body()}
 				{#each policies as p (p.id)}
 					<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editingPolicy = p; }}>
 						<td>
-							<RowLink onclick={() => (editingPolicy = p)} ariaLabel={`Edit policy ${p.name}`}>
+							<RowLink onclick={() => (editingPolicy = p)} ariaLabel={m('expenses.policies.editAria', { name: p.name })}>
 								{p.name}
 							</RowLink>
 						</td>
-						<td>{p.category ?? 'All'}</td>
+						<td>{p.category ?? m('expenses.policies.categoryAll')}</td>
 						<td class="right mono">{p.category_limit != null ? formatMoney(p.category_limit, { currency: orgCurrency.currency }) : '—'}</td>
 						<td class="right mono">{p.requires_receipt_above != null ? formatMoney(p.requires_receipt_above, { currency: orgCurrency.currency }) : '—'}</td>
 						<td class="right mono">{p.requires_preapproval_above != null ? formatMoney(p.requires_preapproval_above, { currency: orgCurrency.currency }) : '—'}</td>
-						<td><span class="badge {p.active ? 'approved' : 'cancelled'}">{p.active ? 'Active' : 'Inactive'}</span></td>
+						<td><span class="badge {p.active ? 'approved' : 'cancelled'}">{p.active ? m('expenses.policies.active') : m('expenses.policies.inactive')}</span></td>
 						<td class="actions">
 							{#if canManagePolicies}
 								<RowAction
@@ -1067,7 +1068,7 @@
 										else confirmDeletePolicyId = p.id;
 									}}
 								>
-									{confirmDeletePolicyId === p.id ? 'Confirm' : 'Delete'}
+									{confirmDeletePolicyId === p.id ? m('expenses.row.confirm') : m('expenses.row.delete')}
 								</RowAction>
 							{/if}
 						</td>
@@ -1083,14 +1084,14 @@
 
 		<DataTable
 			columns={[
-				{ label: 'Title' },
-				{ label: 'Category' },
-				{ label: 'Estimated', class: 'right' },
-				{ label: 'Status' },
+				{ label: m('expenses.preapprovals.col.title') },
+				{ label: m('expenses.preapprovals.col.category') },
+				{ label: m('expenses.preapprovals.col.estimated'), class: 'right' },
+				{ label: m('expenses.preapprovals.col.status') },
 				{ label: '', class: 'actions-col' }
 			]}
 			isEmpty={preapprovals.length === 0}
-			empty={preapprovalsLoading ? 'Loading…' : 'No pre-approval requests.'}
+			empty={preapprovalsLoading ? m('expenses.loading') : m('expenses.preapprovals.empty')}
 		>
 			{#snippet body()}
 				{#each preapprovals as pa (pa.id)}
@@ -1101,7 +1102,7 @@
 						<td><span class="badge {pa.status}">{EXPENSE_PREAPPROVAL_STATUS_LABELS[pa.status as keyof typeof EXPENSE_PREAPPROVAL_STATUS_LABELS] ?? pa.status}</span></td>
 						<td class="actions">
 							{#if canDecidePreapproval(pa)}
-								<RowAction variant="success" onclick={() => approvePa(pa)}>Approve</RowAction>
+								<RowAction variant="success" onclick={() => approvePa(pa)}>{m('expenses.preapprovals.approve')}</RowAction>
 								<RowAction
 									variant="danger"
 									armed={paRejectArmedId === pa.id}
@@ -1110,7 +1111,7 @@
 										else paRejectArmedId = pa.id;
 									}}
 								>
-									{paRejectArmedId === pa.id ? 'Confirm reject' : 'Reject'}
+									{paRejectArmedId === pa.id ? m('expenses.preapprovals.confirmReject') : m('expenses.preapprovals.reject')}
 								</RowAction>
 							{/if}
 						</td>
@@ -1121,9 +1122,9 @@
 	{:else if tab === 'cards'}
 		<!-- ===================== Cards tab (WF4) ===================== -->
 		<div class="kpi-row">
-			<KpiCard value={unmatchedCount} label="Unmatched" highlight={unmatchedCount ? 'red' : null} />
-			<KpiCard value={matchedCount} label="Matched" highlight={matchedCount ? 'green' : null} />
-			<KpiCard value={cardsTotal} label="Transactions" />
+			<KpiCard value={unmatchedCount} label={m('expenses.cards.kpi.unmatched')} highlight={unmatchedCount ? 'red' : null} />
+			<KpiCard value={matchedCount} label={m('expenses.cards.kpi.matched')} highlight={matchedCount ? 'green' : null} />
+			<KpiCard value={cardsTotal} label={m('expenses.cards.kpi.transactions')} />
 		</div>
 
 		<div class="filter-row">
@@ -1132,15 +1133,15 @@
 
 		<DataTable
 			columns={[
-				{ label: 'Date' },
-				{ label: 'Merchant' },
-				{ label: 'Card' },
-				{ label: 'Amount', class: 'right' },
-				{ label: 'Status' },
+				{ label: m('expenses.cards.col.date') },
+				{ label: m('expenses.cards.col.merchant') },
+				{ label: m('expenses.cards.col.card') },
+				{ label: m('expenses.cards.col.amount'), class: 'right' },
+				{ label: m('expenses.cards.col.status') },
 				{ label: '', class: 'actions-col' }
 			]}
 			isEmpty={cardTxns.length === 0}
-			empty={cardsLoading ? 'Loading…' : 'No card transactions. Import a CSV or sync virtual cards.'}
+			empty={cardsLoading ? m('expenses.loading') : m('expenses.cards.empty')}
 		>
 			{#snippet body()}
 				{#each cardTxns as txn (txn.id)}
@@ -1149,7 +1150,7 @@
 						<td>{txn.merchant ?? '—'}</td>
 						<td class="muted">
 							{#if txn.virtual_card_id}
-								<span class="badge approved">Virtual</span>
+								<span class="badge approved">{m('expenses.cards.virtual')}</span>
 							{/if}
 							{txn.card_last_four ? `•••• ${txn.card_last_four}` : '—'}
 						</td>
@@ -1163,16 +1164,16 @@
 						</td>
 						<td class="actions">
 							{#if canManagePolicies && txn.reconciliation_status === 'unmatched'}
-								<RowAction variant="default" onclick={() => openMatchPicker(txn)}>Match</RowAction>
+								<RowAction variant="default" onclick={() => openMatchPicker(txn)}>{m('expenses.cards.match')}</RowAction>
 							{/if}
 							{#if canCreate && txn.reconciliation_status === 'unmatched'}
-								<RowAction variant="default" onclick={() => createExpenseForCard(txn)}>Create expense</RowAction>
+								<RowAction variant="default" onclick={() => createExpenseForCard(txn)}>{m('expenses.cards.createExpense')}</RowAction>
 							{/if}
 							{#if canManagePolicies && txn.reconciliation_status === 'matched'}
-								<RowAction variant="default" onclick={() => unmatchCard(txn)}>Unmatch</RowAction>
+								<RowAction variant="default" onclick={() => unmatchCard(txn)}>{m('expenses.cards.unmatch')}</RowAction>
 							{/if}
 							{#if canManagePolicies && txn.reconciliation_status === 'unmatched'}
-								<RowAction variant="default" onclick={() => ignoreCard(txn)}>Ignore</RowAction>
+								<RowAction variant="default" onclick={() => ignoreCard(txn)}>{m('expenses.cards.ignore')}</RowAction>
 							{/if}
 						</td>
 					</tr>
@@ -1181,7 +1182,7 @@
 		</DataTable>
 		{#if cardsTotal > 0}
 			<div class="load-more-row">
-				<span class="load-more-end">Showing all {cardsTotal} transaction{cardsTotal === 1 ? '' : 's'}</span>
+				<span class="load-more-end">{m('expenses.cards.showingAll', { total: cardsTotal })}</span>
 			</div>
 		{/if}
 	{/if}
@@ -1191,14 +1192,14 @@
 {#if tab === 'expenses'}
 	<BulkBar count={selected.size} onclear={() => (selected = new Set())}>
 		{#snippet actions()}
-			<select class="bulk-gl-select" bind:value={bulkGl} aria-label="GL account for bulk recode" disabled={bulkBusy}>
-				<option value="">Clear GL</option>
+			<select class="bulk-gl-select" bind:value={bulkGl} aria-label={m('expenses.bulk.glAria')} disabled={bulkBusy}>
+				<option value="">{m('expenses.bulk.clearGl')}</option>
 				{#each glAccounts as g (g.id)}
 					<option value={g.id}>{g.code} — {g.name}</option>
 				{/each}
 			</select>
 			<button class="bulk-action-btn" disabled={bulkBusy} onclick={applyBulkGl}>
-				{bulkBusy ? 'Applying…' : `GL code ${selected.size}`}
+				{bulkBusy ? m('expenses.bulk.applying') : m('expenses.bulk.glCode', { n: selected.size })}
 			</button>
 		{/snippet}
 	</BulkBar>
@@ -1213,22 +1214,22 @@
 {/if}
 
 {#if showNewReport}
-	<Modal open ariaLabel="New report" title="New Expense Report" width="sm" onclose={() => (showNewReport = false)}>
+	<Modal open ariaLabel={m('expenses.newReport.aria')} title={m('expenses.newReport.title')} width="sm" onclose={() => (showNewReport = false)}>
 		<form onsubmit={(e) => { e.preventDefault(); handleNewReport(); }}>
 			<div class="report-form">
 				<label>
-					<span>Report Number <em class="required">*</em></span>
+					<span>{m('expenses.newReport.number')} <em class="required">*</em></span>
 					<input type="text" bind:value={newReportNumber} required />
 				</label>
 				<label>
-					<span>Title</span>
+					<span>{m('expenses.newReport.titleField')}</span>
 					<input type="text" bind:value={newReportTitle} />
 				</label>
 			</div>
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (showNewReport = false)}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={() => (showNewReport = false)}>{m('expenses.newReport.cancel')}</button>
 				<button type="submit" class="btn-primary" disabled={reportBusy || !newReportNumber.trim()}>
-					{reportBusy ? 'Creating…' : 'Create'}
+					{reportBusy ? m('expenses.newReport.creating') : m('expenses.newReport.create')}
 				</button>
 			</div>
 		</form>
@@ -1244,15 +1245,15 @@
 {/if}
 
 {#if showNewPreapproval}
-	<Modal open ariaLabel="New pre-approval" title="New Pre-approval Request" width="sm" onclose={() => (showNewPreapproval = false)}>
+	<Modal open ariaLabel={m('expenses.newPreapproval.aria')} title={m('expenses.newPreapproval.title')} width="sm" onclose={() => (showNewPreapproval = false)}>
 		<form onsubmit={(e) => { e.preventDefault(); handleNewPreapproval(); }}>
 			<div class="report-form">
 				<label>
-					<span>Title <em class="required">*</em></span>
+					<span>{m('expenses.newPreapproval.titleField')} <em class="required">*</em></span>
 					<input type="text" bind:value={paTitle} required />
 				</label>
 				<label>
-					<span>Estimated Amount <em class="required">*</em></span>
+					<span>{m('expenses.newPreapproval.estimated')} <em class="required">*</em></span>
 					<input
 						type="number"
 						step="0.01"
@@ -1262,18 +1263,18 @@
 					/>
 				</label>
 				<label>
-					<span>Category</span>
-					<input type="text" bind:value={paCategory} placeholder="e.g. travel" />
+					<span>{m('expenses.newPreapproval.category')}</span>
+					<input type="text" bind:value={paCategory} placeholder={m('expenses.newPreapproval.categoryPlaceholder')} />
 				</label>
 				<label>
-					<span>Justification</span>
+					<span>{m('expenses.newPreapproval.justification')}</span>
 					<textarea bind:value={paJustification} rows="2"></textarea>
 				</label>
 			</div>
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (showNewPreapproval = false)}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={() => (showNewPreapproval = false)}>{m('expenses.newReport.cancel')}</button>
 				<button type="submit" class="btn-primary" disabled={paBusy || !paTitle.trim() || paAmount == null}>
-					{paBusy ? 'Creating…' : 'Create'}
+					{paBusy ? m('expenses.newReport.creating') : m('expenses.newReport.create')}
 				</button>
 			</div>
 		</form>
@@ -1281,12 +1282,12 @@
 {/if}
 
 {#if matchTxn}
-	<Modal open ariaLabel="Match transaction" title="Match to an expense" width="sm" onclose={closeMatchPicker}>
+	<Modal open ariaLabel={m('expenses.match.aria')} title={m('expenses.match.title')} width="sm" onclose={closeMatchPicker}>
 		<div class="match-picker">
 			{#if matchLoading}
-				<p class="muted">Loading suggestions…</p>
+				<p class="muted">{m('expenses.match.loading')}</p>
 			{:else if matchSuggestions.length === 0}
-				<p class="muted">No candidate expenses (amount + date window). Try Create expense instead.</p>
+				<p class="muted">{m('expenses.match.empty')}</p>
 			{:else}
 				<ul class="match-list">
 					{#each matchSuggestions as suggestion (suggestion.expense.id)}
@@ -1306,7 +1307,7 @@
 			{/if}
 		</div>
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={closeMatchPicker}>Cancel</button>
+			<button type="button" class="btn-cancel" onclick={closeMatchPicker}>{m('expenses.match.cancel')}</button>
 		</div>
 	</Modal>
 {/if}
