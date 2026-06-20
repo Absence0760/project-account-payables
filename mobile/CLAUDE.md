@@ -40,7 +40,7 @@ mobile/
 │   │   └── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
 │   ├── services/
 │   │   ├── biometric_service.dart  # Face ID / fingerprint via local_auth
-│   │   ├── camera_capture.dart     # Image picker + invoice upload
+│   │   ├── camera_capture.dart     # Image picker (camera/gallery) + file picker (PDF/PNG/JPG/TIFF) + invoice upload
 │   │   ├── offline_store.dart      # SQLite cache for offline viewing
 │   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications
 │   ├── stores/
@@ -53,14 +53,15 @@ mobile/
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
 │   │   ├── dashboard_screen.dart # KPIs, aging, top vendors
 │   │   ├── invoices_screen.dart  # Invoice list with search + status filters + camera button
-│   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + activity timeline
+│   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + activity timeline + file preview (image thumbnail / PDF card) → full viewer
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
 │   │   ├── exceptions_screen.dart # Exception queue — filter + swipe/sheet resolve/escalate/dismiss
-│   │   ├── capture_screen.dart   # Camera/gallery capture → upload → extract
+│   │   ├── capture_screen.dart   # Camera/gallery capture + file picker (PDF/PNG/JPG/TIFF) → upload → extract
 │   │   ├── payments_screen.dart  # Payment history
 │   │   └── settings_screen.dart  # User profile, biometric toggle, logout
 │   └── widgets/
 │       ├── activity_timeline.dart # Invoice audit-log timeline (action label, actor, time, per-field before→after diff); empty state; one merged Semantics label per entry
+│       ├── invoice_file_viewer.dart # Full-screen uploaded-file viewer — images via Image.network (auth headers), PDFs fetched as bytes via ApiClient.getBytes + rendered with pdfx; isPdf/absoluteUrl helpers; loading/error/Retry states
 │       ├── invoice_edit_sheet.dart # Modal bottom-sheet edit form (vendor, invoice #, amount, PO, GL, description, due date); returns the partial diff; amount sent as string-Decimal
 │       ├── status_badge.dart    # Colored invoice status chip
 │       ├── exception_status_badge.dart # Colored exception status chip (open/escalated/resolved/dismissed)
@@ -133,6 +134,8 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Settings (profile, tenant info, logout)
 - JWT in secure storage (iOS Keychain / Android Keystore)
 - Camera OCR — snap photo or pick from gallery → upload → trigger AI extraction
+- File upload via file picker — pick a PDF / PNG / JPG / TIFF document on the device (`CameraCapture.pickDocument` → `file_picker`) and upload it through the same `/api/invoices/upload` extraction pipeline as the camera path. The capture screen offers Camera / Gallery / Choose file; PDFs preview as a document card (no inline bitmap), images preview inline
+- File viewer — the invoice detail screen previews the uploaded file (image thumbnail or a PDF card) and opens it full-screen via `InvoiceFileViewer`: images via `Image.network` (auth headers), PDFs fetched as bytes (`ApiClient.getBytes`, so the JWT + tenant headers are attached) and rendered with `pdfx`; loading / error / Retry states
 - Push notifications — Firebase Cloud Messaging (foreground + background), no-op if Firebase not configured
 - Offline mode — SQLite cache for dashboard and invoice list, serves cached data on network failure
 - Biometric login — Face ID / fingerprint / device PIN, toggle in settings, checked on app launch
@@ -148,8 +151,6 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - **MFA** — `AuthStore.login()` only handles `TokenResponse`; if the backend returns `MFAChallengeResponse` (when `AP_MFA_ENABLED=true` and the user is enrolled or org-enforced), login throws. Mobile users can still sign in when MFA is off, but tenants with enforcement need a mobile MFA flow + a `/profile` enrollment screen.
 - **Org Security settings** — the web `/organization` page exposes the `mfa.required` toggle; mobile has no equivalent.
 - **OIDC SSO** — `Sign in with Okta/Microsoft` button is web-only.
-- Invoice upload via file picker (PDF/PNG/JPG/TIFF) — mobile has camera only
-- PDF/image viewer for uploaded invoice files (mobile shows the image inline + full-screen, but no PDF rendering yet)
 - Advanced search modal (vendor, PO, amount range, date range)
 - Invoice warnings/fraud flags display
 - ERP status display on invoice detail

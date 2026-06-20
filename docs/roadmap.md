@@ -575,10 +575,10 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 - [x] Biometric login — Face ID / fingerprint / device PIN toggle in settings, checked on app launch
 
 **Medium priority — parity with web (see `mobile/CLAUDE.md` for full gap list):**
-- [ ] Invoice upload via file picker (PDF/PNG/JPG/TIFF support)
+- [x] Invoice upload via file picker (PDF/PNG/JPG/TIFF support) — `CameraCapture.pickDocument` via `file_picker`, Choose-file button on the capture screen → same `/api/invoices/upload` extraction pipeline as the camera path; PDFs preview as a document card, images inline
 - [x] Invoice editing (change fields in detail screen) — edit sheet → `PATCH /api/invoices/{id}` (vendor/number/amount/PO/GL/description/due date; money + dates as string-Decimal), gated to admin/ap_manager/cfo on editable statuses
 - [x] Activity timeline in invoice detail (audit log) — `GET /api/invoices/{id}/audit-log` rendered as a timeline widget (actor, action, time, per-field before→after), with empty/loading/error states
-- [ ] PDF/image viewer for uploaded invoice files
+- [x] PDF/image viewer for uploaded invoice files — `InvoiceFileViewer` on the invoice detail screen: images via `Image.network` (auth headers), PDFs fetched as bytes (`ApiClient.getBytes`) + rendered with `pdfx`; inline image-thumbnail / PDF-card preview opens the full viewer; loading/error/Retry states
 - [x] Exception queue (list, resolve, escalate, dismiss) — `ExceptionsScreen` + `ExceptionStore` over `GET /api/exceptions` + `POST /api/exceptions/{id}/resolve`, admin/ap_manager. Detail view / assign / bulk-resolve deferred
 - [ ] Vendor management (list, verify/reject, ERP sync)
 - [ ] Payment queue (select invoices, choose method)
