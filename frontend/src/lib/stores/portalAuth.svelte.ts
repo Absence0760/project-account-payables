@@ -58,16 +58,29 @@ function createPortalAuth() {
 		return { kind: 'ok' };
 	}
 
-	// Second factor: trade the login-issued challenge token + a TOTP code for a
-	// real access token.
-	async function completeMfa(challenge_token: string, code: string) {
+	// Second factor: trade the login-issued challenge token + a code for a real
+	// access token. `method` picks the factor — `totp` (authenticator, default)
+	// or `email` (the on-demand email-OTP backup).
+	async function completeMfa(
+		challenge_token: string,
+		code: string,
+		method: 'totp' | 'email' = 'totp'
+	) {
 		const res = await portalApi.post<PortalTokenResponse>('/api/portal/auth/mfa/challenge', {
 			challenge_token,
 			code,
+			method,
 		});
 		setPortalToken(res.access_token);
 		loggedIn = true;
 		await fetchUser();
+	}
+
+	// Request the email-OTP backup code be sent to the vendor's account address.
+	// The login-issued challenge token is the credential. Returns 204 regardless
+	// of whether a code was actually sent (no account enumeration).
+	async function requestEmailMfa(challenge_token: string) {
+		await portalApi.post('/api/portal/auth/mfa/challenge/email', { challenge_token });
 	}
 
 	async function fetchUser() {
@@ -120,6 +133,7 @@ function createPortalAuth() {
 		},
 		login,
 		completeMfa,
+		requestEmailMfa,
 		logout,
 		fetchUser,
 		changePassword,
