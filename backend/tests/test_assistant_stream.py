@@ -438,6 +438,127 @@ async def test_stream_failed_persist_charges_no_usage(realdb):
 
 
 # ===========================================================================
+# Layer 2 — claude per-token passthrough lands on the SSE wire (orchestrator)
+# ===========================================================================
+
+
+async def test_stream_claude_per_token_passthrough_through_orchestrator(realdb, monkeypatch):
+    """With the `claude` adapter active (its Anthropic streaming client MOCKED),
+    `run_turn_streaming` forwards the model's real per-token `text_delta`s as SSE
+    `delta` frames, and commits the streamed usage to the control-plane meter.
+
+    Drives `run_turn_streaming` directly with the realdb harness's sessions (the
+    SSE *endpoint* is exercised by the mock-adapter tests above; here we prove
+    the claude per-token deltas reach the wire and the token accounting under
+    streaming stays accurate, end to end through the real commit path). No
+    Anthropic key, no network.
+
+    The unit-level adapter behaviour is in `test_assistant_claude_stream.py`."""
+    import httpx
+
+    from app.models.organization import Organization
+    from app.models.user import User
+    from app.services.assistant import claude_adapter as claude_mod
+    from app.services.assistant import orchestrator
+    from app.services.assistant.claude_adapter import ClaudeAssistantAdapter
+    from app.services.assistant.orchestrator import run_turn_streaming
+
+    await _clear_usage(realdb, "a")
+    a = realdb.info("a")
+
+    # A streaming SSE body: 4 text_delta tokens + input/output usage on the wire.
+    tokens = ["Here ", "are ", "your ", "invoices."]
+    frames = [
+        'event: message_start\ndata: {"type":"message_start","message":'
+        '{"usage":{"input_tokens":37,"output_tokens":0}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,'
+        '"content_block":{"type":"text","text":""}}\n\n',
+    ]
+    for tok in tokens:
+        frames.append(
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,'
+            f'"delta":{{"type":"text_delta","text":{json.dumps(tok)}}}}}\n\n'
+        )
+    frames.append('event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n')
+    frames.append(
+        'event: message_delta\ndata: {"type":"message_delta",'
+        '"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}\n\n'
+    )
+    frames.append('event: message_stop\ndata: {"type":"message_stop"}\n\n')
+    sse_body = "".join(frames)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=sse_body.encode(), headers={"content-type": "text/event-stream"}
+        )
+
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+
+    def _factory(*args, **kwargs):
+        kwargs.pop("timeout", None)
+        return real_client(transport=transport, timeout=5.0)
+
+    monkeypatch.setattr(claude_mod.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(
+        orchestrator,
+        "get_assistant_adapter",
+        lambda _cfg: ClaudeAssistantAdapter({"api_key": "sk-test", "model": "claude-opus-4-8"}),
+    )
+
+    from sqlalchemy import select
+
+    from app.models.assistant import AssistantUsage
+
+    mk_a = realdb.sessionmaker("a")
+    try:
+        async with realdb.control_sessionmaker()() as control_db, mk_a() as tenant_db:
+            org = await control_db.get(Organization, a.org_id)
+            user = (
+                await control_db.execute(select(User).where(User.organization_id == a.org_id))
+            ).scalars().first()
+            ent = await _default_entity_id(tenant_db, a.org_id)
+
+            raw = "".join(
+                [
+                    frame
+                    async for frame in run_turn_streaming(
+                        control_db=control_db,
+                        tenant_db=tenant_db,
+                        org=org,
+                        user=user,
+                        entity_id=ent,
+                        conversation_id=None,
+                        message="show my invoices",
+                    )
+                ]
+            )
+
+        events = _parse_sse(raw)
+        delta_events = [d for n, d in events if n == "delta"]
+        done = [d for n, d in events if n == "done"][0]
+
+        # Per-token passthrough: one delta per streamed token, in order, lossless.
+        assert [d["text"] for d in delta_events] == tokens
+        assert "".join(d["text"] for d in delta_events) == done["answer"]
+        assert done["answer"] == "Here are your invoices."
+        # Usage on the done payload is the streamed usage (input 37, output 9).
+        assert done["usage"] == {"input_tokens": 37, "output_tokens": 9}
+
+        # Committed to the control-plane meter — accounting under streaming holds.
+        async with realdb.control_sessionmaker()() as cs:
+            usage_row = (
+                await cs.execute(
+                    select(AssistantUsage).where(AssistantUsage.organization_id == a.org_id)
+                )
+            ).scalar_one()
+        assert usage_row.input_tokens == 37
+        assert usage_row.output_tokens == 9
+    finally:
+        await _clear_usage(realdb, "a")
+
+
+# ===========================================================================
 # Layer 2 — auth on the stream endpoint
 # ===========================================================================
 

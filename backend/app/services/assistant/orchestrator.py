@@ -19,12 +19,19 @@ from app.models.assistant import Conversation, ConversationMessage
 from app.models.organization import Organization
 from app.models.user import User
 from app.services.assistant import usage
-from app.services.assistant.base import AssistantReply, RunTool, ToolInvocation
+from app.services.assistant.base import (
+    AssistantReply,
+    RunTool,
+    StreamDone,
+    TextDelta,
+    ToolDelta,
+    ToolInvocation,
+)
 from app.services.assistant.dispatcher import get_assistant_adapter
 from app.services.assistant.sse import (
     sse_done,
     sse_error,
-    sse_text_deltas,
+    sse_text_delta,
     sse_tool_event,
 )
 from app.services.assistant.tools import TOOL_SPECS, TOOLS
@@ -347,12 +354,19 @@ async def run_turn_streaming(
 ) -> AsyncIterator[str]:
     """Execute one chat turn, yielding SSE frames as the answer is produced.
 
-    Emits (in order): one ``tool`` event per tool invocation, then ``delta``
-    events chunking ``reply.answer``, then a terminal ``done`` event. The
-    adapter still runs the full server-orchestrated tool-use loop and the
-    audited ``run_tool`` still fires — chunking the assembled answer is the
-    real transport here (the model is server-orchestrated, not a raw token
-    pass-through), not a mask over a non-streaming model.
+    Iterates the adapter's ``respond_streaming`` generator and forwards its
+    events onto the wire: a ``ToolDelta`` becomes a ``tool`` frame (emitted as
+    the tool completes, before the prose that cites it), a ``TextDelta`` becomes
+    a ``delta`` frame, and the terminal ``StreamDone`` carries the assembled
+    reply used for persistence + the final ``done`` frame.
+
+    On the ``claude`` adapter the ``TextDelta``s are **real Anthropic per-token
+    ``text_delta``s forwarded as they arrive** — true token-by-token passthrough
+    — while the audited ``run_tool`` still fires for every tool-use block. On
+    ``mock`` / ``ollama`` the deltas are coarse post-hoc chunks of the assembled
+    answer (the default ``respond_streaming``), so local-first + tests stay
+    deterministic and network-free. Either path's concatenated ``delta`` text
+    reconstructs ``done.answer`` exactly.
 
     **Transactional invariant.** Under ``StreamingResponse`` the request-scoped
     session teardown fires only after the body is fully drained, so we commit
@@ -377,22 +391,31 @@ async def run_turn_streaming(
             conversation_id=conversation_id,
         )
 
-        # The adapter runs the full tool-use loop (audited via run_tool).
-        reply = await adapter.respond(
+        # Iterate the adapter's streaming generator, forwarding each event onto
+        # the SSE wire as it arrives. The adapter runs the full tool-use loop
+        # (audited via run_tool); `tool` frames are emitted as tools complete
+        # and `delta` frames as text is produced (real per-token on claude). The
+        # terminal StreamDone carries the assembled reply for persistence.
+        reply: AssistantReply | None = None
+        async for ev in adapter.respond_streaming(
             message=message,
             history=history,
             tool_specs=TOOL_SPECS,
             run_tool=run_tool,
-        )
-
-        # Emit one `tool` event per invocation BEFORE the prose, so the UI can
-        # render a chart while the answer text streams in.
-        for inv in reply.tool_invocations:
-            yield sse_tool_event(inv)
-
-        # Stream the assembled answer as incremental `delta` chunks.
-        for frame in sse_text_deltas(reply.answer):
-            yield frame
+        ):
+            if isinstance(ev, ToolDelta):
+                yield sse_tool_event(ev.invocation)
+            elif isinstance(ev, TextDelta):
+                # An empty span produces no frame (keeps the stream tidy).
+                if ev.text:
+                    yield sse_text_delta(ev.text)
+            elif isinstance(ev, StreamDone):
+                reply = ev.reply
+        if reply is None:  # defensive — a well-behaved adapter always ends with StreamDone
+            reply = AssistantReply(
+                answer="I wasn't able to produce an answer for that.",
+                provider="",
+            )
 
         # Persist + record, then commit BOTH together (tenant first). This is
         # the single point where the turn's rows become durable.

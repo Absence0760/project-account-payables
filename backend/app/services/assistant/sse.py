@@ -66,8 +66,18 @@ def iter_answer_chunks(answer: str) -> list[str]:
     return _CHUNK_RE.findall(answer)
 
 
+def sse_text_delta(text: str) -> str:
+    """A single ``event: delta`` frame carrying one text span.
+
+    Used by the orchestrator to forward each ``TextDelta`` as it arrives —
+    a real Anthropic ``text_delta`` on the claude path, a coarse chunk on the
+    mock/ollama path. Concatenating every span reconstructs the answer exactly.
+    """
+    return _frame("delta", {"text": text})
+
+
 def sse_text_deltas(answer: str) -> list[str]:
-    """``event: delta`` frames for the assembled answer, in order."""
+    """``event: delta`` frames for the assembled answer, in order (chunked)."""
     return [_frame("delta", {"text": chunk}) for chunk in iter_answer_chunks(answer)]
 
 

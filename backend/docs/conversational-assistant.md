@@ -82,7 +82,10 @@ inside the adapter instead.
   the five tools as Anthropic tool schemas, and a manual tool-use loop capped at
   `AP_ASSISTANT_MAX_TOOL_HOPS`. The model id resolves from config
   (`AP_ASSISTANT_MODEL` → falls back to `AP_EXTRACTION_MODEL`) — never
-  hardcoded. Real `usage` tokens are summed across hops.
+  hardcoded. Real `usage` tokens are summed across hops. **Streaming**: it also
+  implements `respond_streaming`, a `stream: true` variant of the same tool-use
+  loop that forwards the Anthropic Messages SSE `text_delta`s as they arrive
+  (true per-token passthrough) — see [Streaming (SSE)](#streaming-sse--post-apiassistantchatstream).
 - **`ollama_adapter.py`** (committed dev default) — raw `httpx` POST to a local
   Ollama `/api/chat` with the five tools converted to OpenAI-style function
   schemas, the same `AP_ASSISTANT_MAX_TOOL_HOPS` loop, and `prompt_eval_count` /
@@ -221,18 +224,54 @@ route. Event names + data shapes:
 | Event | Data | When |
 |-------|------|------|
 | `tool` | `{"tool", "args", "result"\|null, "error"\|null}` (same shape as `ToolInvocationOut`) | one per tool invocation, emitted **before** the prose so the UI can render a chart while text streams |
-| `delta` | `{"text": "<chunk>"}` | incremental answer text; concatenating every `delta.text` reconstructs `done.answer` exactly (lossless word-chunking) |
+| `delta` | `{"text": "<chunk>"}` | incremental answer text; concatenating every `delta.text` reconstructs `done.answer` exactly (lossless). On `claude` this is **real per-token passthrough** (one frame per Anthropic `text_delta`); on `mock`/`ollama` it is word-chunking of the assembled answer |
 | `done` | `{"conversation_id", "answer", "tool_invocations": [...], "usage": {"input_tokens", "output_tokens"}}` | terminal, authoritative payload |
 | `error` | `{"code", "detail"}` | only for failures **after** the 200/stream has started |
 
-The `delta` chunking IS the genuine transport here, not a mask over a
-non-streaming model: the assistant is **server-orchestrated** through the fixed
-tool-use loop (`adapter.respond` runs the loop and the audited `run_tool` still
-fires), and chunking the assembled answer is how that orchestrated answer is
-delivered incrementally. For the local-first `mock` adapter this streams the
-deterministic answer. Deeper **per-token claude passthrough** (forwarding the
-Anthropic SSE deltas as they arrive, rather than chunking the assembled answer)
-remains a tracked follow-up — see [Deferred](#deferred).
+The stream is driven by the adapter's `respond_streaming` generator, which the
+orchestrator iterates and forwards onto the wire: a `ToolDelta` becomes a `tool`
+frame (emitted as the tool completes, before the prose that cites it), a
+`TextDelta` becomes a `delta` frame, and a terminal `StreamDone` carries the
+assembled `AssistantReply` used for persistence + the final `done` frame
+(`app/services/assistant/base.py` defines the three event types).
+
+- **`claude` — true per-token passthrough.** `respond_streaming` runs the same
+  server-orchestrated tool-use loop, but each hop is a `stream: true` request:
+  the Anthropic `content_block_delta` / `text_delta` events are forwarded as
+  `TextDelta`s the instant they arrive, so the SPA renders the model's natural
+  -language text token-by-token. Tool-use blocks (whose args stream as
+  `input_json_delta` fragments) still drive the audited `run_tool` and surface
+  as `ToolDelta`s, and the multi-hop loop feeds tool results back exactly as the
+  non-streaming path does.
+- **`mock` / `ollama` — deterministic chunking.** These inherit the base
+  `respond_streaming`, which runs the non-streaming `respond` to completion then
+  replays it as `ToolDelta`s + coarse word-chunk `TextDelta`s. No network, so
+  local-first + tests stay deterministic and never need an Anthropic key. The
+  `claude` adapter still **fails soft to `mock`** when unkeyed (dispatcher
+  downgrade), so a fresh clone streams the deterministic answer.
+
+The wire contract (`tool`/`delta`/`done`/`error`) is identical across adapters —
+only how finely `delta`s are produced differs.
+
+#### Token accounting under streaming
+
+The meter stays exactly as accurate streaming as non-streaming. The `claude`
+streaming generator reads usage straight off the Anthropic SSE events:
+`input_tokens` from `message_start.message.usage.input_tokens` and
+`output_tokens` from the cumulative `message_delta.usage.output_tokens` (the
+running total the API emits per response), summed across tool-use hops — the
+same sum the non-streaming `respond` computes from each hop's `usage`. The
+assembled `AssistantReply` (on `StreamDone`) carries those totals, and the
+orchestrator records them via `usage.record` inside the same in-generator commit
+as the conversation + audit rows (see [Transactional invariant](#transactional-invariant-under-streamingresponse)).
+A mid-stream claude failure fails soft — the generator yields a fallback
+`TextDelta` + `StreamDone` and never raises, so it never double-charges tokens
+(only what actually streamed before the failure is counted) and the
+budget/commit path is unaffected. Covered by
+`tests/test_assistant_claude_stream.py` (per-token order, multi-hop usage sum,
+fail-soft, mock determinism, no-key downgrade) +
+`tests/test_assistant_stream.py` (the claude passthrough lands on the SSE wire
+through the real commit path).
 
 ### Budget refusal is a real HTTP 429, before the stream
 
@@ -286,21 +325,12 @@ a tenant DB.
 
 ## Deferred (tracked follow-ups)
 
-1. **Per-token claude SSE passthrough** — `/chat/stream` ships today, streaming
-   the server-orchestrated answer as `delta` chunks (the genuine transport for a
-   tool-loop-orchestrated reply). The remaining refinement is forwarding the
-   Anthropic Messages SSE deltas verbatim as they arrive from the `claude`
-   adapter (rather than chunking the assembled answer), which needs the adapter
-   to expose a streaming `respond` variant. Trigger: a claude-keyed deployment
-   wants true token-by-token latency rather than per-word chunking of the
-   finished answer. The wire contract (`tool`/`delta`/`done`/`error`) does not
-   change — only how finely `delta`s are produced on the claude path.
-2. **Chart-rendering UI / example-prompt empty state** — frontend only; the API
+1. **Chart-rendering UI / example-prompt empty state** — frontend only; the API
    already returns chartable structured `result` (and `tool` SSE events stream
    it before the prose).
-3. **BYO-LLM beyond claude** (openai/etc.) — add adapters under the same
+2. **BYO-LLM beyond claude** (openai/etc.) — add adapters under the same
    registry; the registry is already open for it.
-4. **Shared `invoice_queries.py`** — `list_invoices` re-builds the filtered
+3. **Shared `invoice_queries.py`** — `list_invoices` re-builds the filtered
    SELECT because `app/api/invoices.py` is frozen this session (in-flight
    multi-entity work). Durable fix: extract the canonical filter/paginate into
    `app/services/` and have both the invoices router and the tool call it.
