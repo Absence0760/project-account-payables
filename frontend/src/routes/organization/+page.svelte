@@ -692,7 +692,11 @@
 		// Drop a path/query and a :port suffix.
 		h = h.split('/')[0].split('?')[0].split(':')[0];
 		if (!h || h.includes(' ')) return null;
-		// Must look like a dotted hostname (label.label…), not a bare word.
+		// UX guard, intentionally STRICTER than the backend: require a dotted
+		// hostname (label.label…), since a real vanity domain always has a TLD.
+		// The backend `normalize_custom_domain` is the authority and accepts a
+		// bare single-label host too; this only spares the operator an obvious
+		// typo client-side (the safe direction — backend still validates).
 		if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(h)) {
 			return null;
 		}

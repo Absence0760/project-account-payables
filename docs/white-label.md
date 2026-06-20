@@ -264,7 +264,15 @@ tenant selector — the JWT `org`-claim cross-check (below) is what actually gat
 access — but letting two orgs claim the same host would make resolution
 ambiguous, so it is refused at registration time, queried via the **same** JSONB
 containment the resolver uses (so the check and the resolution can't disagree).
-Re-saving a host the tenant already owns is **not** a self-conflict.
+Re-saving a host the tenant already owns is **not** a self-conflict. The `409`
+body is **generic** ("…already registered to another tenant") — it never echoes
+the conflicting hostname back, so it can't confirm to the caller that a specific
+host belongs to some other org. The check-and-write is serialized by a
+transaction-level `pg_advisory_xact_lock`, so two orgs PUT-ing the same host
+concurrently can't both race past the guard (the lock is held to commit and
+auto-releases on rollback; no DB constraint is needed since the domains live in
+a JSONB array, and admin-config writes are rare enough that one global lock is
+cheap).
 
 Every mutation audits `organization.custom_domains_updated` into the tenant
 trail, **PII-free**: it records only the host **count** (old → new), never the
