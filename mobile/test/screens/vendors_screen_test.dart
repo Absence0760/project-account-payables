@@ -7,11 +7,18 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/vendors_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/vendor_store.dart';
 import 'package:ap_mobile/widgets/vendor_list_tile.dart';
+
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -92,7 +99,7 @@ void main() {
       MockClient((req) async => _list([_vendorJson('1'), _vendorJson('2')])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: VendorsScreen()));
+    await tester.pumpWidget(_localized(const VendorsScreen()));
     await _pumpUntil(tester, find.byType(VendorListTile));
 
     expect(find.byType(VendorListTile), findsNWidgets(2));
@@ -102,7 +109,7 @@ void main() {
   testWidgets('renders the status filter chips', (tester) async {
     await loginThen(['ap_manager'], MockClient((req) async => _list([])));
 
-    await tester.pumpWidget(const MaterialApp(home: VendorsScreen()));
+    await tester.pumpWidget(_localized(const VendorsScreen()));
     await _pumpUntil(tester, find.text('No vendors found'));
 
     expect(find.widgetWithText(FilterChip, 'All'), findsOneWidget);
@@ -124,7 +131,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: VendorsScreen()));
+    await tester.pumpWidget(_localized(const VendorsScreen()));
     await _pumpUntil(tester, find.byType(VendorListTile));
 
     expect(find.byTooltip('Sync from ERP'), findsOneWidget);
@@ -138,7 +145,7 @@ void main() {
       (tester) async {
     await loginThen(['cfo'], MockClient((req) async => _list([_vendorJson('1')])));
 
-    await tester.pumpWidget(const MaterialApp(home: VendorsScreen()));
+    await tester.pumpWidget(_localized(const VendorsScreen()));
     await _pumpUntil(tester, find.byType(VendorListTile));
 
     expect(find.byTooltip('Sync from ERP'), findsNothing);
@@ -160,7 +167,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: VendorsScreen()));
+    await tester.pumpWidget(_localized(const VendorsScreen()));
     await _pumpUntil(tester, find.byType(VendorListTile));
 
     await tester.tap(find.byType(VendorListTile).first);

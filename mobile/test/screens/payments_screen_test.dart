@@ -8,7 +8,14 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/payments_screen.dart';
+
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _list(List<Map<String, dynamic>> items) => http.Response(
       jsonEncode({'payments': items}),
@@ -56,7 +63,7 @@ void main() {
       client: MockClient((req) async => completer.future),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await tester.pump();
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
@@ -71,7 +78,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.text('No payments'));
 
     expect(find.widgetWithText(AppBar, 'Payments'), findsOneWidget);
@@ -83,7 +90,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.text('No payments'));
 
     expect(find.text('No payments'), findsOneWidget);
@@ -99,7 +106,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.byType(ListTile));
 
     expect(find.byType(ListTile), findsNWidgets(2));
@@ -114,7 +121,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.byType(ListTile));
 
     expect(find.text('Wire • WIRE-9'), findsOneWidget);
@@ -128,7 +135,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.byType(ListTile));
 
     // id.substring(0, 8) of 'abcdef1234567890' -> 'abcdef12'
@@ -147,7 +154,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.byType(ListTile));
 
     expect(find.text('Pending'), findsOneWidget);
@@ -166,7 +173,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.byType(ListTile));
 
     expect(find.byType(CircleAvatar), findsNWidgets(2));
@@ -179,7 +186,7 @@ void main() {
       client: MockClient((req) async => http.Response('boom', 500)),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.textContaining('Error:'));
 
     expect(find.textContaining('Error:'), findsOneWidget);
@@ -193,7 +200,7 @@ void main() {
       client: MockClient((req) async => throw Exception('network down')),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: PaymentsScreen()));
+    await tester.pumpWidget(_localized(const PaymentsScreen()));
     await _pumpUntil(tester, find.textContaining('Error:'));
 
     expect(find.textContaining('Error:'), findsOneWidget);

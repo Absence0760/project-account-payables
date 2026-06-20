@@ -6,10 +6,17 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/notifications_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/notification_store.dart';
 import 'package:ap_mobile/widgets/notification_list_tile.dart';
+
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _page(
   List<Map<String, dynamic>> items, {
@@ -81,7 +88,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+    await tester.pumpWidget(_localized(const NotificationsScreen()));
     await _pumpUntil(tester, find.byType(NotificationListTile));
 
     expect(find.byType(NotificationListTile), findsNWidgets(2));
@@ -96,7 +103,7 @@ void main() {
       client: MockClient((req) async => _page([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+    await tester.pumpWidget(_localized(const NotificationsScreen()));
     await _pumpUntil(tester, find.text('No notifications'));
 
     expect(find.text('No notifications'), findsOneWidget);
@@ -109,7 +116,7 @@ void main() {
       client: MockClient((req) async => throw Exception('offline')),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+    await tester.pumpWidget(_localized(const NotificationsScreen()));
     await _pumpUntil(tester, find.text("Couldn't load notifications"));
 
     expect(find.text("Couldn't load notifications"), findsOneWidget);
@@ -126,7 +133,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+    await tester.pumpWidget(_localized(const NotificationsScreen()));
     await _pumpUntil(tester, find.text('No notifications'));
 
     expect(find.widgetWithText(FilterChip, 'All'), findsOneWidget);
@@ -156,7 +163,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+    await tester.pumpWidget(_localized(const NotificationsScreen()));
     await _pumpUntil(tester, find.byType(NotificationListTile));
     expect(store.unread, 1);
 
@@ -186,7 +193,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+    await tester.pumpWidget(_localized(const NotificationsScreen()));
     await _pumpUntil(tester, find.byType(NotificationListTile));
 
     // The mark-all-read action is present while there's an unread row.

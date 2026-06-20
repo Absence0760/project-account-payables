@@ -6,10 +6,17 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/widgets/exception_list_tile.dart';
+
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _list(List<Map<String, dynamic>> items) => http.Response(
       jsonEncode({'items': items, 'total': items.length, 'page': 1}),
@@ -78,7 +85,7 @@ void main() {
           ])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+    await tester.pumpWidget(_localized(const ExceptionsScreen()));
     await _pumpUntil(tester, find.byType(ExceptionListTile));
 
     expect(find.byType(ExceptionListTile), findsNWidgets(2));
@@ -92,7 +99,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+    await tester.pumpWidget(_localized(const ExceptionsScreen()));
     await _pumpUntil(tester, find.text('No exceptions'));
 
     expect(find.text('No exceptions'), findsOneWidget);
@@ -104,7 +111,7 @@ void main() {
       client: MockClient((req) async => _list([])),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+    await tester.pumpWidget(_localized(const ExceptionsScreen()));
     await _pumpUntil(tester, find.text('No exceptions'));
 
     expect(find.widgetWithText(FilterChip, 'All'), findsOneWidget);
@@ -123,7 +130,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+    await tester.pumpWidget(_localized(const ExceptionsScreen()));
     await _pumpUntil(tester, find.text('No exceptions'));
 
     await tester.tap(find.widgetWithText(FilterChip, 'Escalated'));
@@ -150,7 +157,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+    await tester.pumpWidget(_localized(const ExceptionsScreen()));
     await _pumpUntil(tester, find.byType(ExceptionListTile));
 
     // Tapping a row opens the action sheet; let it animate fully in so the
@@ -183,7 +190,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+    await tester.pumpWidget(_localized(const ExceptionsScreen()));
     await _pumpUntil(tester, find.byType(ExceptionListTile));
 
     await tester.drag(

@@ -87,6 +87,48 @@ void main() {
     expect(find.text('設定'), findsOneWidget);
   });
 
+  testWidgets(
+      'a newly-localized screen string (vendorsTitle) switches with the locale',
+      (tester) async {
+    // Guards the latest extraction batch (notifications / vendors / exceptions
+    // / payments). Uses the same notifier-driven host so the assertion proves
+    // the new keys re-localize live, not just that they parse.
+    final probe = Builder(
+      builder: (context) {
+        final l = AppLocalizations.of(context);
+        return Scaffold(
+          body: Column(
+            children: [
+              Text(l.vendorsTitle),
+              Text(l.exceptionsTitle),
+              Text(l.notificationsTitle),
+              Text(l.paymentStatusCompleted),
+            ],
+          ),
+        );
+      },
+    );
+
+    await LocaleStore.instance.setLocale(const Locale('en'));
+    await tester.pumpWidget(host(probe));
+    await tester.pump();
+    expect(find.text('Vendors'), findsOneWidget);
+    expect(find.text('Completed'), findsOneWidget);
+
+    await LocaleStore.instance.setLocale(const Locale('de'));
+    await tester.pump();
+    expect(find.text('Lieferanten'), findsOneWidget); // vendorsTitle
+    expect(find.text('Ausnahmen'), findsOneWidget); // exceptionsTitle
+    expect(find.text('Benachrichtigungen'), findsOneWidget); // notificationsTitle
+    expect(find.text('Abgeschlossen'), findsOneWidget); // paymentStatusCompleted
+    expect(find.text('Vendors'), findsNothing);
+
+    await LocaleStore.instance.setLocale(const Locale('ja'));
+    await tester.pump();
+    expect(find.text('取引先'), findsOneWidget); // vendorsTitle
+    expect(find.text('完了'), findsOneWidget); // paymentStatusCompleted
+  });
+
   testWidgets('the choice persists and reloads via init()', (tester) async {
     await LocaleStore.instance.setLocale(const Locale('fr'));
     expect(LocaleStore.tagOf(LocaleStore.instance.locale!), 'fr');

@@ -590,7 +590,7 @@ void main() {
         client: MockClient((req) async => _wrappedList([_exceptionJson('1')])),
       );
 
-      await tester.pumpWidget(const MaterialApp(home: ExceptionsScreen()));
+      await tester.pumpWidget(_host(const ExceptionsScreen()));
       await _pumpUntil(tester, find.byType(ExceptionListTile));
 
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
@@ -695,7 +695,7 @@ void main() {
         ),
       );
 
-      await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+      await tester.pumpWidget(_host(const NotificationsScreen()));
       await _pumpUntil(tester, find.byType(NotificationListTile));
 
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
