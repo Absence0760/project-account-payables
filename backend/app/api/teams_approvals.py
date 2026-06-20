@@ -115,7 +115,8 @@ def _verify_teams_signature(headers: dict, raw_body: bytes) -> bool:
     provided_b64 = auth[len("HMAC ") :].strip()
     try:
         key = base64.b64decode(secret)
-        expected = base64.b64encode(hmac.new(key, raw_body, hashlib.sha256).digest()).decode("ascii")
+        digest = hmac.new(key, raw_body, hashlib.sha256).digest()
+        expected = base64.b64encode(digest).decode("ascii")
     except Exception:  # noqa: BLE001 — non-base64 secret / malformed input must fail closed
         return False
     return hmac.compare_digest(expected, provided_b64)
