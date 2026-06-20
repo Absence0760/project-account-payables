@@ -254,3 +254,59 @@ def test_exception_dict_carries_assignee_uuid():
     body = _exception_dict(exc, None)
     assert body["assigned_to_user_id"] == str(target)
     assert body["assigned_to"] == "Demo Manager"
+
+
+# ---------- get_exception: single-row detail endpoint ---------------------
+
+
+def test_get_exception_returns_full_dict_for_found_row():
+    """The detail endpoint returns the same `_exception_dict` shape the
+    list/assign handlers do, joining the invoice."""
+    from app.api.exceptions import get_exception
+
+    exc = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        exception_type="po_mismatch",
+        severity="warning",
+        description="amount off",
+        status="open",
+        resolution=None,
+        resolved_by=None,
+        resolved_at=None,
+        assigned_to="Demo Manager",
+        assigned_to_user_id=uuid.uuid4(),
+        due_at=None,
+        time_to_resolution_seconds=None,
+        created_at=datetime.now(UTC),
+    )
+    inv = SimpleNamespace(invoice_number="INV-100", vendor_name="Acme", amount=250)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(first=MagicMock(return_value=(exc, inv))))
+    user = SimpleNamespace(full_name="Demo Admin", organization_id=uuid.uuid4())
+
+    body = asyncio.run(get_exception(exc.id, db=db, user=user, entity_id=None))
+
+    assert body["id"] == str(exc.id)
+    assert body["invoice_number"] == "INV-100"
+    assert body["vendor_name"] == "Acme"
+    assert body["amount"] == 250.0
+    assert body["exception_type"] == "po_mismatch"
+    assert body["assigned_to"] == "Demo Manager"
+
+
+def test_get_exception_404_when_missing():
+    """A missing / out-of-scope id is an opaque 404 (no enumeration)."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.api.exceptions import get_exception
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock(first=MagicMock(return_value=None)))
+    user = SimpleNamespace(full_name="Demo Admin", organization_id=uuid.uuid4())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(get_exception(uuid.uuid4(), db=db, user=user, entity_id=None))
+    assert exc_info.value.status_code == 404

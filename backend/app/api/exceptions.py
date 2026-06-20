@@ -146,6 +146,30 @@ async def exception_summary(
     }
 
 
+# Declared AFTER the literal `/summary` route so FastAPI doesn't match
+# "summary" as an exception_id (routes match in declaration order).
+@router.get("/{exception_id}")
+async def get_exception(
+    exception_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Single-exception detail (+ its invoice), for the queue detail view.
+    Entity-scoped like the list — an out-of-scope or missing id is the same
+    opaque 404 so the response doesn't enumerate."""
+    query = apply_entity_scope(
+        select(APException, Invoice).outerjoin(Invoice, APException.invoice_id == Invoice.id),
+        APException,
+        entity_id,
+    ).where(APException.id == exception_id)
+    row = (await db.execute(query)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    exc, inv = row
+    return _exception_dict(exc, inv)
+
+
 class ResolveRequest(BaseModel):
     resolution: str
     action: str = "resolve"  # resolve, escalate, dismiss
