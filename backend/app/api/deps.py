@@ -315,6 +315,29 @@ async def get_api_key_principal(
         logger.warning("api-key usage/last_used write failed: id=%s err=%s", matched.id, exc)
         await db.rollback()
 
+    # Per-key request cap on the whole /api/v1 surface. Enforced AFTER the key
+    # authenticates (above), so an unauthenticated/garbage key already returned
+    # the opaque 401 and never reaches here — a 429 only ever confirms a *valid*
+    # key over its limit, never that a key exists. Keyed on the API key id, so
+    # one key flooding the API can't 429 another org's key (per-key, not per-IP,
+    # not per-org). A `RateLimitExceeded` (429 + Retry-After) is allowed to
+    # propagate; any OTHER failure (e.g. Redis unreachable) FAILS OPEN — a Redis
+    # blip must not deny otherwise-valid authenticated API access. The window is
+    # one minute; the limit is `AP_PUBLIC_API_RATE_LIMIT_PER_MINUTE`.
+    from app.services.rate_limit import RateLimitExceeded, check_rate_limit
+
+    try:
+        await check_rate_limit(
+            "public_api",
+            limit=settings.public_api_rate_limit_per_minute,
+            window_seconds=60,
+            subject=str(matched.id),
+        )
+    except RateLimitExceeded:
+        raise
+    except Exception as exc:  # pragma: no cover - fail-open on a limiter outage
+        logger.warning("api-key rate-limit check failed open: id=%s err=%s", matched.id, exc)
+
     return ApiKeyPrincipal(
         api_key_id=matched.id,
         organization_id=org.id,

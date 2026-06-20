@@ -393,6 +393,15 @@ class Settings(BaseSettings):
     # app/models/api_key.py). See backend/docs/public-api.md.
     public_api_enabled: bool = True
 
+    # Per-API-key request cap on the /api/v1 surface, enforced by the Redis
+    # sliding-window limiter (services/rate_limit.py) keyed on the API key id —
+    # NOT per-IP, NOT per-org. A key over its limit gets a 429 (Retry-After);
+    # an unauthenticated/garbage key still gets the opaque 401 (the limit is
+    # checked AFTER the key authenticates, so it never confirms a key exists).
+    # The window is one minute. Composes with the master `rate_limit_enabled`
+    # switch (CI flips that off). See backend/docs/public-api.md § Rate limiting.
+    public_api_rate_limit_per_minute: int = 120
+
     # ---- Outbound webhooks (push counterpart of /api/v1) -----------------
     # Master switch for outbound webhooks: subscription emit + the background
     # retry/delivery sweep. OFF by default so a fresh clone / pnpm dev never

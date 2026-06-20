@@ -82,7 +82,7 @@ def _client_ip(request: Request) -> str:
 
 async def check_rate_limit(
     endpoint: str,
-    request: Request,
+    request: Request | None = None,
     *,
     limit: int,
     window_seconds: int,
@@ -92,8 +92,11 @@ async def check_rate_limit(
 
     The bucket is keyed on ``(endpoint, subject)``. ``subject`` defaults to the
     resolved client IP, but callers can pass an explicit value — e.g. the
-    target email address — to cap abuse that a per-IP limit can't (an attacker
-    rotating IPs to email-bomb one victim address).
+    target email address, or an authenticated API key id — to cap abuse that a
+    per-IP limit can't (an attacker rotating IPs to email-bomb one victim
+    address, or a single API key flooding the public API). When ``subject`` is
+    given the ``request`` is unused, so callers keying on an explicit subject
+    may omit it; only the IP-fallback path needs the request.
 
     No-ops when ``settings.rate_limit_enabled`` is False. The switch
     exists so CI's e2e job (where every shard's 4 workers hit
@@ -104,7 +107,12 @@ async def check_rate_limit(
     if not settings.rate_limit_enabled:
         return
 
-    client = subject if subject is not None else _client_ip(request)
+    if subject is not None:
+        client = subject
+    elif request is not None:
+        client = _client_ip(request)
+    else:
+        raise ValueError("check_rate_limit requires either a request or an explicit subject")
     key = f"{KEY_PREFIX}{endpoint}:{client}"
     now = time.time()
     cutoff = now - window_seconds
