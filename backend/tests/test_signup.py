@@ -148,6 +148,50 @@ async def test_signup_start_creates_verification_and_sends_email(realdb, cleanup
         assert len(row.token) >= 16
 
 
+async def test_signup_start_stashes_locale_in_meta(realdb, cleanup_signup):
+    """The optional email-copy locale is normalized + stashed in `meta` so the
+    later welcome email (sent from /complete) renders in the same language."""
+    slugs, emails = cleanup_signup
+    slug = _unique_slug()
+    email = f"{slug}@example.com"
+    slugs.append(slug)
+    emails.append(email)
+
+    body = _start_body(slug, email)
+    body["locale"] = "de"
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=body)
+    assert resp.status_code == 200
+
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        row = (
+            await s.execute(select(EmailVerification).where(EmailVerification.slug == slug))
+        ).scalar_one()
+        assert (row.meta or {}).get("locale") == "de"
+
+
+async def test_signup_start_unknown_locale_falls_back_to_english_in_meta(realdb, cleanup_signup):
+    slugs, emails = cleanup_signup
+    slug = _unique_slug()
+    email = f"{slug}@example.com"
+    slugs.append(slug)
+    emails.append(email)
+
+    body = _start_body(slug, email)
+    body["locale"] = "zz-ZZ"  # unsupported → normalize to English (never rejected)
+    async with realdb.client(key="a", role=None) as c:
+        resp = await c.post("/api/signup/start", json=body)
+    assert resp.status_code == 200
+
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        row = (
+            await s.execute(select(EmailVerification).where(EmailVerification.slug == slug))
+        ).scalar_one()
+        assert (row.meta or {}).get("locale") == "en"
+
+
 async def test_signup_start_rejects_malformed_email(realdb, cleanup_signup):
     slugs, _ = cleanup_signup
     slug = _unique_slug()
