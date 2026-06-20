@@ -45,6 +45,7 @@ flag it.
 |------|----------|-------|
 | Mint | `POST /api/api-keys` (admin) | Body `{ "name": "reporting-bot" }`. Returns the **plaintext key exactly once** in `key`, plus metadata in `api_key`. Audited `api_key.created` (PII-free: prefix + name + scopes). |
 | List | `GET /api/api-keys` (admin) | Metadata only — prefix, scopes, timestamps. **Never** the hash or plaintext. |
+| Usage | `GET /api/api-keys/{id}/usage?window_days=30` (admin) | Per-key request totals (counts only) from the `api_key_usage` meter — all-time `total_requests`, trailing-`window_days` `window_requests`, `last_used_at`, and a per-day `daily` breakdown. Org-scoped (wrong-org id → opaque 404, same as revoke). **Never** the hash or plaintext. |
 | Revoke | `DELETE /api/api-keys/{id}` (admin) | Soft revoke (`revoked_at` stamped; row kept for audit). Idempotent. Audited `api_key.revoked`. |
 
 - **Plaintext shown once.** The mint response is the only place the full key ever
@@ -56,6 +57,24 @@ flag it.
   inherits enforcement without a migration.
 - **`last_used_at`.** Stamped best-effort on every successful auth (its own
   session; a failure there never breaks a valid request).
+
+### Per-key usage metering
+
+Every authenticated `/api/v1` request increments a **per-key, per-day** counter
+so usage is queryable for the billing track and for an admin "how busy is this
+key" read. The store is the aggregate `api_key_usage` table — one row per
+`(api_key_id, usage_date)` holding a running `request_count` — not a per-request
+log: aggregation keeps the write a single `INSERT … ON CONFLICT … DO UPDATE`
+increment and the read a cheap rollup, and it stores **no** request payloads or
+PII (only counts + a UTC day).
+
+The increment rides the **same** best-effort write the `last_used_at` stamp does,
+on the `get_api_key_principal` auth path (the upsert + the `last_used_at` UPDATE
+are one commit on the request-scoped control session — see `app/api/deps.py::
+_record_api_key_usage`). **Metering is best-effort:** if the usage write fails it
+is swallowed with a PII-free warning (the key id only, never the key material)
+and the request proceeds — a meter failure never breaks an otherwise valid
+authenticated call. Reads land via `GET /api/api-keys/{id}/usage` (above).
 
 ### Failure mode
 
@@ -178,6 +197,16 @@ rule has nothing to hold here.
 `created_at`/`updated_at`. Control-plane-only migration (gated on the
 `organizations` table existing — mirrors `0021_scim_bearer_hash`); it does **not**
 fan out to tenant DBs.
+
+`ApiKeyUsage` (control plane, table `api_key_usage`, migration **0058**, added to
+`CONTROL_TABLES`): `id`, `api_key_id` (FK, `ON DELETE CASCADE`),
+`organization_id` (FK — denormalised so a billing rollup can `GROUP BY` org
+without joining `api_keys`), `usage_date` (UTC day), `request_count`
+(`BigInteger`, exact), `created_at`/`updated_at`. Unique on
+`(api_key_id, usage_date)` (`uq_api_key_usage_key_day`) — the upsert target for
+the per-request increment. Control-plane-only migration (gated on `organizations`
+existing — mirrors `0055`); it does **not** fan out to tenant DBs, and a
+control-plane-only change needs no `migrate_all_tenants.py` run.
 
 ## Outbound webhooks
 
@@ -310,4 +339,10 @@ later roadmap work:
   (`scopes` column + `require_api_scope`) is in place for it.
 - **Per-key rate limiting** — the repo has a Redis sliding-window limiter
   (`services/rate_limit.py`) that a future slice should key on `api_key_id`; not
-  wired in this slice to avoid inventing a new policy surface prematurely.
+  wired in this slice to avoid inventing a new policy surface prematurely. The
+  `api_key_usage` meter now in place is the natural input for a per-key quota.
+- **Frontend key-management UI** — the API-key mint / list / revoke / **usage**
+  surface is fully built on the backend (`/api/api-keys/*`, admin-gated), but the
+  SvelteKit admin screen to drive it (show the per-key usage chart from
+  `GET /api/api-keys/{id}/usage`) is owned by the frontend track and not built
+  here. Tracked as frontend roadmap work; the read API it will call is stable.
