@@ -5,6 +5,7 @@ import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/admin_users_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/screens/org_settings_screen.dart';
+import 'package:ap_mobile/screens/workflows_screen.dart';
 import 'package:ap_mobile/services/biometric_service.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/locale_store.dart';
@@ -136,6 +137,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const OrgSettingsScreen()),
+              ),
+            ),
+            // Read-only workflow viewer (the no-code builder stays on the web).
+            ListTile(
+              leading: const Icon(Icons.account_tree_outlined),
+              title: const Text('Workflows'),
+              subtitle: const Text('View workflow definitions and steps'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const WorkflowsScreen()),
               ),
             ),
           ],

@@ -496,4 +496,91 @@ void main() {
           reason: 'a failed bulk op leaves the selection intact to retry');
     });
   });
+
+  group('exportSelected', () {
+    test('posts ids + format and returns the bytes + server filename', () async {
+      Map<String, dynamic>? sentBody;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' && req.url.path.endsWith('/bulk/export')) {
+            sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+            return http.Response(
+              'id,vendor\n1,Acme\n',
+              200,
+              headers: {
+                'content-type': 'text/csv',
+                'content-disposition':
+                    'attachment; filename="invoices-export.csv"',
+              },
+            );
+          }
+          return _list([]);
+        }),
+      );
+
+      store
+        ..debugReset()
+        ..enterSelectionMode('1')
+        ..toggleSelected('2');
+
+      final result = await store.exportSelected('csv');
+
+      expect(result, isNotNull);
+      expect(String.fromCharCodes(result!.bytes), contains('Acme'));
+      expect(result.filename, 'invoices-export.csv');
+      expect(sentBody!['format'], 'csv');
+      expect((sentBody!['ids'] as List).toSet(), {'1', '2'});
+      expect(store.selectionMode, isTrue,
+          reason: 'export is non-mutating — selection is preserved');
+    });
+
+    test('falls back to a default filename when the header is absent', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          return http.Response(
+            '<Invoices/>',
+            200,
+            headers: {'content-type': 'application/xml'},
+          );
+        }),
+      );
+
+      store
+        ..debugReset()
+        ..enterSelectionMode('1');
+
+      final result = await store.exportSelected('xml');
+
+      expect(result!.filename, 'invoices-export.xml');
+    });
+
+    test('nothing selected is a no-op (null, no request)', () async {
+      var calls = 0;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          calls++;
+          return _list([]);
+        }),
+      );
+
+      store.debugReset();
+      expect(await store.exportSelected('csv'), isNull);
+      expect(calls, 0);
+    });
+
+    test('failure records the error and returns null', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 500)),
+      );
+
+      store
+        ..debugReset()
+        ..enterSelectionMode('1');
+
+      final result = await store.exportSelected('csv');
+
+      expect(result, isNull);
+      expect(store.error, isNotNull);
+    });
+  });
 }

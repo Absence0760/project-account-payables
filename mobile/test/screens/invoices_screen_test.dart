@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -9,9 +12,42 @@ import 'package:http/testing.dart';
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
+import 'package:ap_mobile/services/file_share.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/widgets/bulk_action_bar.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
+
+/// Records the last share invocation so the export test can assert the bytes +
+/// filename reached the platform share sheet without touching a plugin channel.
+class _FakeFileShare extends FileShare {
+  _FakeFileShare() : super.forTest();
+  int calls = 0;
+  Uint8List? lastBytes;
+  String? lastFilename;
+  String? lastMimeType;
+
+  @override
+  Future<void> shareBytes({
+    required Uint8List bytes,
+    required String filename,
+    required String mimeType,
+  }) async {
+    calls++;
+    lastBytes = bytes;
+    lastFilename = filename;
+    lastMimeType = mimeType;
+  }
+}
+
+Map<String, dynamic> _me(List<String> roles) => {
+      'id': 'u1',
+      'email': 'demo@acme.com',
+      'full_name': 'Demo User',
+      'organization_id': 'org1',
+      'roles': roles,
+    };
 
 // Wraps a screen with the localization delegates it now needs. No explicit
 // `locale` → defaults to `en`, so the English assertions below still hold.
@@ -61,11 +97,15 @@ void main() {
   setUp(() async {
     InvoiceStore.instance.debugReset();
     await OfflineStore.instance.clear();
+    FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();
+    FileShare.debugOverride(null);
     // Stores are singletons — reset the filter so chip-selection tests start
     // from the 'All' (null) baseline regardless of test ordering.
     store.setStatusFilter(null);
   });
+
+  tearDown(() => FileShare.debugOverride(null));
 
   testWidgets('shows a loading spinner while the initial fetch is in flight',
       (tester) async {
@@ -256,4 +296,76 @@ void main() {
     expect(find.byType(InvoiceListTile), findsOneWidget);
     expect(store.fromCache, isTrue);
   });
+
+  testWidgets(
+      'bulk Export action: picks CSV, POSTs bulk/export, hands bytes to share',
+      (tester) async {
+    final fake = _FakeFileShare();
+    FileShare.debugOverride(fake);
+
+    var exportCalls = 0;
+    // First serve a successful login + /me (admin → canBulkEditInvoices), then
+    // the invoice list, then the export bytes.
+    ApiClient().debugConfigure(
+      client: MockClient((req) async {
+        if (req.url.path == '/api/auth/login') {
+          return http.Response(
+            jsonEncode({'access_token': 'tok'}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (req.url.path == '/api/auth/me') {
+          return http.Response(
+            jsonEncode(_me(['admin'])),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (req.method == 'POST' && req.url.path.endsWith('/bulk/export')) {
+          exportCalls++;
+          return http.Response(
+            'id,vendor\n1,Acme Corp\n',
+            200,
+            headers: {
+              'content-type': 'text/csv',
+              'content-disposition':
+                  'attachment; filename="invoices-export.csv"',
+            },
+          );
+        }
+        return _list([_invoiceJson('1', vendor: 'Acme Corp')]);
+      }),
+    );
+    await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+    await tester.pumpWidget(_localized(const InvoicesScreen()));
+    await _pumpUntil(tester, find.byType(InvoiceListTile));
+
+    // Enter selection mode and select the row.
+    store.enterSelectionMode('1');
+    await tester.pump();
+    expect(find.byType(BulkActionBar), findsOneWidget);
+
+    // Tap Export → choose CSV from the format sheet.
+    await tester.tap(find.widgetWithText(TextButton, 'Export'));
+    await tester.pumpAndSettle();
+    expect(find.text('Export as…'), findsOneWidget);
+    await tester.tap(find.text('CSV'));
+    await _pumpUntilTrue(tester, () => fake.calls >= 1);
+
+    expect(exportCalls, 1);
+    expect(fake.calls, 1);
+    expect(fake.lastFilename, 'invoices-export.csv');
+    expect(fake.lastMimeType, 'text/csv');
+    expect(String.fromCharCodes(fake.lastBytes!), contains('Acme Corp'));
+    // Non-mutating read keeps the selection.
+    expect(store.selectionMode, isTrue);
+  });
+}
+
+Future<void> _pumpUntilTrue(WidgetTester tester, bool Function() c) async {
+  for (var i = 0; i < 30 && !c(); i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
 }

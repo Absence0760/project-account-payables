@@ -182,6 +182,51 @@ class ApiClient {
     return response.bodyBytes;
   }
 
+  /// POST [body] (JSON) and return the raw response bytes (auth + tenant
+  /// headers attached) via the swappable HTTP client. [path] is API-relative
+  /// (e.g. `/invoices/bulk/export`). Used by the bulk-export action, whose
+  /// endpoint streams a CSV/XML file rather than JSON. A 401 clears the
+  /// session; any other non-2xx throws an [ApiException]. Returns the body
+  /// bytes plus the server-suggested filename parsed from `Content-Disposition`
+  /// (null when absent).
+  Future<({Uint8List bytes, String? filename})> postBytes(
+    String path, [
+    Map<String, dynamic>? body,
+  ]) async {
+    final uri = _uri(path);
+    debugPrint('[API] POST(bytes) $uri');
+    final response = await _http
+        .post(
+          uri,
+          headers: _headers,
+          body: body != null ? jsonEncode(body) : null,
+        )
+        .timeout(const Duration(seconds: 30));
+    debugPrint('[API] POST(bytes) $path → ${response.statusCode}');
+    if (response.statusCode == 401) {
+      await clearSession();
+      throw ApiException(401, 'Unauthorized');
+    }
+    if (response.statusCode >= 400) {
+      throw ApiException(response.statusCode, response.body);
+    }
+    return (
+      bytes: response.bodyBytes,
+      filename: _filenameFromDisposition(response.headers['content-disposition']),
+    );
+  }
+
+  /// Pull a `filename="..."` token out of a `Content-Disposition` header.
+  /// Returns null when the header is absent or has no filename.
+  static String? _filenameFromDisposition(String? disposition) {
+    if (disposition == null) return null;
+    final match = RegExp(r'filename\*?=(?:UTF-8'
+            "''"
+            r')?"?([^";]+)"?')
+        .firstMatch(disposition);
+    return match?.group(1)?.trim();
+  }
+
   Future<void> delete(String path) async {
     final response = await _http.delete(_uri(path), headers: _headers);
     if (response.statusCode >= 400) {

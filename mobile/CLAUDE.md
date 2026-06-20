@@ -46,10 +46,12 @@ mobile/
 │   │   ├── notification.dart    # AppNotification (in-app notification center row); eventLabel + linksToInvoice helper; copyMarkedRead for optimistic mark-read
 │   │   ├── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
 │   │   ├── payment_queue.dart   # PaymentQueueItem, PaymentSummary, PaymentRun, PaymentRunSelection (money as display strings — no client float math)
-│   │   └── vendor.dart          # Vendor, VendorStatus enum (active/unverified/inactive/rejected)
+│   │   ├── vendor.dart          # Vendor, VendorStatus enum (active/unverified/inactive/rejected)
+│   │   └── workflow.dart        # WorkflowDefinition + WorkflowStepConfig (read-only; parses steps_config.steps; typeLabel helper)
 │   ├── services/
 │   │   ├── biometric_service.dart  # Face ID / fingerprint via local_auth
 │   │   ├── camera_capture.dart     # Image picker (camera/gallery) + file picker (PDF/PNG/JPG/TIFF) + invoice upload
+│   │   ├── file_share.dart         # Swappable share_plus wrapper — writes bytes to a temp file → platform share sheet (bulk export); FileShare.debugOverride for tests
 │   │   ├── offline_store.dart      # SQLite cache for offline viewing
 │   │   └── push_service.dart       # Firebase Cloud Messaging + local notifications
 │   ├── stores/
@@ -63,6 +65,7 @@ mobile/
 │   │   ├── cash_flow_store.dart # Predictive cash-flow forecast + cash position (CFO/admin); 30/60/90-day horizon; not offline-cached (privileged fast-moving read)
 │   │   ├── locale_store.dart    # Per-device display-language choice (i18n) → MaterialApp.locale; persisted via secure storage, never account-roamed
 │   │   ├── vendor_store.dart    # Vendor list, filter/search, verify/reject, ERP sync (offline cached)
+│   │   ├── workflow_store.dart  # Workflow-definition list (read-only) — load + loading/error; NOT offline-cached (privileged admin read, no mutators)
 │   │   └── payment_queue_store.dart # Payment queue + summary + runs; per-row method selection; create/execute/cancel runs
 │   ├── screens/
 │   │   ├── login_screen.dart    # Tenant + email/password login (routes to MfaScreen on an MFA challenge)
@@ -81,10 +84,12 @@ mobile/
 │   │   ├── payments_screen.dart  # Payment history
 │   │   ├── vendors_screen.dart   # Vendor management — list + search/status filters, swipe/sheet verify+reject (unverified only), ERP-sync app-bar action (all admin/ap_manager-gated)
 │   │   ├── payment_queue_screen.dart # Pay — Queue tab (select approved invoices + per-row method → Create Run) + Runs tab (execute/cancel drafts), KPI summary bar
-│   │   └── settings_screen.dart  # User profile, biometric toggle, logout
+│   │   ├── workflows_screen.dart # Admin — read-only workflow list (name, active/default status, step count) → tap-through; reached from Settings → Administration
+│   │   ├── workflow_detail_screen.dart # Read-only workflow detail — steps (number, type, name, enabled) + per-step config summary; fetches GET /api/workflows/{id} on open
+│   │   └── settings_screen.dart  # User profile, biometric toggle, logout; Administration section (admin-only): User Management, Organization Settings, Workflows
 │   └── widgets/
 │       ├── activity_timeline.dart # Invoice audit-log timeline (action label, actor, time, per-field before→after diff); empty state; one merged Semantics label per entry
-│       ├── bulk_action_bar.dart  # Bottom bar shown in invoice multi-select mode — selected count + bulk status-change / delete actions (reusable shape)
+│       ├── bulk_action_bar.dart  # Bottom bar shown in invoice multi-select mode — selected count + bulk export / status-change / delete actions (each action omitted when its callback is null; reusable shape)
 │       ├── advanced_search_sheet.dart # Modal bottom-sheet advanced search (vendor, PO, amount range, due-date range); seeded from live filters; min≤max + decimal validation; returns InvoiceSearchFilters (Apply) / empty (Clear) / null (dismiss)
 │       ├── invoice_warnings_panel.dart # Detail-screen warnings/fraud flags (severity-coloured) + PO-match panel (match type, status, variance %, issues); one merged Semantics label per warning
 │       ├── erp_status_panel.dart # Detail-screen ERP status — ErpInfo.fromAuditLog derives ERP reference / document id / send error from the audit log; shown for ERP-bound + ERP-failed statuses
@@ -143,9 +148,10 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | MFA (second factor) | `POST /api/auth/mfa/verify` (totp/email → JWT), `POST /api/auth/mfa/challenge/email` (request email OTP) |
 | Dashboard | `GET /api/dashboard` |
 | Cash Flow | `GET /api/analytics/cashflow_forecast` + `GET /api/analytics/cash_position` (both `horizon_days` + `granularity`; CFO/admin) |
-| Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`); bulk ops `POST /api/invoices/bulk/delete` + `POST /api/invoices/bulk/status` (admin/ap_manager/cfo) |
+| Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`); bulk ops `POST /api/invoices/bulk/delete` + `POST /api/invoices/bulk/status` + `POST /api/invoices/bulk/export` (CSV/XML → share sheet; admin/ap_manager/cfo) |
 | Admin — User Management | `GET /api/admin/users` (`search`/paginated), `GET /api/admin/roles`, `PATCH /api/admin/users/{id}` (`role_names` / `is_active`) — admin only |
 | Admin — Organization Settings | `GET /api/organization`, `PATCH /api/organization` (`{name, settings:{company, invoice_defaults}}` — shallow-merged; admin only) |
+| Admin — Workflows (read-only) | `GET /api/workflows` (list), `GET /api/workflows/{id}` (detail) — reads open to any authed role; the mobile entry point is admin-only (mirrors web nav `roles: ['admin']`). No create/edit on mobile |
 | Invoice Detail | `GET /api/invoices/{id}` (carries `warnings` + `po_match`), `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline + ERP-status derivation, any authenticated role) |
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss) |
@@ -170,10 +176,13 @@ Bottom navigation adapts based on user roles (same as web frontend):
 | Payments | Admin, AP Manager, CFO |
 | Settings | All roles |
 
-The **admin surfaces** (User Management + Organization Settings) are not
-bottom-nav tabs — they live under a **Settings → Administration** section that
-renders only for admins (`AuthStore.isOrgAdmin`), mirroring the backend
-`require_roles(ROLE_ADMIN)` on `/api/admin/*` + `PATCH /api/organization`. The
+The **admin surfaces** (User Management + Organization Settings + the read-only
+Workflows viewer) are not bottom-nav tabs — they live under a **Settings →
+Administration** section that renders only for admins (`AuthStore.isOrgAdmin`),
+mirroring the backend `require_roles(ROLE_ADMIN)` on `/api/admin/*` + `PATCH
+/api/organization` and the web nav `roles: ['admin']` on `/workflows` (the
+`/api/workflows` reads themselves are open to any authed role, so the Workflows
+entry is a UI gate matching desktop, not a security boundary). The
 **invoice bulk-ops** affordance (multi-select toggle + long-press) shows only
 for `canBulkEditInvoices` (admin/ap_manager/cfo), matching the bulk endpoints'
 gate; clerks never see it.
@@ -245,17 +254,32 @@ everyone else.
 - **Passkey (WebAuthn) MFA** — web-only; never offered as a mobile factor.
 - **Org Security settings** — the web `/organization` page exposes the `mfa.required` toggle; mobile has no equivalent.
 - **OIDC SSO** — `Sign in with Okta/Microsoft` button is web-only.
-- Workflow management (list, create, edit steps) — not yet on mobile.
-- Export (CSV, JSON, XML) — the backend `POST /api/invoices/bulk/export` exists
-  and the bulk-select UI is now in place, but mobile doesn't yet trigger a file
-  download/share. A natural follow-up to the bulk-ops work.
+- **Workflow management (create / edit / no-code builder)** — the read-only
+  list + step viewer is now on mobile (see Done → "Workflow management
+  (read-only)"); creating, editing, version history, simulation and import/export
+  stay desktop-only (lower value on a phone).
 
 **Admin parity (now shipped on mobile):**
 - **Bulk operations** — invoice multi-select (long-press or the checklist
-  app-bar action) + bulk delete / bulk status-change over `POST
-  /api/invoices/bulk/{delete,status}`; gated to admin/ap_manager/cfo; the
-  backend skips immutable-status rows and the result snackbar reports
-  deleted/updated + skipped counts.
+  app-bar action) + bulk delete / bulk status-change / **bulk export** over
+  `POST /api/invoices/bulk/{delete,status,export}`; gated to
+  admin/ap_manager/cfo; the backend skips immutable-status rows and the result
+  snackbar reports deleted/updated + skipped counts. **Export** offers CSV / XML
+  from a format sheet, POSTs the selected ids to `bulk/export` (raw bytes via
+  `ApiClient.postBytes`, which parses the `Content-Disposition` filename), writes
+  the bytes to a temp file and hands them to the platform share sheet
+  (`share_plus` via the swappable `services/file_share.dart`). Export is a
+  non-mutating read, so it leaves the selection intact; loading + error +
+  share-cancel states are announced via `A11y.announce`.
+- **Workflow management (read-only)** — `WorkflowsScreen` + `WorkflowStore` over
+  `GET /api/workflows` list a tenant's workflow definitions (name, active/default
+  status badges, step count); tapping a row opens `WorkflowDetailScreen`
+  (`GET /api/workflows/{id}`) with the configured steps (number, type, name,
+  enabled flag, a short PII-free per-step config summary). Reached from Settings →
+  Administration, admin-gated (`AuthStore.canViewWorkflows`, mirroring the web
+  nav `roles: ['admin']`). The no-code builder — create / edit / versions /
+  simulate / import-export — stays on the web; mobile is a viewer. Not
+  offline-cached (privileged admin read).
 - **Admin user management** — `AdminUsersScreen` over `/api/admin/*`: list/search
   users, edit a user's roles (system roles only — custom roles confer no access
   today), activate/deactivate. Admin-only; reached from Settings → Administration.
@@ -331,7 +355,10 @@ low-balance alert exposes one merged "Low balance alert …" announcement, and t
 red projected-end / breached-closing money + alert copy all clear contrast at
 AA via `.shade900`), the invoice list tile in **selection mode** (exposes a
 `checked` state + keeps its tap target) and the `BulkActionBar` (labelled count +
-actions, contrast), and the two admin screens — `AdminUsersScreen` (a
+the export / status / delete actions, contrast), the read-only `WorkflowsScreen`
+(loaded list meets tap-target + label + contrast; the inactive row merges into
+one announcement carrying "Inactive" so the status badge isn't an unlabelled
+colour cue), and the two admin screens — `AdminUsersScreen` (a
 deactivated row merges into one announcement carrying "inactive" so the Inactive
 badge isn't an unlabelled colour cue; the in-app-bar Material `SearchBar` is a
 24px framework field exempt from the whole-screen tap-target sweep, same as the
