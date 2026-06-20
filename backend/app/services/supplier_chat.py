@@ -215,21 +215,26 @@ async def notify_supplier_of_ap_message(
 
     inv_ref = invoice.invoice_number or str(invoice.id)
     org_name = (org.settings or {}).get("company", {}).get("name") or org.name
-    subject = f"{org_name}: new message on invoice {inv_ref}"
-    body_text = (
-        f"Hi {vendor.name},\n\n"
-        f"{org_name} posted a new message on invoice {inv_ref}.\n\n"
-        f"View the conversation and reply:\n  {link}\n"
-    )
-    body_html = (
-        f"<p>Hi {vendor.name},</p>"
-        f"<p><strong>{org_name}</strong> posted a new message on invoice "
-        f"<code>{inv_ref}</code>.</p>"
-        f'<p><a href="{link}">View the conversation and reply</a></p>'
-    )
 
+    # The direct portal-link email targets the Vendor's generic contact address
+    # (not an identified VendorUser), so there's no per-user locale to read here
+    # — copy renders in English (the catalogue default). Routing it through the
+    # catalogue keeps the wording consistent with the localized notification
+    # path and makes a future per-vendor locale a one-line change. The deep link
+    # (`link`) and org name stay locale-independent (placeholder-interpolated).
     from app.services.branding import get_brand_context
-    from app.services.email_adapters import EmailMessage, get_email_adapter
+    from app.services.email_adapters import EmailMessage, get_email_adapter, translate
+
+    subject = translate("chat.portal_link.subject", None, org=org_name, ref=inv_ref)
+    greeting = translate("chat.portal_link.greeting", None, name=vendor.name)
+    line = translate("chat.portal_link.body", None, org=org_name, ref=inv_ref)
+    cta = translate("chat.portal_link.cta", None)
+    body_text = f"{greeting}\n\n{line}\n\n{cta}\n  {link}\n"
+    body_html = (
+        f"<p>{greeting}</p>"
+        f"<p>{line}</p>"
+        f'<p><a href="{link}">{cta}</a></p>'
+    )
 
     try:
         adapter = get_email_adapter()

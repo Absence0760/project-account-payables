@@ -249,8 +249,23 @@ async def notify_event(
             )
 
         if channels["email"] and getattr(user, "email", None):
-            email_text = rendered.body_text
-            email_html = rendered.body_html
+            # Localize the email copy to the recipient's account-level locale
+            # preference (DB `User.locale`). The in-app row above stays in the
+            # default (English) `rendered` — the locale pref drives EMAIL only,
+            # never in-app UI. We can only re-render per-locale when we have the
+            # PII-free invoice context; a pre-`rendered` event (e.g. contract
+            # renewal) keeps its English copy. Deep links / money / numbers are
+            # placeholder-interpolated, so they're identical across locales.
+            recipient_locale = getattr(user, "locale", None)
+            email_rendered = rendered
+            if invoice_ctx is not None and recipient_locale:
+                try:
+                    email_rendered = render(event_type, invoice_ctx, locale=recipient_locale)
+                except Exception:  # noqa: BLE001 — never let a locale render break the send
+                    email_rendered = rendered
+            email_subject = email_rendered.title
+            email_text = email_rendered.body_text
+            email_html = email_rendered.body_html
             if tenant_slug is not None:
                 from app.services.email_action_token import build_email_action_links
 
@@ -268,7 +283,7 @@ async def notify_event(
                     email_html = f"{email_html or ''}{html_block}"
             await _send_email_best_effort(
                 user.email,
-                rendered.title,
+                email_subject,
                 email_text,
                 email_html,
                 event_type=event_type,

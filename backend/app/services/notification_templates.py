@@ -49,34 +49,50 @@ def _money(ctx: InvoiceContext) -> str:
     return f" for {ctx.currency} {ctx.amount:,.2f}"
 
 
-def render(event_type: str, ctx: InvoiceContext) -> RenderedNotification:
-    """Render the notification for `event_type`. Raises on unknown events."""
+# Map the canonical event_type strings to the catalogue key prefix. The
+# catalogue (app/services/email_adapters/email_catalogue.py) owns the per-locale
+# copy; this module stays the thin event → (title, body) renderer.
+_EVENT_TO_KEY = {
+    EVENT_INVOICE_ASSIGNED: "invoice_assigned",
+    EVENT_INVOICE_APPROVED: "invoice_approved",
+    EVENT_INVOICE_REJECTED: "invoice_rejected",
+    EVENT_INVOICE_PAID: "invoice_paid",
+    EVENT_CHAT_MESSAGE: "chat_message",
+}
+
+
+def render(
+    event_type: str, ctx: InvoiceContext, *, locale: str | None = None
+) -> RenderedNotification:
+    """Render the notification for `event_type`. Raises on unknown events.
+
+    ``locale`` selects the email-copy language (account-level DB ``locale``
+    preference of the recipient). Defaults to ``None`` → English, which is what
+    the in-app notification center always uses (the in-app row is NOT localized
+    by the recipient's email locale — see ``docs/notifications.md``). The deep
+    links, money amount, invoice number, and vendor name are interpolated as
+    placeholders, so they stay identical across locales — only the copy changes.
+    """
+    # Imported lazily to keep this pure module free of the adapter package at
+    # import time (avoids a cycle: adapters never import templates).
+    from app.services.email_adapters.email_catalogue import translate
+
+    key = _EVENT_TO_KEY.get(event_type)
+    if key is None:
+        raise ValueError(f"No notification template for event type '{event_type}'")
+
     ref = f"Invoice {ctx.invoice_number} ({ctx.vendor_name})"
     money = _money(ctx)
 
-    if event_type == EVENT_INVOICE_ASSIGNED:
-        title = f"{ref} assigned to you for review"
-        body = f"{ref}{money} has been assigned to you for review."
-    elif event_type == EVENT_INVOICE_APPROVED:
-        title = f"{ref} was approved"
-        body = f"{ref}{money} has been approved."
-    elif event_type == EVENT_INVOICE_REJECTED:
-        title = f"{ref} was rejected"
-        body = f"{ref}{money} was rejected."
-        if ctx.reason:
-            body += f" Reason: {ctx.reason}"
-    elif event_type == EVENT_INVOICE_PAID:
-        title = f"{ref} was paid"
-        body = f"{ref}{money} has been marked paid."
-    elif event_type == EVENT_CHAT_MESSAGE:
+    title = translate(f"notif.{key}.title", locale, ref=ref)
+    body = translate(f"notif.{key}.body", locale, ref=ref, money=money)
+
+    if event_type == EVENT_INVOICE_REJECTED and ctx.reason:
+        body += translate("notif.invoice_rejected.reason", locale, reason=ctx.reason)
+    elif event_type == EVENT_CHAT_MESSAGE and ctx.note:
         # NEVER put the raw message body into title/body. ctx.note may carry at
         # most a short author label (e.g. "from supplier") — no message text.
-        title = f"New message on {ref}"
-        body = f"A new message was posted on {ref}."
-        if ctx.note:
-            body += f" ({ctx.note})"
-    else:
-        raise ValueError(f"No notification template for event type '{event_type}'")
+        body += translate("notif.chat_message.note", locale, note=ctx.note)
 
     body_html = f"<p>{body}</p>"
     return RenderedNotification(title=title, body_text=body, body_html=body_html)

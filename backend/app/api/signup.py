@@ -45,7 +45,12 @@ from app.schemas.signup import (
     SignupStartResponse,
     SlugCheckResponse,
 )
-from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.email_adapters import (
+    EmailMessage,
+    get_email_adapter,
+    normalize_locale,
+    translate,
+)
 from app.services.rate_limit import check_rate_limit
 from app.services.tenant_provisioning import provision_tenant
 from app.utils.hcaptcha import CaptchaError, verify_captcha
@@ -159,7 +164,11 @@ async def signup_start(
         )
     )
 
-    # 6. Create the verification token.
+    # 6. Create the verification token. The chosen email-copy locale (English
+    #    fallback) is stashed in `meta` so the later welcome email — sent from a
+    #    different request, after the user clicks the link — renders in the same
+    #    language. It drives EMAIL copy only, never any in-app UI.
+    locale = normalize_locale(body.locale)
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + VERIFICATION_TTL
     verification = EmailVerification(
@@ -169,27 +178,29 @@ async def signup_start(
         slug=body.slug,
         admin_name=body.admin_name,
         expires_at=expires_at,
-        meta={"ip": client_ip or "", "user_agent": request.headers.get("user-agent", "")},
+        meta={
+            "ip": client_ip or "",
+            "user_agent": request.headers.get("user-agent", ""),
+            "locale": locale,
+        },
     )
     db.add(verification)
     await db.flush()
 
-    # 6. Send the verification email.
+    # 6. Send the verification email (localized; the verify link is
+    #    locale-independent — only the surrounding copy changes).
     verify_link = _public_url(f"/verify?token={token}")
     email = get_email_adapter()
     try:
         await email.send(
             EmailMessage(
                 to=body.admin_email,
-                subject="Verify your Account Payables workspace",
+                subject=translate("signup.verify.subject", locale),
                 body_text=(
-                    f"Hi {body.admin_name},\n\n"
-                    f"Someone (hopefully you) requested to create the '{body.slug}' "
-                    f"workspace on Account Payables. Click the link below to "
-                    f"confirm and finish setting up your tenant:\n\n"
+                    f"{translate('signup.verify.greeting', locale, name=body.admin_name)}\n\n"
+                    f"{translate('signup.verify.body', locale, slug=body.slug)}\n\n"
                     f"{verify_link}\n\n"
-                    f"This link expires in 24 hours. If you didn't request this, "
-                    f"you can safely ignore this email.\n"
+                    f"{translate('signup.verify.expiry', locale)}\n"
                 ),
             )
         )
@@ -276,23 +287,39 @@ async def signup_complete(
     verification.consumed_at = datetime.now(UTC)
     await db.flush()
 
-    # 5. Send the welcome email with the tenant URL and credentials.
+    # 5. Send the welcome email with the tenant URL and credentials. Reuse the
+    #    locale captured at signup-start (stashed in `meta`) so the welcome lands
+    #    in the same language as the verification email. The URL / credentials
+    #    are locale-independent — only the surrounding copy changes.
     tenant_url = _tenant_url(verification.slug)
+    locale = normalize_locale((verification.meta or {}).get("locale"))
+    greeting = translate("signup.welcome.greeting", locale, name=verification.admin_name)
+    url_label = translate("signup.welcome.url_label", locale)
+    email_label = translate("signup.welcome.email_label", locale)
+    pw_label = translate("signup.welcome.password_label", locale)
+    welcome_body = "\n".join(
+        [
+            greeting,
+            "",
+            translate("signup.welcome.body", locale),
+            "",
+            f"  {url_label}:      {tenant_url}",
+            f"  {email_label}:    {verification.email}",
+            f"  {pw_label}: {temp_password}",
+            "",
+            translate("signup.welcome.change_note", locale),
+            "",
+            translate("signup.welcome.signoff", locale),
+            "",
+        ]
+    )
     email_adapter = get_email_adapter()
     try:
         await email_adapter.send(
             EmailMessage(
                 to=verification.email,
-                subject=f"Your Account Payables workspace '{verification.slug}' is ready",
-                body_text=(
-                    f"Hi {verification.admin_name},\n\n"
-                    f"Your workspace is live.\n\n"
-                    f"  URL:      {tenant_url}\n"
-                    f"  Email:    {verification.email}\n"
-                    f"  Password: {temp_password}\n\n"
-                    f"You'll be asked to change your password when you first sign in.\n\n"
-                    f"Welcome aboard!\n"
-                ),
+                subject=translate("signup.welcome.subject", locale, slug=verification.slug),
+                body_text=welcome_body,
             )
         )
     except Exception:  # noqa: BLE001

@@ -8,6 +8,10 @@ class SignupStartRequest(BaseModel):
     admin_email: str = Field(..., min_length=3, max_length=320)
     # hCaptcha response token from the widget.
     captcha_token: str | None = None
+    # Optional email-copy language for the verification + welcome emails. Any
+    # unsupported / absent value falls back to English (normalize_locale). The
+    # frontend signup form passing this is a deferred follow-up (frontend track).
+    locale: str | None = Field(default=None, max_length=16)
 
 
 class SignupStartResponse(BaseModel):
