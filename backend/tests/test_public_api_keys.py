@@ -158,6 +158,9 @@ async def _mint_key(realdb, key: str, name: str = "ci-key") -> tuple[str, dict]:
 async def test_mint_then_use_happy_path(realdb):
     mk = realdb.sessionmaker("a")
     inv_id = await _seed_invoice(mk, realdb.info("a").org_id, number="INV-A1")
+    # The /api/v1 surface is plan-gated (require_api_entitlement("public_api")).
+    # Seed the grant here rather than relying on leaked state from another test.
+    await _grant_public_api(realdb, "a")
 
     plaintext, body = await _mint_key(realdb, "a")
     # Mint returns the plaintext exactly once + metadata (no hash anywhere).
@@ -198,6 +201,7 @@ async def test_missing_and_bad_key_rejected(realdb):
 
 @pytest.mark.asyncio
 async def test_revoked_key_rejected(realdb):
+    await _grant_public_api(realdb, "a")
     plaintext, body = await _mint_key(realdb, "a")
     key_id = body["api_key"]["id"]
 
@@ -223,6 +227,7 @@ async def test_cross_tenant_key_cannot_read_other_tenant(realdb):
     mk_b = realdb.sessionmaker("b")
     inv_a = await _seed_invoice(mk_a, realdb.info("a").org_id, number="INV-ONLY-A")
     inv_b = await _seed_invoice(mk_b, realdb.info("b").org_id, number="INV-ONLY-B")
+    await _grant_public_api(realdb, "a")
 
     # Mint a key for tenant A only.
     plaintext_a, _ = await _mint_key(realdb, "a")
