@@ -47,6 +47,11 @@ CONTROL_TABLES: frozenset[str] = frozenset(
         # organizations — control-plane only, never fanned to tenant DBs.
         "plans",
         "subscriptions",
+        # Outbound webhook subscriptions + delivery log (see app/models/
+        # webhook.py). Keyed off organizations — the push counterpart of the
+        # /api/v1 pull surface. Control-plane only, never fanned to tenant DBs.
+        "webhook_subscriptions",
+        "webhook_deliveries",
     }
 )
 

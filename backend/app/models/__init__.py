@@ -66,6 +66,7 @@ from app.models.vendor_statement_recon import (
     VendorStatementReconLine,
 )
 from app.models.vendor_user import VendorUser
+from app.models.webhook import WebhookDelivery, WebhookSubscription
 from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, WorkflowStep
 
 __all__ = [
@@ -146,4 +147,6 @@ __all__ = [
     "Conversation",
     "ConversationMessage",
     "AssistantUsage",
+    "WebhookSubscription",
+    "WebhookDelivery",
 ]
