@@ -72,6 +72,11 @@ class AuthStore extends ChangeNotifier {
   // (_CFO_ROLES = admin, cfo on /analytics/cashflow_forecast + /cash_position).
   // Note: ap_manager is deliberately excluded (it's a privileged CFO surface).
   bool get canViewCashFlow => isAdmin || isCfo;
+  // Workflow management (read-only on mobile) — mirrors the web nav
+  // `roles: ['admin']`. The GET /api/workflows reads are open to any authed
+  // user, so this is a UI gate matching the desktop entry point, not a security
+  // boundary.
+  bool get canViewWorkflows => isAdmin;
 
   Future<bool> init() async {
     await ApiClient().init();

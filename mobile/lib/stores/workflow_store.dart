@@ -1,0 +1,45 @@
+import 'package:flutter/foundation.dart';
+
+import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/models/workflow.dart';
+
+/// Read-only workflow-definition list. Mirrors the admin stores
+/// (`AdminUserStore` / `OrgSettingsStore`): an in-memory singleton that loads
+/// from `GET /api/workflows`, with loading / error state. Deliberately NOT
+/// offline-cached — workflow definitions are a privileged admin read, not an
+/// operational list a clerk needs on a plane. There are no mutators: the
+/// no-code builder stays on the web.
+class WorkflowStore extends ChangeNotifier {
+  static final WorkflowStore instance = WorkflowStore._();
+  WorkflowStore._();
+
+  List<WorkflowDefinition> _workflows = [];
+  bool _loading = false;
+  String? _error;
+
+  List<WorkflowDefinition> get workflows => _workflows;
+  bool get loading => _loading;
+  String? get error => _error;
+
+  @visibleForTesting
+  void debugReset() {
+    _workflows = [];
+    _loading = false;
+    _error = null;
+  }
+
+  Future<void> fetch() async {
+    _loading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      _workflows = await WorkflowApi.list();
+      _error = null;
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
+  }
+}

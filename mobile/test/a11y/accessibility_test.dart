@@ -21,6 +21,7 @@ import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/screens/notifications_screen.dart';
+import 'package:ap_mobile/screens/workflows_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/admin_user_store.dart';
 import 'package:ap_mobile/stores/cash_flow_store.dart';
@@ -28,6 +29,7 @@ import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/org_settings_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/stores/notification_store.dart';
+import 'package:ap_mobile/stores/workflow_store.dart';
 import 'package:ap_mobile/widgets/activity_timeline.dart';
 import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
 import 'package:ap_mobile/widgets/bulk_action_bar.dart';
@@ -216,6 +218,7 @@ void main() {
       await tester.pumpWidget(_host(
         BulkActionBar(
           selectedCount: 3,
+          onExport: () {},
           onStatusChange: () {},
           onDelete: () {},
         ),
@@ -947,6 +950,71 @@ void main() {
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
       await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+
+  group('WorkflowsScreen', () {
+    setUp(() {
+      WorkflowStore.instance.debugReset();
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('the loaded list meets tap-target + label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response(
+              jsonEncode({
+                'items': [
+                  {
+                    'id': 'wf1',
+                    'name': 'Default Workflow',
+                    'is_active': true,
+                    'is_default': true,
+                    'steps_config': {
+                      'steps': [
+                        {
+                          'number': 1,
+                          'type': 'extraction',
+                          'name': 'Extract',
+                          'config': {},
+                        },
+                      ],
+                    },
+                    'created_at': '2026-01-01T00:00:00',
+                  },
+                  {
+                    'id': 'wf2',
+                    'name': 'Rush Approval',
+                    'is_active': false,
+                    'is_default': false,
+                    'steps_config': {'steps': []},
+                    'created_at': '2026-01-01T00:00:00',
+                  },
+                ],
+                'total': 2,
+                'page': 1,
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            )),
+      );
+
+      await tester.pumpWidget(_host(const WorkflowsScreen()));
+      await _pumpUntil(tester, find.text('Default Workflow'));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // Covers the Active/Inactive + Default badges (darkened-accent text).
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // The inactive row merges into one announcement carrying "Inactive" so
+      // the badge isn't an unlabelled colour cue.
+      expect(
+        find.bySemanticsLabel(RegExp(r'Rush Approval.*Inactive')),
+        findsOneWidget,
+      );
       handle.dispose();
     });
   });
