@@ -10,7 +10,7 @@ mint / revoke writes an append-only, PII-free audit row.
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, require_roles
 from app.database import get_control_db
-from app.models.api_key import ApiKey
+from app.models.api_key import ApiKey, ApiKeyUsage
 from app.models.organization import Organization
 from app.models.user import User
 from app.services.api_keys import generate_api_key
@@ -55,6 +55,26 @@ class ApiKeyCreatedResponse(BaseModel):
     api_key: ApiKeyResponse
     # Shown once; the admin must copy it now. Never stored or logged.
     key: str
+
+
+class ApiKeyUsageDay(BaseModel):
+    """One day's aggregated request count for a key."""
+
+    usage_date: date
+    request_count: int
+
+
+class ApiKeyUsageResponse(BaseModel):
+    """Per-key usage totals — counts only, never any key material."""
+
+    api_key_id: uuid.UUID
+    key_prefix: str
+    total_requests: int
+    # Trailing-window total (default 30 days) for a quick "recent activity" read.
+    window_days: int
+    window_requests: int
+    last_used_at: datetime | None = None
+    daily: list[ApiKeyUsageDay]
 
 
 @router.post("", response_model=ApiKeyCreatedResponse, status_code=status.HTTP_201_CREATED)
@@ -143,3 +163,59 @@ async def revoke_api_key(
         )
 
     return ApiKeyResponse.model_validate(row)
+
+
+@router.get("/{key_id}/usage", response_model=ApiKeyUsageResponse)
+async def get_api_key_usage(
+    key_id: uuid.UUID,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+    window_days: int = 30,
+) -> ApiKeyUsageResponse:
+    """Per-key request usage (counts only) for the public ``/api/v1`` surface.
+
+    Reads the ``api_key_usage`` aggregate (one row per key per UTC day). Returns
+    the all-time total, a trailing-``window_days`` total, and the per-day
+    breakdown. Metadata only — never the hash or plaintext. Admin + JWT-gated,
+    org-scoped (a wrong-org / missing key id is the same opaque 404 as revoke).
+    """
+    window_days = max(1, min(window_days, 365))
+
+    # Scope the key to this org first — same opaque 404 for wrong-org and
+    # missing so the response can't enumerate another tenant's key ids.
+    key_row = (
+        await db.execute(
+            select(ApiKey).where(ApiKey.id == key_id, ApiKey.organization_id == org.id)
+        )
+    ).scalar_one_or_none()
+    if key_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+
+    rows = (
+        (
+            await db.execute(
+                select(ApiKeyUsage)
+                .where(ApiKeyUsage.api_key_id == key_id)
+                .order_by(ApiKeyUsage.usage_date.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    total = sum(r.request_count for r in rows)
+    window_start = datetime.now(UTC).date() - timedelta(days=window_days - 1)
+    window_total = sum(r.request_count for r in rows if r.usage_date >= window_start)
+
+    return ApiKeyUsageResponse(
+        api_key_id=key_row.id,
+        key_prefix=key_row.key_prefix,
+        total_requests=total,
+        window_days=window_days,
+        window_requests=window_total,
+        last_used_at=key_row.last_used_at,
+        daily=[
+            ApiKeyUsageDay(usage_date=r.usage_date, request_count=r.request_count) for r in rows
+        ],
+    )

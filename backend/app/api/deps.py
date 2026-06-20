@@ -206,6 +206,45 @@ class ApiKeyPrincipal:
     scopes: tuple[str, ...]
 
 
+async def _record_api_key_usage(
+    db: AsyncSession,
+    *,
+    api_key_id: uuid.UUID,
+    org_id: uuid.UUID,
+    at: datetime,
+) -> None:
+    """Increment the per-key, per-day request counter (best-effort meter).
+
+    Single ``INSERT … ON CONFLICT (api_key_id, usage_date) DO UPDATE`` against
+    the ``api_key_usage`` aggregate so a busy key is one cheap upsert per request
+    (no per-request log rows, no read-modify-write race). The caller runs this
+    inside the same best-effort try/except as the ``last_used_at`` stamp and
+    owns the commit/rollback — a metering failure never breaks the auth path.
+    """
+    # Local import: the upsert dialect helper + model stay out of deps.py's
+    # module import graph for every consumer (mirrors the api_keys import above).
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from app.models.api_key import ApiKeyUsage
+
+    usage_date = at.astimezone(UTC).date()
+    stmt = pg_insert(ApiKeyUsage).values(
+        id=uuid.uuid4(),
+        api_key_id=api_key_id,
+        organization_id=org_id,
+        usage_date=usage_date,
+        request_count=1,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[ApiKeyUsage.api_key_id, ApiKeyUsage.usage_date],
+        set_={
+            "request_count": ApiKeyUsage.request_count + 1,
+            "updated_at": at,
+        },
+    )
+    await db.execute(stmt)
+
+
 async def get_api_key_principal(
     x_api_key: str | None = Header(default=None),
     db: AsyncSession = Depends(get_control_db),
@@ -257,18 +296,23 @@ async def get_api_key_principal(
     if org is None:
         raise _API_KEY_401
 
-    # Best-effort last-used stamp on the SAME request-scoped control session.
-    # A separate session (own connection) would run a 2nd concurrent operation
-    # on the control engine's pooled asyncpg connection — asyncpg forbids that
-    # ("another operation is in progress") and it poisons the connection for the
-    # rest of the request. Sequential reuse of `db` is safe. Never break auth.
+    # Best-effort last-used stamp + per-day usage meter on the SAME
+    # request-scoped control session. A separate session (own connection) would
+    # run a 2nd concurrent operation on the control engine's pooled asyncpg
+    # connection — asyncpg forbids that ("another operation is in progress") and
+    # it poisons the connection for the rest of the request. Sequential reuse of
+    # `db` is safe. METERING IS BEST-EFFORT: a failure here must never break an
+    # otherwise valid authenticated request, so it's swallowed (PII-free log).
+    now = datetime.now(UTC)
     try:
         await db.execute(
-            update(ApiKey).where(ApiKey.id == matched.id).values(last_used_at=datetime.now(UTC))
+            update(ApiKey).where(ApiKey.id == matched.id).values(last_used_at=now)
         )
+        await _record_api_key_usage(db, api_key_id=matched.id, org_id=org.id, at=now)
         await db.commit()
     except Exception as exc:  # pragma: no cover - observability, not auth
-        logger.warning("api-key last_used stamp failed: id=%s err=%s", matched.id, exc)
+        # PII-free: only the key id (a UUID, never the plaintext/hash) + error.
+        logger.warning("api-key usage/last_used write failed: id=%s err=%s", matched.id, exc)
         await db.rollback()
 
     return ApiKeyPrincipal(

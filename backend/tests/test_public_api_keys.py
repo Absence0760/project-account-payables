@@ -18,12 +18,16 @@ pure and always run.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
 import pytest
 
+from app.models.api_key import ApiKey
+from app.models.billing import Plan, Subscription
 from app.models.invoice import Invoice, InvoiceStatus
+from app.models.organization import Organization
 from app.services.api_keys import (
     KEY_BRAND,
     PREFIX_LEN,
@@ -98,6 +102,47 @@ async def _seed_invoice(mk, org_id, *, number: str) -> uuid.UUID:
         )
         await s.commit()
     return inv_id
+
+
+async def _grant_public_api(realdb, key: str) -> None:
+    """Give the tenant a live plan that includes the ``public_api`` entitlement.
+
+    The ``/api/v1`` routes are plan-gated (``require_api_entitlement("public_api")``
+    → 402 without a granting plan), so any test that exercises a metered v1 call
+    must seed one. Mirrors ``tests/test_billing.py::_seed_plan/_seed_subscription``.
+    """
+    from sqlalchemy import delete
+
+    org_id = realdb.info(key).org_id
+    plan_id = uuid.uuid4()
+    async with realdb.control_sessionmaker()() as s:
+        # The fixture reuses org rows across tests and doesn't truncate billing;
+        # a leftover live subscription trips uq_subscription_one_live_per_org.
+        await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
+        await s.commit()
+    async with realdb.control_sessionmaker()() as s:
+        s.add(
+            Plan(
+                id=plan_id,
+                code=f"meter_test_{uuid.uuid4().hex[:8]}",
+                name="Meter Test",
+                monthly_price=Decimal("49.00"),
+                currency="USD",
+                entitlements={"public_api": True},
+                trial_days=14,
+            )
+        )
+        s.add(
+            Subscription(
+                id=uuid.uuid4(),
+                organization_id=org_id,
+                plan_id=plan_id,
+                status="active",
+                current_period_start=datetime(2026, 6, 1, tzinfo=UTC),
+                current_period_end=datetime(2026, 6, 30, tzinfo=UTC),
+            )
+        )
+        await s.commit()
 
 
 async def _mint_key(realdb, key: str, name: str = "ci-key") -> tuple[str, dict]:
@@ -217,3 +262,128 @@ async def test_list_returns_metadata_only(realdb):
         assert "key" not in r
         # The full plaintext must not be reconstructable from list output.
         assert plaintext not in str(r)
+
+
+# ---------------------------------------------------------------------------
+# Per-key usage metering (feeds billing).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metered_call_increments_usage(realdb):
+    """Each authenticated /api/v1 call bumps the per-key, per-day counter, and the
+    admin usage endpoint reports the running total — counts only, no key material."""
+    mk = realdb.sessionmaker("a")
+    await _seed_invoice(mk, realdb.info("a").org_id, number="INV-USAGE-1")
+    await _grant_public_api(realdb, "a")
+
+    plaintext, body = await _mint_key(realdb, "a", name="metered-bot")
+    key_id = body["api_key"]["id"]
+
+    # Three programmatic reads (list + detail-ish + list again).
+    async with _api_key_client(realdb, "a", api_key=plaintext) as c:
+        for _ in range(3):
+            assert (await c.get("/api/v1/invoices")).status_code == 200
+
+    # Admin reads the meter.
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.get(f"/api/api-keys/{key_id}/usage")
+    assert resp.status_code == 200, resp.text
+    usage = resp.json()
+    assert usage["api_key_id"] == key_id
+    assert usage["key_prefix"] == plaintext[:PREFIX_LEN]
+    assert usage["total_requests"] == 3
+    assert usage["window_requests"] == 3
+    # Aggregate, not per-request: a single day row holding the running count.
+    assert len(usage["daily"]) == 1
+    assert usage["daily"][0]["request_count"] == 3
+    # last_used_at was stamped by the same auth path.
+    assert usage["last_used_at"] is not None
+    # No key material leaks anywhere in the response.
+    assert "key_hash" not in str(usage)
+    assert plaintext not in str(usage)
+
+
+@pytest.mark.asyncio
+async def test_usage_endpoint_is_admin_gated(realdb):
+    plaintext, body = await _mint_key(realdb, "a")
+    key_id = body["api_key"]["id"]
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.get(f"/api/api-keys/{key_id}/usage")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_usage_endpoint_other_tenant_key_is_404(realdb):
+    # Mint a key in tenant A; tenant B's admin must not read its usage.
+    _, body = await _mint_key(realdb, "a")
+    key_id = body["api_key"]["id"]
+    async with realdb.client(key="b", role="admin") as c:
+        resp = await c.get(f"/api/api-keys/{key_id}/usage")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_failed_usage_write_does_not_break_auth(monkeypatch):
+    """Metering is best-effort: if the per-day usage write blows up, the API-key
+    auth dependency must STILL resolve a principal (the meter is observability,
+    not auth). Pure unit test with a stub control session — no realdb harness —
+    so it deterministically pins the swallow-and-continue contract.
+    """
+    import app.api.deps as deps
+    from app.api.deps import ApiKeyPrincipal, get_api_key_principal
+    from app.services.api_keys import generate_api_key
+
+    full_key, prefix, digest = generate_api_key()
+    org_id = uuid.uuid4()
+    key_id = uuid.uuid4()
+
+    matched = ApiKey(
+        id=key_id,
+        organization_id=org_id,
+        name="stub",
+        key_prefix=prefix,
+        key_hash=digest,
+        scopes=["read"],
+        revoked_at=None,
+    )
+    org = Organization(id=org_id, name="Stub", slug="stub", db_name="ap_stub")
+
+    rollback_calls = {"n": 0}
+
+    class _StubResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [matched]
+
+    class _StubSession:
+        async def execute(self, *_a, **_k):
+            # First call: the prefix SELECT in get_api_key_principal.
+            return _StubResult()
+
+        async def get(self, _model, _id):
+            return org
+
+        async def commit(self):  # pragma: no cover - not reached on the failure path
+            pass
+
+        async def rollback(self):
+            rollback_calls["n"] += 1
+
+    # Make the meter write blow up; the auth path must swallow it.
+    async def _boom(*_a, **_k):
+        raise RuntimeError("simulated meter failure")
+
+    monkeypatch.setattr(deps, "_record_api_key_usage", _boom)
+
+    principal = await get_api_key_principal(x_api_key=full_key, db=_StubSession())
+
+    # Auth still succeeded — a valid principal for the org.
+    assert isinstance(principal, ApiKeyPrincipal)
+    assert principal.api_key_id == key_id
+    assert principal.organization_id == org_id
+    assert "read" in principal.scopes
+    # The best-effort block caught the failure and rolled back (never raised).
+    assert rollback_calls["n"] == 1
