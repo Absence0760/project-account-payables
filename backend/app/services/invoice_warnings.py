@@ -807,18 +807,18 @@ async def _ensure_exception(
 
         due_at = _dt.now(_UTC) + _td(hours=float(sla_hours))
 
-    db.add(
-        APException(
-            invoice_id=invoice.id,
-            exception_type=exception_type,
-            severity=severity,
-            description=description,
-            status="open",
-            organization_id=invoice.organization_id,
-            entity_id=invoice.entity_id,  # exception follows its invoice (P2)
-            assigned_to_user_id=assigned_to_user_id,
-            due_at=due_at,
-        )
+    from app.services.exception_service import create_exception
+
+    await create_exception(
+        db,
+        exception_type=exception_type,
+        severity=severity,
+        description=description,
+        status="open",
+        organization_id=invoice.organization_id,
+        invoice=invoice,  # exception follows its invoice (P2)
+        assigned_to_user_id=assigned_to_user_id,
+        due_at=due_at,
     )
 
 

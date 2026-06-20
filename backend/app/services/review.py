@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.services.rag import store_embedding
 from app.services.vendor_priors import record_corrections
@@ -282,16 +281,16 @@ async def reject_invoice(
         details={"reason": reason},
     )
 
-    # Create an exception record
-    db.add(
-        APException(
-            invoice_id=invoice.id,
-            exception_type="review_rejected",
-            description=reason,
-            status="open",
-            organization_id=invoice.organization_id,
-            entity_id=invoice.entity_id,  # exception follows its invoice (P2)
-        )
+    # Create an exception record (shared chokepoint → emits `exception.raised`)
+    from app.services.exception_service import create_exception
+
+    await create_exception(
+        db,
+        exception_type="review_rejected",
+        description=reason,
+        status="open",
+        organization_id=invoice.organization_id,
+        invoice=invoice,  # exception follows its invoice (P2)
     )
 
     instance = await get_workflow_instance(db, invoice.id)

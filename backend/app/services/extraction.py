@@ -328,11 +328,11 @@ async def run_extraction(
         # check in invoice_warnings.py misses. Flags with a warning on the
         # invoice and an APException for the queue; never blocks the
         # extraction itself — reviewer decides.
-        from app.models.exception import Exception as APException
         from app.services.duplicate_detection import (
             find_semantic_duplicates,
             matches_to_warning,
         )
+        from app.services.exception_service import create_exception
 
         duplicate_matches = await find_semantic_duplicates(
             db, invoice_text, exclude_invoice_id=invoice_id
@@ -342,16 +342,14 @@ async def run_extraction(
             existing = list(invoice.warnings or [])
             existing.append(duplicate_warning)
             invoice.warnings = existing
-            db.add(
-                APException(
-                    invoice_id=invoice_id,
-                    exception_type="duplicate",
-                    severity="warning",
-                    description=duplicate_warning["message"],
-                    status="open",
-                    organization_id=invoice_org_id,
-                    entity_id=invoice.entity_id,  # exception follows its invoice (P2)
-                )
+            await create_exception(
+                db,
+                exception_type="duplicate",
+                severity="warning",
+                description=duplicate_warning["message"],
+                status="open",
+                organization_id=invoice_org_id,
+                invoice=invoice,  # exception follows its invoice (P2)
             )
             print(f"[extraction] Duplicate detection: {len(duplicate_matches)} near-match(es)")
 
@@ -488,19 +486,17 @@ async def run_extraction(
         except Exception:
             pass
 
-        # Create exception record
-        from app.models.exception import Exception as APException
+        # Create exception record (shared chokepoint → emits `exception.raised`)
+        from app.services.exception_service import create_exception
 
-        db.add(
-            APException(
-                invoice_id=invoice_id,
-                exception_type="extraction_failed",
-                severity="error",
-                description=f"Extraction failed: {str(exc)[:500]}",
-                status="open",
-                organization_id=invoice_org_id,
-                entity_id=invoice.entity_id,  # exception follows its invoice (P2)
-            )
+        await create_exception(
+            db,
+            exception_type="extraction_failed",
+            severity="error",
+            description=f"Extraction failed: {str(exc)[:500]}",
+            status="open",
+            organization_id=invoice_org_id,
+            invoice=invoice,  # exception follows its invoice (P2)
         )
 
         # Transition pending → failed

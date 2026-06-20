@@ -201,21 +201,45 @@ async def emit_payment_settled(invoice) -> None:
 
 
 async def emit_exception_raised(
-    *, organization_id, exception_id, invoice_id, exception_type
+    *,
+    organization_id,
+    exception_id,
+    exception_type,
+    severity=None,
+    status=None,
+    invoice=None,
+    invoice_id=None,
 ) -> None:
     """Emit ``exception.raised`` when an AP exception is opened.
 
-    NOTE: not wired to a call site in this slice — see ``backend/docs/public-api.md``
-    § Outbound webhooks (deferred event source). Kept here so the next slice
-    only adds the one emit line at a non-conflicting exception chokepoint.
+    Wired from the shared exception-create chokepoint
+    (``services/exception_service.create_exception``) so every freshly-opened
+    ``Exception`` row — whatever code path raised it — fires exactly one
+    ``exception.raised`` event per subscription. ``event_key`` is the exception
+    id, so a best-effort re-run that re-creates the same row (or a double-fire)
+    dedupes on ``(subscription, exception.raised:<exception_id>)``.
+
+    The payload is PII-free: identifiers, the exception classification, and the
+    invoice's public-facing fields (number, vendor *name*, amount as an exact
+    string, currency). No tax id / bank detail / address. Some exceptions have no
+    invoice (e.g. a Positive Pay never-issued cheque) — then ``invoice`` is
+    ``None`` and only ``invoice_id`` (also ``None``) is carried.
     """
+    inv_id = invoice_id if invoice_id is not None else getattr(invoice, "id", None)
     await emit_event(
         organization_id=organization_id,
         event_type=EVENT_EXCEPTION_RAISED,
         event_key=str(exception_id),
         data={
             "exception_id": str(exception_id),
-            "invoice_id": str(invoice_id) if invoice_id else None,
             "exception_type": exception_type,
+            "severity": severity,
+            "status": status,
+            "invoice_id": str(inv_id) if inv_id else None,
+            "invoice_number": getattr(invoice, "invoice_number", None),
+            "vendor_name": getattr(invoice, "vendor_name", None),
+            "amount": _money_str(getattr(invoice, "amount", None)),
+            "currency": getattr(invoice, "currency", None) or "USD",
+            "link": f"/invoices/{inv_id}" if inv_id else "/exceptions",
         },
     )

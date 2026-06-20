@@ -59,6 +59,7 @@ from app.schemas.positive_pay import (
 from app.services import positive_pay as service
 from app.services import storage
 from app.services.audit_dispatch import dispatch_audit
+from app.services.exception_service import create_exception
 from app.services.positive_pay import (
     CLASS_AMOUNT_MISMATCH,
     CLASS_NOT_ON_FILE,
@@ -514,16 +515,19 @@ async def process_return(
         if already > 0:
             continue
 
-        db.add(
-            APException(
-                invoice_id=invoice_id,
-                exception_type="fraud_flag",
-                severity="error",
-                status="open",
-                description=description,
-                organization_id=org_id,
-                entity_id=entity_id,
-            )
+        # Shared chokepoint → also emits the `exception.raised` outbound webhook.
+        # No Invoice object is loaded here (a return may even be invoice-less),
+        # so we pass the bare invoice_id + entity_id; the emit payload then
+        # carries identifiers only (no number/vendor/amount) for this source.
+        await create_exception(
+            db,
+            exception_type="fraud_flag",
+            severity="error",
+            status="open",
+            description=description,
+            organization_id=org_id,
+            invoice_id=invoice_id,
+            entity_id=entity_id,
         )
         exceptions_created += 1
 
