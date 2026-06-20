@@ -953,12 +953,12 @@ The product meters extraction usage (`ExtractionUsage`, `CardRebate`) but had no
 ---
 
 ### White-Label / Partner Branding
-**Status:** In progress (per-tenant brand config + frontend CSS-var theming shipped; branded outbound PDFs + emails shipped; custom domains and reseller multi-tenant admin deferred)
+**Status:** In progress (per-tenant brand config + frontend CSS-var theming shipped; branded outbound PDFs + emails shipped; custom-domain tenant resolution shipped — vanity-host → tenant mapping on `settings.brand.custom_domains`, JWT cross-check preserved; reseller multi-tenant admin + the custom-domain admin UI deferred)
 
 Per-tenant theming so resellers, banks, and ERP partners can offer the platform under their own brand — a common mid-market distribution channel and an enterprise procurement ask.
 
 - [x] Per-tenant brand config — logo, accent/theme tokens, product name, support + legal links on `Organization.settings.brand` (no migration), `GET/PUT /api/organization/branding` (admin mutate, audited, hex/URL-validated). Frontend `brand` rune store applies `--accent`/`--accent-strong` CSS custom properties on mount (org colors override the AA defaults only when set), logo + product name in the sidebar + `<title>`, edited from the Organization → Branding panel. See `docs/white-label.md`
-- [ ] Custom domain / subdomain support beyond `*.localhost` tenant routing (TLS + the existing `X-Tenant-Slug` resolution)
+- [x] Custom domain / subdomain support beyond `*.localhost` tenant routing — backend resolution layer shipped: a tenant can register vanity hostnames on `settings.brand.custom_domains` (JSON, no migration); `app/tenant.py::get_tenant_slug` falls back to matching the request `Host` against that list when no `X-Tenant-Slug` header is present (`resolve_tenant_slug_by_custom_domain` + `normalize_custom_domain`, JSONB `@>` lookup). The resolved slug is only a **candidate** — `get_tenant`'s JWT `org`-claim cross-check still gates it, so a forged `Host` can't widen access (invariant #4 preserved); unknown/malformed host falls back to the original 400. TLS + DNS provisioning is infra (out of scope for app code); the per-tenant `custom_domains` admin UI is deferred. See `docs/white-label.md § Custom domains` + `docs/multi-tenancy.md`
 - [x] Branded outbound surfaces (PDFs + emails) — remittance / 1099 / SOX-audit PDFs and outbound transactional emails carry the tenant product name + logo + accent (resolved through one `services/branding.get_brand_context` helper; PDF logo embed is size/time-bounded + fail-soft to product-name text; email From display name + HTML header + support footer applied in the shared email-adapter base). See `docs/white-label.md`. (Supplier-portal theming + PDF/CSV-export branding + the localized email catalogue remain.)
 - [ ] Partner/reseller admin — a parent that manages multiple branded child tenants (relates to the deferred multi-entity / org-hierarchy work)
 

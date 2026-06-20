@@ -5,12 +5,15 @@ product name, logo, and accent colors. Shipped so far:
 
 1. **Brand config + frontend theming** (first slice) — `settings.brand`,
    `GET/PUT /api/organization/branding`, CSS custom-property theming.
-2. **Branded outbound surfaces** (this slice) — the generated PDFs (remittance,
+2. **Branded outbound surfaces** — the generated PDFs (remittance,
    1099 working copy, SOX audit report) and outbound transactional emails carry
    the tenant's product name + logo + accent, not the platform's.
+3. **Custom domains** (this slice) — a tenant can be served on its own vanity
+   hostname (`ap.acmecorp.com`) and have the backend resolve it to the right
+   tenant, in addition to the `*.localhost` subdomain / `X-Tenant-Slug`
+   mechanism. See [Custom domains](#custom-domains-vanity-hostnames) below.
 
-Custom domains (vanity hostnames) and reseller / partner multi-tenant admin are
-later slices (see `docs/roadmap.md`).
+Reseller / partner multi-tenant admin is a later slice (see `docs/roadmap.md`).
 
 ## What it covers
 
@@ -157,8 +160,82 @@ failure degrades to the platform brand, never breaking the send.
 - Frontend: `frontend/src/lib/stores/brandTheme.test.ts` — the pure
   color-application / fallback logic (`isValidHexColor`, `brandThemeVars`).
 
+## Custom domains (vanity hostnames)
+
+A tenant can be reached on its own hostname — `ap.acmecorp.com` — instead of (or
+in addition to) the `*.localhost` / `<slug>.app.com` subdomain. This is the
+white-label "served under the partner's own domain" ask. The TLS certificate and
+DNS for the vanity host are **infra** concerns (CloudFront/ALB + ACM + a CNAME to
+the platform) and out of scope for the app code; the app's job is purely to map
+an inbound request on that host back to the right tenant.
+
+### Storage — no migration
+
+The vanity hostnames live on `Organization.settings.brand.custom_domains`, a JSON
+array of bare, lowercase hostnames, e.g.:
+
+```json
+{ "brand": { "custom_domains": ["ap.acmecorp.com", "pay.acmecorp.com"] } }
+```
+
+Like every other white-label field, this is settings JSONB — **no migration**. A
+malformed / non-array `custom_domains` value never breaks resolution (see below).
+
+### Resolution — `app/tenant.py`
+
+`get_tenant_slug` resolves the tenant selector for every request, in order:
+
+1. **Primary** — the `X-Tenant-Slug` header (set by the SPA from the subdomain).
+   If present, it is used verbatim and the custom-domain lookup is skipped (no DB
+   query).
+2. **Fallback** — when the header is absent, the request `Host` header is
+   normalized (`normalize_custom_domain`: strip `:port`, lowercase, reject empty /
+   IPv6-literal / malformed values) and matched against the per-org
+   `settings.brand.custom_domains` array via a JSONB `@>` containment query
+   (`resolve_tenant_slug_by_custom_domain`). A match yields the owning org's slug.
+3. An unknown/unmatched host (or a malformed settings blob — the lookup catches
+   and swallows the error) **falls back to the original 400** "Missing
+   X-Tenant-Slug header". It never resolves a wrong tenant and never 500s.
+
+The resolved slug then flows through the **unchanged** `get_tenant` →
+`get_tenant_db` chain — the tenant engine is still built only through the existing
+`get_tenant_engine(tenant.db_name)` chokepoint, never by a hardcoded DB name.
+
+### Trust model — the JWT cross-check still gates everything
+
+This is the load-bearing point. A custom domain resolves only a **candidate**
+tenant slug; it does **not** grant access. `get_tenant` still performs the
+cross-tenant guard: for an employee JWT (`typ != "vendor"`), the token's `org`
+claim **must equal** the resolved Organization's id, or the request is rejected
+with `403`. So:
+
+- A forged / leaked `Host: ap.acmecorp.com` header, on its own, can no more widen
+  access than a forged `X-Tenant-Slug: acme` header can — both only pick a
+  candidate; the JWT org claim is the actual authority. An attacker holding a
+  techflow JWT who points a request at acme's vanity host still gets a 403.
+- Vendor-portal tokens (`typ="vendor"`) and unauthenticated requests are exempt
+  from the cross-check exactly as before (VendorUser rows are tenant-local;
+  unauthenticated requests are rejected by the downstream auth dependency). The
+  custom-domain fallback changes *how the slug is derived*, not the guard that
+  follows it.
+
+In short: custom-domain resolution is a convenience for picking the tenant when
+the SPA can't supply the header; it is **not** a new trust boundary, and the
+existing tenant-isolation invariant (project invariant #4) is fully preserved.
+
+### Tests
+
+`backend/tests/test_tenant_custom_domain.py` — `normalize_custom_domain`
+edge cases (port strip, case-fold, IPv6/malformed reject); the header taking
+priority and skipping the DB lookup; a custom domain resolving to the right slug;
+unknown domain / no host falling back to 400; a malformed settings blob not
+500-ing; and — the security headline — that the JWT `org`-claim cross-check still
+rejects a mismatched token on the custom-domain path (and allows a matching one).
+
 ## Deferred to later slices
 
-- Custom domains (vanity hostnames per tenant).
+- Admin UI to manage a tenant's `custom_domains` list (currently set via the
+  settings JSON / API directly) and the operational runbook for the
+  TLS-cert + DNS provisioning that pairs with it.
 - Reseller / partner multi-tenant admin (one partner managing many tenants'
   branding).

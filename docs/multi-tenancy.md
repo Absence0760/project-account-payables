@@ -41,6 +41,10 @@ X-Tenant-Slug header + Authorization Bearer <JWT>
 
 The cross-check in `get_tenant` is the load-bearing security control. Without it, an authenticated user from tenant A could read or mutate tenant B's data by sending `X-Tenant-Slug: <other-tenant>`. Vendor-portal tokens (`typ="vendor"`) are exempt — they're scoped naturally because `VendorUser` rows live in the per-tenant DB. See `docs/authentication.md § Cross-tenant guard`.
 
+### Custom-domain fallback (white-label vanity hostnames)
+
+When the `X-Tenant-Slug` header is **absent**, `get_tenant_slug` falls back to matching the request `Host` against the per-org `settings.brand.custom_domains` JSON array, so a tenant served on its own vanity hostname (`ap.acmecorp.com`) resolves to its slug without the SPA supplying the header. An unknown / unmatched host (or a malformed settings blob) falls back to the original `400` — never a wrong tenant. **The fallback only picks a *candidate* slug; the `get_tenant` JWT `org`-claim cross-check above still gates it**, so a forged `Host` header can no more widen access than a forged `X-Tenant-Slug` header can. See `docs/white-label.md § Custom domains` for the full trust model.
+
 ### 4. Routes use the correct database
 
 - **Auth routes** (`/api/auth/*`) use the control-plane DB — users and orgs live there
