@@ -128,6 +128,101 @@ test.describe('/billing (admin)', () => {
 		}
 	});
 
+	test('renders the invoices / receipts section (mock provider seeds receipts)', async ({
+		page
+	}) => {
+		// `GET /api/billing/invoices` is admin/cfo-gated and sourced through the
+		// org's billing adapter. The local-first default (`mock`) fabricates
+		// deterministic receipts only when the org has a provider customer id; a
+		// fresh e2e tenant has none, so the list is legitimately empty and the
+		// section shows its "No invoices yet." empty state. Either way the section
+		// renders with its table (never a 500), which is what we assert here.
+		const section = page.getByTestId('billing-invoices');
+		await expect(section).toBeVisible({ timeout: 10_000 });
+		await expect(section.getByRole('heading', { name: 'Invoices & receipts' })).toBeVisible();
+		// A grid is present (the DataTable shell) regardless of row count.
+		await expect(section.locator('.grid-container table')).toBeVisible();
+	});
+
+	test('with seeded billing receipts, the list shows rows + a hosted-url link', async ({
+		page
+	}) => {
+		// Point the org at a billing customer id so the `mock` adapter fabricates
+		// deterministic receipts, and stub one row's hosted_url via route
+		// interception so the "View" link is deterministically present. The route
+		// stub keeps this test independent of provider seed state.
+		await page.route('**/api/billing/invoices', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					provider: 'mock',
+					invoices: [
+						{
+							id: 'mock_in_e2e_2026-06',
+							number: 'MOCK-2026-06',
+							period: '2026-06',
+							amount: '49.00',
+							currency: 'USD',
+							status: 'paid',
+							hosted_url: 'https://billing.example.com/invoices/mock_in_e2e_2026-06',
+							created_at: '2026-06-01T00:00:00Z'
+						},
+						{
+							id: 'mock_in_e2e_2026-05',
+							number: 'MOCK-2026-05',
+							period: '2026-05',
+							amount: '49.00',
+							currency: 'USD',
+							status: 'open',
+							hosted_url: null,
+							created_at: '2026-05-01T00:00:00Z'
+						}
+					]
+				})
+			});
+		});
+
+		await page.goto('/billing');
+		await page.waitForLoadState('networkidle');
+
+		const section = page.getByTestId('billing-invoices');
+		await expect(section).toBeVisible({ timeout: 10_000 });
+		// Both rows surface their invoice number + exact <Money> amount + status.
+		await expect(section.getByText('MOCK-2026-06')).toBeVisible();
+		await expect(section.getByText('MOCK-2026-05')).toBeVisible();
+		await expect(section.getByText('$49.00').first()).toBeVisible();
+		await expect(section.getByText('Paid', { exact: true })).toBeVisible();
+		await expect(section.getByText('Open', { exact: true })).toBeVisible();
+		// The paid row's hosted-url opens in a new tab.
+		const viewLink = section.getByRole('link', {
+			name: /View invoice MOCK-2026-06 \(opens in a new tab\)/
+		});
+		await expect(viewLink).toBeVisible();
+		await expect(viewLink).toHaveAttribute(
+			'href',
+			'https://billing.example.com/invoices/mock_in_e2e_2026-06'
+		);
+		await expect(viewLink).toHaveAttribute('target', '_blank');
+	});
+
+	test('with no receipts, the invoices section shows the empty state', async ({ page }) => {
+		await page.route('**/api/billing/invoices', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ provider: 'mock', invoices: [] })
+			});
+		});
+
+		await page.goto('/billing');
+		await page.waitForLoadState('networkidle');
+
+		const section = page.getByTestId('billing-invoices');
+		await expect(section).toBeVisible({ timeout: 10_000 });
+		await expect(section.getByText('No invoices yet.')).toBeVisible();
+	});
+
 	test('the Subscription section tab is visible + active for the admin', async ({ page }) => {
 		// /billing is a child of the Billing nav group, so it surfaces as a
 		// section sub-tab (not a top-level sidebar row). On /billing the Billing
@@ -159,10 +254,12 @@ test.describe('/billing (clerk — not authorized)', () => {
 	test('the API 403s a clerk directly', async ({ page, tenantClerk }) => {
 		await signInAndWait(page, tenantClerk);
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));
-		const resp = await page.request.get(
-			`${process.env.PUBLIC_API_URL ?? 'http://localhost:8000'}/api/billing/subscription`,
-			{ headers: { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() } }
-		);
-		expect(resp.status()).toBe(403);
+		const base = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+		const headers = { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() };
+		// Both billing reads (subscription + invoices) are admin/cfo-only.
+		const sub = await page.request.get(`${base}/api/billing/subscription`, { headers });
+		expect(sub.status()).toBe(403);
+		const invoices = await page.request.get(`${base}/api/billing/invoices`, { headers });
+		expect(invoices.status()).toBe(403);
 	});
 });

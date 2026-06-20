@@ -60,3 +60,33 @@ export interface BillingSubscriptionResponse {
 	period: string;
 	usage: BillingUsage;
 }
+
+/** Settlement state of a past billing invoice / receipt. */
+export type BillingInvoiceStatus = 'paid' | 'open' | 'void';
+
+/** One past platform-billing invoice / receipt. Mirrors `GET /api/billing/invoices`
+ *  (`backend/app/api/billing.py`). Money is an exact decimal string. */
+export interface BillingInvoice {
+	/** Provider-side invoice id (stable row key). */
+	id: string;
+	/** Human invoice number (e.g. `MOCK-2026-06`), null when the provider omits it. */
+	number: string | null;
+	/** Billing period the invoice covers, `YYYY-MM` (null when unknown). */
+	period: string | null;
+	/** Total as an exact decimal string — rendered via `<Money>`, never re-computed. */
+	amount: string;
+	/** ISO 4217 currency code. */
+	currency: string;
+	status: BillingInvoiceStatus;
+	/** Hosted invoice / receipt URL (e.g. Stripe), null when the provider has none. */
+	hosted_url: string | null;
+	/** ISO timestamp the invoice was created (null when unknown). */
+	created_at: string | null;
+}
+
+export interface BillingInvoicesResponse {
+	/** Active billing adapter (e.g. `mock`, `stripe_billing`). */
+	provider: string;
+	/** Past invoices / receipts, newest first. Empty when the org has none. */
+	invoices: BillingInvoice[];
+}

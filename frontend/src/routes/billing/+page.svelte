@@ -3,11 +3,16 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import SubscriptionBadge from '$lib/components/ui/SubscriptionBadge.svelte';
-	import { getBillingSubscription } from '$lib/api/billing';
+	import { getBillingInvoices, getBillingSubscription } from '$lib/api/billing';
 	import { formatMoney } from '$lib/utils/money';
-	import type { BillingSubscriptionResponse } from '$lib/types/billing';
+	import type {
+		BillingInvoice,
+		BillingInvoiceStatus,
+		BillingSubscriptionResponse
+	} from '$lib/types/billing';
 
 	// RBAC: the backend gates `GET /api/billing/subscription` to admin / cfo and
 	// 403s everyone else. `isAdmin` covers admin; `isCfo` = admin|cfo, so the
@@ -25,6 +30,12 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
+	// Invoices / receipts list — loaded independently so a slow / failed invoices
+	// fetch never blocks the plan + usage surface (and vice-versa).
+	let invoices = $state<BillingInvoice[]>([]);
+	let invoicesLoading = $state(true);
+	let invoicesError = $state<string | null>(null);
+
 	async function load() {
 		loading = true;
 		error = null;
@@ -37,10 +48,25 @@
 		}
 	}
 
+	async function loadInvoices() {
+		invoicesLoading = true;
+		invoicesError = null;
+		try {
+			invoices = (await getBillingInvoices()).invoices;
+		} catch (e) {
+			invoicesError = e instanceof Error ? e.message : 'Failed to load invoices.';
+		} finally {
+			invoicesLoading = false;
+		}
+	}
+
 	$effect(() => {
 		// Only fetch once we know the role is allowed (avoids a guaranteed 403
 		// for the clerk/manager before the redirect fires).
-		if (userLoaded && allowed) load();
+		if (userLoaded && allowed) {
+			load();
+			loadInvoices();
+		}
 	});
 
 	const plan = $derived(data?.plan ?? null);
@@ -67,6 +93,22 @@
 			? `${formatDate(subscription.current_period_start)} → ${formatDate(subscription.current_period_end)}`
 			: '—'
 	);
+
+	/** Human label for an invoice settlement state (data-driven English). */
+	const INVOICE_STATUS_LABELS: Record<BillingInvoiceStatus, string> = {
+		paid: 'Paid',
+		open: 'Open',
+		void: 'Void'
+	};
+
+	const INVOICE_COLUMNS = [
+		{ label: 'Invoice' },
+		{ label: 'Period' },
+		{ label: 'Amount', class: 'num' },
+		{ label: 'Status' },
+		{ label: 'Date' },
+		{ label: '', class: 'actions-col' }
+	];
 
 	/** Pretty list of granted entitlement flags (truthy boolean keys). */
 	const entitlementFlags = $derived(
@@ -186,6 +228,60 @@
 				<Money amount={data?.usage.card_rebate_total} />
 				(informational)
 			</p>
+		</section>
+	{/if}
+
+	<!-- Invoices / receipts — the org's past platform-billing invoices. Loaded
+	     independently of the plan/usage block above, so it renders for an org
+	     with receipts but no live subscription too. -->
+	{#if !loading && !error}
+		<section class="invoices-section" aria-label="Invoices and receipts" data-testid="billing-invoices">
+			<h3>Invoices &amp; receipts</h3>
+			{#if invoicesLoading}
+				<p class="state" data-testid="billing-invoices-loading">Loading invoices…</p>
+			{:else if invoicesError}
+				<div class="state error" data-testid="billing-invoices-error" role="alert">
+					<p>{invoicesError}</p>
+					<button type="button" class="btn" onclick={loadInvoices}>Retry</button>
+				</div>
+			{:else}
+				<DataTable
+					columns={INVOICE_COLUMNS}
+					isEmpty={invoices.length === 0}
+					empty="No invoices yet."
+				>
+					{#snippet body()}
+						{#each invoices as inv (inv.id)}
+							<tr>
+								<td class="mono">{inv.number ?? '—'}</td>
+								<td>{inv.period ?? '—'}</td>
+								<td class="num"><Money amount={inv.amount} currency={inv.currency} /></td>
+								<td>
+									<span class="inv-badge {inv.status}">
+										{INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
+									</span>
+								</td>
+								<td>{formatDate(inv.created_at)}</td>
+								<td class="actions">
+									{#if inv.hosted_url}
+										<a
+											class="link"
+											href={inv.hosted_url}
+											target="_blank"
+											rel="noopener noreferrer"
+											aria-label={`View invoice ${inv.number ?? inv.id} (opens in a new tab)`}
+										>
+											View
+										</a>
+									{:else}
+										<span class="muted">—</span>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					{/snippet}
+				</DataTable>
+			{/if}
 		</section>
 	{/if}
 </PageHeader>
@@ -353,5 +449,50 @@
 	.link {
 		color: var(--accent, #7d9bff);
 		font-size: 0.9rem;
+	}
+
+	.invoices-section {
+		margin-top: 1.5rem;
+		max-width: 720px;
+	}
+
+	.invoices-section h3 {
+		margin: 0 0 0.75rem;
+	}
+
+	.num {
+		text-align: right;
+	}
+
+	.muted {
+		color: var(--text-muted, #94a3b8);
+	}
+
+	/* Settlement-state pill — mirrors the StatusBadge .badge recipe, tones
+	   WCAG-1.4.3-calibrated against the dark surface (green/grey/red). */
+	.inv-badge {
+		display: inline-block;
+		padding: 3px 10px;
+		border-radius: 12px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		white-space: nowrap;
+	}
+
+	.inv-badge.paid {
+		background: rgba(31, 168, 106, 0.15);
+		color: #26b977;
+	}
+
+	.inv-badge.open {
+		background: rgba(255, 180, 50, 0.15);
+		color: #d4940a;
+	}
+
+	.inv-badge.void {
+		background: rgba(148, 163, 184, 0.18);
+		color: #94a3b8;
 	}
 </style>
