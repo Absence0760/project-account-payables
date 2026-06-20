@@ -80,6 +80,76 @@ export interface RiskSummaryBucket {
 	count: number;
 }
 
+// ---------------------------------------------------------------------------
+// External vendor enrichment (firmographics from D&B / Clearbit / mock).
+// Mirrors the backend `VendorEnrichmentResponse` / `VendorEnrichmentApply*`.
+// Advisory / suggestion-only: the enrich call NEVER writes back — a steward
+// reviews the per-field diff and explicitly applies a chosen subset. `tax_id`
+// is intentionally NOT applyable here (only `name` / `address` / `website`);
+// a tax-id change goes through the bank/tax change-request gate.
+// ---------------------------------------------------------------------------
+
+// Vendor columns the enrichment apply endpoint can write. Kept in lock-step
+// with the backend `APPLYABLE_FIELDS` tuple (name / address / website).
+export type EnrichableField = 'name' | 'address' | 'website';
+
+// Normalised firmographics from the provider (raw tax_id is never echoed —
+// only `tax_id_masked` of the form `***<last4>`).
+export interface VendorFirmographics {
+	provider: string;
+	matched: boolean;
+	legal_name: string | null;
+	address: string | null;
+	country: string | null;
+	industry: string | null;
+	sic_code: string | null;
+	naics_code: string | null;
+	employee_count: number | null;
+	annual_revenue: string | null;
+	website: string | null;
+	duns_number: string | null;
+	year_founded: number | null;
+	tax_id_masked: string | null;
+	confidence: number | null;
+	extra: Record<string, unknown>;
+}
+
+// One advisory change a steward may choose to apply (current → suggested).
+export interface EnrichmentFieldSuggestion {
+	field: EnrichableField;
+	current_value: string | null;
+	suggested_value: string | null;
+}
+
+export interface VendorEnrichmentResponse {
+	vendor_id: string;
+	vendor_name: string;
+	firmographics: VendorFirmographics;
+	suggestions: EnrichmentFieldSuggestion[];
+	generated_at: string;
+}
+
+// The steward's selection of fields to write onto the vendor.
+export interface EnrichmentApplyField {
+	field: EnrichableField;
+	value: string | null;
+}
+
+export interface VendorEnrichmentApplyResponse {
+	vendor_id: string;
+	// Field-level before/after diff actually written (empty when a no-op).
+	applied: Record<string, { old: string | null; new: string | null }>;
+	vendor: Vendor;
+	applied_at: string;
+}
+
+// Human labels for the applyable fields (used in the enrich diff UI).
+export const ENRICHABLE_FIELD_LABELS: Record<EnrichableField, string> = {
+	name: 'Legal name',
+	address: 'Address',
+	website: 'Website'
+};
+
 export const SCREENING_STATUS_LABELS: Record<ScreeningStatus, string> = {
 	unscreened: 'Unscreened',
 	clear: 'Clear',
