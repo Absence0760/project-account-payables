@@ -20,6 +20,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.services.adaptive_workflows import (
+    ApproverPattern,
+    EligibleApprover,
     VendorBaseline,
     _stdev,
     compute_approver_patterns,
@@ -27,6 +29,7 @@ from app.services.adaptive_workflows import (
     compute_vendor_patterns,
     derive_suggestions,
     detect_invoice_anomaly,
+    recommend_approvers,
 )
 
 # ---------------------------------------------------------------------------
@@ -216,6 +219,106 @@ def test_derive_no_suggestion_when_any_modification():
     ]
     s = derive_suggestions(compute_vendor_patterns(clean))[0]
     assert "20/20 invoices approved unmodified" in s.title
+
+
+# ---------------------------------------------------------------------------
+# Smart routing — pure-function tests
+# ---------------------------------------------------------------------------
+
+
+def _pat(approver_id, *, approved, rejected=0, median_ttd="1.0"):
+    """Build an ApproverPattern with the fields recommend_approvers reads."""
+    total = approved + rejected
+    rate = Decimal("0") if total == 0 else (Decimal(approved) / Decimal(total) * 100)
+    return ApproverPattern(
+        approver_id=approver_id,
+        approver_name=None,
+        approved_count=approved,
+        rejected_count=rejected,
+        approval_rate_pct=rate.quantize(Decimal("0.1")),
+        median_time_to_approve_days=Decimal(median_ttd),
+        avg_time_to_approve_days=Decimal(median_ttd),
+        sample_size=total,
+    )
+
+
+def test_routing_prefers_faster_consistent_approver():
+    # A is fast + clean; B is slow + has rejections. A should rank first.
+    pats = [
+        _pat("A", approved=20, rejected=0, median_ttd="1.0"),
+        _pat("B", approved=10, rejected=10, median_ttd="10.0"),
+    ]
+    eligible = [
+        EligibleApprover("A", "Ann"),
+        EligibleApprover("B", "Bob"),
+    ]
+    res = recommend_approvers(eligible, pats, vendor_id="V1", vendor_name="Acme")
+    assert res.insufficient_history is False
+    assert [c.approver_id for c in res.candidates] == ["A", "B"]
+    assert res.candidates[0].rank == 1
+    assert res.candidates[1].rank == 2
+    assert res.candidates[0].score > res.candidates[1].score
+    # Advisory only — no assignment field, just a ranked read model.
+    assert res.candidates[0].approver_name == "Ann"
+
+
+def test_routing_vendor_familiarity_breaks_close_race():
+    # Two identical approvers; the one familiar with the vendor wins.
+    pats = [
+        _pat("A", approved=15, rejected=0, median_ttd="2.0"),
+        _pat("B", approved=15, rejected=0, median_ttd="2.0"),
+    ]
+    eligible = [
+        EligibleApprover("A", "Ann", vendor_approved_count=0),
+        EligibleApprover("B", "Bob", vendor_approved_count=5),
+    ]
+    res = recommend_approvers(eligible, pats, vendor_id="V1", vendor_name="Acme")
+    assert res.candidates[0].approver_id == "B"
+    assert res.candidates[0].vendor_approved_count == 5
+    assert any("this vendor" in r for r in res.candidates[0].reasons)
+
+
+def test_routing_new_approver_with_no_history_is_routable_but_last():
+    # C has no decision history and no familiarity → appears, scored 0, ranked last,
+    # and insufficient_history stays False because A/B do have history.
+    pats = [_pat("A", approved=20, rejected=0, median_ttd="1.0")]
+    eligible = [
+        EligibleApprover("A", "Ann"),
+        EligibleApprover("C", "Cal"),  # not in patterns at all
+    ]
+    res = recommend_approvers(eligible, pats, vendor_id="V1", vendor_name="Acme")
+    assert res.insufficient_history is False
+    ids = [c.approver_id for c in res.candidates]
+    assert ids == ["A", "C"]
+    cal = res.candidates[1]
+    assert cal.sample_size == 0
+    assert cal.score == Decimal("0.0")
+    assert "no approval history yet" in cal.reasons
+
+
+def test_routing_insufficient_history_when_nobody_has_acted():
+    # No patterns, no familiarity → insufficient_history True (caller falls back).
+    eligible = [EligibleApprover("A", "Ann"), EligibleApprover("B", "Bob")]
+    res = recommend_approvers(eligible, [], vendor_id="V1", vendor_name="Acme")
+    assert res.insufficient_history is True
+    # Still returns the candidates (ranked, all score 0) so the UI can list them.
+    assert {c.approver_id for c in res.candidates} == {"A", "B"}
+    assert all(c.score == Decimal("0.0") for c in res.candidates)
+
+
+def test_routing_top_n_caps_the_list():
+    pats = [_pat(x, approved=10, rejected=0) for x in ("A", "B", "C", "D")]
+    eligible = [EligibleApprover(x, x) for x in ("A", "B", "C", "D")]
+    res = recommend_approvers(eligible, pats, top_n=2)
+    assert len(res.candidates) == 2
+
+
+def test_routing_is_advisory_no_mutation_surface():
+    # Sanity: the suggestion object exposes no apply/assign affordance — it is a
+    # frozen read model of ranked candidates only.
+    res = recommend_approvers([EligibleApprover("A", "Ann")], [_pat("A", approved=5)])
+    assert not hasattr(res, "assign")
+    assert not hasattr(res.candidates[0], "apply")
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +620,61 @@ async def test_suggestions_scoped_to_organization(realdb):
             await s.execute(select(WorkflowSuggestion).where(WorkflowSuggestion.id == foreign_id))
         ).scalar_one()
         assert row.status == "open"
+
+
+async def test_routing_suggestion_endpoint(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    # ap_manager approves 24 of this vendor's invoices → history + familiarity.
+    vid = await _seed_approved_vendor(mk, org_id, actor_id, amounts=[Decimal("4800")] * 24)
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get(f"/api/adaptive/routing-suggestion?invoice_id={inv_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["insufficient_history"] is False
+    assert data["invoice_id"] == str(inv_id)
+    # The approving manager appears, with vendor familiarity, ranked first.
+    top = data["candidates"][0]
+    assert top["approver_id"] == str(actor_id)
+    assert top["rank"] == 1
+    assert top["vendor_approved_count"] == 24
+    # Scores serialise as string-Decimal (no wire floats).
+    assert isinstance(top["score"], str)
+    # ap_clerk is NOT an eligible approver → never a candidate.
+    clerk_id = str(realdb.info("a").users["ap_clerk"])
+    assert all(c["approver_id"] != clerk_id for c in data["candidates"])
+
+
+async def test_routing_suggestion_404_outside_tenant(realdb):
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get(f"/api/adaptive/routing-suggestion?invoice_id={uuid.uuid4()}")
+    assert r.status_code == 404
+
+
+async def test_routing_suggestion_rbac_and_auth(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    vid = await _seed_approved_vendor(mk, org_id, actor_id, amounts=[Decimal("4800")] * 24)
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+    path = f"/api/adaptive/routing-suggestion?invoice_id={inv_id}"
+
+    # Unauthenticated → 401.
+    async with realdb.client(key="a", role=None) as anon:
+        assert (await anon.get(path)).status_code == 401
+    # Clerk excluded from this manager/CFO read surface → 403.
+    async with realdb.client(key="a", role="ap_clerk") as clerk:
+        assert (await clerk.get(path)).status_code == 403
+    # CFO allowed.
+    async with realdb.client(key="a", role="cfo") as cfo:
+        assert (await cfo.get(path)).status_code == 200
 
 
 async def test_tenant_isolation(realdb):

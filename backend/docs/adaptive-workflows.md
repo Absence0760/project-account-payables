@@ -1,10 +1,12 @@
 # Adaptive AI Workflows
 
 > **Advisory only.** Nothing in this feature approves an invoice, adjusts a
-> threshold, or mutates a workflow definition. It is a set of **read models**
-> over approval history plus an **advisory** suggestion store. The "act" surfaces
-> (smart routing, auto-adjusting thresholds, A/B testing, retraining) are tracked
-> follow-ups, not built here.
+> threshold, assigns an approver, or mutates a workflow definition. It is a set
+> of **read models** over approval history plus an **advisory** suggestion store.
+> Smart routing **recommends** approvers but never assigns one; the remaining
+> "act" surfaces (auto-adjusting thresholds, A/B testing, retraining, and the
+> apply path that actually assigns the routed approver) are tracked follow-ups,
+> not built here.
 
 > **Local-first / deterministic.** All learning and anomaly detection is plain
 > statistics (`Decimal`) over the tenant's own data. There is **no LLM call** and
@@ -14,7 +16,7 @@
 
 ## Overview
 
-Three surfaces, all under `/api/adaptive`:
+Four surfaces, all under `/api/adaptive`:
 
 1. **Approval-pattern learning** (`GET /approval-patterns`) — per-approver and
    per-vendor aggregates over the tenant's approval/rejection history.
@@ -24,6 +26,10 @@ Three surfaces, all under `/api/adaptive`:
 3. **Workflow-change suggestions** (`GET /suggestions`,
    `POST /suggestions/{id}/dismiss`) — derived "consider auto-approve under $X"
    suggestions, persisted with `open / dismissed / applied / stale` status.
+4. **Smart routing** (`GET /routing-suggestion`) — for one invoice, **rank** the
+   org's eligible approvers by routing fit (fastest + most-consistent + most
+   vendor-familiar), purely from their approval history. Advisory — never
+   assigns anyone.
 
 The statistics live in `app/services/adaptive_workflows.py` (pure, sync, no IO —
 unit-testable without a DB). The SQL, the control-plane name join, response
@@ -129,6 +135,39 @@ is what governs. The suggested threshold is the vendor's max approved amount
 rounded **up** to the nearest $500. `confidence_pct = min(consistency_pct, 99)`
 (never claims 100%). Messages are deterministic template strings — no LLM.
 
+### Smart routing
+
+`recommend_approvers(eligible, approver_patterns, ...)` (pure, in
+`services/adaptive_workflows.py`) ranks the org's **eligible approvers** for one
+invoice. Eligible = active control-plane `User`s in the org holding an
+approval-capable role (`admin` / `ap_manager` / `cfo`; `ap_clerk` enters
+invoices but doesn't approve, so it's excluded). Each candidate gets a
+deterministic 0–100 score = weighted sum of four sub-scores (each normalised to
+0..1):
+
+| Sub-score | Weight | Formula |
+|---|---|---|
+| **speed** | 45 | `1 − median_time_to_approve_days / horizon` (clamped 0..1); a 0-day median for a real approver = 1 (fastest); no approval history = 0 |
+| **consistency** | 25 | `approval_rate_pct / 100` (fewer rejections / rework) |
+| **vendor familiarity** | 20 | `min(vendor_approved_count, 5) / 5` — how many of *this vendor's* invoices the approver has approved before |
+| **experience** | 10 | `min(sample_size, 20) / 20` — total decisions made (more signal) |
+
+`horizon` defaults to 14 days. Vendor familiarity is computed in the API layer
+by counting this approver's approvals of the invoice's vendor over the same
+decision-row window the patterns are built from. The per-approver speed /
+consistency / experience come from `compute_approver_patterns` (all-vendor
+history).
+
+Ties break on more vendor familiarity → larger sample → `approver_id` (stable +
+deterministic). An eligible approver with **no** decision history still appears
+(so a new-but-valid approver is routable) but scores only on familiarity.
+`insufficient_history` is True only when **no** eligible approver has any history
+to rank on — the caller should then fall back to its normal assignment policy.
+Each candidate carries a `reasons` list (deterministic human-readable strings)
+explaining its score. **The result never assigns anyone** — it's a ranked read
+model; the apply path that would actually set `assigned_to_id` routes through the
+future audited assignment slice.
+
 ## Tunables — `Organization.settings.adaptive`
 
 Partial override (omit a key to inherit; unknown keys dropped — mirrors
@@ -151,6 +190,7 @@ Partial override (omit a key to inherit; unknown keys dropped — mirrors
 | `/api/adaptive/anomalies` | GET | admin / ap_manager / cfo | `?invoice_id=<uuid>` (single) or batch (in-review queue, cap 200); 404 if the invoice isn't in this tenant/entity |
 | `/api/adaptive/suggestions` | GET | admin / ap_manager / cfo | `?status=open|all` (default `open`), `?days=365`; **upserts** then returns |
 | `/api/adaptive/suggestions/{id}/dismiss` | POST | admin / ap_manager | idempotent; 404 outside tenant |
+| `/api/adaptive/routing-suggestion` | GET | admin / ap_manager / cfo | `?invoice_id=<uuid>` (required), `?days=180` lookback; 404 if the invoice isn't in this tenant/entity. Ranked, advisory — assigns nobody |
 
 Read routes exclude `ap_clerk` — this is a manager/CFO surface, matching the
 analytics precedent. Every route is behind `get_current_user` + `require_roles`.
@@ -191,7 +231,11 @@ not apply.
 
 ## Deferred follow-ups
 
-- **Smart auto-routing** to a specific approver.
+- **Smart routing — apply path.** `GET /routing-suggestion` recommends approvers
+  (shipped); the **apply** path that actually sets `Invoice.assigned_to_id` to a
+  routed approver is not built. When built it MUST route through the audited
+  `review.assign_reviewer` so an assignment writes an audit row, exactly like the
+  threshold apply path below.
 - **Auto-adjusting thresholds** — when built, the **apply** path MUST route
   through the audited `review.approve_invoice` / workflow-definition PATCH so
   audit rows are written. `status='applied'` is the placeholder for this.

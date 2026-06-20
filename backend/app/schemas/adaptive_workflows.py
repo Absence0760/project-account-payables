@@ -116,6 +116,32 @@ class SuggestionListResponse(BaseModel):
     suggestions: list[SuggestionResponse]
 
 
+# ---------------------------------------------------------------------------
+# Smart routing (advisory)
+# ---------------------------------------------------------------------------
+
+
+class RoutingCandidateResponse(BaseModel):
+    approver_id: str
+    approver_name: str | None = None
+    score: str  # 0-100, string-Decimal
+    rank: int
+    median_time_to_approve_days: str
+    approval_rate_pct: str
+    sample_size: int
+    vendor_approved_count: int
+    reasons: list[str]
+
+
+class RoutingSuggestionResponse(BaseModel):
+    invoice_id: str | None = None
+    vendor_id: str | None = None
+    vendor_name: str
+    amount: str
+    insufficient_history: bool
+    candidates: list[RoutingCandidateResponse]
+
+
 __all__ = [
     "ApproverPatternResponse",
     "VendorPatternResponse",
@@ -126,4 +152,6 @@ __all__ = [
     "AnomalyBatchResponse",
     "SuggestionResponse",
     "SuggestionListResponse",
+    "RoutingCandidateResponse",
+    "RoutingSuggestionResponse",
 ]

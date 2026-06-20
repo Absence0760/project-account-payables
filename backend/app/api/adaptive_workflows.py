@@ -44,17 +44,20 @@ from app.api.deps import (
 from app.models.adaptive_suggestion import WorkflowSuggestion
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
-from app.models.user import User
+from app.models.user import Role, User, UserRole
 from app.models.workflow import AuditLog
 from app.schemas.adaptive_workflows import (
     AnomalyBatchResponse,
     ApprovalPatternsResponse,
     InvoiceAnomalyResponse,
+    RoutingSuggestionResponse,
     SuggestionListResponse,
 )
 from app.services.adaptive_workflows import (
     DerivedSuggestion,
+    EligibleApprover,
     InvoiceAnomaly,
+    RoutingSuggestion,
     VendorBaseline,
     _decimal_days,
     compute_approver_patterns,
@@ -62,6 +65,7 @@ from app.services.adaptive_workflows import (
     compute_vendor_patterns,
     derive_suggestions,
     detect_invoice_anomaly,
+    recommend_approvers,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -69,6 +73,9 @@ router = APIRouter(prefix="/adaptive", tags=["adaptive-workflows"])
 
 _READ_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 _WRITE_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER)
+# Roles that can actually act on an approval — the eligible-approver pool for
+# smart routing. ap_clerk enters invoices but does not approve, so it's excluded.
+_APPROVAL_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 
 # Approved-or-beyond — the "historically accepted" set used for the vendor
 # baseline (pending / rejected invoices are not part of the accepted norm).
@@ -632,3 +639,115 @@ async def dismiss_suggestion(
         row.dismissed_at = datetime.now(UTC)
         await db.flush()
     return SuggestionListResponse(suggestions=[_suggestion_dict(row)])
+
+
+# ---------------------------------------------------------------------------
+# GET /api/adaptive/routing-suggestion  (advisory smart routing; read-only)
+# ---------------------------------------------------------------------------
+
+
+async def _eligible_approver_ids(
+    ctrl_db: AsyncSession, *, organization_id: uuid.UUID
+) -> dict[str, str | None]:
+    """Active control-plane users in this org holding an approval-capable role →
+    {approver_id: full_name}. Scoped to the caller's org (the routing pool can
+    only ever be this org's own approvers)."""
+    rows = (
+        await ctrl_db.execute(
+            select(User.id, User.full_name)
+            .join(UserRole, UserRole.user_id == User.id)
+            .join(Role, Role.id == UserRole.role_id)
+            .where(
+                User.organization_id == organization_id,
+                User.is_active.is_(True),
+                Role.name.in_(_APPROVAL_ROLES),
+            )
+            .distinct()
+        )
+    ).all()
+    return {str(uid): name for uid, name in rows}
+
+
+def _routing_dict(s: RoutingSuggestion) -> dict:
+    return {
+        "invoice_id": s.invoice_id,
+        "vendor_id": s.vendor_id,
+        "vendor_name": s.vendor_name,
+        "amount": str(s.amount),
+        "insufficient_history": s.insufficient_history,
+        "candidates": [
+            {
+                "approver_id": c.approver_id,
+                "approver_name": c.approver_name,
+                "score": str(c.score),
+                "rank": c.rank,
+                "median_time_to_approve_days": str(c.median_time_to_approve_days),
+                "approval_rate_pct": str(c.approval_rate_pct),
+                "sample_size": c.sample_size,
+                "vendor_approved_count": c.vendor_approved_count,
+                "reasons": c.reasons,
+            }
+            for c in s.candidates
+        ],
+    }
+
+
+@router.get("/routing-suggestion", response_model=RoutingSuggestionResponse)
+async def routing_suggestion(
+    invoice_id: uuid.UUID = Query(...),
+    days: int = Query(180, ge=1, le=730),
+    db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+):
+    """Advisory: rank the org's eligible approvers by routing fit for this
+    invoice (fastest + most-consistent + most-familiar with the vendor), purely
+    from their approval history. **Read-only** — never assigns anyone or mutates
+    workflow state. The act/apply path is a future slice (see
+    backend/docs/adaptive-workflows.md § Smart routing)."""
+    q = apply_entity_scope(select(Invoice).where(Invoice.id == invoice_id), Invoice, entity_id)
+    inv = (await db.execute(q)).scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    since = datetime.now(UTC) - timedelta(days=days)
+    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+
+    approvers = compute_approver_patterns(decisions)
+
+    # Per-approver familiarity with THIS vendor: count approvals of this vendor's
+    # invoices, keyed by approver id, over the same decision-row window.
+    inv_vendor_id = str(inv.vendor_id) if inv.vendor_id else None
+    inv_vendor_name = inv.vendor_name or ""
+    familiarity: dict[str, int] = {}
+    for d in decisions:
+        if d["decision"] != "approved" or not d["approver_id"]:
+            continue
+        same_vendor = (
+            d["vendor_id"] == inv_vendor_id
+            if inv_vendor_id is not None
+            else (d["vendor_id"] is None and d["vendor_name"] == inv_vendor_name)
+        )
+        if same_vendor:
+            familiarity[d["approver_id"]] = familiarity.get(d["approver_id"], 0) + 1
+
+    names = await _eligible_approver_ids(ctrl_db, organization_id=user.organization_id)
+    eligible = [
+        EligibleApprover(
+            approver_id=aid,
+            approver_name=name,
+            vendor_approved_count=familiarity.get(aid, 0),
+        )
+        for aid, name in names.items()
+    ]
+
+    suggestion = recommend_approvers(
+        eligible,
+        approvers,
+        invoice_id=str(inv.id),
+        vendor_id=inv_vendor_id,
+        vendor_name=inv_vendor_name,
+        amount=Decimal(str(inv.amount or 0)),
+    )
+    return RoutingSuggestionResponse(**_routing_dict(suggestion))

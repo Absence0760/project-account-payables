@@ -635,7 +635,7 @@ Workflows that learn from team behavior and adapt over time — routing, approva
 - [x] Adaptive approval-pattern learning (read model) — per-approver + per-vendor approval stats (counts, approval/consistency rates, time-to-approve). `services/adaptive_workflows.py`, `GET /api/adaptive/approval-patterns`.
 - [x] Baseline anomaly detection (on-demand, explainable) — `GET /api/adaptive/anomalies`; flags amount / approver / timing deviation and **returns the per-vendor baseline it compared against**. Read-only — distinct from (and does not duplicate) the per-invoice `fraud_stat_anomaly` warning, which writes warnings + Exceptions.
 - [x] Advisory workflow-change suggestions — "consider auto-approve under $X" auto-approve-threshold suggestions persisted in `workflow_suggestions` (migration 0031) with `open/dismissed/applied/stale`; advisory only — nothing is auto-applied.
-- [ ] Smart routing — assign invoices to the fastest/most-appropriate approver *(follow-up)*
+- [x] Smart routing — **recommend** the fastest/most-appropriate approver for an invoice — advisory, read-only `GET /api/adaptive/routing-suggestion?invoice_id=` ranks the org's eligible approvers (admin/ap_manager/cfo) by a deterministic score (speed + consistency + vendor familiarity + experience) from their approval history; `recommend_approvers` in `services/adaptive_workflows.py`. Assigns nobody — the apply path that sets `assigned_to_id` (via the audited `assign_reviewer`) is the tracked follow-up.
 - [ ] Auto-adjust thresholds — raise auto-approve limit as accuracy improves *(follow-up; the apply path must route through the audited `review.approve_invoice` / workflow-definition PATCH)*
 - [ ] A/B testing for workflow rules — compare performance of different configs *(follow-up)*
 - [ ] Feedback loop — corrections feed back into the AI model *(follow-up)*
@@ -654,7 +654,7 @@ Auto-populate and validate invoice fields using historical data from the same su
 - [ ] Vendor performance scoring — on-time delivery, invoice accuracy, dispute rate — accuracy + dispute sub-scores shipped (`GET /api/enrichment/vendors/{id}/score`); on-time delivery deferred pending a PO expected-date column.
 - [x] Suggest vendor consolidation — identify duplicate/similar vendors — `GET /api/enrichment/vendors/consolidation-suggestions` clusters by tax_id / code / fuzzy name (union-find, blocking-bounded), deterministic canonical pick, tax_id masked. Advisory; auto-merge deferred. See backend/docs/data-enrichment.md
 - [ ] Enrich vendor data from external sources (D&B, Clearbit)
-- [x] Price variance detection — same item, different price across invoices — per-vendor line-item median baseline + tolerance; returned inline on the suggestions endpoint with baseline+delta. Persisting as a warning/exception is a tracked follow-up.
+- [x] Price variance detection — same item, different price across invoices — per-vendor line-item median baseline + tolerance; returned inline on the suggestions endpoint with baseline+delta. **Now also persisted** at the `invoice_warnings.refresh_warnings` write chokepoint: a deviating line writes an `Invoice.warnings` entry + a de-duped `price_variance` `Exception` (gated by `settings.fraud_rules.price_variance_enabled`, default on; reuses the pure `detect_price_variance`, no math duplication; idempotent via `_ensure_exception`).
 
 ---
 
