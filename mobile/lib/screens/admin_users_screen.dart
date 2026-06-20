@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/admin_user.dart';
 import 'package:ap_mobile/stores/admin_user_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -37,16 +38,17 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('User Management'),
+        title: Text(l.adminUsersTitle),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: SearchBar(
               controller: _searchController,
-              hintText: 'Search by name or email',
+              hintText: l.adminUsersSearchHint,
               leading: const Icon(Icons.search, size: 20),
               onChanged: (q) => AdminUserStore.instance.setSearch(q),
               elevation: WidgetStateProperty.all(0),
@@ -66,7 +68,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
             return _ErrorState(message: store.error!, onRetry: store.fetch);
           }
           if (store.users.isEmpty) {
-            return const Center(child: Text('No users found'));
+            return Center(child: Text(l.adminUsersEmpty));
           }
 
           return RefreshIndicator(
@@ -90,6 +92,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
   void _showActions(AdminUser user) {
     final isSelf = AuthStore.instance.user?.id == user.id;
+    final l = AppLocalizations.of(context);
     showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) {
@@ -107,9 +110,11 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.badge_outlined),
-                title: const Text('Edit roles'),
+                title: Text(l.adminUsersEditRoles),
                 subtitle: Text(
-                  user.roles.isEmpty ? 'No roles' : user.roles.join(', '),
+                  user.roles.isEmpty
+                      ? l.adminUsersNoRoles
+                      : user.roles.join(', '),
                 ),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
@@ -121,13 +126,17 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   user.isActive ? Icons.block : Icons.check_circle_outline,
                   color: user.isActive ? Colors.red.shade700 : Colors.green,
                 ),
-                title: Text(user.isActive ? 'Deactivate user' : 'Activate user'),
+                title: Text(
+                  user.isActive
+                      ? l.adminUsersDeactivate
+                      : l.adminUsersActivate,
+                ),
                 subtitle: isSelf
-                    ? const Text("You can't deactivate your own account")
+                    ? Text(l.adminUsersCannotDeactivateSelf)
                     : Text(
                         user.isActive
-                            ? 'Signs them out and blocks sign-in'
-                            : 'Restores sign-in access',
+                            ? l.adminUsersDeactivateHint
+                            : l.adminUsersActivateHint,
                       ),
                 // The backend lets an admin deactivate anyone, but locking
                 // yourself out would be a footgun — disable it for self.
@@ -145,6 +154,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   }
 
   Future<void> _editRoles(AdminUser user) async {
+    final l = AppLocalizations.of(context);
     final available = AdminUserStore.instance.systemRoleNames;
     final selected = await showModalBottomSheet<List<String>>(
       context: context,
@@ -159,22 +169,24 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     final ok = await AdminUserStore.instance.setRoles(user.id, selected);
     if (!mounted) return;
     final message = ok
-        ? 'Updated roles for ${user.fullName}'
-        : 'Failed to update roles: ${AdminUserStore.instance.error ?? ''}';
+        ? l.adminUsersRolesUpdated(user.fullName)
+        : l.adminUsersRolesUpdateFailed(AdminUserStore.instance.error ?? '');
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
     A11y.announce(context, message);
   }
 
   Future<void> _toggleActive(AdminUser user) async {
+    final l = AppLocalizations.of(context);
     final target = !user.isActive;
     final ok = await AdminUserStore.instance.setActive(user.id, target);
     if (!mounted) return;
-    final verb = target ? 'Activated' : 'Deactivated';
     final message = ok
-        ? '$verb ${user.fullName}'
-        : 'Failed to update ${user.fullName}: '
-            '${AdminUserStore.instance.error ?? ''}';
+        ? (target
+            ? l.adminUsersActivated(user.fullName)
+            : l.adminUsersDeactivated(user.fullName))
+        : l.adminUsersUpdateFailed(
+            user.fullName, AdminUserStore.instance.error ?? '');
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
     A11y.announce(context, message);
@@ -199,15 +211,19 @@ class _RoleEditorState extends State<_RoleEditor> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Padding(
-            padding: EdgeInsets.all(16),
+          Padding(
+            padding: const EdgeInsets.all(16),
             child: Text(
-              'Edit roles',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+              l.adminUsersEditRoles,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
             ),
           ),
           const Divider(height: 1),
@@ -231,13 +247,13 @@ class _RoleEditorState extends State<_RoleEditor> {
               children: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
+                  child: Text(l.commonCancel),
                 ),
                 const SizedBox(width: 8),
                 FilledButton(
                   onPressed: () =>
                       Navigator.of(context).pop(_selected.toList()),
-                  child: const Text('Apply'),
+                  child: Text(l.commonApply),
                 ),
               ],
             ),
@@ -254,20 +270,21 @@ class _UserTile extends StatelessWidget {
 
   const _UserTile({required this.user, required this.onTap});
 
-  String get _semanticLabel {
+  String _semanticLabel(AppLocalizations l) {
     final parts = <String>[
       user.fullName,
       user.email,
       if (user.roles.isNotEmpty) 'roles ${user.roles.join(', ')}',
-      user.isActive ? 'active' : 'inactive',
+      user.isActive ? l.adminUsersRoleActive : l.adminUsersRoleInactive,
     ];
     return parts.join(', ');
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Semantics(
-      label: _semanticLabel,
+      label: _semanticLabel(l),
       button: true,
       excludeSemantics: true,
       child: ListTile(
@@ -330,7 +347,7 @@ class _InactiveBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
-        'Inactive',
+        AppLocalizations.of(context).adminUsersInactiveBadge,
         style: TextStyle(
           color: Colors.red.shade900,
           fontSize: 11,
@@ -349,15 +366,16 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
           const SizedBox(height: 12),
-          const Text('Could not load users'),
+          Text(l.adminUsersLoadError),
           const SizedBox(height: 12),
-          FilledButton(onPressed: onRetry, child: const Text('Retry')),
+          FilledButton(onPressed: onRetry, child: Text(l.commonRetry)),
         ],
       ),
     );

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/workflow.dart';
 import 'package:ap_mobile/screens/workflows_screen.dart' show WorkflowStatusBadge;
 
@@ -51,13 +52,15 @@ class _WorkflowDetailScreenState extends State<WorkflowDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(_workflow?.name ?? 'Workflow')),
-      body: _buildBody(),
+      appBar:
+          AppBar(title: Text(_workflow?.name ?? l.workflowDetailFallbackTitle)),
+      body: _buildBody(l),
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildBody(AppLocalizations l) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -68,9 +71,9 @@ class _WorkflowDetailScreenState extends State<WorkflowDetailScreen> {
           children: [
             Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
             const SizedBox(height: 12),
-            const Text('Could not load workflow'),
+            Text(l.workflowDetailLoadError),
             const SizedBox(height: 12),
-            FilledButton(onPressed: _load, child: const Text('Retry')),
+            FilledButton(onPressed: _load, child: Text(l.commonRetry)),
           ],
         ),
       );
@@ -84,9 +87,9 @@ class _WorkflowDetailScreenState extends State<WorkflowDetailScreen> {
           _Header(workflow: wf),
           const Divider(height: 1),
           if (wf.steps.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: Text('This workflow has no steps.')),
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Center(child: Text(l.workflowDetailNoSteps)),
             )
           else
             for (final step in wf.steps) _StepTile(step: step),
@@ -126,7 +129,7 @@ class _Header extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                'Default workflow',
+                AppLocalizations.of(context).workflowDetailDefaultWorkflow,
                 style: TextStyle(color: Colors.blue.shade800, fontSize: 13),
               ),
             ),
@@ -151,13 +154,16 @@ class _StepTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final summary = _configSummary(step);
+    final l = AppLocalizations.of(context);
+    final summary = _configSummary(step, l);
     // One merged announcement per step row.
     final semanticsLabel = [
-      'Step ${step.number}',
+      l.workflowDetailStepNumber(step.number),
       step.typeLabel,
       step.name,
-      step.enabled ? 'Enabled' : 'Disabled',
+      step.enabled
+          ? l.workflowDetailStepEnabled
+          : l.workflowDetailStepDisabled,
       ?summary,
     ].join(', ');
 
@@ -189,7 +195,7 @@ class _StepTile extends StatelessWidget {
         trailing: step.enabled
             ? null
             : Text(
-                'Disabled',
+                l.workflowDetailStepDisabled,
                 style: TextStyle(
                   color: Colors.grey.shade700,
                   fontSize: 12,
@@ -202,7 +208,7 @@ class _StepTile extends StatelessWidget {
 
   /// A short, PII-free summary of the common config keys for a step type.
   /// Returns null when there's nothing useful to show.
-  static String? _configSummary(WorkflowStepConfig step) {
+  static String? _configSummary(WorkflowStepConfig step, AppLocalizations l) {
     final cfg = step.config;
     if (cfg.isEmpty) return null;
     switch (step.type) {
@@ -212,16 +218,20 @@ class _StepTile extends StatelessWidget {
         final count = ids is List ? ids.length : 0;
         if (strategy is String && strategy.isNotEmpty) {
           return count > 0
-              ? '$strategy · $count approver${count == 1 ? '' : 's'}'
+              ? '$strategy · ${l.workflowDetailApproverCount(count)}'
               : strategy;
         }
         return null;
       case 'delay':
         final hours = cfg['delay_hours'] ?? cfg['hours'];
-        return hours != null ? 'Delay $hours h' : null;
+        return hours != null
+            ? l.workflowDetailDelaySummary(hours.toString())
+            : null;
       case 'condition':
         final field = cfg['field'];
-        return field is String && field.isNotEmpty ? 'On $field' : null;
+        return field is String && field.isNotEmpty
+            ? l.workflowDetailConditionSummary(field)
+            : null;
       default:
         return null;
     }

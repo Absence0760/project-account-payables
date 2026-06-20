@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/mfa_challenge.dart';
 import 'package:ap_mobile/screens/home_screen.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -61,6 +62,9 @@ class _MfaScreenState extends State<MfaScreen> {
   bool get _canUseTotp => widget.challenge.supportsTotp;
 
   Future<void> _requestEmailOtp() async {
+    // Resolve the localized string before the await so we don't touch
+    // BuildContext across the async gap.
+    final emailedMessage = AppLocalizations.of(context).mfaEmailedAnnounce;
     setState(() => _sendingEmail = true);
     final ok = await AuthStore.instance.requestEmailOtp(
       widget.challenge.challengeToken,
@@ -71,7 +75,7 @@ class _MfaScreenState extends State<MfaScreen> {
       if (ok) _emailRequested = true;
     });
     if (ok) {
-      A11y.announce(context, 'A sign-in code was emailed to you.');
+      A11y.announce(context, emailedMessage);
     } else {
       final error = AuthStore.instance.error;
       if (error != null) A11y.announce(context, error);
@@ -112,8 +116,9 @@ class _MfaScreenState extends State<MfaScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Two-factor authentication')),
+      appBar: AppBar(title: Text(l.mfaTitle)),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -137,10 +142,10 @@ class _MfaScreenState extends State<MfaScreen> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      const Text(
-                        'Verify it\'s you',
+                      Text(
+                        l.mfaHeading,
                         textAlign: TextAlign.center,
-                        style: TextStyle(
+                        style: const TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.bold,
                           letterSpacing: -0.5,
@@ -148,10 +153,7 @@ class _MfaScreenState extends State<MfaScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        _method == 'email'
-                            ? 'Enter the 6-digit code we emailed you.'
-                            : 'Enter the 6-digit code from your '
-                                  'authenticator app.',
+                        _method == 'email' ? l.mfaPromptEmail : l.mfaPromptTotp,
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 14,
@@ -171,10 +173,7 @@ class _MfaScreenState extends State<MfaScreen> {
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(
-                            'Your organization requires two-factor '
-                            'authentication. Verify with an email code now, '
-                            'then finish setting up an authenticator app in '
-                            'the web app.',
+                            l.mfaEnforcedNotice,
                             // shade900 on the amber tint clears AA contrast.
                             style: TextStyle(color: Colors.amber.shade900),
                           ),
@@ -183,11 +182,11 @@ class _MfaScreenState extends State<MfaScreen> {
                       const SizedBox(height: 24),
                       TextFormField(
                         controller: _codeController,
-                        decoration: const InputDecoration(
-                          labelText: 'Code',
+                        decoration: InputDecoration(
+                          labelText: l.mfaCode,
                           hintText: '123456',
-                          prefixIcon: Icon(Icons.dialpad),
-                          border: OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.dialpad),
+                          border: const OutlineInputBorder(),
                         ),
                         keyboardType: TextInputType.number,
                         autocorrect: false,
@@ -200,8 +199,8 @@ class _MfaScreenState extends State<MfaScreen> {
                         ],
                         validator: (v) {
                           final value = v?.trim() ?? '';
-                          if (value.isEmpty) return 'Required';
-                          if (value.length < 6) return 'Enter at least 6 digits';
+                          if (value.isEmpty) return l.mfaCodeRequired;
+                          if (value.length < 6) return l.mfaCodeTooShort;
                           return null;
                         },
                         onFieldSubmitted: (_) => _verify(),
@@ -233,7 +232,7 @@ class _MfaScreenState extends State<MfaScreen> {
                                   color: Colors.white,
                                 ),
                               )
-                            : const Text('Verify'),
+                            : Text(l.mfaVerify),
                       ),
                       // Email-OTP affordance — offered whenever the challenge
                       // lists `email`. Sends / resends a code to the account
@@ -247,23 +246,23 @@ class _MfaScreenState extends State<MfaScreen> {
                             icon: const Icon(Icons.mail_outline),
                             label: Text(
                               _sendingEmail
-                                  ? 'Sending…'
+                                  ? l.mfaSending
                                   : _emailRequested
-                                  ? 'Resend email code'
-                                  : 'Send email code',
+                                  ? l.mfaResendEmailCode
+                                  : l.mfaSendEmailCode,
                             ),
                           )
                         else
                           TextButton(
                             onPressed: () => _switchMethod('email'),
-                            child: const Text('Use an email code instead'),
+                            child: Text(l.mfaUseEmailInstead),
                           ),
                         // Offer the way back to the authenticator code when the
                         // user switched to email but TOTP is also available.
                         if (_method == 'email' && _canUseTotp)
                           TextButton(
                             onPressed: () => _switchMethod('totp'),
-                            child: const Text('Use authenticator app instead'),
+                            child: Text(l.mfaUseAuthenticatorInstead),
                           ),
                       ],
                     ],

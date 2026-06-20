@@ -5,7 +5,16 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
+
+/// Wraps the screen in a localized MaterialApp (defaults to `en`) so
+/// `AppLocalizations.of(context)` resolves and the English assertions hold.
+Widget _host(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 void main() {
   setUp(() {
@@ -15,7 +24,7 @@ void main() {
 
   testWidgets('renders the tenant/email/password fields and Sign In button',
       (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+    await tester.pumpWidget(_host(const LoginScreen()));
 
     expect(find.widgetWithText(TextFormField, 'Tenant'), findsOneWidget);
     expect(find.widgetWithText(TextFormField, 'Email'), findsOneWidget);
@@ -34,7 +43,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+    await tester.pumpWidget(_host(const LoginScreen()));
 
     // Clear the prefilled tenant so all three are empty.
     await tester.enterText(find.widgetWithText(TextFormField, 'Tenant'), '');
@@ -49,7 +58,7 @@ void main() {
       client: MockClient((req) async => http.Response('nope', 401)),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+    await tester.pumpWidget(_host(const LoginScreen()));
 
     await tester.enterText(
         find.widgetWithText(TextFormField, 'Email'), 'demo@acme.com');

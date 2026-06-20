@@ -1660,6 +1660,486 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Execute'**
   String get payConfirmExecute;
+
+  /// No description provided for @loginAppName.
+  ///
+  /// In en, this message translates to:
+  /// **'Better AP'**
+  String get loginAppName;
+
+  /// No description provided for @loginTagline.
+  ///
+  /// In en, this message translates to:
+  /// **'Accounts Payable, Made Simple'**
+  String get loginTagline;
+
+  /// No description provided for @loginTenant.
+  ///
+  /// In en, this message translates to:
+  /// **'Tenant'**
+  String get loginTenant;
+
+  /// No description provided for @loginEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Email'**
+  String get loginEmail;
+
+  /// No description provided for @loginPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Password'**
+  String get loginPassword;
+
+  /// No description provided for @loginShowPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Show password'**
+  String get loginShowPassword;
+
+  /// No description provided for @loginHidePassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide password'**
+  String get loginHidePassword;
+
+  /// No description provided for @loginRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Required'**
+  String get loginRequired;
+
+  /// No description provided for @loginSignIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign In'**
+  String get loginSignIn;
+
+  /// No description provided for @mfaTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Two-factor authentication'**
+  String get mfaTitle;
+
+  /// No description provided for @mfaHeading.
+  ///
+  /// In en, this message translates to:
+  /// **'Verify it\'s you'**
+  String get mfaHeading;
+
+  /// No description provided for @mfaPromptEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the 6-digit code we emailed you.'**
+  String get mfaPromptEmail;
+
+  /// No description provided for @mfaPromptTotp.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the 6-digit code from your authenticator app.'**
+  String get mfaPromptTotp;
+
+  /// No description provided for @mfaEnforcedNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Your organization requires two-factor authentication. Verify with an email code now, then finish setting up an authenticator app in the web app.'**
+  String get mfaEnforcedNotice;
+
+  /// No description provided for @mfaCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Code'**
+  String get mfaCode;
+
+  /// No description provided for @mfaCodeRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Required'**
+  String get mfaCodeRequired;
+
+  /// No description provided for @mfaCodeTooShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter at least 6 digits'**
+  String get mfaCodeTooShort;
+
+  /// No description provided for @mfaVerify.
+  ///
+  /// In en, this message translates to:
+  /// **'Verify'**
+  String get mfaVerify;
+
+  /// No description provided for @mfaSending.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending…'**
+  String get mfaSending;
+
+  /// No description provided for @mfaResendEmailCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Resend email code'**
+  String get mfaResendEmailCode;
+
+  /// No description provided for @mfaSendEmailCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Send email code'**
+  String get mfaSendEmailCode;
+
+  /// No description provided for @mfaUseEmailInstead.
+  ///
+  /// In en, this message translates to:
+  /// **'Use an email code instead'**
+  String get mfaUseEmailInstead;
+
+  /// No description provided for @mfaUseAuthenticatorInstead.
+  ///
+  /// In en, this message translates to:
+  /// **'Use authenticator app instead'**
+  String get mfaUseAuthenticatorInstead;
+
+  /// No description provided for @mfaEmailedAnnounce.
+  ///
+  /// In en, this message translates to:
+  /// **'A sign-in code was emailed to you.'**
+  String get mfaEmailedAnnounce;
+
+  /// No description provided for @adminUsersTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'User Management'**
+  String get adminUsersTitle;
+
+  /// No description provided for @adminUsersSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search by name or email'**
+  String get adminUsersSearchHint;
+
+  /// No description provided for @adminUsersEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No users found'**
+  String get adminUsersEmpty;
+
+  /// No description provided for @adminUsersLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load users'**
+  String get adminUsersLoadError;
+
+  /// No description provided for @adminUsersEditRoles.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit roles'**
+  String get adminUsersEditRoles;
+
+  /// No description provided for @adminUsersNoRoles.
+  ///
+  /// In en, this message translates to:
+  /// **'No roles'**
+  String get adminUsersNoRoles;
+
+  /// No description provided for @adminUsersDeactivate.
+  ///
+  /// In en, this message translates to:
+  /// **'Deactivate user'**
+  String get adminUsersDeactivate;
+
+  /// No description provided for @adminUsersActivate.
+  ///
+  /// In en, this message translates to:
+  /// **'Activate user'**
+  String get adminUsersActivate;
+
+  /// No description provided for @adminUsersCannotDeactivateSelf.
+  ///
+  /// In en, this message translates to:
+  /// **'You can\'t deactivate your own account'**
+  String get adminUsersCannotDeactivateSelf;
+
+  /// No description provided for @adminUsersDeactivateHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Signs them out and blocks sign-in'**
+  String get adminUsersDeactivateHint;
+
+  /// No description provided for @adminUsersActivateHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Restores sign-in access'**
+  String get adminUsersActivateHint;
+
+  /// No description provided for @adminUsersRoleActive.
+  ///
+  /// In en, this message translates to:
+  /// **'active'**
+  String get adminUsersRoleActive;
+
+  /// No description provided for @adminUsersRoleInactive.
+  ///
+  /// In en, this message translates to:
+  /// **'inactive'**
+  String get adminUsersRoleInactive;
+
+  /// No description provided for @adminUsersInactiveBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Inactive'**
+  String get adminUsersInactiveBadge;
+
+  /// No description provided for @adminUsersRolesUpdated.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated roles for {name}'**
+  String adminUsersRolesUpdated(String name);
+
+  /// No description provided for @adminUsersRolesUpdateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to update roles: {error}'**
+  String adminUsersRolesUpdateFailed(String error);
+
+  /// No description provided for @adminUsersActivated.
+  ///
+  /// In en, this message translates to:
+  /// **'Activated {name}'**
+  String adminUsersActivated(String name);
+
+  /// No description provided for @adminUsersDeactivated.
+  ///
+  /// In en, this message translates to:
+  /// **'Deactivated {name}'**
+  String adminUsersDeactivated(String name);
+
+  /// No description provided for @adminUsersUpdateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to update {name}: {error}'**
+  String adminUsersUpdateFailed(String name, String error);
+
+  /// No description provided for @orgSettingsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Organization Settings'**
+  String get orgSettingsTitle;
+
+  /// No description provided for @orgSettingsNoSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'No settings'**
+  String get orgSettingsNoSettings;
+
+  /// No description provided for @orgSettingsLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load settings'**
+  String get orgSettingsLoadError;
+
+  /// No description provided for @orgSettingsSectionCompany.
+  ///
+  /// In en, this message translates to:
+  /// **'Company'**
+  String get orgSettingsSectionCompany;
+
+  /// No description provided for @orgSettingsSectionInvoiceDefaults.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice defaults'**
+  String get orgSettingsSectionInvoiceDefaults;
+
+  /// No description provided for @orgSettingsName.
+  ///
+  /// In en, this message translates to:
+  /// **'Organization name'**
+  String get orgSettingsName;
+
+  /// No description provided for @orgSettingsAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'Address'**
+  String get orgSettingsAddress;
+
+  /// No description provided for @orgSettingsPhone.
+  ///
+  /// In en, this message translates to:
+  /// **'Phone'**
+  String get orgSettingsPhone;
+
+  /// No description provided for @orgSettingsWebsite.
+  ///
+  /// In en, this message translates to:
+  /// **'Website'**
+  String get orgSettingsWebsite;
+
+  /// No description provided for @orgSettingsTaxId.
+  ///
+  /// In en, this message translates to:
+  /// **'Tax ID'**
+  String get orgSettingsTaxId;
+
+  /// No description provided for @orgSettingsCurrency.
+  ///
+  /// In en, this message translates to:
+  /// **'Default currency'**
+  String get orgSettingsCurrency;
+
+  /// No description provided for @orgSettingsPaymentTerms.
+  ///
+  /// In en, this message translates to:
+  /// **'Payment terms'**
+  String get orgSettingsPaymentTerms;
+
+  /// No description provided for @orgSettingsNumberPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice number prefix'**
+  String get orgSettingsNumberPrefix;
+
+  /// No description provided for @orgSettingsGlAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Default GL account'**
+  String get orgSettingsGlAccount;
+
+  /// No description provided for @orgSettingsCostCenter.
+  ///
+  /// In en, this message translates to:
+  /// **'Default cost center'**
+  String get orgSettingsCostCenter;
+
+  /// No description provided for @orgSettingsSave.
+  ///
+  /// In en, this message translates to:
+  /// **'Save changes'**
+  String get orgSettingsSave;
+
+  /// No description provided for @orgSettingsSaving.
+  ///
+  /// In en, this message translates to:
+  /// **'Saving…'**
+  String get orgSettingsSaving;
+
+  /// No description provided for @orgSettingsFieldRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'{label} is required'**
+  String orgSettingsFieldRequired(String label);
+
+  /// No description provided for @orgSettingsSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Organization settings saved'**
+  String get orgSettingsSaved;
+
+  /// No description provided for @orgSettingsSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to save: {error}'**
+  String orgSettingsSaveFailed(String error);
+
+  /// No description provided for @workflowsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflows'**
+  String get workflowsTitle;
+
+  /// No description provided for @workflowsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No workflows found'**
+  String get workflowsEmpty;
+
+  /// No description provided for @workflowsLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load workflows'**
+  String get workflowsLoadError;
+
+  /// No description provided for @workflowsStatusActive.
+  ///
+  /// In en, this message translates to:
+  /// **'Active'**
+  String get workflowsStatusActive;
+
+  /// No description provided for @workflowsStatusInactive.
+  ///
+  /// In en, this message translates to:
+  /// **'Inactive'**
+  String get workflowsStatusInactive;
+
+  /// No description provided for @workflowsDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'Default'**
+  String get workflowsDefault;
+
+  /// No description provided for @workflowsStepCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} step} other {{count} steps}}'**
+  String workflowsStepCount(int count);
+
+  /// No description provided for @workflowDetailFallbackTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow'**
+  String get workflowDetailFallbackTitle;
+
+  /// No description provided for @workflowDetailLoadError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load workflow'**
+  String get workflowDetailLoadError;
+
+  /// No description provided for @workflowDetailNoSteps.
+  ///
+  /// In en, this message translates to:
+  /// **'This workflow has no steps.'**
+  String get workflowDetailNoSteps;
+
+  /// No description provided for @workflowDetailDefaultWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Default workflow'**
+  String get workflowDetailDefaultWorkflow;
+
+  /// No description provided for @workflowDetailStepNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'Step {number}'**
+  String workflowDetailStepNumber(int number);
+
+  /// No description provided for @workflowDetailStepEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabled'**
+  String get workflowDetailStepEnabled;
+
+  /// No description provided for @workflowDetailStepDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled'**
+  String get workflowDetailStepDisabled;
+
+  /// No description provided for @workflowDetailApproverCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} approver} other {{count} approvers}}'**
+  String workflowDetailApproverCount(int count);
+
+  /// No description provided for @workflowDetailDelaySummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Delay {hours} h'**
+  String workflowDetailDelaySummary(String hours);
+
+  /// No description provided for @workflowDetailConditionSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'On {field}'**
+  String workflowDetailConditionSummary(String field);
 }
 
 class _AppLocalizationsDelegate

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/home_screen.dart';
 import 'package:ap_mobile/screens/mfa_screen.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -62,6 +63,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -86,10 +88,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      const Text(
-                        'Better AP',
+                      Text(
+                        l.loginAppName,
                         textAlign: TextAlign.center,
-                        style: TextStyle(
+                        style: const TextStyle(
                           fontSize: 28,
                           fontWeight: FontWeight.bold,
                           letterSpacing: -0.5,
@@ -97,7 +99,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Accounts Payable, Made Simple',
+                        l.loginTagline,
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 14,
@@ -108,33 +110,33 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 32),
                       TextFormField(
                         controller: _tenantController,
-                        decoration: const InputDecoration(
-                          labelText: 'Tenant',
+                        decoration: InputDecoration(
+                          labelText: l.loginTenant,
                           hintText: 'acme',
-                          prefixIcon: Icon(Icons.business),
-                          border: OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.business),
+                          border: const OutlineInputBorder(),
                         ),
                         validator: (v) =>
-                            v == null || v.isEmpty ? 'Required' : null,
+                            v == null || v.isEmpty ? l.loginRequired : null,
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
                         controller: _emailController,
-                        decoration: const InputDecoration(
-                          labelText: 'Email',
-                          prefixIcon: Icon(Icons.email),
-                          border: OutlineInputBorder(),
+                        decoration: InputDecoration(
+                          labelText: l.loginEmail,
+                          prefixIcon: const Icon(Icons.email),
+                          border: const OutlineInputBorder(),
                         ),
                         keyboardType: TextInputType.emailAddress,
                         autocorrect: false,
                         validator: (v) =>
-                            v == null || v.isEmpty ? 'Required' : null,
+                            v == null || v.isEmpty ? l.loginRequired : null,
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
                         controller: _passwordController,
                         decoration: InputDecoration(
-                          labelText: 'Password',
+                          labelText: l.loginPassword,
                           prefixIcon: const Icon(Icons.lock),
                           border: const OutlineInputBorder(),
                           // Labelled, ≥48dp show/hide toggle (WCAG 4.1.2). The
@@ -142,13 +144,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           // the tooltip serves sighted hover/long-press.
                           suffixIcon: Semantics(
                             label: _obscurePassword
-                                ? 'Show password'
-                                : 'Hide password',
+                                ? l.loginShowPassword
+                                : l.loginHidePassword,
                             button: true,
                             child: IconButton(
                               tooltip: _obscurePassword
-                                  ? 'Show password'
-                                  : 'Hide password',
+                                  ? l.loginShowPassword
+                                  : l.loginHidePassword,
                               icon: Icon(
                                 _obscurePassword
                                     ? Icons.visibility
@@ -162,7 +164,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         obscureText: _obscurePassword,
                         validator: (v) =>
-                            v == null || v.isEmpty ? 'Required' : null,
+                            v == null || v.isEmpty ? l.loginRequired : null,
                         onFieldSubmitted: (_) => _login(),
                       ),
                       if (auth.error != null) ...[
@@ -192,7 +194,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   color: Colors.white,
                                 ),
                               )
-                            : const Text('Sign In'),
+                            : Text(l.loginSignIn),
                       ),
                     ],
                   );

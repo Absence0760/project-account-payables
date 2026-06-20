@@ -407,5 +407,151 @@
   "payRunStatusFailed": "Failed",
   "payRunStatusCancelled": "Cancelled",
   "payConfirmCancel": "Cancel",
-  "payConfirmExecute": "Execute"
+  "payConfirmExecute": "Execute",
+
+  "loginAppName": "Better AP",
+  "loginTagline": "Accounts Payable, Made Simple",
+  "loginTenant": "Tenant",
+  "loginEmail": "Email",
+  "loginPassword": "Password",
+  "loginShowPassword": "Show password",
+  "loginHidePassword": "Hide password",
+  "loginRequired": "Required",
+  "loginSignIn": "Sign In",
+
+  "mfaTitle": "Two-factor authentication",
+  "mfaHeading": "Verify it's you",
+  "mfaPromptEmail": "Enter the 6-digit code we emailed you.",
+  "mfaPromptTotp": "Enter the 6-digit code from your authenticator app.",
+  "mfaEnforcedNotice": "Your organization requires two-factor authentication. Verify with an email code now, then finish setting up an authenticator app in the web app.",
+  "mfaCode": "Code",
+  "mfaCodeRequired": "Required",
+  "mfaCodeTooShort": "Enter at least 6 digits",
+  "mfaVerify": "Verify",
+  "mfaSending": "Sending…",
+  "mfaResendEmailCode": "Resend email code",
+  "mfaSendEmailCode": "Send email code",
+  "mfaUseEmailInstead": "Use an email code instead",
+  "mfaUseAuthenticatorInstead": "Use authenticator app instead",
+  "mfaEmailedAnnounce": "A sign-in code was emailed to you.",
+
+  "adminUsersTitle": "User Management",
+  "adminUsersSearchHint": "Search by name or email",
+  "adminUsersEmpty": "No users found",
+  "adminUsersLoadError": "Could not load users",
+  "adminUsersEditRoles": "Edit roles",
+  "adminUsersNoRoles": "No roles",
+  "adminUsersDeactivate": "Deactivate user",
+  "adminUsersActivate": "Activate user",
+  "adminUsersCannotDeactivateSelf": "You can't deactivate your own account",
+  "adminUsersDeactivateHint": "Signs them out and blocks sign-in",
+  "adminUsersActivateHint": "Restores sign-in access",
+  "adminUsersRoleActive": "active",
+  "adminUsersRoleInactive": "inactive",
+  "adminUsersInactiveBadge": "Inactive",
+  "adminUsersRolesUpdated": "Updated roles for {name}",
+  "@adminUsersRolesUpdated": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "adminUsersRolesUpdateFailed": "Failed to update roles: {error}",
+  "@adminUsersRolesUpdateFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "adminUsersActivated": "Activated {name}",
+  "@adminUsersActivated": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "adminUsersDeactivated": "Deactivated {name}",
+  "@adminUsersDeactivated": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "adminUsersUpdateFailed": "Failed to update {name}: {error}",
+  "@adminUsersUpdateFailed": {
+    "placeholders": {
+      "name": { "type": "String" },
+      "error": { "type": "String" }
+    }
+  },
+
+  "orgSettingsTitle": "Organization Settings",
+  "orgSettingsNoSettings": "No settings",
+  "orgSettingsLoadError": "Could not load settings",
+  "orgSettingsSectionCompany": "Company",
+  "orgSettingsSectionInvoiceDefaults": "Invoice defaults",
+  "orgSettingsName": "Organization name",
+  "orgSettingsAddress": "Address",
+  "orgSettingsPhone": "Phone",
+  "orgSettingsWebsite": "Website",
+  "orgSettingsTaxId": "Tax ID",
+  "orgSettingsCurrency": "Default currency",
+  "orgSettingsPaymentTerms": "Payment terms",
+  "orgSettingsNumberPrefix": "Invoice number prefix",
+  "orgSettingsGlAccount": "Default GL account",
+  "orgSettingsCostCenter": "Default cost center",
+  "orgSettingsSave": "Save changes",
+  "orgSettingsSaving": "Saving…",
+  "orgSettingsFieldRequired": "{label} is required",
+  "@orgSettingsFieldRequired": {
+    "placeholders": {
+      "label": { "type": "String" }
+    }
+  },
+  "orgSettingsSaved": "Organization settings saved",
+  "orgSettingsSaveFailed": "Failed to save: {error}",
+  "@orgSettingsSaveFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+
+  "workflowsTitle": "Workflows",
+  "workflowsEmpty": "No workflows found",
+  "workflowsLoadError": "Could not load workflows",
+  "workflowsStatusActive": "Active",
+  "workflowsStatusInactive": "Inactive",
+  "workflowsDefault": "Default",
+  "workflowsStepCount": "{count, plural, one {{count} step} other {{count} steps}}",
+  "@workflowsStepCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "workflowDetailFallbackTitle": "Workflow",
+  "workflowDetailLoadError": "Could not load workflow",
+  "workflowDetailNoSteps": "This workflow has no steps.",
+  "workflowDetailDefaultWorkflow": "Default workflow",
+  "workflowDetailStepNumber": "Step {number}",
+  "@workflowDetailStepNumber": {
+    "placeholders": {
+      "number": { "type": "int" }
+    }
+  },
+  "workflowDetailStepEnabled": "Enabled",
+  "workflowDetailStepDisabled": "Disabled",
+  "workflowDetailApproverCount": "{count, plural, one {{count} approver} other {{count} approvers}}",
+  "@workflowDetailApproverCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "workflowDetailDelaySummary": "Delay {hours} h",
+  "@workflowDetailDelaySummary": {
+    "placeholders": {
+      "hours": { "type": "String" }
+    }
+  },
+  "workflowDetailConditionSummary": "On {field}",
+  "@workflowDetailConditionSummary": {
+    "placeholders": {
+      "field": { "type": "String" }
+    }
+  }
 }

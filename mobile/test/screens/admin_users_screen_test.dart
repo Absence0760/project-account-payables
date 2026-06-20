@@ -7,8 +7,16 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/admin_users_screen.dart';
 import 'package:ap_mobile/stores/admin_user_store.dart';
+
+/// Localized host (defaults to `en`) so `AppLocalizations.of(context)` resolves.
+Widget _host(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -66,7 +74,7 @@ void main() {
       client: _client([_userJson('1'), _userJson('2', active: false)]),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: AdminUsersScreen()));
+    await tester.pumpWidget(_host(const AdminUsersScreen()));
     await _pumpUntil(tester, find.text('User 1'));
 
     expect(find.text('User 1'), findsOneWidget);
@@ -79,7 +87,7 @@ void main() {
   testWidgets('tapping a user opens the action sheet', (tester) async {
     ApiClient().debugConfigure(client: _client([_userJson('1')]));
 
-    await tester.pumpWidget(const MaterialApp(home: AdminUsersScreen()));
+    await tester.pumpWidget(_host(const AdminUsersScreen()));
     await _pumpUntil(tester, find.text('User 1'));
 
     await tester.tap(find.text('User 1'));
@@ -94,7 +102,7 @@ void main() {
       client: MockClient((req) async => http.Response('boom', 500)),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: AdminUsersScreen()));
+    await tester.pumpWidget(_host(const AdminUsersScreen()));
     await _pumpUntil(tester, find.text('Could not load users'));
 
     expect(find.widgetWithText(FilledButton, 'Retry'), findsOneWidget);
@@ -113,7 +121,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: AdminUsersScreen()));
+    await tester.pumpWidget(_host(const AdminUsersScreen()));
     await _pumpUntil(tester, find.text('User 1'));
 
     await tester.tap(find.text('User 1'));

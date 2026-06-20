@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/organization.dart';
 import 'package:ap_mobile/stores/org_settings_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
@@ -81,8 +82,9 @@ class _OrgSettingsScreenState extends State<OrgSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Organization Settings')),
+      appBar: AppBar(title: Text(l.orgSettingsTitle)),
       body: ListenableBuilder(
         listenable: OrgSettingsStore.instance,
         builder: (context, _) {
@@ -96,7 +98,7 @@ class _OrgSettingsScreenState extends State<OrgSettingsScreen> {
           }
           final settings = store.settings;
           if (settings == null) {
-            return const Center(child: Text('No settings'));
+            return Center(child: Text(l.orgSettingsNoSettings));
           }
 
           // Seed the form once from the first load (and re-seed if the slug
@@ -110,19 +112,21 @@ class _OrgSettingsScreenState extends State<OrgSettingsScreen> {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _sectionHeader('Company'),
-                _field(_name, 'Organization name', requiredField: true),
-                _field(_address, 'Address'),
-                _field(_phone, 'Phone', keyboard: TextInputType.phone),
-                _field(_website, 'Website', keyboard: TextInputType.url),
-                _field(_taxId, 'Tax ID'),
+                _sectionHeader(l.orgSettingsSectionCompany),
+                _field(_name, l.orgSettingsName, requiredField: true),
+                _field(_address, l.orgSettingsAddress),
+                _field(_phone, l.orgSettingsPhone,
+                    keyboard: TextInputType.phone),
+                _field(_website, l.orgSettingsWebsite,
+                    keyboard: TextInputType.url),
+                _field(_taxId, l.orgSettingsTaxId),
                 const SizedBox(height: 16),
-                _sectionHeader('Invoice defaults'),
-                _field(_currency, 'Default currency'),
-                _field(_paymentTerms, 'Payment terms'),
-                _field(_numberPrefix, 'Invoice number prefix'),
-                _field(_glAccount, 'Default GL account'),
-                _field(_costCenter, 'Default cost center'),
+                _sectionHeader(l.orgSettingsSectionInvoiceDefaults),
+                _field(_currency, l.orgSettingsCurrency),
+                _field(_paymentTerms, l.orgSettingsPaymentTerms),
+                _field(_numberPrefix, l.orgSettingsNumberPrefix),
+                _field(_glAccount, l.orgSettingsGlAccount),
+                _field(_costCenter, l.orgSettingsCostCenter),
                 const SizedBox(height: 24),
                 FilledButton.icon(
                   onPressed: store.saving ? null : _save,
@@ -133,7 +137,9 @@ class _OrgSettingsScreenState extends State<OrgSettingsScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.save),
-                  label: Text(store.saving ? 'Saving…' : 'Save changes'),
+                  label: Text(
+                    store.saving ? l.orgSettingsSaving : l.orgSettingsSave,
+                  ),
                 ),
               ],
             ),
@@ -167,8 +173,9 @@ class _OrgSettingsScreenState extends State<OrgSettingsScreen> {
           border: const OutlineInputBorder(),
         ),
         validator: requiredField
-            ? (v) =>
-                (v == null || v.trim().isEmpty) ? '$label is required' : null
+            ? (v) => (v == null || v.trim().isEmpty)
+                ? AppLocalizations.of(context).orgSettingsFieldRequired(label)
+                : null
             : null,
       ),
     );
@@ -177,6 +184,7 @@ class _OrgSettingsScreenState extends State<OrgSettingsScreen> {
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
+    final l = AppLocalizations.of(context);
     final update = OrgSettingsUpdate(
       name: _name.text.trim(),
       companyAddress: _address.text.trim(),
@@ -195,8 +203,8 @@ class _OrgSettingsScreenState extends State<OrgSettingsScreen> {
     final ok = await OrgSettingsStore.instance.save(update);
     if (!mounted) return;
     final message = ok
-        ? 'Organization settings saved'
-        : 'Failed to save: ${OrgSettingsStore.instance.error ?? ''}';
+        ? l.orgSettingsSaved
+        : l.orgSettingsSaveFailed(OrgSettingsStore.instance.error ?? '');
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
     A11y.announce(context, message);
@@ -211,15 +219,16 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
           const SizedBox(height: 12),
-          const Text('Could not load settings'),
+          Text(l.orgSettingsLoadError),
           const SizedBox(height: 12),
-          FilledButton(onPressed: onRetry, child: const Text('Retry')),
+          FilledButton(onPressed: onRetry, child: Text(l.commonRetry)),
         ],
       ),
     );

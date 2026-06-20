@@ -880,4 +880,289 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get payConfirmExecute => 'Ejecutar';
+
+  @override
+  String get loginAppName => 'Better AP';
+
+  @override
+  String get loginTagline => 'Cuentas por pagar, simplificadas';
+
+  @override
+  String get loginTenant => 'Inquilino';
+
+  @override
+  String get loginEmail => 'Correo electrónico';
+
+  @override
+  String get loginPassword => 'Contraseña';
+
+  @override
+  String get loginShowPassword => 'Mostrar contraseña';
+
+  @override
+  String get loginHidePassword => 'Ocultar contraseña';
+
+  @override
+  String get loginRequired => 'Obligatorio';
+
+  @override
+  String get loginSignIn => 'Iniciar sesión';
+
+  @override
+  String get mfaTitle => 'Autenticación de dos factores';
+
+  @override
+  String get mfaHeading => 'Verifica tu identidad';
+
+  @override
+  String get mfaPromptEmail =>
+      'Introduce el código de 6 dígitos que te enviamos por correo electrónico.';
+
+  @override
+  String get mfaPromptTotp =>
+      'Introduce el código de 6 dígitos de tu aplicación de autenticación.';
+
+  @override
+  String get mfaEnforcedNotice =>
+      'Tu organización requiere autenticación de dos factores. Verifica ahora con un código por correo electrónico y luego termina de configurar una aplicación de autenticación en la aplicación web.';
+
+  @override
+  String get mfaCode => 'Código';
+
+  @override
+  String get mfaCodeRequired => 'Obligatorio';
+
+  @override
+  String get mfaCodeTooShort => 'Introduce al menos 6 dígitos';
+
+  @override
+  String get mfaVerify => 'Verificar';
+
+  @override
+  String get mfaSending => 'Enviando…';
+
+  @override
+  String get mfaResendEmailCode => 'Reenviar código por correo';
+
+  @override
+  String get mfaSendEmailCode => 'Enviar código por correo';
+
+  @override
+  String get mfaUseEmailInstead => 'Usar un código por correo en su lugar';
+
+  @override
+  String get mfaUseAuthenticatorInstead =>
+      'Usar la aplicación de autenticación en su lugar';
+
+  @override
+  String get mfaEmailedAnnounce =>
+      'Se envió un código de inicio de sesión a tu correo electrónico.';
+
+  @override
+  String get adminUsersTitle => 'Gestión de usuarios';
+
+  @override
+  String get adminUsersSearchHint => 'Buscar por nombre o correo electrónico';
+
+  @override
+  String get adminUsersEmpty => 'No se encontraron usuarios';
+
+  @override
+  String get adminUsersLoadError => 'No se pudieron cargar los usuarios';
+
+  @override
+  String get adminUsersEditRoles => 'Editar roles';
+
+  @override
+  String get adminUsersNoRoles => 'Sin roles';
+
+  @override
+  String get adminUsersDeactivate => 'Desactivar usuario';
+
+  @override
+  String get adminUsersActivate => 'Activar usuario';
+
+  @override
+  String get adminUsersCannotDeactivateSelf =>
+      'No puedes desactivar tu propia cuenta';
+
+  @override
+  String get adminUsersDeactivateHint =>
+      'Los cierra la sesión y bloquea el inicio de sesión';
+
+  @override
+  String get adminUsersActivateHint => 'Restaura el acceso de inicio de sesión';
+
+  @override
+  String get adminUsersRoleActive => 'activo';
+
+  @override
+  String get adminUsersRoleInactive => 'inactivo';
+
+  @override
+  String get adminUsersInactiveBadge => 'Inactivo';
+
+  @override
+  String adminUsersRolesUpdated(String name) {
+    return 'Roles actualizados para $name';
+  }
+
+  @override
+  String adminUsersRolesUpdateFailed(String error) {
+    return 'No se pudieron actualizar los roles: $error';
+  }
+
+  @override
+  String adminUsersActivated(String name) {
+    return '$name activado';
+  }
+
+  @override
+  String adminUsersDeactivated(String name) {
+    return '$name desactivado';
+  }
+
+  @override
+  String adminUsersUpdateFailed(String name, String error) {
+    return 'No se pudo actualizar $name: $error';
+  }
+
+  @override
+  String get orgSettingsTitle => 'Configuración de la organización';
+
+  @override
+  String get orgSettingsNoSettings => 'Sin configuración';
+
+  @override
+  String get orgSettingsLoadError => 'No se pudo cargar la configuración';
+
+  @override
+  String get orgSettingsSectionCompany => 'Empresa';
+
+  @override
+  String get orgSettingsSectionInvoiceDefaults =>
+      'Valores predeterminados de factura';
+
+  @override
+  String get orgSettingsName => 'Nombre de la organización';
+
+  @override
+  String get orgSettingsAddress => 'Dirección';
+
+  @override
+  String get orgSettingsPhone => 'Teléfono';
+
+  @override
+  String get orgSettingsWebsite => 'Sitio web';
+
+  @override
+  String get orgSettingsTaxId => 'Identificación fiscal';
+
+  @override
+  String get orgSettingsCurrency => 'Moneda predeterminada';
+
+  @override
+  String get orgSettingsPaymentTerms => 'Condiciones de pago';
+
+  @override
+  String get orgSettingsNumberPrefix => 'Prefijo de número de factura';
+
+  @override
+  String get orgSettingsGlAccount => 'Cuenta contable predeterminada';
+
+  @override
+  String get orgSettingsCostCenter => 'Centro de costos predeterminado';
+
+  @override
+  String get orgSettingsSave => 'Guardar cambios';
+
+  @override
+  String get orgSettingsSaving => 'Guardando…';
+
+  @override
+  String orgSettingsFieldRequired(String label) {
+    return '$label es obligatorio';
+  }
+
+  @override
+  String get orgSettingsSaved => 'Configuración de la organización guardada';
+
+  @override
+  String orgSettingsSaveFailed(String error) {
+    return 'Error al guardar: $error';
+  }
+
+  @override
+  String get workflowsTitle => 'Flujos de trabajo';
+
+  @override
+  String get workflowsEmpty => 'No se encontraron flujos de trabajo';
+
+  @override
+  String get workflowsLoadError =>
+      'No se pudieron cargar los flujos de trabajo';
+
+  @override
+  String get workflowsStatusActive => 'Activo';
+
+  @override
+  String get workflowsStatusInactive => 'Inactivo';
+
+  @override
+  String get workflowsDefault => 'Predeterminado';
+
+  @override
+  String workflowsStepCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count pasos',
+      one: '$count paso',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get workflowDetailFallbackTitle => 'Flujo de trabajo';
+
+  @override
+  String get workflowDetailLoadError => 'No se pudo cargar el flujo de trabajo';
+
+  @override
+  String get workflowDetailNoSteps => 'Este flujo de trabajo no tiene pasos.';
+
+  @override
+  String get workflowDetailDefaultWorkflow => 'Flujo de trabajo predeterminado';
+
+  @override
+  String workflowDetailStepNumber(int number) {
+    return 'Paso $number';
+  }
+
+  @override
+  String get workflowDetailStepEnabled => 'Habilitado';
+
+  @override
+  String get workflowDetailStepDisabled => 'Deshabilitado';
+
+  @override
+  String workflowDetailApproverCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count aprobadores',
+      one: '$count aprobador',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String workflowDetailDelaySummary(String hours) {
+    return 'Retraso $hours h';
+  }
+
+  @override
+  String workflowDetailConditionSummary(String field) {
+    return 'En $field';
+  }
 }

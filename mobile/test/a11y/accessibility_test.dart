@@ -497,7 +497,7 @@ void main() {
     testWidgets('meets tap-target, label and contrast guidelines',
         (tester) async {
       final handle = tester.ensureSemantics();
-      await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+      await tester.pumpWidget(_host(const LoginScreen()));
       await tester.pump();
 
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
@@ -510,7 +510,7 @@ void main() {
     testWidgets('the password show/hide toggle exposes an accessible label',
         (tester) async {
       final handle = tester.ensureSemantics();
-      await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+      await tester.pumpWidget(_host(const LoginScreen()));
       await tester.pump();
 
       // The icon-only visibility toggle must announce its purpose (WCAG 4.1.2).
