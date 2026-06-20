@@ -88,12 +88,20 @@ async def test_employee_clear_locale_with_empty_string(realdb):
 
 async def test_employee_omitting_locale_leaves_it_untouched(realdb):
     async with realdb.client(key=TENANT, role="admin") as client:
-        await client.patch("/api/auth/me", json={"locale": "es"})
-        # A profile update that doesn't mention locale must not wipe it.
-        resp = await client.patch("/api/auth/me", json={"full_name": "Renamed Admin"})
-        assert resp.status_code == 200
-        assert resp.json()["locale"] == "es"
-        assert resp.json()["full_name"] == "Renamed Admin"
+        original_name = (await client.get("/api/auth/me")).json()["full_name"]
+        try:
+            await client.patch("/api/auth/me", json={"locale": "es"})
+            # A profile update that doesn't mention locale must not wipe it.
+            resp = await client.patch("/api/auth/me", json={"full_name": "Renamed Admin"})
+            assert resp.status_code == 200
+            assert resp.json()["locale"] == "es"
+            assert resp.json()["full_name"] == "Renamed Admin"
+        finally:
+            # The realdb fixture truncates tenant tables but NOT control-plane
+            # users, so this rename of the *shared* seeded admin would otherwise
+            # leak into later tests (e.g. test_credit_memos asserts the seeded
+            # admin's name). Restore it.
+            await client.patch("/api/auth/me", json={"full_name": original_name})
 
 
 async def test_employee_set_locale_requires_auth(realdb):

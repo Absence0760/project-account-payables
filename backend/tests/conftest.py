@@ -480,3 +480,16 @@ async def realdb():
         yield db
     finally:
         await db.cleanup()
+        # Background-service code paths exercised by some realdb tests
+        # (audit_log_shipper.ship_once, peppol_receive, contract_renewal) reach
+        # the *module-global* engines in app.database — not this fixture's
+        # per-test harness engines. Those globals cache an asyncpg pool bound to
+        # the event loop of the first test that touches them; a later test runs
+        # under a fresh function-scoped loop, and reusing the cached pool raises
+        # "got Future attached to a different loop" / "another operation is in
+        # progress". Dispose them after every realdb test so the next test
+        # rebinds its own loop. (The per-test harness engines avoid this for the
+        # request path; this covers the background-service path.)
+        from app.database import dispose_all_engines
+
+        await dispose_all_engines()
