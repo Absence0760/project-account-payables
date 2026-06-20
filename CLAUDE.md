@@ -309,9 +309,14 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_PUBLIC_API_ENABLED` | `true` | Platform kill switch for the public Developer API (`/api/v1`, `X-API-Key` auth). The surface is auth-gated regardless; when `false` every key fails closed with the opaque 401. No secret — API keys are minted per-org and stored hashed. See `backend/docs/public-api.md`. |
 | `AP_WEBHOOKS_ENABLED` | `false` | Master switch for **outbound** Developer-API webhooks — gates BOTH the event emit (`services/webhooks/dispatch.emit_event` → silent no-op when off, no outbound HTTP) and the background retry/delivery sweep. OFF in local dev so a fresh clone never makes outbound calls; flip on in deployed envs. No secret — each subscription's HMAC signing secret is generated at create time and stored on the `webhook_subscriptions` row (a symmetric verification key). See `backend/docs/public-api.md` § Outbound webhooks. |
 | `AP_WEBHOOKS_DELIVERY_INTERVAL_SECONDS` | `60` | Outbound-webhook retry/delivery sweep tick interval. |
-| `AP_BILLING_PROVIDER` | `mock` | Platform billing adapter — `mock` (in-process, deterministic, no network/credential — local-first default) \| `stripe_billing` (skeleton, fails closed without a key). Per-org override `Organization.settings.billing.provider`. See `backend/docs/billing.md`. |
+| `AP_BILLING_PROVIDER` | `mock` | Platform billing adapter — `mock` (in-process, deterministic, no network/credential — local-first default) \| `stripe_billing` (live create/get-subscription + report-usage over the Stripe REST API, fails closed without a key). Per-org override `Organization.settings.billing.provider`. See `backend/docs/billing.md`. |
 | `AP_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing key — **no hardcoded fallback**; sops in deployed. The `stripe_billing` adapter fails closed without it. |
 | `AP_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe billing webhook signature verification — no fallback; sops in deployed. |
+| `AP_BILLING_STRIPE_API_BASE` | `https://api.stripe.com` | Stripe REST API base URL — overridable so a sandbox / test can point the `stripe_billing` adapter elsewhere; still fails closed without an API key. |
+| `AP_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}` — public-by-design, HMAC-gated, deduped by `event_id`, drives the `Subscription` lifecycle transition, 204-silent on rejection). OFF in local dev; flip on in deployed envs. See `backend/docs/billing.md` § Inbound webhook route. |
+| `AP_BILLING_DUNNING_ENABLED` | `false` | Master switch for the dunning / past-due automation sweep — cancels subscriptions overdue past the grace window (NEVER moves money). OFF by default; flip on in deployed envs. |
+| `AP_BILLING_DUNNING_INTERVAL_SECONDS` | `3600` | Dunning sweep tick interval. |
+| `AP_BILLING_DUNNING_GRACE_DAYS` | `14` | Grace window (days from `current_period_end`) a subscription may sit `past_due` before the dunning sweep cancels it. |
 
 Full list in `backend/app/config.py`.
 
