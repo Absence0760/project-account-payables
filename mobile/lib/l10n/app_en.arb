@@ -1,0 +1,81 @@
+{
+  "@@locale": "en",
+  "navDashboard": "Dashboard",
+  "navInvoices": "Invoices",
+  "navContracts": "Contracts",
+  "navApprovals": "Approvals",
+  "navExceptions": "Exceptions",
+  "navVendors": "Vendors",
+  "navPay": "Pay",
+  "navPayments": "Payments",
+  "navSettings": "Settings",
+
+  "shellAppName": "Account Payables",
+
+  "commonSave": "Save",
+  "commonSaving": "Saving…",
+  "commonCancel": "Cancel",
+  "commonLoading": "Loading…",
+  "commonRetry": "Retry",
+  "commonAll": "All",
+  "commonSearch": "Search",
+  "commonClear": "Clear",
+  "commonApply": "Apply",
+
+  "settingsTitle": "Settings",
+  "settingsTenant": "Tenant",
+  "settingsTenantNotSet": "Not set",
+  "settingsApiServer": "API Server",
+  "settingsBiometricUnlock": "Biometric Unlock",
+  "settingsBiometricHint": "Use fingerprint or face to unlock",
+  "settingsSignOut": "Sign Out",
+  "settingsLanguage": "Language",
+  "settingsLanguageHint": "Choose the language used across the app. Your choice is saved on this device.",
+  "settingsLanguageSystem": "System default",
+
+  "dashboardTitle": "Dashboard",
+  "dashboardTotalInvoices": "Total Invoices",
+  "dashboardUpcoming": "Upcoming",
+  "dashboardForReview": "For Review",
+  "dashboardApproved": "Approved",
+  "dashboardAging": "Invoice Aging",
+  "dashboardTopVendors": "Top Vendors",
+  "dashboardAgingCurrent": "Current",
+  "dashboardAgingDays30": "30 Days",
+  "dashboardAgingDays60": "60 Days",
+  "dashboardAgingDays90plus": "90+",
+  "dashboardCachedBanner": "Showing cached data — couldn't reach the server",
+  "dashboardErrorPrefix": "Error: {error}",
+  "@dashboardErrorPrefix": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "dashboardInvoiceCount": "{count, plural, one {{count} invoice} other {{count} invoices}}",
+  "@dashboardInvoiceCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+
+  "invoicesTitle": "Invoices",
+  "invoicesSearchHint": "Search invoices...",
+  "invoicesSearchAria": "Search invoices",
+  "invoicesAdvancedSearch": "Advanced Search",
+  "invoicesAdvancedSearchActive": "Advanced search, filters active",
+  "invoicesCaptureInvoice": "Capture Invoice",
+  "invoicesCaptureInvoiceLabel": "Capture invoice",
+  "invoicesEmpty": "No invoices found",
+  "invoicesFilterAll": "All",
+  "invoicesFilterNew": "New",
+  "invoicesFilterPending": "Pending",
+  "invoicesFilterReview": "Review",
+  "invoicesFilterApproved": "Approved",
+  "invoicesFilterRejected": "Rejected",
+  "invoicesFilterPaid": "Paid",
+  "invoicesColInvoiceNumber": "Invoice #",
+  "invoicesColVendor": "Vendor",
+  "invoicesColAmount": "Amount",
+  "invoicesColDueDate": "Due Date",
+  "invoicesColStatus": "Status"
+}

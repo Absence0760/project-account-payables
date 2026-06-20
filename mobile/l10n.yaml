@@ -1,0 +1,15 @@
+# Flutter gen-l10n configuration. Mirrors the web i18n track
+# (frontend/src/lib/i18n/) — same six locales (en, de, fr, es, pt-BR, ja),
+# same ICU plural shapes.
+#
+# `output-dir: lib/l10n/gen` writes the generated `AppLocalizations` into the
+# source tree (committed, non-synthetic output) so it is reviewable + travels
+# with a clone. (Recent Flutter dropped the `synthetic-package` flag — output
+# is always non-synthetic now; an explicit `output-dir` is what makes it land
+# in the tree rather than the build cache.)
+arb-dir: lib/l10n
+template-arb-file: app_en.arb
+output-localization-file: app_localizations.dart
+output-class: AppLocalizations
+output-dir: lib/l10n/gen
+nullable-getter: false
