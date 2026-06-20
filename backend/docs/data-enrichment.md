@@ -8,7 +8,7 @@ three read-only endpoints, all suggestion-only / compute-on-read.
 | Surface | What it does | Persists? |
 |---|---|---|
 | **Auto-fill** | Suggests the dominant historical `gl_account` / `cost_center` / `payment_terms` for a draft invoice's vendor | No — advisory |
-| **Price variance** | Flags draft line items whose unit price deviates from the vendor's per-item historical median | No — returned inline |
+| **Price variance** | Flags draft line items whose unit price deviates from the vendor's per-item historical median | Yes — also persisted as a warning + `price_variance` exception on every invoice mutation (returned inline too) |
 | **Vendor scoring** | Accuracy + dispute (+ optional on-time) sub-scores → renormalized composite | No — compute-on-read |
 | **Vendor consolidation** | Clusters likely-duplicate / similar vendors so the master list can be deduped | No — advisory, never merges |
 
@@ -71,12 +71,32 @@ pass over the vendor's invoices, acceptable for an on-demand reviewer endpoint
   `30.0`), else `"info"`. `direction = "over" | "under"`.
 - History line rows are capped at `PRICE_HISTORY_LIMIT` (default `500`).
 
-**Why inline, not persisted (this slice):** `invoice_warnings.refresh_warnings`
-is a *write* path that runs on every invoice mutation and raises `Exception`
-rows. Wiring price-variance there is a heavier behavior change (mutation-path
-coupling, exception-queue noise, dedup) than a read-only "suggestions for this
-draft" endpoint warrants. The pure `detect_price_variance` is built to be called
-from `refresh_warnings` unchanged when that follow-up is taken.
+**Persisted as a warning + exception (the follow-up, now shipped).**
+`invoice_warnings.refresh_warnings` — the single write chokepoint that runs on
+every invoice mutation and after every extraction — calls
+`_refresh_price_variance`, which reuses the **same pure `detect_price_variance`**
+math (no re-implementation). For an extracted invoice (status `!= new`) with a
+`vendor_id`, it:
+
+- pulls this vendor's approved-or-beyond historical line items (same set + same
+  `(item, currency)` keying as the advisory endpoint, bounded by
+  `PRICE_HISTORY_LIMIT`) and the draft's own line items;
+- appends one `price_variance` warning per flagged line to `Invoice.warnings`
+  (severity `warning`/`info`, same thresholds as the inline surface); and
+- raises **one** de-duped `price_variance` `Exception` covering all flagged
+  lines (severity escalates to `warning` if any line cleared the escalate
+  threshold). Dedup is via `_ensure_exception` — re-running on the same invoice
+  never piles up duplicate open exceptions, exactly like `fraud_stat_anomaly`.
+
+Gated by the `price_variance_enabled` fraud rule (default `true` — set
+`settings.fraud_rules.price_variance_enabled: false` to opt out, like the other
+fraud rules). Tolerance / escalate / min-history come from the **same**
+`settings.enrichment` block the advisory endpoint uses, so the persisted warning
+and the inline advisory always agree. Best-effort: a failure in the check is
+swallowed (PII-free log) and never blocks saving the invoice. The message
+carries only the item label + prices + percent — no vendor PII. Covered by
+`backend/tests/test_price_variance_warning.py`. The inline read-only endpoint is
+unchanged.
 
 ## Vendor performance scoring
 
@@ -279,8 +299,10 @@ unknown keys dropped, numeric coercion guarded — like `_adaptive_settings`):
 
 ## Deferred follow-ups
 
-- **Persist price variance** into `invoice_warnings.refresh_warnings` (+ raise an
-  `Exception`) — the pure `detect_price_variance` is built to be reused there.
+- ~~**Persist price variance** into `invoice_warnings.refresh_warnings` (+ raise an
+  `Exception`)~~ — **DONE.** `_refresh_price_variance` reuses the pure
+  `detect_price_variance` at the `refresh_warnings` chokepoint; see the Price
+  variance section above.
 - **PO expected-date column** to make on-time delivery real (adds a column +
   migration + extraction mapping); on-time stays N/A until then.
 - **Cached `vendor_scores` table** for multi-vendor sorting (trigger: a
