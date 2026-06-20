@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface CompanyProfile {
 		address: string;
@@ -139,7 +140,7 @@
 				model: extractionOllamaModel,
 			});
 		} catch (err) {
-			extractionTestResult = { success: false, message: err instanceof Error ? err.message : 'Test failed' };
+			extractionTestResult = { success: false, message: err instanceof Error ? err.message : m('org.toast.testFailed') };
 		} finally {
 			testingExtraction = false;
 		}
@@ -242,7 +243,7 @@
 				token_secret: erpTokenSecret,
 			});
 		} catch (err) {
-			connectionResult = { success: false, message: err instanceof Error ? err.message : 'Test failed' };
+			connectionResult = { success: false, message: err instanceof Error ? err.message : m('org.toast.testFailed') };
 		} finally {
 			testingConnection = false;
 		}
@@ -366,7 +367,7 @@
 				brandLegalUrl = (brandCfg.legal_url as string) || '';
 			}
 		} catch {
-			toast('Failed to load organization', 'error');
+			toast(m('org.toast.loadFailed'), 'error');
 		}
 	}
 
@@ -416,7 +417,7 @@
 		} catch (err) {
 			paymentsTestResult = {
 				success: false,
-				message: err instanceof Error ? err.message : 'Test failed',
+				message: err instanceof Error ? err.message : m('org.toast.testFailed'),
 			};
 		} finally {
 			testingPayments = false;
@@ -429,13 +430,13 @@
 			settings: partial,
 		});
 		org = data;
-		toast(`${section} saved`, 'success');
+		toast(m('org.toast.sectionSaved', { section }), 'success');
 	}
 
 	async function saveProfile() {
 		savingProfile = true;
 		try {
-			await patchSettings('Company profile', {
+			await patchSettings(m('org.section.companySaved'), {
 				company: {
 					address, phone, website,
 					tax_id: taxId,
@@ -443,7 +444,7 @@
 				},
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingProfile = false;
 		}
@@ -452,7 +453,7 @@
 	async function saveDefaults() {
 		savingDefaults = true;
 		try {
-			await patchSettings('Invoice defaults', {
+			await patchSettings(m('org.section.defaultsSaved'), {
 				invoice_defaults: {
 					currency,
 					payment_terms: paymentTerms,
@@ -462,7 +463,7 @@
 				},
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingDefaults = false;
 		}
@@ -471,7 +472,7 @@
 	async function saveErp() {
 		savingErp = true;
 		try {
-			await patchSettings('ERP integration', {
+			await patchSettings(m('org.section.erpSaved'), {
 				erp: {
 					type: erpType,
 					integration_method: erpMethod,
@@ -491,7 +492,7 @@
 				},
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingErp = false;
 		}
@@ -500,7 +501,7 @@
 	async function saveExtraction() {
 		savingExtraction = true;
 		try {
-			await patchSettings('AI Extraction', {
+			await patchSettings(m('org.section.extractionSaved'), {
 				extraction: {
 					program_type: extractionProgramType,
 					provider: extractionProvider,
@@ -513,7 +514,7 @@
 				},
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingExtraction = false;
 		}
@@ -522,7 +523,7 @@
 	async function saveCards() {
 		savingCards = true;
 		try {
-			await patchSettings('Virtual cards', {
+			await patchSettings(m('org.section.cardsSaved'), {
 				cards: {
 					enabled: cardsEnabled,
 					program_type: cardsProgramType,
@@ -538,7 +539,7 @@
 				},
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingCards = false;
 		}
@@ -547,11 +548,11 @@
 	async function saveSecurity() {
 		savingSecurity = true;
 		try {
-			await patchSettings('Security', {
+			await patchSettings(m('org.section.securitySaved'), {
 				mfa: { required: mfaRequired },
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingSecurity = false;
 		}
@@ -566,10 +567,10 @@
 				.map((d) => d.trim().toLowerCase())
 				.filter((d) => d.length > 0);
 			const payload: FraudRules = { ...fraud, personal_email_domains: domains };
-			await patchSettings('Fraud detection', { fraud_rules: payload });
+			await patchSettings(m('org.section.fraudSaved'), { fraud_rules: payload });
 			fraud = payload;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingFraud = false;
 		}
@@ -584,7 +585,7 @@
 	async function savePayments() {
 		savingPayments = true;
 		try {
-			await patchSettings('Payments', {
+			await patchSettings(m('org.section.paymentsSaved'), {
 				payments: {
 					provider: paymentsProvider,
 					program_type: paymentsProgramType,
@@ -597,17 +598,18 @@
 				},
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingPayments = false;
 		}
 	}
 
-	const PLAN_LABELS: Record<string, string> = {
-		free: 'Free',
-		pro: 'Pro',
-		enterprise: 'Enterprise',
-	};
+	const planLabel = (plan: string): string =>
+		({
+			free: m('org.plan.free'),
+			pro: m('org.plan.pro'),
+			enterprise: m('org.plan.enterprise'),
+		})[plan] ?? plan;
 
 	// ── White-label branding ────────────────────────────────────────────
 	import { brand } from '$lib/stores/brand.svelte';
@@ -630,20 +632,20 @@
 		// Client-side validation mirroring the backend BrandConfig guards, so a
 		// typo surfaces inline instead of as a 422.
 		if (brandAccentColor.trim() && !HEX_RE.test(brandAccentColor.trim())) {
-			toast('Accent color must be a hex value like #638cff', 'error');
+			toast(m('org.branding.toast.accentInvalid'), 'error');
 			return;
 		}
 		if (brandAccentStrongColor.trim() && !HEX_RE.test(brandAccentStrongColor.trim())) {
-			toast('Accent (strong) color must be a hex value like #3f5fd6', 'error');
+			toast(m('org.branding.toast.accentStrongInvalid'), 'error');
 			return;
 		}
 		for (const [label, val] of [
-			['Logo URL', brandLogoUrl],
-			['Support URL', brandSupportUrl],
-			['Legal URL', brandLegalUrl],
+			[m('org.branding.label.logoUrl'), brandLogoUrl],
+			[m('org.branding.label.supportUrl'), brandSupportUrl],
+			[m('org.branding.label.legalUrl'), brandLegalUrl],
 		] as const) {
 			if (val.trim() && !/^https?:\/\//i.test(val.trim())) {
-				toast(`${label} must be an http(s) URL`, 'error');
+				toast(m('org.branding.toast.urlInvalid', { label }), 'error');
 				return;
 			}
 		}
@@ -661,9 +663,9 @@
 			// without a reload.
 			brand.reset();
 			await brand.ensureLoadedAndApply();
-			toast('Branding saved', 'success');
+			toast(m('org.branding.toast.saved'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('org.toast.saveFailed'), 'error');
 		} finally {
 			savingBranding = false;
 		}
@@ -712,7 +714,7 @@
 			);
 			customDomains = data.custom_domains ?? [];
 		} catch (err) {
-			domainsError = err instanceof Error ? err.message : 'Failed to load custom domains';
+			domainsError = err instanceof Error ? err.message : m('org.customDomains.toast.loadFailed');
 		} finally {
 			loadingDomains = false;
 		}
@@ -730,7 +732,7 @@
 			customDomains = data.custom_domains ?? [];
 			return true;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to save custom domains', 'error');
+			toast(err instanceof Error ? err.message : m('org.customDomains.toast.saveFailed'), 'error');
 			return false;
 		} finally {
 			savingDomains = false;
@@ -740,17 +742,17 @@
 	async function addCustomDomain() {
 		const host = normalizeDomain(newDomain);
 		if (!host) {
-			toast('Enter a valid hostname like ap.acmecorp.com', 'error');
+			toast(m('org.customDomains.toast.invalid'), 'error');
 			return;
 		}
 		if (customDomains.includes(host)) {
-			toast('That domain is already registered', 'error');
+			toast(m('org.customDomains.toast.duplicate'), 'error');
 			return;
 		}
 		const ok = await saveCustomDomains([...customDomains, host]);
 		if (ok) {
 			newDomain = '';
-			toast('Custom domain added', 'success');
+			toast(m('org.customDomains.toast.added'), 'success');
 		}
 	}
 
@@ -762,7 +764,7 @@
 		}
 		confirmRemoveDomain = null;
 		const ok = await saveCustomDomains(customDomains.filter((d) => d !== host));
-		if (ok) toast('Custom domain removed', 'success');
+		if (ok) toast(m('org.customDomains.toast.removed'), 'success');
 	}
 </script>
 
@@ -775,46 +777,46 @@
 	}}
 />
 
-<PageHeader title="Organization">
+<PageHeader title={m('org.title')}>
 	{#if org}
 		<div class="sections">
 			<section class="card">
-				<h2>Company Profile</h2>
+				<h2>{m('org.section.company')}</h2>
 				<div class="form-grid">
 					<label>
-						<span>Company Name</span>
+						<span>{m('org.company.name')}</span>
 						<input type="text" bind:value={name} />
 					</label>
 					<label>
-						<span>Tax ID / EIN</span>
-						<input type="text" bind:value={taxId} placeholder="XX-XXXXXXX" />
+						<span>{m('org.company.taxId')}</span>
+						<input type="text" bind:value={taxId} placeholder={m('org.company.taxIdPlaceholder')} />
 					</label>
 					<label class="full-width">
-						<span>Address</span>
-						<textarea bind:value={address} rows="2" placeholder="Street, City, State, ZIP"></textarea>
+						<span>{m('org.company.address')}</span>
+						<textarea bind:value={address} rows="2" placeholder={m('org.company.addressPlaceholder')}></textarea>
 					</label>
 					<label>
-						<span>Phone</span>
+						<span>{m('org.company.phone')}</span>
 						<input type="tel" bind:value={phone} />
 					</label>
 					<label>
-						<span>Website</span>
+						<span>{m('org.company.website')}</span>
 						<input type="url" bind:value={website} placeholder="https://" />
 					</label>
 				</div>
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingProfile} onclick={saveProfile}>
-						{savingProfile ? 'Saving...' : 'Save Profile'}
+						{savingProfile ? m('org.common.saving') : m('org.company.save')}
 					</button>
 				</div>
 			</section>
 
 			<section class="card">
-				<h2>Invoice Defaults</h2>
-				<p class="card-hint">These defaults are applied to new invoices.</p>
+				<h2>{m('org.section.defaults')}</h2>
+				<p class="card-hint">{m('org.defaults.hint')}</p>
 				<div class="form-grid">
 					<label>
-						<span>Currency</span>
+						<span>{m('org.defaults.currency')}</span>
 						<select bind:value={currency}>
 							<option value="USD">USD — US Dollar</option>
 							<option value="EUR">EUR — Euro</option>
@@ -825,7 +827,7 @@
 						</select>
 					</label>
 					<label>
-						<span>Payment Terms</span>
+						<span>{m('org.defaults.paymentTerms')}</span>
 						<select bind:value={paymentTerms}>
 							<option value="Due on Receipt">Due on Receipt</option>
 							<option value="Net 10">Net 10</option>
@@ -838,55 +840,54 @@
 						</select>
 					</label>
 					<label>
-						<span>Invoice Number Prefix</span>
+						<span>{m('org.defaults.numberPrefix')}</span>
 						<input type="text" bind:value={numberPrefix} placeholder="INV-" />
 					</label>
 					<label>
-						<span>Default GL Account</span>
-						<input type="text" bind:value={defaultGl} placeholder="e.g. 6100" />
+						<span>{m('org.defaults.defaultGl')}</span>
+						<input type="text" bind:value={defaultGl} placeholder={m('org.defaults.defaultGlPlaceholder')} />
 					</label>
 					<label>
-						<span>Default Cost Center</span>
-						<input type="text" bind:value={defaultCostCenter} placeholder="e.g. ADMIN" />
+						<span>{m('org.defaults.defaultCostCenter')}</span>
+						<input type="text" bind:value={defaultCostCenter} placeholder={m('org.defaults.defaultCostCenterPlaceholder')} />
 					</label>
 				</div>
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingDefaults} onclick={saveDefaults}>
-						{savingDefaults ? 'Saving...' : 'Save Defaults'}
+						{savingDefaults ? m('org.common.saving') : m('org.defaults.save')}
 					</button>
 				</div>
 			</section>
 
 			<section class="card">
-				<h2>Branding</h2>
+				<h2>{m('org.section.branding')}</h2>
 				<p class="card-hint">
-					White-label the app for your organization. Leave a field blank to use the
-					platform default. Accent colors retheme the app immediately on save.
+					{m('org.branding.hint')}
 				</p>
 				<div class="form-grid">
 					<label>
-						<span>Product Name</span>
+						<span>{m('org.branding.productName')}</span>
 						<input
 							type="text"
 							bind:value={brandProductName}
-							placeholder="Accounts Payable"
+							placeholder={m('org.branding.productNamePlaceholder')}
 							maxlength="120"
 						/>
 					</label>
 					<label>
-						<span>Logo URL</span>
+						<span>{m('org.branding.logoUrl')}</span>
 						<input
 							type="url"
 							bind:value={brandLogoUrl}
-							placeholder="https://cdn.example.com/logo.png"
+							placeholder={m('org.branding.logoUrlPlaceholder')}
 						/>
 					</label>
 					<label>
-						<span>Accent Color</span>
+						<span>{m('org.branding.accentColor')}</span>
 						<span class="color-field">
 							<input
 								type="color"
-								aria-label="Accent color picker"
+								aria-label={m('org.branding.accentColorPicker')}
 								value={brandAccentColor.trim() || DEFAULT_ACCENT}
 								oninput={(e) => (brandAccentColor = e.currentTarget.value)}
 							/>
@@ -898,11 +899,11 @@
 						</span>
 					</label>
 					<label>
-						<span>Accent Color (strong)</span>
+						<span>{m('org.branding.accentStrong')}</span>
 						<span class="color-field">
 							<input
 								type="color"
-								aria-label="Strong accent color picker"
+								aria-label={m('org.branding.accentStrongPicker')}
 								value={brandAccentStrongColor.trim() || DEFAULT_ACCENT_STRONG}
 								oninput={(e) => (brandAccentStrongColor = e.currentTarget.value)}
 							/>
@@ -914,51 +915,45 @@
 						</span>
 					</label>
 					<label>
-						<span>Support URL</span>
+						<span>{m('org.branding.supportUrl')}</span>
 						<input
 							type="url"
 							bind:value={brandSupportUrl}
-							placeholder="https://help.example.com"
+							placeholder={m('org.branding.supportUrlPlaceholder')}
 						/>
 					</label>
 					<label>
-						<span>Legal / Terms URL</span>
+						<span>{m('org.branding.legalUrl')}</span>
 						<input
 							type="url"
 							bind:value={brandLegalUrl}
-							placeholder="https://example.com/legal"
+							placeholder={m('org.branding.legalUrlPlaceholder')}
 						/>
 					</label>
 				</div>
 				<p class="card-hint">
-					The strong accent is a darker companion used for text-bearing accent
-					backgrounds (buttons, active chips) so white text stays AA-legible.
+					{m('org.branding.strongHint')}
 				</p>
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingBranding} onclick={saveBranding}>
-						{savingBranding ? 'Saving...' : 'Save Branding'}
+						{savingBranding ? m('org.common.saving') : m('org.branding.save')}
 					</button>
 				</div>
 			</section>
 
 			<section class="card">
-				<h2>Custom Domains</h2>
+				<h2>{m('org.section.customDomains')}</h2>
 				<p class="card-hint">
-					Serve the app under your own vanity hostname (e.g.
-					<code>ap.acmecorp.com</code>) in addition to your
-					<code>{org?.slug ?? 'tenant'}</code> subdomain. You are responsible for the
-					DNS (CNAME to the platform) and TLS certificate — registering a host here
-					only tells the platform which tenant that host belongs to. A host already
-					claimed by another tenant is rejected.
+					{m('org.customDomains.hint', { example: 'ap.acmecorp.com', slug: org?.slug ?? 'tenant' })}
 				</p>
 
 				{#if loadingDomains}
-					<p class="card-hint">Loading custom domains…</p>
+					<p class="card-hint">{m('org.customDomains.loading')}</p>
 				{:else if domainsError}
 					<p class="domain-error" role="alert">{domainsError}</p>
 				{:else}
 					{#if customDomains.length === 0}
-						<p class="card-hint domain-empty">No custom domains registered.</p>
+						<p class="card-hint domain-empty">{m('org.customDomains.empty')}</p>
 					{:else}
 						<ul class="domain-list">
 							{#each customDomains as host (host)}
@@ -970,10 +965,10 @@
 											class="btn-remove-domain"
 											class:armed={confirmRemoveDomain === host}
 											disabled={savingDomains}
-											aria-label={`Remove custom domain ${host}`}
+											aria-label={m('org.customDomains.removeAria', { host })}
 											onclick={() => removeCustomDomain(host)}
 										>
-											{confirmRemoveDomain === host ? 'Confirm remove' : 'Remove'}
+											{confirmRemoveDomain === host ? m('org.customDomains.confirmRemove') : m('org.customDomains.remove')}
 										</button>
 									</span>
 								</li>
@@ -991,33 +986,33 @@
 						<input
 							type="text"
 							bind:value={newDomain}
-							placeholder="ap.acmecorp.com"
-							aria-label="New custom domain"
+							placeholder={m('org.customDomains.newPlaceholder')}
+							aria-label={m('org.customDomains.newAria')}
 							autocomplete="off"
 							spellcheck="false"
 						/>
 						<button type="submit" class="btn-save-section" disabled={savingDomains}>
-							{savingDomains ? 'Saving…' : 'Add domain'}
+							{savingDomains ? m('org.customDomains.adding') : m('org.customDomains.add')}
 						</button>
 					</form>
 				{/if}
 			</section>
 
 			<section class="card">
-				<h2>AI Extraction</h2>
-				<p class="card-hint">Configure how invoice data is extracted from uploaded files. Platform mode uses our AI — charged per extraction. BYOK uses your own API key.</p>
+				<h2>{m('org.section.extraction')}</h2>
+				<p class="card-hint">{m('org.extraction.hint')}</p>
 
 				<div class="form-grid">
 					<label>
-						<span>Program</span>
+						<span>{m('org.extraction.program')}</span>
 						<select bind:value={extractionProgramType}>
-							<option value="platform">Platform (per-invoice fee)</option>
-							<option value="byok">Bring Your Own Key (free)</option>
+							<option value="platform">{m('org.extraction.programPlatform')}</option>
+							<option value="byok">{m('org.extraction.programByok')}</option>
 						</select>
 					</label>
 					{#if extractionProgramType === 'byok'}
 						<label>
-							<span>Provider</span>
+							<span>{m('org.extraction.provider')}</span>
 							<select bind:value={extractionProvider}>
 								{#each EXTRACTION_PROVIDERS as p}
 									<option value={p.value}>{p.label}</option>
@@ -1026,44 +1021,44 @@
 						</label>
 					{:else}
 						<label>
-							<span>Provider</span>
+							<span>{m('org.extraction.provider')}</span>
 							<input type="text" value="Claude Vision (Anthropic)" disabled />
 						</label>
 					{/if}
 				</div>
 
 				{#if extractionProgramType === 'platform'}
-					<p class="card-hint" style="margin-top: 10px;">Extractions use our Claude Vision API. No API key needed. Usage is tracked and billed per extraction.</p>
+					<p class="card-hint" style="margin-top: 10px;">{m('org.extraction.platformHint')}</p>
 				{:else if extractionProvider === 'claude_vision' || extractionProvider === 'openai_vision'}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>{extractionProvider === 'claude_vision' ? 'Anthropic' : 'OpenAI'} API Key</span>
+							<span>{extractionProvider === 'claude_vision' ? m('org.extraction.anthropicKey') : m('org.extraction.openaiKey')}</span>
 							<input type="password" bind:value={extractionApiKey} placeholder="sk-..." />
 						</label>
 					</div>
 				{:else if extractionProvider === 'aws_textract'}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>AWS Access Key ID</span>
+							<span>{m('org.extraction.awsKeyId')}</span>
 							<input type="text" bind:value={extractionAwsKeyId} />
 						</label>
 						<label>
-							<span>AWS Secret Access Key</span>
+							<span>{m('org.extraction.awsSecret')}</span>
 							<input type="password" bind:value={extractionAwsSecret} />
 						</label>
 						<label>
-							<span>AWS Region</span>
+							<span>{m('org.extraction.awsRegion')}</span>
 							<input type="text" bind:value={extractionAwsRegion} placeholder="us-east-1" />
 						</label>
 					</div>
 				{:else if extractionProvider === 'ollama'}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>Ollama URL</span>
+							<span>{m('org.extraction.ollamaUrl')}</span>
 							<input type="url" bind:value={extractionOllamaUrl} placeholder="http://localhost:11434" />
 						</label>
 						<label>
-							<span>Model</span>
+							<span>{m('org.extraction.model')}</span>
 							<select bind:value={extractionOllamaModel}>
 								<option value="llama3.2-vision:11b">Llama 3.2 Vision 11B</option>
 								<option value="llama3.2-vision:90b">Llama 3.2 Vision 90B</option>
@@ -1072,15 +1067,15 @@
 							</select>
 						</label>
 					</div>
-					<p class="card-hint" style="margin-top: 8px;">Runs locally — no data leaves your machine. Install: <code>brew install ollama && ollama pull {extractionOllamaModel}</code></p>
+					<p class="card-hint" style="margin-top: 8px;">{m('org.extraction.ollamaHint')} <code>brew install ollama && ollama pull {extractionOllamaModel}</code></p>
 				{/if}
 
 				<div class="erp-test-row">
 					<button class="btn-save-section" disabled={savingExtraction} onclick={saveExtraction}>
-						{savingExtraction ? 'Saving...' : 'Save Extraction Settings'}
+						{savingExtraction ? m('org.common.saving') : m('org.extraction.save')}
 					</button>
 					<button class="btn-test" disabled={testingExtraction} onclick={testExtraction}>
-						{testingExtraction ? 'Testing...' : 'Test Connection'}
+						{testingExtraction ? m('org.common.testing') : m('org.common.testConnection')}
 					</button>
 					{#if extractionTestResult}
 						<span class="test-result" class:success={extractionTestResult.success} class:failure={!extractionTestResult.success}>
@@ -1091,11 +1086,11 @@
 			</section>
 
 			<section class="card">
-				<h2>ERP Integration</h2>
-				<p class="card-hint">Connect to your ERP system for invoice posting and payment tracking.</p>
+				<h2>{m('org.section.erp')}</h2>
+				<p class="card-hint">{m('org.erp.hint')}</p>
 				<div class="form-grid">
 					<label>
-						<span>ERP System</span>
+						<span>{m('org.erp.system')}</span>
 						<select bind:value={erpType}>
 							{#each ERP_TYPES as erp}
 								<option value={erp.value}>{erp.label}</option>
@@ -1103,10 +1098,10 @@
 						</select>
 					</label>
 					<label>
-						<span>Integration Method</span>
+						<span>{m('org.erp.method')}</span>
 						<select bind:value={erpMethod}>
-							<option value="merge_dev">Merge.dev (Unified API)</option>
-							<option value="direct">Direct API Connection</option>
+							<option value="merge_dev">{m('org.erp.methodMergeDev')}</option>
+							<option value="direct">{m('org.erp.methodDirect')}</option>
 						</select>
 					</label>
 				</div>
@@ -1114,89 +1109,89 @@
 				{#if erpMethod === 'merge_dev'}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>Merge.dev API Key</span>
+							<span>{m('org.erp.mergeApiKey')}</span>
 							<input type="password" bind:value={erpApiKey} placeholder="test_..." />
 						</label>
 						<label>
-							<span>Account Token</span>
-							<input type="password" bind:value={erpAccountToken} placeholder="Customer linked account token" />
+							<span>{m('org.erp.accountToken')}</span>
+							<input type="password" bind:value={erpAccountToken} placeholder={m('org.erp.accountTokenPlaceholder')} />
 						</label>
 					</div>
-					<p class="card-hint" style="margin-top: 8px;">Get your API key from the <a href="https://app.merge.dev" target="_blank" rel="noopener">Merge.dev dashboard</a>. Account tokens are created when customers connect their ERP via Merge Link.</p>
+					<p class="card-hint" style="margin-top: 8px;">{m('org.erp.mergeHintPre')} <a href="https://app.merge.dev" target="_blank" rel="noopener">{m('org.erp.mergeDashboard')}</a>{m('org.erp.mergeHintPost')}</p>
 				{:else if erpType === 'dynamics_365_bc'}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>Base URL</span>
+							<span>{m('org.erp.baseUrl')}</span>
 							<input type="url" bind:value={erpBaseUrl} placeholder="https://api.businesscentral.dynamics.com/v2.0" />
 						</label>
 						<label>
-							<span>Environment</span>
+							<span>{m('org.erp.environment')}</span>
 							<input type="text" bind:value={erpEnvironment} placeholder="production" />
 						</label>
 						<label>
-							<span>Azure Tenant ID</span>
+							<span>{m('org.erp.tenantId')}</span>
 							<input type="text" bind:value={erpTenantId} />
 						</label>
 						<label>
-							<span>Client ID</span>
+							<span>{m('org.erp.clientId')}</span>
 							<input type="text" bind:value={erpClientId} />
 						</label>
 						<label>
-							<span>Client Secret</span>
+							<span>{m('org.erp.clientSecret')}</span>
 							<input type="password" bind:value={erpClientSecret} />
 						</label>
 						<label>
-							<span>Company ID</span>
+							<span>{m('org.erp.companyId')}</span>
 							<input type="text" bind:value={erpCompanyId} />
 						</label>
 					</div>
 				{:else if erpType === 'netsuite'}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>Account ID</span>
+							<span>{m('org.erp.accountId')}</span>
 							<input type="text" bind:value={erpAccountId} placeholder="1234567" />
 						</label>
 						<label>
-							<span>Consumer Key</span>
+							<span>{m('org.erp.consumerKey')}</span>
 							<input type="text" bind:value={erpConsumerKey} />
 						</label>
 						<label>
-							<span>Consumer Secret</span>
+							<span>{m('org.erp.consumerSecret')}</span>
 							<input type="password" bind:value={erpConsumerSecret} />
 						</label>
 						<label>
-							<span>Token ID</span>
+							<span>{m('org.erp.tokenId')}</span>
 							<input type="text" bind:value={erpTokenId} />
 						</label>
 						<label>
-							<span>Token Secret</span>
+							<span>{m('org.erp.tokenSecret')}</span>
 							<input type="password" bind:value={erpTokenSecret} />
 						</label>
 					</div>
 				{:else}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>API Base URL</span>
+							<span>{m('org.erp.apiBaseUrl')}</span>
 							<input type="url" bind:value={erpBaseUrl} />
 						</label>
 						<label>
-							<span>API Key / Client ID</span>
+							<span>{m('org.erp.apiKeyClientId')}</span>
 							<input type="password" bind:value={erpClientId} />
 						</label>
 						<label>
-							<span>API Secret / Client Secret</span>
+							<span>{m('org.erp.apiSecretClientSecret')}</span>
 							<input type="password" bind:value={erpClientSecret} />
 						</label>
 					</div>
-					<p class="card-hint" style="margin-top: 8px;">Direct integration for {ERP_TYPES.find(e => e.value === erpType)?.label} is coming soon. Use Merge.dev in the meantime.</p>
+					<p class="card-hint" style="margin-top: 8px;">{m('org.erp.directSoonHint', { erp: ERP_TYPES.find(e => e.value === erpType)?.label ?? erpType })}</p>
 				{/if}
 
 				<div class="erp-test-row">
 					<button class="btn-save-section" disabled={savingErp} onclick={saveErp}>
-						{savingErp ? 'Saving...' : 'Save ERP Settings'}
+						{savingErp ? m('org.common.saving') : m('org.erp.save')}
 					</button>
 					<button class="btn-test" disabled={testingConnection} onclick={testConnection}>
-						{testingConnection ? 'Testing...' : 'Test Connection'}
+						{testingConnection ? m('org.common.testing') : m('org.common.testConnection')}
 					</button>
 					{#if connectionResult}
 						<span class="test-result" class:success={connectionResult.success} class:failure={!connectionResult.success}>
@@ -1207,19 +1202,16 @@
 			</section>
 
 			<section class="card">
-				<h2>Payments (ACH / Wire / RTP)</h2>
+				<h2>{m('org.section.payments')}</h2>
 				<p class="card-hint">
-					Pick the payment processor that moves money to vendors when a
-					payment run is executed. <strong>Mock</strong> is for local dev — payments
-					complete instantly with fake references and no real transfer.
-					<strong>Modern Treasury</strong> handles real ACH, wire, and RTP via your bank.
+					{m('org.payments.hint')}
 				</p>
 
 				<div class="form-grid">
 					<label>
-						<span>Provider</span>
+						<span>{m('org.payments.provider')}</span>
 						<select bind:value={paymentsProvider}>
-							<option value="mock">Mock (dev only)</option>
+							<option value="mock">{m('org.payments.providerMock')}</option>
 							<option value="modern_treasury">Modern Treasury</option>
 						</select>
 					</label>
@@ -1228,40 +1220,40 @@
 				{#if paymentsProvider === 'modern_treasury'}
 					<div class="form-grid">
 						<label>
-							<span>Modern Treasury Organization ID</span>
+							<span>{m('org.payments.orgId')}</span>
 							<input type="text" bind:value={paymentsOrgId} placeholder="org_..." />
 						</label>
 						<label>
-							<span>API Key</span>
+							<span>{m('org.payments.apiKey')}</span>
 							<input type="password" bind:value={paymentsApiKey} placeholder="••••••••" autocomplete="off" />
 						</label>
 						<label>
-							<span>Originating Account ID</span>
-							<input type="text" bind:value={paymentsOriginatingAccount} placeholder="internal_account_..." />
+							<span>{m('org.payments.originatingAccount')}</span>
+							<input type="text" bind:value={paymentsOriginatingAccount} placeholder={m('org.payments.originatingAccountPlaceholder')} />
 						</label>
 						<label>
-							<span>Webhook Signing Secret</span>
-							<input type="password" bind:value={paymentsWebhookSecret} placeholder="for HMAC-SHA256 verification" autocomplete="off" />
+							<span>{m('org.payments.webhookSecret')}</span>
+							<input type="password" bind:value={paymentsWebhookSecret} placeholder={m('org.payments.webhookSecretPlaceholder')} autocomplete="off" />
 						</label>
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={paymentsSandbox} />
-							<span>Sandbox mode</span>
+							<span>{m('org.payments.sandbox')}</span>
 						</label>
 					</div>
 					<p class="card-hint">
-						Configure your webhook in Modern Treasury to point at:
+						{m('org.payments.webhookHint')}
 						<code>{org.created_at ? `${window.location.origin.replace(window.location.host, org.slug + '.' + window.location.host)}/api/payments/webhook/${org.slug}/modern_treasury` : '...'}</code>
 					</p>
 				{/if}
 
 				<div class="form-grid">
 					<label>
-						<span>CFO sign-off threshold ($)</span>
+						<span>{m('org.payments.cfoThreshold')}</span>
 						<input
 							type="number"
 							min="0"
 							step="100"
-							placeholder="No threshold"
+							placeholder={m('org.payments.cfoThresholdPlaceholder')}
 							value={paymentsCfoThreshold ?? ''}
 							oninput={(e) => {
 								const v = (e.currentTarget as HTMLInputElement).value;
@@ -1271,17 +1263,15 @@
 					</label>
 				</div>
 				<p class="card-hint">
-					Payment runs whose total exceeds this amount land in <em>pending CFO
-					approval</em> and refuse to execute until a user with the CFO role signs off.
-					Leave blank to disable the gate.
+					{m('org.payments.cfoHint')}
 				</p>
 
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingPayments} onclick={savePayments}>
-						{savingPayments ? 'Saving...' : 'Save Payment Settings'}
+						{savingPayments ? m('org.common.saving') : m('org.payments.save')}
 					</button>
 					<button class="btn-test" disabled={testingPayments || paymentsProvider === 'mock'} onclick={testPayments}>
-						{testingPayments ? 'Testing...' : 'Test Connection'}
+						{testingPayments ? m('org.common.testing') : m('org.common.testConnection')}
 					</button>
 					{#if paymentsTestResult}
 						<span class="test-result" class:success={paymentsTestResult.success} class:failure={!paymentsTestResult.success}>
@@ -1292,26 +1282,26 @@
 			</section>
 
 			<section class="card">
-				<h2>Virtual Cards</h2>
-				<p class="card-hint">Issue single-use virtual cards for invoice payments. Earn rebates on every transaction.</p>
+				<h2>{m('org.section.cards')}</h2>
+				<p class="card-hint">{m('org.cards.hint')}</p>
 
 				<div class="form-grid">
 					<label>
-						<span>Enabled</span>
+						<span>{m('org.cards.enabled')}</span>
 						<select bind:value={cardsEnabled}>
-							<option value={false}>Disabled</option>
-							<option value={true}>Enabled</option>
+							<option value={false}>{m('org.cards.disabled')}</option>
+							<option value={true}>{m('org.cards.enabledOn')}</option>
 						</select>
 					</label>
 					<label>
-						<span>Card Program</span>
+						<span>{m('org.cards.program')}</span>
 						<select bind:value={cardsProgramType}>
-							<option value="platform">Platform (recommended)</option>
-							<option value="byok">Bring Your Own Keys</option>
+							<option value="platform">{m('org.cards.programPlatform')}</option>
+							<option value="byok">{m('org.cards.programByok')}</option>
 						</select>
 					</label>
 					<label>
-						<span>Region</span>
+						<span>{m('org.cards.region')}</span>
 						<select bind:value={cardsRegion}>
 							{#each CARD_REGIONS as r}
 								<option value={r.value}>{r.label}</option>
@@ -1319,23 +1309,23 @@
 						</select>
 					</label>
 					<label>
-						<span>Card Expiry (days)</span>
+						<span>{m('org.cards.expiryDays')}</span>
 						<input type="number" min="1" max="90" bind:value={cardsExpiryDays} />
 					</label>
 				</div>
 
 				{#if cardsEnabled && cardsProgramType === 'platform'}
-					<p class="card-hint" style="margin-top: 10px;">Cards are issued through our platform. Provider is auto-selected based on your region ({autoProvider === 'lithic' ? 'Lithic' : 'Nium'}). No API keys needed.</p>
+					<p class="card-hint" style="margin-top: 10px;">{m('org.cards.platformHint', { provider: autoProvider === 'lithic' ? 'Lithic' : 'Nium' })}</p>
 				{/if}
 
 				{#if cardsEnabled && cardsProgramType === 'byok'}
 					<div class="form-grid" style="margin-top: 14px;">
 						<label>
-							<span>Provider</span>
+							<span>{m('org.cards.provider')}</span>
 							<select bind:value={cardsProvider}>
-								<option value="">Auto ({autoProvider === 'lithic' ? 'Lithic' : 'Nium'})</option>
-								<option value="lithic">Lithic (US/UK/EU)</option>
-								<option value="nium">Nium (Global)</option>
+								<option value="">{m('org.cards.providerAuto', { provider: autoProvider === 'lithic' ? 'Lithic' : 'Nium' })}</option>
+								<option value="lithic">{m('org.cards.providerLithic')}</option>
+								<option value="nium">{m('org.cards.providerNium')}</option>
 							</select>
 						</label>
 					</div>
@@ -1343,40 +1333,40 @@
 					{#if effectiveProvider === 'lithic'}
 						<div class="form-grid" style="margin-top: 14px;">
 							<label>
-								<span>Lithic API Key</span>
+								<span>{m('org.cards.lithicApiKey')}</span>
 								<input type="password" bind:value={cardsApiKey} placeholder="api-key-..." />
 							</label>
 							<label>
-								<span>Sandbox Mode</span>
+								<span>{m('org.cards.sandboxMode')}</span>
 								<select bind:value={cardsSandbox}>
-									<option value={true}>Sandbox (testing)</option>
-									<option value={false}>Production</option>
+									<option value={true}>{m('org.cards.sandboxTesting')}</option>
+									<option value={false}>{m('org.cards.production')}</option>
 								</select>
 							</label>
 						</div>
 					{:else if effectiveProvider === 'nium'}
 						<div class="form-grid" style="margin-top: 14px;">
 							<label>
-								<span>Client ID</span>
+								<span>{m('org.cards.clientId')}</span>
 								<input type="text" bind:value={cardsClientId} />
 							</label>
 							<label>
-								<span>Client Secret</span>
+								<span>{m('org.cards.clientSecret')}</span>
 								<input type="password" bind:value={cardsClientSecret} />
 							</label>
 							<label>
-								<span>Customer Hash ID</span>
+								<span>{m('org.cards.customerHashId')}</span>
 								<input type="text" bind:value={cardsCustomerHashId} />
 							</label>
 							<label>
-								<span>Wallet Hash ID</span>
+								<span>{m('org.cards.walletHashId')}</span>
 								<input type="text" bind:value={cardsWalletHashId} />
 							</label>
 							<label>
-								<span>Sandbox Mode</span>
+								<span>{m('org.cards.sandboxMode')}</span>
 								<select bind:value={cardsSandbox}>
-									<option value={true}>Sandbox (testing)</option>
-									<option value={false}>Production</option>
+									<option value={true}>{m('org.cards.sandboxTesting')}</option>
+									<option value={false}>{m('org.cards.production')}</option>
 								</select>
 							</label>
 						</div>
@@ -1385,54 +1375,49 @@
 
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingCards} onclick={saveCards}>
-						{savingCards ? 'Saving...' : 'Save Card Settings'}
+						{savingCards ? m('org.common.saving') : m('org.cards.save')}
 					</button>
 				</div>
 			</section>
 
 			<section class="card">
-				<h2>Security</h2>
+				<h2>{m('org.section.security')}</h2>
 				<p class="card-hint">
-					Require all users in this workspace to enable two-factor
-					authentication. Existing users without MFA will be prompted to
-					enroll on their next sign-in.
+					{m('org.security.hint')}
 				</p>
 
 				<label class="switch-row">
 					<input type="checkbox" bind:checked={mfaRequired} />
-					<span>Require two-factor authentication for all users</span>
+					<span>{m('org.security.requireMfa')}</span>
 				</label>
 
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingSecurity} onclick={saveSecurity}>
-						{savingSecurity ? 'Saving...' : 'Save'}
+						{savingSecurity ? m('org.common.saving') : m('org.security.save')}
 					</button>
 				</div>
 			</section>
 
 			{#if fraud}
 				<section class="card">
-					<h2>Fraud Detection</h2>
+					<h2>{m('org.section.fraud')}</h2>
 					<p class="card-hint">
-						Each rule below is checked when an invoice is created or updated. Disabling
-						a rule suppresses both the warning and the auto-generated exception so the
-						queue stays clean.
+						{m('org.fraud.hint')}
 					</p>
 
 					<div class="fraud-grid">
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.round_amount_enabled} />
 							<span>
-								<strong>Round amounts</strong>
+								<strong>{m('org.fraud.roundAmount')}</strong>
 								<span class="rule-hint">
-									Flag invoices ≥ ${fraud.round_amount_min} that are exact
-									multiples of $1,000.
+									{m('org.fraud.roundAmountHint', { min: fraud.round_amount_min })}
 								</span>
 							</span>
 						</label>
 						<div class="threshold-row">
 							<label>
-								<span>Minimum amount ($)</span>
+								<span>{m('org.fraud.minAmount')}</span>
 								<input
 									type="number"
 									min="0"
@@ -1446,9 +1431,9 @@
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.future_date_enabled} />
 							<span>
-								<strong>Future invoice date</strong>
+								<strong>{m('org.fraud.futureDate')}</strong>
 								<span class="rule-hint">
-									Flag invoices whose <em>invoice_date</em> lands in the future.
+									{m('org.fraud.futureDateHint')}
 								</span>
 							</span>
 						</label>
@@ -1456,16 +1441,15 @@
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.rush_payment_enabled} />
 							<span>
-								<strong>Rush payment</strong>
+								<strong>{m('org.fraud.rushPayment')}</strong>
 								<span class="rule-hint">
-									Flag invoices whose due date is within N days of the invoice
-									date.
+									{m('org.fraud.rushPaymentHint')}
 								</span>
 							</span>
 						</label>
 						<div class="threshold-row">
 							<label>
-								<span>Max days between invoice + due</span>
+								<span>{m('org.fraud.maxDays')}</span>
 								<input
 									type="number"
 									min="0"
@@ -1479,17 +1463,15 @@
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.new_vendor_large_enabled} />
 							<span>
-								<strong>New vendor + large amount</strong>
+								<strong>{m('org.fraud.newVendorLarge')}</strong>
 								<span class="rule-hint">
-									Flag invoices ≥ ${fraud.new_vendor_large_amount} from vendors
-									created in the last {fraud.new_vendor_max_age_days} days — the
-									canonical phishing pattern.
+									{m('org.fraud.newVendorLargeHint', { amount: fraud.new_vendor_large_amount, days: fraud.new_vendor_max_age_days })}
 								</span>
 							</span>
 						</label>
 						<div class="threshold-row">
 							<label>
-								<span>Vendor age (days)</span>
+								<span>{m('org.fraud.vendorAge')}</span>
 								<input
 									type="number"
 									min="1"
@@ -1498,7 +1480,7 @@
 								/>
 							</label>
 							<label>
-								<span>Large-amount threshold ($)</span>
+								<span>{m('org.fraud.largeThreshold')}</span>
 								<input
 									type="number"
 									min="0"
@@ -1512,10 +1494,9 @@
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.bank_change_enabled} />
 							<span>
-								<strong>Bank / remit-to change</strong>
+								<strong>{m('org.fraud.bankChange')}</strong>
 								<span class="rule-hint">
-									Flag invoices when the vendor's <em>remit_to_address</em> on
-									this invoice differs from prior approved invoices.
+									{m('org.fraud.bankChangeHint')}
 								</span>
 							</span>
 						</label>
@@ -1523,16 +1504,15 @@
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.personal_email_enabled} />
 							<span>
-								<strong>Personal email domain</strong>
+								<strong>{m('org.fraud.personalEmail')}</strong>
 								<span class="rule-hint">
-									Flag invoices from vendors whose contact email uses a free /
-									personal mail provider.
+									{m('org.fraud.personalEmailHint')}
 								</span>
 							</span>
 						</label>
 						<div class="threshold-row">
 							<label class="full">
-								<span>Personal email domains (one per line or comma-separated)</span>
+								<span>{m('org.fraud.personalEmailDomains')}</span>
 								<textarea
 									rows="4"
 									bind:value={personalEmailDomainsText}
@@ -1544,17 +1524,15 @@
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.stat_anomaly_enabled} />
 							<span>
-								<strong>Statistical amount anomaly</strong>
+								<strong>{m('org.fraud.statAnomaly')}</strong>
 								<span class="rule-hint">
-									Compare the invoice amount to this vendor's prior approved
-									invoices. Fires when the amount is more than N standard
-									deviations above the mean.
+									{m('org.fraud.statAnomalyHint')}
 								</span>
 							</span>
 						</label>
 						<div class="threshold-row">
 							<label>
-								<span>σ (standard deviations)</span>
+								<span>{m('org.fraud.sigma')}</span>
 								<input
 									type="number"
 									min="0.5"
@@ -1564,7 +1542,7 @@
 								/>
 							</label>
 							<label>
-								<span>Min prior invoices</span>
+								<span>{m('org.fraud.minPriorInvoices')}</span>
 								<input
 									type="number"
 									min="2"
@@ -1577,12 +1555,9 @@
 						<label class="switch-row">
 							<input type="checkbox" bind:checked={fraud.llm_anomaly_enabled} />
 							<span>
-								<strong>LLM-based anomaly check</strong>
+								<strong>{m('org.fraud.llmAnomaly')}</strong>
 								<span class="rule-hint">
-									Send the invoice + vendor history to a language model and ask
-									"is this in pattern for this vendor?". Costs one LLM call per
-									incoming invoice — leave off unless you've configured an
-									extraction provider with a real key.
+									{m('org.fraud.llmAnomalyHint')}
 								</span>
 							</span>
 						</label>
@@ -1595,31 +1570,31 @@
 							onclick={resetFraudToDefaults}
 							disabled={savingFraud}
 						>
-							Reset to defaults
+							{m('org.fraud.resetDefaults')}
 						</button>
 						<button
 							class="btn-save-section"
 							disabled={savingFraud}
 							onclick={saveFraud}
 						>
-							{savingFraud ? 'Saving...' : 'Save'}
+							{savingFraud ? m('org.common.saving') : m('org.fraud.save')}
 						</button>
 					</div>
 				</section>
 			{/if}
 
 			<section class="card">
-				<h2>Data Sync</h2>
-				<p class="card-hint">Pull data from your connected ERP. Requires ERP Integration to be configured above.</p>
+				<h2>{m('org.section.dataSync')}</h2>
+				<p class="card-hint">{m('org.dataSync.hint')}</p>
 
 				<div class="sync-grid">
 					<div class="sync-item">
 						<div class="sync-info">
-							<span class="sync-name">Chart of Accounts</span>
-							<span class="sync-desc">GL account codes for invoice coding</span>
+							<span class="sync-name">{m('org.dataSync.coa')}</span>
+							<span class="sync-desc">{m('org.dataSync.coaDesc')}</span>
 						</div>
 						<button class="btn-outline" disabled={syncingGL} onclick={syncGLAccounts}>
-							{syncingGL ? 'Syncing...' : 'Sync GL Accounts'}
+							{syncingGL ? m('org.dataSync.syncing') : m('org.dataSync.syncGl')}
 						</button>
 						{#if glSyncResult}
 							<span class="sync-result">{glSyncResult}</span>
@@ -1628,11 +1603,11 @@
 
 					<div class="sync-item">
 						<div class="sync-info">
-							<span class="sync-name">Purchase Orders</span>
-							<span class="sync-desc">POs for invoice matching and validation</span>
+							<span class="sync-name">{m('org.dataSync.pos')}</span>
+							<span class="sync-desc">{m('org.dataSync.posDesc')}</span>
 						</div>
 						<button class="btn-outline" disabled={syncingPOs} onclick={syncPurchaseOrders}>
-							{syncingPOs ? 'Syncing...' : 'Sync POs'}
+							{syncingPOs ? m('org.dataSync.syncing') : m('org.dataSync.syncPos')}
 						</button>
 						{#if poSyncResult}
 							<span class="sync-result">{poSyncResult}</span>
@@ -1641,25 +1616,25 @@
 
 					<div class="sync-item">
 						<div class="sync-info">
-							<span class="sync-name">Vendors</span>
-							<span class="sync-desc">Vendor master list for matching</span>
+							<span class="sync-name">{m('org.dataSync.vendors')}</span>
+							<span class="sync-desc">{m('org.dataSync.vendorsDesc')}</span>
 						</div>
-						<a href="/vendors" class="btn-outline">Manage on Vendors page</a>
+						<a href="/vendors" class="btn-outline">{m('org.dataSync.manageVendors')}</a>
 					</div>
 				</div>
 			</section>
 
 			<section class="card plan-card">
-				<h2>Plan</h2>
+				<h2>{m('org.section.plan')}</h2>
 				<div class="plan-info">
-					<span class="plan-badge">{PLAN_LABELS[org.plan] ?? org.plan}</span>
-					<span class="plan-slug">Tenant: <code>{org.slug}</code></span>
-					<span class="plan-date">Created: {new Date(org.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</span>
+					<span class="plan-badge">{planLabel(org.plan)}</span>
+					<span class="plan-slug">{m('org.plan.tenant')} <code>{org.slug}</code></span>
+					<span class="plan-date">{m('org.plan.created', { date: new Date(org.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) })}</span>
 				</div>
 			</section>
 		</div>
 	{:else}
-		<div class="loading">Loading...</div>
+		<div class="loading">{m('org.loading')}</div>
 	{/if}
 </PageHeader>
 

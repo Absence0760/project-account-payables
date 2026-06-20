@@ -5,6 +5,7 @@
 	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import type {
 		CashflowForecast,
 		CashflowGranularity,
@@ -52,7 +53,7 @@
 			whatif = w;
 			position = p;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load cash-flow data';
+			error = e instanceof Error ? e.message : m('cfo.error.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -86,59 +87,63 @@
 			a.remove();
 			URL.revokeObjectURL(url);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Could not export CSV';
+			error = e instanceof Error ? e.message : m('cfo.error.exportFailed');
 		}
+	}
+
+	function granLabel(g: string): string {
+		return g === 'day' ? m('cfo.gran.day') : g === 'month' ? m('cfo.gran.month') : m('cfo.gran.week');
 	}
 </script>
 
-<PageHeader title="Cash Flow">
+<PageHeader title={m('cfo.title')}>
 	{#snippet actions()}
-		<button class="btn-primary" onclick={exportCsv} data-testid="export-csv">Export CSV</button>
+		<button class="btn-primary" onclick={exportCsv} data-testid="export-csv">{m('cfo.exportCsv')}</button>
 	{/snippet}
 
 	<div class="cf-controls">
 		<div class="control">
-			<span class="control-label">Granularity</span>
+			<span class="control-label">{m('cfo.control.granularity')}</span>
 			<div class="seg">
 				{#each ['day', 'week', 'month'] as g (g)}
 					<button
 						class="seg-btn"
 						class:active={granularity === g}
 						onclick={() => (granularity = g as CashflowGranularity)}
-					>{g}</button>
+					>{granLabel(g)}</button>
 				{/each}
 			</div>
 		</div>
 		<div class="control">
-			<span class="control-label">Horizon</span>
+			<span class="control-label">{m('cfo.control.horizon')}</span>
 			<div class="seg">
 				{#each [30, 90, 180, 365] as h (h)}
 					<button class="seg-btn" class:active={horizonDays === h} onclick={() => (horizonDays = h)}>
-						{h}d
+						{m('cfo.control.horizonDays', { days: h })}
 					</button>
 				{/each}
 			</div>
 		</div>
 		<label class="control">
-			<span class="control-label">Opening bank balance</span>
+			<span class="control-label">{m('cfo.control.openingBalance')}</span>
 			<input
 				class="cf-input"
 				type="text"
 				inputmode="decimal"
-				placeholder="e.g. 250000"
+				placeholder={m('cfo.control.openingPlaceholder')}
 				bind:value={openingBalance}
-				aria-label="Opening bank balance"
+				aria-label={m('cfo.control.openingBalance')}
 			/>
 		</label>
 		<label class="control">
-			<span class="control-label">Min balance alert</span>
+			<span class="control-label">{m('cfo.control.minBalance')}</span>
 			<input
 				class="cf-input"
 				type="text"
 				inputmode="decimal"
-				placeholder="e.g. 50000"
+				placeholder={m('cfo.control.minBalancePlaceholder')}
 				bind:value={threshold}
-				aria-label="Minimum balance threshold"
+				aria-label={m('cfo.control.minBalance')}
 			/>
 		</label>
 	</div>
@@ -146,22 +151,22 @@
 	{#if error}
 		<p class="cf-error" role="alert">{error}</p>
 	{:else if loading}
-		<p class="loading">Loading…</p>
+		<p class="loading">{m('cfo.loading')}</p>
 	{:else if forecast}
 		<div class="kpi-row">
-			<KpiCard value={fmt(forecast.totals.scheduled_amount)} label="Projected outflow" />
-			<KpiCard value={fmt(forecast.totals.committed_amount)} label="Committed" />
-			<KpiCard value={fmt(forecast.totals.pending_amount)} label="Pipeline (pending)" />
+			<KpiCard value={fmt(forecast.totals.scheduled_amount)} label={m('cfo.kpi.projectedOutflow')} />
+			<KpiCard value={fmt(forecast.totals.committed_amount)} label={m('cfo.kpi.committed')} />
+			<KpiCard value={fmt(forecast.totals.pending_amount)} label={m('cfo.kpi.pipeline')} />
 			<KpiCard
 				value={fmt(whatif?.scenarios.early.total_discount_captured ?? 0)}
-				label="Discount if paid early"
+				label={m('cfo.kpi.discountIfEarly')}
 				highlight="green"
 			/>
 		</div>
 
 		<!-- Forecast bar chart -->
 		<div class="chart-card">
-			<h2>Projected outflows ({granularity})</h2>
+			<h2>{m('cfo.chart.projectedOutflows', { granularity: granLabel(granularity) })}</h2>
 			{#if forecast.periods.length > 0}
 				<div class="cf-bars">
 					{#each forecast.periods as p (p.period)}
@@ -170,17 +175,17 @@
 							<div
 								class="cf-bar-bg"
 								role="img"
-								aria-label={`Committed ${fmt(p.committed_amount)}, pending ${fmt(p.pending_amount)}`}
+								aria-label={m('cfo.chart.barAria', { committed: fmt(p.committed_amount), pending: fmt(p.pending_amount) })}
 							>
 								<div
 									class="cf-bar committed"
 									style="width:{(p.committed_amount / maxScheduled) * 100}%"
-									title="Committed {fmt(p.committed_amount)}"
+									title={m('cfo.chart.committedTitle', { amount: fmt(p.committed_amount) })}
 								></div>
 								<div
 									class="cf-bar pending"
 									style="width:{(p.pending_amount / maxScheduled) * 100}%"
-									title="Pending {fmt(p.pending_amount)}"
+									title={m('cfo.chart.pendingTitle', { amount: fmt(p.pending_amount) })}
 								></div>
 							</div>
 							<span class="cf-bar-amount">{fmt(p.scheduled_amount)}</span>
@@ -188,29 +193,29 @@
 					{/each}
 				</div>
 				<div class="cf-legend">
-					<span class="cf-dot committed"></span> Committed
-					<span class="cf-dot pending"></span> Pending pipeline
+					<span class="cf-dot committed"></span> {m('cfo.legend.committed')}
+					<span class="cf-dot pending"></span> {m('cfo.legend.pending')}
 				</div>
 			{:else}
-				<p class="empty">No projected outflows in this window.</p>
+				<p class="empty">{m('cfo.empty.outflows')}</p>
 			{/if}
 		</div>
 
 		<!-- What-if scenarios -->
 		{#if whatif}
 			<div class="chart-card">
-				<h2>Payment-timing what-if</h2>
+				<h2>{m('cfo.whatif.title')}</h2>
 				<div class="scenario-grid">
-					{#each [['early', 'Pay early'], ['on_time', 'Pay on time'], ['late', 'Pay late']] as [key, label] (key)}
+					{#each [['early', m('cfo.whatif.early')], ['on_time', m('cfo.whatif.onTime')], ['late', m('cfo.whatif.late')]] as [key, label] (key)}
 						{@const s = whatif.scenarios[key as 'early' | 'on_time' | 'late']}
 						<div class="scenario-card" class:best={key === 'early'}>
 							<span class="scenario-title">{label}</span>
 							<span class="scenario-outflow">{fmt(s.total_outflow)}</span>
-							<span class="scenario-sub">net outflow</span>
+							<span class="scenario-sub">{m('cfo.whatif.netOutflow')}</span>
 							{#if s.total_discount_captured > 0}
-								<span class="scenario-discount">+{fmt(s.total_discount_captured)} discount captured</span>
+								<span class="scenario-discount">{m('cfo.whatif.discountCaptured', { amount: fmt(s.total_discount_captured) })}</span>
 							{/if}
-							<span class="scenario-days">~{s.weighted_avg_pay_date_days} days to pay</span>
+							<span class="scenario-days">{m('cfo.whatif.daysToPay', { days: s.weighted_avg_pay_date_days })}</span>
 						</div>
 					{/each}
 				</div>
@@ -220,22 +225,22 @@
 		<!-- Cash position -->
 		{#if position}
 			<div class="chart-card">
-				<h2>Cash position</h2>
+				<h2>{m('cfo.position.title')}</h2>
 				{#if position.opening_balance_source === 'none'}
-					<p class="cf-hint">Enter an opening bank balance above to project the running cash position.</p>
+					<p class="cf-hint">{m('cfo.position.enterOpening')}</p>
 				{/if}
 				{#if position.breaches.length > 0}
 					<p class="cf-breach" role="alert">
-						⚠ {position.breaches.length} period{position.breaches.length === 1 ? '' : 's'} project below your minimum-balance alert.
+						{m('cfo.position.breach', { n: position.breaches.length })}
 					</p>
 				{/if}
 				<table class="cf-table">
 					<thead>
 						<tr>
-							<th>Period</th>
-							<th class="num">Opening</th>
-							<th class="num">Outflow</th>
-							<th class="num">Closing</th>
+							<th>{m('cfo.position.colPeriod')}</th>
+							<th class="num">{m('cfo.position.colOpening')}</th>
+							<th class="num">{m('cfo.position.colOutflow')}</th>
+							<th class="num">{m('cfo.position.colClosing')}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -248,7 +253,7 @@
 							</tr>
 						{/each}
 						{#if position.periods.length === 0}
-							<tr><td colspan="4" class="empty">No outflows projected in this window.</td></tr>
+							<tr><td colspan="4" class="empty">{m('cfo.position.empty')}</td></tr>
 						{/if}
 					</tbody>
 				</table>
