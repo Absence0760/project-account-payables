@@ -62,6 +62,7 @@
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { formatDate } from '$lib/utils/time';
 	import ExpenseModal from '$lib/components/modals/ExpenseModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
@@ -245,15 +246,6 @@
 			if (confirmDeletePolicyId) confirmDeletePolicyId = null;
 			if (paRejectArmedId) paRejectArmedId = null;
 		}
-	}
-
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		return new Date(s).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			year: 'numeric'
-		});
 	}
 
 	// ============================ Reports tab ============================

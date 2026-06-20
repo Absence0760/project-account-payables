@@ -4,6 +4,7 @@
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import ByEntityBreakdown from '$lib/components/analytics/ByEntityBreakdown.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { formatPeriod } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import type {
@@ -26,13 +27,6 @@
 
 	function fmt(n: number): string {
 		return formatMoney(n, { currency: orgCurrency.currency, whole: true });
-	}
-
-	function formatPeriod(p: string): string {
-		// month keys are YYYY-MM; day/week keys are YYYY-MM-DD.
-		const d = new Date(p.length === 7 ? `${p}-01` : p);
-		if (Number.isNaN(d.getTime())) return p;
-		return d.toLocaleDateString('en-US', { month: 'short', day: p.length === 7 ? undefined : 'numeric', year: '2-digit' });
 	}
 
 	async function load() {
