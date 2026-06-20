@@ -6,8 +6,11 @@ human would use) or escalates it to a human. Tenant-scoped, append-only
 decision log, local-first (no LLM key required), opt-in per org.
 
 **Status:** two fully-implemented resolvers for `po_mismatch` (small amount
-mismatch + missing-PO auto-link), behind a single dispatcher; the rest are
-escalate-only stubs (see [Deferred](#deferred)).
+mismatch + missing-PO auto-link) behind one dispatcher, plus a GL-coding resolver
+for `missing_data` behind its own dispatcher; the remaining exception types are
+escalate-only stubs (see [Deferred](#deferred)). An agent dashboard UI ships the
+resolution / escalation rates + decision log on the `/exceptions` **AI Agents**
+tab (accuracy is a labelled placeholder pending a human-overturn signal).
 
 ## Data model — `AgentDecision`
 
@@ -50,7 +53,9 @@ app/services/exception_agents/
     ├── po_mismatch.py      # dispatcher registered for `po_mismatch` — tries each delegate
     ├── amount_mismatch.py  # delegate: po_mismatch amount variance (snap + approve)
     ├── missing_po.py       # delegate: missing/unresolved PO (link by vendor+amount+date)
-    └── stubs.py            # escalate-only stubs (missing_data, duplicate, fraud_flag)
+    ├── missing_data.py     # dispatcher registered for `missing_data` — tries each delegate
+    ├── gl_coding.py        # delegate: GL-coding fix/correct from vendor history (+ approve)
+    └── stubs.py            # escalate-only stubs (duplicate, fraud_flag)
 ```
 
 - A **resolver** handles exactly one `exception_type`. `evaluate(...)` returns an
@@ -209,6 +214,56 @@ rather than escalating a blank.
   resolved exception. Writes the two audit rows (`invoice.approved` + the
   `AgentDecision`, the latter recording `changes={"po_number": {...}}`).
 
+## The GL-coding resolver (`gl_coding_v1`)
+
+Handles `exception_type == "missing_data"` where the actionable gap is a
+**missing or inconsistent GL account**: the invoice has no `gl_account` (or one
+that disagrees with how this vendor has been coded every other time), and the
+vendor's approved history shows a single dominant GL a reviewer would almost
+certainly pick. The agent fills / corrects that one field and approves.
+
+Registered behind a **`missing_data` dispatcher** (`resolvers/missing_data.py`),
+mirroring the `po_mismatch` dispatcher: the registry is keyed by exception type,
+the dispatcher is the single registered `missing_data` resolver, and it delegates
+to `gl_coding_v1` (today the sole strategy). The dispatcher surfaces the
+delegate's `agent_type` so the `AgentDecision` records the real resolver.
+
+- **Reuses the enrichment stats, doesn't reimplement them.** The dominant-value
+  math is the pure `vendor_enrichment.suggest_fields` primitive — the same
+  dominance-ratio computation the `/api/enrichment/.../suggestions` advisory
+  surface uses. The resolver only adds the agent wiring: pull the vendor's
+  approved-or-beyond coding history (newest first, bounded by `HISTORY_LIMIT`),
+  ask `suggest_fields` for the dominant `gl_account` (and `cost_center`), map the
+  dominance to a confidence, and apply.
+- **Corrects, not only fills.** `suggest_fields` is non-destructive (it suppresses
+  any field the draft already populates), so the resolver calls it with an empty
+  `current` — the dominant value is derived purely from history. It then compares
+  to the invoice's *actual* current GL: a present-but-inconsistent GL is corrected
+  to the vendor's dominant value, not left alone. An invoice already coded to the
+  dominant GL escalates (the missing-data gap is elsewhere; no false "resolution").
+- **Confidence bands.** A very dominant value (≥ 80% dominance over ≥ 5 approved
+  invoices) → `0.92` (auto at `balanced`/`aggressive`); a merely-majority value →
+  `0.80` (auto only under `aggressive`). Below the enrichment suggestion floor
+  (`autofill_min_confidence` / `autofill_min_sample`, read from the org's
+  `settings.enrichment`) no suggestion is produced → escalate. Ambiguous history
+  (no majority) → escalate.
+- **Cost center rides along** only when the draft's cost center is empty *and* the
+  vendor has its own dominant cost center — never overwrites a populated one, and
+  never codes a cost center on its own (the trigger is always the GL fix).
+- **Other-required-field gate.** A GL fix only makes an invoice payable when the
+  vendor / invoice-number / amount are already present (mirrors the
+  `invoice_warnings` missing-field set). A genuinely missing one of those
+  escalates — a GL correction alone wouldn't help.
+- **`apply` — correct + approve via the audited path.** Re-locks the invoice,
+  re-asserts `ready_for_review`, re-derives the dominant GL under the lock (bails
+  if it no longer holds, or the invoice was already coded → idempotent), honours
+  the CFO / maximum gate exactly as the PO resolvers (escalate, never self-approve
+  past a threshold), then calls `review.approve_invoice(corrections={"gl_account":
+  …, "cost_center": …})` — the same audited correction path a human approver uses.
+  **It never touches `amount`** — GL recode only; it never moves money. Writes the
+  two audit rows (`invoice.approved` with the field diff + the `AgentDecision`,
+  the latter recording `changes={"gl_account": {...}, "cost_center": {...}}`).
+
 ## No-LLM-key fail-soft
 
 `llm_rationale.build_rationale` mirrors `audit_summary.py`: the deterministic
@@ -235,6 +290,23 @@ Response shapes are typed Pydantic `response_model`s in
 `AgentDecisionListResponse`, `AgentStatsResponse`, `AgentResolveResponse`).
 
 `confidence` is serialised as `float` in responses (display only) — stored exact.
+
+### Dashboard UI
+
+The `/exceptions` route carries an **AI Agents** tab (a `ui/Tabs` panel beside the
+operational Queue) rendering `lib/components/exceptions/AgentDashboard.svelte` over
+`GET /agent-stats` + `GET /agent-decisions` (via `lib/api/exceptionAgents.ts`):
+
+- a KPI row — decisions made, resolution rate, escalation rate, auto-resolved,
+  escalated;
+- a recent-decision log table (resolver / exception type / action / confidence /
+  autonomy / change summary) with an action filter (`all` / `auto_resolved` /
+  `escalated` / `no_action`) and Load-More pagination;
+- an **accuracy** card that shows "Not yet measured" with an explainer — never a
+  fabricated number — until a human-overturn signal exists (see below).
+
+Read-only; both endpoints are admin/ap_manager-gated server-side. e2e:
+`frontend/tests-e2e/exceptions/agent-dashboard.spec.ts`.
 
 **Concurrency:** `coordinator.run_agent` takes a `FOR UPDATE` lock on the
 exception row and re-asserts its status before doing anything. The API's
@@ -266,14 +338,17 @@ roadmap follow-up.
 
 | Exception type | State | Follow-up |
 |----------------|-------|-----------|
-| `missing_data` | stub — always escalates | missing-data field auto-fill (the missing-**PO** case is now handled by `missing_po_v1` under `po_mismatch`/`no_po`, not here) |
+| `missing_data` | **`gl_coding_v1`** (GL coding) behind the `missing_data` dispatcher; non-GL missing-field gaps still escalate | other missing-field auto-fill (vendor / amount / terms). The missing-**PO** case is handled by `missing_po_v1` under `po_mismatch`/`no_po`, not here |
 | `duplicate` | stub — always escalates | duplicate auto-merge |
 | `fraud_flag` | stub — always escalates | (likely stays human-gated) |
 | `unverified_vendor`, `review_rejected`, `amount_exceeded`, `extraction_failed` | unregistered → `no_action` | human gates / out of scope for this slice |
 
-Also deferred: GL-coding auto-resolve, the agent dashboard UI, a mobile surface,
-adaptive/learned thresholds, and an accuracy metric (needs a human-overturn
-signal — `agent-stats.accuracy` is `null` until then).
+Also deferred: a mobile agent surface, adaptive/learned thresholds, and an
+**accuracy metric** — it needs a human-overturn signal (was an auto-resolution
+later reversed?), which is not tracked yet, so `agent-stats.accuracy` is `null`
+and the dashboard shows "Not yet measured" rather than a fabricated figure.
+GL-coding follow-ups: per-line GL coding (multi-line invoices coded per item),
+and learned per-vendor dominance thresholds instead of the static bands.
 
 Missing-PO follow-ups (out of this slice): line-level (multi-PO) split matching —
 one invoice spanning several POs; matching against `created`/non-`open` POs; and
