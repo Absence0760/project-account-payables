@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/workflow.dart';
 import 'package:ap_mobile/screens/workflow_detail_screen.dart';
 import 'package:ap_mobile/stores/workflow_store.dart';
@@ -30,8 +31,9 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Workflows')),
+      appBar: AppBar(title: Text(l.workflowsTitle)),
       body: ListenableBuilder(
         listenable: WorkflowStore.instance,
         builder: (context, _) {
@@ -44,7 +46,7 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
             return _ErrorState(onRetry: store.fetch);
           }
           if (store.workflows.isEmpty) {
-            return const Center(child: Text('No workflows found'));
+            return Center(child: Text(l.workflowsEmpty));
           }
 
           return RefreshIndicator(
@@ -79,14 +81,16 @@ class _WorkflowTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final stepCount = workflow.steps.length;
-    final stepLabel = '$stepCount ${stepCount == 1 ? 'step' : 'steps'}';
-    final statusText = workflow.isActive ? 'Active' : 'Inactive';
+    final stepLabel = l.workflowsStepCount(stepCount);
+    final statusText =
+        workflow.isActive ? l.workflowsStatusActive : l.workflowsStatusInactive;
 
     // One merged announcement per row so assistive tech reads a single phrase.
     final semanticsLabel = [
       workflow.name,
-      if (workflow.isDefault) 'Default',
+      if (workflow.isDefault) l.workflowsDefault,
       statusText,
       stepLabel,
     ].join(', ');
@@ -103,7 +107,7 @@ class _WorkflowTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (workflow.isDefault) ...[
-              const _Pill(label: 'Default', color: Colors.blue),
+              _Pill(label: l.workflowsDefault, color: Colors.blue),
               const SizedBox(width: 6),
             ],
             WorkflowStatusBadge(isActive: workflow.isActive),
@@ -125,11 +129,13 @@ class WorkflowStatusBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final color = isActive ? Colors.green : Colors.grey;
     final fg = isActive ? Colors.green.shade800 : Colors.grey.shade700;
-    final label = isActive ? 'Active' : 'Inactive';
+    final label =
+        isActive ? l.workflowsStatusActive : l.workflowsStatusInactive;
     return Semantics(
-      label: 'Status: $label',
+      label: '${l.invoicesColStatus}: $label',
       excludeSemantics: true,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -179,15 +185,16 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
           const SizedBox(height: 12),
-          const Text('Could not load workflows'),
+          Text(l.workflowsLoadError),
           const SizedBox(height: 12),
-          FilledButton(onPressed: onRetry, child: const Text('Retry')),
+          FilledButton(onPressed: onRetry, child: Text(l.commonRetry)),
         ],
       ),
     );
