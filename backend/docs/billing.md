@@ -8,12 +8,13 @@ accounts-payable money path the app manages for customers.
 > **Status.** Shipped: the control-plane plan/subscription model, a usage rollup
 > off the existing meters, a `mock`-default billing adapter family, an
 > entitlement gating helper wired onto the public `/api/v1` surface, a customer
-> read endpoint + UI, **the live `stripe_billing` create/get-subscription +
-> report-usage API calls, the inbound HMAC-verified + deduped webhook route, and
-> the dunning / past-due automation sweep.** **Deferred to later slices:**
-> proration math, plan-change / payment-method / invoice-list endpoints, and a
-> per-org Stripe customer/price provisioning flow (the create call expects the
-> resolved Stripe `customer`/`price` ids in adapter config).
+> read endpoint + UI, the live `stripe_billing` create/get-subscription +
+> report-usage API calls, the inbound HMAC-verified + deduped webhook route, the
+> dunning / past-due automation sweep, **per-org Stripe customer/price
+> provisioning (`ensure_customer` / `ensure_price` + the `provision_org_billing`
+> resolver that persists the ids on `settings.billing`), and mid-period
+> proration math + the `POST /api/billing/change-plan` endpoint.** **Deferred to
+> later slices:** payment-method / invoice-list endpoints.
 
 ## Where it lives (control plane)
 
@@ -74,7 +75,7 @@ class MyAdapter(BillingAdapter):
 | Adapter | Notes |
 |---------|-------|
 | `mock` (**default**) | In-process, deterministic, no network/credential. Synthetic `mock_sub_<org>` id; `report_usage` is a no-op; `parse_webhook` reads a dev JSON envelope. Local-first. |
-| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `AP_BILLING_STRIPE_API_KEY`. `create_subscription` / `get_subscription` / `report_usage` are now **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; subscription create sends an `Idempotency-Key` header so a retried create can't double-subscribe; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `create_subscription` expects the resolved Stripe `customer`/`price` ids in adapter config (per-org provisioning of those is a later slice → `BillingNotConfigured` if absent). A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body via `services/webhook_security.verify_hmac_sha256` and maps Stripe statuses → our four-state lifecycle. |
+| `stripe_billing` | Live key via sops, **fails closed** (`BillingNotConfigured`) without `AP_BILLING_STRIPE_API_KEY`. `ensure_customer` / `ensure_price` / `create_subscription` / `get_subscription` / `report_usage` are **implemented** against the Stripe REST API via `httpx` (key as HTTP-Basic username, form-encoded bodies; every create sends an `Idempotency-Key` header so a retry can't duplicate; `report_usage` POSTs one Billing Meter Event per meter with the quantity as an exact decimal **string**, never float). `ensure_customer` resolve-or-creates the per-org Stripe `customer` (idempotency key `ap-customer-<org>`, sends only the org business name + an admin email — never bank/tax/PAN); `ensure_price` resolve-or-creates the per-plan recurring `price` (unit amount = the plan's monthly price in integer **minor units** via exact Decimal math, idempotency key `ap-price-<code>-<cents>-<cur>`). `create_subscription` consumes the resolved `stripe_customer_id` + `stripe_price_id` from config (the provisioning resolver injects them) → `BillingNotConfigured` if absent. A non-2xx raises a PII-free `BillingProviderError` (status + op only, never the response body). `parse_webhook` verifies the `Stripe-Signature` HMAC over the raw body and maps Stripe statuses → our four-state lifecycle. |
 
 `get_billing_adapter(provider=None)` resolves: explicit arg → `AP_BILLING_PROVIDER`
 → `mock`. An unknown name falls back to `mock` (a bad config can't break read
@@ -154,6 +155,94 @@ one query, no per-tenant fan-out. **Idempotent** — only `past_due` rows are
 touched and canceling moves a row out of `past_due`. Long-lived asyncio task in
 `main.lifespan`, OFF by default (`AP_BILLING_DUNNING_ENABLED`).
 
+## Per-org provisioning (`services/billing/provisioning.py`)
+
+The live `stripe_billing` adapter's `create_subscription` needs the provider-side
+`customer` id (one per org) and `price` id (one per plan). `provision_org_billing(control_db, org=…, plan=…)`
+resolves those:
+
+1. read `Organization.settings.billing.stripe_customer_id` + `.plan_price_ids[plan.code]`;
+2. for anything missing, call the adapter's `ensure_customer` / `ensure_price`
+   (idempotent at the provider — a stable idempotency key means a retry returns
+   the original object, never a duplicate);
+3. persist the new ids back onto `settings.billing` (via `flag_modified`, no
+   migration — reuses the existing JSONB block that already holds `provider`)
+   and commit, so a later retry reuses them and skips the round-trip;
+4. return `ProvisionedIds(customer_id, price_id)`.
+
+`Subscription.external_subscription_id` (an existing column) holds the live
+provider subscription id once `create_subscription` returns.
+
+Fail-closed: with the `stripe_billing` adapter and no API key, `ensure_customer` /
+`ensure_price` raise `BillingNotConfigured` *before* anything is persisted. The
+`mock` adapter returns deterministic synthetic ids (`mock_cus_<org>` /
+`mock_price_<code>`) with no network — the local-first default.
+
+The linkage lives in `settings.billing`:
+
+```json
+{
+  "billing": {
+    "provider": "stripe_billing",
+    "stripe_customer_id": "cus_...",
+    "plan_price_ids": {"growth": "price_..."}
+  }
+}
+```
+
+## Proration (`services/billing/proration.py`)
+
+`compute_proration(old_monthly, new_monthly, period_start, period_end, change_at) -> ProrationResult`
+is a **pure, Decimal-exact** function for a mid-period plan change:
+
+```
+proration = (new_monthly - old_monthly) * (unused_days / period_days)
+```
+
+i.e. credit the unused portion of the old plan and charge the same portion of
+the new one. **Positive** = extra charge (upgrade), **negative** = credit
+(downgrade), **`Decimal("0.00")`** = same-price or same-plan change.
+
+- `unused_days` = whole (floored) days remaining from `change_at` to `period_end`;
+  `period_days` = whole days in the window. `change_at` outside the window
+  clamps to the nearest boundary (before start → whole period; after end → zero).
+- **Rounding rule:** intermediate products keep full Decimal precision; the final
+  amount is quantized to **2 decimal places** with **`ROUND_HALF_UP`** (round half
+  away from zero — the convention invoices expect, e.g. `0.005 → 0.01`). Rounded
+  exactly once, at the end, so no error accumulates.
+- No float anywhere. A degenerate / inverted window or zero remaining days yields
+  `0.00` without dividing.
+
+## Plan change (`services/billing/plan_change.py` + `POST /api/billing/change-plan`)
+
+`change_plan(control_db, org=…, new_plan_code=…, actor_id=…, change_at=None)`:
+
+1. resolve the org's live subscription + current plan (`get_active_subscription`);
+   **404** (no enumeration) when there's no live subscription;
+2. resolve the target `Plan` by `code` (active only); **404** when unknown;
+3. **idempotent no-op** when the target equals the current plan — `changed=False`,
+   zero proration, no mutation, no provider call, **no audit row** (mirrors the
+   `transition_invoice` / `apply_billing_event` no-op rule). A retry of the same
+   change therefore can't double-charge;
+4. compute the proration (`compute_proration`, pure Decimal);
+5. `provision_org_billing` (resolve-or-create customer + the new plan's price) —
+   fails closed before any mutation with the live adapter and no key;
+6. drop any stale **canceled** subscription row for the target plan (guards the
+   `uq_subscription_org_plan` unique constraint), repoint `plan_id`, and write an
+   append-only `billing.plan_changed` audit row (PII-free — org + old/new plan
+   code + proration as an exact decimal **string** + day counts), dispatched
+   *before* the commit.
+
+**Money-path boundary:** this NEVER moves money directly. The proration is
+computed and recorded; issuing the actual charge/credit line is the provider's
+job (a live Stripe subscription amendment on the next invoice). The `mock`
+provider no-ops, so locally the proration is informational.
+
+Endpoint `POST /api/billing/change-plan` (JWT + `require_roles(admin, cfo)` —
+matches the read endpoint) takes `{"plan_code": "..."}` and returns
+`{changed, old_plan_code, new_plan_code, proration: {amount, unused_days, period_days}}`
+with `amount` an exact decimal string.
+
 ## Entitlement gating (`services/billing/entitlements.py` + `api/deps.py`)
 
 `get_entitlements(db, org_id)` returns the `entitlements` JSON of the plan behind
@@ -197,7 +286,8 @@ period:
 
 `plan`/`subscription` are `null` when the org has no live subscription. Money is
 an exact decimal **string** (this is a billing surface — exactness is the point).
-Plan-change, payment-method, and invoice-list endpoints are later slices.
+Plan-change is now shipped (`POST /api/billing/change-plan`, above);
+payment-method and invoice-list endpoints are later slices.
 
 ## Customer-facing UI (`frontend/src/routes/billing/`)
 
@@ -266,3 +356,16 @@ status → no audit, unknown subscription → 204, disabled switch → 204, prov
 mismatch → 204); and the dunning sweep (cancels overdue `past_due` + audit +
 idempotent re-run, spares within grace). Route auth-gating is in
 `tests/test_rbac.py` (the route is in `NO_AUTH_REQUIRED`).
+
+`backend/tests/test_billing_proration.py` — the proration math (upgrade →
+positive, downgrade → negative, same-price → `0.00`, `ROUND_HALF_UP` 2-dp
+rounding incl. an exact `.005` boundary, no-days-remaining → `0.00`, degenerate
+window → `0.00`) + `_to_minor_units` exactness (pure, no DB); provisioning
+(mock deterministic ids; live Stripe `ensure_customer`/`ensure_price` with
+idempotency keys + minor-units + `create_subscription` succeeding with resolved
+ids, all against a mocked `httpx` transport; fail-closed without a key); and the
+plan-change service + `POST /api/billing/change-plan` endpoint on the
+real-Postgres harness (applies proration + audit row, idempotent same-plan
+no-op, retry no-op, no-live-sub / unknown-plan errors, provisioning persistence,
+clerk RBAC 403). The `change_plan` audit row uses the `_audit_engine_on_loop`
+fixture (same loop-binding workaround as the webhook suite).

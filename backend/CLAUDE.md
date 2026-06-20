@@ -482,18 +482,26 @@ class MyAdapter(BillingAdapter):
 ```
 
 Registered: `mock` (in-process, deterministic, no network/credential — the
-**local-first default**), `stripe_billing` (skeleton — live key via sops, **fails
-closed** `BillingNotConfigured` without it; the provider API calls are documented
-`TODO` skeletons for the next slice, but `parse_webhook` IS implemented end-to-end
-with HMAC verify via `webhook_security`). Selection via
-`Organization.settings.billing.provider` → `AP_BILLING_PROVIDER` (default `mock`).
-This is the AP platform's OWN customer billing (plans / subscriptions /
-metering — control-plane, keyed by org), distinct from the AP money path the app
-runs for customers. Usage rollup off the existing `extraction_usage` /
-`card_rebates` meters lives in `services/billing/usage_rollup.py`; entitlement
-gating (`require_entitlement` / `require_api_entitlement` in `deps.py`, 402 on a
-plan miss) reads `services/billing/entitlements.py`. First slice — real Stripe
-wiring, dunning, and the plan-change UI are later. See `docs/billing.md`.
+**local-first default**), `stripe_billing` (live REST over `httpx` — key via
+sops, **fails closed** `BillingNotConfigured` without it). Implemented:
+`ensure_customer` / `ensure_price` (per-org customer + per-plan recurring price,
+idempotent creates, minor-units via exact Decimal), `create_subscription` /
+`get_subscription`, `report_usage` (one Billing Meter Event per meter, exact
+decimal-string quantities), and `parse_webhook` (Stripe-Signature HMAC verify).
+Selection via `Organization.settings.billing.provider` → `AP_BILLING_PROVIDER`
+(default `mock`). This is the AP platform's OWN customer billing (plans /
+subscriptions / metering — control-plane, keyed by org), distinct from the AP
+money path the app runs for customers. Usage rollup off the existing
+`extraction_usage` / `card_rebates` meters lives in
+`services/billing/usage_rollup.py`; entitlement gating (`require_entitlement` /
+`require_api_entitlement` in `deps.py`, 402 on a plan miss) reads
+`services/billing/entitlements.py`. Per-org customer/price provisioning
+(`services/billing/provisioning.py` → `settings.billing.stripe_customer_id` +
+`.plan_price_ids`, no migration), mid-period proration
+(`services/billing/proration.py`, pure Decimal, `ROUND_HALF_UP` 2 dp), and the
+plan-change endpoint (`POST /api/billing/change-plan`, admin/cfo, idempotent +
+audited) are shipped; payment-method + invoice-list UI are later. See
+`docs/billing.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
