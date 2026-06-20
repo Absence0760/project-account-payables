@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/config.dart';
 import 'package:ap_mobile/l10n/gen/app_localizations.dart';
+import 'package:ap_mobile/screens/admin_users_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
+import 'package:ap_mobile/screens/org_settings_screen.dart';
 import 'package:ap_mobile/services/biometric_service.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/locale_store.dart';
@@ -105,6 +107,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: Text(l.settingsApiServer),
             subtitle: Text(AppConfig.apiBaseUrl),
           ),
+
+          // Administration — admin-only surfaces (user management + org
+          // settings). Both backend surfaces are admin-gated; the section is
+          // hidden entirely for non-admins.
+          if (AuthStore.instance.isOrgAdmin) ...[
+            const Divider(height: 32),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text(
+                'Administration',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.group),
+              title: const Text('User Management'),
+              subtitle: const Text('Roles, activate / deactivate users'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.business_center),
+              title: const Text('Organization Settings'),
+              subtitle: const Text('Company profile, invoice defaults'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const OrgSettingsScreen()),
+              ),
+            ),
+          ],
 
           // Display language — a per-device choice (like the biometric toggle),
           // persisted locally via LocaleStore and never sent to the backend.

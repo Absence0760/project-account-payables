@@ -1,10 +1,12 @@
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/models/admin_user.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/cash_flow.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/models/notification.dart';
+import 'package:ap_mobile/models/organization.dart';
 import 'package:ap_mobile/models/payment.dart';
 import 'package:ap_mobile/models/payment_queue.dart';
 import 'package:ap_mobile/models/user.dart';
@@ -415,6 +417,79 @@ class PaymentApi {
   /// `POST /api/payments/runs/{id}/cancel`.
   static Future<Map<String, dynamic>> cancelRun(String id) async {
     return _api.post('/payments/runs/$id/cancel');
+  }
+}
+
+/// Admin user-management surface (`/api/admin/*`, admin-only on the backend).
+/// Control-plane data; no tenant header needed beyond the usual one.
+class AdminApi {
+  static final _api = ApiClient();
+
+  /// `GET /api/admin/users` — org users, newest first. `search` filters by
+  /// name/email. The envelope is `{items, total, page, page_size}`; `getList`
+  /// unwraps `items`.
+  static Future<List<AdminUser>> listUsers({
+    String? search,
+    int page = 1,
+    int pageSize = 50,
+  }) async {
+    final params = <String, String>{
+      'page': page.toString(),
+      'page_size': pageSize.toString(),
+    };
+    if (search != null && search.isNotEmpty) params['search'] = search;
+    final items = await _api.getList('/admin/users', params);
+    return items
+        .map((e) => AdminUser.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// `GET /api/admin/roles` — system + this org's custom roles.
+  static Future<List<AdminRole>> listRoles() async {
+    final items = await _api.getList('/admin/roles');
+    return items
+        .map((e) => AdminRole.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// `PATCH /api/admin/users/{id}` with the partial body. Returns the updated
+  /// user. The backend force-logs-out the target on a role change or
+  /// deactivation (the prior JWT was signed before the change).
+  static Future<AdminUser> updateUser(
+    String id,
+    Map<String, dynamic> changes,
+  ) async {
+    final data = await _api.patch('/admin/users/$id', changes);
+    return AdminUser.fromJson(data);
+  }
+
+  /// Replace the user's full set of role names (`PATCH .../users/{id}`).
+  static Future<AdminUser> setRoles(String id, List<String> roleNames) =>
+      updateUser(id, {'role_names': roleNames});
+
+  /// Activate / deactivate the user (`PATCH .../users/{id}`).
+  static Future<AdminUser> setActive(String id, bool active) =>
+      updateUser(id, {'is_active': active});
+}
+
+/// Organization settings (`/api/organization`). GET is readable by any authed
+/// user; the PATCH that edits settings is admin-only on the backend.
+class OrganizationApi {
+  static final _api = ApiClient();
+
+  /// `GET /api/organization` — the org + its full settings JSONB. We project it
+  /// down to the safe editable subset (company + invoice defaults).
+  static Future<OrgSettings> get() async {
+    final data = await _api.get('/organization');
+    return OrgSettings.fromJson(data);
+  }
+
+  /// `PATCH /api/organization` with `{name, settings: {company, invoice_defaults}}`.
+  /// The backend shallow-merges the settings keys, so untouched keys (erp,
+  /// cards, payments, sso …) are preserved. Returns the refreshed settings.
+  static Future<OrgSettings> update(OrgSettingsUpdate body) async {
+    final data = await _api.patch('/organization', body.toJson());
+    return OrgSettings.fromJson(data);
   }
 }
 
