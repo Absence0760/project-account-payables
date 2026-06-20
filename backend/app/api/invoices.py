@@ -348,8 +348,9 @@ async def export_einvoice(
     (422 on failure — an AP user must not emit a non-compliant document), then
     serializes to that format's XML.
 
-    `format` selects the dialect: `ubl` (default, PEPPOL BIS Billing 3.0) or a
-    registered national format — `fatturapa` (IT), `cfdi` (MX), `nfe` (BR),
+    `format` selects the dialect: `ubl` (default, PEPPOL BIS Billing 3.0),
+    `cii` (UN/CEFACT Cross-Industry Invoice — the Factur-X / ZUGFeRD dialect),
+    or a registered national format — `fatturapa` (IT), `cfdi` (MX), `nfe` (BR),
     `dian` (CO). An unknown format is a 400. The national generators are
     pre-clearance documents; live government clearance (SdI / SAT-PAC / SEFAZ /
     DIAN) is a tracked follow-up — see `docs/e-invoicing.md`.
@@ -358,15 +359,18 @@ async def export_einvoice(
     from app.services.e_invoice import (
         EInvoiceValidationError,
         assert_valid,
+        generate_cii,
         generate_ubl,
         get_country_format,
         invoice_to_einvoice_document,
     )
 
-    # `ubl` keeps the original built-in path; any other token resolves a
-    # registered national format (None → unsupported).
+    # `ubl` / `cii` keep the original built-in path (shared normalized model +
+    # `assert_valid` tax guard); any other token resolves a registered national
+    # format (None → unsupported).
+    builtin_generators = {"ubl": generate_ubl, "cii": generate_cii}
     country_format = None
-    if format != "ubl":
+    if format not in builtin_generators:
         country_format = get_country_format(format)
         if country_format is None:
             raise HTTPException(status_code=400, detail="Unsupported e-invoice format")
@@ -402,15 +406,16 @@ async def export_einvoice(
 
     base = invoice.invoice_number or invoice.id
     if country_format is None:
-        # Built-in UBL path.
+        # Built-in UBL / CII path — shared tax guard, format-specific generator.
         try:
             assert_valid(doc)
         except EInvoiceValidationError as exc:
             # str(exc) is a PII-free "field: code" join — safe in the error body.
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        xml_bytes = generate_ubl(doc)
+        xml_bytes = builtin_generators[format](doc)
         media_type = "application/xml"
-        filename = f"einvoice-{base}.xml"
+        tag = "" if format == "ubl" else f"-{format}"
+        filename = f"einvoice-{base}{tag}.xml"
     else:
         # National format path — validate via the format, then generate.
         errors = country_format.validate(doc)
