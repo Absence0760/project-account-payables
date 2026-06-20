@@ -606,6 +606,25 @@ class Settings(BaseSettings):
     # recommendation is 5 minutes).
     slack_request_max_age_seconds: int = 300
 
+    # Microsoft Teams interactive approval — the **security token** Teams signs
+    # every Outgoing-Webhook POST with. Teams computes
+    # `HMAC-SHA256(base64-decode(security_token), raw_body)` and sends it
+    # base64-encoded as `Authorization: HMAC <base64-digest>`. We rebuild that and
+    # compare constant-time. Empty default → the feature is OFF: the inbound
+    # `/api/approvals/teams/interactivity` webhook rejects every request (fail-
+    # closed, no hardcoded fallback, mirroring the Slack secret). The committed
+    # .env.development sets a NON-secret base64 dev value so the flow is
+    # exercisable in tests; deployed envs set the real Teams Outgoing-Webhook
+    # security token via sops. The action token carried in the card button reuses
+    # `email_action_signing_key` (the `teams`-channel binding keeps it distinct
+    # from the email link and the Slack button). See backend/docs/teams-approval.md.
+    teams_security_token: str = ""
+    # Reject a Teams interactivity POST whose `X-Teams-Request-Timestamp` is more
+    # than this many seconds from now (replay-window guard). Teams does not always
+    # send a timestamp header; when absent we fall back to the single-use action
+    # token jti + the workflow state machine for replay protection.
+    teams_request_max_age_seconds: int = 300
+
     # Partner / reseller link codes (white-label two-sided-consent attach). The
     # HMAC-SHA256 key the platform signs a partner *link code* with: the
     # prospective CHILD tenant's admin mints a short-lived code (proof of

@@ -61,6 +61,7 @@ from app.api import (
     slack_approvals,
     tax,
     tax_intl,
+    teams_approvals,
     vendor_statement_recon,
     vendors,
     workflow,
@@ -162,6 +163,10 @@ NO_AUTH_REQUIRED = {
     # the Slack request signature (HMAC) + the signed single-use action token in
     # the button value (no JWT/session). Public-by-design (Slack POSTs it).
     ("POST", "/approvals/slack/interactivity"),
+    # teams_approvals.py — approve/reject from the Teams approval card; gated by
+    # the Teams Outgoing-Webhook HMAC + the signed single-use action token in the
+    # card action (no JWT/session). Public-by-design (Teams POSTs it).
+    ("POST", "/approvals/teams/interactivity"),
     # billing_webhook.py — inbound billing-provider (Stripe) webhook; HMAC-verified
     # inside the adapter's parse_webhook + deduped by event id, provider in URL
     # path. Public-by-design (the billing provider POSTs it); resolves the
@@ -215,6 +220,7 @@ ROUTERS = [
     slack_approvals.public_router,
     tax.router,
     tax_intl.router,
+    teams_approvals.public_router,
     vendor_statement_recon.router,
     vendors.router,
     workflow.router,

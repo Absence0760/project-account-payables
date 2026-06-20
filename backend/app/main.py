@@ -58,6 +58,7 @@ from app.api import (
     slack_approvals,
     tax,
     tax_intl,
+    teams_approvals,
     vendor_risk,
     vendor_statement_recon,
     vendors,
@@ -352,6 +353,7 @@ app.include_router(email_intake.public_router, prefix="/api")
 app.include_router(email_intake.admin_router, prefix="/api")
 app.include_router(peppol_inbound.public_router, prefix="/api")
 app.include_router(slack_approvals.public_router, prefix="/api")
+app.include_router(teams_approvals.public_router, prefix="/api")
 app.include_router(catalogs.public_router, prefix="/api")
 app.include_router(tax.router, prefix="/api")
 app.include_router(tax_intl.router, prefix="/api")

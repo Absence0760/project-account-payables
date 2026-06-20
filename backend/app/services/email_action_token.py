@@ -1,10 +1,11 @@
-"""Signed, single-action tokens for out-of-app approval (email + Slack).
+"""Signed, single-action tokens for out-of-app approval (email + Slack + Teams).
 
 Originally minted for the email-approval link, this token is now also the
-credential carried in the Slack approval message's interactive buttons. A
-``channel`` claim (``email`` / ``slack``) binds a token to its delivery surface
-so one surface's token can't be replayed against the other — see
-:data:`CHANNEL_EMAIL` / :data:`CHANNEL_SLACK` and ``expected_channel`` on
+credential carried in the Slack approval message's interactive buttons and the
+Microsoft Teams approval card's Action.Http buttons. A ``channel`` claim
+(``email`` / ``slack`` / ``teams``) binds a token to its delivery surface so one
+surface's token can't be replayed against another — see :data:`CHANNEL_EMAIL` /
+:data:`CHANNEL_SLACK` / :data:`CHANNEL_TEAMS` and ``expected_channel`` on
 :func:`verify_action_token`. The module name is kept for the email callers.
 
 An AP reviewer who receives the "invoice assigned to you for review" email can
@@ -62,6 +63,7 @@ _VALID_ACTIONS = frozenset({ACTION_APPROVE, ACTION_REJECT})
 # callers (which pass no channel) round-trip unchanged.
 CHANNEL_EMAIL = "email"
 CHANNEL_SLACK = "slack"
+CHANNEL_TEAMS = "teams"
 
 
 @dataclass(frozen=True)
@@ -278,6 +280,48 @@ def build_slack_action_tokens(
         signing_key=signing_key,
         ttl_hours=ttl_hours,
         channel=CHANNEL_SLACK,
+        now=now,
+    )
+    if not approve or not reject:
+        return None
+    return approve, reject
+
+
+def build_teams_action_tokens(
+    *,
+    tenant_slug: str,
+    invoice_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    signing_key: str,
+    ttl_hours: int,
+    now: float | None = None,
+) -> tuple[str, str] | None:
+    """Build the (approve, reject) ``teams``-channel tokens for the card actions.
+
+    Returns ``None`` when the feature is disabled (no key) so the Teams adapter
+    simply omits the interactive Action.Http buttons. Each token binds the same
+    facts as the email / Slack link — tenant + invoice + the intended approver +
+    action + expiry — but on the ``teams`` channel, so it can only be redeemed at
+    the Teams interactivity endpoint, not the email-confirm or Slack one.
+    """
+    approve = build_action_token(
+        tenant_slug=tenant_slug,
+        invoice_id=invoice_id,
+        actor_id=actor_id,
+        action=ACTION_APPROVE,
+        signing_key=signing_key,
+        ttl_hours=ttl_hours,
+        channel=CHANNEL_TEAMS,
+        now=now,
+    )
+    reject = build_action_token(
+        tenant_slug=tenant_slug,
+        invoice_id=invoice_id,
+        actor_id=actor_id,
+        action=ACTION_REJECT,
+        signing_key=signing_key,
+        ttl_hours=ttl_hours,
+        channel=CHANNEL_TEAMS,
         now=now,
     )
     if not approve or not reject:
