@@ -23,6 +23,14 @@ class AuthStore extends ChangeNotifier {
   bool get isClerkOnly => _user?.isClerkOnly ?? false;
   bool get canApprove => isAdmin || isManager;
   bool get canViewPayments => isAdmin || isManager || isCfo;
+  // Vendor verify/reject + ERP sync — mirrors the backend gate on those
+  // routes (require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)). Vendor *reads* are
+  // open to CFO too, but the mutating actions are not.
+  bool get canManageVendors => isAdmin || isManager;
+  // Creating / executing payment runs — backend gate is admin/ap_manager/cfo
+  // (same as viewing payments). CFO sign-off on over-threshold runs is a
+  // separate server-side gate surfaced via `requires_cfo_approval`.
+  bool get canManagePayments => isAdmin || isManager || isCfo;
   // Invoice field editing — mirrors the backend PATCH /api/invoices/{id} gate
   // (admin / ap_manager / cfo). Clerks are read-only here.
   bool get canEditInvoice => isAdmin || isManager || isCfo;
