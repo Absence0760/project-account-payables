@@ -45,21 +45,25 @@ from app.models.adaptive_suggestion import WorkflowSuggestion
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
-from app.models.workflow import AuditLog
+from app.models.workflow import AuditLog, WorkflowDefinition
 from app.schemas.adaptive_workflows import (
     AnomalyBatchResponse,
     ApplyRoutingRequest,
     ApplyRoutingResponse,
+    ApplyThresholdRequest,
+    ApplyThresholdResponse,
     ApprovalPatternsResponse,
     InvoiceAnomalyResponse,
     RoutingSuggestionResponse,
     SuggestionListResponse,
+    ThresholdRecommendationResponse,
 )
 from app.services.adaptive_workflows import (
     DerivedSuggestion,
     EligibleApprover,
     InvoiceAnomaly,
     RoutingSuggestion,
+    ThresholdRecommendation,
     VendorBaseline,
     _decimal_days,
     compute_approver_patterns,
@@ -68,7 +72,9 @@ from app.services.adaptive_workflows import (
     derive_suggestions,
     detect_invoice_anomaly,
     recommend_approvers,
+    recommend_auto_approve_threshold,
 )
+from app.services.audit_dispatch import dispatch_audit
 from app.services.review import assign_reviewer
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -872,4 +878,277 @@ async def apply_routing_suggestion(
         assigned_to_name=inv.assigned_to,
         rank=top.rank,
         score=str(top.score),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auto-approve threshold — recommend (GET) + apply (POST)
+# ---------------------------------------------------------------------------
+#
+# The "act" surface for adaptive thresholds. The GET recommends a conservative
+# raise to the org-wide ``auto_approve_below`` dollar threshold from the same
+# clean-history vendor patterns that back the advisory suggestions. The POST
+# applies it **through the audited workflow-definition PATCH path** — it reuses
+# `workflow_definitions._snapshot_version` + the `workflow.version_snapshot`
+# audit dispatch so a `WorkflowVersion` snapshot + audit row land EXACTLY as a
+# manual edit through `PATCH /api/workflows/{id}` would. The threshold lives on
+# the active definition's approval step (`config.auto_approve_below`); editing it
+# affects only NEW invoices — in-flight invoices read their frozen snapshot.
+
+# Admin-only — matches who can edit workflow definitions (the manual
+# `PATCH /api/workflows/{id}` is `require_roles(ROLE_ADMIN)`).
+_THRESHOLD_APPLY_ROLES = (ROLE_ADMIN,)
+
+
+def _approval_auto_below(steps_config: dict) -> Decimal:
+    """Read the current ``auto_approve_below`` off the approval step (0 = unset).
+
+    Mirrors `workflow_engine.get_step_config` lookup but returns a Decimal."""
+    for step in (steps_config or {}).get("steps", []):
+        if step.get("type") == "approval":
+            raw = (step.get("config") or {}).get("auto_approve_below")
+            if raw is None:
+                return Decimal("0")
+            try:
+                return Decimal(str(raw))
+            except (TypeError, ValueError):
+                return Decimal("0")
+    return Decimal("0")
+
+
+async def _active_workflow_definition(
+    db: AsyncSession, org_id: uuid.UUID, *, workflow_id: uuid.UUID | None = None
+) -> WorkflowDefinition | None:
+    """The definition the threshold apply targets: the explicit ``workflow_id``
+    if given, else the org's active (then default) definition."""
+    if workflow_id is not None:
+        return (
+            await db.execute(
+                select(WorkflowDefinition).where(
+                    WorkflowDefinition.id == workflow_id,
+                    WorkflowDefinition.organization_id == org_id,
+                )
+            )
+        ).scalar_one_or_none()
+    # Prefer the active definition, fall back to the default.
+    return (
+        await db.execute(
+            select(WorkflowDefinition)
+            .where(WorkflowDefinition.organization_id == org_id)
+            .order_by(
+                WorkflowDefinition.is_active.desc(),
+                WorkflowDefinition.is_default.desc(),
+                WorkflowDefinition.created_at,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _recommend_threshold(
+    org: Organization, decisions: list[dict], current_threshold: Decimal
+) -> ThresholdRecommendation:
+    cfg = _adaptive_settings(org)
+    vendor_patterns = compute_vendor_patterns(decisions)
+    return recommend_auto_approve_threshold(
+        vendor_patterns,
+        current_threshold=current_threshold,
+        min_history=cfg["suggestion_min_history"],
+        min_consistency_pct=cfg["suggestion_min_consistency_pct"],
+    )
+
+
+def _threshold_response_dict(rec: ThresholdRecommendation) -> dict:
+    return {
+        "should_raise": rec.should_raise,
+        "current_threshold": str(rec.current_threshold),
+        "recommended_threshold": str(rec.recommended_threshold),
+        "cap_threshold": str(rec.cap_threshold),
+        "qualifying_vendor_count": rec.qualifying_vendor_count,
+        "total_clean_invoices": rec.total_clean_invoices,
+        "reason_code": rec.reason_code,
+        "rationale": rec.rationale,
+        "evidence": rec.evidence,
+    }
+
+
+@router.get("/threshold-recommendation", response_model=ThresholdRecommendationResponse)
+async def threshold_recommendation(
+    days: int = Query(365, ge=1, le=730),
+    workflow_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+):
+    """Advisory: recommend a conservative raise to the org-wide
+    ``auto_approve_below`` threshold from clean-history vendor patterns.
+
+    **Read-only** — never mutates the workflow definition. The apply path is
+    ``POST /threshold-recommendation/apply`` (admin-only). The current threshold
+    is read off the active (or specified) workflow definition's approval step."""
+    defn = await _active_workflow_definition(db, org.id, workflow_id=workflow_id)
+    current = _approval_auto_below(defn.steps_config) if defn else Decimal("0")
+
+    since = datetime.now(UTC) - timedelta(days=days)
+    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    rec = _recommend_threshold(org, decisions, current)
+
+    payload = _threshold_response_dict(rec)
+    payload["workflow_id"] = str(defn.id) if defn else None
+    payload["lookback_days"] = days
+    return ThresholdRecommendationResponse(**payload)
+
+
+@router.post("/threshold-recommendation/apply", response_model=ApplyThresholdResponse)
+async def apply_threshold_recommendation(
+    body: ApplyThresholdRequest,
+    days: int = Query(365, ge=1, le=730),
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_THRESHOLD_APPLY_ROLES)),
+):
+    """Apply the auto-approve threshold recommendation: write the new
+    ``auto_approve_below`` onto the workflow definition's approval step
+    **through the audited workflow-definition PATCH path**.
+
+    Reuses `workflow_definitions._snapshot_version` + the
+    `workflow.version_snapshot` audit dispatch, so a `WorkflowVersion` snapshot
+    and an audit row land exactly as the manual `PATCH /api/workflows/{id}`
+    would — the threshold change is versioned + auditable, never a raw row
+    mutation. **Affects only NEW invoices** — in-flight invoices read their
+    frozen workflow snapshot (the project's snapshot invariant).
+
+    Explicit / opt-in — admin triggers it (matching who can edit workflow
+    definitions). Idempotent: when the recommendation does not raise the
+    threshold (insufficient evidence, no increase) it is a no-op (`applied=false`,
+    no snapshot / audit row). The threshold is recomputed server-side here, so an
+    admin can never apply a number the deterministic stats no longer support; the
+    optional `expected_recommended_threshold` adds an optimistic-concurrency
+    guard (409 on a mismatch)."""
+    from app.api.workflow_definitions import _snapshot_version
+
+    defn = await _active_workflow_definition(db, org.id, workflow_id=body.workflow_id)
+    if defn is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No workflow definition to update — create one first",
+        )
+
+    current = _approval_auto_below(defn.steps_config)
+    since = datetime.now(UTC) - timedelta(days=days)
+    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    rec = _recommend_threshold(org, decisions, current)
+
+    # Optimistic-concurrency guard: refuse a stale apply.
+    if body.expected_recommended_threshold is not None:
+        try:
+            expected = Decimal(str(body.expected_recommended_threshold))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail="expected_recommended_threshold is not a number"
+            ) from exc
+        if expected != rec.recommended_threshold:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Recommendation changed since it was read "
+                    f"(now {rec.recommended_threshold}); re-read before applying"
+                ),
+            )
+
+    if not rec.should_raise:
+        # No-op — don't snapshot a version or write an audit row for a non-change.
+        return ApplyThresholdResponse(
+            applied=False,
+            workflow_id=str(defn.id),
+            previous_threshold=str(current),
+            new_threshold=str(current),
+            reason_code=rec.reason_code,
+            rationale=rec.rationale,
+            version_number=None,
+        )
+
+    # Snapshot the PRIOR steps_config into history BEFORE mutating — exactly the
+    # manual PATCH path's behaviour (audit + version, then overwrite).
+    version = await _snapshot_version(
+        db,
+        defn=defn,
+        org_id=org.id,
+        actor_id=user.id,
+        note="Auto-saved before adaptive auto-approve threshold raise",
+    )
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="workflow.version_snapshot",
+        entity_type="workflow_definition",
+        entity_id=defn.id,
+        details={"reason": "adaptive_threshold_raise"},
+    )
+
+    # Build the new steps_config with the raised auto_approve_below on the
+    # approval step. If no approval step exists, append one so the threshold has
+    # somewhere to live (mirrors DEFAULT_STEPS_CONFIG's approval shape).
+    new_steps_config = {"steps": [dict(s) for s in (defn.steps_config or {}).get("steps", [])]}
+    new_threshold = float(rec.recommended_threshold)
+    found = False
+    for step in new_steps_config["steps"]:
+        if step.get("type") == "approval":
+            cfg = dict(step.get("config") or {})
+            cfg["auto_approve_below"] = new_threshold
+            step["config"] = cfg
+            found = True
+            break
+    if not found:
+        new_steps_config["steps"].append(
+            {
+                "number": len(new_steps_config["steps"]) + 1,
+                "type": "approval",
+                "name": "Manager Approval",
+                "enabled": True,
+                "config": {
+                    "required": True,
+                    "approver_strategy": "manual",
+                    "require_segregation": True,
+                    "auto_approve_below": new_threshold,
+                },
+            }
+        )
+    defn.steps_config = new_steps_config
+
+    # A second, threshold-specific audit row records the dollar change itself
+    # (the version_snapshot row above records that an edit happened; this one
+    # records WHAT changed and WHY for the SOX trail).
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="workflow.auto_approve_threshold_raised",
+        entity_type="workflow_definition",
+        entity_id=defn.id,
+        details={
+            "previous_threshold": str(current),
+            "new_threshold": str(rec.recommended_threshold),
+            "qualifying_vendor_count": rec.qualifying_vendor_count,
+            "total_clean_invoices": rec.total_clean_invoices,
+            "reason_code": rec.reason_code,
+            "source": "adaptive_recommendation",
+        },
+    )
+    await db.commit()
+    await db.refresh(defn)
+
+    return ApplyThresholdResponse(
+        applied=True,
+        workflow_id=str(defn.id),
+        previous_threshold=str(current),
+        new_threshold=str(rec.recommended_threshold),
+        reason_code=rec.reason_code,
+        rationale=rec.rationale,
+        version_number=version.version_number,
     )

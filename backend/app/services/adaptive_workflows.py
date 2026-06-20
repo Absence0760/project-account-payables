@@ -51,11 +51,13 @@ __all__ = [
     "EligibleApprover",
     "RoutingCandidate",
     "RoutingSuggestion",
+    "ThresholdRecommendation",
     "compute_approver_patterns",
     "compute_vendor_patterns",
     "compute_vendor_baseline",
     "detect_invoice_anomaly",
     "derive_suggestions",
+    "recommend_auto_approve_threshold",
     "recommend_approvers",
     "_decimal_days",
 ]
@@ -541,6 +543,177 @@ def derive_suggestions(
 
 
 # ---------------------------------------------------------------------------
+# Org-wide auto-approve threshold recommendation (the "act" surface)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ThresholdRecommendation:
+    """A conservative, explainable recommendation to RAISE the org's workflow
+    ``auto_approve_below`` dollar threshold, derived from the same clean-history
+    vendor patterns that back ``derive_suggestions``.
+
+    ``should_raise`` is True only when there is genuine, qualifying evidence AND
+    the recommended threshold is strictly higher than the current one. The
+    recommendation is **advisory data** — applying it is a separate, explicit,
+    audited admin action (it never auto-applies). ``recommended_threshold`` is a
+    ``Decimal`` dollar amount; the apply path writes it onto the workflow
+    definition's approval step through the audited PATCH path.
+    """
+
+    should_raise: bool
+    current_threshold: Decimal  # the org's current auto_approve_below (0 = none set)
+    recommended_threshold: Decimal  # the proposed new threshold (>= current)
+    cap_threshold: Decimal  # the hard ceiling the raise was clamped to
+    qualifying_vendor_count: int  # vendors clearing the clean-history gate
+    total_clean_invoices: int  # # approvals across qualifying vendors
+    evidence: list[dict]  # per-vendor evidence (vendor_name, n, max_amount)
+    rationale: str  # deterministic, human-readable explanation
+    reason_code: str  # "ok" | "insufficient_evidence" | "no_increase" | "at_cap"
+
+
+def recommend_auto_approve_threshold(
+    vendor_patterns: list[VendorApprovalPattern],
+    *,
+    current_threshold: Decimal,
+    min_history: int = 12,
+    min_consistency_pct: Decimal = Decimal("95"),
+    min_qualifying_vendors: int = 3,
+    max_raise_multiple: Decimal = Decimal("2.0"),
+    absolute_cap: Decimal = Decimal("25000"),
+    threshold_round_to: Decimal = Decimal("500"),
+) -> ThresholdRecommendation:
+    """Recommend a new org-wide ``auto_approve_below`` threshold — conservatively.
+
+    The evidence base is the **clean-history** vendors (the exact gate
+    ``derive_suggestions`` uses: ``>= min_history`` approvals, **zero**
+    rejections, **zero** modifications). The recommendation only fires when
+    enough independent vendors clear that gate (``>= min_qualifying_vendors``),
+    so a single chatty vendor can't move the org-wide limit.
+
+    The candidate threshold is the **maximum clean-approved amount** seen across
+    qualifying vendors, rounded **up** to ``threshold_round_to`` — every dollar
+    below it would have sailed through with a spotless record. It is then clamped
+    by two ceilings (whichever is lower), so accuracy buys a *bounded* raise per
+    apply, never a leap:
+
+      * a **relative** cap of ``current_threshold * max_raise_multiple`` (when a
+        threshold is already set — the first raise off ``0`` skips the relative
+        cap, since 0×anything is 0, and uses the absolute cap only);
+      * an **absolute** ceiling ``absolute_cap``.
+
+    Invariants (mirroring the roadmap's "SAFE, auditable, explicit" ask):
+
+      * **Never lowers.** ``recommended_threshold`` is ``max(current, …)``; if the
+        evidence supports nothing above the current limit, ``should_raise`` is
+        False (``reason_code="no_increase"``).
+      * **Capped.** The raise can't exceed the relative/absolute ceiling in one
+        step (``reason_code="at_cap"`` when the cap is what's binding the result,
+        but a capped raise still ``should_raise``).
+      * **Refuses on thin evidence.** Fewer than ``min_qualifying_vendors`` clean
+        vendors → ``should_raise=False`` (``reason_code="insufficient_evidence"``).
+
+    Pure / deterministic — no LLM, no IO. The caller persists/applies.
+    """
+    current = current_threshold if current_threshold > 0 else Decimal("0")
+
+    qualifying: list[VendorApprovalPattern] = [
+        vp
+        for vp in vendor_patterns
+        if vp.approved_count >= min_history
+        and vp.rejected_count == 0
+        and vp.unmodified_count == vp.approved_count
+        and vp.consistency_pct >= min_consistency_pct
+    ]
+    qualifying.sort(key=lambda vp: (-vp.max_approved_amount, vp.vendor_name))
+
+    evidence = [
+        {
+            "vendor_id": vp.vendor_id,
+            "vendor_name": vp.vendor_name,
+            "based_on_n": vp.approved_count,
+            "max_approved_amount": str(vp.max_approved_amount),
+            "median_approved_amount": str(vp.median_approved_amount),
+        }
+        for vp in qualifying
+    ]
+    total_clean = sum(vp.approved_count for vp in qualifying)
+
+    # The relative ceiling. A 0 current threshold means "no auto-approve yet" —
+    # the relative cap (0×mult = 0) would forbid every raise, so for the first
+    # raise we fall back to the absolute cap alone.
+    relative_cap = current * max_raise_multiple
+    cap = absolute_cap if current == 0 else min(relative_cap, absolute_cap)
+
+    if len(qualifying) < min_qualifying_vendors:
+        return ThresholdRecommendation(
+            should_raise=False,
+            current_threshold=_q2(current),
+            recommended_threshold=_q2(current),
+            cap_threshold=_q2(cap),
+            qualifying_vendor_count=len(qualifying),
+            total_clean_invoices=total_clean,
+            evidence=evidence,
+            rationale=(
+                f"Only {len(qualifying)} vendor(s) have a clean auto-approvable "
+                f"history (need {min_qualifying_vendors}). Not enough independent "
+                f"evidence to raise the org-wide auto-approve threshold."
+            ),
+            reason_code="insufficient_evidence",
+        )
+
+    # Highest clean-approved amount across qualifying vendors, rounded UP.
+    observed_max = max(vp.max_approved_amount for vp in qualifying)
+    candidate = _q2(
+        (observed_max / threshold_round_to).quantize(Decimal("1"), rounding=ROUND_CEILING)
+        * threshold_round_to
+    )
+
+    # Clamp to the cap, then never below current.
+    capped = min(candidate, cap)
+    recommended = max(current, capped)
+
+    if recommended <= current:
+        return ThresholdRecommendation(
+            should_raise=False,
+            current_threshold=_q2(current),
+            recommended_threshold=_q2(current),
+            cap_threshold=_q2(cap),
+            qualifying_vendor_count=len(qualifying),
+            total_clean_invoices=total_clean,
+            evidence=evidence,
+            rationale=(
+                f"{len(qualifying)} vendor(s) with {total_clean} spotless approvals, "
+                f"but the supportable threshold (${candidate:,.0f}, capped at "
+                f"${cap:,.0f}) is not above the current ${current:,.0f}. No change."
+            ),
+            reason_code="no_increase",
+        )
+
+    at_cap = capped < candidate  # the cap, not the evidence, bound the result
+    rationale = (
+        f"{len(qualifying)} vendor(s) cleared the clean-history gate "
+        f"({total_clean} approvals, 0 rejections, 0 corrections). The highest "
+        f"clean-approved amount is ${observed_max:,.2f}; raising auto-approve "
+        f"from ${current:,.0f} to ${recommended:,.0f}"
+        + (f" (capped at ${cap:,.0f})." if at_cap else ".")
+        + " Affects only NEW invoices — in-flight invoices keep their frozen "
+        "workflow snapshot."
+    )
+    return ThresholdRecommendation(
+        should_raise=True,
+        current_threshold=_q2(current),
+        recommended_threshold=_q2(recommended),
+        cap_threshold=_q2(cap),
+        qualifying_vendor_count=len(qualifying),
+        total_clean_invoices=total_clean,
+        evidence=evidence,
+        rationale=rationale,
+        reason_code="at_cap" if at_cap else "ok",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Smart routing — advisory approver recommendation
 # ---------------------------------------------------------------------------
 
@@ -690,9 +863,7 @@ def recommend_approvers(
             )
         )
 
-    scored.sort(
-        key=lambda c: (-c.score, -c.vendor_approved_count, -c.sample_size, c.approver_id)
-    )
+    scored.sort(key=lambda c: (-c.score, -c.vendor_approved_count, -c.sample_size, c.approver_id))
     ranked = [
         RoutingCandidate(
             approver_id=c.approver_id,

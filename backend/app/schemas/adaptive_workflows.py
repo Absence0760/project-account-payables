@@ -163,6 +163,68 @@ class ApplyRoutingResponse(BaseModel):
     score: str  # the chosen candidate's routing score (string-Decimal)
 
 
+# ---------------------------------------------------------------------------
+# Auto-approve threshold recommendation + apply
+# ---------------------------------------------------------------------------
+
+
+class ThresholdEvidenceItem(BaseModel):
+    vendor_id: str | None = None
+    vendor_name: str
+    based_on_n: int
+    max_approved_amount: str  # string-Decimal
+    median_approved_amount: str
+
+
+class ThresholdRecommendationResponse(BaseModel):
+    """Advisory recommendation to raise the org-wide ``auto_approve_below``
+    threshold. Money fields are string-Decimal. ``should_raise`` /
+    ``reason_code`` tell the UI whether an apply would do anything."""
+
+    should_raise: bool
+    current_threshold: str
+    recommended_threshold: str
+    cap_threshold: str
+    qualifying_vendor_count: int
+    total_clean_invoices: int
+    reason_code: str  # "ok" | "insufficient_evidence" | "no_increase" | "at_cap"
+    rationale: str
+    evidence: list[ThresholdEvidenceItem]
+    # The active workflow definition the apply path would mutate (None when the
+    # org has no active definition yet — apply 409s in that case).
+    workflow_id: str | None = None
+    lookback_days: int
+
+
+class ApplyThresholdRequest(BaseModel):
+    """Body for the threshold apply path.
+
+    ``workflow_id`` pins which definition to update (defaults to the org's
+    active definition when omitted). ``expected_recommended_threshold`` is an
+    optional optimistic guard: when supplied it must equal the freshly-recomputed
+    recommendation (string or number) or the apply 409s — so an admin can't apply
+    a stale number the UI showed before the stats shifted underneath them."""
+
+    workflow_id: uuid.UUID | None = None
+    expected_recommended_threshold: str | None = None
+
+
+class ApplyThresholdResponse(BaseModel):
+    """Outcome of applying the threshold recommendation through the audited
+    workflow-definition PATCH path.
+
+    ``applied`` is False on the idempotent no-op (the recommendation does not
+    raise the threshold — no version snapshot or audit row written)."""
+
+    applied: bool
+    workflow_id: str
+    previous_threshold: str
+    new_threshold: str
+    reason_code: str
+    rationale: str
+    version_number: int | None = None  # the WorkflowVersion snapshot written on apply
+
+
 __all__ = [
     "ApproverPatternResponse",
     "VendorPatternResponse",
@@ -177,4 +239,8 @@ __all__ = [
     "RoutingSuggestionResponse",
     "ApplyRoutingRequest",
     "ApplyRoutingResponse",
+    "ThresholdEvidenceItem",
+    "ThresholdRecommendationResponse",
+    "ApplyThresholdRequest",
+    "ApplyThresholdResponse",
 ]
