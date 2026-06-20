@@ -1,15 +1,26 @@
 # Adaptive AI Workflows
 
-> **Mostly advisory.** Nothing in this feature approves an invoice, adjusts a
-> threshold, or mutates a workflow definition. It is a set of **read models**
-> over approval history plus an **advisory** suggestion store — with **one**
-> explicit, opt-in act surface: the smart-routing **apply** path
-> (`POST /routing-suggestion/apply`) assigns the top-ranked recommended approver
-> **through the existing audited `review.assign_reviewer` service** (audit row +
-> notification + OOO delegation — never a raw `assigned_to_id` write). Everything
-> else stays advisory: smart routing's GET surface only **recommends**; the
-> remaining "act" surfaces (auto-adjusting thresholds, A/B testing, retraining)
-> are tracked follow-ups, not built here.
+> **Mostly advisory.** Most of this feature is **read models** over approval
+> history plus an **advisory** suggestion store. There are **two** explicit,
+> opt-in act surfaces, each of which routes through an existing audited service
+> rather than mutating state directly:
+>
+>   1. The smart-routing **apply** path (`POST /routing-suggestion/apply`)
+>      assigns the top-ranked recommended approver **through the existing audited
+>      `review.assign_reviewer` service** (audit row + notification + OOO
+>      delegation — never a raw `assigned_to_id` write).
+>   2. The auto-approve-threshold **apply** path
+>      (`POST /threshold-recommendation/apply`) raises the org-wide
+>      `auto_approve_below` dollar threshold **through the existing audited
+>      workflow-definition PATCH path** — it reuses
+>      `workflow_definitions._snapshot_version` + the `workflow.version_snapshot`
+>      audit dispatch, so a `WorkflowVersion` snapshot + audit row land exactly as
+>      a manual `PATCH /api/workflows/{id}` edit would. Never a raw `steps_config`
+>      mutation.
+>
+> Everything else stays advisory: the GET surfaces only **recommend**; the
+> remaining "act" surfaces (A/B testing, retraining) are tracked follow-ups, not
+> built here.
 
 > **Local-first / deterministic.** All learning and anomaly detection is plain
 > statistics (`Decimal`) over the tenant's own data. There is **no LLM call** and
@@ -19,7 +30,7 @@
 
 ## Overview
 
-Four surfaces, all under `/api/adaptive`:
+Five surfaces, all under `/api/adaptive`:
 
 1. **Approval-pattern learning** (`GET /approval-patterns`) — per-approver and
    per-vendor aggregates over the tenant's approval/rejection history.
@@ -29,10 +40,16 @@ Four surfaces, all under `/api/adaptive`:
 3. **Workflow-change suggestions** (`GET /suggestions`,
    `POST /suggestions/{id}/dismiss`) — derived "consider auto-approve under $X"
    suggestions, persisted with `open / dismissed / applied / stale` status.
-4. **Smart routing** (`GET /routing-suggestion`) — for one invoice, **rank** the
-   org's eligible approvers by routing fit (fastest + most-consistent + most
-   vendor-familiar), purely from their approval history. Advisory — never
-   assigns anyone.
+4. **Smart routing** (`GET /routing-suggestion`,
+   `POST /routing-suggestion/apply`) — for one invoice, **rank** the org's
+   eligible approvers by routing fit (fastest + most-consistent + most
+   vendor-familiar), purely from their approval history. GET is advisory; the
+   apply path assigns the top pick through the audited `review.assign_reviewer`.
+5. **Auto-approve threshold** (`GET /threshold-recommendation`,
+   `POST /threshold-recommendation/apply`) — recommend a **conservative raise**
+   to the org-wide `auto_approve_below` dollar threshold from the same
+   clean-history vendor evidence the suggestions use, and (admin-only) apply it
+   through the audited workflow-definition PATCH path.
 
 The statistics live in `app/services/adaptive_workflows.py` (pure, sync, no IO —
 unit-testable without a DB). The SQL, the control-plane name join, response
@@ -214,6 +231,85 @@ no-op), `assigned_to_id`, `assigned_to_name`, `rank` (always 1 — the top pick)
 `score` (string-Decimal). The commit follows the manual-assign convention — the
 `get_tenant_db` dependency commits on a clean return.
 
+### Auto-approve threshold — recommend + apply
+
+The "act" surface for adaptive *thresholds* (the routing apply above acts on
+*assignment*). It answers the roadmap ask "raise the auto-approve limit as
+accuracy improves" — **safely, auditably, and only when an admin explicitly
+applies it**.
+
+`recommend_auto_approve_threshold(vendor_patterns, current_threshold, …)` (pure,
+in `services/adaptive_workflows.py`) computes a recommended new org-wide
+`auto_approve_below` dollar threshold. The evidence base is the **clean-history**
+vendors — the *exact* gate `derive_suggestions` uses: `>= min_history` approvals,
+**zero** rejections, **zero** modifications. The rule is deliberately
+conservative and explainable:
+
+- **Requires breadth of evidence.** At least `min_qualifying_vendors` (default 3)
+  independent vendors must clear the clean-history gate, so a single chatty
+  vendor can't move the org-wide limit. Fewer → `should_raise=False`,
+  `reason_code="insufficient_evidence"`.
+- **Candidate = the highest clean-approved amount** seen across qualifying
+  vendors, rounded **up** to the nearest $500 — every dollar below it would have
+  sailed through with a spotless record.
+- **Never lowers.** `recommended_threshold = max(current, capped_candidate)`; if
+  the evidence supports nothing above the current limit it's a no-op
+  (`reason_code="no_increase"`).
+- **Caps the raise.** The candidate is clamped by the lower of a **relative** cap
+  (`current × max_raise_multiple`, default 2×) and an **absolute** cap (default
+  $25,000). The first raise off `0` (no threshold yet) skips the relative cap
+  (0×anything is 0) and uses the absolute cap only. A capped-but-still-raising
+  result carries `reason_code="at_cap"`.
+
+The recommendation carries the full evidence list (`vendor_name`, `n`,
+`max_approved_amount`, `median`) and a deterministic `rationale` — no LLM, like
+the advisory suggestions. `GET /threshold-recommendation` reads the current
+threshold off the active (or `?workflow_id=`-specified) workflow definition's
+approval step and returns the recommendation; it never mutates anything.
+
+#### Apply (`POST /threshold-recommendation/apply`)
+
+The explicit, opt-in write. It writes the new `auto_approve_below` onto the
+workflow definition's **approval** step (`steps_config.steps[].config`) — but
+**through the audited workflow-definition PATCH path**, never as a raw row
+mutation. Concretely it reuses the same two helpers the manual
+`PATCH /api/workflows/{id}` uses when `steps` change:
+
+- `workflow_definitions._snapshot_version(...)` writes a `WorkflowVersion` row
+  snapshotting the **prior** `steps_config` (so the change is reversible /
+  diffable in the no-code builder exactly like a manual edit);
+- a `workflow.version_snapshot` audit row (`reason: adaptive_threshold_raise`)
+  records that an edit happened, **plus** a second
+  `workflow.auto_approve_threshold_raised` audit row records *what* changed
+  (`previous_threshold` → `new_threshold`, the qualifying-vendor / clean-invoice
+  counts, `source: adaptive_recommendation`) for the SOX trail.
+
+Guards / behaviour:
+
+- **RBAC `admin` only** — matches who can edit workflow definitions
+  (`PATCH /api/workflows/{id}` is `require_roles(ROLE_ADMIN)`). CFO / ap_manager
+  can **read** the recommendation (`GET`, manager/CFO read roles) but **cannot
+  apply** it (403) — even though ap_manager can assign reviewers, editing the
+  workflow definition is an admin act.
+- **Recomputed server-side.** The threshold is re-derived from live stats inside
+  the apply, so an admin can never apply a number the deterministic evidence no
+  longer supports. The optional `expected_recommended_threshold` body field adds
+  an optimistic-concurrency guard (409 if it no longer matches the fresh
+  recommendation — guards against applying a stale UI value).
+- **Idempotent / no-op safe.** When the recommendation doesn't raise the
+  threshold (`insufficient_evidence` / `no_increase`) the apply is a no-op:
+  `applied=false`, **no version snapshot, no audit row**. A second apply after a
+  raise is likewise a no-op (`no_increase`).
+- **409** when there's no workflow definition to update.
+- **Affects only NEW invoices.** Per the project's workflow-snapshot invariant,
+  `WorkflowInstance.steps_config_snapshot` is frozen at invoice creation, so a
+  raised threshold changes nothing for in-flight invoices — only invoices created
+  after the apply read the new limit. The `rationale` says so explicitly.
+
+Response (`ApplyThresholdResponse`): `applied`, `workflow_id`,
+`previous_threshold`, `new_threshold` (string-Decimal), `reason_code`,
+`rationale`, `version_number` (the snapshot written, or `null` on a no-op).
+
 ## Tunables — `Organization.settings.adaptive`
 
 Partial override (omit a key to inherit; unknown keys dropped — mirrors
@@ -238,6 +334,8 @@ Partial override (omit a key to inherit; unknown keys dropped — mirrors
 | `/api/adaptive/suggestions/{id}/dismiss` | POST | admin / ap_manager | idempotent; 404 outside tenant |
 | `/api/adaptive/routing-suggestion` | GET | admin / ap_manager / cfo | `?invoice_id=<uuid>` (required), `?days=180` lookback; 404 if the invoice isn't in this tenant/entity. Ranked, advisory — assigns nobody |
 | `/api/adaptive/routing-suggestion/apply` | POST | admin / ap_manager | Body `{invoice_id}`, `?days=180`. Assigns the top recommendation via the audited `review.assign_reviewer`. 409 if not `ready_for_review`; 422 if no eligible approver; 404 outside tenant/entity; idempotent no-op when already assigned to the chosen approver. **Write surface — CFO excluded (read-only on routing).** |
+| `/api/adaptive/threshold-recommendation` | GET | admin / ap_manager / cfo | `?days=365` lookback, `?workflow_id=<uuid>` (defaults to active definition). Conservative recommended raise to `auto_approve_below` + evidence + rationale. Read-only — never mutates the definition |
+| `/api/adaptive/threshold-recommendation/apply` | POST | **admin only** | Body `{workflow_id?, expected_recommended_threshold?}`, `?days=365`. Raises `auto_approve_below` through the audited workflow-definition PATCH path (WorkflowVersion snapshot + audit rows). 409 if no definition / stale `expected_recommended_threshold`; idempotent no-op when the recommendation doesn't raise. **Write surface — matches who can edit workflow definitions; CFO/ap_manager excluded.** Affects only NEW invoices (frozen workflow snapshots) |
 
 Read routes exclude `ap_clerk` — this is a manager/CFO surface, matching the
 analytics precedent. The **apply** POST is a *write*, gated to `admin` /
@@ -285,9 +383,18 @@ not apply.
   assigns the top recommendation through the audited `review.assign_reviewer`
   (audit row + notification + OOO delegation; never a raw `assigned_to_id`
   write). See § Smart routing — apply above.
-- **Auto-adjusting thresholds** — when built, the **apply** path MUST route
-  through the audited `review.approve_invoice` / workflow-definition PATCH so
-  audit rows are written. `status='applied'` is the placeholder for this.
+- **Auto-adjusting thresholds.** ✅ **Shipped** —
+  `GET /threshold-recommendation` recommends a conservative raise to the
+  org-wide `auto_approve_below` and `POST /threshold-recommendation/apply`
+  (admin-only) writes it **through the audited workflow-definition PATCH path**
+  (WorkflowVersion snapshot + `workflow.version_snapshot` +
+  `workflow.auto_approve_threshold_raised` audit rows). See § Auto-approve
+  threshold — recommend + apply above. Remaining sub-follow-up: surface
+  `status='applied'` on the per-vendor `workflow_suggestions` rows whose vendor
+  evidence fed an applied raise (the org-wide apply doesn't currently flip the
+  per-vendor advisory suggestion's status — the two stores stay independent so a
+  dismissal/stale flip on a vendor suggestion can't be confused with the
+  org-wide threshold history; revisit if a UI needs to thread them).
 - **A/B testing** of workflow rules.
 - **Model-retraining feedback loop.**
 - **LLM phrasing** of suggestion text — if added, must fail soft to the template
