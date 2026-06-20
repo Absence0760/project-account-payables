@@ -41,6 +41,7 @@ export const messages = {
 	'nav.roles': 'Funções',
 	'nav.auditTrail': 'Trilha de auditoria',
 	'nav.workflows': 'Fluxos de trabalho',
+	'nav.experiments': 'Experimentos',
 	'nav.apiKeys': 'Chaves de API',
 
 	// App shell / sidebar

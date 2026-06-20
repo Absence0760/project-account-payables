@@ -40,6 +40,7 @@ export const messages = {
 	'nav.roles': 'Rollen',
 	'nav.auditTrail': 'Prüfprotokoll',
 	'nav.workflows': 'Workflows',
+	'nav.experiments': 'Experimente',
 	'nav.apiKeys': 'API-Schlüssel',
 
 	// App shell / sidebar
