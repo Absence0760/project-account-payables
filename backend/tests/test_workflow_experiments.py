@@ -1,0 +1,388 @@
+"""Coverage for A/B testing of workflow rules (workflow experiments).
+
+Two tiers (mirrors the adaptive-workflows suite):
+
+  * Pure-Python edges — the deterministic A/B assignment (stable, ratio-honouring)
+    and the per-variant metrics math + winner call. No DB.
+
+  * Real-Postgres end-to-end (``realdb``) — drives the ``/api/experiments/*``
+    routes against a live tenant DB so the CRUD/lifecycle, RBAC, audit rows, the
+    invoice-creation assignment hook (snapshot freeze + recorded assignment), and
+    the results readout are all real.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections import Counter
+from decimal import Decimal
+
+from app.services.workflow_experiments import (
+    VARIANT_A,
+    VARIANT_B,
+    assign_variant,
+    compute_experiment_results,
+)
+
+# ---------------------------------------------------------------------------
+# Pure-function unit tests (no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_assignment_is_stable_and_deterministic():
+    inv = str(uuid.uuid4())
+    exp = str(uuid.uuid4())
+    first = assign_variant(inv, exp, split_a_pct=50)
+    # Same inputs → same variant, every time.
+    for _ in range(20):
+        assert assign_variant(inv, exp, split_a_pct=50) == first
+    assert first in (VARIANT_A, VARIANT_B)
+
+
+def test_assignment_independent_per_experiment():
+    inv = str(uuid.uuid4())
+    # Two experiments split the same invoice independently — at least one of a
+    # batch of experiment ids disagrees with another (not all forced equal).
+    variants = {assign_variant(inv, str(uuid.uuid4()), split_a_pct=50) for _ in range(50)}
+    assert variants == {VARIANT_A, VARIANT_B}
+
+
+def test_assignment_honours_split_ratio():
+    exp = str(uuid.uuid4())
+    counts = Counter(assign_variant(str(uuid.uuid4()), exp, split_a_pct=80) for _ in range(4000))
+    a_share = counts[VARIANT_A] / sum(counts.values())
+    # 80/20 split — wide tolerance, but clearly biased toward A.
+    assert 0.74 < a_share < 0.86
+
+
+def test_assignment_extremes_force_one_variant():
+    exp = str(uuid.uuid4())
+    assert all(
+        assign_variant(str(uuid.uuid4()), exp, split_a_pct=100) == VARIANT_A for _ in range(200)
+    )
+    assert all(
+        assign_variant(str(uuid.uuid4()), exp, split_a_pct=0) == VARIANT_B for _ in range(200)
+    )
+
+
+def _row(decision, *, auto=False, unmodified=False, ttd=None, exc=False):
+    return {
+        "decision": decision,
+        "auto_approved": auto,
+        "unmodified": unmodified,
+        "time_to_approval_days": ttd,
+        "had_exception": exc,
+    }
+
+
+def test_metrics_not_enough_data_state():
+    rows_a = [_row("approved", ttd=Decimal("2"))] * 3
+    rows_b = [_row("approved", ttd=Decimal("4"))] * 3
+    res = compute_experiment_results(rows_a, rows_b, min_sample_per_variant=10)
+    assert res.enough_data is False
+    assert res.winner is None
+    assert "Not enough data" in res.rationale
+    # Metrics still computed for what data exists.
+    assert res.variant_a.completed_count == 3
+
+
+def test_metrics_winner_lower_time_is_better():
+    # A is faster (lower median time-to-approval) → A wins on the default metric.
+    rows_a = [_row("approved", ttd=Decimal("1")) for _ in range(12)]
+    rows_b = [_row("approved", ttd=Decimal("5")) for _ in range(12)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="time_to_approval_days", min_sample_per_variant=10
+    )
+    assert res.enough_data is True
+    assert res.winner == VARIANT_A
+    assert res.variant_a.median_time_to_approval_days == Decimal("1.0")
+    assert res.variant_b.median_time_to_approval_days == Decimal("5.0")
+
+
+def test_metrics_winner_higher_touchless_is_better():
+    # B has a higher touchless rate → B wins when touchless is the primary metric.
+    rows_a = [_row("approved", auto=False, unmodified=True, ttd=Decimal("1")) for _ in range(10)]
+    rows_b = [_row("approved", auto=True, unmodified=True, ttd=Decimal("1")) for _ in range(10)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="touchless_rate_pct", min_sample_per_variant=10
+    )
+    assert res.winner == VARIANT_B
+    assert res.variant_a.touchless_rate_pct == Decimal("0.0")
+    assert res.variant_b.touchless_rate_pct == Decimal("100.0")
+
+
+def test_metrics_rates_and_exception_counting():
+    # 10 assigned: 6 approved (2 touchless), 2 rejected, 2 in-flight; 3 had exc.
+    rows = (
+        [
+            _row("approved", auto=True, unmodified=True, ttd=Decimal("2"), exc=False)
+            for _ in range(2)
+        ]
+        + [
+            _row("approved", auto=False, unmodified=False, ttd=Decimal("3"), exc=True)
+            for _ in range(4)
+        ]
+        + [_row("rejected", exc=True) for _ in range(2)]
+        + [_row(None) for _ in range(2)]
+    )
+    res = compute_experiment_results(rows, list(rows), min_sample_per_variant=1)
+    m = res.variant_a
+    assert m.assigned_count == 10
+    assert m.completed_count == 8  # 6 approved + 2 rejected
+    assert m.approved_count == 6
+    assert m.rejected_count == 2
+    assert m.touchless_count == 2
+    # exception rate is over ALL assigned (10), not just completed.
+    assert m.exception_count == 6  # 4 approved-with-exc + 2 rejected-with-exc
+    assert m.exception_rate_pct == Decimal("60.0")
+    # touchless rate over completed (8).
+    assert m.touchless_rate_pct == Decimal("25.0")
+    # rejection rate over completed (8).
+    assert m.rejection_rate_pct == Decimal("25.0")
+
+
+def test_metrics_tie():
+    rows_a = [_row("approved", ttd=Decimal("3")) for _ in range(10)]
+    rows_b = [_row("approved", ttd=Decimal("3")) for _ in range(10)]
+    res = compute_experiment_results(rows_a, rows_b, min_sample_per_variant=10)
+    assert res.winner == "tie"
+
+
+# ---------------------------------------------------------------------------
+# Real-DB / API tests (realdb fixture)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_definition(mk, org_id):
+    from app.models.workflow import WorkflowDefinition
+
+    steps = {
+        "steps": [
+            {"type": "extraction", "config": {}},
+            {"type": "approval", "config": {"auto_approve_below": 100}},
+            {"type": "erp_export", "config": {}},
+        ]
+    }
+    async with mk() as s:
+        defn = WorkflowDefinition(
+            organization_id=org_id,
+            name="Test WF",
+            steps_config=steps,
+            is_active=True,
+            is_default=False,
+        )
+        s.add(defn)
+        await s.commit()
+        await s.refresh(defn)
+        return defn.id, steps
+
+
+def _payload(defn_id):
+    return {
+        "name": "Faster approval test",
+        "description": "Try a higher auto-approve threshold",
+        "workflow_definition_id": str(defn_id),
+        "config_a": {"steps": [{"type": "approval", "config": {"auto_approve_below": 100}}]},
+        "config_b": {"steps": [{"type": "approval", "config": {"auto_approve_below": 5000}}]},
+        "split_a_pct": 50,
+        "primary_metric": "time_to_approval_days",
+        "min_sample_per_variant": 5,
+    }
+
+
+async def test_create_and_lifecycle(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/experiments", json=_payload(defn_id))
+        assert r.status_code == 201, r.text
+        exp = r.json()
+        assert exp["status"] == "draft"
+        eid = exp["id"]
+
+        # list
+        r = await client.get("/api/experiments")
+        assert r.status_code == 200
+        assert any(e["id"] == eid for e in r.json()["experiments"])
+
+        # start
+        r = await client.post(f"/api/experiments/{eid}/start")
+        assert r.status_code == 200
+        assert r.json()["status"] == "running"
+        assert r.json()["started_at"] is not None
+
+        # start again — idempotent
+        r = await client.post(f"/api/experiments/{eid}/start")
+        assert r.status_code == 200 and r.json()["status"] == "running"
+
+        # cannot edit while running
+        r = await client.patch(f"/api/experiments/{eid}", json={"name": "x"})
+        assert r.status_code == 409
+
+        # conclude
+        r = await client.post(f"/api/experiments/{eid}/conclude")
+        assert r.status_code == 200
+        assert r.json()["status"] == "concluded"
+        assert r.json()["ended_at"] is not None
+
+
+async def test_results_not_enough_then_winner(realdb):
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["admin"]
+    defn_id, _ = await _seed_definition(mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.post("/api/experiments", json=_payload(defn_id))
+        eid = r.json()["id"]
+        await client.post(f"/api/experiments/{eid}/start")
+
+        # No assignments yet → not enough data.
+        r = await client.get(f"/api/experiments/{eid}/results")
+        assert r.status_code == 200
+        assert r.json()["enough_data"] is False
+        assert r.json()["winner"] is None
+
+    # Manually record assignments + approval audit rows: A slow (5d), B fast (1d).
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.models.workflow_experiment import WorkflowExperiment
+
+    async with mk() as s:
+        exp = (
+            await s.execute(
+                select(WorkflowExperiment).where(WorkflowExperiment.id == uuid.UUID(eid))
+            )
+        ).scalar_one()
+        assignments = {}
+        base = datetime.now(UTC) - timedelta(days=20)
+        for i in range(12):
+            variant = VARIANT_A if i % 2 == 0 else VARIANT_B
+            inv = Invoice(
+                organization_id=org_id,
+                invoice_number=f"EXP-{i}",
+                vendor_name="V",
+                amount=Decimal("500"),
+                status=InvoiceStatus.approved,
+            )
+            s.add(inv)
+            await s.commit()
+            await s.refresh(inv)
+            assignments[str(inv.id)] = variant
+            ready_at = base + timedelta(days=i)
+            ttd_days = 5 if variant == VARIANT_A else 1
+            approved_at = ready_at + timedelta(days=ttd_days)
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=None,
+                    action="invoice.status_changed",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details={"new_status": "ready_for_review"},
+                    created_at=ready_at,
+                )
+            )
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=actor_id,
+                    action="invoice.approved",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details=None,
+                    created_at=approved_at,
+                )
+            )
+        exp.assignments = assignments
+        await s.commit()
+
+    async with realdb.client(key="a", role="cfo") as client:
+        r = await client.get(f"/api/experiments/{eid}/results")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["enough_data"] is True
+        # B is faster → B wins on time_to_approval_days.
+        assert body["winner"] == VARIANT_B
+        assert body["variant_b"]["median_time_to_approval_days"] == "1.0"
+        assert body["variant_a"]["median_time_to_approval_days"] == "5.0"
+
+
+async def test_assignment_at_invoice_creation_freezes_variant_snapshot(realdb):
+    """The workflow-engine hook assigns a running experiment's variant and freezes
+    that variant's config onto the new invoice's instance snapshot."""
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.services.workflow_engine import create_workflow_instance
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as client:
+        # split_a_pct=100 → every invoice lands in A (config_a snapshot).
+        payload = _payload(defn_id)
+        payload["split_a_pct"] = 100
+        r = await client.post("/api/experiments", json=payload)
+        eid = r.json()["id"]
+        await client.post(f"/api/experiments/{eid}/start")
+
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number="HOOK-1",
+            vendor_name="V",
+            amount=Decimal("500"),
+            status=InvoiceStatus.new,
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+        instance = await create_workflow_instance(s, inv)
+        await s.commit()
+        # config_a was frozen onto the snapshot.
+        assert instance.steps_config_snapshot["steps"][0]["config"]["auto_approve_below"] == 100
+
+    # The experiment recorded the assignment durably.
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.get("/api/experiments")
+        exp = next(e for e in r.json()["experiments"] if e["id"] == eid)
+        assert exp["assigned_count"] == 1
+
+
+async def test_rbac_create_forbidden_for_clerk_and_manager(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+    payload = _payload(defn_id)
+    async with realdb.client(key="a", role="ap_clerk") as clerk:
+        assert (await clerk.post("/api/experiments", json=payload)).status_code == 403
+    async with realdb.client(key="a", role="ap_manager") as mgr:
+        # manager can READ but not create
+        assert (await mgr.get("/api/experiments")).status_code == 200
+        assert (await mgr.post("/api/experiments", json=payload)).status_code == 403
+
+
+async def test_auth_required(realdb):
+    async with realdb.client(key="a", role=None) as client:
+        assert (await client.get("/api/experiments")).status_code == 401
+
+
+async def test_scoped_to_organization(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+    async with realdb.client(key="a", role="admin") as client:
+        eid = (await client.post("/api/experiments", json=_payload(defn_id))).json()["id"]
+    # Tenant b can't see or fetch tenant a's experiment.
+    async with realdb.client(key="b", role="admin") as other:
+        assert (await other.get(f"/api/experiments/{eid}/results")).status_code == 404
+        assert eid not in {
+            e["id"] for e in (await other.get("/api/experiments")).json()["experiments"]
+        }
