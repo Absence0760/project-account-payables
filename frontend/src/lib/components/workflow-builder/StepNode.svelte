@@ -6,15 +6,33 @@
 		step: WorkflowStep;
 		index: number;
 		selected: boolean;
+		/** True for the first / last node — disables the matching move button. */
+		isFirst: boolean;
+		isLast: boolean;
 		ondragstart: (e: DragEvent) => void;
 		ondragend: () => void;
 		onselect: () => void;
 		ontoggle: () => void;
 		ondelete: () => void;
+		/** Keyboard / single-pointer alternative to drag-reorder (WCAG 2.5.7). */
+		onmoveup: () => void;
+		onmovedown: () => void;
 	};
 
-	let { step, index, selected, ondragstart, ondragend, onselect, ontoggle, ondelete }: Props =
-		$props();
+	let {
+		step,
+		index,
+		selected,
+		isFirst,
+		isLast,
+		ondragstart,
+		ondragend,
+		onselect,
+		ontoggle,
+		ondelete,
+		onmoveup,
+		onmovedown,
+	}: Props = $props();
 
 	const ICONS: Record<string, string> = {
 		extraction: 'M9 2L4.5 6.5 9 11M15 2l4.5 4.5L15 11M12 2v9',
@@ -42,6 +60,10 @@
 	ondragend={ondragend}
 	onclick={onselect}
 	onkeydown={(e) => {
+		// Only the node's own Enter/Space selects it — when focus is on a child
+		// control (move / toggle / delete buttons) let that control handle the
+		// key, so the bubbled preventDefault can't swallow its activation.
+		if (e.target !== e.currentTarget) return;
 		if (e.key === 'Enter' || e.key === ' ') {
 			e.preventDefault();
 			onselect();
@@ -78,6 +100,30 @@
 	</div>
 
 	<div class="node-actions">
+		<!-- Single-pointer / keyboard alternative to drag-reorder (WCAG 2.5.7
+		     Dragging Movements + 2.1.1 Keyboard). -->
+		<button
+			type="button"
+			class="icon-action"
+			title="Move up"
+			aria-label="Move {step.name} up"
+			disabled={isFirst}
+			onclick={(e) => {
+				e.stopPropagation();
+				onmoveup();
+			}}
+		>↑</button>
+		<button
+			type="button"
+			class="icon-action"
+			title="Move down"
+			aria-label="Move {step.name} down"
+			disabled={isLast}
+			onclick={(e) => {
+				e.stopPropagation();
+				onmovedown();
+			}}
+		>↓</button>
 		<button
 			type="button"
 			class="enabled-toggle"
@@ -228,9 +274,19 @@
 		font-family: inherit;
 	}
 
+	.icon-action:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--text);
+	}
+
+	.icon-action:disabled {
+		opacity: 0.35;
+		cursor: not-allowed;
+	}
+
 	.icon-action.danger:hover {
-		border-color: #e04040;
-		color: #e04040;
+		border-color: #f06464;
+		color: #f06464;
 	}
 
 	.node-number {

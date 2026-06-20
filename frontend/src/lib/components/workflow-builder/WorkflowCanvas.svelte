@@ -111,11 +111,15 @@
 				{step}
 				index={i}
 				selected={selectedIndex === i}
+				isFirst={i === 0}
+				isLast={i === steps.length - 1}
 				ondragstart={(e) => handleNodeDragStart(e, i)}
 				ondragend={handleNodeDragEnd}
 				onselect={() => onselect(i)}
 				ontoggle={() => ontoggle(i)}
 				ondelete={() => ondelete(i)}
+				onmoveup={() => onreorder(i, i - 1)}
+				onmovedown={() => onreorder(i, i + 1)}
 			/>
 
 			<!-- Branch annotations for condition / parallel -->
