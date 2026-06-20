@@ -33,10 +33,21 @@ class SlackChatNotificationAdapter(ChatNotificationAdapter):
         super().__init__(config)
         self.webhook_url: str = (config or {}).get("webhook_url") or ""
 
+    # block_id on the actions block — the interactivity endpoint reads the token
+    # from each button's `value`, but a stable block_id makes the payload easy to
+    # recognise. PII-free.
+    APPROVAL_ACTIONS_BLOCK_ID = "ap_invoice_approval"
+    ACTION_ID_APPROVE = "ap_approve"
+    ACTION_ID_REJECT = "ap_reject"
+
     def build_body(self, message: ChatMessage) -> dict:
         """Shape a ChatMessage into Slack's incoming-webhook JSON body.
 
-        Pure (no network) so tests can assert the exact shape.
+        Pure (no network) so tests can assert the exact shape. When the message
+        carries both action tokens (the "assigned for review" event with the
+        feature configured), an interactive Block Kit ``actions`` block with
+        Approve / Reject buttons is appended — each button's ``value`` is the
+        signed, single-use action token that IS the credential.
         """
         lines = [f"*Vendor:* {message.vendor_name}", f"*Status:* {message.status}"]
         amount = message.amount_str()
@@ -46,14 +57,43 @@ class SlackChatNotificationAdapter(ChatNotificationAdapter):
         if message.link:
             section_text += f"\n<{message.link}|View invoice>"
 
+        blocks: list[dict] = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": section_text},
+            }
+        ]
+
+        # Interactive Approve/Reject buttons — only when both tokens are present.
+        # The token in `value` (≤2000 chars, Slack's cap) carries tenant +
+        # invoice + intended approver + action + expiry under HMAC; no PII.
+        if message.approve_token and message.reject_token:
+            blocks.append(
+                {
+                    "type": "actions",
+                    "block_id": self.APPROVAL_ACTIONS_BLOCK_ID,
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": self.ACTION_ID_APPROVE,
+                            "style": "primary",
+                            "text": {"type": "plain_text", "text": "Approve"},
+                            "value": message.approve_token,
+                        },
+                        {
+                            "type": "button",
+                            "action_id": self.ACTION_ID_REJECT,
+                            "style": "danger",
+                            "text": {"type": "plain_text", "text": "Reject"},
+                            "value": message.reject_token,
+                        },
+                    ],
+                }
+            )
+
         return {
             "text": message.title,  # plain fallback (notifications / no-block clients)
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": section_text},
-                }
-            ],
+            "blocks": blocks,
         }
 
     async def send(self, message: ChatMessage) -> None:

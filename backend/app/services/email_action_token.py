@@ -1,4 +1,11 @@
-"""Signed, single-action tokens for email approval (approve/reject from email).
+"""Signed, single-action tokens for out-of-app approval (email + Slack).
+
+Originally minted for the email-approval link, this token is now also the
+credential carried in the Slack approval message's interactive buttons. A
+``channel`` claim (``email`` / ``slack``) binds a token to its delivery surface
+so one surface's token can't be replayed against the other — see
+:data:`CHANNEL_EMAIL` / :data:`CHANNEL_SLACK` and ``expected_channel`` on
+:func:`verify_action_token`. The module name is kept for the email callers.
 
 An AP reviewer who receives the "invoice assigned to you for review" email can
 approve or reject the invoice straight from a link in that email — no login.
@@ -48,6 +55,14 @@ ACTION_APPROVE = "approve"
 ACTION_REJECT = "reject"
 _VALID_ACTIONS = frozenset({ACTION_APPROVE, ACTION_REJECT})
 
+# The delivery surface a token is bound to. A token minted for one surface must
+# not verify against another (a Slack button token can't be replayed against the
+# email-confirm endpoint, and vice versa) — `verify_action_token` enforces this
+# via `expected_channel`. The default is `email` so the original email-approval
+# callers (which pass no channel) round-trip unchanged.
+CHANNEL_EMAIL = "email"
+CHANNEL_SLACK = "slack"
+
 
 @dataclass(frozen=True)
 class ActionToken:
@@ -59,6 +74,7 @@ class ActionToken:
     action: str
     jti: str
     exp: int
+    channel: str = CHANNEL_EMAIL
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -83,6 +99,7 @@ def build_action_token(
     action: str,
     signing_key: str,
     ttl_hours: int,
+    channel: str = CHANNEL_EMAIL,
     now: float | None = None,
 ) -> str | None:
     """Build a ``<b64url-payload>.<hex-hmac>`` token, or ``None`` if disabled.
@@ -91,6 +108,10 @@ def build_action_token(
     action is not one of the two valid actions — so a caller can simply skip
     adding the link. The signature covers the base64 payload string, so the
     exact transmitted bytes are what gets authenticated.
+
+    ``channel`` binds the token to its delivery surface (``email`` / ``slack``);
+    it is part of the signed payload, so a token minted for one surface fails
+    verification on another. Defaults to ``email`` for the original callers.
     """
     if not signing_key or action not in _VALID_ACTIONS:
         return None
@@ -100,6 +121,7 @@ def build_action_token(
         "i": str(invoice_id),
         "a": str(actor_id),
         "act": action,
+        "ch": channel,
         "exp": int(issued) + ttl_hours * 3600,
         "jti": secrets.token_urlsafe(9),
     }
@@ -112,14 +134,21 @@ def verify_action_token(
     token: str | None,
     signing_key: str,
     *,
+    expected_channel: str = CHANNEL_EMAIL,
     now: float | None = None,
 ) -> ActionToken | None:
     """Verify signature + expiry and return the decoded facts, or ``None``.
 
     Returns ``None`` — never raises — on an empty key, a malformed token, a bad
-    signature, an unknown action, a malformed payload, or an expired token, so
-    every rejection path surfaces as a friendly "invalid/expired link" rather
-    than a 500. Constant-time signature comparison via ``hmac.compare_digest``.
+    signature, an unknown action, a malformed payload, a channel mismatch, or an
+    expired token, so every rejection path surfaces as a friendly
+    "invalid/expired link" rather than a 500. Constant-time signature comparison
+    via ``hmac.compare_digest``.
+
+    ``expected_channel`` rejects a token minted for a different delivery surface
+    (a Slack button token presented to the email endpoint, or vice versa). A
+    token with no ``ch`` claim is treated as ``email`` so older email tokens
+    still verify.
     """
     if not signing_key or not token or "." not in token:
         return None
@@ -134,6 +163,9 @@ def verify_action_token(
         action = data["act"]
         if action not in _VALID_ACTIONS:
             return None
+        channel = str(data.get("ch", CHANNEL_EMAIL))
+        if channel != expected_channel:
+            return None
         exp = int(data["exp"])
         decoded = ActionToken(
             tenant_slug=str(data["t"]),
@@ -142,6 +174,7 @@ def verify_action_token(
             action=action,
             jti=str(data["jti"]),
             exp=exp,
+            channel=channel,
         )
     except (KeyError, ValueError, TypeError, json.JSONDecodeError):
         return None
@@ -208,3 +241,45 @@ def build_email_action_links(
         "</p>"
     )
     return text, html
+
+
+def build_slack_action_tokens(
+    *,
+    tenant_slug: str,
+    invoice_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    signing_key: str,
+    ttl_hours: int,
+    now: float | None = None,
+) -> tuple[str, str] | None:
+    """Build the (approve, reject) ``slack``-channel tokens for the button values.
+
+    Returns ``None`` when the feature is disabled (no key) so the Slack adapter
+    simply omits the interactive ``actions`` block. Each token binds the same
+    facts as the email link — tenant + invoice + the intended approver + action
+    + expiry — but on the ``slack`` channel, so it can only be redeemed at the
+    Slack interactivity endpoint, not the email-confirm one.
+    """
+    approve = build_action_token(
+        tenant_slug=tenant_slug,
+        invoice_id=invoice_id,
+        actor_id=actor_id,
+        action=ACTION_APPROVE,
+        signing_key=signing_key,
+        ttl_hours=ttl_hours,
+        channel=CHANNEL_SLACK,
+        now=now,
+    )
+    reject = build_action_token(
+        tenant_slug=tenant_slug,
+        invoice_id=invoice_id,
+        actor_id=actor_id,
+        action=ACTION_REJECT,
+        signing_key=signing_key,
+        ttl_hours=ttl_hours,
+        channel=CHANNEL_SLACK,
+        now=now,
+    )
+    if not approve or not reject:
+        return None
+    return approve, reject

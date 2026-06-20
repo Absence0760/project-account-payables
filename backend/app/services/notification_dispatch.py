@@ -256,6 +256,7 @@ async def notify_event(
             event_type=event_type,
             invoice_ctx=invoice_ctx,
             entity_id=entity_id,
+            recipient_user_ids=recipient_user_ids,
         )
 
 
@@ -295,12 +296,60 @@ def _chat_event_enabled(chat_config: dict, event_type: str) -> bool:
     return bool(events.get(event_type, True))
 
 
+def _build_slack_action_tokens(
+    *,
+    event_type: str,
+    chat_config: dict,
+    slug: str | None,
+    invoice_id: uuid.UUID | None,
+    recipient_user_ids: list[uuid.UUID] | None,
+) -> tuple[str | None, str | None]:
+    """Build the (approve, reject) Slack-button tokens for an assigned invoice.
+
+    Returns ``(None, None)`` — so the message stays non-interactive — unless ALL
+    of: the event is ``invoice_assigned``, the chat provider is Slack, the action
+    signing key is set, the tenant slug + invoice id resolve, and there is
+    exactly one intended approver to bind the token to. The single-approver
+    guard matches how ``review.assign_reviewer`` fires the event (one reviewer
+    per assignment); binding to one specific approver keeps the same
+    no-privilege-escalation property as the per-recipient email link.
+    """
+    from app.models.notification import EVENT_INVOICE_ASSIGNED
+
+    if event_type != EVENT_INVOICE_ASSIGNED:
+        return None, None
+    if (chat_config.get("provider") or settings.chat_notification_provider) != "slack":
+        return None, None
+    if not settings.email_action_signing_key or slug is None or invoice_id is None:
+        return None, None
+
+    approvers = [uid for uid in (recipient_user_ids or []) if uid is not None]
+    if len(approvers) != 1:
+        # Zero or many intended approvers — a single channel post can't bind a
+        # token to a specific reviewer, so omit the buttons (link still works).
+        return None, None
+
+    from app.services.email_action_token import build_slack_action_tokens
+
+    tokens = build_slack_action_tokens(
+        tenant_slug=slug,
+        invoice_id=invoice_id,
+        actor_id=approvers[0],
+        signing_key=settings.email_action_signing_key,
+        ttl_hours=settings.email_action_ttl_hours,
+    )
+    if tokens is None:
+        return None, None
+    return tokens
+
+
 async def _send_chat_best_effort(
     *,
     organization_id: uuid.UUID,
     event_type: str,
     invoice_ctx,
     entity_id: uuid.UUID | None,
+    recipient_user_ids: list[uuid.UUID] | None = None,
 ) -> None:
     """Post one approval event to the org's chat channel (Slack/Teams).
 
@@ -308,6 +357,12 @@ async def _send_chat_best_effort(
     transport) is swallowed and logged PII-free so the caller's transaction is
     never affected. No-ops when the org hasn't enabled chat, the event isn't a
     chat-notifiable approval event, or the provider can't be resolved.
+
+    For the "assigned for review" event, when the org's chat provider is Slack
+    and the action-signing key is configured, the message gets interactive
+    Approve/Reject buttons. Each button carries a signed, single-use action
+    token bound to the intended approver (the assigned reviewer) on the ``slack``
+    channel — the same primitive the email-approval link uses.
     """
     from app.services.chat_notification_adapters import (
         get_chat_notification_adapter,
@@ -333,6 +388,14 @@ async def _send_chat_best_effort(
         except Exception:  # noqa: BLE001 — a bad template must not break dispatch
             link = None
 
+    approve_token, reject_token = _build_slack_action_tokens(
+        event_type=event_type,
+        chat_config=chat_config,
+        slug=slug,
+        invoice_id=entity_id,
+        recipient_user_ids=recipient_user_ids,
+    )
+
     message = render_chat_message(
         event_type,
         invoice_number=getattr(invoice_ctx, "invoice_number", "") or "",
@@ -340,6 +403,8 @@ async def _send_chat_best_effort(
         amount=getattr(invoice_ctx, "amount", None),
         currency=getattr(invoice_ctx, "currency", None) or "USD",
         link=link,
+        approve_token=approve_token,
+        reject_token=reject_token,
     )
     if message is None:
         # Not a chat-notifiable event (e.g. chat_message / contract_renewal).

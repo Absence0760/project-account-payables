@@ -35,6 +35,13 @@ class ChatMessage:
     amount: Decimal | None = None
     currency: str = "USD"
     link: str | None = None  # deep link into the app (no secrets)
+    # Optional signed Approve/Reject action tokens for an interactive message
+    # (currently Slack Block Kit buttons on the "assigned for review" event).
+    # Each is the per-action token from `email_action_token` bound to the
+    # `slack` channel + the intended approver; it IS the credential, redeemed at
+    # the Slack interactivity endpoint. None = a plain (non-interactive) message.
+    approve_token: str | None = None
+    reject_token: str | None = None
 
     def amount_str(self) -> str:
         """Render the amount exactly from the Decimal, or '' when absent."""
@@ -87,6 +94,8 @@ def render_chat_message(
     amount: Decimal | None = None,
     currency: str = "USD",
     link: str | None = None,
+    approve_token: str | None = None,
+    reject_token: str | None = None,
 ) -> ChatMessage | None:
     """Build a PII-free ChatMessage for an approval event, or None if unknown.
 
@@ -94,6 +103,11 @@ def render_chat_message(
     and an optional deep link ever enter the message — never bank details, tax
     IDs, addresses, or payment-method numbers. Returns None for an event type
     chat doesn't notify on, so the caller simply skips it.
+
+    ``approve_token`` / ``reject_token`` are the optional signed action tokens
+    that turn the message interactive (Slack Approve/Reject buttons). They are
+    only meaningful on the "assigned for review" event; adapters render buttons
+    only when both are present.
     """
     labels = _EVENT_LABELS.get(event_type)
     if labels is None:
@@ -109,4 +123,6 @@ def render_chat_message(
         amount=amount,
         currency=currency or "USD",
         link=link,
+        approve_token=approve_token,
+        reject_token=reject_token,
     )
