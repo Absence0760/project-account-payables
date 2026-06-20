@@ -287,8 +287,25 @@ receiver can dedupe.
             "amount": "123.45", "currency": "USD", "status": "approved" } }
 ```
 
+`exception.raised` carries the exception classification plus the same invoice
+metadata (and a deep link):
+
+```jsonc
+{ "id": "exception.raised:<exception-id>", "type": "exception.raised",
+  "created_at": "<iso8601>", "organization_id": "<org-id>",
+  "data": { "exception_id": "…", "exception_type": "duplicate",
+            "severity": "warning", "status": "open",
+            "invoice_id": "…", "invoice_number": "…", "vendor_name": "…",
+            "amount": "123.45", "currency": "USD", "link": "/invoices/<id>" } }
+```
+
+The `id` (and thus the dedupe `event_id`) is `exception.raised:<exception-id>`,
+so a re-fire / replay of the same exception delivers once. An invoice-less
+exception (e.g. a Positive Pay never-issued cheque) carries `invoice_id` /
+`invoice_number` / `vendor_name` / `amount` as `null` and `link: "/exceptions"`.
+
 `amount` is an **exact JSON string** (money-is-exact), not a float. Payloads are
-PII-free — invoice metadata only, no bank/tax/PAN fields.
+PII-free — invoice/exception metadata only, no bank/tax/PAN fields.
 
 ### Dispatch + retry + dead-letter
 
@@ -315,20 +332,34 @@ PII-free — invoice metadata only, no bank/tax/PAN fields.
 
 ### Event sources wired
 
-The emit is hooked into `workflow_engine.transition_invoice` — the single
-invoice-status chokepoint — alongside the existing notification hook, keyed off
-the resulting status: `approved` → `invoice.approved`, `paid` →
-`payment.settled`. Every path that converges on those statuses (the ERP-sync /
-payment-webhook / direct-schedule paths) emits exactly once, here.
+**`invoice.approved` / `payment.settled`** are hooked into
+`workflow_engine.transition_invoice` — the single invoice-status chokepoint —
+alongside the existing notification hook, keyed off the resulting status:
+`approved` → `invoice.approved`, `paid` → `payment.settled`. Every path that
+converges on those statuses (the ERP-sync / payment-webhook / direct-schedule
+paths) emits exactly once, here.
 
-**`exception.raised` is deferred this slice** — there is no single commit
-chokepoint for `Exception` creation (it's scattered across
-`invoice_warnings.py`, `extraction.py`, `review.py`, etc.), and the primary site
-(`invoice_warnings.py`) was being edited concurrently. The typed helper
-`dispatch.emit_exception_raised` already exists, so the follow-up only adds one
-emit line at a non-conflicting exception chokepoint. **Follow-up:** wire
-`exception.raised` from a single Exception-commit chokepoint (or add one) so the
-emit isn't duplicated across the scattered creation sites.
+**`exception.raised`** is emitted from the shared exception-create chokepoint
+`services/exception_service.create_exception`. Every `Exception` row in the
+codebase is now constructed through this one helper — it builds the row,
+flushes for the id, then best-effort emits `exception.raised` (the exception id
+is the `event_key`, so a re-run / double-fire dedupes on
+`(subscription, exception.raised:<exception-id>)`). The five former
+construction sites all route through it, so coverage is complete (no
+silent partial coverage):
+
+| Source | Exception types | Invoice in payload? |
+|--------|-----------------|---------------------|
+| `invoice_warnings._ensure_exception` | `duplicate`, `po_mismatch`, `fraud_flag`, `unverified_vendor`, `amount_exceeded`, `missing_data`, `quality_hold`, `contract_noncompliant`, price-variance, LLM-anomaly | yes |
+| `extraction.run_extraction` | `duplicate` (semantic), `extraction_failed` | yes |
+| `review.reject_invoice` | `review_rejected` | yes |
+| `positive_pay` return-processing | `fraud_flag` (altered / never-issued cheque) | only when the cheque maps to an invoice; never-issued → identifiers only |
+
+Each caller keeps its own dedupe-precheck (different uniqueness rules), so the
+helper never double-creates; it owns only the construct → flush → emit tail.
+Like the invoice-status emit, it never raises into the caller and is a silent
+no-op when `AP_WEBHOOKS_ENABLED` is off — a webhook failure can't break
+exception creation or the invoice mutation that triggered it.
 
 ### Management API (`/api/webhooks`)
 
@@ -357,7 +388,6 @@ writes a PII-free audit row (`webhook_subscription.created/updated/deleted`,
 These are explicitly **out of scope** for the current slices and tracked as
 later roadmap work:
 
-- **`exception.raised` event source** — see [Event sources wired](#event-sources-wired).
 - **Full developer portal** — the published [OpenAPI spec + Swagger UI docs
   page](#published-openapi-spec) ship now; a richer hosted portal (guides,
   changelog, API-key self-service from the docs) is later work.
