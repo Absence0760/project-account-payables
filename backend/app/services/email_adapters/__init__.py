@@ -10,11 +10,23 @@ from app.services.email_adapters.dispatcher import (
     list_available_providers,
     register_email_adapter,
 )
+from app.services.email_adapters.email_catalogue import (
+    DEFAULT_LOCALE,
+    SUPPORTED_EMAIL_LOCALES,
+    is_supported_locale,
+    normalize_locale,
+    translate,
+)
 
 __all__ = [
+    "DEFAULT_LOCALE",
+    "SUPPORTED_EMAIL_LOCALES",
     "EmailAdapter",
     "EmailMessage",
     "get_email_adapter",
+    "is_supported_locale",
     "list_available_providers",
+    "normalize_locale",
     "register_email_adapter",
+    "translate",
 ]
