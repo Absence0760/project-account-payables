@@ -59,6 +59,8 @@ def test_control_tables_are_the_expected_control_plane_set():
             "api_keys",
             "plans",
             "subscriptions",
+            "webhook_subscriptions",
+            "webhook_deliveries",
         }
     )
 
