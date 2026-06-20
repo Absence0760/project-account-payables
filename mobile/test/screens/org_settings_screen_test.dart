@@ -7,8 +7,16 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/org_settings_screen.dart';
 import 'package:ap_mobile/stores/org_settings_store.dart';
+
+/// Localized host (defaults to `en`) so `AppLocalizations.of(context)` resolves.
+Widget _host(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -59,7 +67,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(const MaterialApp(home: OrgSettingsScreen()));
+    await tester.pumpWidget(_host(const OrgSettingsScreen()));
     await _pumpUntil(tester, find.text('Acme Corp'));
   }
 
