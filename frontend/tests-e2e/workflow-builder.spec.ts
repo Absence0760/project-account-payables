@@ -77,6 +77,52 @@ test.describe('no-code workflow builder management', () => {
 		}
 	});
 
+	test('steps reorder via the per-node Move buttons (keyboard-operable, WCAG 2.5.7)', async ({
+		page,
+	}) => {
+		// The canvas drag-to-reorder is pointer-only; the per-node ↑/↓ buttons are
+		// its keyboard + single-pointer alternative. Verify a keyboard user can
+		// reorder: Tab to the button, activate with Enter, see the order flip.
+		const name = `Reorder WF ${Date.now()}`;
+		await page.goto('/workflows');
+		await page.getByRole('button', { name: '+ New Workflow' }).click();
+		await page.locator('#wf-name').fill(name);
+		await page.getByRole('button', { name: /^Create$/ }).click();
+		await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/);
+		const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
+
+		try {
+			// Seed two named steps via the API, then reload the editor.
+			const patch = await page.request.patch(`${API_BASE}/api/workflows/${id}`, {
+				headers: await authedTenantHeaders(page),
+				data: {
+					steps: [
+						{ number: 1, type: 'approval', name: 'Step Alpha', enabled: true, config: {} },
+						{ number: 2, type: 'approval', name: 'Step Beta', enabled: true, config: {} },
+					],
+				},
+			});
+			expect(patch.ok()).toBeTruthy();
+			await page.reload();
+
+			const nodes = page.locator('.canvas .node');
+			await expect(nodes).toHaveCount(2, { timeout: 10_000 });
+			await expect(nodes.nth(0)).toContainText('Step Alpha');
+
+			// Reachable by accessible name + operable from the keyboard.
+			const moveDown = nodes.nth(0).getByRole('button', { name: 'Move Step Alpha down' });
+			await moveDown.focus();
+			await expect(moveDown).toBeFocused();
+			await page.keyboard.press('Enter');
+
+			// Order flipped (client-side; no save needed to prove the control works).
+			await expect(nodes.nth(0)).toContainText('Step Beta');
+			await expect(nodes.nth(1)).toContainText('Step Alpha');
+		} finally {
+			await deleteWorkflowByName(page, name);
+		}
+	});
+
 	test('version history shows ≥1 version after an edit', async ({ page }) => {
 		const name = `Versioned WF ${Date.now()}`;
 		// Create via the standard create modal (no template dependency).
