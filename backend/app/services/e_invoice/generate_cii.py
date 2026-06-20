@@ -119,9 +119,7 @@ def _build_party(parent: etree._Element, tag: str, party: EInvoiceParty) -> None
         legal = _ram(party_el, "SpecifiedLegalOrganization")
         _ram(legal, "ID", party.registration_id)
 
-    has_address = any(
-        (party.address_lines, party.city, party.postal_code, party.country_code)
-    )
+    has_address = any((party.address_lines, party.city, party.postal_code, party.country_code))
     if has_address:
         addr = _ram(party_el, "PostalTradeAddress")
         # cii._parse_party reads LineOne, LineTwo, LineThree in order into
