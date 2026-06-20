@@ -8,7 +8,16 @@ import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/config.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/widgets/invoice_file_viewer.dart';
+
+/// Wraps the viewer in a MaterialApp carrying the localization delegates so
+/// `AppLocalizations.of(context)` resolves (defaults to English).
+Widget _localized(String fileUrl) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: InvoiceFileViewer(fileUrl: fileUrl),
+    );
 
 void main() {
   setUp(() {
@@ -59,9 +68,7 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(
-        home: InvoiceFileViewer(fileUrl: '/api/invoices/file/k/scan.pdf'),
-      ),
+      _localized('/api/invoices/file/k/scan.pdf'),
     );
     await tester.pump();
 
@@ -81,9 +88,7 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(
-        home: InvoiceFileViewer(fileUrl: '/api/invoices/file/k/scan.pdf'),
-      ),
+      _localized('/api/invoices/file/k/scan.pdf'),
     );
     // Pump bounded frames until the async fetch resolves into the error state.
     for (var i = 0; i < 20 && find.text('Unable to load PDF').evaluate().isEmpty;
@@ -97,9 +102,7 @@ void main() {
 
   testWidgets('uses the image title for a non-PDF file', (tester) async {
     await tester.pumpWidget(
-      const MaterialApp(
-        home: InvoiceFileViewer(fileUrl: '/api/invoices/file/k/photo.png'),
-      ),
+      _localized('/api/invoices/file/k/photo.png'),
     );
     await tester.pump();
 

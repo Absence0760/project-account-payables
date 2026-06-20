@@ -38,7 +38,10 @@ class InvoiceFileViewer extends StatefulWidget {
 class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
   PdfController? _pdfController;
   bool _loading = true;
-  String? _error;
+  // True once the PDF byte-fetch / decode has failed. The user-facing message
+  // is resolved from AppLocalizations in build() — not here — because _loadPdf
+  // runs in initState, before the Localizations inherited widget is available.
+  bool _pdfError = false;
 
   bool get _isPdf => InvoiceFileViewer.isPdf(widget.fileUrl);
 
@@ -60,10 +63,9 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
   }
 
   Future<void> _loadPdf() async {
-    final l = AppLocalizations.of(context);
     setState(() {
       _loading = true;
-      _error = null;
+      _pdfError = false;
     });
     try {
       // Fetch via the shared client so the auth + tenant headers are attached
@@ -82,7 +84,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
       debugPrint('[viewer] PDF load failed: $e');
       if (!mounted) return;
       setState(() {
-        _error = l.fileViewerPdfError;
+        _pdfError = true;
         _loading = false;
       });
     }
@@ -106,7 +108,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null) {
+    if (_pdfError) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -114,7 +116,7 @@ class _InvoiceFileViewerState extends State<InvoiceFileViewer> {
             Semantics(
               liveRegion: true,
               child: Text(
-                _error!,
+                l.fileViewerPdfError,
                 style: const TextStyle(color: Colors.white),
               ),
             ),

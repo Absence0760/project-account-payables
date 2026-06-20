@@ -8,10 +8,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+
+/// Wraps the screen in a MaterialApp carrying the localization delegates so
+/// `AppLocalizations.of(context)` resolves (defaults to English).
+Widget _localized() => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const InvoiceDetailScreen(invoiceId: '1'),
+    );
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -149,7 +158,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await tester.pump();
 
@@ -174,7 +183,7 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Globex LLC'));
 
@@ -194,7 +203,7 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Unknown Vendor'));
 
@@ -212,7 +221,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.textContaining('Error:'));
 
@@ -238,7 +247,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.widgetWithText(FilledButton, 'Retry'));
 
@@ -257,7 +266,7 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Approve'));
 
@@ -272,7 +281,7 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -296,7 +305,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -322,7 +331,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Approve'));
 
@@ -362,7 +371,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Approve'));
 
@@ -390,7 +399,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Approve'));
 
@@ -408,7 +417,7 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Reject'));
 
@@ -442,7 +451,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Reject'));
 
@@ -463,7 +472,7 @@ void main() {
     await _arrange(_detailClient(_invoiceJson('1', status: 'ready_for_review')));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -477,7 +486,7 @@ void main() {
     ));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -491,7 +500,7 @@ void main() {
     await _arrange(_detailClient(_invoiceJson('1', status: 'paid')));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -516,7 +525,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.byTooltip('Edit'));
 
@@ -556,7 +565,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.byTooltip('Edit'));
 
@@ -587,7 +596,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.byTooltip('Edit'));
 
@@ -640,7 +649,7 @@ void main() {
     ));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Uploaded invoice'));
 
@@ -656,7 +665,7 @@ void main() {
     await _arrange(_detailClient(_invoiceJson('1', status: 'ready_for_review')));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('No activity yet'));
 
@@ -670,7 +679,7 @@ void main() {
     )));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Tap to view PDF'));
 
@@ -688,7 +697,7 @@ void main() {
     )));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -702,7 +711,7 @@ void main() {
     await _arrange(_detailClient(_invoiceJson('1', fileUrl: null)));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -723,7 +732,7 @@ void main() {
     await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Reject'));
 
@@ -754,7 +763,7 @@ void main() {
     )));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -778,7 +787,7 @@ void main() {
     )));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
@@ -805,7 +814,7 @@ void main() {
     ));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('ERP Status'));
 
@@ -818,7 +827,7 @@ void main() {
     await _arrange(_detailClient(_invoiceJson('1', status: 'ready_for_review')));
 
     await tester.pumpWidget(
-      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+      _localized(),
     );
     await _pumpUntil(tester, find.text('Acme Corp'));
 
