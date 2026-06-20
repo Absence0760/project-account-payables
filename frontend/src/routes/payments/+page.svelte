@@ -17,6 +17,7 @@
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { PERM_PAYMENT_VOID } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
 
 	let HISTORY_COLUMNS = $derived([
@@ -204,9 +205,10 @@
 	}
 
 	function canVoid(p: Payment): boolean {
-		// Server-side gate: ROLE_ADMIN | ROLE_CFO. Status: anything that
+		// Server-side gate: require_permission(payment.void) — defaults to
+		// admin/cfo, but a custom role can be granted it. Status: anything that
 		// isn't already terminal-by-failure.
-		if (auth.user && (auth.isAdmin || auth.isCfo)) {
+		if (auth.user && auth.can(PERM_PAYMENT_VOID)) {
 			return p.status === 'completed' || p.status === 'submitted' || p.status === 'processing';
 		}
 		return false;
