@@ -192,6 +192,211 @@ async def test_whatif_clerk_forbidden(realdb):
 # ---------------------------------------------------------------------------
 
 
+async def _set_org_settings(realdb, key: str, mutate) -> None:
+    """Apply `mutate(settings_dict)` to the tenant org's control-plane settings.
+
+    The realdb fixture truncates TENANT tables but not the control-plane
+    `organizations` row, so settings-mutating tests must reset what they set —
+    each such test below restores the relevant block at the end."""
+    from sqlalchemy import update
+
+    from app.models.organization import Organization
+
+    info = realdb.info(key)
+    async with realdb.control_sessionmaker()() as s:
+        org = await s.get(Organization, info.org_id)
+        settings = dict(org.settings or {})
+        mutate(settings)
+        await s.execute(
+            update(Organization).where(Organization.id == info.org_id).values(settings=settings)
+        )
+        await s.commit()
+
+
+async def test_cash_position_auto_seeds_from_provider_balance(realdb):
+    """With no opening_balance query param, the position seeds from the org's
+    configured (mock) payment provider's deterministic balance."""
+    await _add_invoice(
+        realdb,
+        "a",
+        amount="50000",
+        status=InvoiceStatus.approved.value,
+        due_date=_TODAY + timedelta(days=10),
+    )
+
+    def _set_mock(settings):
+        settings["payments"] = {"provider": "mock"}
+
+    await _set_org_settings(realdb, "a", _set_mock)
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/analytics/cash_position?granularity=month")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Mock deterministic balance 250000 seeded automatically.
+        assert body["opening_balance"] == 250000.0
+        assert body["opening_balance_source"] == "provider"
+        assert body["opening_balance_currency"] == "USD"
+        assert body["periods"][0]["closing"] == 200000.0
+    finally:
+        await _set_org_settings(realdb, "a", lambda s: s.pop("payments", None))
+
+
+async def test_cash_position_seed_balance_false_skips_provider(realdb):
+    """`seed_balance=false` skips the provider call and falls through to the
+    `none` source (no manual balance, no settings balance)."""
+
+    def _set_mock(settings):
+        settings["payments"] = {"provider": "mock"}
+
+    await _set_org_settings(realdb, "a", _set_mock)
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/analytics/cash_position?seed_balance=false")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["opening_balance"] == 0.0
+        assert body["opening_balance_source"] == "none"
+    finally:
+        await _set_org_settings(realdb, "a", lambda s: s.pop("payments", None))
+
+
+async def test_cash_position_query_balance_beats_provider(realdb):
+    """An explicit opening_balance query param wins over the provider auto-sync."""
+
+    def _set_mock(settings):
+        settings["payments"] = {"provider": "mock"}
+
+    await _set_org_settings(realdb, "a", _set_mock)
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/analytics/cash_position?opening_balance=1000")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["opening_balance"] == 1000.0
+        assert body["opening_balance_source"] == "query"
+    finally:
+        await _set_org_settings(realdb, "a", lambda s: s.pop("payments", None))
+
+
+async def test_cash_position_falls_back_to_settings_when_provider_unsupported(realdb):
+    """Provider can't report a balance → fall through to the persisted
+    settings.cashflow.opening_balance (source `settings`)."""
+
+    def _set(settings):
+        settings["payments"] = {"provider": "mock", "balance_available": False}
+        settings["cashflow"] = {"opening_balance": "7777"}
+
+    await _set_org_settings(realdb, "a", _set)
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/analytics/cash_position")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["opening_balance"] == 7777.0
+        assert body["opening_balance_source"] == "settings"
+    finally:
+
+        def _clear(settings):
+            settings.pop("payments", None)
+            settings.pop("cashflow", None)
+
+        await _set_org_settings(realdb, "a", _clear)
+
+
+async def test_cash_position_reads_persisted_threshold(realdb):
+    """When the request passes no min_balance_threshold, the endpoint reads the
+    org's persisted threshold and flags / collects breaches accordingly."""
+    await _add_invoice(
+        realdb,
+        "a",
+        amount="800",
+        status=InvoiceStatus.approved.value,
+        due_date=_TODAY + timedelta(days=10),
+    )
+
+    def _set(settings):
+        settings["cashflow"] = {"min_balance_threshold": "500"}
+
+    await _set_org_settings(realdb, "a", _set)
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get(
+                "/api/analytics/cash_position?opening_balance=1000&granularity=month"
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Persisted threshold 500 applied (no query override): 1000-800=200 < 500.
+        assert body["threshold"] == 500.0
+        assert body["periods"][0]["below_threshold"] is True
+        assert len(body["breaches"]) == 1
+        assert body["breaches"][0]["shortfall"] == 300.0
+    finally:
+        await _set_org_settings(realdb, "a", lambda s: s.pop("cashflow", None))
+
+
+# ---------------------------------------------------------------------------
+# cash-position-settings (persisted thresholds GET/PUT)
+# ---------------------------------------------------------------------------
+
+
+async def test_cash_position_settings_round_trip(realdb):
+    """PUT persists the threshold; GET reads it back; cash_position then applies
+    it without a per-request override."""
+    try:
+        async with realdb.client(key="a", role="cfo") as c:
+            # Default: nothing persisted.
+            get0 = await c.get("/api/analytics/cash-position-settings")
+            assert get0.status_code == 200
+            assert get0.json()["min_balance_threshold"] is None
+
+            put = await c.put(
+                "/api/analytics/cash-position-settings",
+                json={"min_balance_threshold": "2500.00"},
+            )
+            assert put.status_code == 200, put.text
+            assert put.json()["min_balance_threshold"] == "2500.00"
+
+            get1 = await c.get("/api/analytics/cash-position-settings")
+            assert get1.json()["min_balance_threshold"] == "2500.00"
+    finally:
+        await _set_org_settings(realdb, "a", lambda s: s.pop("cashflow", None))
+
+
+async def test_cash_position_settings_negative_rejected(realdb):
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.put(
+            "/api/analytics/cash-position-settings",
+            json={"min_balance_threshold": "-1"},
+        )
+    assert resp.status_code == 422
+
+
+async def test_cash_position_settings_clerk_forbidden(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        assert (await c.get("/api/analytics/cash-position-settings")).status_code == 403
+        assert (
+            await c.put(
+                "/api/analytics/cash-position-settings",
+                json={"min_balance_threshold": "100"},
+            )
+        ).status_code == 403
+
+
+async def test_cash_position_settings_admin_allowed(realdb):
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            assert (await c.get("/api/analytics/cash-position-settings")).status_code == 200
+            assert (
+                await c.put(
+                    "/api/analytics/cash-position-settings",
+                    json={"min_balance_threshold": "100"},
+                )
+            ).status_code == 200
+    finally:
+        await _set_org_settings(realdb, "a", lambda s: s.pop("cashflow", None))
+
+
 async def test_cash_position_with_opening_balance_and_breach(realdb):
     await _add_invoice(
         realdb,
