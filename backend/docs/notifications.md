@@ -101,6 +101,76 @@ optional short author label (`InvoiceContext.note` — `"from supplier"` /
 `"you were mentioned"`). **Never** the raw message body. See
 [supplier-chat.md](supplier-chat.md).
 
+## Chat notifications (Slack / Teams)
+
+In addition to per-recipient email + in-app, an org can fan **approval-lifecycle
+events** out to a team chat channel (Slack or Microsoft Teams) via that
+provider's **incoming webhook**. This is a single channel post per event (not
+per-recipient) and is **entirely best-effort** — a chat-send failure never
+breaks the invoice transition.
+
+### Adapter family
+
+`services/chat_notification_adapters/` mirrors `email_adapters/` exactly — a
+decorator registry + a per-org-config-aware factory + a local-first `mock`
+default:
+
+| Provider | Body shape | Notes |
+|---|---|---|
+| `mock` | — | **Default.** No network, no credential. Records sends on `mock_adapter.SENT` + logs a PII-free line, so `pnpm dev` exercises the full path with no real Slack/Teams. |
+| `slack` | `{"text": ..., "blocks": [section]}` | Posts to a Slack incoming-webhook URL via httpx. |
+| `teams` | legacy `MessageCard` (`@type`/`sections.facts`/`potentialAction`) | Posts to a Teams incoming-webhook URL via httpx. |
+
+`get_chat_notification_adapter(org_config)` resolves the provider from
+`org_config["provider"]` → `AP_CHAT_NOTIFICATION_PROVIDER` (default `mock`); an
+unknown key falls back to `mock` and never raises.
+`render_chat_message(event_type, ...)` builds the PII-free `ChatMessage`
+(returns `None` for non-approval events like `chat_message` /
+`contract_renewal_due`, so they're skipped).
+
+### Per-org configuration
+
+`Organization.settings.chat_notifications` (JSONB — no migration, mirroring how
+`notifications` / `residency` carry config in settings-JSON):
+
+```json
+{
+  "enabled": true,
+  "provider": "slack",
+  "webhook_url": "https://hooks.slack.com/services/...",
+  "events": { "invoice_assigned": true, "invoice_approved": true,
+              "invoice_rejected": true, "invoice_paid": false }
+}
+```
+
+- `enabled` is the per-org master gate and defaults **off** — chat is opt-in per
+  org (unlike email/in-app, which default on). When off, no adapter is built.
+- `events` is opt-out *within* an enabled org: a missing event key defaults on.
+- `webhook_url` is the per-org credential, carried in settings (it's a
+  channel-scoped URL, not a platform secret). The `slack` / `teams` adapters
+  **fail closed** when it's absent: a no-op + a PII-free warning, never an
+  exception. There is **no hardcoded fallback** webhook URL.
+
+### Wiring
+
+`notification_dispatch.notify_event` dispatches chat **after** the per-recipient
+email/in-app loop, once per event, for the four approval events email already
+handles (`invoice_assigned` / `invoice_approved` / `invoice_rejected` /
+`invoice_paid`). `_send_chat_best_effort` loads the org's
+`settings.chat_notifications`, checks the enable + per-event gate, renders the
+message, builds the adapter, and sends — the whole thing wrapped in its own
+try/except so any failure (config load, adapter build, transport) is swallowed
+and logged PII-free. The deep link is built from `AP_TENANT_URL_TEMPLATE` +
+invoice id (no secrets).
+
+### PII
+
+The chat message carries **only** invoice number, vendor name, amount + currency
+(rendered exactly from the `Decimal`), a human status word, and an optional deep
+link — **never** bank details, tax IDs, full addresses, or payment-method
+numbers. Failure logs record the event type only, never the webhook URL or the
+amount.
+
 ## Two effects per recipient, each preference-gated
 
 For each recipient, `notify_event`:
@@ -176,6 +246,11 @@ user's row returns the same 404 as a missing row — no enumeration.
 - No new external dependency: outbound email reuses the existing adapter stack
   (`AP_EMAIL_PROVIDER`, `console` default — no network, no secrets). Mailpit
   (`pnpm mail:up`) previews SMTP locally. The in-app center is pure Postgres.
+- `AP_CHAT_NOTIFICATION_PROVIDER` (default `mock`) — platform-default chat
+  adapter. Per-org override + webhook URL + per-event toggles live on
+  `Organization.settings.chat_notifications` (see § Chat notifications above).
+  The `mock` default needs no Slack/Teams credential, so `pnpm dev` runs
+  unchanged.
 
 ## Tests
 
@@ -185,6 +260,11 @@ user's row returns the same 404 as a missing row — no enumeration.
   transition + audit row survive), kill switch (real DB).
 - `tests/test_notifications.py` — router: per-user scoping, cross-user/tenant
   isolation, mark-read 404, read-all, pagination shape, prefs round-trip.
+- `tests/test_chat_notification_adapters.py` — chat fan-out: mock default +
+  unknown-key fallback, per-org provider override, Slack vs Teams body shaping
+  (httpx mocked, no network), fail-closed when no webhook URL, PII absent from
+  the rendered message, and `_send_chat_best_effort` swallowing a send failure /
+  honouring the enable + per-event gate (all pure / mocked — no DB).
 - `tests/test_vendor_notification_prefs.py` — vendor prefs: pure mapping
   (`prefs_to_response` / `apply_pref_update`), the GET/PATCH portal endpoints
   (vendor-scoped, auth enforced, audited, caller-only), and the dispatch

@@ -78,6 +78,32 @@ async def _resolve_org_slug(organization_id: uuid.UUID) -> str | None:
         return result.scalar_one_or_none()
 
 
+async def _resolve_org_chat_config(organization_id: uuid.UUID) -> tuple[dict, str | None]:
+    """Load an org's `settings.chat_notifications` config + its slug.
+
+    Returns ``({}, None)`` on any miss so the caller can degrade to "no chat
+    notification" without raising. The slug is used to build the (PII-free)
+    deep link into the tenant app.
+    """
+    from app.database import control_session_factory
+    from app.models.organization import Organization
+
+    async with control_session_factory() as ctrl_db:
+        result = await ctrl_db.execute(
+            select(Organization.slug, Organization.settings).where(
+                Organization.id == organization_id
+            )
+        )
+        row = result.first()
+    if row is None:
+        return {}, None
+    slug, org_settings = row
+    chat_config = (org_settings or {}).get("chat_notifications") or {}
+    if not isinstance(chat_config, dict):
+        return {}, slug
+    return chat_config, slug
+
+
 async def resolve_role_user_ids(organization_id: uuid.UUID, role_name: str) -> list[uuid.UUID]:
     """Return the ids of active users in an org holding a given role.
 
@@ -221,6 +247,17 @@ async def notify_event(
                 event_type=event_type,
             )
 
+    # Chat fan-out (Slack / Teams) — a single channel post per event, not
+    # per-recipient. Approval-lifecycle events only; entirely best-effort and
+    # self-guarded so a chat-send failure never breaks the caller's transition.
+    if entity_type == "invoice" and invoice_ctx is not None:
+        await _send_chat_best_effort(
+            organization_id=organization_id,
+            event_type=event_type,
+            invoice_ctx=invoice_ctx,
+            entity_id=entity_id,
+        )
+
 
 async def _send_email_best_effort(
     to: str,
@@ -241,3 +278,76 @@ async def _send_email_best_effort(
     except Exception:  # noqa: BLE001
         # PII rule: log the event type only — never the recipient address.
         logger.exception("notify_event: email send failed for event_type=%s", event_type)
+
+
+def _chat_event_enabled(chat_config: dict, event_type: str) -> bool:
+    """Whether the org wants chat notifications for this event.
+
+    Master gate is `chat_config["enabled"]` (default off — chat is opt-in per
+    org, unlike email/in-app which default on). The per-event `events` map is
+    opt-out within that: a missing event key defaults to on once enabled.
+    """
+    if not chat_config.get("enabled"):
+        return False
+    events = chat_config.get("events")
+    if not isinstance(events, dict):
+        return True
+    return bool(events.get(event_type, True))
+
+
+async def _send_chat_best_effort(
+    *,
+    organization_id: uuid.UUID,
+    event_type: str,
+    invoice_ctx,
+    entity_id: uuid.UUID | None,
+) -> None:
+    """Post one approval event to the org's chat channel (Slack/Teams).
+
+    Best-effort + fully self-guarded: any failure (config load, adapter build,
+    transport) is swallowed and logged PII-free so the caller's transaction is
+    never affected. No-ops when the org hasn't enabled chat, the event isn't a
+    chat-notifiable approval event, or the provider can't be resolved.
+    """
+    from app.services.chat_notification_adapters import (
+        get_chat_notification_adapter,
+        render_chat_message,
+    )
+
+    try:
+        chat_config, slug = await _resolve_org_chat_config(organization_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("notify_event: failed loading chat config for event_type=%s", event_type)
+        return
+
+    if not _chat_event_enabled(chat_config, event_type):
+        return
+
+    # Deep link into the tenant app (no secrets / PII). Best-effort — omitted
+    # when the slug or entity is missing.
+    link: str | None = None
+    if slug and entity_id is not None:
+        try:
+            base = settings.tenant_url_template.format(slug=slug).rstrip("/")
+            link = f"{base}/invoices/{entity_id}"
+        except Exception:  # noqa: BLE001 — a bad template must not break dispatch
+            link = None
+
+    message = render_chat_message(
+        event_type,
+        invoice_number=getattr(invoice_ctx, "invoice_number", "") or "",
+        vendor_name=getattr(invoice_ctx, "vendor_name", "") or "",
+        amount=getattr(invoice_ctx, "amount", None),
+        currency=getattr(invoice_ctx, "currency", None) or "USD",
+        link=link,
+    )
+    if message is None:
+        # Not a chat-notifiable event (e.g. chat_message / contract_renewal).
+        return
+
+    try:
+        adapter = get_chat_notification_adapter(chat_config)
+        await adapter.send(message)
+    except Exception:  # noqa: BLE001
+        # PII rule: log the event type only — never the webhook URL or amount.
+        logger.exception("notify_event: chat send failed for event_type=%s", event_type)
