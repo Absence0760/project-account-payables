@@ -241,6 +241,57 @@ The resolved slug then flows through the **unchanged** `get_tenant` →
 `get_tenant_db` chain — the tenant engine is still built only through the existing
 `get_tenant_engine(tenant.db_name)` chokepoint, never by a hardcoded DB name.
 
+### Managing the list — admin endpoint + UI
+
+The `custom_domains` list is managed through a dedicated admin endpoint pair
+(distinct from `GET/PUT /api/organization/branding`, because `custom_domains`
+lives under `settings.brand` but is **not** a `BrandConfig` field):
+
+`GET /api/organization/branding/custom-domains` — returns
+`{ "custom_domains": [...] }`. **Read-gated to any authenticated org user**
+(same posture as `GET .../branding`) — the resolver reads it too.
+
+`PUT /api/organization/branding/custom-domains` — **admin-only**
+(`require_roles(ROLE_ADMIN)`). Full-replace semantics. Each host is normalized
+through the **same** `normalize_custom_domain` the resolver uses (strip `:port`,
+lowercase, reject empty / IPv6-literal / malformed) — so a stored value can never
+diverge from what actually resolves. Malformed entries are rejected (`422`); the
+normalized list is de-duplicated.
+
+**Cross-org uniqueness (anti-hijack).** A host already registered to a
+*different* org is rejected (`409`). A custom domain is only a *candidate*
+tenant selector — the JWT `org`-claim cross-check (below) is what actually gates
+access — but letting two orgs claim the same host would make resolution
+ambiguous, so it is refused at registration time, queried via the **same** JSONB
+containment the resolver uses (so the check and the resolution can't disagree).
+Re-saving a host the tenant already owns is **not** a self-conflict. The `409`
+body is **generic** ("…already registered to another tenant") — it never echoes
+the conflicting hostname back, so it can't confirm to the caller that a specific
+host belongs to some other org. The check-and-write is serialized by a
+transaction-level `pg_advisory_xact_lock`, so two orgs PUT-ing the same host
+concurrently can't both race past the guard (the lock is held to commit and
+auto-releases on rollback; no DB constraint is needed since the domains live in
+a JSONB array, and admin-config writes are rare enough that one global lock is
+cheap).
+
+Every mutation audits `organization.custom_domains_updated` into the tenant
+trail, **PII-free**: it records only the host **count** (old → new), never the
+hostnames themselves (tenant infra config kept out of the trail). A branding
+save (`PUT .../branding`) **preserves** `custom_domains` — it carries the
+existing list forward rather than letting `BrandConfig.model_dump()` wipe it.
+
+**Operator responsibility — DNS + TLS.** Registering a host here only tells the
+platform which tenant that host maps to. The vanity host's **DNS** (a CNAME to
+the platform edge) and **TLS certificate** (CloudFront/ALB + ACM) are infra,
+provisioned out of band — see *Custom domains* intro above.
+
+**Admin UI** — the **Custom Domains** section on `/organization`
+(`frontend/src/routes/organization/+page.svelte`, below the Branding panel):
+lists the current hostnames, adds one (client-side validated to mirror the
+backend `normalize_custom_domain`, surfacing a typo inline instead of as a
+`422`/`409`), and removes one (armed two-click confirm). Loading / error / empty
+states; the operator's DNS+TLS responsibility is called out in the panel hint.
+
 ### Trust model — the JWT cross-check still gates everything
 
 This is the load-bearing point. A custom domain resolves only a **candidate**
@@ -272,10 +323,24 @@ unknown domain / no host falling back to 400; a malformed settings blob not
 500-ing; and — the security headline — that the JWT `org`-claim cross-check still
 rejects a mismatched token on the custom-domain path (and allows a matching one).
 
+`backend/tests/test_custom_domains_admin.py` — the management endpoint: GET
+readable by any authed role + 401 without auth; PUT admin-only (403 for a
+manager); normalize + de-dupe + persist to `settings.brand.custom_domains`;
+PII-free `organization.custom_domains_updated` audit (count only); round-trip
+through GET; 422 on a malformed host; clearing the list; **cross-org uniqueness
+409** (tenant B claims a host → tenant A is refused, A's list unchanged);
+re-registering a host the tenant already owns is fine; and the regression that a
+branding save preserves `custom_domains`.
+
+`frontend/tests-e2e/organization/custom-domains.spec.ts` — the panel renders;
+adding a host through the UI round-trips through GET; removing one (armed
+confirm) drops it; an invalid hostname surfaces an inline error and fires no PUT.
+
 ## Deferred to later slices
 
-- Admin UI to manage a tenant's `custom_domains` list (currently set via the
-  settings JSON / API directly) and the operational runbook for the
-  TLS-cert + DNS provisioning that pairs with it.
+- The operational runbook for the TLS-cert + DNS provisioning that pairs with a
+  registered custom domain (the app-side `custom_domains` admin UI + endpoint
+  pair shipped — see *Managing the list* above; the infra automation that issues
+  the ACM cert and wires the CNAME is a separate, infra-owned slice).
 - Reseller / partner multi-tenant admin (one partner managing many tenants'
   branding).

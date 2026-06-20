@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -14,6 +15,7 @@ from app.models.user import User
 from app.schemas.organization import (
     BrandConfig,
     CompanyProfile,
+    CustomDomainsConfig,
     InvoiceDefaults,
     OrganizationResponse,
     UpdateOrganizationRequest,
@@ -26,7 +28,7 @@ from app.services.data_residency import (
     resolve_region,
 )
 from app.services.sso import generate_scim_token
-from app.tenant import get_tenant
+from app.tenant import get_tenant, normalize_custom_domain
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +233,16 @@ async def update_branding(
     product name, colors) — never user data.
     """
     existing = dict(org.settings or {})
-    existing["brand"] = body.model_dump()
+    # Preserve `custom_domains` — it lives under `settings.brand` but is NOT a
+    # `BrandConfig` field, so a naive `existing["brand"] = body.model_dump()`
+    # would silently wipe a tenant's registered vanity hostnames on every
+    # branding save. Carry the existing list forward; it is managed only by the
+    # dedicated custom-domains endpoint below.
+    prior_brand = existing.get("brand")
+    new_brand = body.model_dump()
+    if isinstance(prior_brand, dict) and "custom_domains" in prior_brand:
+        new_brand["custom_domains"] = prior_brand["custom_domains"]
+    existing["brand"] = new_brand
     org.settings = existing
     flag_modified(org, "settings")
 
@@ -254,6 +265,137 @@ async def update_branding(
     )
 
     return body
+
+
+def _resolve_custom_domains(org: Organization) -> list[str]:
+    """Read `settings.brand.custom_domains`, tolerating a missing / malformed
+    block by returning an empty list (mirrors the resolver's own resilience)."""
+    brand = (org.settings or {}).get("brand")
+    if not isinstance(brand, dict):
+        return []
+    raw = brand.get("custom_domains")
+    if not isinstance(raw, list):
+        return []
+    # Keep only well-formed string entries — a stray non-string can't break the
+    # read or the UI list.
+    return [d for d in raw if isinstance(d, str)]
+
+
+@router.get("/branding/custom-domains", response_model=CustomDomainsConfig)
+async def get_custom_domains(
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(get_current_user),
+):
+    """Return this tenant's registered white-label vanity hostnames.
+
+    Read-gated to any authenticated org user (same posture as
+    `GET /api/organization/branding`). The list is the source the custom-domain
+    tenant resolver matches an inbound `Host` against (see
+    `docs/white-label.md` § Custom domains).
+    """
+    return CustomDomainsConfig(custom_domains=_resolve_custom_domains(org))
+
+
+@router.put("/branding/custom-domains", response_model=CustomDomainsConfig)
+async def update_custom_domains(
+    body: CustomDomainsConfig,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Replace this tenant's registered vanity hostnames. Admin only; audited.
+
+    Each host is normalized through the SAME `normalize_custom_domain` the tenant
+    resolver uses (strip `:port`, lowercase, reject empty / IPv6-literal /
+    malformed), so a stored value can never diverge from what actually resolves.
+    Malformed entries are rejected (422); the normalized list is de-duplicated.
+
+    **Cross-org uniqueness (anti-hijack):** a host already registered to a
+    *different* org is rejected (409). A custom domain is only a *candidate*
+    tenant selector — the JWT `org`-claim cross-check in `get_tenant` is what
+    actually gates access — but letting two orgs claim the same host would make
+    resolution ambiguous and is a footgun, so we refuse it at registration time.
+    The operator still owns DNS + TLS for the host (out of scope for app code);
+    see `docs/white-label.md` § Custom domains.
+
+    Audited PII-free: only the host COUNT, never the hostnames themselves.
+    """
+    before = _resolve_custom_domains(org)
+
+    # Normalize + validate every entry through the resolver's own function so the
+    # stored form is exactly what `resolve_tenant_slug_by_custom_domain` matches.
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in body.custom_domains:
+        host = normalize_custom_domain(raw)
+        if host is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid custom domain: {raw!r}",
+            )
+        if host in seen:
+            # De-duplicate silently — a repeated host is not an error, just noise.
+            continue
+        seen.add(host)
+        normalized.append(host)
+
+    # Serialize the check-and-write so two orgs can't race past the
+    # cross-org-uniqueness guard and both claim the same host (a TOCTOU hijack).
+    # A transaction-level advisory lock on a constant key makes every
+    # custom-domains write across the cluster mutually exclusive; it auto-releases
+    # at commit/rollback. Writes are admin-initiated config (rare), so a single
+    # global lock is cheap and there's no DB constraint to add (the domains live
+    # in a JSONB array, not their own column). Key derived from a fixed label.
+    _CUSTOM_DOMAINS_LOCK_KEY = 0x4350_4D44  # "CPMD" — arbitrary constant
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:k)").bindparams(k=_CUSTOM_DOMAINS_LOCK_KEY)
+    )
+
+    # Cross-org uniqueness: refuse a host already claimed by another org. Query
+    # each candidate via the SAME JSONB containment the resolver uses, so the
+    # check and the resolution can't disagree.
+    for host in normalized:
+        if host in before:
+            # Already ours — no conflict possible.
+            continue
+        owner = (
+            await db.execute(
+                select(Organization.id).where(
+                    Organization.settings.contains({"brand": {"custom_domains": [host]}})
+                )
+            )
+        ).scalars().first()
+        if owner is not None and owner != org.id:
+            # Generic message — do NOT echo the host, which would confirm to this
+            # caller that a specific hostname is claimed by another tenant
+            # (cross-tenant info disclosure + the endpoint's PII-free posture).
+            raise HTTPException(
+                status_code=409,
+                detail="One or more requested custom domains is already registered "
+                "to another tenant.",
+            )
+
+    existing = dict(org.settings or {})
+    brand = dict(existing.get("brand") or {})
+    brand["custom_domains"] = normalized
+    existing["brand"] = brand
+    org.settings = existing
+    # Mutating a nested dict in-place doesn't mark JSONB dirty on its own.
+    flag_modified(org, "settings")
+
+    await db.commit()
+
+    # Audit the config change into the TENANT trail. PII-free: counts only —
+    # the hostnames themselves are tenant infra config, kept out of the trail.
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="organization.custom_domains_updated",
+        entity_id=org.id,
+        details={"count": {"old": len(before), "new": len(normalized)}},
+    )
+
+    return CustomDomainsConfig(custom_domains=normalized)
 
 
 @router.post("/test-erp")

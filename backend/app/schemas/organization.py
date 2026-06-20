@@ -79,6 +79,21 @@ class BrandConfig(BaseModel):
         return (v or "").strip()
 
 
+class CustomDomainsConfig(BaseModel):
+    """The tenant's registered white-label vanity hostnames.
+
+    Stored under `settings.brand.custom_domains` (a JSON array of bare,
+    lowercase hostnames). A request arriving on one of these hosts with no
+    `X-Tenant-Slug` header resolves to this tenant — but only as a *candidate*;
+    the JWT `org`-claim cross-check in `app.tenant.get_tenant` still gates it
+    (see `docs/white-label.md` § Custom domains). Validation/normalization is
+    done in the endpoint via the SAME `normalize_custom_domain` the resolver
+    uses — not here — so the stored value can never diverge from what resolves.
+    """
+
+    custom_domains: list[str] = Field(default_factory=list)
+
+
 class OrganizationResponse(BaseModel):
     id: str
     name: str
