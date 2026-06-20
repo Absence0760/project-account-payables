@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/stores/dashboard_store.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
+import 'package:ap_mobile/widgets/notification_bell.dart';
 
 final _currencyFormat = NumberFormat.compactCurrency(symbol: '\$');
 
@@ -28,7 +29,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(l.dashboardTitle)),
+      appBar: AppBar(
+        title: Text(l.dashboardTitle),
+        actions: const [NotificationBell()],
+      ),
       body: ListenableBuilder(
         listenable: DashboardStore.instance,
         builder: (context, _) {

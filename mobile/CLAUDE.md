@@ -42,6 +42,7 @@ mobile/
 │   │   ├── audit_entry.dart     # AuditEntry + AuditFieldChange (invoice activity timeline; details.changes diff)
 │   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states); isEditable gate mirrors backend IMMUTABLE_STATUSES
 │   │   ├── exception.dart       # ApException, ApExceptionStatus + ApExceptionSeverity enums
+│   │   ├── notification.dart    # AppNotification (in-app notification center row); eventLabel + linksToInvoice helper; copyMarkedRead for optimistic mark-read
 │   │   ├── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
 │   │   ├── payment_queue.dart   # PaymentQueueItem, PaymentSummary, PaymentRun, PaymentRunSelection (money as display strings — no client float math)
 │   │   └── vendor.dart          # Vendor, VendorStatus enum (active/unverified/inactive/rejected)
@@ -54,6 +55,7 @@ mobile/
 │   │   ├── auth_store.dart      # Auth state — login, logout, role checks
 │   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject (offline cached)
 │   │   ├── exception_store.dart # Exception list, filter, resolve/escalate/dismiss (offline cached)
+│   │   ├── notification_store.dart # In-app notification center — list (All/Unread filter), unread badge count, optimistic mark-read + read-all (offline cached)
 │   │   ├── dashboard_store.dart # Dashboard KPI data (offline cached)
 │   │   ├── locale_store.dart    # Per-device display-language choice (i18n) → MaterialApp.locale; persisted via secure storage, never account-roamed
 │   │   ├── vendor_store.dart    # Vendor list, filter/search, verify/reject, ERP sync (offline cached)
@@ -66,6 +68,7 @@ mobile/
 │   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + warnings/fraud + PO match + ERP status + activity timeline + file preview (image thumbnail / PDF card) → full viewer
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
 │   │   ├── exceptions_screen.dart # Exception queue — filter + swipe/sheet resolve/escalate/dismiss
+│   │   ├── notifications_screen.dart # In-app notification center — All/Unread filter, tap → mark read (+ deep-link to invoice detail when the row is an invoice), mark-all-read; empty/loading/error states
 │   │   ├── capture_screen.dart   # Camera/gallery capture + file picker (PDF/PNG/JPG/TIFF) → upload → extract
 │   │   ├── payments_screen.dart  # Payment history
 │   │   ├── vendors_screen.dart   # Vendor management — list + search/status filters, swipe/sheet verify+reject (unverified only), ERP-sync app-bar action (all admin/ap_manager-gated)
@@ -81,6 +84,8 @@ mobile/
 │       ├── status_badge.dart    # Colored invoice status chip
 │       ├── exception_status_badge.dart # Colored exception status chip (open/escalated/resolved/dismissed)
 │       ├── exception_list_tile.dart    # Exception row with type, invoice, severity, status
+│       ├── notification_list_tile.dart # Notification row — unread dot, title, body, event label + relative time; one merged Semantics label
+│       ├── notification_bell.dart      # App-bar bell action with a live unread Badge → opens NotificationsScreen (in the Dashboard app bar; visible to all roles)
 │       ├── kpi_card.dart        # Dashboard metric card
 │       ├── invoice_list_tile.dart # Invoice row with vendor, amount, status
 │       ├── vendor_status_badge.dart # Colored vendor status chip (active/unverified/inactive/rejected)
@@ -119,6 +124,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Invoice Detail | `GET /api/invoices/{id}` (carries `warnings` + `po_match`), `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline + ERP-status derivation, any authenticated role) |
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss) |
+| Notifications | `GET /api/notifications` (`unread_only` filter — envelope carries `items` + total `unread`), `GET /api/notifications/unread-count` (badge), `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` |
 | Payments | `GET /api/payments` |
 | Vendors | `GET /api/vendors` (status/search filters), `POST /api/vendors/{id}/verify`, `POST /api/vendors/{id}/reject`, `POST /api/vendors/sync-erp` (mutations admin/ap_manager) |
 | Pay (queue) | `GET /api/payments/queue`, `GET /api/payments/summary`, `GET /api/payments/runs/`, `POST /api/payments/runs` (create draft), `POST /api/payments/runs/{id}/execute`, `POST /api/payments/runs/{id}/cancel` (admin/ap_manager/cfo) |
@@ -139,6 +145,11 @@ Bottom navigation adapts based on user roles (same as web frontend):
 | Payments | Admin, AP Manager, CFO |
 | Settings | All roles |
 
+The **notification center** is not a bottom-nav tab — it's reached from the
+`NotificationBell` app-bar action (with a live unread `Badge`) in the Dashboard
+app bar, so it's available to **all roles** (notifications are per-user, not
+role-gated; the backend scopes the list to the caller via `require_roles(*ALL_ROLES)`).
+
 ## Feature status
 
 **Done:**
@@ -153,6 +164,7 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Activity timeline — invoice audit log on the detail screen (`GET /api/invoices/{id}/audit-log`): action label, actor, timestamp, per-field before→after diff from `details.changes`; loading / empty / error states; one merged Semantics announcement per entry
 - Approvals tab with swipe-to-approve
 - Exception queue (list + status filter + resolve / escalate / dismiss via swipe + action sheet; admin / AP manager only)
+- In-app notification center — `NotificationsScreen` + `NotificationStore` over `GET /api/notifications` (+ `unread-count` / `{id}/read` / `read-all`). Reached from the `NotificationBell` app-bar action (live unread `Badge`) in the Dashboard app bar (all roles). All / Unread filter chips; tapping a row marks it read (optimistic — flips the row + decrements the badge instantly, reconciles via refetch on failure) and deep-links to the invoice detail when the row is an `invoice` with an `entity_id` (other entity types e.g. `contract` just mark read — no mobile detail yet); mark-all-read app-bar action shown only while something is unread; offline-cached list + empty / loading / error (Retry) states. The email/in-app backend (Priority 8) serves mobile with no new endpoints
 - Payment history list
 - Vendor management — `VendorsScreen` + `VendorStore` over `GET /api/vendors` with status filters + search; verify / reject an unverified vendor via swipe (verify ⟶ / reject ⟵) or the action sheet, and an ERP-sync app-bar action (`POST /api/vendors/sync-erp`). Read is admin/ap_manager/cfo; the mutating actions are gated to admin/ap_manager (mirrors `require_roles`) and simply hidden for CFO. Offline-cached list
 - Payment queue + runs — `PaymentQueueScreen` + `PaymentQueueStore`. Queue tab lists approved invoices (`GET /api/payments/queue`), each row a checkbox + per-row method picker; the selection creates a draft run (`POST /api/payments/runs`). Runs tab lists runs (`GET /api/payments/runs/`) and executes / cancels drafts. A KPI summary bar (total paid / pending / queue / card rebates) sits above both (`GET /api/payments/summary`). CFO-approval-required runs surface the gate before an execute attempt. Money is rendered as server-supplied display strings — the device never does float arithmetic on money (totals are server-computed)
@@ -238,8 +250,12 @@ one merged announcement per timeline entry), the vendor list tile + vendor
 status badge (one merged row announcement; every status colour clears contrast),
 the invoice warnings panel (one merged "Severity: message" announcement per
 warning; every severity tint clears contrast), the ERP status panel (error-row
-contrast), and the advanced-search sheet (labelled icon-only close/date-clear
-controls, tap-target + contrast).
+contrast), the advanced-search sheet (labelled icon-only close/date-clear
+controls, tap-target + contrast), and the notification center (the
+`NotificationListTile` — one merged "Unread, <event>, <title>, …" announcement
+that also clears contrast on a read row; the `NotificationBell` — accessible
+label carrying the live unread count, e.g. "Notifications, 3 unread"; the
+`NotificationsScreen` — labelled mark-all-read action + tap-target/contrast).
 `textContrastGuideline` is strict
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.

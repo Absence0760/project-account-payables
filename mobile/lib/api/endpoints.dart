@@ -3,6 +3,7 @@ import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
+import 'package:ap_mobile/models/notification.dart';
 import 'package:ap_mobile/models/payment.dart';
 import 'package:ap_mobile/models/payment_queue.dart';
 import 'package:ap_mobile/models/user.dart';
@@ -196,6 +197,69 @@ class ExceptionApi {
       'action': action,
       'resolution': resolution,
     });
+  }
+}
+
+/// One page of the notification list plus the user's total unread count.
+/// The backend returns `{items, total, unread, page, page_size}`; `unread` is
+/// the user's total unread count regardless of the page window, so the same
+/// response feeds both the list and the app-bar badge.
+class NotificationPage {
+  final List<AppNotification> items;
+  final int total;
+  final int unread;
+
+  NotificationPage({
+    required this.items,
+    required this.total,
+    required this.unread,
+  });
+}
+
+class NotificationApi {
+  static final _api = ApiClient();
+
+  /// `GET /api/notifications` — the current user's notifications, newest first.
+  /// `unreadOnly` filters to unread rows; `unread` in the result is always the
+  /// total unread count.
+  static Future<NotificationPage> list({
+    bool unreadOnly = false,
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    final params = <String, String>{
+      'page': page.toString(),
+      'page_size': pageSize.toString(),
+    };
+    if (unreadOnly) params['unread_only'] = 'true';
+
+    final data = await _api.get('/notifications', params);
+    final items = (data['items'] as List? ?? [])
+        .map((e) => AppNotification.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return NotificationPage(
+      items: items,
+      total: (data['total'] as num?)?.toInt() ?? items.length,
+      unread: (data['unread'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  /// `GET /api/notifications/unread-count` — cheap badge count.
+  static Future<int> unreadCount() async {
+    final data = await _api.get('/notifications/unread-count');
+    return (data['unread'] as num?)?.toInt() ?? 0;
+  }
+
+  /// `POST /api/notifications/{id}/read` — mark one read (idempotent server-side).
+  static Future<void> markRead(String id) async {
+    await _api.post('/notifications/$id/read');
+  }
+
+  /// `POST /api/notifications/read-all` — mark every unread row read; returns
+  /// the number updated.
+  static Future<int> markAllRead() async {
+    final data = await _api.post('/notifications/read-all');
+    return (data['updated'] as num?)?.toInt() ?? 0;
   }
 }
 

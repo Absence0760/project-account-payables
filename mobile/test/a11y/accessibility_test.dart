@@ -11,14 +11,17 @@ import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
+import 'package:ap_mobile/models/notification.dart';
 import 'package:ap_mobile/models/vendor.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
 import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
+import 'package:ap_mobile/screens/notifications_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/stores/notification_store.dart';
 import 'package:ap_mobile/widgets/activity_timeline.dart';
 import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
 import 'package:ap_mobile/widgets/erp_status_panel.dart';
@@ -28,6 +31,8 @@ import 'package:ap_mobile/widgets/invoice_edit_sheet.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
 import 'package:ap_mobile/widgets/invoice_warnings_panel.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
+import 'package:ap_mobile/widgets/notification_bell.dart';
+import 'package:ap_mobile/widgets/notification_list_tile.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
 import 'package:ap_mobile/widgets/vendor_list_tile.dart';
 import 'package:ap_mobile/widgets/vendor_status_badge.dart';
@@ -91,6 +96,41 @@ Map<String, dynamic> _exceptionJson(String id) => {
       'status': 'open',
       'is_overdue': false,
       'created_at': '2026-01-01T12:00:00',
+    };
+
+AppNotification _notification({bool read = false}) => AppNotification(
+      id: 'n1',
+      eventType: 'invoice_approved',
+      entityType: 'invoice',
+      entityId: 'inv1',
+      title: 'Invoice approved',
+      body: 'INV-001 was approved by Demo User',
+      readAt: read ? DateTime(2026, 1, 2) : null,
+      createdAt: DateTime(2026, 1, 1),
+    );
+
+http.Response _notificationPage(List<Map<String, dynamic>> items) =>
+    http.Response(
+      jsonEncode({
+        'items': items,
+        'total': items.length,
+        'unread': items.where((i) => i['read_at'] == null).length,
+        'page': 1,
+        'page_size': 20,
+      }),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+
+Map<String, dynamic> _notificationJson(String id) => {
+      'id': id,
+      'event_type': 'invoice_approved',
+      'entity_type': 'invoice',
+      'entity_id': 'inv-$id',
+      'title': 'Invoice approved',
+      'body': 'INV-$id was approved',
+      'read_at': null,
+      'created_at': '2026-01-01T12:00:00Z',
     };
 
 Map<String, dynamic> _invoiceJson(String id) => {
@@ -557,6 +597,114 @@ void main() {
       await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
       await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+
+  group('NotificationListTile', () {
+    testWidgets('meets tap-target, label and contrast guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        NotificationListTile(notification: _notification(), onTap: () {}),
+      ));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+
+    testWidgets('announces one merged label leading with unread + event',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        NotificationListTile(notification: _notification(), onTap: () {}),
+      ));
+      expect(
+        find.bySemanticsLabel(
+          RegExp(r'Unread.*Invoice approved.*was approved'),
+        ),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+
+    // A read row must still clear contrast (greyed glyph + muted title).
+    testWidgets('a read row clears contrast', (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        NotificationListTile(notification: _notification(read: true)),
+      ));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+
+  group('NotificationBell', () {
+    setUp(() {
+      NotificationStore.instance.debugReset();
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('exposes an accessible label including the unread count',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      // Seed the store with 3 unread so the badge renders.
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response(
+              jsonEncode({'unread': 3}),
+              200,
+              headers: {'content-type': 'application/json'},
+            )),
+      );
+      await tester.pumpWidget(_host(const NotificationBell()));
+      // Wait on the real rendered signal — the badge label appearing — not the
+      // store field, so the ListenableBuilder rebuild that carries the count
+      // into the Semantics label is guaranteed flushed before we assert.
+      await _pumpUntil(tester, find.bySemanticsLabel('Notifications, 3 unread'));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      expect(find.bySemanticsLabel('Notifications, 3 unread'), findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('NotificationsScreen', () {
+    setUpAll(() async {
+      OfflineStore.instance.debugUseMemory();
+    });
+
+    setUp(() async {
+      NotificationStore.instance.debugReset();
+      FlutterSecureStorage.setMockInitialValues({});
+      await OfflineStore.instance.clear();
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('the loaded center meets tap-target + label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient(
+          (req) async => _notificationPage([_notificationJson('1')]),
+        ),
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: NotificationsScreen()));
+      await _pumpUntil(tester, find.byType(NotificationListTile));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // The mark-all-read action announces its purpose (WCAG 4.1.2).
+      expect(find.bySemanticsLabel('Mark all notifications read'),
+          findsOneWidget);
       handle.dispose();
     });
   });
