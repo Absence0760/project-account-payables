@@ -47,8 +47,9 @@ void main() {
 
   Future<void> loginAs(List<String> roles) async {
     ApiClient().debugConfigure(client: _client(roles));
-    final ok = await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
-    expect(ok, isTrue);
+    final result =
+        await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+    expect(result.isSuccess, isTrue);
   }
 
   testWidgets('renders the action for an admin', (tester) async {

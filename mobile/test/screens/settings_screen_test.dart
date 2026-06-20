@@ -63,8 +63,8 @@ Future<void> _loginAs({
   ApiClient().debugConfigure(
     client: _happyClient(fullName: fullName, email: email, roles: roles),
   );
-  final ok = await AuthStore.instance.login(email, 'demo', 'acme');
-  expect(ok, isTrue);
+  final result = await AuthStore.instance.login(email, 'demo', 'acme');
+  expect(result.isSuccess, isTrue);
 }
 
 void main() {

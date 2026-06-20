@@ -41,6 +41,7 @@ mobile/
 │   │   ├── user.dart            # User model with role helpers
 │   │   ├── audit_entry.dart     # AuditEntry + AuditFieldChange (invoice activity timeline; details.changes diff)
 │   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states); isEditable gate mirrors backend IMMUTABLE_STATUSES
+│   │   ├── mfa_challenge.dart    # MFAChallenge (login MFA-challenge response) — challengeToken + offered methods (totp/email) + mustEnroll
 │   │   ├── exception.dart       # ApException, ApExceptionStatus + ApExceptionSeverity enums
 │   │   ├── notification.dart    # AppNotification (in-app notification center row); eventLabel + linksToInvoice helper; copyMarkedRead for optimistic mark-read
 │   │   ├── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
@@ -64,7 +65,8 @@ mobile/
 │   │   ├── vendor_store.dart    # Vendor list, filter/search, verify/reject, ERP sync (offline cached)
 │   │   └── payment_queue_store.dart # Payment queue + summary + runs; per-row method selection; create/execute/cancel runs
 │   ├── screens/
-│   │   ├── login_screen.dart    # Tenant + email/password login
+│   │   ├── login_screen.dart    # Tenant + email/password login (routes to MfaScreen on an MFA challenge)
+│   │   ├── mfa_screen.dart      # MFA second-factor code entry (TOTP + email-OTP backup); POST /auth/mfa/verify → JWT
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
 │   │   ├── dashboard_screen.dart # KPIs, aging, top vendors (app-bar: CashFlowButton + NotificationBell)
 │   │   ├── cash_flow_screen.dart # Predictive cash-flow forecast (CFO/admin) — KPI summary (opening/projected-end balance, committed/pending outflow), per-period forecast + running cash-position list, low-balance alert, 30/60/90-day horizon chips, pull-to-refresh
@@ -119,6 +121,17 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 
 - API base URL: `http://localhost:8000` (configurable in `config.dart`)
 - Auth: `POST /api/auth/login` → JWT stored in secure storage
+- **MFA**: `POST /api/auth/login` may return an **MFA challenge**
+  (`{mfa_required: true, mfa_challenge_token, methods, must_enroll}`) instead of
+  a `TokenResponse` when `AP_MFA_ENABLED` is on and the user is enrolled /
+  org-enforced. `AuthStore.login` returns a `LoginResult`
+  (`success`/`mfaRequired`/`failure`); on `mfaRequired` the login screen pushes
+  `MfaScreen`, which submits the code to `POST /api/auth/mfa/verify` (`totp` or
+  `email` method) → real JWT stored exactly like the no-MFA path. Email-OTP
+  backup is requested via `POST /api/auth/mfa/challenge/email`. Passkey
+  (WebAuthn) is web-only — never offered on mobile; MFA *enrollment* is also
+  web-only (an org-enforced un-enrolled user can still verify by email, with a
+  banner pointing them to the web app). Mirrors the web `/login/mfa` flow.
 - Tenant: entered on login screen → sent as `X-Tenant-Slug` header
 - 401 responses auto-clear session and return to login
 
@@ -127,6 +140,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Screen | API calls |
 |--------|-----------|
 | Login | `POST /api/auth/login`, `GET /api/auth/me` |
+| MFA (second factor) | `POST /api/auth/mfa/verify` (totp/email → JWT), `POST /api/auth/mfa/challenge/email` (request email OTP) |
 | Dashboard | `GET /api/dashboard` |
 | Cash Flow | `GET /api/analytics/cashflow_forecast` + `GET /api/analytics/cash_position` (both `horizon_days` + `granularity`; CFO/admin) |
 | Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`); bulk ops `POST /api/invoices/bulk/delete` + `POST /api/invoices/bulk/status` (admin/ap_manager/cfo) |
@@ -199,6 +213,16 @@ everyone else.
 - Role-based bottom navigation
 - Settings (profile, tenant info, logout)
 - JWT in secure storage (iOS Keychain / Android Keystore)
+- MFA challenge login — when `POST /api/auth/login` returns an MFA challenge
+  (instead of a `TokenResponse`), `AuthStore.login` reports `mfaRequired` and the
+  login screen routes to `MfaScreen`. The user enters their TOTP code (or
+  switches to the email-OTP backup, auto-/re-requested via
+  `POST /api/auth/mfa/challenge/email`), which is verified at
+  `POST /api/auth/mfa/verify`; the returned JWT is stored exactly like the
+  no-MFA path. Wrong/expired codes surface a friendly live-region-announced
+  error and keep the user on the screen to retry. An org-enforced un-enrolled
+  user (`must_enroll`) gets an email-only flow plus a banner to finish
+  authenticator setup in the web app (enrollment + passkeys are web-only)
 - Camera OCR — snap photo or pick from gallery → upload → trigger AI extraction
 - File upload via file picker — pick a PDF / PNG / JPG / TIFF document on the device (`CameraCapture.pickDocument` → `file_picker`) and upload it through the same `/api/invoices/upload` extraction pipeline as the camera path. The capture screen offers Camera / Gallery / Choose file; PDFs preview as a document card (no inline bitmap), images preview inline
 - File viewer — the invoice detail screen previews the uploaded file (image thumbnail or a PDF card) and opens it full-screen via `InvoiceFileViewer`: images via `Image.network` (auth headers), PDFs fetched as bytes (`ApiClient.getBytes`, so the JWT + tenant headers are attached) and rendered with `pdfx`; loading / error / Retry states
@@ -214,7 +238,11 @@ everyone else.
 - Swipe-to-approve gesture
 
 **Web features not yet on mobile (see `docs/roadmap.md` Priority 8):**
-- **MFA** — `AuthStore.login()` only handles `TokenResponse`; if the backend returns `MFAChallengeResponse` (when `AP_MFA_ENABLED=true` and the user is enrolled or org-enforced), login throws. Mobile users can still sign in when MFA is off, but tenants with enforcement need a mobile MFA flow + a `/profile` enrollment screen.
+- **MFA enrollment** — the *challenge / verify* flow is shipped (see Done →
+  "MFA challenge login"), but **enrolling** a TOTP authenticator (and managing
+  passkeys) is still web-only (`/profile`). An org-enforced un-enrolled user can
+  log in by email OTP on mobile and is pointed to the web app to finish setup.
+- **Passkey (WebAuthn) MFA** — web-only; never offered as a mobile factor.
 - **Org Security settings** — the web `/organization` page exposes the `mfa.required` toggle; mobile has no equivalent.
 - **OIDC SSO** — `Sign in with Okta/Microsoft` button is web-only.
 - Workflow management (list, create, edit steps) — not yet on mobile.
