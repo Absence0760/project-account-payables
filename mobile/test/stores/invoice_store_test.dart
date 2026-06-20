@@ -128,6 +128,69 @@ void main() {
       expect(store.statusFilter, 'approved');
       expect(await sentStatus.future, 'approved');
     });
+
+    test('setFilters carries the advanced-search params into the request',
+        () async {
+      final sent = Completer<Map<String, String>>();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (!sent.isCompleted) sent.complete(req.url.queryParameters);
+          return _list([]);
+        }),
+      );
+
+      store.setFilters(const InvoiceSearchFilters(
+        vendor: 'Acme',
+        poNumber: 'PO-9',
+        amountMin: 100,
+        amountMax: 5000,
+      ));
+
+      expect(store.filters.isEmpty, isFalse);
+      expect(store.filters.activeCount, 4);
+      final params = await sent.future;
+      expect(params['vendor'], 'Acme');
+      expect(params['po_number'], 'PO-9');
+      expect(params['amount_min'], '100.0');
+      expect(params['amount_max'], '5000.0');
+    });
+
+    test('setFilters sends due-date range as YYYY-MM-DD', () async {
+      final sent = Completer<Map<String, String>>();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (!sent.isCompleted) sent.complete(req.url.queryParameters);
+          return _list([]);
+        }),
+      );
+
+      store.setFilters(InvoiceSearchFilters(
+        dueDateFrom: DateTime(2026, 2, 1),
+        dueDateTo: DateTime(2026, 3, 15),
+      ));
+
+      final params = await sent.future;
+      expect(params['due_date_from'], '2026-02-01');
+      expect(params['due_date_to'], '2026-03-15');
+    });
+
+    test('setFilters with empty omits all advanced params', () async {
+      final sent = Completer<Map<String, String>>();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (!sent.isCompleted) sent.complete(req.url.queryParameters);
+          return _list([]);
+        }),
+      );
+
+      store.setFilters(InvoiceSearchFilters.empty);
+
+      expect(store.filters.isEmpty, isTrue);
+      final params = await sent.future;
+      expect(params.containsKey('vendor'), isFalse);
+      expect(params.containsKey('amount_min'), isFalse);
+      expect(params.containsKey('due_date_from'), isFalse);
+    });
   });
 
   group('approve / reject', () {

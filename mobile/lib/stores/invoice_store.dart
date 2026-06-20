@@ -5,6 +5,46 @@ import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 
+/// Immutable bundle of the advanced-search filters (vendor, PO, amount range,
+/// due-date range). Held alongside the quick status-chip filter + search box.
+/// `isEmpty` lets the UI show an "advanced filters active" indicator.
+class InvoiceSearchFilters {
+  final String? vendor;
+  final String? poNumber;
+  final double? amountMin;
+  final double? amountMax;
+  final DateTime? dueDateFrom;
+  final DateTime? dueDateTo;
+
+  const InvoiceSearchFilters({
+    this.vendor,
+    this.poNumber,
+    this.amountMin,
+    this.amountMax,
+    this.dueDateFrom,
+    this.dueDateTo,
+  });
+
+  static const empty = InvoiceSearchFilters();
+
+  bool get isEmpty =>
+      (vendor == null || vendor!.isEmpty) &&
+      (poNumber == null || poNumber!.isEmpty) &&
+      amountMin == null &&
+      amountMax == null &&
+      dueDateFrom == null &&
+      dueDateTo == null;
+
+  int get activeCount => [
+        vendor != null && vendor!.isNotEmpty,
+        poNumber != null && poNumber!.isNotEmpty,
+        amountMin != null,
+        amountMax != null,
+        dueDateFrom != null,
+        dueDateTo != null,
+      ].where((e) => e).length;
+}
+
 class InvoiceStore extends ChangeNotifier {
   static final InvoiceStore instance = InvoiceStore._();
   InvoiceStore._();
@@ -14,12 +54,14 @@ class InvoiceStore extends ChangeNotifier {
   String? _error;
   String? _statusFilter;
   String? _searchQuery;
+  InvoiceSearchFilters _filters = InvoiceSearchFilters.empty;
   bool _fromCache = false;
 
   List<Invoice> get invoices => _invoices;
   bool get loading => _loading;
   String? get error => _error;
   String? get statusFilter => _statusFilter;
+  InvoiceSearchFilters get filters => _filters;
   bool get fromCache => _fromCache;
 
   List<Invoice> get pendingApproval =>
@@ -34,6 +76,7 @@ class InvoiceStore extends ChangeNotifier {
     _error = null;
     _statusFilter = null;
     _searchQuery = null;
+    _filters = InvoiceSearchFilters.empty;
     _fromCache = false;
   }
 
@@ -47,17 +90,34 @@ class InvoiceStore extends ChangeNotifier {
     fetch();
   }
 
+  /// Apply the advanced-search filters (vendor / PO / amount range / due-date
+  /// range) and refetch. Pass [InvoiceSearchFilters.empty] to clear them.
+  void setFilters(InvoiceSearchFilters filters) {
+    _filters = filters;
+    fetch();
+  }
+
   Future<void> fetch() async {
     _loading = true;
     _error = null;
     notifyListeners();
 
-    final cacheKey = 'invoices_${_statusFilter ?? 'all'}_${_searchQuery ?? ''}';
+    final f = _filters;
+    final cacheKey = 'invoices_${_statusFilter ?? 'all'}_${_searchQuery ?? ''}'
+        '_${f.vendor ?? ''}_${f.poNumber ?? ''}_${f.amountMin ?? ''}'
+        '_${f.amountMax ?? ''}_${f.dueDateFrom?.toIso8601String() ?? ''}'
+        '_${f.dueDateTo?.toIso8601String() ?? ''}';
 
     try {
       _invoices = await InvoiceApi.list(
         status: _statusFilter,
         search: _searchQuery,
+        vendor: f.vendor,
+        poNumber: f.poNumber,
+        amountMin: f.amountMin,
+        amountMax: f.amountMax,
+        dueDateFrom: f.dueDateFrom,
+        dueDateTo: f.dueDateTo,
       );
       _fromCache = false;
       _loading = false;

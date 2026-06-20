@@ -5,6 +5,7 @@ import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/screens/capture_screen.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
 
 class InvoicesScreen extends StatefulWidget {
@@ -37,6 +38,28 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
       appBar: AppBar(
         title: const Text('Invoices'),
         actions: [
+          // Advanced search (vendor / PO / amount range / due-date range).
+          // A dot badge marks an active advanced filter so it's never invisible.
+          ListenableBuilder(
+            listenable: InvoiceStore.instance,
+            builder: (context, _) {
+              final active = !InvoiceStore.instance.filters.isEmpty;
+              return Semantics(
+                label: active
+                    ? 'Advanced search, filters active'
+                    : 'Advanced search',
+                button: true,
+                child: IconButton(
+                  tooltip: 'Advanced Search',
+                  icon: Badge(
+                    isLabelVisible: active,
+                    child: const Icon(Icons.tune),
+                  ),
+                  onPressed: _openAdvancedSearch,
+                ),
+              );
+            },
+          ),
           // Explicit label is the screen-reader name (tooltip alone isn't
           // exposed as a semantics label on all platforms — WCAG 4.1.2).
           Semantics(
@@ -140,6 +163,17 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
         onSelected: (_) => InvoiceStore.instance.setStatusFilter(value),
       ),
     );
+  }
+
+  Future<void> _openAdvancedSearch() async {
+    final result = await showAdvancedSearchSheet(
+      context,
+      InvoiceStore.instance.filters,
+    );
+    // null = dismissed (no change); empty = Clear; otherwise Apply.
+    if (result != null) {
+      InvoiceStore.instance.setFilters(result);
+    }
   }
 
   void _openDetail(Invoice invoice) {

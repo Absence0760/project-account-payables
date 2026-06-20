@@ -40,6 +40,12 @@ class InvoiceApi {
   static Future<List<Invoice>> list({
     String? status,
     String? search,
+    String? vendor,
+    String? poNumber,
+    double? amountMin,
+    double? amountMax,
+    DateTime? dueDateFrom,
+    DateTime? dueDateTo,
     int page = 1,
     int perPage = 20,
   }) async {
@@ -49,12 +55,31 @@ class InvoiceApi {
     };
     if (status != null) params['status'] = status;
     if (search != null) params['search'] = search;
+    // Advanced-search filters — backend query-param names in
+    // `backend/app/api/invoices.py::list_invoices`.
+    if (vendor != null && vendor.isNotEmpty) params['vendor'] = vendor;
+    if (poNumber != null && poNumber.isNotEmpty) {
+      params['po_number'] = poNumber;
+    }
+    if (amountMin != null) params['amount_min'] = amountMin.toString();
+    if (amountMax != null) params['amount_max'] = amountMax.toString();
+    if (dueDateFrom != null) {
+      params['due_date_from'] = _isoDate(dueDateFrom);
+    }
+    if (dueDateTo != null) params['due_date_to'] = _isoDate(dueDateTo);
 
     final items = await _api.getList('/invoices', params);
     return items
         .map((e) => Invoice.fromJson(e as Map<String, dynamic>))
         .toList();
   }
+
+  /// `YYYY-MM-DD` — the backend parses these into `date` (FastAPI `date`
+  /// query params).
+  static String _isoDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
 
   static Future<Invoice> getById(String id) async {
     final data = await _api.get('/invoices/$id');

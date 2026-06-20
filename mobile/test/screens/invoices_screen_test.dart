@@ -140,6 +140,34 @@ void main() {
     expect(find.widgetWithText(FilterChip, 'Approved'), findsOneWidget);
     expect(find.widgetWithText(FilterChip, 'Paid'), findsOneWidget);
     expect(find.byIcon(Icons.camera_alt), findsOneWidget);
+    // Advanced search action is present.
+    expect(find.byIcon(Icons.tune), findsOneWidget);
+  });
+
+  testWidgets('opening advanced search and applying filters refetches',
+      (tester) async {
+    Map<String, String>? lastParams;
+    ApiClient().debugConfigure(
+      client: MockClient((req) async {
+        lastParams = req.url.queryParameters;
+        return _list([]);
+      }),
+    );
+
+    await tester.pumpWidget(const MaterialApp(home: InvoicesScreen()));
+    await _pumpUntil(tester, find.text('No invoices found'));
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    expect(find.text('Advanced Search'), findsOneWidget);
+
+    await tester.enterText(
+        find.widgetWithText(TextFormField, 'Vendor'), 'Globex');
+    await tester.tap(find.text('Apply'));
+    await tester.pumpAndSettle();
+
+    expect(store.filters.vendor, 'Globex');
+    expect(lastParams?['vendor'], 'Globex');
   });
 
   testWidgets('the "All" chip is selected by default', (tester) async {
