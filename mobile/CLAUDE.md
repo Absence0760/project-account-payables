@@ -295,13 +295,23 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   **Settings** (`settings_screen.dart`) — endonyms (English / Deutsch /
   Français / Español / Português (Brasil) / 日本語) plus a "System default"
   entry that clears the override.
-- **String coverage (starter set)** — the nav (`home_screen`), **dashboard**,
-  **invoices list**, and the **settings** screen (incl. the picker) are
-  extracted, mirroring what the web extracted first. The rest of the app stays
+- **String coverage** — extracted so far: the nav (`home_screen`),
+  **dashboard**, **invoices list**, the **settings** screen (incl. the picker),
+  and — added incrementally — the **notifications center**
+  (`notifications_screen`), **vendors** (`vendors_screen`), **exceptions**
+  (`exceptions_screen`), and **payments history** (`payments_screen`, incl. its
+  inline payment-status labels). Mirrors what the web extracted. The rest of the
+  app (invoice detail, payment queue/runs, approvals, capture, login) stays
   hardcoded English until its extraction slice — an un-extracted literal simply
-  stays English (the same incremental path as web). To extract a string: add a
-  flat camelCase key + value to `app_en.arb`, translate it in every other ARB,
-  run `flutter gen-l10n`, and replace the literal with `l.<key>`.
+  stays English (the same incremental path as web), and data-driven enum/status
+  maps that live in shared badge widgets (`status_badge`, `vendor_status_badge`,
+  `exception_status_badge`) are left English until their own turn. To extract a
+  string: add a flat camelCase key + value to `app_en.arb`, translate it in
+  every other ARB, run `flutter gen-l10n`, and replace the literal with
+  `l.<key>`. Any test that pumps a now-localized screen must wrap it in a
+  `MaterialApp` carrying `AppLocalizations.localizationsDelegates` +
+  `supportedLocales` (the per-file `_localized` / `_host` helper) or
+  `AppLocalizations.of(context)` null-checks at runtime.
 - **Tests** — `test/l10n/arb_parity_test.dart` is the ARB key-parity guard
   (mirrors the web `messages_parity`): every locale ARB has exactly the
   template's key set, no empty values, and the same placeholder *set* (deduped
