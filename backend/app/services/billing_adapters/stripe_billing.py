@@ -1,4 +1,4 @@
-"""Stripe Billing adapter — SKELETON (later slice wires the live API calls).
+"""Stripe Billing adapter — live REST calls over ``httpx``.
 
 Fail-closed posture: every method that would touch Stripe raises
 ``BillingNotConfigured`` when no API key is present, so selecting this provider
@@ -6,12 +6,15 @@ without a key can never silently no-op or fall back to a permissive path. The
 real secret arrives via sops (``AP_BILLING_STRIPE_API_KEY`` /
 ``AP_BILLING_STRIPE_WEBHOOK_SECRET``) — there is NO hardcoded fallback.
 
-The wire shape is correct (the DTOs the dispatcher/caller expect, the webhook
-HMAC verification + the dedupe contract), but the actual ``stripe`` SDK / HTTP
-calls are intentionally left as documented skeletons for the next slice (see the
-``TODO(jared)`` markers). ``parse_webhook`` IS implemented end-to-end (HMAC
-verify via the shared ``webhook_security`` helper) because the webhook invariant
-requires it now.
+Implemented end-to-end against the Stripe REST API (key as HTTP-Basic username,
+form-encoded bodies, ``Idempotency-Key`` on every create so a retry can't
+duplicate): per-org customer + per-plan price provisioning
+(``ensure_customer`` / ``ensure_price``), ``create_subscription`` /
+``get_subscription``, ``report_usage`` (Billing Meter Events, one per meter,
+quantities as exact decimal strings), and ``parse_webhook`` (Stripe-Signature
+HMAC verify). ``create_subscription`` consumes the resolved ``stripe_customer_id``
++ ``stripe_price_id`` from config (the provisioning service resolves + persists
+them); without them it fails closed.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import hashlib
 import hmac
 import json
 import logging
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 
@@ -39,6 +43,16 @@ logger = logging.getLogger(__name__)
 # (AP_BILLING_STRIPE_API_BASE) so a sandbox / test can repoint it; this constant
 # is only the last-resort fallback when config carries no value.
 _DEFAULT_API_BASE = "https://api.stripe.com"
+
+
+def _to_minor_units(amount: Decimal) -> int:
+    """Convert an exact Decimal money amount to integer minor units (cents).
+
+    Decimal-exact: multiply by 100 and quantize to a whole number with
+    ROUND_HALF_UP before converting to int — never via float. Stripe prices are
+    integer minor units, so $49.00 -> 4900.
+    """
+    return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 class BillingNotConfigured(RuntimeError):
@@ -100,6 +114,60 @@ class StripeBillingAdapter(BillingAdapter):
             auth=(self._api_key, ""),
             timeout=self._timeout,
         )
+
+    async def ensure_customer(
+        self, *, organization_id: str, name: str | None = None, email: str | None = None
+    ) -> str:
+        """Resolve-or-create the Stripe ``customer`` for an org. Returns its id.
+
+        Idempotent at the provider: a stable ``Idempotency-Key`` keyed on the org
+        id means a retried create returns the original customer rather than a
+        duplicate. Stripe has no upsert, so the caller persists the returned id
+        (on ``Organization.settings.billing.stripe_customer_id``) and passes it
+        back on the next call to skip this round-trip entirely.
+
+        PII boundary: only the org name (a business name, not personal data) and
+        an admin contact email are sent — never bank/tax/PAN data.
+        """
+        self._require_key()
+        form: dict[str, str] = {"metadata[organization_id]": str(organization_id)}
+        if name:
+            form["name"] = name
+        if email:
+            form["email"] = email
+        headers = {"Idempotency-Key": f"ap-customer-{organization_id}"}
+        async with self._client() as client:
+            resp = await client.post("/v1/customers", data=form, headers=headers)
+        payload = self._json_or_raise(resp, "ensure_customer")
+        return str(payload["id"])
+
+    async def ensure_price(
+        self, *, plan_code: str, monthly_price: Decimal, currency: str = "USD"
+    ) -> str:
+        """Resolve-or-create the recurring Stripe ``price`` for a plan. Returns its id.
+
+        Maps our internal ``Plan`` to a Stripe monthly recurring price. The
+        unit amount is the plan's monthly price in the smallest currency unit
+        (cents) — computed with exact Decimal math, never float. Idempotent via
+        an ``Idempotency-Key`` keyed on the plan code + amount + currency, so a
+        retried create returns the original price. The caller persists the id
+        (on ``Plan``-keyed ``Organization.settings.billing.plan_price_ids``).
+        """
+        self._require_key()
+        unit_amount = _to_minor_units(monthly_price)
+        cur = currency.lower()
+        form = {
+            "unit_amount": str(unit_amount),
+            "currency": cur,
+            "recurring[interval]": "month",
+            "product_data[name]": plan_code,
+            "metadata[plan_code]": plan_code,
+        }
+        headers = {"Idempotency-Key": f"ap-price-{plan_code}-{unit_amount}-{cur}"}
+        async with self._client() as client:
+            resp = await client.post("/v1/prices", data=form, headers=headers)
+        payload = self._json_or_raise(resp, "ensure_price")
+        return str(payload["id"])
 
     async def create_subscription(self, request: CreateSubscriptionRequest) -> ProviderSubscription:
         """Create a subscription at Stripe and normalize the result.

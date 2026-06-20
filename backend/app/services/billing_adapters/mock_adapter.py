@@ -12,6 +12,7 @@ It never moves money — there is no money to move locally.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 from app.services.billing_adapters.base import (
     BillingAdapter,
@@ -27,9 +28,19 @@ from app.services.billing_adapters.dispatcher import register_billing_adapter
 class MockBillingAdapter(BillingAdapter):
     provider_name = "mock"
 
-    async def create_subscription(
-        self, request: CreateSubscriptionRequest
-    ) -> ProviderSubscription:
+    async def ensure_customer(
+        self, *, organization_id: str, name: str | None = None, email: str | None = None
+    ) -> str:
+        # Deterministic synthetic id derived from the org — stable across retries.
+        return f"mock_cus_{organization_id}"
+
+    async def ensure_price(
+        self, *, plan_code: str, monthly_price: Decimal, currency: str = "USD"
+    ) -> str:
+        # Deterministic synthetic id derived from the plan — stable across retries.
+        return f"mock_price_{plan_code}"
+
+    async def create_subscription(self, request: CreateSubscriptionRequest) -> ProviderSubscription:
         # Deterministic synthetic id so a retried create is idempotent locally.
         return ProviderSubscription(
             external_subscription_id=f"mock_sub_{request.organization_id}",

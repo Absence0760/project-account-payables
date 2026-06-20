@@ -67,9 +67,23 @@ class BillingAdapter:
     def __init__(self, config: dict | None = None):
         self.config = config or {}
 
-    async def create_subscription(
-        self, request: CreateSubscriptionRequest
-    ) -> ProviderSubscription:
+    async def ensure_customer(
+        self, *, organization_id: str, name: str | None = None, email: str | None = None
+    ) -> str:
+        """Resolve-or-create the provider-side customer for an org. Returns its id.
+
+        Idempotent at the provider (a stable per-org idempotency key). The caller
+        persists the returned id so subsequent calls skip the round-trip.
+        """
+        raise NotImplementedError
+
+    async def ensure_price(
+        self, *, plan_code: str, monthly_price: Decimal, currency: str = "USD"
+    ) -> str:
+        """Resolve-or-create the recurring provider-side price for a plan. Returns its id."""
+        raise NotImplementedError
+
+    async def create_subscription(self, request: CreateSubscriptionRequest) -> ProviderSubscription:
         raise NotImplementedError
 
     async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription:

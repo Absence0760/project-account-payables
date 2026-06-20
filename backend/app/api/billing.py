@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ROLE_ADMIN, ROLE_CFO, require_roles
@@ -26,7 +26,12 @@ from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
-from app.services.billing import get_active_subscription, rollup_usage
+from app.services.billing import (
+    PlanChangeError,
+    change_plan,
+    get_active_subscription,
+    rollup_usage,
+)
 from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/billing", tags=["billing"])
@@ -116,4 +121,63 @@ async def get_subscription(
         subscription=sub_view,
         period=period,
         usage=usage.as_meters(),
+    )
+
+
+class PlanChangeRequest(BaseModel):
+    # Target plan's stable machine code (Plan.code).
+    plan_code: str = Field(min_length=1, max_length=50)
+
+
+class ProrationView(BaseModel):
+    # Net mid-period adjustment as an exact decimal STRING (never float):
+    # positive = extra charge (upgrade), negative = credit (downgrade),
+    # "0.00" = no change / same plan.
+    amount: str
+    unused_days: int
+    period_days: int
+
+
+class PlanChangeResponse(BaseModel):
+    changed: bool
+    old_plan_code: str
+    new_plan_code: str
+    proration: ProrationView
+
+
+@router.post("/change-plan", response_model=PlanChangeResponse)
+async def change_subscription_plan(
+    body: PlanChangeRequest,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+    control_db: AsyncSession = Depends(get_control_db),
+) -> PlanChangeResponse:
+    """Move the org's live subscription to another plan, prorated mid-period.
+
+    admin/cfo only (matches the read endpoint). Idempotent: changing to the plan
+    the org is already on is a successful no-op (``changed=false``, zero
+    proration) — a retry can't double-charge. 404 when the org has no live
+    subscription or the target plan is unknown/inactive. Every applied change
+    writes an append-only ``billing.plan_changed`` audit row. Money in the
+    response is an exact decimal string.
+    """
+    try:
+        result = await change_plan(
+            control_db, org=org, new_plan_code=body.plan_code, actor_id=user.id
+        )
+    except PlanChangeError as exc:
+        # 404 (not 400): don't enumerate which plan codes / subscriptions exist.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plan change not available."
+        ) from exc
+
+    return PlanChangeResponse(
+        changed=result.changed,
+        old_plan_code=result.old_plan_code,
+        new_plan_code=result.new_plan_code,
+        proration=ProrationView(
+            amount=str(result.proration.amount),
+            unused_days=result.proration.unused_days,
+            period_days=result.proration.period_days,
+        ),
     )

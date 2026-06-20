@@ -10,6 +10,16 @@ from app.services.billing.entitlements import (
     get_entitlements,
     has_entitlement,
 )
+from app.services.billing.plan_change import (
+    PlanChangeError,
+    PlanChangeResult,
+    change_plan,
+)
+from app.services.billing.proration import ProrationResult, compute_proration
+from app.services.billing.provisioning import (
+    ProvisionedIds,
+    provision_org_billing,
+)
 from app.services.billing.usage_rollup import UsageRollup, rollup_usage
 
 __all__ = [
@@ -18,4 +28,11 @@ __all__ = [
     "get_active_subscription",
     "get_entitlements",
     "has_entitlement",
+    "compute_proration",
+    "ProrationResult",
+    "provision_org_billing",
+    "ProvisionedIds",
+    "change_plan",
+    "PlanChangeError",
+    "PlanChangeResult",
 ]
