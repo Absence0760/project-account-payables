@@ -1,0 +1,62 @@
+/**
+ * Response contracts for the platform billing surface — how the AP platform
+ * bills its OWN customers (the orgs/tenants): plans, subscription state, and
+ * usage-to-date. This is the control-plane billing read surface, distinct from
+ * the accounts-payable money path the app manages for customers.
+ *
+ * Mirrors `GET /api/billing/subscription` (`backend/app/api/billing.py`).
+ * Money values arrive as exact decimal **strings** (this is a billing surface —
+ * exactness is the point) and are rendered through `<Money>` / `formatMoney`,
+ * never re-computed client-side.
+ */
+
+/** Lifecycle of an org's subscription. Mirrors the backend's four states. */
+export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'canceled';
+
+export interface BillingPlan {
+	/** Stable machine id (e.g. `growth`). */
+	code: string;
+	/** Display name (e.g. `Growth`). */
+	name: string;
+	/** Monthly price as an exact decimal string (e.g. `"49.00"`). */
+	monthly_price: string;
+	/** ISO 4217 currency code. */
+	currency: string;
+	/** Feature flags, e.g. `{ "public_api": true, "max_seats": 25 }`. */
+	entitlements: Record<string, unknown>;
+	/** Free-trial length in days. */
+	trial_days: number;
+}
+
+export interface BillingSubscription {
+	status: SubscriptionStatus;
+	/** ISO timestamps bounding the current billing period. */
+	current_period_start: string | null;
+	current_period_end: string | null;
+	/** ISO timestamp the trial ends (null once the trial is over / never trialed). */
+	trial_end: string | null;
+	/** True when a live provider (Stripe) owns the subscription. */
+	externally_managed: boolean;
+}
+
+/** Usage-to-date for the current period. All values are exact strings. */
+export interface BillingUsage {
+	/** Total extraction events in the period. */
+	extractions: string;
+	/** The billable (platform-program) subset of extractions. */
+	extractions_platform: string;
+	/** Card rebate total (informational this slice) as a decimal string. */
+	card_rebate_total: string;
+}
+
+export interface BillingSubscriptionResponse {
+	/** Active billing adapter (e.g. `mock`, `stripe_billing`). */
+	provider: string;
+	/** Null when the org has no live subscription. */
+	plan: BillingPlan | null;
+	/** Null when the org has no live subscription. */
+	subscription: BillingSubscription | null;
+	/** The period the usage is rolled up for, `YYYY-MM`. */
+	period: string;
+	usage: BillingUsage;
+}
