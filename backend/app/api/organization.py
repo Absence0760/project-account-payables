@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -339,6 +339,18 @@ async def update_custom_domains(
         seen.add(host)
         normalized.append(host)
 
+    # Serialize the check-and-write so two orgs can't race past the
+    # cross-org-uniqueness guard and both claim the same host (a TOCTOU hijack).
+    # A transaction-level advisory lock on a constant key makes every
+    # custom-domains write across the cluster mutually exclusive; it auto-releases
+    # at commit/rollback. Writes are admin-initiated config (rare), so a single
+    # global lock is cheap and there's no DB constraint to add (the domains live
+    # in a JSONB array, not their own column). Key derived from a fixed label.
+    _CUSTOM_DOMAINS_LOCK_KEY = 0x4350_4D44  # "CPMD" — arbitrary constant
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:k)").bindparams(k=_CUSTOM_DOMAINS_LOCK_KEY)
+    )
+
     # Cross-org uniqueness: refuse a host already claimed by another org. Query
     # each candidate via the SAME JSONB containment the resolver uses, so the
     # check and the resolution can't disagree.
@@ -354,9 +366,13 @@ async def update_custom_domains(
             )
         ).scalars().first()
         if owner is not None and owner != org.id:
+            # Generic message — do NOT echo the host, which would confirm to this
+            # caller that a specific hostname is claimed by another tenant
+            # (cross-tenant info disclosure + the endpoint's PII-free posture).
             raise HTTPException(
                 status_code=409,
-                detail=f"Custom domain '{host}' is already registered to another tenant.",
+                detail="One or more requested custom domains is already registered "
+                "to another tenant.",
             )
 
     existing = dict(org.settings or {})
