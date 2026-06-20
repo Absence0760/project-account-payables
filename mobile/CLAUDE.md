@@ -20,15 +20,20 @@ flutter build apk            # production Android APK
 flutter build appbundle      # production Android App Bundle (Play Store)
 flutter analyze              # lint/analyze
 flutter test                 # run tests
+flutter gen-l10n             # regenerate AppLocalizations from lib/l10n/*.arb
 ```
 
 ## Project structure
 
 ```
 mobile/
+├── l10n.yaml                    # gen-l10n config (arb-dir, template, committed output dir)
 ├── lib/
-│   ├── main.dart                # App entry, splash, biometric check, push init
+│   ├── main.dart                # App entry, splash, biometric check, push init; MaterialApp.locale ← LocaleStore (i18n)
 │   ├── config.dart              # API URL, tenant slug
+│   ├── l10n/                    # i18n — ARB catalogues + committed gen-l10n output
+│   │   ├── app_en.arb           # source-of-truth catalogue (+ app_{de,fr,es,pt,pt_BR,ja}.arb)
+│   │   └── gen/                 # committed AppLocalizations (flutter gen-l10n; non-synthetic)
 │   ├── api/
 │   │   ├── api_client.dart      # HTTP client (JWT + X-Tenant-Slug header, timeout, debug logs)
 │   │   └── endpoints.dart       # Typed API methods (auth, invoices, dashboard, payments)
@@ -50,6 +55,7 @@ mobile/
 │   │   ├── invoice_store.dart   # Invoice list, filter, approve/reject (offline cached)
 │   │   ├── exception_store.dart # Exception list, filter, resolve/escalate/dismiss (offline cached)
 │   │   ├── dashboard_store.dart # Dashboard KPI data (offline cached)
+│   │   ├── locale_store.dart    # Per-device display-language choice (i18n) → MaterialApp.locale; persisted via secure storage, never account-roamed
 │   │   ├── vendor_store.dart    # Vendor list, filter/search, verify/reject, ERP sync (offline cached)
 │   │   └── payment_queue_store.dart # Payment queue + summary + runs; per-row method selection; create/execute/cancel runs
 │   ├── screens/
@@ -238,10 +244,60 @@ controls, tap-target + contrast).
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.
 
+## Internationalization (i18n)
+
+Multi-language UI via the **idiomatic Flutter `gen-l10n` + `intl` + `.arb`**
+path — the mobile counterpart of the web `frontend/src/lib/i18n/` runtime.
+Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
+
+- **Catalogues** — `lib/l10n/app_<locale>.arb`. `app_en.arb` is the
+  source-of-truth template (with `@key` placeholder metadata); the others
+  translate its values. ICU plurals (`{count, plural, one {…} other {…}}`) and
+  `{placeholder}` substitution are used where the web uses them. Japanese has
+  no grammatical plural, so its plural blocks carry only an `other` arm.
+  `app_pt.arb` is a base-Portuguese fallback that gen-l10n **requires**
+  alongside the script/country `app_pt_BR.arb` (same content).
+- **Config** — `l10n.yaml` drives generation; `flutter: generate: true` in
+  `pubspec.yaml` wires it into the build. Output is **committed**
+  (non-synthetic): `flutter gen-l10n` writes `AppLocalizations` into
+  `lib/l10n/gen/` (in the tree, reviewable, travels with a clone — recent
+  Flutter dropped the `synthetic-package` flag; an explicit `output-dir` is
+  what lands it in the tree). **Re-run `flutter gen-l10n` after editing any
+  ARB** and commit the regenerated `gen/` files.
+- **Reading strings** — `AppLocalizations.of(context).<key>` (e.g.
+  `l.navInvoices`, `l.dashboardInvoiceCount(n)`). A widget under test needs
+  `localizationsDelegates: AppLocalizations.localizationsDelegates` +
+  `supportedLocales: AppLocalizations.supportedLocales` on its `MaterialApp`
+  (no explicit `locale` → defaults to `en`, so English assertions hold).
+- **Per-device locale** — language is a **device** choice (like the biometric
+  toggle), NOT account-roamed. `LocaleStore` (`stores/locale_store.dart`, a
+  `ChangeNotifier` singleton) persists the choice locally via
+  `flutter_secure_storage` and never sends it to the backend. `main.dart`
+  wraps `MaterialApp` in a `ListenableBuilder` on `LocaleStore.instance` and
+  passes `locale: LocaleStore.instance.locale` (`null` = follow system) so a
+  picker change re-localizes the whole tree live. The picker lives in
+  **Settings** (`settings_screen.dart`) — endonyms (English / Deutsch /
+  Français / Español / Português (Brasil) / 日本語) plus a "System default"
+  entry that clears the override.
+- **String coverage (starter set)** — the nav (`home_screen`), **dashboard**,
+  **invoices list**, and the **settings** screen (incl. the picker) are
+  extracted, mirroring what the web extracted first. The rest of the app stays
+  hardcoded English until its extraction slice — an un-extracted literal simply
+  stays English (the same incremental path as web). To extract a string: add a
+  flat camelCase key + value to `app_en.arb`, translate it in every other ARB,
+  run `flutter gen-l10n`, and replace the literal with `l.<key>`.
+- **Tests** — `test/l10n/arb_parity_test.dart` is the ARB key-parity guard
+  (mirrors the web `messages_parity`): every locale ARB has exactly the
+  template's key set, no empty values, and the same placeholder *set* (deduped
+  — a 1-arm `ja` plural compares equal to a 2-arm `en` one).
+  `test/l10n/locale_switch_test.dart` proves the `LocaleStore` →
+  `MaterialApp.locale` plumbing re-localizes a visible string live.
+
 ## Conventions
 
 - **StatefulWidget + setState** for local state, **ChangeNotifier** for shared state
-- **No code generation** — manual `fromJson` factories (keeps things simple)
+- **No code generation** — manual `fromJson` factories for models (the only
+  generated code is the gen-l10n `AppLocalizations` under `lib/l10n/gen/`)
 - **Material 3** with `useMaterial3: true`
 - **iOS + Android** — no web/desktop targets
 - **Lint rules** (`analysis_options.yaml`): `prefer_single_quotes`, `require_trailing_commas`, `sort_pub_dependencies`, `always_use_package_imports`
