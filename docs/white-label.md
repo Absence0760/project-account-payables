@@ -1,10 +1,16 @@
 # White-Label / Partner Branding
 
 Per-tenant white-labeling so an organization can present the app under its own
-product name, logo, and accent colors. This is the **first slice**: brand config
-+ frontend theming via CSS custom properties. Custom domains, branded
-PDFs/emails, and reseller multi-tenant admin are later slices (see
-`docs/roadmap.md`).
+product name, logo, and accent colors. Shipped so far:
+
+1. **Brand config + frontend theming** (first slice) — `settings.brand`,
+   `GET/PUT /api/organization/branding`, CSS custom-property theming.
+2. **Branded outbound surfaces** (this slice) — the generated PDFs (remittance,
+   1099 working copy, SOX audit report) and outbound transactional emails carry
+   the tenant's product name + logo + accent, not the platform's.
+
+Custom domains (vanity hostnames) and reseller / partner multi-tenant admin are
+later slices (see `docs/roadmap.md`).
 
 ## What it covers
 
@@ -85,17 +91,74 @@ an accent background clears WCAG 1.4.3 contrast. Orgs are encouraged (UI hint) t
 set a darker strong accent for the same reason, but the app does not enforce a
 contrast ratio on custom colors in this slice.
 
+## Branded outbound surfaces (PDFs + emails)
+
+All outbound surfaces resolve brand through **one** helper —
+`backend/app/services/branding.py::get_brand_context(org_settings)` — which
+returns a frozen `BrandContext` (product name, logo URL, accent color, support /
+legal URLs) with platform defaults baked in. It is **pure + total**: tolerates a
+`None` settings dict, a missing / non-dict `brand` block, and individually
+malformed fields (each falls back to its platform default for text/accent, or to
+empty for URLs), and never touches the network. Platform defaults: product name
+**"Accounts Payable"**, accent **`#638cff`** (kept in sync with the frontend
+`app.css` token).
+
+### PDFs
+
+`remittance_pdf.py`, `tax_1099_forms.py`, and `audit_report_pdf.py` each take a
+resolved `BrandContext` on their render context (defaulting to the platform brand
+so an old call site still renders) and draw a branded header — the tenant **logo**
+when one is configured and embeddable, otherwise the tenant **product name** in
+the **accent color**. The remittance footer also appends the tenant's support
+URL when set.
+
+**Logo embed is best-effort and bounded** (`fetch_logo_bytes` /
+`build_logo_flowable`): the fetch is time-bounded (`LOGO_FETCH_TIMEOUT_SECONDS`,
+3s) and size-bounded (`LOGO_MAX_BYTES`, 1 MiB, enforced both via the
+`Content-Length` header and a hard cap on the streamed bytes), only `http(s)`
+URLs are fetched, and **any** failure (no URL, bad scheme, timeout, oversized,
+non-2xx, undecodable image) returns `None` so the renderer falls back to the
+product-name text. Logo embedding can never break PDF generation, and a dev box
+with no network renders fine. Money stays exact and no PII enters the header /
+footer (brand chrome only).
+
+### Emails
+
+The `EmailMessage` dataclass carries an optional `brand: BrandContext`. The
+email adapters (`console` / `smtp` / `ses`) apply it uniformly via shared
+`EmailAdapter` helpers (`_branded_from` / `_branded_html` / `_branded_text`):
+
+- the **From** display name becomes the tenant product name
+  (`Acme Pay <no-reply@platform.com>` — the deliverable address is unchanged;
+  an address that already has a display name, or is empty, is left alone; the
+  name is sanitized of quotes / CR / LF so it can't break the header);
+- the **HTML** body is wrapped with a small brand header line (product name in
+  the accent color) and a support-link footer (only when a support URL is set);
+- the **plaintext** body gets the same support-link footer.
+
+A message with no `brand` set uses the **platform-default** brand, so every
+email still presents consistently. The tenant-aware senders that resolve and
+pass the brand: `notification_dispatch.notify_event` (invoice-lifecycle emails),
+`vendor_notifications.notify_vendor_of_invoice_event` (supplier paid / rejected),
+and `supplier_chat.notify_supplier_of_ap_message` (portal chat link). The
+control-plane signup / MFA emails fire before a tenant brand exists, so they use
+the platform default. Brand resolution for emails is best-effort — a load
+failure degrades to the platform brand, never breaking the send.
+
 ## Tests
 
 - Backend: `backend/tests/test_branding.py` — schema validation (hex/URL
   guards), admin-only mutate, persistence to `settings.brand`, PII-free audit
-  row, 422 on bad hex/URL, 401 without auth, GET readable by any role.
+  row, 422 on bad hex/URL, 401 without auth, GET readable by any role; **plus**
+  `get_brand_context` resolution + platform-default + malformed-field fallback,
+  the remittance / 1099 / audit PDFs rendering the product name (+ logo-fetch
+  failure falling back to text), and the email adapters branding the From /
+  HTML header / support footer.
 - Frontend: `frontend/src/lib/stores/brandTheme.test.ts` — the pure
   color-application / fallback logic (`isValidHexColor`, `brandThemeVars`).
 
 ## Deferred to later slices
 
 - Custom domains (vanity hostnames per tenant).
-- Branded PDFs (remittance, audit report) and outbound emails.
 - Reseller / partner multi-tenant admin (one partner managing many tenants'
   branding).

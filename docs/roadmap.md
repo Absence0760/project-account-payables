@@ -612,17 +612,17 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 ## Priority 9: AI-Powered Automation (strong differentiators)
 
 ### AI Agents for Autonomous Exception Handling
-**Status:** In progress (first slice: amount-mismatch resolver shipped)
+**Status:** Resolvers + dashboard shipped (amount-mismatch, missing-PO, GL-coding; agent dashboard UI)
 
 AI agents that autonomously resolve common exceptions without human intervention — mismatched amounts, missing PO references, GL coding errors. See `backend/docs/exception-agents.md`.
 
 - [x] Agent framework — registry + coordinator + autonomy thresholds (`services/exception_agents/`)
 - [x] Auto-resolve: small amount mismatches within tolerance (`amount_mismatch_v1`)
 - [x] Auto-resolve: missing PO — match by vendor + amount + date range — `missing_po_v1` resolver: finds the real PO by vendor (id/fuzzy ≥0.8) + amount (per-vendor/commodity tolerance) + date window, links by `po_number`, approves via `review` (never adjusts the amount); a registered `po_mismatch` **dispatcher** routes to `amount_mismatch_v1` (status `matched`) vs `missing_po_v1` (status `no_po`). Confidence-gated on autonomy; ambiguous/none → escalate; idempotent. Multi-PO split matching deferred
-- [ ] Auto-resolve: GL coding errors — correct based on historical patterns *(deferred)*
+- [x] Auto-resolve: GL coding errors — correct based on historical patterns — `gl_coding_v1` resolver under a `missing_data` **dispatcher**: derives the vendor's dominant GL (and an empty cost center) from approved history via the pure `vendor_enrichment.suggest_fields` primitive (no stats reimplemented), fills or corrects the GL through the audited `review.approve_invoice(corrections=…)` path (never moves money), confidence-banded (0.92 strong / 0.80 majority) and gated on the org autonomy threshold; ambiguous / other-missing-field / already-correct → escalate; CFO-gate honoured; idempotent (re-derives under the row lock). See `backend/docs/exception-agents.md`
 - [x] Escalation rules — sub-threshold confidence routes to human (`escalated`)
 - [x] Agent decision log — `AgentDecision` table + `/api/exceptions/agent-decisions`
-- [ ] Dashboard: agent resolution rate, accuracy, escalation rate *(API delivered: `/agent-stats`; UI deferred; accuracy is a placeholder pending a human-overturn signal)*
+- [x] Dashboard: agent resolution rate, accuracy, escalation rate — `/exceptions` → **AI Agents** tab (`AgentDashboard.svelte`) over `/agent-stats` + `/agent-decisions`: KPI row (decisions / resolution rate / escalation rate / auto-resolved / escalated) + recent-decision log with an action filter. Accuracy is shown as an explicit "Not yet measured" placeholder (a human-overturn signal is needed before a real figure — never fabricated)
 - [x] Configurable autonomy level per org (conservative → aggressive)
 
 ---
@@ -953,13 +953,13 @@ The product meters extraction usage (`ExtractionUsage`, `CardRebate`) but had no
 ---
 
 ### White-Label / Partner Branding
-**Status:** In progress (first slice: per-tenant brand config + frontend CSS-var theming shipped; custom domains, branded PDFs/emails, and reseller multi-tenant admin deferred)
+**Status:** In progress (per-tenant brand config + frontend CSS-var theming shipped; branded outbound PDFs + emails shipped; custom domains and reseller multi-tenant admin deferred)
 
 Per-tenant theming so resellers, banks, and ERP partners can offer the platform under their own brand — a common mid-market distribution channel and an enterprise procurement ask.
 
 - [x] Per-tenant brand config — logo, accent/theme tokens, product name, support + legal links on `Organization.settings.brand` (no migration), `GET/PUT /api/organization/branding` (admin mutate, audited, hex/URL-validated). Frontend `brand` rune store applies `--accent`/`--accent-strong` CSS custom properties on mount (org colors override the AA defaults only when set), logo + product name in the sidebar + `<title>`, edited from the Organization → Branding panel. See `docs/white-label.md`
 - [ ] Custom domain / subdomain support beyond `*.localhost` tenant routing (TLS + the existing `X-Tenant-Slug` resolution)
-- [ ] Branded outbound surfaces — emails (ties to the localized email-catalogue work), remittance/check PDFs, the supplier portal, and PDF/CSV exports carry the tenant's brand, not the platform's
+- [x] Branded outbound surfaces (PDFs + emails) — remittance / 1099 / SOX-audit PDFs and outbound transactional emails carry the tenant product name + logo + accent (resolved through one `services/branding.get_brand_context` helper; PDF logo embed is size/time-bounded + fail-soft to product-name text; email From display name + HTML header + support footer applied in the shared email-adapter base). See `docs/white-label.md`. (Supplier-portal theming + PDF/CSV-export branding + the localized email catalogue remain.)
 - [ ] Partner/reseller admin — a parent that manages multiple branded child tenants (relates to the deferred multi-entity / org-hierarchy work)
 
 **Competitors:** AvidXchange + several bank-channel AP products ship white-label; a distribution lever more than a feature
