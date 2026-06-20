@@ -38,12 +38,13 @@ class SmtpAdapter(EmailAdapter):
 
     def _build(self, message: EmailMessage) -> MimeMessage:
         mime = MimeMessage()
-        mime["From"] = self.from_address
+        mime["From"] = self._branded_from(message)
         mime["To"] = message.to
         mime["Subject"] = message.subject
-        mime.set_content(message.body_text)
-        if message.body_html:
-            mime.add_alternative(message.body_html, subtype="html")
+        mime.set_content(self._branded_text(message))
+        branded_html = self._branded_html(message)
+        if branded_html:
+            mime.add_alternative(branded_html, subtype="html")
         return mime
 
     def _send_sync(self, mime: MimeMessage) -> None:

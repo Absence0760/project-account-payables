@@ -114,6 +114,12 @@ async def notify_vendor_of_invoice_event(
     if not recipients:
         return
 
+    # Resolve the tenant brand once for the vendor emails (best-effort).
+    from app.services.notification_dispatch import _resolve_org_brand
+
+    org_id = getattr(invoice, "organization_id", None)
+    brand = await _resolve_org_brand(org_id) if org_id is not None else None
+
     try:
         rendered = render(
             event_type,
@@ -144,6 +150,7 @@ async def notify_vendor_of_invoice_event(
             rendered.body_text,
             rendered.body_html,
             event_type=event_type,
+            brand=brand,
         )
 
 
@@ -154,6 +161,7 @@ async def _send_vendor_email_best_effort(
     body_html: str | None,
     *,
     event_type: str,
+    brand=None,
 ) -> None:
     """Send one email, swallowing + logging (PII-free) any failure."""
     from app.services.email_adapters import EmailMessage, get_email_adapter
@@ -161,7 +169,13 @@ async def _send_vendor_email_best_effort(
     try:
         adapter = get_email_adapter()
         await adapter.send(
-            EmailMessage(to=to, subject=subject, body_text=body_text, body_html=body_html)
+            EmailMessage(
+                to=to,
+                subject=subject,
+                body_text=body_text,
+                body_html=body_html,
+                brand=brand,
+            )
         )
     except Exception:  # noqa: BLE001 — PII rule: never log the address
         logger.exception(

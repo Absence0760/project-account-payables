@@ -64,6 +64,28 @@ async def _load_recipients(recipient_user_ids: list[uuid.UUID]) -> dict[uuid.UUI
     return {u.id: u for u in users}
 
 
+async def _resolve_org_brand(organization_id: uuid.UUID):
+    """Load an org's resolved white-label brand context (control plane).
+
+    Returns the platform-default brand on any miss so the caller can always
+    brand the email (the platform brand is a sensible default). Best-effort —
+    never raises.
+    """
+    from app.database import control_session_factory
+    from app.models.organization import Organization
+    from app.services.branding import get_brand_context
+
+    try:
+        async with control_session_factory() as ctrl_db:
+            result = await ctrl_db.execute(
+                select(Organization.settings).where(Organization.id == organization_id)
+            )
+            org_settings = result.scalar_one_or_none()
+    except Exception:  # noqa: BLE001 — brand is cosmetic; never break dispatch.
+        return get_brand_context(None)
+    return get_brand_context(org_settings)
+
+
 async def _resolve_org_slug(organization_id: uuid.UUID) -> str | None:
     """Look up an org's tenant slug (control plane). Used only to build the
     per-recipient email-approval links — returns None on any miss so the caller
@@ -176,6 +198,11 @@ async def notify_event(
         logger.exception("notify_event: failed loading recipients for event_type=%s", event_type)
         return
 
+    # Resolve the tenant brand once for every email this dispatch sends (the
+    # From display name + HTML header + support footer). Best-effort — falls back
+    # to the platform brand on any miss.
+    brand = await _resolve_org_brand(organization_id)
+
     # Email approval: when an invoice is assigned for review and the feature is
     # configured, the reviewer's email gets per-recipient Approve/Reject links
     # (the token binds to *that* reviewer). Resolve the tenant slug once here;
@@ -245,6 +272,7 @@ async def notify_event(
                 email_text,
                 email_html,
                 event_type=event_type,
+                brand=brand,
             )
 
     # Chat fan-out (Slack / Teams) — a single channel post per event, not
@@ -267,6 +295,7 @@ async def _send_email_best_effort(
     body_html: str | None,
     *,
     event_type: str,
+    brand=None,
 ) -> None:
     """Send one email, swallowing + logging (PII-free) any failure."""
     from app.services.email_adapters import EmailMessage, get_email_adapter
@@ -274,7 +303,13 @@ async def _send_email_best_effort(
     try:
         adapter = get_email_adapter()
         await adapter.send(
-            EmailMessage(to=to, subject=subject, body_text=body_text, body_html=body_html)
+            EmailMessage(
+                to=to,
+                subject=subject,
+                body_text=body_text,
+                body_html=body_html,
+                brand=brand,
+            )
         )
     except Exception:  # noqa: BLE001
         # PII rule: log the event type only — never the recipient address.

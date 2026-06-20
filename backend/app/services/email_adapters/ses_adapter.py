@@ -34,13 +34,15 @@ class SesAdapter(EmailAdapter):
         )
 
     async def send(self, message: EmailMessage) -> None:
-        body: dict = {"Text": {"Data": message.body_text, "Charset": "UTF-8"}}
-        if message.body_html:
-            body["Html"] = {"Data": message.body_html, "Charset": "UTF-8"}
+        body: dict = {"Text": {"Data": self._branded_text(message), "Charset": "UTF-8"}}
+        branded_html = self._branded_html(message)
+        if branded_html:
+            body["Html"] = {"Data": branded_html, "Charset": "UTF-8"}
+        source = self._branded_from(message) or self.config["from_address"]
 
         def _send():
             return self._client.send_email(
-                Source=self.config["from_address"],
+                Source=source,
                 Destination={"ToAddresses": [message.to]},
                 Message={
                     "Subject": {"Data": message.subject, "Charset": "UTF-8"},

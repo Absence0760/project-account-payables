@@ -23,9 +23,9 @@ class ConsoleAdapter(EmailAdapter):
             "\n" + "=" * 72 + "\n"
             "EMAIL (console adapter — not actually sent)\n"
             f"To:      {message.to}\n"
-            f"From:    {self.config.get('from_address', '')}\n"
+            f"From:    {self._branded_from(message)}\n"
             f"Subject: {message.subject}\n" + "-" * 72 + "\n"
-            f"{message.body_text}\n" + "=" * 72
+            f"{self._branded_text(message)}\n" + "=" * 72
         )
 
     async def test_connection(self) -> bool:

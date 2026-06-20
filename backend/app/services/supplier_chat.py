@@ -228,6 +228,7 @@ async def notify_supplier_of_ap_message(
         f'<p><a href="{link}">View the conversation and reply</a></p>'
     )
 
+    from app.services.branding import get_brand_context
     from app.services.email_adapters import EmailMessage, get_email_adapter
 
     try:
@@ -238,6 +239,7 @@ async def notify_supplier_of_ap_message(
                 subject=subject,
                 body_text=body_text,
                 body_html=body_html,
+                brand=get_brand_context(org.settings),
             )
         )
     except Exception as exc:  # noqa: BLE001
