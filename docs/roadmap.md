@@ -589,11 +589,29 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 - [x] ERP status display on invoice detail — `ErpStatusPanel` derives ERP reference / document id / send error from the loaded audit log (`invoice.erp_*` / `invoice.completed` entries); shown for ERP-bound statuses + ERP-failed invoices
 
 **Low priority — admin features (less needed on mobile):**
-- [ ] Bulk operations (select multiple, delete, status change)
-- [ ] Export (CSV/XML)
-- [ ] Workflow management
-- [ ] Organization settings
-- [ ] Admin user management
+- [x] Bulk operations (select multiple, delete, status change) — invoice
+  multi-select (long-press or the checklist app-bar action) + bulk delete /
+  bulk status-change over `POST /api/invoices/bulk/{delete,status}`, gated to
+  admin/ap_manager/cfo; backend skips immutable-status rows; result snackbar
+  reports deleted/updated + skipped counts. `BulkActionBar` widget +
+  `InvoiceStore` selection state. See `mobile/CLAUDE.md`.
+- [x] Admin user management — `AdminUsersScreen` + `AdminUserStore` over
+  `/api/admin/*`: list/search users, edit roles (system roles only), activate /
+  deactivate. Admin-only, reached from Settings → Administration. (Create-user
+  + delete-user deferred — mobile focuses on the day-to-day role/status edits.)
+- [x] Organization settings — `OrgSettingsScreen` + `OrgSettingsStore` read +
+  edit the safe subset the web app exposes (company profile + invoice defaults)
+  via `GET/PATCH /api/organization`; ERP/payment/SSO secrets deliberately not
+  surfaced; web-set `logo_url` carried through unedited. Admin-only.
+- [ ] Export (CSV/XML) — backend `POST /api/invoices/bulk/export` exists and the
+  bulk-select UI now exists; mobile still needs to wire a file download/share
+  off the selection. Natural next slice after bulk-ops. **Follow-up:** add an
+  "Export" action to the invoice `BulkActionBar` that calls bulk-export and
+  hands the bytes to the platform share sheet.
+- [ ] Workflow management — list / create / edit workflow definitions; not yet
+  on mobile (lower value on a phone; the no-code builder is a desktop surface).
+  **Follow-up:** a read-only workflow list + active-step view first, before any
+  mobile editing.
 
 **Files:** `mobile/` — see `mobile/CLAUDE.md` for full structure
 
