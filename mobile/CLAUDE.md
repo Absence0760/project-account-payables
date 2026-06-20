@@ -56,8 +56,8 @@ mobile/
 │   │   ├── login_screen.dart    # Tenant + email/password login
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
 │   │   ├── dashboard_screen.dart # KPIs, aging, top vendors
-│   │   ├── invoices_screen.dart  # Invoice list with search + status filters + camera button
-│   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + activity timeline + file preview (image thumbnail / PDF card) → full viewer
+│   │   ├── invoices_screen.dart  # Invoice list with search + status filters + advanced-search (tune) action + camera button
+│   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + warnings/fraud + PO match + ERP status + activity timeline + file preview (image thumbnail / PDF card) → full viewer
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
 │   │   ├── exceptions_screen.dart # Exception queue — filter + swipe/sheet resolve/escalate/dismiss
 │   │   ├── capture_screen.dart   # Camera/gallery capture + file picker (PDF/PNG/JPG/TIFF) → upload → extract
@@ -67,6 +67,9 @@ mobile/
 │   │   └── settings_screen.dart  # User profile, biometric toggle, logout
 │   └── widgets/
 │       ├── activity_timeline.dart # Invoice audit-log timeline (action label, actor, time, per-field before→after diff); empty state; one merged Semantics label per entry
+│       ├── advanced_search_sheet.dart # Modal bottom-sheet advanced search (vendor, PO, amount range, due-date range); seeded from live filters; min≤max + decimal validation; returns InvoiceSearchFilters (Apply) / empty (Clear) / null (dismiss)
+│       ├── invoice_warnings_panel.dart # Detail-screen warnings/fraud flags (severity-coloured) + PO-match panel (match type, status, variance %, issues); one merged Semantics label per warning
+│       ├── erp_status_panel.dart # Detail-screen ERP status — ErpInfo.fromAuditLog derives ERP reference / document id / send error from the audit log; shown for ERP-bound + ERP-failed statuses
 │       ├── invoice_file_viewer.dart # Full-screen uploaded-file viewer — images via Image.network (auth headers), PDFs fetched as bytes via ApiClient.getBytes + rendered with pdfx; isPdf/absoluteUrl helpers; loading/error/Retry states
 │       ├── invoice_edit_sheet.dart # Modal bottom-sheet edit form (vendor, invoice #, amount, PO, GL, description, due date); returns the partial diff; amount sent as string-Decimal
 │       ├── status_badge.dart    # Colored invoice status chip
@@ -106,8 +109,8 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 |--------|-----------|
 | Login | `POST /api/auth/login`, `GET /api/auth/me` |
 | Dashboard | `GET /api/dashboard` |
-| Invoices | `GET /api/invoices` |
-| Invoice Detail | `GET /api/invoices/{id}`, `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline, any authenticated role) |
+| Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`) |
+| Invoice Detail | `GET /api/invoices/{id}` (carries `warnings` + `po_match`), `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline + ERP-status derivation, any authenticated role) |
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss) |
 | Payments | `GET /api/payments` |
@@ -136,7 +139,10 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Login with tenant selection
 - Dashboard (KPIs, aging buckets, top vendors)
 - Invoice list with search + status filter chips
+- Advanced search — `AdvancedSearchSheet` (app-bar `tune` action; a dot badge marks an active advanced filter) filters the list by vendor, PO number, amount range and due-date range via `InvoiceStore.setFilters` → `GET /api/invoices` (`vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`). Seeded from the live filters; validates min ≤ max + plain-decimal amounts; Apply / Clear / dismiss. The advanced filters compose with the quick status chips + search box (all carried into the same request + offline cache key)
 - Invoice detail with approve/reject
+- Invoice warnings / fraud flags + PO match — `InvoiceWarningsPanel` on the detail screen renders `Invoice.warnings` (`{type, severity, message}`, severity-coloured to WCAG AA) and the `po_match` panel (match type, status, variance %, issues). Parity with the web invoice modal; nothing renders when there are no warnings and no PO
+- ERP status — `ErpStatusPanel` shows the invoice's ERP integration status (ERP reference / document id / send error + last action). `ErpInfo.fromAuditLog` derives it from the already-loaded audit log (latest `invoice.erp_*` / `invoice.completed` entry), so no extra request. Shown for ERP-bound statuses (`sending_to_erp` / `sent_to_erp` / `posted_in_erp`) and ERP-failed invoices
 - Invoice editing — edit-sheet on the detail screen (vendor, invoice #, amount, PO, GL account, description, due date) via `PATCH /api/invoices/{id}`; amount sent as string-Decimal (never a lossy float); input validation; RBAC-gated (admin/ap_manager/cfo, hidden for clerks) and hidden in immutable statuses (the backend would 409); save success/failure announced via `A11y.announce`
 - Activity timeline — invoice audit log on the detail screen (`GET /api/invoices/{id}/audit-log`): action label, actor, timestamp, per-field before→after diff from `details.changes`; loading / empty / error states; one merged Semantics announcement per entry
 - Approvals tab with swipe-to-approve
@@ -165,9 +171,6 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - **MFA** — `AuthStore.login()` only handles `TokenResponse`; if the backend returns `MFAChallengeResponse` (when `AP_MFA_ENABLED=true` and the user is enrolled or org-enforced), login throws. Mobile users can still sign in when MFA is off, but tenants with enforcement need a mobile MFA flow + a `/profile` enrollment screen.
 - **Org Security settings** — the web `/organization` page exposes the `mfa.required` toggle; mobile has no equivalent.
 - **OIDC SSO** — `Sign in with Okta/Microsoft` button is web-only.
-- Advanced search modal (vendor, PO, amount range, date range)
-- Invoice warnings/fraud flags display
-- ERP status display on invoice detail
 - Workflow management (list, create, edit steps)
 - Organization settings (company, ERP config, extraction config)
 - Admin user management (create, edit, delete users, role assignment)
@@ -225,8 +228,12 @@ the invoice list tile, KPI card, status badge, login screen, the capture action,
 the approvals approve/reject affordances, the exception list tile + exception
 status badge + exceptions screen (queue swipe/sheet actions), the invoice
 activity timeline + invoice edit-sheet (icon-only close/clear controls labelled,
-one merged announcement per timeline entry), and the vendor list tile + vendor
-status badge (one merged row announcement; every status colour clears contrast).
+one merged announcement per timeline entry), the vendor list tile + vendor
+status badge (one merged row announcement; every status colour clears contrast),
+the invoice warnings panel (one merged "Severity: message" announcement per
+warning; every severity tint clears contrast), the ERP status panel (error-row
+contrast), and the advanced-search sheet (labelled icon-only close/date-clear
+controls, tap-target + contrast).
 `textContrastGuideline` is strict
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.

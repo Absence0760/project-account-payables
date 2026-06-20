@@ -584,9 +584,9 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 - [x] Payment queue (select invoices, choose method) — `PaymentQueueScreen` Queue tab over `GET /api/payments/queue`, per-row method dropdown
 - [x] Payment runs (create/execute batches) — Runs tab: create draft from selection, execute/cancel with CFO-approval-gate surfacing
 - [x] Payment summary cards (total paid, pending, rebates) — KPI summary bar over `GET /api/payments/summary`
-- [ ] Advanced search modal (vendor, PO, amount range, date range)
-- [ ] Invoice warnings/fraud flags display
-- [ ] ERP status display on invoice detail
+- [x] Advanced search modal (vendor, PO, amount range, date range) — `AdvancedSearchSheet` (app-bar `tune` action with an active-filter badge) → `InvoiceStore.setFilters` → `GET /api/invoices` with `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`; seeded from the live filters, validated (min ≤ max, plain decimals)
+- [x] Invoice warnings/fraud flags display — `InvoiceWarningsPanel` on the detail screen renders `Invoice.warnings` (severity-coloured) + the `po_match` panel (match type, status, variance %, issues), parity with the web modal
+- [x] ERP status display on invoice detail — `ErpStatusPanel` derives ERP reference / document id / send error from the loaded audit log (`invoice.erp_*` / `invoice.completed` entries); shown for ERP-bound statuses + ERP-failed invoices
 
 **Low priority — admin features (less needed on mobile):**
 - [ ] Bulk operations (select multiple, delete, status change)
