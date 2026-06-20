@@ -172,11 +172,13 @@ deterministic 0–100 score = weighted sum of four sub-scores (each normalised t
 | **vendor familiarity** | 20 | `min(vendor_approved_count, 5) / 5` — how many of *this vendor's* invoices the approver has approved before |
 | **experience** | 10 | `min(sample_size, 20) / 20` — total decisions made (more signal) |
 
-`horizon` defaults to 14 days. Vendor familiarity is computed in the API layer
-by counting this approver's approvals of the invoice's vendor over the same
-decision-row window the patterns are built from. The per-approver speed /
-consistency / experience come from `compute_approver_patterns` (all-vendor
-history).
+The weighted sum of those four is the candidate's **`base_score`** (0..100).
+A fifth term — the **outcome down-weight** — is then *subtracted* (see below) to
+give the final `score`. `horizon` defaults to 14 days. Vendor familiarity is
+computed in the API layer by counting this approver's approvals of the invoice's
+vendor over the same decision-row window the patterns are built from. The
+per-approver speed / consistency / experience come from
+`compute_approver_patterns` (all-vendor history).
 
 Ties break on more vendor familiarity → larger sample → `approver_id` (stable +
 deterministic). An eligible approver with **no** decision history still appears
@@ -186,6 +188,51 @@ to rank on — the caller should then fall back to its normal assignment policy.
 Each candidate carries a `reasons` list (deterministic human-readable strings)
 explaining its score. **The GET result never assigns anyone** — it's a ranked
 read model. The separate **apply** path below is what actually assigns.
+
+#### Smart routing — outcome down-weighting (the feedback loop, in the router)
+
+The four sub-scores above are **forward-looking** — they rank on the *approval*
+history alone. The router also folds in the realised human **outcomes** of each
+approver's past decisions, so it stops recommending an approver whose approvals
+don't hold up. This is the routing-side mirror of the *threshold* feedback loop
+(below): the same overturn signal, bucketed **per approver** instead of over the
+auto-approved population.
+
+- **Per-approver overturn rate** — `compute_approver_outcomes` (pure, in
+  `services/adaptive_workflows.py`) reads, for each approver, the share of their
+  `invoice.approved` decisions in the window that a human later **voided**
+  (`invoice.voided_return_to_approved`), **rejected** (`invoice.rejected`), or
+  **corrected** (a later `invoice.approved` carrying `details.changes` **by a
+  different actor** — an approver correcting their *own* call on the way in is not
+  an overturn of themselves). The same `is_overturned(voided, corrected,
+  rejected)` primitive backs both this and the threshold-side
+  `compute_outcome_stats`, so the two surfaces agree on what "overturned" means
+  and the audit parsing isn't re-derived twice. The SQL that builds these rows is
+  `_approver_outcome_rows` (a single LEFT-joined aggregate, entity-scoped via the
+  invoice join), the per-invoice mirror of `_auto_approval_outcome_rows`.
+- **The penalty** — `recommend_approvers(..., outcomes=…)` subtracts
+  `min(overturn_rate, 25 %) / 25 % × 30` points from `base_score` (floored at 0).
+  So an approver overturned **at or above 25 %** loses the full **30-point**
+  penalty; one below it loses it linearly; a clean approver loses nothing. It is
+  **banded + bounded** (≤ 30 points, never hard-zeros a candidate): a high
+  overturn rate de-prioritises an approver without making them unroutable.
+- **Thin evidence never penalises.** Below a **min-sample of 5 decided invoices**
+  the API passes no `ApproverOutcome` for that approver (`insufficient_data`), so
+  **no penalty** applies — one bad call can't sink a new approver. (The rate is
+  still surfaced for explainability; it just doesn't bite.)
+- **Explainable.** Each `RoutingCandidate` returns `base_score`,
+  `outcome_penalty`, and the per-approver `overturn_rate_pct` /
+  `overturned_count` / `outcome_sample_size`, plus a `reasons` entry when the
+  penalty bit (`down-weighted N pts — k/m decisions later overturned (r %)`) —
+  mirroring how `/anomalies` returns the baseline and `/feedback` returns its
+  basis. The `score` = `base_score − outcome_penalty`, so a held-back approver is
+  fully traceable on the wire.
+
+Because the `score` is what the candidates sort on, a heavily-overturned approver
+can drop below a clean peer even when the overturned one is *more* vendor-familiar
+(the −30 penalty outweighs the +20 familiarity edge) — the router stops
+recommending decisions that don't hold up. The **apply** path is unchanged: it
+still assigns whichever candidate now ranks first.
 
 #### Smart routing — apply (`POST /routing-suggestion/apply`)
 
@@ -603,9 +650,15 @@ not apply.
   no-raise when overturns climb), plus a real `auto_approval_overturn_rate` +
   `recommendation_acceptance_rate` effectiveness signal (each with an honest
   insufficient-data state). Deterministic, no LLM, no migration. See § Feedback
-  loop above. Sub-follow-up: a per-vendor / per-approver outcome down-weighting in
-  the *routing* recommendation (the loop currently adjusts the *threshold*; the
-  router still ranks on approval history alone).
+  loop above. Sub-follow-up — **per-approver outcome down-weighting in the
+  *routing* recommendation**: ✅ **Shipped** — `recommend_approvers` now folds
+  each approver's overturn rate (their decisions later voided / corrected-by-
+  someone-else / rejected, from `compute_approver_outcomes`) into the routing
+  score as a banded, bounded subtractive penalty (≤ 30 pts, no penalty below a
+  5-decision min-sample, never hard-zeros), surfaced + explained on each
+  `RoutingCandidate` (`base_score` / `outcome_penalty` / `overturn_rate_pct`).
+  Reuses the shared `is_overturned` primitive so the threshold- and routing-side
+  overturn parsing isn't duplicated. See § Smart routing — outcome down-weighting.
 - **Model-retraining feedback loop** (a *trainable* model). The deterministic
   feedback loop above closes the "corrections feed back" ask without one; a real
   trainable model is a far larger, separately-scoped effort and is not built here.

@@ -20,10 +20,12 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.services.adaptive_workflows import (
+    ApproverOutcome,
     ApproverPattern,
     EligibleApprover,
     VendorBaseline,
     _stdev,
+    compute_approver_outcomes,
     compute_approver_patterns,
     compute_effectiveness,
     compute_outcome_stats,
@@ -31,6 +33,7 @@ from app.services.adaptive_workflows import (
     compute_vendor_patterns,
     derive_suggestions,
     detect_invoice_anomaly,
+    is_overturned,
     outcome_adjusted_threshold,
     recommend_approvers,
     recommend_auto_approve_threshold,
@@ -437,6 +440,148 @@ def test_routing_is_advisory_no_mutation_surface():
 
 
 # ---------------------------------------------------------------------------
+# Routing outcome down-weighting (feedback loop folded into the router)
+# ---------------------------------------------------------------------------
+
+
+def _arow(approver_id, invoice_id, *, voided=False, corrected=False, rejected=False):
+    return {
+        "approver_id": approver_id,
+        "invoice_id": invoice_id,
+        "voided": voided,
+        "corrected": corrected,
+        "rejected": rejected,
+    }
+
+
+def _aoutcome(approver_id, *, decided, overturned, insufficient=False):
+    rate = Decimal("0") if decided == 0 else (Decimal(overturned) / Decimal(decided) * 100)
+    return ApproverOutcome(
+        approver_id=approver_id,
+        decided_count=decided,
+        overturned_count=overturned,
+        overturn_rate_pct=rate.quantize(Decimal("0.1")),
+        insufficient_data=insufficient,
+    )
+
+
+def test_is_overturned_primitive():
+    assert is_overturned(voided=True, corrected=False, rejected=False) is True
+    assert is_overturned(voided=False, corrected=True, rejected=False) is True
+    assert is_overturned(voided=False, corrected=False, rejected=True) is True
+    assert is_overturned(voided=False, corrected=False, rejected=False) is False
+
+
+def test_compute_approver_outcomes_rate_and_dedupe():
+    # A: 5 decided, 1 overturned (the same invoice appearing twice counts once).
+    rows = [_arow("A", f"i{i}") for i in range(4)]
+    rows.append(_arow("A", "bad", voided=True))
+    rows.append(_arow("A", "bad", rejected=True))  # same invoice, second signal
+    out = compute_approver_outcomes(rows, min_sample=5)
+    assert out["A"].decided_count == 5
+    assert out["A"].overturned_count == 1
+    assert out["A"].overturn_rate_pct == Decimal("20.0")
+    assert out["A"].insufficient_data is False
+
+
+def test_compute_approver_outcomes_skips_rows_without_approver():
+    rows = [_arow(None, "i0", voided=True), _arow("A", "i1")]
+    out = compute_approver_outcomes(rows, min_sample=1)
+    assert set(out) == {"A"}  # the NULL-approver row produced no bucket
+    assert out["A"].overturned_count == 0
+
+
+def test_compute_approver_outcomes_insufficient_below_min_sample():
+    rows = [_arow("A", "i0", voided=True), _arow("A", "i1")]
+    out = compute_approver_outcomes(rows, min_sample=5)
+    assert out["A"].insufficient_data is True
+
+
+def test_routing_downweights_frequently_overturned_approver():
+    # A and B are identical on the forward score (same speed/rate/sample). B's
+    # decisions are overturned 40% of the time → B is penalised below A.
+    pats = [
+        _pat("A", approved=20, rejected=0, median_ttd="1.0"),
+        _pat("B", approved=20, rejected=0, median_ttd="1.0"),
+    ]
+    eligible = [EligibleApprover("A", "Ann"), EligibleApprover("B", "Bob")]
+    outcomes = {
+        "A": _aoutcome("A", decided=20, overturned=0),
+        "B": _aoutcome("B", decided=20, overturned=8),  # 40% > cap → full penalty
+    }
+    res = recommend_approvers(eligible, pats, outcomes=outcomes, vendor_id="V1")
+    a = next(c for c in res.candidates if c.approver_id == "A")
+    b = next(c for c in res.candidates if c.approver_id == "B")
+    # Same base score; B carries the penalty and ranks below A.
+    assert a.base_score == b.base_score
+    assert a.outcome_penalty == Decimal("0.0")
+    assert b.outcome_penalty > Decimal("0")
+    assert b.score < a.score
+    assert res.candidates[0].approver_id == "A"
+    # Explained on the candidate + reasons.
+    assert b.overturn_rate_pct == Decimal("40.0")
+    assert b.overturned_count == 8
+    assert any("overturned" in r for r in b.reasons)
+
+
+def test_routing_penalty_is_banded_and_bounded():
+    # The penalty maxes out at _W_OUTCOME_PENALTY (30) at/above the cap rate (25%).
+    pats = [_pat("A", approved=20, rejected=0, median_ttd="1.0")]
+    # 60% overturn — well above the 25% cap; penalty must clamp to 30, not 72.
+    outcomes = {"A": _aoutcome("A", decided=20, overturned=12)}
+    res = recommend_approvers([EligibleApprover("A", "Ann")], pats, outcomes=outcomes)
+    cand = res.candidates[0]
+    assert cand.outcome_penalty == Decimal("30.0")
+    # Bounded: never hard-zeros — a strong forward score survives the full penalty.
+    assert cand.score > Decimal("0")
+    assert cand.score == max(Decimal("0"), cand.base_score - Decimal("30.0"))
+
+
+def test_routing_thin_outcome_evidence_no_penalty():
+    # Below the min-sample the API passes insufficient_data=True → no penalty,
+    # even at a high overturn rate (one bad call must not sink an approver).
+    pats = [_pat("A", approved=20, rejected=0, median_ttd="1.0")]
+    outcomes = {"A": _aoutcome("A", decided=2, overturned=1, insufficient=True)}  # 50% but thin
+    res = recommend_approvers([EligibleApprover("A", "Ann")], pats, outcomes=outcomes)
+    cand = res.candidates[0]
+    assert cand.outcome_penalty == Decimal("0.0")
+    assert cand.score == cand.base_score
+    # The rate is still surfaced (explainability) even though it didn't penalise.
+    assert cand.overturn_rate_pct == Decimal("50.0")
+
+
+def test_routing_no_outcomes_arg_is_backwards_compatible():
+    # Omitting `outcomes` (the round-2 call shape) penalises nobody.
+    pats = [_pat("A", approved=20, rejected=0, median_ttd="1.0")]
+    res = recommend_approvers([EligibleApprover("A", "Ann")], pats)
+    cand = res.candidates[0]
+    assert cand.outcome_penalty == Decimal("0.0")
+    assert cand.score == cand.base_score
+    assert cand.overturned_count == 0
+
+
+def test_routing_clean_peer_outranks_overturned_despite_familiarity():
+    # The down-weight is strong enough that a heavily-overturned, vendor-familiar
+    # approver loses to a clean peer — the router stops recommending decisions
+    # that don't hold up even when the approver "knows" the vendor.
+    pats = [
+        _pat("A", approved=20, rejected=0, median_ttd="1.0"),  # clean, unfamiliar
+        _pat("B", approved=20, rejected=0, median_ttd="1.0"),  # familiar but overturned
+    ]
+    eligible = [
+        EligibleApprover("A", "Ann", vendor_approved_count=0),
+        EligibleApprover("B", "Bob", vendor_approved_count=5),
+    ]
+    outcomes = {
+        "A": _aoutcome("A", decided=20, overturned=0),
+        "B": _aoutcome("B", decided=20, overturned=10),  # 50% → full 30-pt penalty
+    }
+    res = recommend_approvers(eligible, pats, outcomes=outcomes, vendor_id="V1")
+    # B's +20 familiarity edge is outweighed by the −30 overturn penalty.
+    assert res.candidates[0].approver_id == "A"
+
+
+# ---------------------------------------------------------------------------
 # Real-DB / API tests (realdb fixture)
 # ---------------------------------------------------------------------------
 
@@ -763,6 +908,281 @@ async def test_routing_suggestion_endpoint(realdb):
     # ap_clerk is NOT an eligible approver → never a candidate.
     clerk_id = str(realdb.info("a").users["ap_clerk"])
     assert all(c["approver_id"] != clerk_id for c in data["candidates"])
+
+
+async def _seed_decisions_for_vendor(mk, org_id, actor_id, *, vendor_id, n, prefix):
+    """Approve ``n`` invoices of an existing ``vendor_id`` by ``actor_id`` (clean,
+    no overturns) — gives the actor identical vendor familiarity + decision
+    history as ``_seed_approved_vendor`` but against a vendor that already exists,
+    so two approvers can share one vendor_id."""
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.vendor import Vendor
+    from app.models.workflow import AuditLog
+
+    async with mk() as s:
+        vname = (await s.execute(select(Vendor.name).where(Vendor.id == vendor_id))).scalar()
+        base = datetime.now(UTC) - timedelta(days=40)
+        for i in range(n):
+            inv = Invoice(
+                organization_id=org_id,
+                invoice_number=f"{prefix}-{i}",
+                vendor_name=vname,
+                vendor_id=vendor_id,
+                amount=Decimal("4800"),
+                status=InvoiceStatus.approved,
+            )
+            s.add(inv)
+            await s.commit()
+            await s.refresh(inv)
+            ready_at = base + timedelta(days=i)
+            approved_at = ready_at + timedelta(days=1)
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=None,
+                    action="invoice.status_changed",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details={"new_status": "ready_for_review"},
+                    created_at=ready_at,
+                )
+            )
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=actor_id,
+                    action="invoice.approved",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details=None,
+                    created_at=approved_at,
+                )
+            )
+        await s.commit()
+
+
+async def _seed_overturns_for_approver(mk, org_id, actor_id, *, n_decided, n_overturned):
+    """Seed ``n_decided`` invoices each approved by ``actor_id``, of which
+    ``n_overturned`` are later overturned by a DIFFERENT actor (a void). Returns
+    the list of invoice ids. The approvals give the actor decision history; the
+    overturn rows feed the routing down-weight."""
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.workflow import AuditLog
+
+    other_actor = uuid.uuid4()
+    base = datetime.now(UTC) - timedelta(days=20)
+    ids = []
+    async with mk() as s:
+        for i in range(n_decided):
+            inv = Invoice(
+                organization_id=org_id,
+                invoice_number=f"OT-{actor_id.hex[:6]}-{i}",
+                vendor_name="Overturn Co",
+                amount=Decimal("1000"),
+                status=InvoiceStatus.approved,
+            )
+            s.add(inv)
+            await s.commit()
+            await s.refresh(inv)
+            ids.append(inv.id)
+            ready_at = base + timedelta(days=i)
+            approved_at = ready_at + timedelta(hours=1)
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=None,
+                    action="invoice.status_changed",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details={"new_status": "ready_for_review"},
+                    created_at=ready_at,
+                )
+            )
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=actor_id,
+                    action="invoice.approved",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details=None,
+                    created_at=approved_at,
+                )
+            )
+            if i < n_overturned:
+                s.add(
+                    AuditLog(
+                        organization_id=org_id,
+                        actor_id=other_actor,  # a DIFFERENT actor walks it back
+                        action="invoice.voided_return_to_approved",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details=None,
+                        created_at=approved_at + timedelta(days=1),
+                    )
+                )
+        await s.commit()
+    return ids
+
+
+async def test_routing_endpoint_downweights_overturned_approver(realdb):
+    """End-to-end: an approver whose decisions are frequently overturned is
+    down-weighted below a clean peer, and the overturn evidence surfaces in the
+    response (the feedback loop folded into the router)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    clean_id = realdb.info("a").users["ap_manager"]
+    dirty_id = realdb.info("a").users["admin"]
+
+    # Both approvers build identical clean approval history on the SAME vendor
+    # (same vendor_id → same familiarity, same speed/rate/experience), so the
+    # forward score is identical and ONLY the overturn signal can separate them.
+    vid = await _seed_approved_vendor(
+        mk, org_id, clean_id, amounts=[Decimal("4800")] * 10, number_prefix="CLEAN"
+    )
+    await _seed_decisions_for_vendor(mk, org_id, dirty_id, vendor_id=vid, n=10, prefix="DIRTY")
+    # …but the "dirty" approver also has 6/10 of a SECOND batch of decisions
+    # later voided (60% overturn → full penalty); the clean approver has none.
+    await _seed_overturns_for_approver(mk, org_id, dirty_id, n_decided=10, n_overturned=6)
+    await _seed_overturns_for_approver(mk, org_id, clean_id, n_decided=10, n_overturned=0)
+
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get(f"/api/adaptive/routing-suggestion?invoice_id={inv_id}")
+    assert r.status_code == 200
+    cands = {c["approver_id"]: c for c in r.json()["candidates"]}
+    clean = cands[str(clean_id)]
+    dirty = cands[str(dirty_id)]
+
+    # The dirty approver carries a penalty; the clean one doesn't. The overturn
+    # rate is over the approver's WHOLE decision set in the window (10 vendor
+    # approvals + 10 overturn-batch = 20 decided, 6 overturned = 30%), which is
+    # above the 25% cap → the full 30-point penalty applies.
+    assert dirty["outcome_penalty"] == "30.0"
+    assert dirty["overturned_count"] == 6
+    assert dirty["outcome_sample_size"] == 20
+    assert dirty["overturn_rate_pct"] == "30.0"
+    assert clean["outcome_penalty"] == "0.0"
+    # Down-weighted strictly below the clean peer's final score.
+    assert Decimal(dirty["score"]) < Decimal(clean["score"])
+    expected = Decimal(dirty["base_score"]) - Decimal(dirty["outcome_penalty"])
+    assert Decimal(dirty["score"]) == expected
+    # Explained in the reasons.
+    assert any("overturned" in reason for reason in dirty["reasons"])
+
+
+async def test_routing_endpoint_no_overturns_no_penalty(realdb):
+    """An approver with a spotless outcome record carries no penalty — the
+    feedback down-weight only bites when decisions are actually walked back."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+
+    vid = await _seed_approved_vendor(
+        mk, org_id, actor_id, amounts=[Decimal("4800")] * 24, number_prefix="NOOT"
+    )
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get(f"/api/adaptive/routing-suggestion?invoice_id={inv_id}")
+    assert r.status_code == 200
+    cand = next(c for c in r.json()["candidates"] if c["approver_id"] == str(actor_id))
+    # No overturn rows for this approver → zero penalty, score == base_score, and
+    # the explainability fields read clean.
+    assert cand["outcome_penalty"] == "0.0"
+    assert cand["overturned_count"] == 0
+    assert cand["overturn_rate_pct"] == "0.0"
+    assert cand["score"] == cand["base_score"]
+
+
+async def test_routing_endpoint_self_correction_not_an_overturn(realdb):
+    """A correction the approver made on their OWN approval is not an overturn of
+    themselves; only a later correction by a DIFFERENT actor counts."""
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    other_actor = realdb.info("a").users["admin"]
+
+    vid = await _seed_approved_vendor(
+        mk, org_id, actor_id, amounts=[Decimal("4800")] * 24, number_prefix="SELFC"
+    )
+    # 6 decided invoices the approver approved; on 3 the approver's OWN approval
+    # carried corrections (NOT an overturn), on 2 a DIFFERENT actor later
+    # re-approved with corrections (a real overturn).
+    base = datetime.now(UTC) - timedelta(days=15)
+    async with mk() as s:
+        for i in range(6):
+            inv = Invoice(
+                organization_id=org_id,
+                invoice_number=f"CORR-{i}",
+                vendor_name="Corr Co",
+                amount=Decimal("1000"),
+                status=InvoiceStatus.approved,
+            )
+            s.add(inv)
+            await s.commit()
+            await s.refresh(inv)
+            ready_at = base + timedelta(days=i)
+            approved_at = ready_at + timedelta(hours=1)
+            self_changes = {"changes": {"amount": {"old": "1", "new": "2"}}} if i < 3 else None
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=None,
+                    action="invoice.status_changed",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details={"new_status": "ready_for_review"},
+                    created_at=ready_at,
+                )
+            )
+            # The approver's own approval (sometimes with self-corrections).
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=actor_id,
+                    action="invoice.approved",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details=self_changes,
+                    created_at=approved_at,
+                )
+            )
+            # On 2 invoices a DIFFERENT actor later re-approves WITH corrections.
+            if i >= 4:
+                s.add(
+                    AuditLog(
+                        organization_id=org_id,
+                        actor_id=other_actor,
+                        action="invoice.approved",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details={"changes": {"gl": {"old": "x", "new": "y"}}},
+                        created_at=approved_at + timedelta(days=1),
+                    )
+                )
+        await s.commit()
+
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get(f"/api/adaptive/routing-suggestion?invoice_id={inv_id}")
+    assert r.status_code == 200
+    cand = next(c for c in r.json()["candidates"] if c["approver_id"] == str(actor_id))
+    # 24 Acme approvals + 6 Corr Co approvals = 30 decided. Only the 2 corrected
+    # by ANOTHER actor are overturns; the 3 self-corrections are NOT counted.
+    assert cand["outcome_sample_size"] == 30
+    assert cand["overturned_count"] == 2
 
 
 async def test_routing_suggestion_404_outside_tenant(realdb):

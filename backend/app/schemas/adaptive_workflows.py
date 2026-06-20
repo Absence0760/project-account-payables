@@ -124,12 +124,17 @@ class SuggestionListResponse(BaseModel):
 class RoutingCandidateResponse(BaseModel):
     approver_id: str
     approver_name: str | None = None
-    score: str  # 0-100, string-Decimal
+    score: str  # 0-100, string-Decimal (net of the outcome down-weight)
+    base_score: str  # forward score BEFORE the outcome down-weight (explainability)
+    outcome_penalty: str  # points subtracted for overturned decisions (>= 0)
     rank: int
     median_time_to_approve_days: str
     approval_rate_pct: str
     sample_size: int
     vendor_approved_count: int
+    overturn_rate_pct: str  # share of THIS approver's decisions later overturned
+    overturned_count: int  # # of this approver's decisions later overturned
+    outcome_sample_size: int  # # of this approver's decisions the rate is over
     reasons: list[str]
 
 

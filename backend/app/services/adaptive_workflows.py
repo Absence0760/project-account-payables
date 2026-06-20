@@ -53,6 +53,7 @@ __all__ = [
     "RoutingSuggestion",
     "ThresholdRecommendation",
     "OutcomeStats",
+    "ApproverOutcome",
     "EffectivenessMetric",
     "FeedbackSignal",
     "compute_approver_patterns",
@@ -62,7 +63,9 @@ __all__ = [
     "derive_suggestions",
     "recommend_auto_approve_threshold",
     "recommend_approvers",
+    "is_overturned",
     "compute_outcome_stats",
+    "compute_approver_outcomes",
     "outcome_adjusted_threshold",
     "compute_effectiveness",
     "_decimal_days",
@@ -740,12 +743,17 @@ class EligibleApprover:
 class RoutingCandidate:
     approver_id: str
     approver_name: str | None
-    score: Decimal  # 0-100, deterministic; higher = better routing fit
+    score: Decimal  # 0-100, deterministic; higher = better routing fit (net of penalty)
+    base_score: Decimal  # the forward score BEFORE the outcome down-weight (explainability)
+    outcome_penalty: Decimal  # points subtracted for overturned decisions (>= 0)
     rank: int  # 1-based, after sort
     median_time_to_approve_days: Decimal  # over this approver's whole history
     approval_rate_pct: Decimal
     sample_size: int  # decisions this approver has made (any vendor)
     vendor_approved_count: int  # how many of this vendor's invoices they approved
+    overturn_rate_pct: Decimal  # share of THIS approver's decisions later overturned, 0.1
+    overturned_count: int  # # of this approver's decisions later voided/corrected/rejected
+    outcome_sample_size: int  # # of this approver's decisions the overturn rate is over
     reasons: list[str]  # deterministic, human-readable explanation of the score
 
 
@@ -771,11 +779,29 @@ _W_CONSISTENCY = Decimal("25")  # higher approval rate (fewer rejections/rework)
 _W_VENDOR_FAMILIARITY = Decimal("20")  # has approved this vendor before
 _W_EXPERIENCE = Decimal("10")  # larger decision sample (more signal)
 
+# Outcome down-weight (the feedback-loop routing penalty). A SUBTRACTIVE term on
+# top of the 0..100 forward score, NOT one of the four positive weights — it
+# bites only when an approver's decisions are being walked back (see
+# backend/docs/adaptive-workflows.md § Smart routing — outcome down-weighting).
+#
+#   penalty = min(overturn_rate, _OUTCOME_PENALTY_RATE_CAP) / _OUTCOME_PENALTY_RATE_CAP
+#             * _W_OUTCOME_PENALTY
+#
+# so an approver overturned at/above the cap rate loses the FULL penalty, one
+# below the cap loses it linearly, and a clean approver loses nothing. Bounded
+# (≤ _W_OUTCOME_PENALTY points) and never hard-zeros a candidate — a high
+# overturn rate de-prioritises an approver without making them unroutable, and
+# below the min-sample the API passes no ApproverOutcome → zero penalty (thin
+# evidence never penalises).
+_W_OUTCOME_PENALTY = Decimal("30")  # max points an overturned approver can lose
+_OUTCOME_PENALTY_RATE_CAP = Decimal("25")  # overturn % at which the full penalty applies
+
 
 def recommend_approvers(
     eligible: list[EligibleApprover],
     approver_patterns: list[ApproverPattern],
     *,
+    outcomes: dict[str, ApproverOutcome] | None = None,
     invoice_id: str | None = None,
     vendor_id: str | None = None,
     vendor_name: str = "",
@@ -786,13 +812,18 @@ def recommend_approvers(
     top_n: int = 5,
 ) -> RoutingSuggestion:
     """Rank eligible approvers by routing fit — fastest + most-consistent +
-    most-familiar with this vendor — purely from their existing approval history.
+    most-familiar with this vendor, **down-weighted by how often their decisions
+    were later overturned** — purely from their existing approval history + the
+    realised human outcomes of those decisions.
 
     Deterministic, no LLM, no IO. The caller resolves ``eligible`` (org approvers
-    with an approval-capable role) and ``approver_patterns`` (from
-    ``compute_approver_patterns`` over the tenant history) and hands them in.
+    with an approval-capable role), ``approver_patterns`` (from
+    ``compute_approver_patterns`` over the tenant history), and ``outcomes`` (from
+    ``compute_approver_outcomes`` over the same window — the per-approver overturn
+    signal) and hands them in.
 
-    Scoring (each sub-score normalised to 0..1, weighted, summed → 0..100):
+    Scoring (each sub-score normalised to 0..1, weighted, summed → a 0..100 *base*
+    score, then a subtractive outcome penalty → the final score):
       * **speed** (``_W_SPEED``) — ``1 - median_time_to_approve / horizon``,
         clamped to [0,1]; an approver with no timing samples scores 0 here.
       * **consistency** (``_W_CONSISTENCY``) — ``approval_rate_pct / 100``.
@@ -800,6 +831,14 @@ def recommend_approvers(
         ``min(vendor_approved_count, familiarity_full_at) / familiarity_full_at``.
       * **experience** (``_W_EXPERIENCE``) —
         ``min(sample_size, experience_full_at) / experience_full_at``.
+      * **outcome penalty** (``_W_OUTCOME_PENALTY``, SUBTRACTED) — the feedback
+        down-weight: ``min(overturn_rate, cap)/cap * _W_OUTCOME_PENALTY`` points
+        removed, so an approver whose decisions are frequently voided / corrected
+        / rejected ranks below an otherwise-equal clean peer. Banded + bounded
+        (≤ ``_W_OUTCOME_PENALTY``, never hard-zeros) and gated on the API side by
+        a min-sample (below it, no ``ApproverOutcome`` is passed → **no penalty**;
+        thin evidence never penalises). ``base_score`` and ``outcome_penalty`` are
+        returned on each candidate for explainability.
 
     An eligible approver with no decision history at all still appears (so a new
     but valid approver is routable), scoring only on familiarity (also 0 when
@@ -808,10 +847,12 @@ def recommend_approvers(
     no eligible approver has any history to rank on.
     """
     pat_by_id = {p.approver_id: p for p in approver_patterns}
+    outcomes = outcomes or {}
 
     horizon = speed_horizon_days if speed_horizon_days > 0 else Decimal("14")
     exp_full = Decimal(experience_full_at) if experience_full_at > 0 else Decimal("1")
     fam_full = Decimal(familiarity_full_at) if familiarity_full_at > 0 else Decimal("1")
+    rate_cap = _OUTCOME_PENALTY_RATE_CAP if _OUTCOME_PENALTY_RATE_CAP > 0 else Decimal("25")
 
     scored: list[RoutingCandidate] = []
     any_history = False
@@ -839,12 +880,30 @@ def recommend_approvers(
         familiarity = min(Decimal(fam), fam_full) / fam_full
         experience = min(Decimal(sample), exp_full) / exp_full
 
-        score = _q1(
+        base_score = _q1(
             _W_SPEED * speed
             + _W_CONSISTENCY * consistency
             + _W_VENDOR_FAMILIARITY * familiarity
             + _W_EXPERIENCE * experience
         )
+
+        # Outcome down-weight. Only when the API passed an ApproverOutcome with
+        # enough evidence (insufficient_data → no penalty). Banded by the overturn
+        # rate, capped at _W_OUTCOME_PENALTY points; the score floors at 0.
+        oc = outcomes.get(e.approver_id)
+        if oc is not None and not oc.insufficient_data:
+            overturn_rate = oc.overturn_rate_pct
+            overturned_n = oc.overturned_count
+            outcome_n = oc.decided_count
+            capped_rate = min(overturn_rate, rate_cap)
+            penalty = _q1(capped_rate / rate_cap * _W_OUTCOME_PENALTY)
+        else:
+            overturn_rate = oc.overturn_rate_pct if oc is not None else Decimal("0")
+            overturned_n = oc.overturned_count if oc is not None else 0
+            outcome_n = oc.decided_count if oc is not None else 0
+            penalty = Decimal("0")
+
+        score = max(Decimal("0"), _q1(base_score - penalty))
 
         reasons: list[str] = []
         if pat and pat.approved_count > 0:
@@ -854,17 +913,27 @@ def recommend_approvers(
             reasons.append("no approval history yet")
         if fam > 0:
             reasons.append(f"approved {fam} invoice(s) from this vendor")
+        if penalty > 0:
+            reasons.append(
+                f"down-weighted {penalty} pts — {overturned_n}/{outcome_n} decisions "
+                f"later overturned ({overturn_rate}%)"
+            )
 
         scored.append(
             RoutingCandidate(
                 approver_id=e.approver_id,
                 approver_name=e.approver_name,
                 score=score,
+                base_score=base_score,
+                outcome_penalty=penalty,
                 rank=0,  # filled after sort
                 median_time_to_approve_days=median_ttd,
                 approval_rate_pct=rate,
                 sample_size=sample,
                 vendor_approved_count=fam,
+                overturn_rate_pct=overturn_rate,
+                overturned_count=overturned_n,
+                outcome_sample_size=outcome_n,
                 reasons=reasons,
             )
         )
@@ -875,11 +944,16 @@ def recommend_approvers(
             approver_id=c.approver_id,
             approver_name=c.approver_name,
             score=c.score,
+            base_score=c.base_score,
+            outcome_penalty=c.outcome_penalty,
             rank=i + 1,
             median_time_to_approve_days=c.median_time_to_approve_days,
             approval_rate_pct=c.approval_rate_pct,
             sample_size=c.sample_size,
             vendor_approved_count=c.vendor_approved_count,
+            overturn_rate_pct=c.overturn_rate_pct,
+            overturned_count=c.overturned_count,
+            outcome_sample_size=c.outcome_sample_size,
             reasons=c.reasons,
         )
         for i, c in enumerate(scored[: max(0, top_n)])
@@ -915,6 +989,17 @@ def recommend_approvers(
 # acceptance rate) with an explicit "insufficient data" state — never a
 # fabricated figure. Both are deterministic, no-LLM, no-IO; the API layer pulls
 # the rows and hands them in already shaped.
+
+
+def is_overturned(*, voided: bool, corrected: bool, rejected: bool) -> bool:
+    """The single source of truth for "was this approval/auto-approval later
+    overturned?" — a void, a correction, or a rejection of the same invoice
+    counts (each a human walking the decision back). Shared by the *threshold*
+    feedback (``compute_outcome_stats``, over auto-approved invoices) and the
+    *routing* feedback (``compute_approver_outcomes``, over each approver's own
+    decisions) so the two surfaces agree on what "overturned" means and the
+    audit-row parsing isn't re-derived twice. Pure / deterministic."""
+    return bool(voided) or bool(corrected) or bool(rejected)
 
 
 @dataclass(frozen=True)
@@ -968,7 +1053,7 @@ def compute_outcome_stats(
         voided += 1 if v else 0
         corrected += 1 if c else 0
         rejected += 1 if j else 0
-        if v or c or j:
+        if is_overturned(voided=v, corrected=c, rejected=j):
             overturned += 1
 
     rate = _q1(Decimal(overturned) / Decimal(auto_n) * Decimal("100")) if auto_n else Decimal("0")
@@ -981,6 +1066,79 @@ def compute_outcome_stats(
         overturn_rate_pct=rate,
         insufficient_data=auto_n < min_sample,
     )
+
+
+@dataclass(frozen=True)
+class ApproverOutcome:
+    """Per-approver overturn signal — the routing-side mirror of ``OutcomeStats``.
+
+    Over the approver's OWN ``invoice.approved`` decisions in the window:
+    ``overturned_count`` is the share whose invoice a human later voided,
+    corrected, or rejected (an approval that didn't hold up). ``decided_count``
+    is the denominator (distinct decided invoices). ``insufficient_data`` is True
+    below the min-sample — too thin to penalise on (no penalty then; an approver
+    is never down-weighted on one bad call). Pure data; the penalty itself is
+    applied in ``recommend_approvers``."""
+
+    approver_id: str
+    decided_count: int
+    overturned_count: int
+    overturn_rate_pct: Decimal  # overturned / decided * 100, 0.1
+    insufficient_data: bool
+
+
+def compute_approver_outcomes(
+    decision_outcome_rows: list,
+    *,
+    min_sample: int = 5,
+) -> dict[str, ApproverOutcome]:
+    """Per-approver overturn rate from their decided-invoice outcomes.
+
+    Each row is one of an approver's decided invoices, duck-typed with:
+      * ``approver_id`` — the approver who made the decision (rows with no
+        approver are skipped — there is no approver to penalise);
+      * ``invoice_id`` — identity (de-dupes multiple outcome signals / rows per
+        ``(approver, invoice)``);
+      * ``voided`` / ``corrected`` / ``rejected`` (bool) — the same overturn
+        signals ``compute_outcome_stats`` reads, classified by the shared
+        ``is_overturned`` primitive (a correction/rejection here means a *later*
+        human walked this approver's decision back — the API layer is
+        responsible for only feeding back signals attributable to someone else).
+
+    Returns ``{approver_id: ApproverOutcome}``. Pure / deterministic; mirrors
+    ``compute_outcome_stats`` but bucketed per approver. ``insufficient_data`` is
+    True when an approver has fewer than ``min_sample`` decided invoices — the
+    caller then applies **no** down-weight (thin evidence never penalises)."""
+    # Per approver: distinct invoices decided + which of those were overturned.
+    decided: dict[str, set[str]] = {}
+    overturned: dict[str, set[str]] = {}
+    for r in decision_outcome_rows:
+        approver = _get(r, "approver_id")
+        if not approver:
+            continue
+        aid = str(approver)
+        inv_id = str(_get(r, "invoice_id"))
+        decided.setdefault(aid, set()).add(inv_id)
+        if is_overturned(
+            voided=bool(_get(r, "voided")),
+            corrected=bool(_get(r, "corrected")),
+            rejected=bool(_get(r, "rejected")),
+        ):
+            overturned.setdefault(aid, set()).add(inv_id)
+
+    out: dict[str, ApproverOutcome] = {}
+    for aid, inv_ids in decided.items():
+        n = len(inv_ids)
+        ot = len(overturned.get(aid, set()))
+        rate = _q1(Decimal(ot) / Decimal(n) * Decimal("100")) if n else Decimal("0")
+        out[aid] = ApproverOutcome(
+            approver_id=aid,
+            decided_count=n,
+            overturned_count=ot,
+            overturn_rate_pct=rate,
+            insufficient_data=n < min_sample,
+        )
+    return out
 
 
 def outcome_adjusted_threshold(
