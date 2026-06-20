@@ -20,6 +20,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import httpx
 import pytest
 from sqlalchemy import delete
 
@@ -29,7 +30,7 @@ from app.models.virtual_card import CardRebate
 from app.services.billing.entitlements import has_entitlement
 from app.services.billing.usage_rollup import UsageRollup, rollup_usage
 from app.services.billing_adapters import get_billing_adapter
-from app.services.billing_adapters.base import CreateSubscriptionRequest
+from app.services.billing_adapters.base import CreateSubscriptionRequest, ProviderInvoice
 from app.services.billing_adapters.mock_adapter import MockBillingAdapter
 from app.services.billing_adapters.stripe_billing import (
     BillingNotConfigured,
@@ -153,6 +154,96 @@ def test_usage_rollup_as_meters_serialises_decimal_as_string():
     assert meters["extractions_platform"] == "2"
     assert meters["card_rebate_total"] == "12.34"
     assert all(isinstance(v, str) for v in meters.values())
+
+
+@pytest.mark.asyncio
+async def test_mock_list_invoices_is_deterministic():
+    adapter = MockBillingAdapter()
+    a = await adapter.list_invoices(customer_id="mock_cus_org-1")
+    b = await adapter.list_invoices(customer_id="mock_cus_org-1")
+    assert a == b  # frozen dataclasses → value-equality, fully deterministic
+    assert len(a) == 6  # capped synthetic run
+    # Newest first: latest is open, the rest paid; money is an exact string.
+    assert a[0].status == "open"
+    assert all(inv.status == "paid" for inv in a[1:])
+    assert all(inv.amount == "49.00" for inv in a)
+    assert all(isinstance(inv.amount, str) for inv in a)
+    assert all(isinstance(inv, ProviderInvoice) for inv in a)
+    # No customer (never provisioned) → empty list, not an error.
+    assert await adapter.list_invoices(customer_id=None) == []
+    assert await adapter.list_invoices(customer_id="") == []
+
+
+@pytest.mark.asyncio
+async def test_stripe_list_invoices_fails_closed_without_key():
+    adapter = StripeBillingAdapter({"stripe_api_key": "", "stripe_webhook_secret": ""})
+    with pytest.raises(BillingNotConfigured):
+        await adapter.list_invoices(customer_id="cus_1")
+
+
+@pytest.mark.asyncio
+async def test_stripe_list_invoices_maps_shape():
+    """Stripe REST list → normalized ProviderInvoice, against a mocked transport
+    (no network). Amount is exact decimal-string from integer minor units; status
+    is mapped; no-customer short-circuits to [] without a call."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["query"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {
+                        "id": "in_2",
+                        "number": "AP-0002",
+                        "status": "open",
+                        "total": 4900,
+                        "currency": "usd",
+                        "created": 1717200000,
+                        "period_start": 1717200000,
+                        "hosted_invoice_url": "https://pay.stripe.test/in_2",
+                    },
+                    {
+                        "id": "in_1",
+                        "number": "AP-0001",
+                        "status": "paid",
+                        "total": 12999,
+                        "currency": "usd",
+                        "created": 1714521600,
+                        "invoice_pdf": "https://pay.stripe.test/in_1.pdf",
+                    },
+                ],
+            },
+        )
+
+    adapter = StripeBillingAdapter({"stripe_api_key": "sk_live", "stripe_webhook_secret": "whsec"})
+    transport = httpx.MockTransport(handler)
+    adapter._client = lambda: httpx.AsyncClient(  # type: ignore[method-assign]
+        base_url="https://api.stripe.test", auth=(adapter._api_key, ""), transport=transport
+    )
+
+    invoices = await adapter.list_invoices(customer_id="cus_42", limit=10)
+    assert captured["path"] == "/v1/invoices"
+    assert captured["query"]["customer"] == "cus_42"
+    assert captured["query"]["limit"] == "10"
+    assert [i.external_invoice_id for i in invoices] == ["in_2", "in_1"]
+    assert invoices[0].amount == "49.00"  # 4900 minor units, exact
+    assert invoices[1].amount == "129.99"  # 12999 minor units, exact
+    assert invoices[0].status == "open"
+    assert invoices[1].status == "paid"
+    assert invoices[0].currency == "USD"
+    assert invoices[0].hosted_url == "https://pay.stripe.test/in_2"
+    assert invoices[1].hosted_url == "https://pay.stripe.test/in_1.pdf"
+    assert invoices[0].period == "2024-06"
+    assert all(isinstance(i.amount, str) for i in invoices)
+
+    # No customer → [] without any HTTP call (handler never re-invoked).
+    captured.clear()
+    assert await adapter.list_invoices(customer_id=None) == []
+    assert captured == {}
 
 
 # ---------------------------------------------------------------------------
@@ -346,12 +437,86 @@ async def test_public_api_is_plan_gated(realdb):
         async with realdb.control_sessionmaker()() as s:
             await s.execute(delete(Subscription).where(Subscription.organization_id == org_id))
             await s.commit()
-        plan_yes = await _seed_plan(
-            realdb, code="test_scale", entitlements={"public_api": True}
-        )
+        plan_yes = await _seed_plan(realdb, code="test_scale", entitlements={"public_api": True})
         await _seed_subscription(realdb, org_id=org_id, plan_id=plan_yes, status="active")
         async with _key_client() as c:
             resp = await c.get("/api/v1/invoices")
         assert resp.status_code == 200, resp.text
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_billing_invoices_endpoint_returns_mock_list(realdb):
+    """GET /api/billing/invoices returns the adapter's invoices with money as
+    exact strings. The default `mock` provider yields data once a customer id is
+    persisted on settings.billing — mirroring a provisioned org."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.organization import Organization
+
+    org_id = realdb.info("a").org_id
+    try:
+        # Persist a customer id so the mock adapter has something to list.
+        async with realdb.control_sessionmaker()() as s:
+            org = await s.get(Organization, uuid.UUID(str(org_id)))
+            settings_dict = dict(org.settings or {})
+            settings_dict["billing"] = {
+                **(settings_dict.get("billing") or {}),
+                "stripe_customer_id": "mock_cus_test",
+            }
+            org.settings = settings_dict
+            flag_modified(org, "settings")
+            await s.commit()
+
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.get("/api/billing/invoices")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["provider"] == "mock"
+        assert len(body["invoices"]) == 6
+        first = body["invoices"][0]
+        assert first["amount"] == "49.00"  # exact string, not float
+        assert isinstance(first["amount"], str)
+        assert first["status"] == "open"
+        assert first["currency"] == "USD"
+        assert all(inv["amount"] == "49.00" for inv in body["invoices"])
+    finally:
+        async with realdb.control_sessionmaker()() as s:
+            org = await s.get(Organization, uuid.UUID(str(org_id)))
+            settings_dict = dict(org.settings or {})
+            settings_dict.pop("billing", None)
+            org.settings = settings_dict
+            flag_modified(org, "settings")
+            await s.commit()
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_billing_invoices_endpoint_no_customer_yields_empty_list(realdb):
+    """An org never provisioned with the provider (no customer id) → empty list,
+    HTTP 200, never a 500."""
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.get("/api/billing/invoices")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["invoices"] == []
+        assert body["provider"] == "mock"
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_billing_invoices_endpoint_admin_or_cfo_only(realdb):
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.client(key="a", role="ap_clerk") as c:
+            resp = await c.get("/api/billing/invoices")
+        assert resp.status_code == 403
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/billing/invoices")
+        assert resp.status_code == 200
     finally:
         await _cleanup_billing(realdb, org_id)
