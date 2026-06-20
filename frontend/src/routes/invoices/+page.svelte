@@ -17,6 +17,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 
@@ -371,16 +372,16 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<PageHeader title="Invoices">
+<PageHeader title={m('invoices.title')}>
 	{#snippet actions()}
 		<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple bind:this={fileInput} onchange={handleUpload} hidden />
 		{#if auth.isAdmin}
 			<button class="btn-secondary" onclick={() => (showBulkRecode = true)}>
-				Bulk Re-code GL
+				{m('invoices.action.bulkRecode')}
 			</button>
 		{/if}
 		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
-			{uploading ? uploadProgress || 'Uploading...' : '+ Upload Invoices'}
+			{uploading ? uploadProgress || m('invoices.action.uploading') : m('invoices.action.upload')}
 		</button>
 	{/snippet}
 
@@ -388,14 +389,14 @@
 		<div class="search-group">
 			<SearchBox
 				bind:value={search}
-				placeholder="Search invoices..."
-				ariaLabel="Search invoices"
+				placeholder={m('invoices.search.placeholder')}
+				ariaLabel={m('invoices.search.aria')}
 			/>
 			<button
 				class="advanced-btn"
 				class:has-filters={hasAdvancedFilters}
 				onclick={() => { advancedFilters = { ...advancedFilters, statuses: [...activeStatuses] }; showAdvancedSearch = true; }}
-				aria-label="Advanced search"
+				aria-label={m('invoices.search.advanced')}
 			>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 					<line x1="4" y1="6" x2="20" y2="6" />
@@ -410,7 +411,7 @@
 		</div>
 		<nav class="filters">
 			<button class="filter-chip" class:active={activeStatuses.length === 0} onclick={() => (activeStatuses = [])}>
-				All <span class="count">{totalCount}</span>
+				{m('common.all')} <span class="count">{totalCount}</span>
 			</button>
 			{#each chipStatuses as s}
 				<button class="filter-chip" class:active={activeStatuses.includes(s)} onclick={() => toggleStatus(s)}>
@@ -422,13 +423,13 @@
 
 	{#if selected.size > 0}
 		<div class="bulk-bar">
-			<span class="bulk-count">{selected.size} selected</span>
-			<button class="bulk-clear" onclick={() => (selected = new Set())}>Clear</button>
+			<span class="bulk-count">{m('invoices.bulk.selected', { n: selected.size })}</span>
+			<button class="bulk-clear" onclick={() => (selected = new Set())}>{m('common.clear')}</button>
 			<div class="bulk-divider"></div>
 
 			{#if !auth.isClerkOnly}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<span class="bulk-btn-wrap" title={hasImmutableSelected ? 'Cannot delete invoices in system-managed statuses' : ''}>
+				<span class="bulk-btn-wrap" title={hasImmutableSelected ? m('invoices.bulk.cannotDelete') : ''}>
 					<button
 						class="bulk-delete-btn"
 						class:armed={confirmBulkDelete}
@@ -444,34 +445,34 @@
 					>
 						{#if confirmBulkDelete}
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-							Confirm Delete
+							{m('invoices.bulk.confirmDelete')}
 						{:else}
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-							Delete
+							{m('invoices.bulk.delete')}
 						{/if}
 					</button>
 				</span>
 
 				<div class="bulk-status-wrapper">
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<span class="bulk-btn-wrap" title={validBulkTransitions.length === 0 ? 'No common status transitions for the selected invoices' : ''}>
+					<span class="bulk-btn-wrap" title={validBulkTransitions.length === 0 ? m('invoices.bulk.noTransitions') : ''}>
 						<button
 							class="bulk-action-btn"
 							disabled={bulkBusy || validBulkTransitions.length === 0}
 							onclick={(e) => { e.stopPropagation(); showBulkStatusSelect = !showBulkStatusSelect; }}
 						>
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-							Change Status
+							{m('invoices.bulk.changeStatus')}
 						</button>
 					</span>
 					{#if showBulkStatusSelect && validBulkTransitions.length > 0}
 						<div class="bulk-status-dropdown">
-							<select bind:value={bulkStatusValue} aria-label="New status for selected invoices">
+							<select bind:value={bulkStatusValue} aria-label={m('invoices.bulk.newStatusAria')}>
 								{#each validBulkTransitions as s}
 									<option value={s}>{STATUS_LABELS[s]}</option>
 								{/each}
 							</select>
-							<button class="bulk-apply-btn" disabled={bulkBusy} onclick={bulkStatusChange}>Apply</button>
+							<button class="bulk-apply-btn" disabled={bulkBusy} onclick={bulkStatusChange}>{m('common.apply')}</button>
 						</div>
 					{/if}
 				</div>
@@ -485,17 +486,17 @@
 		</div>
 	{/if}
 
-	<DataTable isEmpty={invoiceStore.all.length === 0} empty="No invoices match your filters." colspan={9} fixed stickyHeader>
+	<DataTable isEmpty={invoiceStore.all.length === 0} empty={m('invoices.empty')} colspan={9} fixed stickyHeader>
 		{#snippet header()}
 			<tr>
-				<th class="checkbox-col"><input type="checkbox" aria-label="Select all invoices" checked={allSelected} onchange={toggleSelectAll} /></th>
-				<th>Invoice #</th>
-				<th>Vendor</th>
-				<th>Description</th>
-				<th>PO #</th>
-				<th class="right">Amount</th>
-				<th>Due Date</th>
-				<th>Status</th>
+				<th class="checkbox-col"><input type="checkbox" aria-label={m('invoices.selectAllAria')} checked={allSelected} onchange={toggleSelectAll} /></th>
+				<th>{m('invoices.col.invoiceNumber')}</th>
+				<th>{m('invoices.col.vendor')}</th>
+				<th>{m('invoices.col.description')}</th>
+				<th>{m('invoices.col.poNumber')}</th>
+				<th class="right">{m('invoices.col.amount')}</th>
+				<th>{m('invoices.col.dueDate')}</th>
+				<th>{m('invoices.col.status')}</th>
 				<th class="actions-col"></th>
 			</tr>
 		{/snippet}
@@ -563,8 +564,8 @@
 								{deletingId === invoice.id
 									? '…'
 									: confirmDeleteId === invoice.id
-										? 'Confirm'
-										: 'Delete'}
+										? m('invoices.row.confirm')
+										: m('invoices.row.delete')}
 							</RowAction>
 						{/if}
 					</td>
@@ -576,12 +577,12 @@
 	{#if invoiceStore.hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={() => invoiceStore.loadMore()} disabled={invoiceStore.loading}>
-				{invoiceStore.loading ? 'Loading…' : `Load more (${invoiceStore.all.length} of ${invoiceStore.total})`}
+				{invoiceStore.loading ? m('common.loading') : m('invoices.loadMore', { shown: invoiceStore.all.length, total: invoiceStore.total })}
 			</button>
 		</div>
 	{:else if invoiceStore.total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {invoiceStore.total} invoice{invoiceStore.total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('invoices.showingAll', { total: invoiceStore.total })}</span>
 		</div>
 	{/if}
 </PageHeader>

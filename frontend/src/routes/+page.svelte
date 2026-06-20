@@ -6,6 +6,7 @@
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface DashboardData {
 		total_invoices: number;
@@ -91,11 +92,11 @@
 	const agingBuckets = $derived(
 		data
 			? [
-				{ label: 'Current', value: data.aging.current, color: AGING_COLORS[0] },
-				{ label: '1-30 days', value: data.aging.days_30, color: AGING_COLORS[1] },
-				{ label: '31-60 days', value: data.aging.days_60, color: AGING_COLORS[2] },
-				{ label: '61-90 days', value: data.aging.days_90, color: AGING_COLORS[3] },
-				{ label: '90+ days', value: data.aging.days_90_plus, color: AGING_COLORS[4] },
+				{ label: m('dashboard.aging.current'), value: data.aging.current, color: AGING_COLORS[0] },
+				{ label: m('dashboard.aging.days30'), value: data.aging.days_30, color: AGING_COLORS[1] },
+				{ label: m('dashboard.aging.days60'), value: data.aging.days_60, color: AGING_COLORS[2] },
+				{ label: m('dashboard.aging.days90'), value: data.aging.days_90, color: AGING_COLORS[3] },
+				{ label: m('dashboard.aging.days90plus'), value: data.aging.days_90_plus, color: AGING_COLORS[4] },
 			]
 			: []
 	);
@@ -111,39 +112,39 @@
 	);
 </script>
 
-<PageHeader title="Dashboard">
+<PageHeader title={m('dashboard.title')}>
 	{#if loading}
-		<p class="loading">Loading...</p>
+		<p class="loading">{m('common.loading')}</p>
 	{:else if data}
 		<!-- KPI Cards -->
 		<div class="kpi-row">
-			<KpiCard value={data.total_invoices} label="Invoices" />
-			<KpiCard value={fmt(data.total_amount)} label="Total Amount" />
-			<KpiCard value={fmt(data.total_paid)} label="Paid" />
-			<KpiCard value={fmt(data.total_pending)} label="Pending" />
+			<KpiCard value={data.total_invoices} label={m('dashboard.kpi.invoices')} />
+			<KpiCard value={fmt(data.total_amount)} label={m('dashboard.kpi.totalAmount')} />
+			<KpiCard value={fmt(data.total_paid)} label={m('dashboard.kpi.paid')} />
+			<KpiCard value={fmt(data.total_pending)} label={m('dashboard.kpi.pending')} />
 			<KpiCard
 				value={`${data.touchless_rate}%`}
-				label="Touchless Rate"
+				label={m('dashboard.kpi.touchlessRate')}
 				highlight={data.touchless_rate >= 80 ? 'green' : null}
 			/>
 			{#if data.open_exceptions > 0}
 				<a href="/exceptions" class="kpi highlight-red kpi-link">
 					<span class="kpi-value">{data.open_exceptions}</span>
-					<span class="kpi-label">Exceptions</span>
+					<span class="kpi-label">{m('dashboard.kpi.exceptions')}</span>
 				</a>
 			{/if}
 			{#if data.stale_approvals > 0}
-				<KpiCard value={data.stale_approvals} label="Stale Approvals" highlight="red" />
+				<KpiCard value={data.stale_approvals} label={m('dashboard.kpi.staleApprovals')} highlight="red" />
 			{/if}
 			{#if data.total_rebates > 0}
-				<KpiCard value={fmt(data.total_rebates)} label="Rebates Earned" highlight="green" />
+				<KpiCard value={fmt(data.total_rebates)} label={m('dashboard.kpi.rebatesEarned')} highlight="green" />
 			{/if}
 		</div>
 
 		<div class="charts-grid">
 			<!-- Invoice Pipeline -->
 			<div class="chart-card">
-				<h2>Invoice Pipeline</h2>
+				<h2>{m('dashboard.chart.pipeline')}</h2>
 				<div class="pipeline">
 					{#each PIPELINE_ORDER.filter(s => (data?.pipeline[s] ?? 0) > 0) as status}
 						{@const count = data?.pipeline[status] ?? 0}
@@ -161,7 +162,7 @@
 
 			<!-- Spend by Vendor -->
 			<div class="chart-card">
-				<h2>Top Vendors by Spend</h2>
+				<h2>{m('dashboard.chart.topVendors')}</h2>
 				{#if data.vendor_spend.length > 0}
 					<div class="vendor-bars">
 						{#each data.vendor_spend as v}
@@ -175,13 +176,13 @@
 						{/each}
 					</div>
 				{:else}
-					<p class="empty">No invoice data yet.</p>
+					<p class="empty">{m('dashboard.empty.vendors')}</p>
 				{/if}
 			</div>
 
 			<!-- Aging -->
 			<div class="chart-card">
-				<h2>Invoice Aging</h2>
+				<h2>{m('dashboard.chart.aging')}</h2>
 					{#if agingTotal > 0}
 					<div class="aging-bar">
 						{#each agingBuckets as bucket}
@@ -204,13 +205,13 @@
 						{/each}
 					</div>
 				{:else}
-					<p class="empty">No open invoices with due dates.</p>
+					<p class="empty">{m('dashboard.empty.aging')}</p>
 				{/if}
 			</div>
 
 			<!-- Upcoming Payments -->
 			<div class="chart-card">
-				<h2>Upcoming & Overdue</h2>
+				<h2>{m('dashboard.chart.upcoming')}</h2>
 				{#if data.upcoming_payments.length > 0}
 					<div class="upcoming-list">
 						{#each data.upcoming_payments as inv}
@@ -223,21 +224,21 @@
 								<span class="upcoming-date" class:overdue-text={inv.is_overdue}>
 									{formatDate(inv.due_date)}
 									{#if inv.is_overdue}
-										<span class="overdue-badge">Overdue</span>
+										<span class="overdue-badge">{m('dashboard.overdue')}</span>
 									{/if}
 								</span>
 							</div>
 						{/each}
 					</div>
 				{:else}
-					<p class="empty">No upcoming payments this week.</p>
+					<p class="empty">{m('dashboard.empty.upcoming')}</p>
 				{/if}
 			</div>
 
 			<!-- Monthly Trend -->
 			{#if data.monthly_trend.length > 0}
 				<div class="chart-card wide">
-					<h2>Monthly Volume</h2>
+					<h2>{m('dashboard.chart.monthlyVolume')}</h2>
 					<div class="trend-chart">
 						{#each data.monthly_trend as month}
 							<div class="trend-bar-group">
