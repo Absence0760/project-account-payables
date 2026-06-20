@@ -383,6 +383,17 @@ class Settings(BaseSettings):
     # app/models/api_key.py). See backend/docs/public-api.md.
     public_api_enabled: bool = True
 
+    # ---- Outbound webhooks (push counterpart of /api/v1) -----------------
+    # Master switch for outbound webhooks: subscription emit + the background
+    # retry/delivery sweep. OFF by default so a fresh clone / pnpm dev never
+    # makes outbound HTTP calls and no background task spins up. Flip
+    # AP_WEBHOOKS_ENABLED on in deployed envs. No secret here — each
+    # subscription's signing secret is generated at create time and stored on
+    # the row (it's a symmetric HMAC verification key; see app/models/webhook.py).
+    # See backend/docs/public-api.md § Outbound webhooks.
+    webhooks_enabled: bool = False
+    webhooks_delivery_interval_seconds: int = 60
+
     # ---- Platform billing & metering -------------------------------------
     # Billing provider adapter. `mock` (in-process, deterministic, no network /
     # credential) is the local-first DEFAULT; `stripe_billing` is a fail-closed

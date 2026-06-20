@@ -59,6 +59,7 @@ from app.api import (
     vendor_risk,
     vendor_statement_recon,
     vendors,
+    webhooks,
     workflow,
     workflow_definitions,
 )
@@ -102,6 +103,7 @@ async def lifespan(app: FastAPI):
     from app.services.recurring_invoices import run_recurring_invoices_loop
     from app.services.retention_sweep import run_retention_loop
     from app.services.vendor_rescreen import run_vendor_rescreen_loop
+    from app.services.webhooks.delivery import run_webhook_delivery_loop
 
     reaper_task: asyncio.Task | None = None
     shipper_task: asyncio.Task | None = None
@@ -113,6 +115,7 @@ async def lifespan(app: FastAPI):
     qms_task: asyncio.Task | None = None
     retention_task: asyncio.Task | None = None
     recurring_task: asyncio.Task | None = None
+    webhooks_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -158,6 +161,13 @@ async def lifespan(app: FastAPI):
         recurring_task = asyncio.create_task(
             run_recurring_invoices_loop(), name="recurring-invoices"
         )
+    # Outbound-webhook retry/delivery sweep. Disabled by default; flip
+    # AP_WEBHOOKS_ENABLED on in deployed envs. The emit path delivers inline on
+    # the running loop; this sweep is the durable retry backstop.
+    if settings.webhooks_enabled:
+        webhooks_task = asyncio.create_task(
+            run_webhook_delivery_loop(), name="webhook-delivery"
+        )
 
     try:
         yield
@@ -173,6 +183,7 @@ async def lifespan(app: FastAPI):
             qms_task,
             retention_task,
             recurring_task,
+            webhooks_task,
         ):
             if task is not None:
                 task.cancel()
@@ -315,6 +326,7 @@ app.include_router(signup.router, prefix="/api")
 app.include_router(auth_sso.router, prefix="/api")
 app.include_router(auth_saml.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
+app.include_router(webhooks.router, prefix="/api")
 app.include_router(scim.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")
