@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { m } from '$lib/i18n/store.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { entityStore } from '$lib/stores/entity.svelte';
@@ -52,7 +53,7 @@
 				`/api/analytics/by-entity?period_days=${periodDays}`
 			);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load per-entity breakdown';
+			error = e instanceof Error ? e.message : m('byEntity.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -61,20 +62,20 @@
 
 {#if entityStore.multiEntity}
 	<div class="chart-card" data-testid="by-entity-section">
-		<h2>By entity</h2>
+		<h2>{m('byEntity.heading')}</h2>
 		{#if error}
 			<p class="be-error" role="alert">{error}</p>
 		{:else if loading && !data}
-			<p class="empty">Loading…</p>
+			<p class="empty">{m('byEntity.loading')}</p>
 		{:else if data}
 			<DataTable
 				columns={[
-					{ label: 'Entity' },
-					{ label: 'Spend (period)', class: 'num' },
-					{ label: 'Outstanding', class: 'num' },
-					{ label: 'Invoices', class: 'num' },
-					{ label: 'Open exceptions', class: 'num' },
-					{ label: 'Open POs', class: 'num' }
+					{ label: m('byEntity.col.entity') },
+					{ label: m('byEntity.col.spend'), class: 'num' },
+					{ label: m('byEntity.col.outstanding'), class: 'num' },
+					{ label: m('byEntity.col.invoices'), class: 'num' },
+					{ label: m('byEntity.col.openExceptions'), class: 'num' },
+					{ label: m('byEntity.col.openPos'), class: 'num' }
 				]}
 			>
 				{#snippet body()}
@@ -82,7 +83,7 @@
 						<tr>
 							<td>
 								{e.entity_name}
-								{#if e.is_default}<span class="be-tag">default</span>{/if}
+								{#if e.is_default}<span class="be-tag">{m('byEntity.tag.default')}</span>{/if}
 							</td>
 							<td class="num"><Money amount={e.total_spend} currency={rowCurrency(e.currency)} mono /></td>
 							<td class="num"><Money amount={e.outstanding_amount} currency={rowCurrency(e.currency)} mono /></td>
@@ -94,7 +95,7 @@
 					{#if data?.consolidated}
 						{@const c = data.consolidated}
 						<tr class="be-total">
-							<td>Consolidated</td>
+							<td>{m('byEntity.consolidated')}</td>
 							<td class="num"><Money amount={c.total_spend} currency={orgCurrency.currency} mono /></td>
 							<td class="num"><Money amount={c.outstanding_amount} currency={orgCurrency.currency} mono /></td>
 							<td class="num">{c.invoice_count}</td>

@@ -6,6 +6,7 @@
 		EXPENSE_STATUS_LABELS
 	} from '$lib/types/expense';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import {
@@ -81,10 +82,10 @@
 		uploading = true;
 		try {
 			const updated = await uploadReceipt(id, file);
-			toast('Receipt uploaded', 'success');
+			toast(m('expenseModal.toast.receiptUploaded'), 'success');
 			onsaved(updated);
 		} catch (err) {
-			handleError(err, 'Upload failed');
+			handleError(err, m('expenseModal.toast.uploadFailed'));
 		} finally {
 			uploading = false;
 			if (fileInput) fileInput.value = '';
@@ -114,11 +115,11 @@
 				saved = await uploadReceipt(saved.id, pendingFile);
 				pendingFile = null;
 			}
-			toast(isCreate ? 'Expense created' : 'Expense saved', 'success');
+			toast(m(isCreate ? 'expenseModal.toast.created' : 'expenseModal.toast.saved'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, isCreate ? 'Create failed' : 'Save failed');
+			handleError(err, m(isCreate ? 'expenseModal.toast.createFailed' : 'expenseModal.toast.saveFailed'));
 		} finally {
 			saving = false;
 		}
@@ -131,18 +132,22 @@
 			window.open(url, '_blank');
 			setTimeout(() => URL.revokeObjectURL(url), 60_000);
 		} catch (err) {
-			handleError(err, 'Could not load receipt');
+			handleError(err, m('expenseModal.toast.receiptLoadFailed'));
 		}
 	}
 
 	const modalTitle = $derived(
 		isCreate
-			? 'New Expense'
+			? m('expenseModal.title.new')
 			: canEdit
-				? `Edit Expense — ${expense!.merchant ?? expense!.id.slice(0, 8)}`
-				: `Expense — ${expense!.merchant ?? expense!.id.slice(0, 8)}`
+				? m('expenseModal.title.edit', {
+						name: expense!.merchant ?? expense!.id.slice(0, 8)
+					})
+				: m('expenseModal.title.view', {
+						name: expense!.merchant ?? expense!.id.slice(0, 8)
+					})
 	);
-	const ariaLabel = $derived(isCreate ? 'New expense' : 'Expense detail');
+	const ariaLabel = $derived(isCreate ? m('expenseModal.aria.new') : m('expenseModal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
@@ -155,15 +160,15 @@
 
 		<div class="form-grid">
 			<label>
-				<span>Date</span>
+				<span>{m('expenseModal.field.date')}</span>
 				<input type="date" bind:value={expense_date} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Merchant <em class="required">*</em></span>
+				<span>{m('expenseModal.field.merchant')} <em class="required">*</em></span>
 				<input type="text" bind:value={merchant} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Amount <em class="required">*</em></span>
+				<span>{m('expenseModal.field.amount')} <em class="required">*</em></span>
 				<input
 					type="number"
 					step="0.01"
@@ -174,25 +179,30 @@
 				/>
 			</label>
 			<label>
-				<span>Currency</span>
+				<span>{m('expenseModal.field.currency')}</span>
 				<input type="text" bind:value={currency} maxlength="3" disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Category</span>
-				<input type="text" bind:value={category} placeholder="e.g. meals, travel" disabled={!canEdit} />
+				<span>{m('expenseModal.field.category')}</span>
+				<input
+					type="text"
+					bind:value={category}
+					placeholder={m('expenseModal.field.categoryPlaceholder')}
+					disabled={!canEdit}
+				/>
 			</label>
 			<label>
-				<span>Payment Method</span>
+				<span>{m('expenseModal.field.paymentMethod')}</span>
 				<select bind:value={payment_method} disabled={!canEdit}>
-					{#each EXPENSE_PAYMENT_METHODS as m}
-						<option value={m}>{EXPENSE_PAYMENT_METHOD_LABELS[m]}</option>
+					{#each EXPENSE_PAYMENT_METHODS as method}
+						<option value={method}>{EXPENSE_PAYMENT_METHOD_LABELS[method]}</option>
 					{/each}
 				</select>
 			</label>
 			<label>
-				<span>GL Account</span>
+				<span>{m('expenseModal.field.glAccount')}</span>
 				<select bind:value={gl_account_id} disabled={!canEdit}>
-					<option value="">Select…</option>
+					<option value="">{m('expenseModal.field.glSelect')}</option>
 					{#each glAccounts as g (g.id)}
 						<option value={g.id}>{g.code} — {g.name}</option>
 					{/each}
@@ -200,23 +210,27 @@
 			</label>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={reimbursable} disabled={!canEdit} />
-				<span>Reimbursable</span>
+				<span>{m('expenseModal.field.reimbursable')}</span>
 			</label>
 			<label class="full-width">
-				<span>Description</span>
+				<span>{m('expenseModal.field.description')}</span>
 				<textarea bind:value={description} rows="2" disabled={!canEdit}></textarea>
 			</label>
 		</div>
 
 		<!-- Receipt -->
 		<div class="receipt-section">
-			<span class="receipt-title">Receipt</span>
+			<span class="receipt-title">{m('expenseModal.receipt.title')}</span>
 			{#if expense?.receipt_file_key}
-				<button type="button" class="btn-doc" onclick={viewReceipt}>View receipt</button>
+				<button type="button" class="btn-doc" onclick={viewReceipt}
+					>{m('expenseModal.receipt.view')}</button
+				>
 			{:else if pendingFile}
-				<span class="receipt-empty">{pendingFile.name} (uploads on save)</span>
+				<span class="receipt-empty"
+					>{m('expenseModal.receipt.pending', { name: pendingFile.name })}</span
+				>
 			{:else}
-				<span class="receipt-empty">No receipt attached.</span>
+				<span class="receipt-empty">{m('expenseModal.receipt.empty')}</span>
 			{/if}
 			{#if canEdit}
 				<input
@@ -232,16 +246,24 @@
 					disabled={uploading}
 					onclick={() => fileInput?.click()}
 				>
-					{uploading ? 'Uploading…' : expense?.receipt_file_key ? 'Replace' : 'Attach'}
+					{uploading
+						? m('expenseModal.receipt.uploading')
+						: expense?.receipt_file_key
+							? m('expenseModal.receipt.replace')
+							: m('expenseModal.receipt.attach')}
 				</button>
 			{/if}
 		</div>
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('expenseModal.close')}</button>
 			{#if canEdit}
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving
+						? m('expenseModal.saving')
+						: isCreate
+							? m('expenseModal.create')
+							: m('expenseModal.save')}
 				</button>
 			{/if}
 		</div>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ExpensePolicy, ExpensePolicyCreate } from '$lib/types/expense';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { createPolicy, updatePolicy } from '$lib/api/expenses';
@@ -61,40 +62,40 @@
 			const saved = isCreate
 				? await createPolicy(payload)
 				: await updatePolicy(policy!.id, payload);
-			toast(isCreate ? 'Policy created' : 'Policy saved', 'success');
+			toast(m(isCreate ? 'policyModal.toast.created' : 'policyModal.toast.saved'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('policyModal.toast.saveFailed'), 'error');
 		} finally {
 			saving = false;
 		}
 	}
 
 	const modalTitle = $derived(
-		isCreate ? 'New Expense Policy' : `Edit Policy — ${policy!.name}`
+		isCreate ? m('policyModal.title.new') : m('policyModal.title.edit', { name: policy!.name })
 	);
-	const ariaLabel = $derived(isCreate ? 'New policy' : 'Policy detail');
+	const ariaLabel = $derived(isCreate ? m('policyModal.aria.new') : m('policyModal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		<div class="form-grid">
 			<label>
-				<span>Name <em class="required">*</em></span>
+				<span>{m('policyModal.field.name')} <em class="required">*</em></span>
 				<input type="text" bind:value={name} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Category</span>
+				<span>{m('policyModal.field.category')}</span>
 				<input
 					type="text"
 					bind:value={category}
-					placeholder="blank = all categories"
+					placeholder={m('policyModal.field.categoryPlaceholder')}
 					disabled={!canEdit}
 				/>
 			</label>
 			<label>
-				<span>Category Limit</span>
+				<span>{m('policyModal.field.categoryLimit')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -105,7 +106,7 @@
 				/>
 			</label>
 			<label>
-				<span>Receipt Required Above</span>
+				<span>{m('policyModal.field.receiptAbove')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -116,7 +117,7 @@
 				/>
 			</label>
 			<label>
-				<span>Pre-approval Required Above</span>
+				<span>{m('policyModal.field.preapprovalAbove')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -127,7 +128,7 @@
 				/>
 			</label>
 			<label>
-				<span>Per-diem Amount</span>
+				<span>{m('policyModal.field.perDiem')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -138,7 +139,7 @@
 				/>
 			</label>
 			<label>
-				<span>Mileage Rate</span>
+				<span>{m('policyModal.field.mileageRate')}</span>
 				<input
 					type="number"
 					step="0.001"
@@ -150,15 +151,19 @@
 			</label>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={active} disabled={!canEdit} />
-				<span>Active</span>
+				<span>{m('policyModal.field.active')}</span>
 			</label>
 		</div>
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('policyModal.close')}</button>
 			{#if canEdit}
 				<button type="submit" class="btn-primary" disabled={saving || !name.trim()}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving
+						? m('policyModal.saving')
+						: isCreate
+							? m('policyModal.create')
+							: m('policyModal.save')}
 				</button>
 			{/if}
 		</div>
