@@ -431,19 +431,19 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 **Competitors:** Tipalti (1099 + W-8BEN + VAT), Bill.com (1099 e-filing), Basware (global VAT, 60+ countries), Medius (EU e-invoicing mandates)
 
 ### Multi-Language UI (Internationalization / i18n)
-**Status:** In progress — **web runtime shipped (first slice)**: `frontend/src/lib/i18n/` (locale negotiation, typed `en` catalogue + `de`, lazy loader, reactive `m()`/`setLocale()`/`initLocale()`, ICU plurals, `<html lang/dir>`, locale picker, `messages_parity` vitest) with the shell/nav extracted; `formatMoney` follows the active locale. Remaining: extract the rest of the routes, more locales (`fr/es/pt-BR/ja`), the mobile ARB track, and server-side email localization. See `frontend/CLAUDE.md` → i18n.
+**Status:** In progress — **web runtime + full starter locale set shipped**: `frontend/src/lib/i18n/` (locale negotiation, typed `en` catalogue + the full `de/fr/es/pt-BR/ja` set as lazy chunks, lazy loader registry, reactive `m()`/`setLocale()`/`initLocale()`, ICU plurals, `<html lang/dir>`, locale picker with endonyms, `messages_parity` vitest) with the shell/nav + **dashboard** + **invoices list** extracted; `formatMoney` follows the active locale. Remaining: extract the rest of the routes, the mobile ARB track, and server-side email localization. See `frontend/CLAUDE.md` → i18n.
 
 The data layer is already internationalized (multi-currency rollups, locale-aware `Intl` money/date formatting, country tax rules, e-invoicing) — but every label, button, email, and error string is still hardcoded English. Localizing the **presentation** layer is the remaining piece for genuine international reach (EU mandates, LATAM, APAC, MENA). Basware/Medius ship 20+ UI languages; Tipalti and Bill.com localize the supplier-facing surfaces. Starter set: `en, de, fr, es, pt-BR, ja` (the six [`../project-running`](../../project-running) already ships), with the RTL switch-point in place for a later `ar`/`he`.
 
 **Web (SvelteKit, `frontend/`):**
 - [x] i18n runtime under `frontend/src/lib/i18n/` — client-side locale detection on first mount (stored choice → `navigator.languages` → English), reactive `m(key, params)` lookup, `<html lang/dir>` applied. **No `Accept-Language` SSR hook** — the frontend is adapter-static (GitHub Pages), so detection must be client-side
-- [ ] English statically bundled (fallback dict + prerender default); every other locale a dynamic `import()` chunk via a typed loader registry, so a single-locale visitor downloads only their strings — i18n adds ~nothing to the initial payload
-- [ ] Compile-time + runtime parity: `Messages = typeof en` + `satisfies Messages` per locale (missing/extra key = type error); a `messages_parity` vitest validating every locale is loadable, complete, non-empty, and placeholder-faithful
-- [ ] ICU inline plurals (`{n, plural, one {…} other {…}}`) resolved via `Intl.PluralRules` for the active locale — not `fooOne`/`fooOther` key pairs (keeps web and mobile plural shapes identical)
-- [ ] Locale picker in settings/shell (endonyms — each language in its own script), choice persisted to `localStorage`
-- [ ] Active locale drives the existing `Intl.NumberFormat`/`Intl.DateTimeFormat` formatters (`<Money>` / `formatMoney()` / date helpers) so numbers, currency, and dates localize together
-- [ ] RTL switch-point (`dirForLocale`) wired to `<html dir>`; audit CSS for logical properties so an `ar`/`he` catalogue drops in with no further layout plumbing
-- [ ] Incremental string extraction — shell/nav first, then route-by-route; an un-extracted literal simply stays English until its turn
+- [x] English statically bundled (fallback dict + prerender default); every other locale a dynamic `import()` chunk via a typed loader registry, so a single-locale visitor downloads only their strings — i18n adds ~nothing to the initial payload (`catalogues.ts`: `en` static, `de/fr/es/pt-BR/ja` lazy `import()`)
+- [x] Compile-time + runtime parity: `Messages = typeof en` + `satisfies Messages` per locale (missing/extra key = type error); a `messages_parity` vitest validating every locale is loadable, complete, non-empty, and placeholder-faithful (covers all six locales via `SUPPORTED_LOCALES`)
+- [x] ICU inline plurals (`{n, plural, one {…} other {…}}`) resolved via `Intl.PluralRules` for the active locale — not `fooOne`/`fooOther` key pairs (keeps web and mobile plural shapes identical) — e.g. the invoices `selected` count + showing-all string
+- [x] Locale picker in settings/shell (endonyms — each language in its own script: English / Deutsch / Français / Español / Português (Brasil) / 日本語), choice persisted to `localStorage`
+- [x] Active locale drives the existing `Intl.NumberFormat`/`Intl.DateTimeFormat` formatters (`<Money>` / `formatMoney()`) so numbers and currency localize together (date helpers still pending)
+- [x] RTL switch-point (`dirForLocale`) wired to `<html dir>`; audit CSS for logical properties so an `ar`/`he` catalogue drops in with no further layout plumbing (switch-point present + unit-tested; no RTL catalogue ships yet)
+- [x] Incremental string extraction — shell/nav first, then route-by-route (shell/nav + dashboard + invoices list done); an un-extracted literal simply stays English until its turn
 
 **Mobile (Flutter, `mobile/`):**
 - [ ] Standard Flutter `gen-l10n` + `intl` + `.arb` catalogues (idiomatic path — plural/placeholder/ICU + `Localizations.localeOf`), committed (non-synthetic) output, same six locales

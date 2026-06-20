@@ -92,8 +92,10 @@ Client-side multi-language UI runtime. The frontend is adapter-static (GitHub
 Pages, no SSR), so locale is negotiated **client-side** — there is no
 `Accept-Language` SSR hook. English is statically bundled (the fallback dict +
 prerender default); every other locale is a lazy `import()` chunk, so a
-single-locale visitor downloads only their strings. **Shipped this slice: `en`
-+ `de`**, structured so the full `en, de, fr, es, pt-BR, ja` set drops in later.
+single-locale visitor downloads only their strings. **Shipped: the full
+`en, de, fr, es, pt-BR, ja` starter set** (`en` static, the other five lazy
+`import()` chunks), structured so a further locale (e.g. an RTL `ar`/`he`)
+drops in by extending the four `locale.ts` tables + a catalogue + a loader.
 
 **Public API (`store.svelte.ts`):**
 - `m(key, params?)` — reactive message lookup. `key` is a typed `MessageKey`
@@ -115,13 +117,13 @@ single-locale visitor downloads only their strings. **Shipped this slice: `en`
 - `interpolate.ts` — **pure** `{placeholder}` substitution + ICU inline plurals.
 - `messages.ts` — `type Messages = typeof en` + `MessageKey`.
 - `catalogues.ts` — typed lazy-loader registry (`Record<Locale, () => Promise<Messages>>`): `en` static, others dynamic `import()`.
-- `locales/en.ts` (source of truth) + `locales/de.ts` (`satisfies Messages` — missing/extra key = compile error).
+- `locales/en.ts` (source of truth) + `locales/{de,fr,es,pt-BR,ja}.ts` (each `satisfies Messages` — missing/extra key = compile error). Japanese has no grammatical plural, so its ICU plural blocks carry only an `other` arm (`Intl.PluralRules('ja')` never selects `one`).
 - `formatLocale.ts` — tiny framework-free holder the `Intl` formatters read (so `money.ts` needn't import the Svelte runtime).
 - `store.svelte.ts` — the rune runtime (the API above). **Runes only.**
 
 **Adding a locale:** add it to `SUPPORTED_LOCALES` (+ `EXACT`/`BASE_TO_LOCALE`/`LOCALE_LABELS`) in `locale.ts`, add a `locales/<loc>.ts` that copies `en`'s keys and translates the values with `satisfies Messages`, and add its `CATALOGUE_LOADERS` entry. The compiler + the parity test then enforce completeness automatically.
 
-**Extracting a string:** add a flat, namespaced key (`nav.invoices`, `common.save`) to `locales/en.ts`, translate it in every other locale, and replace the hardcoded literal with `m('…')`. **This slice extracted the shell/nav only** (`$lib/nav.ts` carries a `labelKey` per entry; `Sidebar.svelte`, `SectionTabs.svelte`, the `+layout` skip-link, and the profile locale picker render via `m()`). The rest of the app stays English until later slices — the designed incremental path.
+**Extracting a string:** add a flat, namespaced key (`nav.invoices`, `common.save`) to `locales/en.ts`, translate it in every other locale, and replace the hardcoded literal with `m('…')`. **Extracted so far:** the shell/nav (`$lib/nav.ts` carries a `labelKey` per entry; `Sidebar.svelte`, `SectionTabs.svelte`, the `+layout` skip-link, the profile locale picker), the **dashboard** (`routes/+page.svelte` — KPI labels, chart headings, aging buckets, empty states) and the **invoices list** (`routes/invoices/+page.svelte` — title, upload/recode actions, search, bulk-bar, table headers, row actions, the `{n, plural, …}` selected-count + showing-all + load-more strings). The rest of the app stays English until later extraction slices — an un-extracted literal simply stays English, the designed incremental path. Reading `m()` inside a `$derived` (e.g. the dashboard's `agingBuckets`) keeps the labels reactive to a locale switch.
 
 **Locale picker:** `routes/profile/+page.svelte` — a `<select>` of endonyms (`LOCALE_LABELS`) bound to `currentLocale()`, persisting via `setLocale`.
 
