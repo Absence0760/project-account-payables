@@ -90,6 +90,12 @@ class PoPayload:
     vendor_name: str | None = None
     total: Decimal = Decimal("0")
     status: str = "open"
+    # Promised / expected delivery date from the ERP, when the upstream PO
+    # record carries one. Maps straight onto ``PurchaseOrder.expected_delivery_date``
+    # (the on-time-delivery vendor sub-score signal). None when the ERP doesn't
+    # supply a promised date — real adapters must NOT fabricate one; the mock
+    # adapter emits a deterministic value so local-first dev exercises the path.
+    expected_delivery_date: date | None = None
     line_items: list[PoLinePayload] = field(default_factory=list)
 
 

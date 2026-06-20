@@ -140,6 +140,20 @@ honest **N/A** (`null`, `sample_size: 0`, `detail` says so) and is excluded from
 the composite — a vendor with no comparable data is never punished, and the math
 never divides by zero. This is the authoritative signal and needs no org flag.
 
+`expected_delivery_date` **auto-populates from ERP PO sync**
+(`POST /api/purchase-orders/sync-erp`): the unified `PoPayload` carries an
+`expected_delivery_date`, the `mock` catalogue emits deterministic dates (with
+one PO deliberately left without one, to exercise the "leave None, don't
+fabricate" branch end-to-end), and the `merge_dev` adapter maps it from the
+upstream `delivery_date` / `expected_delivery_date` / `requested_delivery_date`
+field (unparseable values fall back to None — never fabricated, never raises).
+The sync mapper sets it on a newly-created PO and **back-fills** it onto an
+existing PO only when the ERP supplies a date AND the row doesn't already carry
+one — a date already on the row (human-set via the model/API, or a prior sync)
+**wins**, and a None payload never erases it. POs are ERP/manual-only (the AI
+extraction pipeline creates invoices, not POs), so there is no extraction leg to
+wire.
+
 An **opt-in** due-date proxy (org flag `ontime_use_due_date_proxy`, default
 `false`) remains as a **weak fallback**, used **only** when the authoritative
 expected-date signal finds no comparable POs *and* the flag is on. It

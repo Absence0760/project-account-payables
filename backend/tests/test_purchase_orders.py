@@ -341,3 +341,104 @@ async def test_sync_erp_isolated_per_tenant(realdb):
     async with mk_b() as s:
         count_b = (await s.execute(select(func.count()).select_from(PurchaseOrder))).scalar_one()
     assert count_b == 0
+
+
+# ---------------------------------------------------------------------------
+# sync-erp — expected_delivery_date auto-population (migration 0060 signal)
+# ---------------------------------------------------------------------------
+
+
+async def test_sync_erp_populates_expected_delivery_date_on_create(realdb):
+    """The mock catalogue carries deterministic promised dates on two of its
+    three POs; the sync mapper must persist them onto the new rows (and leave
+    the third, which has no ERP date, NULL)."""
+    from datetime import date
+
+    org_id = realdb.info("a").org_id
+    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/purchase-orders/sync-erp")
+    assert resp.status_code == 200
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        rows = (await s.execute(select(PurchaseOrder))).scalars().all()
+        by_number = {p.po_number: p for p in rows}
+    assert by_number["PO-2024-200"].expected_delivery_date == date(2024, 6, 15)
+    assert by_number["PO-2024-201"].expected_delivery_date == date(2024, 7, 1)
+    # The ERP supplied no date for this one → stays NULL, never fabricated.
+    assert by_number["PO-2024-202"].expected_delivery_date is None
+
+
+async def test_sync_erp_does_not_clobber_human_set_expected_delivery_date(realdb):
+    """A date already on the row (set via the model/API) wins — a re-sync must
+    never overwrite it, even though the ERP supplies its own date for that PO."""
+    from datetime import date
+
+    org_id = realdb.info("a").org_id
+    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+
+    # Pre-seed PO-2024-200 with a human-chosen expected date that differs from
+    # the mock ERP's (2024-06-15).
+    human_date = date(2030, 1, 1)
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        po = PurchaseOrder(
+            po_number="PO-2024-200",
+            total=Decimal("2500.00"),
+            status="open",
+            expected_delivery_date=human_date,
+            organization_id=org_id,
+        )
+        s.add(po)
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/purchase-orders/sync-erp")
+    assert resp.status_code == 200
+
+    async with mk() as s:
+        kept = (
+            await s.execute(
+                select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-200")
+            )
+        ).scalar_one()
+    # Human value preserved — the sync neither overwrote it nor created a dup.
+    assert kept.expected_delivery_date == human_date
+
+
+async def test_sync_erp_backfills_missing_expected_delivery_date_on_existing_po(realdb):
+    """An existing PO with no expected date gets the ERP's promised date filled
+    in on a re-sync (the auto-population back-fill), reported as ``updated``."""
+    from datetime import date
+
+    org_id = realdb.info("a").org_id
+    await _set_org_erp(org_id, {"type": "mock", "integration_method": "direct"})
+
+    # Pre-seed PO-2024-201 WITHOUT an expected date (e.g. created before the
+    # ERP started supplying one); the mock ERP carries 2024-07-01 for it.
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        po = PurchaseOrder(
+            po_number="PO-2024-201",
+            total=Decimal("15000.00"),
+            status="open",
+            organization_id=org_id,
+        )
+        s.add(po)
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post("/api/purchase-orders/sync-erp")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["updated"] >= 1
+
+    async with mk() as s:
+        filled = (
+            await s.execute(
+                select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-201")
+            )
+        ).scalar_one()
+    assert filled.expected_delivery_date == date(2024, 7, 1)

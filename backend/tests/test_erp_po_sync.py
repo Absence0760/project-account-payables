@@ -15,6 +15,7 @@ inherit the base's `[]` default. We assert that explicitly so a future
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -56,6 +57,23 @@ def test_mock_adapter_list_pos_returns_seeded_catalogue():
             # "Money is exact" in CLAUDE.md.
             for field in (li.quantity, li.unit_price, li.total):
                 assert field is None or isinstance(field, Decimal)
+
+
+def test_mock_adapter_list_pos_emits_deterministic_expected_delivery_dates():
+    """The mock catalogue carries deterministic ``expected_delivery_date``s on
+    some POs (so local-first dev exercises the on-time-delivery auto-population
+    path end-to-end) and deliberately leaves one PO without one (so the
+    "no promised date → leave None, don't fabricate" branch is exercised too)."""
+    from app.services.erp_adapters.dispatcher import get_erp_adapter
+
+    adapter = get_erp_adapter({"type": "mock", "integration_method": "direct"})
+    pos = {p.po_number: p for p in _run(adapter.list_pos())}
+
+    # Stable across calls — no clock / randomness in the fixture.
+    assert pos["PO-2024-200"].expected_delivery_date == date(2024, 6, 15)
+    assert pos["PO-2024-201"].expected_delivery_date == date(2024, 7, 1)
+    # At least one PO without a promised date — never fabricated.
+    assert pos["PO-2024-202"].expected_delivery_date is None
 
 
 def test_mock_adapter_list_pos_returns_independent_copies():
@@ -168,6 +186,45 @@ def test_merge_dev_list_pos_maps_response_into_po_payloads():
     assert p.line_items[0].total == Decimal("500")
     assert p.line_items[0].gl_account == "6010"
     assert p.line_items[1].gl_account is None  # absent in payload
+
+
+def test_merge_dev_list_pos_maps_expected_delivery_date():
+    """Merge exposes the promised delivery date under a few field names; the
+    mapper maps the first present one onto ``expected_delivery_date`` and parses
+    ISO date / datetime strings, falling back to None on anything unparseable
+    (never fabricates a date for a real adapter)."""
+    from app.services.erp_adapters.merge_dev import MergeDevAdapter
+
+    adapter = MergeDevAdapter({"api_key": "k", "account_token": "tok"})
+
+    cases = [
+        ({"number": "P", "delivery_date": "2025-03-10"}, date(2025, 3, 10)),
+        # full ISO datetime → date part
+        ({"number": "P", "delivery_date": "2025-03-10T12:00:00Z"}, date(2025, 3, 10)),
+        # alternate field names
+        ({"number": "P", "expected_delivery_date": "2025-04-01"}, date(2025, 4, 1)),
+        ({"number": "P", "requested_delivery_date": "2025-05-02"}, date(2025, 5, 2)),
+        # absent → None (no fabrication)
+        ({"number": "P"}, None),
+        # unparseable garbage → None, must not raise
+        ({"number": "P", "delivery_date": "not-a-date"}, None),
+    ]
+    for raw, expected in cases:
+        body = {"results": [raw], "next": None}
+        with patch("httpx.AsyncClient") as client_cls:
+            client = client_cls.return_value.__aenter__.return_value
+            client.get = AsyncMock(return_value=_make_mock_response(200, body))
+            pos = _run(adapter.list_pos())
+        assert pos[0].expected_delivery_date == expected, raw
+
+
+def test_po_payload_expected_delivery_date_default_is_none():
+    """A real adapter that doesn't set the field must leave it None — the
+    on-time scorer treats None as "no promised date" (excluded), so a bogus
+    default would silently corrupt every vendor's on-time sub-score."""
+    from app.services.erp_adapters.base import PoPayload
+
+    assert PoPayload(po_number="x").expected_delivery_date is None
 
 
 def test_merge_dev_list_pos_status_mapping_uses_internal_vocab():
