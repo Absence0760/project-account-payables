@@ -25,13 +25,14 @@ from app.schemas.portal import (
     PortalMFAChallengeResponse,
     PortalMFAChallengeVerifyRequest,
     PortalMFADisableRequest,
+    PortalMFAEmailChallengeRequest,
     PortalMFAEnrollStartResponse,
     PortalMFAVerifyRequest,
     PortalTokenResponse,
     PortalUpdateProfileRequest,
 )
 from app.services import mfa
-from app.services.email_adapters import is_supported_locale
+from app.services.email_adapters import EmailMessage, get_email_adapter, is_supported_locale
 from app.services.rate_limit import check_rate_limit
 from app.tenant import get_tenant_db
 from app.utils.passwords import (
@@ -41,6 +42,25 @@ from app.utils.passwords import (
 )
 
 router = APIRouter(prefix="/portal/auth", tags=["portal-auth"])
+
+
+async def _send_vendor_email_otp(vu: VendorUser, code: str) -> None:
+    """Deliver the email-OTP backup code to the vendor user's account address via
+    the configured email adapter (console in dev). The code is the only sensitive
+    field and is passed in the body only — never logged."""
+    msg = EmailMessage(
+        to=vu.email,
+        subject="Your supplier portal sign-in code",
+        body_text=(
+            f"Hi {vu.full_name},\n\n"
+            f"Your sign-in code is: {code}\n\n"
+            f"It expires in {settings.mfa_email_otp_ttl_seconds // 60} minutes. "
+            "If you didn't try to sign in, ignore this email and consider "
+            "rotating your password."
+        ),
+    )
+    adapter = get_email_adapter()
+    await adapter.send(msg)
 
 
 @router.post("/login")
@@ -198,17 +218,50 @@ async def portal_change_password(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/mfa/challenge/email", status_code=status.HTTP_204_NO_CONTENT)
+async def portal_request_email_otp(
+    body: PortalMFAEmailChallengeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Generate + email a one-time backup code to an MFA-enrolled vendor user.
+    The `challenge_token` from `/login` proves the password was already accepted,
+    so we don't email codes to random people. Public-by-design (same gating as
+    `/mfa/challenge`); 204 on every path so it doesn't enumerate accounts."""
+    # Cap how fast a single IP can churn email-OTPs — protects the vendor's
+    # inbox from being weaponised as a notification spammer.
+    await check_rate_limit("portal_auth_mfa_email", request, limit=5, window_seconds=60)
+    if not settings.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is disabled")
+    try:
+        vu_id = mfa.decode_vendor_challenge_token(body.challenge_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    vu = (await db.execute(select(VendorUser).where(VendorUser.id == vu_id))).scalar_one_or_none()
+    # Only an enrolled, active vendor gets a code. Stay 204 either way so the
+    # response doesn't reveal which accounts exist / are enrolled.
+    if not vu or not vu.is_active or not vu.mfa_enabled:
+        return
+
+    code = await mfa.issue_vendor_email_otp(vu.id)
+    await _send_vendor_email_otp(vu, code)
+
+
 @router.post("/mfa/challenge")
 async def portal_mfa_challenge(
     body: PortalMFAChallengeVerifyRequest,
     request: Request,
     db: AsyncSession = Depends(get_tenant_db),
 ) -> PortalTokenResponse:
-    """Trade the login-issued challenge token + a valid TOTP code for a real
-    vendor access token. Public-by-design (the challenge token proves the
-    password was already accepted), so it mirrors `/login`'s rate limiting."""
+    """Trade the login-issued challenge token + a valid code for a real vendor
+    access token. `method` picks the factor: `totp` (the enrolled authenticator,
+    default) or `email` (the on-demand email-OTP backup). Public-by-design (the
+    challenge token proves the password was already accepted), so it mirrors
+    `/login`'s rate limiting."""
     # TOTP is a 6-digit code (10^6 keyspace). 10 attempts / minute caps an
-    # online brute-force well inside the short challenge TTL.
+    # online brute-force well inside the short challenge TTL. Email-OTP is
+    # single-use, so the limit there only mitigates timing-attack probing.
     await check_rate_limit("portal_auth_mfa_verify", request, limit=10, window_seconds=60)
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled")
@@ -220,10 +273,17 @@ async def portal_mfa_challenge(
     vu = (await db.execute(select(VendorUser).where(VendorUser.id == vu_id))).scalar_one_or_none()
     if not vu or not vu.is_active:
         raise HTTPException(status_code=401, detail="Invalid challenge")
+    # Both factors require the vendor to have actually enrolled MFA — the
+    # email-OTP is a *backup* to TOTP, not an independent enrollment path.
     if not vu.mfa_enabled or not vu.mfa_secret:
         raise HTTPException(status_code=400, detail="MFA not enrolled for this account")
-    if not mfa.verify_totp(vu.mfa_secret, body.code):
-        raise HTTPException(status_code=401, detail="Invalid code")
+
+    if body.method == "email":
+        if not await mfa.verify_vendor_email_otp(vu.id, body.code):
+            raise HTTPException(status_code=401, detail="Invalid or expired code")
+    else:
+        if not mfa.verify_totp(vu.mfa_secret, body.code):
+            raise HTTPException(status_code=401, detail="Invalid code")
 
     token = create_vendor_access_token(vu.id, vu.vendor_id)
     return PortalTokenResponse(

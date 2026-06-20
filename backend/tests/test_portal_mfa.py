@@ -27,6 +27,7 @@ from app.api.portal_auth import (
     portal_mfa_disable,
     portal_mfa_enroll,
     portal_mfa_verify,
+    portal_request_email_otp,
 )
 from app.config import settings
 from app.schemas.portal import (
@@ -34,6 +35,7 @@ from app.schemas.portal import (
     PortalMFAChallengeResponse,
     PortalMFAChallengeVerifyRequest,
     PortalMFADisableRequest,
+    PortalMFAEmailChallengeRequest,
     PortalMFAVerifyRequest,
     PortalTokenResponse,
 )
@@ -157,7 +159,8 @@ async def test_login_challenges_when_mfa_enrolled(mfa_on, monkeypatch):
     )
     assert isinstance(res, PortalMFAChallengeResponse)
     assert res.mfa_required is True
-    assert res.methods == ["totp"]
+    # TOTP primary + the email-OTP backup factor are both offered.
+    assert res.methods == ["totp", "email"]
     # The challenge token must carry the vendor-challenge typ, NOT an access token.
     assert mfa.decode_vendor_challenge_token(res.mfa_challenge_token) == vu.id
 
@@ -233,6 +236,161 @@ async def test_challenge_verify_wrong_code_rejected(mfa_on, monkeypatch):
             db=db,
         )
     assert exc.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Email-OTP backup factor — request a code, then verify it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_email_otp_request_sends_code_to_enrolled_vendor(mfa_on, monkeypatch):
+    """An enrolled, active vendor with a valid challenge token gets a code
+    issued + emailed to their account address."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    db = _mock_db(vendor_user=vu)
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    issue = AsyncMock(return_value="654321")
+    monkeypatch.setattr("app.api.portal_auth.mfa.issue_vendor_email_otp", issue)
+    send = AsyncMock()
+    monkeypatch.setattr("app.api.portal_auth._send_vendor_email_otp", send)
+
+    challenge = mfa.create_vendor_challenge_token(vu.id)
+    res = await portal_request_email_otp(
+        body=PortalMFAEmailChallengeRequest(challenge_token=challenge),
+        request=MagicMock(),
+        db=db,
+    )
+    assert res is None  # 204
+    issue.assert_awaited_once_with(vu.id)
+    # The code is handed to the email helper — never returned in the response.
+    send.assert_awaited_once()
+    assert send.await_args.args[1] == "654321"
+
+
+@pytest.mark.asyncio
+async def test_email_otp_request_silent_for_unenrolled_vendor(mfa_on, monkeypatch):
+    """A vendor who hasn't enrolled MFA gets no code — and a silent 204 (no
+    enumeration of which accounts exist / are enrolled)."""
+    vu = _vendor_user(mfa_enabled=False)
+    db = _mock_db(vendor_user=vu)
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    issue = AsyncMock()
+    monkeypatch.setattr("app.api.portal_auth.mfa.issue_vendor_email_otp", issue)
+    send = AsyncMock()
+    monkeypatch.setattr("app.api.portal_auth._send_vendor_email_otp", send)
+
+    challenge = mfa.create_vendor_challenge_token(vu.id)
+    res = await portal_request_email_otp(
+        body=PortalMFAEmailChallengeRequest(challenge_token=challenge),
+        request=MagicMock(),
+        db=db,
+    )
+    assert res is None
+    issue.assert_not_awaited()
+    send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_email_otp_request_rejects_employee_challenge(mfa_on, monkeypatch):
+    """The email-request endpoint enforces the same vendor-challenge typ gate —
+    an employee challenge token is a 401."""
+    db = _mock_db()
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    employee_challenge = mfa.create_challenge_token(uuid.uuid4())
+    with pytest.raises(HTTPException) as exc:
+        await portal_request_email_otp(
+            body=PortalMFAEmailChallengeRequest(challenge_token=employee_challenge),
+            request=MagicMock(),
+            db=db,
+        )
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_challenge_verify_email_method_mints_token(mfa_on, monkeypatch):
+    """method='email' + a valid email OTP mints a real vendor access token."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    db = _mock_db(vendor_user=vu)
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    verify = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.api.portal_auth.mfa.verify_vendor_email_otp", verify)
+
+    challenge = mfa.create_vendor_challenge_token(vu.id)
+    res = await portal_mfa_challenge(
+        body=PortalMFAChallengeVerifyRequest(
+            challenge_token=challenge, code="654321", method="email"
+        ),
+        request=MagicMock(),
+        db=db,
+    )
+    assert isinstance(res, PortalTokenResponse)
+    verify.assert_awaited_once_with(vu.id, "654321")
+    from app.api.deps import decode_token
+
+    assert decode_token(res.access_token)["typ"] == "vendor"
+
+
+@pytest.mark.asyncio
+async def test_challenge_verify_email_wrong_or_expired_code_rejected(mfa_on, monkeypatch):
+    """A bad / expired email OTP is a 401 — and never falls through to TOTP."""
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    db = _mock_db(vendor_user=vu)
+    monkeypatch.setattr("app.api.portal_auth.check_rate_limit", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "app.api.portal_auth.mfa.verify_vendor_email_otp", AsyncMock(return_value=False)
+    )
+
+    challenge = mfa.create_vendor_challenge_token(vu.id)
+    with pytest.raises(HTTPException) as exc:
+        await portal_mfa_challenge(
+            body=PortalMFAChallengeVerifyRequest(
+                challenge_token=challenge, code="000000", method="email"
+            ),
+            request=MagicMock(),
+            db=db,
+        )
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_email_otp_keyspace_isolated_from_employee(monkeypatch):
+    """The vendor email-OTP Redis key is a DISTINCT prefix from the employee one,
+    so the same UUID value can't collide across surfaces."""
+
+    class _FakeRedis:
+        def __init__(self):
+            self.store = {}
+
+        async def setex(self, key, ttl, val):
+            self.store[key] = val
+
+        async def get(self, key):
+            return self.store.get(key)
+
+        async def delete(self, key):
+            self.store.pop(key, None)
+
+    fake = _FakeRedis()
+    monkeypatch.setattr("app.services.mfa.get_redis", AsyncMock(return_value=fake))
+
+    same_id = uuid.uuid4()
+    employee_code = await mfa.issue_email_otp(same_id)
+    vendor_code = await mfa.issue_vendor_email_otp(same_id)
+    keys = list(fake.store.keys())
+    assert any(k.startswith(mfa.EMAIL_OTP_PREFIX) for k in keys)
+    assert any(k.startswith(mfa.VENDOR_EMAIL_OTP_PREFIX) for k in keys)
+    assert len(fake.store) == 2  # two separate slots, no overwrite
+
+    # A vendor code must NOT verify against the employee keyspace and vice versa.
+    assert await mfa.verify_vendor_email_otp(same_id, employee_code) is False
+    assert await mfa.verify_email_otp(same_id, vendor_code) is False
+    # Each verifies against its own slot, single-use.
+    assert await mfa.verify_vendor_email_otp(same_id, vendor_code) is True
+    assert await mfa.verify_vendor_email_otp(same_id, vendor_code) is False
 
 
 # ---------------------------------------------------------------------------

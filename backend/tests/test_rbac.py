@@ -132,9 +132,11 @@ NO_AUTH_REQUIRED = {
     # portal_auth.py — pre-login + logout (Bearer header, not as Depends)
     ("POST", "/portal/auth/login"),
     ("POST", "/portal/auth/logout"),
-    # portal_auth.py — MFA challenge verify; the login-issued challenge token
-    # (typ=vendor_mfa_challenge) IS the credential, so it's pre-access-token.
+    # portal_auth.py — MFA challenge verify + email-OTP backup request; the
+    # login-issued challenge token (typ=vendor_mfa_challenge) IS the credential,
+    # so both are pre-access-token (public-by-design).
     ("POST", "/portal/auth/mfa/challenge"),
+    ("POST", "/portal/auth/mfa/challenge/email"),
     # portal.py — single-use card-reveal token; the URL token IS the credential
     ("GET", "/portal/cards/{token}"),
     # email_intake.py — webhook authenticated by HMAC + per-tenant token in address
