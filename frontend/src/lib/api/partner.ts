@@ -3,7 +3,7 @@
 // raw fetch. Backend: `backend/app/api/partner.py` (admin + JWT gated, scoped to
 // the caller's own child tenants). See `docs/white-label.md` § Partner admin.
 import { api } from '$lib/api';
-import type { ChildBranding, PartnerOverview } from '$lib/types/partner';
+import type { ChildBranding, ChildTenant, LinkCode, PartnerOverview } from '$lib/types/partner';
 
 /** The caller's partner overview — its identity + the child tenants it administers. */
 export function getPartnerOverview(): Promise<PartnerOverview> {
@@ -22,4 +22,26 @@ export function updateChildBranding(
 	branding: ChildBranding
 ): Promise<ChildBranding> {
 	return api.put<ChildBranding>(`/api/partner/children/${childId}/branding`, branding);
+}
+
+/** Mint a single-use link code FOR the caller's own org, so it can be attached
+ *  as a child by a partner. Handing the code to a partner is the consent step —
+ *  the partner can do nothing with it until then. Admin-only; 503 if the feature
+ *  is not configured (no signing key). */
+export function mintLinkCode(): Promise<LinkCode> {
+	return api.post<LinkCode>('/api/partner/link-code', {});
+}
+
+/** Attach a consenting child to the caller's partner org by redeeming a code the
+ *  child's admin minted. The signature is the consent proof — a partner can't
+ *  adopt an org that didn't issue a code. Admin-only; 400 on a bad/expired code,
+ *  409 on a replay or a child already linked elsewhere. */
+export function attachChild(linkCode: string): Promise<ChildTenant> {
+	return api.post<ChildTenant>('/api/partner/children', { link_code: linkCode });
+}
+
+/** Detach a child tenant from the caller's partner org (back to standalone).
+ *  Admin-only; scoped to the caller's own children (opaque 404 otherwise). */
+export function detachChild(childId: string): Promise<void> {
+	return api.delete(`/api/partner/children/${childId}`);
 }
