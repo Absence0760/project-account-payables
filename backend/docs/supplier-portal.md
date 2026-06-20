@@ -54,7 +54,8 @@ uses `get_current_vendor_user` (except `/portal/auth/login`,
 | POST   | `/portal/auth/logout`            | Adds `jti` to the shared Redis blocklist                                      |
 | GET    | `/portal/auth/me`                | Returns the vendor-user + vendor summary (incl. `mfa_enabled`)               |
 | POST   | `/portal/auth/change-password`   | Used by the forced first-login rotation and voluntary rotations               |
-| POST   | `/portal/auth/mfa/challenge`     | **Public** — trade the login-issued challenge token + TOTP code for an access token |
+| POST   | `/portal/auth/mfa/challenge`     | **Public** — trade the login-issued challenge token + a code (`method` totp\|email) for an access token |
+| POST   | `/portal/auth/mfa/challenge/email` | **Public** — email the on-demand OTP backup code to the enrolled vendor; 204-silent (no enumeration) |
 | POST   | `/portal/auth/mfa/enroll`        | Mint a TOTP secret + QR (pending until verified)                              |
 | POST   | `/portal/auth/mfa/verify`        | Verify a code to activate MFA (`mfa_enabled=true`)                            |
 | POST   | `/portal/auth/mfa/disable`       | Turn MFA off — re-verifies a current code first                              |
@@ -77,16 +78,34 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
   a current code before clearing the columns.
 - **Login challenge.** When `AP_MFA_ENABLED` is on and the vendor is enrolled,
   `POST /login` returns `PortalMFAChallengeResponse` (`{mfa_required, mfa_challenge_token,
-  methods: ["totp"]}`) instead of the access token. The browser submits the code
-  to `POST /mfa/challenge`, which verifies and mints the real vendor access token.
+  methods: ["totp", "email"]}`) instead of the access token. The browser submits the code
+  to `POST /mfa/challenge` with `method` (`totp` default | `email`), which verifies and
+  mints the real vendor access token.
+- **Email-OTP backup factor.** Mirrors the employee email-OTP backup
+  (`docs/authentication.md` § MFA → Email OTP) for the vendor when they've lost
+  their authenticator. `POST /mfa/challenge/email` (public, gated by the same
+  `vendor_mfa_challenge` token) issues a 6-digit code via
+  `services/mfa.issue_vendor_email_otp` and emails it through the configured
+  outbound email adapter (`console` in local dev — local-first, no cloud). The
+  code's SHA-256 lives in Redis under a **distinct** keyspace
+  (`mfa:vendor_email_otp:<vendor_user_id>`, separate from the employee
+  `mfa:email_otp:` prefix) with the `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL,
+  single-use. The vendor then submits it to `POST /mfa/challenge` with
+  `method="email"`. The backup is gated on the vendor having actually enrolled
+  TOTP (`mfa_enabled` + `mfa_secret`) — it's a fallback to the authenticator, not
+  an independent enrollment path. The request endpoint is 204-silent for an
+  unenrolled / unknown / inactive account (no enumeration); the OTP and the
+  vendor email never appear in logs. No migration — Redis-only, exactly like the
+  employee backup.
 - **Token-type isolation (cross-auth-leak guard).** The challenge token carries
   `typ=vendor_mfa_challenge` — distinct from both the employee challenge
   (`mfa_challenge`) and the vendor access token (`vendor`). So a challenge token
   can never resolve as an access token through `get_current_vendor_user`, an
-  employee challenge can never hit `/portal/auth/mfa/challenge`, and a vendor
-  access token can never satisfy the challenge endpoint. `services/mfa.create_vendor_challenge_token`
-  / `decode_vendor_challenge_token` enforce the `typ` symmetrically.
-- TOTP only for now — no email-OTP backup for vendors (a future addition).
+  employee challenge can never hit `/portal/auth/mfa/challenge[/email]`, and a
+  vendor access token can never satisfy the challenge endpoint.
+  `services/mfa.create_vendor_challenge_token` / `decode_vendor_challenge_token`
+  enforce the `typ` symmetrically. The email-OTP keyspace is likewise isolated
+  from the employee one, so the same UUID value can't collide across surfaces.
 
 ### Invoices + payments (`portal.py`)
 
@@ -266,7 +285,7 @@ Routes:
 
 | Route                         | Purpose                                                |
 |-------------------------------|--------------------------------------------------------|
-| `/portal/login`               | Sign-in form + MFA second-factor (TOTP) step           |
+| `/portal/login`               | Sign-in form + MFA second-factor step (TOTP, with a "use email code instead" backup) |
 | `/portal/change-password`     | Forced first-login rotation                            |
 | `/portal/invoices`            | List + upload                                          |
 | `/portal/purchase-orders`     | PO list + per-row "Create invoice" (flip)              |
@@ -292,12 +311,13 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
 - [x] Notification preferences (email-on-paid, email-on-rejected) — per-portal-user, vendor-controlled; wired into the `transition_invoice` dispatch chokepoint
 - [x] Virtual card viewing (secure, single-use reveal token) — `GET /portal/cards/{token}` consumes a one-time `CardRevealToken`
 - [x] MFA (TOTP) for portal users (migration 0053; opt-in per vendor user, gated by `AP_MFA_ENABLED`)
+- [x] MFA email-OTP backup factor for portal users (Redis-only, no migration; on-demand via `POST /portal/auth/mfa/challenge/email`, sent through the email adapter, gated by `AP_MFA_ENABLED`)
 
 ## Phase 3 (deferred)
 
 Add these when there's demand from the first paying customer:
 
-- MFA email-OTP backup factor for portal users (TOTP shipped; email backup deferred)
+- (nothing currently parked here)
 
 ## Operational notes
 
