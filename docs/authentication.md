@@ -514,13 +514,13 @@ OIDC SSO sign-in does **not** trigger our MFA challenge — the IdP is the sourc
 
 ### Supplier-portal MFA (vendor users)
 
-The supplier portal has its own TOTP MFA for `VendorUser`s, mirroring this flow but on the separate vendor auth surface (`typ=vendor` JWT, tenant-scoped). It reuses the same `services/mfa.py` TOTP primitives and the same `AP_MFA_ENABLED` master switch.
+The supplier portal has its own TOTP MFA (with an email-OTP backup) for `VendorUser`s, mirroring this flow but on the separate vendor auth surface (`typ=vendor` JWT, tenant-scoped). It reuses the same `services/mfa.py` primitives and the same `AP_MFA_ENABLED` master switch.
 
-- **Columns:** `vendor_users.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` (migration `0053_vendor_mfa`, tenant DB) — the exact shape of the `User` MFA columns.
+- **Columns:** `vendor_users.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` (migration `0053_vendor_mfa`, tenant DB) — the exact shape of the `User` MFA columns. The email-OTP backup needs no column (Redis-only, like the employee one).
 - **Opt-in per vendor user.** There's no org-wide enforcement for vendors (unlike employee `Organization.settings.mfa.required`). With `AP_MFA_ENABLED=false` (local-dev default), an enrolled vendor still logs in with just a password.
-- **Login challenge** returns `PortalMFAChallengeResponse` (`methods: ["totp"]`); the vendor completes `POST /api/portal/auth/mfa/challenge` to mint the access token. Enroll / verify / disable live at `/api/portal/auth/mfa/{enroll,verify,disable}`.
-- **Token-type isolation.** The portal challenge token carries `typ=vendor_mfa_challenge` — distinct from the employee challenge (`mfa_challenge`) and the vendor access token (`vendor`) — so the three token types can never be substituted for one another across surfaces.
-- TOTP only for now (no email-OTP backup factor for vendors yet). Full reference: `backend/docs/supplier-portal.md` § MFA.
+- **Login challenge** returns `PortalMFAChallengeResponse` (`methods: ["totp", "email"]`); the vendor completes `POST /api/portal/auth/mfa/challenge` (with `method` totp|email) to mint the access token. Enroll / verify / disable live at `/api/portal/auth/mfa/{enroll,verify,disable}`.
+- **Email-OTP backup.** When the vendor has lost their authenticator, `POST /api/portal/auth/mfa/challenge/email` (public, gated by the `vendor_mfa_challenge` token) emails a single-use 6-digit code via the configured email adapter (`console` in dev). Its SHA-256 lives in Redis under a distinct keyspace (`mfa:vendor_email_otp:<id>`, separate from the employee `mfa:email_otp:`) with the `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL. Gated on the vendor having enrolled TOTP — a backup to the authenticator, not a standalone enrollment path. 204-silent for unenrolled / unknown accounts (no enumeration); OTP + email never logged.
+- **Token-type isolation.** The portal challenge token carries `typ=vendor_mfa_challenge` — distinct from the employee challenge (`mfa_challenge`) and the vendor access token (`vendor`) — so the three token types can never be substituted for one another across surfaces. Full reference: `backend/docs/supplier-portal.md` § MFA.
 
 ### Endpoints
 

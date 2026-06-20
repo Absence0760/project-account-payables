@@ -49,11 +49,15 @@ class PortalMFAChallengeResponse(BaseModel):
     an access token by calling /portal/auth/mfa/challenge. The challenge token
     carries `typ=vendor_mfa_challenge` — distinct from both the employee
     challenge (`mfa_challenge`) and the full vendor access token (`vendor`) — so
-    a challenge token can never be used as an access token, and vice versa."""
+    a challenge token can never be used as an access token, and vice versa.
+
+    `methods` lists the factors the vendor can clear the challenge with: TOTP
+    (the enrolled authenticator) plus `email` — the on-demand email-OTP backup
+    delivered to the vendor's account address, mirroring the employee flow."""
 
     mfa_required: bool = True
     mfa_challenge_token: str
-    methods: list[str] = ["totp"]  # TOTP only — no email-OTP backup for vendors yet
+    methods: list[str] = ["totp", "email"]
 
 
 class PortalMFAEnrollStartResponse(BaseModel):
@@ -81,11 +85,21 @@ class PortalMFADisableRequest(BaseModel):
 
 
 class PortalMFAChallengeVerifyRequest(BaseModel):
-    """Trade the login-issued challenge token + a valid TOTP code for a real
-    vendor access token."""
+    """Trade the login-issued challenge token + a valid code for a real vendor
+    access token. `method` selects the factor: `totp` (the enrolled
+    authenticator, default) or `email` (the on-demand email-OTP backup)."""
 
     challenge_token: str = Field(..., min_length=1)
     code: str = Field(..., min_length=6, max_length=8)
+    method: str = Field(default="totp")
+
+
+class PortalMFAEmailChallengeRequest(BaseModel):
+    """Ask for the email-OTP backup code during a login challenge. The
+    login-issued `challenge_token` proves the password was already accepted, so
+    we don't email codes to random people."""
+
+    challenge_token: str = Field(..., min_length=1)
 
 
 class PortalMeResponse(BaseModel):

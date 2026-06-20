@@ -38,6 +38,11 @@ from app.redis import get_redis
 ALGORITHM = "HS256"
 
 EMAIL_OTP_PREFIX = "mfa:email_otp:"
+# Supplier-portal email-OTP backup. A DISTINCT Redis keyspace from the employee
+# one (`mfa:email_otp:`) so a vendor user id can never collide with an employee
+# user id of the same UUID value — the same isolation principle as the distinct
+# `vendor_mfa_challenge` token type.
+VENDOR_EMAIL_OTP_PREFIX = "mfa:vendor_email_otp:"
 CHALLENGE_TYPE = "mfa_challenge"
 # Supplier-portal MFA challenge. A DISTINCT `typ` from both the employee
 # challenge (`mfa_challenge`) and the vendor access token (`vendor`), so a
@@ -140,6 +145,45 @@ async def verify_email_otp(user_id: uuid.UUID, code: str) -> bool:
         return False
     stored_hex = stored.decode("utf-8") if isinstance(stored, bytes) else stored
     # constant-time compare to thwart timing oracles
+    if not hmac.compare_digest(stored_hex, _hash_otp(code.strip())):
+        return False
+    await r.delete(key)
+    return True
+
+
+# Supplier-portal email-OTP backup — same mechanism as the employee one above,
+# but in a distinct Redis keyspace (`VENDOR_EMAIL_OTP_PREFIX`) so a vendor-user
+# id and an employee-user id of the same UUID value never share a slot.
+
+
+def _vendor_email_otp_key(vendor_user_id: uuid.UUID) -> str:
+    return f"{VENDOR_EMAIL_OTP_PREFIX}{vendor_user_id}"
+
+
+async def issue_vendor_email_otp(vendor_user_id: uuid.UUID) -> str:
+    """Generate a 6-digit email backup code for a supplier-portal user, store
+    its hash in Redis, return the plaintext for the caller to email. Each call
+    invalidates any previous outstanding code for that vendor user."""
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    r = await get_redis()
+    await r.setex(
+        _vendor_email_otp_key(vendor_user_id),
+        settings.mfa_email_otp_ttl_seconds,
+        _hash_otp(code),
+    )
+    return code
+
+
+async def verify_vendor_email_otp(vendor_user_id: uuid.UUID, code: str) -> bool:
+    """Verify + consume a previously-issued supplier-portal email OTP. Single-use."""
+    if not code:
+        return False
+    r = await get_redis()
+    key = _vendor_email_otp_key(vendor_user_id)
+    stored = await r.get(key)
+    if not stored:
+        return False
+    stored_hex = stored.decode("utf-8") if isinstance(stored, bytes) else stored
     if not hmac.compare_digest(stored_hex, _hash_otp(code.strip())):
         return False
     await r.delete(key)

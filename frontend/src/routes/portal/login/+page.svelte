@@ -8,9 +8,14 @@
 	let loading = $state(false);
 
 	// MFA second-factor step. When login returns a challenge, we swap the
-	// password form for the TOTP-code form (stashing the challenge token).
+	// password form for the code form (stashing the challenge token). The vendor
+	// can clear it with their authenticator (`totp`) or, if they've lost it, with
+	// an emailed one-time backup code (`email`).
 	let mfaChallenge = $state<string | null>(null);
 	let mfaCode = $state('');
+	let mfaMethod = $state<'totp' | 'email'>('totp');
+	let emailSent = $state(false);
+	let emailSending = $state(false);
 
 	function afterAuth() {
 		if (portalAuth.user?.must_change_password) {
@@ -29,6 +34,8 @@
 			if (res.kind === 'mfa') {
 				mfaChallenge = res.challenge;
 				mfaCode = '';
+				mfaMethod = 'totp';
+				emailSent = false;
 			} else {
 				afterAuth();
 			}
@@ -45,7 +52,7 @@
 		error = '';
 		loading = true;
 		try {
-			await portalAuth.completeMfa(mfaChallenge, mfaCode);
+			await portalAuth.completeMfa(mfaChallenge, mfaCode, mfaMethod);
 			afterAuth();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Verification failed';
@@ -54,9 +61,33 @@
 		}
 	}
 
+	async function sendEmailCode() {
+		if (!mfaChallenge) return;
+		error = '';
+		emailSending = true;
+		try {
+			await portalAuth.requestEmailMfa(mfaChallenge);
+			mfaMethod = 'email';
+			mfaCode = '';
+			emailSent = true;
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to send email code';
+		} finally {
+			emailSending = false;
+		}
+	}
+
+	function useAuthenticator() {
+		mfaMethod = 'totp';
+		mfaCode = '';
+		error = '';
+	}
+
 	function backToPassword() {
 		mfaChallenge = null;
 		mfaCode = '';
+		mfaMethod = 'totp';
+		emailSent = false;
 		error = '';
 	}
 </script>
@@ -65,7 +96,13 @@
 	{#if mfaChallenge}
 		<form class="login-card" onsubmit={handleMfaSubmit}>
 			<h1>Two-factor authentication</h1>
-			<p class="subtitle">Enter the 6-digit code from your authenticator app</p>
+			<p class="subtitle">
+				{#if mfaMethod === 'email'}
+					Enter the 6-digit code we emailed to your account address
+				{:else}
+					Enter the 6-digit code from your authenticator app
+				{/if}
+			</p>
 
 			<div role="alert" aria-live="assertive">
 				{#if error}
@@ -74,7 +111,7 @@
 			</div>
 
 			<label>
-				<span>Authentication code</span>
+				<span>{mfaMethod === 'email' ? 'Email code' : 'Authentication code'}</span>
 				<input
 					type="text"
 					inputmode="numeric"
@@ -85,9 +122,25 @@
 				/>
 			</label>
 
-			<button type="submit" disabled={loading}>
+			<button type="submit" disabled={loading || mfaCode.length < 6}>
 				{loading ? 'Verifying...' : 'Verify'}
 			</button>
+
+			<div class="divider"><span>or</span></div>
+
+			{#if mfaMethod === 'totp'}
+				<button type="button" class="secondary" onclick={sendEmailCode} disabled={emailSending}>
+					{emailSending ? 'Sending…' : 'Use email code instead'}
+				</button>
+			{:else}
+				{#if emailSent}
+					<p class="hint">If an account is enrolled, a code is on its way to your inbox.</p>
+				{/if}
+				<button type="button" class="secondary" onclick={useAuthenticator}>
+					Use authenticator app
+				</button>
+			{/if}
+
 			<button type="button" class="link-btn" onclick={backToPassword}>Back to sign in</button>
 		</form>
 	{:else}
@@ -201,5 +254,36 @@
 		color: var(--text-muted);
 		font-weight: 400;
 		font-size: 0.82rem;
+	}
+	.secondary {
+		margin-top: 0;
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text);
+	}
+	.secondary:hover:not(:disabled) {
+		border-color: var(--text-muted);
+	}
+	.divider {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		color: var(--text-muted);
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		margin: 4px 0;
+	}
+	.divider::before,
+	.divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border);
+	}
+	.hint {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--text-muted);
 	}
 </style>
