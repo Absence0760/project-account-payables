@@ -5,6 +5,11 @@ historical invoice data. No external calls, no cloud key — runs on a laptop
 with `pnpm dev` and the mock adapters (local-first invariant). Four surfaces,
 three read-only endpoints, all suggestion-only / compute-on-read.
 
+A fifth surface — **external enrichment** (firmographics from D&B / Clearbit) —
+is bolted on via a pluggable adapter family with a deterministic `mock` default,
+so it too runs with no cloud account; the real providers fail closed without a
+key. See [§ External enrichment (D&B / Clearbit)](#external-enrichment-db--clearbit) below.
+
 | Surface | What it does | Persists? |
 |---|---|---|
 | **Auto-fill** | Suggests the dominant historical `gl_account` / `cost_center` / `payment_terms` for a draft invoice's vendor | No — advisory |
@@ -283,6 +288,76 @@ excluded). No path params — scans the whole (entity-scoped) vendor book.
 }
 ```
 
+## External enrichment (D&B / Clearbit)
+
+The four surfaces above are derived from the tenant's own history. **External
+enrichment** instead looks a vendor up in a third-party firmographics provider
+(Dun & Bradstreet, Clearbit) and returns a normalised record — legal name,
+registered address, country, industry + SIC/NAICS, employee count, annual
+revenue, website, DUNS, founding year — so an AP steward can review and
+selectively apply it. It is built as a **pluggable adapter family**
+(`services/enrichment_adapters/`) following the project's local-first adapter
+pattern (the same shape as `sanctions_adapters` / `fx_adapters` /
+`billing_adapters`).
+
+### Adapters
+
+| Provider | Network / key | Behaviour |
+|---|---|---|
+| `mock` (default) | none | Deterministic synthetic firmographics from a hash of the vendor name (legal name carries a `(MOCK)` marker so it can't be mistaken for real data). A built-in no-match fixture set + a `mock_no_match` override exercise the "couldn't enrich" branch. Local-first — `pnpm dev` + the whole test suite run against it with no cloud account. |
+| `dun_bradstreet` | `httpx` to D&B Direct+ | Skeleton — `cleanseMatch` (resolve to a DUNS) → `data/duns/{duns}` firmographics block, request/response shapes match the published API. **Fails closed** (`EnrichmentNotConfigured`) without a per-org `api_key`; no hardcoded fallback secret. |
+| `clearbit` | `httpx` to Clearbit Company API | Skeleton — domain-keyed `companies/find`. A vendor with no email-derived domain is a clean no-match (not an error). **Fails closed** without a per-org `api_key`. |
+
+Registry via the `@register_enrichment_adapter` decorator;
+`get_enrichment_adapter(config)` resolves per-org
+`Organization.settings.enrichment.provider` → the `AP_VENDOR_ENRICHMENT_PROVIDER`
+env default (`mock`). An unknown provider name falls back to `mock` (a typo can't
+break enrichment), but the real providers still fail closed on a missing key.
+
+To add a provider: copy `mock_adapter.py`, implement `enrich_vendor` +
+`test_connection`, register with the decorator.
+
+### `POST /api/enrichment/vendors/{vendor_id}/enrich`
+
+Roles: `admin`, `ap_manager`, `cfo` (managerial data-stewardship action that may
+consume a metered external API — clerk excluded, like the score + consolidation
+surfaces). Tenant-scoped via `get_tenant_db` + `get_tenant`.
+
+**Advisory / suggestion-only — never overwrites.** The response carries the
+looked-up firmographics plus a per-field `suggestions` diff (where the provider's
+value differs from what we hold today); the enrichment path **never writes back
+onto the `Vendor` row**. Applying a suggestion is a separate, explicit step (a
+deferred follow-up — see below), mirroring the consolidation surface's
+"suggest a canonical, never merge" stance.
+
+**PII.** A vendor's raw `tax_id` is passed to a provider as a match key (an input
+only) but is **never echoed back** — only a masked `***<last4>` (`mask_tax_id`,
+reused from `vendor_consolidation`) ever appears in the response, and no PII
+enters a log line. A keyless real provider returns a PII-free 422 (the message
+names only the missing `api_key`, never a secret).
+
+```json
+{
+  "vendor_id": "…",
+  "vendor_name": "Acme Supplies",
+  "firmographics": {
+    "provider": "mock", "matched": true,
+    "legal_name": "Acme Supplies (MOCK)", "address": "1 Mock Plaza, Suite 100",
+    "country": "US", "industry": "Commercial Printing", "sic_code": "2752",
+    "naics_code": "323111", "employee_count": 1828, "annual_revenue": "457000000",
+    "website": "https://acmesupplies.example", "duns_number": "388666768",
+    "year_founded": 1982, "tax_id_masked": "***6789", "confidence": 88,
+    "extra": {"source": "mock", "deterministic": true}
+  },
+  "suggestions": [
+    {"field": "address", "current_value": null, "suggested_value": "1 Mock Plaza, Suite 100"}
+  ],
+  "generated_at": "2026-06-20T…Z"
+}
+```
+
+`annual_revenue` is a **string** on the wire (never a float — money invariant).
+
 ## Config (org settings, all safe defaults — no key required)
 
 Optional overrides under `Organization.settings.enrichment` (merge-over-defaults;
@@ -307,7 +382,19 @@ unknown keys dropped, numeric coercion guarded — like `_adaptive_settings`):
   migration + extraction mapping); on-time stays N/A until then.
 - **Cached `vendor_scores` table** for multi-vendor sorting (trigger: a
   sort-by-score dashboard); reuses the pure scorer behind a refresh writer.
-- **External enrichment** (D&B / Clearbit) — out of scope, violates local-first.
+- ~~**External enrichment** (D&B / Clearbit)~~ — **DONE.** Built as a pluggable
+  adapter family with a deterministic `mock` default (local-first preserved) +
+  fail-closed `dun_bradstreet` / `clearbit` skeletons. See
+  [§ External enrichment](#external-enrichment-db--clearbit). Remaining:
+  - **Apply a suggestion** — the enrich endpoint is advisory (returns a
+    firmographics diff, never mutates the `Vendor` row). An explicit "apply this
+    suggested address / website" write path (audited, idempotent) is deferred.
+    Trigger: an "Apply" action in the vendor-detail UI. A `Vendor.website` column
+    would also be needed before the website suggestion can land (the model has no
+    website column today — the suggestion is surfaced but not yet applicable).
+  - **Live D&B / Clearbit calls** — the real adapters are working skeletons
+    (request/response shapes match the published APIs) but need a live key wired
+    via sops per-org before they call out; until then they fail closed.
 - **Auto-merge of a consolidation cluster** — the consolidation endpoint is
   advisory (suggests a canonical candidate, never mutates). An actual merge
   (re-point invoices/POs/payments to the canonical vendor, retire the

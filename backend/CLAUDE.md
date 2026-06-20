@@ -356,6 +356,19 @@ Registered: `mock`, `complyadvantage` (skeleton — live key required). Same reg
 
 `services/compliance.check_payment_compliance` is called by `execute_payment_run` between `prepare_international_payment` and `adapter.create_payment`. A `match` verdict refuses the payment outright; a `review_required` puts it on hold (`status="pending_compliance"`). Every screening writes an append-only `sanctions_checks` row. Per-org config in `Organization.settings.compliance`. See `docs/international-payments.md` § KYC / AML compliance.
 
+### Vendor-enrichment adapters (`services/enrichment_adapters/`)
+
+```python
+@register_enrichment_adapter("my_provider")
+class MyAdapter:
+    provider_name = "my_provider"
+    def __init__(self, config: dict | None = None): ...
+    async def enrich_vendor(self, query: VendorEnrichmentQuery) -> VendorFirmographics: ...
+    async def test_connection(self) -> bool: ...
+```
+
+Registered: `mock` (deterministic synthetic firmographics, no network/credential — the local-first default), `dun_bradstreet` + `clearbit` (httpx skeletons — live key via per-org settings; **fail closed** `EnrichmentNotConfigured` without it, no hardcoded fallback). `get_enrichment_adapter(config)` resolves `Organization.settings.enrichment.provider` → `AP_VENDOR_ENRICHMENT_PROVIDER` (default `mock`); an unknown name falls back to `mock`. External vendor firmographics (legal name / registered address / industry+SIC/NAICS / employee count / revenue / website / DUNS / founding year) for `POST /api/enrichment/vendors/{id}/enrich`. **Advisory / suggestion-only** — returns the firmographics + a per-field suggestion diff but NEVER writes back onto the `Vendor` row. Raw `tax_id` is an input match-key only — never echoed (only `***<last4>` via `mask_tax_id`), never logged. See `docs/data-enrichment.md` § External enrichment.
+
 ### Audit-shipping adapters (`services/audit_shipping/`)
 
 ```python
