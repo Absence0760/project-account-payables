@@ -82,6 +82,16 @@ class Settings(BaseSettings):
     qms_sync_interval_seconds: int = 3600
     qms_provider: str = "mock"
 
+    # External vendor enrichment (firmographics from D&B / Clearbit / ...).
+    # Platform-default adapter for the on-demand "enrich this vendor from an
+    # external source" endpoint. `mock` (deterministic, no network/credential —
+    # the local-first default) lets `pnpm dev` + tests run with no cloud account.
+    # A per-org `settings.enrichment.provider` overrides it; the real providers
+    # (`dun_bradstreet`, `clearbit`) FAIL CLOSED without a per-org `api_key` (no
+    # hardcoded fallback secret). Advisory only — enrichment never writes back
+    # onto the Vendor row. See `docs/data-enrichment.md` § External enrichment.
+    vendor_enrichment_provider: str = "mock"  # "mock" | "dun_bradstreet" | "clearbit"
+
     # Sanctions & vendor-risk screening. `vendor_screening_enabled` is the
     # master switch for synchronous screening on vendor create / update
     # (default on — the `mock` adapter is safe and local-first, returning
