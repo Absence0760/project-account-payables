@@ -383,10 +383,19 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   (`exceptions_screen`), **payments history** (`payments_screen`, incl. its
   inline payment-status labels), the **approvals** screen (`approvals_screen`,
   incl. the swipe action labels + pending-count plural), the **capture** screen
-  (`capture_screen`, incl. the source pickers + upload error messages), and the
+  (`capture_screen`, incl. the source pickers + upload error messages), the
   **advanced-search sheet** (`advanced_search_sheet`, incl. its field labels +
-  validation messages + date-field a11y hints). Mirrors what the web extracted.
-  The rest of the app (invoice detail, payment queue/runs, login) stays
+  validation messages + date-field a11y hints), the **invoice detail** screen
+  (`invoice_detail_screen` + its sub-widgets `invoice_warnings_panel`,
+  `erp_status_panel`, `invoice_edit_sheet`, `invoice_file_viewer`,
+  `activity_timeline` — detail fields, edit sheet, warnings/PO-match labels +
+  severity + variance placeholder, ERP-status panel labels, file-viewer
+  titles/errors, the timeline empty state), and the **payment queue/runs**
+  screen (`payment_queue_screen` — Pay tabs, KPI summary bar, per-row method
+  dropdown via a localized `_methodLabel`, the selected-count + payments-count
+  plurals, create/execute/cancel controls + confirm dialogs, run-status chip via
+  a localized `_runStatusLabel`, and the CFO-approval gate message). Mirrors what
+  the web extracted. The rest of the app (login) stays
   hardcoded English until its extraction slice — an un-extracted literal simply
   stays English (the same incremental path as web), and data-driven enum/status
   maps that live in shared badge widgets (`status_badge`, `vendor_status_badge`,
@@ -404,9 +413,20 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   `test/l10n/locale_switch_test.dart` proves the `LocaleStore` →
   `MaterialApp.locale` plumbing re-localizes a visible string live, and carries
   a per-batch guard asserting each extraction round's new keys switch with the
-  locale (the notifications/vendors/exceptions/payments batch and the
-  approvals/capture/advanced-search batch, incl. their plural + placeholder
-  strings).
+  locale (the notifications/vendors/exceptions/payments batch, the
+  approvals/capture/advanced-search batch, the invoice-detail batch
+  (detail/edit/warnings/ERP/file-viewer, incl. the `invoiceDetailErrorPrefix` +
+  `warningsVarianceLabel` placeholders) and the payment-queue batch (Pay
+  tabs/summary/runs, incl. the `paySelectedCount` plural + `payRunExecuteFailed`
+  placeholder)). When a screen or shared sub-widget is localized, every existing
+  widget/screen test that pumps it must wrap the subject in a `MaterialApp`
+  carrying `AppLocalizations.localizationsDelegates` + `supportedLocales` (a
+  `_localized` / `_host` / `_screenHost` helper), or `AppLocalizations.of`
+  returns null at runtime. Do NOT call `AppLocalizations.of(context)` from a
+  widget's `initState` (the `Localizations` inherited widget isn't available
+  yet — `dependOnInheritedWidgetOfExactType … before initState() completed`);
+  resolve a flag in `initState` and localize the message in `build`, as
+  `invoice_file_viewer` does for its PDF-load error.
 
 ## Conventions
 
