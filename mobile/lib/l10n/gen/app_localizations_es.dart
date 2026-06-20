@@ -66,6 +66,9 @@ class AppLocalizationsEs extends AppLocalizations {
   String get commonApply => 'Aplicar';
 
   @override
+  String get commonClose => 'Cerrar';
+
+  @override
   String get settingsTitle => 'Ajustes';
 
   @override
@@ -373,4 +376,126 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get paymentStatusCancelled => 'Cancelado';
+
+  @override
+  String get approvalsTitle => 'Aprobaciones pendientes';
+
+  @override
+  String get approvalsAllCaughtUp => '¡Todo al día!';
+
+  @override
+  String get approvalsNoneWaiting => 'No hay facturas esperando aprobación';
+
+  @override
+  String approvalsPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count facturas pendientes',
+      one: '$count factura pendiente',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get approvalActionApprove => 'Aprobar';
+
+  @override
+  String get approvalActionReject => 'Rechazar';
+
+  @override
+  String get approvalApproved => 'Factura aprobada';
+
+  @override
+  String get captureTitle => 'Capturar factura';
+
+  @override
+  String get captureChange => 'Cambiar';
+
+  @override
+  String get captureUpload => 'Subir';
+
+  @override
+  String get captureUploading => 'Subiendo…';
+
+  @override
+  String get captureEmptyPrompt =>
+      'Toma una foto, elige de la galería o selecciona un archivo';
+
+  @override
+  String get captureCamera => 'Cámara';
+
+  @override
+  String get captureGallery => 'Galería';
+
+  @override
+  String get captureChooseFile => 'Elegir archivo';
+
+  @override
+  String get captureSupportedFormats => 'Admite PDF, PNG, JPG y TIFF';
+
+  @override
+  String get captureUploadSuccess => 'Factura subida correctamente';
+
+  @override
+  String captureUploadFailedStatus(int status, String message) {
+    return 'Error al subir ($status): $message';
+  }
+
+  @override
+  String captureUploadFailed(String error) {
+    return 'Error al subir: $error';
+  }
+
+  @override
+  String captureSelectedDocument(String name) {
+    return 'Documento seleccionado: $name';
+  }
+
+  @override
+  String get capturePdfReady => 'Documento PDF listo para subir';
+
+  @override
+  String get advSearchTitle => 'Búsqueda avanzada';
+
+  @override
+  String get advSearchClose => 'Cerrar búsqueda avanzada';
+
+  @override
+  String get advSearchVendor => 'Proveedor';
+
+  @override
+  String get advSearchPoNumber => 'N.º de pedido';
+
+  @override
+  String get advSearchMinAmount => 'Importe mínimo';
+
+  @override
+  String get advSearchMaxAmount => 'Importe máximo';
+
+  @override
+  String get advSearchDueFrom => 'Vence desde';
+
+  @override
+  String get advSearchDueTo => 'Vence hasta';
+
+  @override
+  String get advSearchAny => 'Cualquiera';
+
+  @override
+  String get advSearchInvalidAmount =>
+      'Introduce un importe válido (p. ej. 1000)';
+
+  @override
+  String get advSearchMinMaxError => 'El mínimo no debe superar el máximo';
+
+  @override
+  String advSearchClearField(String label) {
+    return 'Borrar $label';
+  }
+
+  @override
+  String advSearchDateFieldHint(String label, String value) {
+    return '$label, actualmente $value. Toca dos veces para cambiar.';
+  }
 }

@@ -352,9 +352,13 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   **dashboard**, **invoices list**, the **settings** screen (incl. the picker),
   and — added incrementally — the **notifications center**
   (`notifications_screen`), **vendors** (`vendors_screen`), **exceptions**
-  (`exceptions_screen`), and **payments history** (`payments_screen`, incl. its
-  inline payment-status labels). Mirrors what the web extracted. The rest of the
-  app (invoice detail, payment queue/runs, approvals, capture, login) stays
+  (`exceptions_screen`), **payments history** (`payments_screen`, incl. its
+  inline payment-status labels), the **approvals** screen (`approvals_screen`,
+  incl. the swipe action labels + pending-count plural), the **capture** screen
+  (`capture_screen`, incl. the source pickers + upload error messages), and the
+  **advanced-search sheet** (`advanced_search_sheet`, incl. its field labels +
+  validation messages + date-field a11y hints). Mirrors what the web extracted.
+  The rest of the app (invoice detail, payment queue/runs, login) stays
   hardcoded English until its extraction slice — an un-extracted literal simply
   stays English (the same incremental path as web), and data-driven enum/status
   maps that live in shared badge widgets (`status_badge`, `vendor_status_badge`,
@@ -370,7 +374,11 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   template's key set, no empty values, and the same placeholder *set* (deduped
   — a 1-arm `ja` plural compares equal to a 2-arm `en` one).
   `test/l10n/locale_switch_test.dart` proves the `LocaleStore` →
-  `MaterialApp.locale` plumbing re-localizes a visible string live.
+  `MaterialApp.locale` plumbing re-localizes a visible string live, and carries
+  a per-batch guard asserting each extraction round's new keys switch with the
+  locale (the notifications/vendors/exceptions/payments batch and the
+  approvals/capture/advanced-search batch, incl. their plural + placeholder
+  strings).
 
 ## Conventions
 

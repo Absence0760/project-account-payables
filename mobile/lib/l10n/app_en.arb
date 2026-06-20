@@ -21,6 +21,7 @@
   "commonSearch": "Search",
   "commonClear": "Clear",
   "commonApply": "Apply",
+  "commonClose": "Close",
 
   "settingsTitle": "Settings",
   "settingsTenant": "Tenant",
@@ -143,5 +144,74 @@
   "paymentStatusProcessing": "Processing",
   "paymentStatusCompleted": "Completed",
   "paymentStatusFailed": "Failed",
-  "paymentStatusCancelled": "Cancelled"
+  "paymentStatusCancelled": "Cancelled",
+
+  "approvalsTitle": "Pending Approvals",
+  "approvalsAllCaughtUp": "All caught up!",
+  "approvalsNoneWaiting": "No invoices waiting for approval",
+  "approvalsPendingCount": "{count, plural, one {{count} invoice pending} other {{count} invoices pending}}",
+  "@approvalsPendingCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "approvalActionApprove": "Approve",
+  "approvalActionReject": "Reject",
+  "approvalApproved": "Invoice approved",
+
+  "captureTitle": "Capture Invoice",
+  "captureChange": "Change",
+  "captureUpload": "Upload",
+  "captureUploading": "Uploading…",
+  "captureEmptyPrompt": "Take a photo, choose from gallery, or pick a file",
+  "captureCamera": "Camera",
+  "captureGallery": "Gallery",
+  "captureChooseFile": "Choose file",
+  "captureSupportedFormats": "Supports PDF, PNG, JPG and TIFF",
+  "captureUploadSuccess": "Invoice uploaded successfully",
+  "captureUploadFailedStatus": "Upload failed ({status}): {message}",
+  "@captureUploadFailedStatus": {
+    "placeholders": {
+      "status": { "type": "int" },
+      "message": { "type": "String" }
+    }
+  },
+  "captureUploadFailed": "Upload failed: {error}",
+  "@captureUploadFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "captureSelectedDocument": "Selected document: {name}",
+  "@captureSelectedDocument": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "capturePdfReady": "PDF document ready to upload",
+
+  "advSearchTitle": "Advanced Search",
+  "advSearchClose": "Close advanced search",
+  "advSearchVendor": "Vendor",
+  "advSearchPoNumber": "PO Number",
+  "advSearchMinAmount": "Min amount",
+  "advSearchMaxAmount": "Max amount",
+  "advSearchDueFrom": "Due from",
+  "advSearchDueTo": "Due to",
+  "advSearchAny": "Any",
+  "advSearchInvalidAmount": "Enter a valid amount (e.g. 1000)",
+  "advSearchMinMaxError": "Min must not exceed max",
+  "advSearchClearField": "Clear {label}",
+  "@advSearchClearField": {
+    "placeholders": {
+      "label": { "type": "String" }
+    }
+  },
+  "advSearchDateFieldHint": "{label}, currently {value}. Double tap to change.",
+  "@advSearchDateFieldHint": {
+    "placeholders": {
+      "label": { "type": "String" },
+      "value": { "type": "String" }
+    }
+  }
 }
