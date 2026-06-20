@@ -171,6 +171,7 @@ backend/
    - `WorkflowDefinition` — name, steps_config (JSONB), is_active, is_default
    - `WorkflowInstance` — definition_id, invoice_id, current_step, state, steps_config_snapshot (JSONB)
    - `WorkflowStep` — instance_id, step_number, step_type, assigned_to, action, completed_at
+   - `WorkflowExperiment` — A/B test of two workflow-rule configs (`config_a`/`config_b` JSONB) on one `workflow_definition_id`; `split_a_pct`, `primary_metric`, `min_sample_per_variant`, `status` (draft/running/concluded), `assignments` (JSONB `{invoice_id: "A"|"B"}`). Assigned at invoice creation (deterministic stable hash, freezes the variant config onto the instance snapshot); migration 0062. See `docs/adaptive-workflows.md` § A/B testing
    - `AuditLog` — actor_id, action, entity_type, entity_id, details (JSONB)
    - `Exception` — invoice_id, exception_type, severity, status (open/resolved/escalated/dismissed)
    - `CreditMemo` — vendor_id, original_invoice_id, amount, status (open/applied/voided)

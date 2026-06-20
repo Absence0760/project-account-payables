@@ -310,6 +310,117 @@ Response (`ApplyThresholdResponse`): `applied`, `workflow_id`,
 `previous_threshold`, `new_threshold` (string-Decimal), `reason_code`,
 `rationale`, `version_number` (the snapshot written, or `null` on a no-op).
 
+## A/B testing of workflow rules
+
+A controlled experiment comparing **two** workflow-rule configurations — an
+**A** control and a **B** variant — running over the *same* workflow definition,
+measured on objective, deterministic metrics so an org can answer "does the
+variant actually approve faster / touchless-r / with fewer exceptions?" before
+adopting it org-wide. Like the rest of this feature it is **local-first +
+deterministic** (no LLM, no cloud key): both the A/B assignment and the metrics
+are pure functions in `services/workflow_experiments.py` (unit-testable without a
+DB), with the DB-touching assignment hook in
+`services/workflow_experiments_runtime.py` and the SQL / lifecycle / results
+shaping in `api/workflow_experiments.py`.
+
+> **Routes / measures — never moves money.** An experiment only decides *which
+> config an invoice runs under* and reads metrics back. It funds nothing; the
+> CFO-gated payment run is unchanged.
+
+### Model — `WorkflowExperiment` (tenant-scoped, migration 0062)
+
+| Field | Meaning |
+|---|---|
+| `workflow_definition_id` | The definition under test — only invoices whose resolved definition is this one get assigned. |
+| `config_a` / `config_b` | The two variant `steps_config` JSONBs (same shape the definition stores). `config_a` is the control. |
+| `split_a_pct` | Percent of invoices routed to A (0–100; 50 = even). |
+| `primary_metric` | The metric the winner is called on — `time_to_approval_days` \| `touchless_rate_pct` \| `exception_rate_pct` \| `rejection_rate_pct`. |
+| `min_sample_per_variant` | Minimum *completed* invoices per arm before a winner is called. |
+| `status` | `draft` → `running` → `concluded` (stop returns a running experiment to `draft`). |
+| `started_at` / `ended_at` | Lifecycle timestamps. |
+| `assignments` | `{invoice_id: "A"|"B"}` — the recorded, stable assignment per in-flight invoice, so the split is auditable and reproducible. |
+
+Fans out to every tenant via `scripts/migrate_all_tenants.py`; fresh tenants get
+it from `create_all` via the registered model (it is NOT a control table).
+
+### Assignment at invoice creation (the frozen-snapshot invariant)
+
+`workflow_engine.create_workflow_instance` — the single chokepoint where the
+per-invoice `steps_config_snapshot` is frozen — calls
+`maybe_assign_experiment_variant`. When a `running` experiment targets the
+invoice's resolved definition (and its entity scope is compatible — an org-wide
+NULL-entity experiment matches any invoice, an entity-scoped one only its own
+entity), the deterministic `assign_variant(invoice_id, experiment_id,
+split_a_pct)` picks A or B (stable SHA-256 hash → `[0,100)` bucket; **no
+randomness, no clock**, so the same invoice always lands in the same variant and
+two experiments split independently). The **chosen variant's config is frozen
+onto the snapshot** — so in-flight invoices keep their variant for life, exactly
+like any other workflow snapshot. The assignment is recorded on the experiment's
+`assignments` map and a PII-free `invoice.experiment_assigned` audit row is
+written. The whole hook is **best-effort**: its caller swallows exceptions, so a
+routing failure falls back to the live definition's config and never breaks
+invoice creation. At most one experiment is honoured per invoice (the
+most-recently-started match) — running two over one definition is a config
+mistake, not a compounded split.
+
+### Results / readout — `GET /api/experiments/{id}/results`
+
+`compute_experiment_results(rows_a, rows_b, primary_metric,
+min_sample_per_variant)` aggregates per-variant metrics over the **recorded
+assignments** (the API resolves each assigned invoice's terminal decision,
+touchless signals, time-to-approval leg, and exception presence from the
+audit_log + Exception rows):
+
+- **median / avg time-to-approval (days)** — over approved invoices, clock-start
+  = the invoice's `ready_for_review` transition (fallback `created_at`), clamped
+  ≥ 0 (reuses the adaptive `_decimal_days` leg).
+- **touchless rate** — auto-approved (`invoice.auto_approved`, no human) **and**
+  unmodified (no `details.changes`), over completed invoices.
+- **exception rate** — invoices that raised ≥ 1 exception, over **all assigned**
+  (not just completed) — exposure is over all work routed to the arm.
+- **rejection rate** — rejected over completed.
+
+"Completed" = the invoice reached a terminal review decision (approved OR
+rejected). A clear **"not enough data yet"** state guards the readout: until
+*both* arms have `≥ min_sample_per_variant` completed invoices, `enough_data` is
+False and `winner` is `null` (with per-arm `notes` saying how many more are
+needed). Past the threshold a **winner** is called by a plain, explainable
+direction check on the primary metric (lower-is-better for
+time/exception/rejection, higher-is-better for touchless); an exact tie is
+`"tie"`. **No statistical-significance test is claimed** — the rationale says so,
+because that would over-promise on the small samples a single tenant produces.
+
+### Endpoints
+
+| Route | Method | RBAC | Notes |
+|---|---|---|---|
+| `/api/experiments` | GET | admin / ap_manager / cfo | `?status=` filter; list |
+| `/api/experiments` | POST | **admin only** | Create (draft). 404 if the workflow definition isn't this org's; 422 on a bad `primary_metric` |
+| `/api/experiments/{id}` | PATCH | **admin only** | Edit — **draft only** (409 otherwise) |
+| `/api/experiments/{id}/start` | POST | **admin only** | draft → running; idempotent (already-running is a no-op); 409 if concluded |
+| `/api/experiments/{id}/stop` | POST | **admin only** | running → draft (stops *new* assignments; in-flight keep their frozen variant); 409 if not running |
+| `/api/experiments/{id}/conclude` | POST | **admin only** | → concluded (terminal; results stay readable); idempotent |
+| `/api/experiments/{id}` | DELETE | **admin only** | **draft only** (409 — stop/conclude a running one to preserve its measurement history) |
+| `/api/experiments/{id}/results` | GET | admin / ap_manager / cfo | Per-variant metrics + winner / not-enough-data over the recorded assignments |
+
+Mutate is **admin-only** (editing workflow rules is an admin act, like editing a
+workflow definition); managers/CFO can read the list + results. Every mutation
+writes a PII-free `workflow_experiment.{created,updated,started,stopped,concluded,deleted}`
+audit row. Every route is behind `get_current_user` + `require_roles`; all are
+tenant + org scoped (404 on cross-tenant fetch).
+
+### Frontend — `/experiments`
+
+A `/experiments` route under the **Settings** nav group (read managers/CFO,
+mutate admin): status `FilterChips` (all / draft / running / concluded), an
+experiments `DataTable` with clickable rows opening a **results readout** modal
+(winner / not-enough-data banner + the per-variant metric table, primary metric
+row highlighted), a create `Modal` (pick a definition — seeds both configs from
+its live `steps_config` — set split %, primary metric, min sample, edit the two
+JSON configs), and per-row start / stop / conclude / delete actions gated by
+status + role. Over `$lib/api/experiments.ts` (types in
+`$lib/types/experiments.ts`).
+
 ## Tunables — `Organization.settings.adaptive`
 
 Partial override (omit a key to inherit; unknown keys dropped — mirrors
@@ -395,7 +506,12 @@ not apply.
   per-vendor advisory suggestion's status — the two stores stay independent so a
   dismissal/stale flip on a vendor suggestion can't be confused with the
   org-wide threshold history; revisit if a UI needs to thread them).
-- **A/B testing** of workflow rules.
+- **A/B testing** of workflow rules. ✅ **Shipped** — see § A/B testing below.
+  Run a controlled experiment comparing two workflow-rule configs on objective,
+  deterministic metrics; assignment freezes a variant config onto the invoice's
+  snapshot at creation; the results endpoint calls a winner past a minimum
+  sample. `/api/experiments` + `services/workflow_experiments*.py` + migration
+  0062 + the `/experiments` frontend surface.
 - **Model-retraining feedback loop.**
 - **LLM phrasing** of suggestion text — if added, must fail soft to the template
   with no key (mirror `services/audit_summary.py`).
