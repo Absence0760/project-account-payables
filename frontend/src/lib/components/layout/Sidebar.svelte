@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { brand } from '$lib/stores/brand.svelte';
 	import { entityStore } from '$lib/stores/entity.svelte';
 	import EntitySwitcher from '$lib/components/layout/EntitySwitcher.svelte';
 	import NotificationBell from '$lib/components/layout/NotificationBell.svelte';
@@ -52,8 +53,14 @@
 <aside class="sidebar" class:collapsed>
 	<div class="sidebar-header" class:collapsed>
 		<div class="logo">
-			<span class="logo-mark">AP</span>
-			{#if !collapsed}<span class="logo-text">{m('shell.appName')}</span>{/if}
+			{#if brand.logoUrl}
+				<!-- White-label logo. Falls back to the bundled "AP" mark when the
+				     org configured none; alt is the (branded) product name. -->
+				<img class="logo-img" src={brand.logoUrl} alt={brand.productName} />
+			{:else}
+				<span class="logo-mark">AP</span>
+			{/if}
+			{#if !collapsed}<span class="logo-text">{brand.productName}</span>{/if}
 		</div>
 		<NotificationBell {collapsed} />
 	</div>
@@ -194,6 +201,15 @@
 		font-size: 1.1rem;
 		font-weight: 800;
 		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	/* White-label logo image — capped to the rail height so a tall logo can't
+	   blow out the header; object-fit keeps the aspect ratio. */
+	.logo-img {
+		height: 24px;
+		max-width: 130px;
+		object-fit: contain;
 		flex-shrink: 0;
 	}
 

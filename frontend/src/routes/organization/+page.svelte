@@ -352,6 +352,18 @@
 				extractionOllamaUrl = (extraction.base_url as string) || 'http://localhost:11434';
 				extractionOllamaModel = (extraction.model as string) || 'llama3.2-vision:11b';
 			}
+			// Branding (white-label)
+			const brandCfg = (data.settings as unknown as Record<string, unknown>).brand as
+				| Record<string, unknown>
+				| undefined;
+			if (brandCfg) {
+				brandProductName = (brandCfg.product_name as string) || '';
+				brandLogoUrl = (brandCfg.logo_url as string) || '';
+				brandAccentColor = (brandCfg.accent_color as string) || '';
+				brandAccentStrongColor = (brandCfg.accent_strong_color as string) || '';
+				brandSupportUrl = (brandCfg.support_url as string) || '';
+				brandLegalUrl = (brandCfg.legal_url as string) || '';
+			}
 		} catch {
 			toast('Failed to load organization', 'error');
 		}
@@ -595,6 +607,66 @@
 		pro: 'Pro',
 		enterprise: 'Enterprise',
 	};
+
+	// ── White-label branding ────────────────────────────────────────────
+	import { brand } from '$lib/stores/brand.svelte';
+
+	let brandProductName = $state('');
+	let brandLogoUrl = $state('');
+	let brandAccentColor = $state('');
+	let brandAccentStrongColor = $state('');
+	let brandSupportUrl = $state('');
+	let brandLegalUrl = $state('');
+	let savingBranding = $state(false);
+
+	const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+	// Default accent tokens (mirror src/app.css :root) so the color pickers show
+	// the live default when the org hasn't set one — without writing it back.
+	const DEFAULT_ACCENT = '#638cff';
+	const DEFAULT_ACCENT_STRONG = '#3f5fd6';
+
+	async function saveBranding() {
+		// Client-side validation mirroring the backend BrandConfig guards, so a
+		// typo surfaces inline instead of as a 422.
+		if (brandAccentColor.trim() && !HEX_RE.test(brandAccentColor.trim())) {
+			toast('Accent color must be a hex value like #638cff', 'error');
+			return;
+		}
+		if (brandAccentStrongColor.trim() && !HEX_RE.test(brandAccentStrongColor.trim())) {
+			toast('Accent (strong) color must be a hex value like #3f5fd6', 'error');
+			return;
+		}
+		for (const [label, val] of [
+			['Logo URL', brandLogoUrl],
+			['Support URL', brandSupportUrl],
+			['Legal URL', brandLegalUrl],
+		] as const) {
+			if (val.trim() && !/^https?:\/\//i.test(val.trim())) {
+				toast(`${label} must be an http(s) URL`, 'error');
+				return;
+			}
+		}
+		savingBranding = true;
+		try {
+			await api.put('/api/organization/branding', {
+				product_name: brandProductName.trim(),
+				logo_url: brandLogoUrl.trim(),
+				accent_color: brandAccentColor.trim(),
+				accent_strong_color: brandAccentStrongColor.trim(),
+				support_url: brandSupportUrl.trim(),
+				legal_url: brandLegalUrl.trim(),
+			});
+			// Refresh the live brand store so the sidebar logo/name + theme update
+			// without a reload.
+			brand.reset();
+			await brand.ensureLoadedAndApply();
+			toast('Branding saved', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+		} finally {
+			savingBranding = false;
+		}
+	}
 </script>
 
 <PageHeader title="Organization">
@@ -675,6 +747,90 @@
 				<div class="section-footer">
 					<button class="btn-save-section" disabled={savingDefaults} onclick={saveDefaults}>
 						{savingDefaults ? 'Saving...' : 'Save Defaults'}
+					</button>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>Branding</h2>
+				<p class="card-hint">
+					White-label the app for your organization. Leave a field blank to use the
+					platform default. Accent colors retheme the app immediately on save.
+				</p>
+				<div class="form-grid">
+					<label>
+						<span>Product Name</span>
+						<input
+							type="text"
+							bind:value={brandProductName}
+							placeholder="Accounts Payable"
+							maxlength="120"
+						/>
+					</label>
+					<label>
+						<span>Logo URL</span>
+						<input
+							type="url"
+							bind:value={brandLogoUrl}
+							placeholder="https://cdn.example.com/logo.png"
+						/>
+					</label>
+					<label>
+						<span>Accent Color</span>
+						<span class="color-field">
+							<input
+								type="color"
+								aria-label="Accent color picker"
+								value={brandAccentColor.trim() || DEFAULT_ACCENT}
+								oninput={(e) => (brandAccentColor = e.currentTarget.value)}
+							/>
+							<input
+								type="text"
+								bind:value={brandAccentColor}
+								placeholder={DEFAULT_ACCENT}
+							/>
+						</span>
+					</label>
+					<label>
+						<span>Accent Color (strong)</span>
+						<span class="color-field">
+							<input
+								type="color"
+								aria-label="Strong accent color picker"
+								value={brandAccentStrongColor.trim() || DEFAULT_ACCENT_STRONG}
+								oninput={(e) => (brandAccentStrongColor = e.currentTarget.value)}
+							/>
+							<input
+								type="text"
+								bind:value={brandAccentStrongColor}
+								placeholder={DEFAULT_ACCENT_STRONG}
+							/>
+						</span>
+					</label>
+					<label>
+						<span>Support URL</span>
+						<input
+							type="url"
+							bind:value={brandSupportUrl}
+							placeholder="https://help.example.com"
+						/>
+					</label>
+					<label>
+						<span>Legal / Terms URL</span>
+						<input
+							type="url"
+							bind:value={brandLegalUrl}
+							placeholder="https://example.com/legal"
+						/>
+					</label>
+				</div>
+				<p class="card-hint">
+					The strong accent is a darker companion used for text-bearing accent
+					backgrounds (buttons, active chips) so white text stays AA-legible.
+				</p>
+				<div class="section-footer">
+					<button class="btn-save-section" disabled={savingBranding} onclick={saveBranding}>
+						{savingBranding ? 'Saving...' : 'Save Branding'}
 					</button>
 				</div>
 			</section>
@@ -1383,12 +1539,34 @@
 		gap: 4px;
 	}
 
-	label span {
+	/* The field label only — not the .color-field wrapper span (reset below). */
+	label > span:first-child {
 		font-size: 0.78rem;
 		font-weight: 500;
 		color: var(--text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.03em;
+	}
+
+	/* Branding color picker: native swatch + hex text input side by side. */
+	.color-field {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		text-transform: none;
+		letter-spacing: normal;
+	}
+
+	.color-field input[type='color'] {
+		width: 40px;
+		height: 36px;
+		padding: 2px;
+		flex-shrink: 0;
+		cursor: pointer;
+	}
+
+	.color-field input[type='text'] {
+		flex: 1;
 	}
 
 	input,

@@ -12,6 +12,7 @@ from app.database import get_control_db
 from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.organization import (
+    BrandConfig,
     CompanyProfile,
     InvoiceDefaults,
     OrganizationResponse,
@@ -183,6 +184,76 @@ async def update_data_residency(
         supported_regions=list(SUPPORTED_REGIONS),
         placement=get_region_placement(body.region),
     )
+
+
+def _resolve_brand(org: Organization) -> BrandConfig:
+    """Parse `settings.brand` into a validated BrandConfig, tolerating a missing
+    or malformed block by returning all-empty (= platform defaults)."""
+    raw = (org.settings or {}).get("brand")
+    if not isinstance(raw, dict):
+        return BrandConfig()
+    try:
+        return BrandConfig(**raw)
+    except Exception:
+        # A persisted-but-now-invalid brand block must never break the read.
+        return BrandConfig()
+
+
+@router.get("/branding", response_model=BrandConfig)
+async def get_branding(
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(get_current_user),
+):
+    """Return this tenant's white-label branding config.
+
+    Read-gated to any authenticated org user (same posture as
+    `GET /api/organization` / data-residency) — the whole app needs the brand to
+    theme itself, not just admins. Only the mutate path is admin-only. Empty
+    fields mean "use the platform default" on the client.
+    """
+    return _resolve_brand(org)
+
+
+@router.put("/branding", response_model=BrandConfig)
+async def update_branding(
+    body: BrandConfig,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Update this tenant's white-label branding. Admin only; audited.
+
+    Pydantic has already validated the payload (hex colors, http(s) URLs), so by
+    the time we get here the values are safe to persist + later inject into the
+    DOM. Written to `org.settings["brand"]` via `flag_modified` (nested JSONB
+    in-place mutation isn't auto-marked dirty), then audited into the tenant
+    trail. PII-free: only the configured branding fields (a logo URL, links, a
+    product name, colors) — never user data.
+    """
+    existing = dict(org.settings or {})
+    existing["brand"] = body.model_dump()
+    org.settings = existing
+    flag_modified(org, "settings")
+
+    await db.commit()
+
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="organization.branding_updated",
+        entity_id=org.id,
+        details={
+            # Booleans only — record *which* fields are now set, never echo a
+            # raw value into the audit trail.
+            "product_name_set": bool(body.product_name),
+            "logo_url_set": bool(body.logo_url),
+            "accent_color_set": bool(body.accent_color),
+            "support_url_set": bool(body.support_url),
+            "legal_url_set": bool(body.legal_url),
+        },
+    )
+
+    return body
 
 
 @router.post("/test-erp")

@@ -7,6 +7,7 @@
 	import ConsentBanner from '$lib/components/ConsentBanner.svelte';
 	import { sidebar } from '$lib/stores/sidebar.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { brand } from '$lib/stores/brand.svelte';
 	import { notificationStore } from '$lib/stores/notifications.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -80,6 +81,23 @@
 		return () => mq.removeEventListener('change', apply);
 	});
 
+	// White-label theming: once the user is fully signed into a tenant, load the
+	// org's brand config and apply its accent colors as CSS custom properties on
+	// <html>. Only the org-configured tokens are written — an unset accent leaves
+	// the AA-passing app.css default in place (see brand.svelte.ts). The branding
+	// read needs auth, so it's gated on the same signed-in condition as the bell.
+	$effect(() => {
+		const active =
+			!!tenant &&
+			auth.loggedIn &&
+			!!auth.user &&
+			!auth.user.must_change_password &&
+			!$page.url.pathname.startsWith(PORTAL_PREFIX);
+		if (active) {
+			brand.ensureLoadedAndApply();
+		}
+	});
+
 	// Drive the sidebar's unread-notification badge. Start the 60s poll once the
 	// user is fully signed in (and past the change-password gate); stop it on
 	// logout so a stale timer doesn't fire 401s after the token is cleared.
@@ -99,7 +117,7 @@
 </script>
 
 <svelte:head>
-	<title>Accounts Payable</title>
+	<title>{brand.productName}</title>
 </svelte:head>
 
 {#if tenant === undefined}
