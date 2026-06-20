@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
@@ -16,8 +17,10 @@ import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
+import 'package:ap_mobile/widgets/activity_timeline.dart';
 import 'package:ap_mobile/widgets/exception_list_tile.dart';
 import 'package:ap_mobile/widgets/exception_status_badge.dart';
+import 'package:ap_mobile/widgets/invoice_edit_sheet.dart';
 import 'package:ap_mobile/widgets/invoice_list_tile.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
@@ -173,6 +176,72 @@ void main() {
         handle.dispose();
       });
     }
+  });
+
+  group('ActivityTimeline', () {
+    AuditEntry auditEntry({
+      String action = 'invoice.edited',
+      Map<String, dynamic>? details = const {
+        'changes': {
+          'amount': {'old': '100.00', 'new': '250.00'},
+        },
+      },
+    }) =>
+        AuditEntry(
+          id: 'a1',
+          actorId: 'u1',
+          actorName: 'Demo User',
+          action: action,
+          entityType: 'invoice',
+          entityId: '1',
+          details: details,
+          createdAt: DateTime(2026, 1, 2, 10),
+        );
+
+    testWidgets('clears contrast and announces one phrase per entry',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        ActivityTimeline(entries: [auditEntry()]),
+      ));
+
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // Each entry merges into a single sensible announcement.
+      expect(
+        find.bySemanticsLabel(
+          RegExp(r'Edited fields by Demo User.*changed from 100.00 to 250.00'),
+        ),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+  });
+
+  group('InvoiceEditSheet', () {
+    Invoice inv() => Invoice(
+          id: '1',
+          invoiceNumber: 'INV-001',
+          vendorName: 'Acme Supplies',
+          amount: 1500,
+          currency: 'USD',
+          status: InvoiceStatus.readyForReview,
+          createdAt: DateTime(2026, 1, 1),
+        );
+
+    testWidgets('meets tap-target, label and contrast guidelines',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(InvoiceEditSheet(invoice: inv())));
+      await tester.pump();
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // The icon-only close + date-clear controls announce their purpose.
+      expect(find.bySemanticsLabel('Close edit form'), findsOneWidget);
+      handle.dispose();
+    });
   });
 
   group('LoginScreen', () {

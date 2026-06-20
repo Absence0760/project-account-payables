@@ -4,10 +4,13 @@ import 'package:intl/intl.dart';
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/config.dart';
+import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
+import 'package:ap_mobile/widgets/activity_timeline.dart';
+import 'package:ap_mobile/widgets/invoice_edit_sheet.dart';
 import 'package:ap_mobile/widgets/status_badge.dart';
 
 final _currencyFormat = NumberFormat.currency(symbol: '\$');
@@ -30,10 +33,17 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   // double-tap firing the money-path POST twice and disables the buttons.
   bool _submitting = false;
 
+  // Activity timeline (audit log) state — loaded independently of the invoice
+  // body so a slow / failed trail never blocks the detail view.
+  List<AuditEntry> _activity = [];
+  bool _activityLoading = true;
+  String? _activityError;
+
   @override
   void initState() {
     super.initState();
     _load();
+    _loadActivity();
   }
 
   Future<void> _load() async {
@@ -52,6 +62,55 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _loadActivity() async {
+    setState(() {
+      _activityLoading = true;
+      _activityError = null;
+    });
+    try {
+      final entries =
+          await InvoiceStore.instance.fetchAuditLog(widget.invoiceId);
+      if (!mounted) return;
+      setState(() {
+        _activity = entries;
+        _activityLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _activityError = e.toString();
+        _activityLoading = false;
+      });
+    }
+  }
+
+  Future<void> _edit() async {
+    final inv = _invoice;
+    if (inv == null || _submitting) return;
+    final changes = await showInvoiceEditSheet(context, inv);
+    if (changes == null || !mounted) return; // cancelled / dismissed
+    if (changes.isEmpty) {
+      _showSnack('No changes to save');
+      return;
+    }
+
+    setState(() => _submitting = true);
+    try {
+      final updated = await InvoiceStore.instance.update(widget.invoiceId, changes);
+      if (!mounted) return;
+      if (updated != null) {
+        // Reflect the edit + the new `invoice.edited` audit row.
+        await _load();
+        await _loadActivity();
+        _showSnack('Invoice updated');
+      } else {
+        _showSnack('Could not save changes — please try again');
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
   }
 
@@ -129,10 +188,31 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     A11y.announce(context, message);
   }
 
+  bool get _canEdit {
+    final inv = _invoice;
+    return inv != null &&
+        inv.status.isEditable &&
+        AuthStore.instance.canEditInvoice;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Invoice Detail')),
+      appBar: AppBar(
+        title: const Text('Invoice Detail'),
+        actions: [
+          if (_canEdit)
+            Semantics(
+              label: 'Edit invoice',
+              button: true,
+              child: IconButton(
+                tooltip: 'Edit',
+                icon: const Icon(Icons.edit),
+                onPressed: _submitting ? null : _edit,
+              ),
+            ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
@@ -161,10 +241,15 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     );
   }
 
+  Future<void> _refreshAll() async {
+    await _load();
+    await _loadActivity();
+  }
+
   Widget _buildDetail() {
     final inv = _invoice!;
     return RefreshIndicator(
-      onRefresh: _load,
+      onRefresh: _refreshAll,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -252,13 +337,54 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             inv.dueDate != null ? _dateFormat.format(inv.dueDate!) : null,
           ),
           _detailRow('Description', inv.description),
+          _detailRow('GL Account', inv.glAccount),
           _detailRow(
             'Created',
             _dateFormat.format(inv.createdAt),
           ),
+
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text(
+            'Activity',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          _buildActivity(),
         ],
       ),
     );
+  }
+
+  Widget _buildActivity() {
+    if (_activityLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 16),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_activityError != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Could not load activity',
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+            ),
+            TextButton.icon(
+              onPressed: _loadActivity,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+    return ActivityTimeline(entries: _activity);
   }
 
   Widget _detailRow(String label, String? value) {

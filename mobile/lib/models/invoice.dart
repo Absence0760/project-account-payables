@@ -39,6 +39,21 @@ enum InvoiceStatus {
 
   bool get isActionable =>
       this == InvoiceStatus.readyForReview;
+
+  /// Whether the invoice's fields may be edited via `PATCH /api/invoices/{id}`.
+  /// Mirrors the backend `IMMUTABLE_STATUSES` gate: once an invoice is en route
+  /// to / posted in the ERP, scheduled, paid, or done, edits are rejected with
+  /// 409, so the edit affordance is hidden in those states.
+  bool get isEditable => switch (this) {
+    InvoiceStatus.sendingToErp ||
+    InvoiceStatus.sentToErp ||
+    InvoiceStatus.postedInErp ||
+    InvoiceStatus.paymentScheduled ||
+    InvoiceStatus.paid ||
+    InvoiceStatus.done =>
+      false,
+    _ => true,
+  };
 }
 
 class Invoice {
@@ -52,6 +67,7 @@ class Invoice {
   final DateTime? dueDate;
   final String? description;
   final String? poNumber;
+  final String? glAccount;
   final String? fileUrl;
   final DateTime createdAt;
 
@@ -66,6 +82,7 @@ class Invoice {
     this.dueDate,
     this.description,
     this.poNumber,
+    this.glAccount,
     this.fileUrl,
     required this.createdAt,
   });
@@ -86,6 +103,7 @@ class Invoice {
           : null,
       description: json['description'] as String?,
       poNumber: json['po_number'] as String?,
+      glAccount: json['gl_account'] as String?,
       fileUrl: json['file_url'] as String?,
       createdAt: DateTime.parse(json['created_at'] as String),
     );

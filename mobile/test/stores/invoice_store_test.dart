@@ -189,4 +189,113 @@ void main() {
       expect(sentReason, 'Wrong amount');
     });
   });
+
+  group('update (edit fields)', () {
+    test('PATCHes the partial body and refetches the list', () async {
+      String? method;
+      String? path;
+      Map<String, dynamic>? sentBody;
+      var listCalls = 0;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'PATCH') {
+            method = req.method;
+            path = req.url.path;
+            sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode(_invoiceJson('1', vendor: 'Globex')),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          listCalls++;
+          return _list([_invoiceJson('1', vendor: 'Globex')]);
+        }),
+      );
+
+      final updated = await store.update('1', {
+        'vendor': 'Globex',
+        'amount': '250.00', // string-Decimal, never a float
+      });
+
+      expect(updated, isNotNull);
+      expect(updated!.vendorName, 'Globex');
+      expect(method, 'PATCH');
+      expect(path, '/api/invoices/1');
+      // Money goes over the wire as a string (Decimal-safe), not a JS number.
+      expect(sentBody!['amount'], '250.00');
+      expect(sentBody!['amount'], isA<String>());
+      expect(listCalls, 1, reason: 'a successful edit refetches the list');
+    });
+
+    test('returns null and records the error on failure', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 409)),
+      );
+
+      final updated = await store.update('1', {'vendor': 'X'});
+
+      expect(updated, isNull);
+      expect(store.error, isNotNull);
+    });
+  });
+
+  group('fetchAuditLog (activity timeline)', () {
+    test('parses the bare audit-log array oldest-first', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          expect(req.url.path, '/api/invoices/1/audit-log');
+          return http.Response(
+            jsonEncode([
+              {
+                'id': 'a1',
+                'actor_id': 'u1',
+                'actor_name': 'Demo User',
+                'action': 'invoice.uploaded',
+                'entity_type': 'invoice',
+                'entity_id': '1',
+                'details': null,
+                'created_at': '2026-01-01T10:00:00',
+              },
+              {
+                'id': 'a2',
+                'actor_id': 'u1',
+                'actor_name': 'Demo User',
+                'action': 'invoice.edited',
+                'entity_type': 'invoice',
+                'entity_id': '1',
+                'details': {
+                  'changes': {
+                    'amount': {'old': '100.00', 'new': '250.00'},
+                  },
+                },
+                'created_at': '2026-01-02T10:00:00',
+              },
+            ]),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      final entries = await store.fetchAuditLog('1');
+
+      expect(entries, hasLength(2));
+      expect(entries.first.action, 'invoice.uploaded');
+      expect(entries.first.actionLabel, 'Uploaded invoice');
+      final edit = entries[1];
+      expect(edit.changes, hasLength(1));
+      expect(edit.changes.first.field, 'amount');
+      expect(edit.changes.first.oldDisplay, '100.00');
+      expect(edit.changes.first.newDisplay, '250.00');
+    });
+
+    test('rethrows when the request fails', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 500)),
+      );
+
+      expect(store.fetchAuditLog('1'), throwsA(isA<ApiException>()));
+    });
+  });
 }

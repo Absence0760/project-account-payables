@@ -34,7 +34,8 @@ mobile/
 │   │   └── endpoints.dart       # Typed API methods (auth, invoices, dashboard, payments)
 │   ├── models/
 │   │   ├── user.dart            # User model with role helpers
-│   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states)
+│   │   ├── audit_entry.dart     # AuditEntry + AuditFieldChange (invoice activity timeline; details.changes diff)
+│   │   ├── invoice.dart         # Invoice, InvoiceStatus enum (12 states); isEditable gate mirrors backend IMMUTABLE_STATUSES
 │   │   ├── exception.dart       # ApException, ApExceptionStatus + ApExceptionSeverity enums
 │   │   └── payment.dart         # Payment, PaymentMethod, DashboardData, aging, trends
 │   ├── services/
@@ -52,13 +53,15 @@ mobile/
 │   │   ├── home_screen.dart     # Bottom nav host (role-aware tabs)
 │   │   ├── dashboard_screen.dart # KPIs, aging, top vendors
 │   │   ├── invoices_screen.dart  # Invoice list with search + status filters + camera button
-│   │   ├── invoice_detail_screen.dart # Detail view with approve/reject
+│   │   ├── invoice_detail_screen.dart # Detail view with approve/reject + edit affordance + activity timeline
 │   │   ├── approvals_screen.dart # Pending approvals with swipe-to-approve
 │   │   ├── exceptions_screen.dart # Exception queue — filter + swipe/sheet resolve/escalate/dismiss
 │   │   ├── capture_screen.dart   # Camera/gallery capture → upload → extract
 │   │   ├── payments_screen.dart  # Payment history
 │   │   └── settings_screen.dart  # User profile, biometric toggle, logout
 │   └── widgets/
+│       ├── activity_timeline.dart # Invoice audit-log timeline (action label, actor, time, per-field before→after diff); empty state; one merged Semantics label per entry
+│       ├── invoice_edit_sheet.dart # Modal bottom-sheet edit form (vendor, invoice #, amount, PO, GL, description, due date); returns the partial diff; amount sent as string-Decimal
 │       ├── status_badge.dart    # Colored invoice status chip
 │       ├── exception_status_badge.dart # Colored exception status chip (open/escalated/resolved/dismissed)
 │       ├── exception_list_tile.dart    # Exception row with type, invoice, severity, status
@@ -95,7 +98,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Login | `POST /api/auth/login`, `GET /api/auth/me` |
 | Dashboard | `GET /api/dashboard` |
 | Invoices | `GET /api/invoices` |
-| Invoice Detail | `GET /api/invoices/{id}`, `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject` |
+| Invoice Detail | `GET /api/invoices/{id}`, `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline, any authenticated role) |
 | Approvals | `GET /api/invoices` (filtered to `ready_for_review`) |
 | Exceptions | `GET /api/exceptions` (status filter), `POST /api/exceptions/{id}/resolve` (action=resolve\|escalate\|dismiss) |
 | Payments | `GET /api/payments` |
@@ -121,6 +124,8 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - Dashboard (KPIs, aging buckets, top vendors)
 - Invoice list with search + status filter chips
 - Invoice detail with approve/reject
+- Invoice editing — edit-sheet on the detail screen (vendor, invoice #, amount, PO, GL account, description, due date) via `PATCH /api/invoices/{id}`; amount sent as string-Decimal (never a lossy float); input validation; RBAC-gated (admin/ap_manager/cfo, hidden for clerks) and hidden in immutable statuses (the backend would 409); save success/failure announced via `A11y.announce`
+- Activity timeline — invoice audit log on the detail screen (`GET /api/invoices/{id}/audit-log`): action label, actor, timestamp, per-field before→after diff from `details.changes`; loading / empty / error states; one merged Semantics announcement per entry
 - Approvals tab with swipe-to-approve
 - Exception queue (list + status filter + resolve / escalate / dismiss via swipe + action sheet; admin / AP manager only)
 - Payment history list
@@ -143,10 +148,8 @@ Bottom navigation adapts based on user roles (same as web frontend):
 - **MFA** — `AuthStore.login()` only handles `TokenResponse`; if the backend returns `MFAChallengeResponse` (when `AP_MFA_ENABLED=true` and the user is enrolled or org-enforced), login throws. Mobile users can still sign in when MFA is off, but tenants with enforcement need a mobile MFA flow + a `/profile` enrollment screen.
 - **Org Security settings** — the web `/organization` page exposes the `mfa.required` toggle; mobile has no equivalent.
 - **OIDC SSO** — `Sign in with Okta/Microsoft` button is web-only.
-- Invoice editing (change fields in detail screen)
 - Invoice upload via file picker (PDF/PNG/JPG/TIFF) — mobile has camera only
-- PDF/image viewer for uploaded invoice files
-- Activity timeline / audit log in invoice detail
+- PDF/image viewer for uploaded invoice files (mobile shows the image inline + full-screen, but no PDF rendering yet)
 - Advanced search modal (vendor, PO, amount range, date range)
 - Invoice warnings/fraud flags display
 - ERP status display on invoice detail
@@ -208,8 +211,10 @@ await expectLater(tester, meetsGuideline(textContrastGuideline));
 
 plus `find.bySemanticsLabel(...)` to confirm icon buttons expose labels. Covers
 the invoice list tile, KPI card, status badge, login screen, the capture action,
-the approvals approve/reject affordances, and the exception list tile + exception
-status badge + exceptions screen (queue swipe/sheet actions).
+the approvals approve/reject affordances, the exception list tile + exception
+status badge + exceptions screen (queue swipe/sheet actions), and the invoice
+activity timeline + invoice edit-sheet (icon-only close/clear controls labelled,
+one merged announcement per timeline entry).
 `textContrastGuideline` is strict
 (it caught the 4.38:1 and 2.55:1 muted-grey defects during this pass), so add a
 contrast check when introducing new coloured text.

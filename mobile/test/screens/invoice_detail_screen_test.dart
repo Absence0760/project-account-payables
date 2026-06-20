@@ -69,12 +69,17 @@ Future<void> _arrange(MockClient client) async {
 }
 
 /// A MockClient covering auth + a single invoice detail GET returning [invoice].
-/// Optional [onApprove] / [onReject] override those POSTs.
+/// Optional [onApprove] / [onReject] / [onPatch] override those calls.
+/// [roles] sets the logged-in user's roles (default admin). [audit] is the
+/// audit-log array returned for `/audit-log` (default empty).
 MockClient _detailClient(
   Map<String, dynamic> invoice, {
   http.Response Function()? onGet,
   http.Response Function(http.Request req)? onApprove,
   http.Response Function(http.Request req)? onReject,
+  http.Response Function(http.Request req)? onPatch,
+  List<String> roles = const ['admin'],
+  List<Map<String, dynamic>> audit = const [],
 }) {
   return MockClient((req) async {
     final path = req.url.path;
@@ -82,7 +87,13 @@ MockClient _detailClient(
       return _json({'access_token': 'tok-123'});
     }
     if (req.method == 'GET' && path == '/api/auth/me') {
-      return _json(_meBody(['admin']));
+      return _json(_meBody(roles));
+    }
+    if (req.method == 'GET' && path.endsWith('/audit-log')) {
+      return _json(audit);
+    }
+    if (req.method == 'PATCH' && path.startsWith('/api/invoices/')) {
+      return onPatch?.call(req) ?? _json(invoice);
     }
     if (req.method == 'POST' && path.endsWith('/approve')) {
       return onApprove?.call(req) ?? _json(invoice);
@@ -90,7 +101,7 @@ MockClient _detailClient(
     if (req.method == 'POST' && path.endsWith('/reject')) {
       return onReject?.call(req) ?? _json(invoice);
     }
-    // InvoiceStore.approve/reject refetch the list after the POST.
+    // InvoiceStore.approve/reject/update refetch the list after the write.
     if (req.method == 'GET' && path == '/api/invoices') {
       return _json({'invoices': <Map<String, dynamic>>[]});
     }
@@ -440,6 +451,211 @@ void main() {
     expect(rejectCalls, 1);
     expect(sentReason, 'Wrong amount');
     expect(find.text('Invoice rejected'), findsOneWidget);
+  });
+
+  testWidgets('shows the Edit action for an editable invoice when the user can '
+      'edit', (tester) async {
+    await _arrange(_detailClient(_invoiceJson('1', status: 'ready_for_review')));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.byTooltip('Edit'), findsOneWidget);
+  });
+
+  testWidgets('hides the Edit action for a clerk', (tester) async {
+    await _arrange(_detailClient(
+      _invoiceJson('1', status: 'ready_for_review'),
+      roles: ['ap_clerk'],
+    ));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.byTooltip('Edit'), findsNothing);
+  });
+
+  testWidgets('hides the Edit action for an immutable-status invoice',
+      (tester) async {
+    // `paid` is in the backend IMMUTABLE_STATUSES set -> PATCH would 409, so
+    // the affordance is hidden.
+    await _arrange(_detailClient(_invoiceJson('1', status: 'paid')));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Acme Corp'));
+
+    expect(find.byTooltip('Edit'), findsNothing);
+  });
+
+  testWidgets('editing a field PATCHes the change and confirms', (tester) async {
+    Map<String, dynamic>? sentBody;
+    var patched = false;
+    final client = _detailClient(
+      _invoiceJson('1', status: 'ready_for_review', vendor: 'Acme Corp'),
+      onPatch: (req) {
+        sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+        patched = true;
+        return _json(_invoiceJson('1', status: 'ready_for_review', vendor: 'Globex'));
+      },
+      onGet: () => patched
+          ? _json(_invoiceJson('1', status: 'ready_for_review', vendor: 'Globex'))
+          : _json(_invoiceJson('1', status: 'ready_for_review', vendor: 'Acme Corp')),
+    );
+    ApiClient().debugConfigure(client: client);
+    await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.byTooltip('Edit'));
+
+    await tester.tap(find.byTooltip('Edit'));
+    await tester.pumpAndSettle();
+
+    // The edit sheet is open.
+    expect(find.text('Edit Invoice'), findsOneWidget);
+
+    // Change the vendor field and save.
+    await tester.enterText(find.widgetWithText(TextFormField, 'Acme Corp'), 'Globex');
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await _pumpUntil(tester, find.text('Invoice updated'));
+
+    expect(sentBody, isNotNull);
+    expect(sentBody!['vendor'], 'Globex');
+    expect(find.text('Invoice updated'), findsOneWidget);
+  });
+
+  testWidgets('the edit sheet sends the amount as a string-Decimal',
+      (tester) async {
+    Map<String, dynamic>? sentBody;
+    var patched = false;
+    final client = _detailClient(
+      _invoiceJson('1', status: 'ready_for_review', amount: 1234.56),
+      onPatch: (req) {
+        sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+        patched = true;
+        return _json(_invoiceJson('1', status: 'ready_for_review', amount: 999.99));
+      },
+      onGet: () => patched
+          ? _json(_invoiceJson('1', status: 'ready_for_review', amount: 999.99))
+          : _json(_invoiceJson('1', status: 'ready_for_review', amount: 1234.56)),
+    );
+    ApiClient().debugConfigure(client: client);
+    await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.byTooltip('Edit'));
+
+    await tester.tap(find.byTooltip('Edit'));
+    await tester.pumpAndSettle();
+
+    // The amount field is seeded with the plain decimal text.
+    await tester.enterText(find.widgetWithText(TextFormField, '1234.56'), '999.99');
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await _pumpUntil(tester, find.text('Invoice updated'));
+
+    expect(sentBody!['amount'], '999.99');
+    expect(sentBody!['amount'], isA<String>(),
+        reason: 'money must travel as string-Decimal, never a float');
+  });
+
+  testWidgets('an invalid amount blocks the save (validation)', (tester) async {
+    var patched = false;
+    final client = _detailClient(
+      _invoiceJson('1', status: 'ready_for_review', amount: 1234.56),
+      onPatch: (req) {
+        patched = true;
+        return _json(_invoiceJson('1', status: 'ready_for_review'));
+      },
+    );
+    ApiClient().debugConfigure(client: client);
+    await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.byTooltip('Edit'));
+
+    await tester.tap(find.byTooltip('Edit'));
+    await tester.pumpAndSettle();
+
+    // A bare dot is not a valid decimal — the input filter strips letters, but
+    // the validator catches the malformed remainder.
+    await tester.enterText(find.widgetWithText(TextFormField, '1234.56'), '.');
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    // Still on the sheet, validation message shown, no PATCH fired.
+    expect(find.text('Edit Invoice'), findsOneWidget);
+    expect(find.textContaining('valid amount'), findsOneWidget);
+    expect(patched, isFalse);
+  });
+
+  testWidgets('renders the activity timeline from the audit log',
+      (tester) async {
+    await _arrange(_detailClient(
+      _invoiceJson('1', status: 'ready_for_review'),
+      audit: [
+        {
+          'id': 'a1',
+          'actor_id': 'u1',
+          'actor_name': 'Demo User',
+          'action': 'invoice.uploaded',
+          'entity_type': 'invoice',
+          'entity_id': '1',
+          'details': null,
+          'created_at': '2026-01-01T10:00:00',
+        },
+        {
+          'id': 'a2',
+          'actor_id': 'u1',
+          'actor_name': 'Demo User',
+          'action': 'invoice.edited',
+          'entity_type': 'invoice',
+          'entity_id': '1',
+          'details': {
+            'changes': {
+              'amount': {'old': '100.00', 'new': '250.00'},
+            },
+          },
+          'created_at': '2026-01-02T10:00:00',
+        },
+      ],
+    ));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('Uploaded invoice'));
+
+    expect(find.text('Activity'), findsOneWidget);
+    expect(find.text('Uploaded invoice'), findsOneWidget);
+    expect(find.text('Edited fields'), findsOneWidget);
+    // The before/after value (rendered as a RichText span) is present.
+    expect(find.textContaining('250.00', findRichText: true), findsOneWidget);
+  });
+
+  testWidgets('shows the empty activity state when there is no audit history',
+      (tester) async {
+    await _arrange(_detailClient(_invoiceJson('1', status: 'ready_for_review')));
+
+    await tester.pumpWidget(
+      const MaterialApp(home: InvoiceDetailScreen(invoiceId: '1')),
+    );
+    await _pumpUntil(tester, find.text('No activity yet'));
+
+    expect(find.text('No activity yet'), findsOneWidget);
   });
 
   testWidgets('cancelling the reject dialog posts nothing', (tester) async {

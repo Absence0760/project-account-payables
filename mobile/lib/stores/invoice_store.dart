@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/services/offline_store.dart';
 
@@ -115,6 +116,30 @@ class InvoiceStore extends ChangeNotifier {
     }
   }
 
+  /// Edit invoice fields. [changes] is the partial PATCH body (money values as
+  /// string-Decimal). On success returns the updated [Invoice] and refreshes
+  /// the list so the edited row reflects the change; on failure records the
+  /// error and returns null. Not a money-moving write — no idempotency key
+  /// needed (a repeated PATCH is naturally idempotent: it sets the same fields).
+  Future<Invoice?> update(String id, Map<String, dynamic> changes) async {
+    try {
+      final updated = await InvoiceApi.update(id, changes);
+      await fetch();
+      return updated;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// Fetch the invoice's activity timeline (audit log). Read-only; the screen
+  /// owns its own loading/error UI, so this just returns the entries (oldest
+  /// first) or rethrows for the caller to surface.
+  Future<List<AuditEntry>> fetchAuditLog(String id) {
+    return InvoiceApi.auditLog(id);
+  }
+
   Map<String, dynamic> _invoiceToJson(Invoice i) => {
         'id': i.id,
         'invoice_number': i.invoiceNumber,
@@ -126,6 +151,7 @@ class InvoiceStore extends ChangeNotifier {
         'due_date': i.dueDate?.toIso8601String(),
         'description': i.description,
         'po_number': i.poNumber,
+        'gl_account': i.glAccount,
         'created_at': i.createdAt.toIso8601String(),
       };
 }

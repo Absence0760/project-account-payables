@@ -1,4 +1,5 @@
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/models/invoice.dart';
@@ -68,6 +69,26 @@ class InvoiceApi {
       'reason': reason,
     });
     return Invoice.fromJson(data);
+  }
+
+  /// Edit invoice fields via `PATCH /api/invoices/{id}` (admin/ap_manager/cfo;
+  /// 409 if the invoice is in an immutable status). [changes] is the partial
+  /// body — only the keys present are updated. Money fields MUST be passed as
+  /// string-Decimal (never a lossy float); the backend's Pydantic `Decimal`
+  /// parses the string exactly. The backend maps `vendor` → `vendor_name`.
+  static Future<Invoice> update(String id, Map<String, dynamic> changes) async {
+    final data = await _api.patch('/invoices/$id', changes);
+    return Invoice.fromJson(data);
+  }
+
+  /// Per-invoice activity timeline (audit log) via
+  /// `GET /api/invoices/{id}/audit-log` — the operational trail, open to any
+  /// authenticated user. Returns a bare JSON array, oldest-first.
+  static Future<List<AuditEntry>> auditLog(String id) async {
+    final items = await _api.getList('/invoices/$id/audit-log');
+    return items
+        .map((e) => AuditEntry.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 }
 

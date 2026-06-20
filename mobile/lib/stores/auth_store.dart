@@ -23,6 +23,9 @@ class AuthStore extends ChangeNotifier {
   bool get isClerkOnly => _user?.isClerkOnly ?? false;
   bool get canApprove => isAdmin || isManager;
   bool get canViewPayments => isAdmin || isManager || isCfo;
+  // Invoice field editing — mirrors the backend PATCH /api/invoices/{id} gate
+  // (admin / ap_manager / cfo). Clerks are read-only here.
+  bool get canEditInvoice => isAdmin || isManager || isCfo;
 
   Future<bool> init() async {
     await ApiClient().init();
