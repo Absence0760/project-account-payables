@@ -30,6 +30,7 @@ for the hybrid format.
 | `validate.py` | `validate_document(doc, *, check_tax=True)` / `assert_valid` + `FieldError` + `EInvoiceValidationError`. EN 16931-subset structural checks; appends `tax_rules.validate_tax_document(doc)` when `check_tax`. |
 | `parse.py` | `parse_e_invoice(file_bytes, mime_type, filename)` orchestrator: detect → embedded-extract → parse → assert_valid. |
 | `generate.py` | `generate_ubl(doc) -> bytes`. Outbound UBL 2.1 serializer — the exact inverse of `ubl.py`. lxml etree, money via `Decimal.quantize`, `currencyID` on amounts. |
+| `generate_cii.py` | `generate_cii(doc) -> bytes`. Outbound UN/CEFACT CII (D16B) serializer — the exact inverse of `cii.py`. Emits `rsm:CrossIndustryInvoice` with the `ram:`/`udt:` namespaces; same lxml-etree posture as `generate.py` (Decimal money, escaped text); dates as the CII basic-date form (`format="102"` → `YYYYMMDD`). |
 | `mapper.py` | `BuyerIdentity` dataclass + `invoice_to_einvoice_document(invoice, line_items, buyer_identity) -> EInvoiceDocument`. Pure ORM `Invoice` → normalized model. |
 | `tax_rules.py` | Country tax validation: `validate_tax_id` / `validate_tax_rate` / `validate_tax_document(doc) -> list[FieldError]`. VAT/GST/IVA/CNPJ/NIT id formats + rate plausibility + zero-rate/reverse-charge. Shared by inbound (`validate.py`) and outbound (export route + national formats). |
 | `country_formats/` | National outbound dialects — `base.py` (`CountryEInvoiceFormat` interface), `dispatcher.py` (registry), and `fatturapa.py` (IT) / `cfdi.py` (MX) / `nfe.py` (BR) / `dian.py` (CO). Generation + national validation only; live clearance deferred. See § National e-invoice formats. |
@@ -144,10 +145,10 @@ XML attachments are accepted on both ingest paths:
   include `application/xml` + `text/xml` (25 MB cap unchanged).
 - Factur-X / ZUGFeRD arrive as PDF and are already covered by `application/pdf`.
 
-## Outbound UBL 2.1 generation
+## Outbound UBL 2.1 + CII generation
 
 The `EInvoiceDocument` model is a full bidirectional representation, so outbound
-generation reuses it as-is — **no model change**. Three pure modules (no DB, no
+generation reuses it as-is — **no model change**. Pure modules (no DB, no
 network, on by default, no new dependency):
 
 ### `generate_ubl(doc) -> bytes`
@@ -163,6 +164,24 @@ Optional fields are omitted when `None`, so the round-trip property holds:
 
 ```
 parse_ubl(generate_ubl(doc)) == doc   # on every core field
+```
+
+### `generate_cii(doc) -> bytes`
+
+Serializes an `EInvoiceDocument` to UN/CEFACT CII (Cross-Industry Invoice, D16B)
+XML — the dialect Factur-X / ZUGFeRD embed in a PDF/A-3 (NOT UBL). It is the
+exact inverse of `cii.py`'s parser: same root (`rsm:CrossIndustryInvoice`), same
+`ram:` / `udt:` namespaces, same element order — `rsm:ExchangedDocument` header +
+`rsm:SupplyChainTradeTransaction` (line items, then the three header aggregates:
+`ApplicableHeaderTradeAgreement` parties+order-ref / `ApplicableHeaderTradeDelivery`
+/ `ApplicableHeaderTradeSettlement` currency+payment+tax+monetary-summation).
+Same lxml-etree posture as `generate_ubl` (text escaped, no templating; money via
+`Decimal.quantize`, amounts 2dp / quantities 4dp); dates emit as the CII
+basic-date form (`format="102"` → `YYYYMMDD`) that the parser's `to_date` reads
+back. Optional fields are omitted when `None`, so the round-trip property holds:
+
+```
+parse_cii(generate_cii(doc)) == doc   # on every core field
 ```
 
 ### `invoice_to_einvoice_document(invoice, line_items, buyer_identity)`
@@ -188,7 +207,7 @@ Decimal is preserved end to end.
 
 | Route | Auth | Behaviour |
 |-------|------|-----------|
-| `GET /api/invoices/{id}/einvoice?format=ubl` | employee JWT + `require_roles(admin, ap_manager, cfo, ap_clerk)`, `get_tenant_db` + `get_tenant` | Maps the tenant invoice → doc, resolves `BuyerIdentity` from `org.settings["company"]` (+ `Entity.name` override when `invoice.entity_id` is set), **asserts tax-valid (422 on failure** — an AP user must not emit a non-compliant invoice; body is the PII-free `field: code` join), then returns the UBL as an `application/xml` attachment. Unknown invoice → 404. The `format` parameter also selects a **national format** — `fatturapa` (IT), `cfdi` (MX), `nfe` (BR), `dian` (CO) — via the country-format registry (see below); an unregistered token (e.g. `cii`) → 400. National exports validate via the format's own `validate(doc)` (422 PII-free on failure) and the download filename is format-tagged (`einvoice-<n>-<format>.xml`). |
+| `GET /api/invoices/{id}/einvoice?format=ubl` | employee JWT + `require_roles(admin, ap_manager, cfo, ap_clerk)`, `get_tenant_db` + `get_tenant` | Maps the tenant invoice → doc, resolves `BuyerIdentity` from `org.settings["company"]` (+ `Entity.name` override when `invoice.entity_id` is set), **asserts tax-valid (422 on failure** — an AP user must not emit a non-compliant invoice; body is the PII-free `field: code` join), then returns the e-invoice as an `application/xml` attachment. Unknown invoice → 404. `format` selects the dialect: `ubl` (default) or `cii` (UN/CEFACT CII) take the **built-in** path (shared normalized model + the same `assert_valid` tax guard, only the generator differs); `fatturapa` (IT) / `cfdi` (MX) / `nfe` (BR) / `dian` (CO) select a **national format** via the country-format registry (see below); an unknown token → 400. The `ubl` download is `einvoice-<n>.xml`; every other dialect is format-tagged (`einvoice-<n>-<format>.xml`) so they don't collide. National exports validate via the format's own `validate(doc)` (422 PII-free on failure). |
 | `GET /portal/invoices/{id}/einvoice` | vendor JWT (`get_current_vendor_user`) | **Vendor-scoped**: the query is `WHERE Invoice.id == id AND Invoice.vendor_id == vu.vendor_id` — a foreign or unknown invoice returns 404 (never a foreign document). Resolves the buyer `Organization` via the injected control session (`get_control_db`) by `invoice.organization_id` (same pattern as the remittance route). Does **not** 422 the supplier on a tax soft-warning — the UBL is always returned and any validation issue is logged field-only, never surfaced to the vendor. |
 
 ### Country tax validation (`tax_rules.py`)
