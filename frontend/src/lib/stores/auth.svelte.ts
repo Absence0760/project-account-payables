@@ -1,4 +1,13 @@
 import { api, setToken, clearToken, hasToken } from '$lib/api';
+import { performAuthentication, performRegistration } from '$lib/webauthn';
+
+export interface Passkey {
+	id: string;
+	name: string;
+	transports: string | null;
+	created_at: string | null;
+	last_used_at: string | null;
+}
 
 interface User {
 	id: string;
@@ -21,7 +30,7 @@ interface TokenResponse {
 export interface MFAChallenge {
 	mfa_required: true;
 	mfa_challenge_token: string;
-	methods: string[]; // "totp" | "email"
+	methods: string[]; // "totp" | "passkey" | "email"
 	must_enroll: boolean;
 }
 
@@ -62,6 +71,48 @@ function createAuthStore() {
 
 	async function requestEmailMfa(challengeToken: string) {
 		await api.post('/api/auth/mfa/challenge/email', { challenge_token: challengeToken });
+	}
+
+	// --- WebAuthn / passkey LOGIN (the passkey factor of the MFA step) -----
+
+	async function completePasskey(challengeToken: string) {
+		// 1. Ask the server for an authentication challenge scoped to this user.
+		const start = await api.post<{ options: any }>('/api/auth/mfa/passkey/authenticate', {
+			challenge_token: challengeToken,
+		});
+		// 2. Run the browser ceremony (prompts Touch ID / security key).
+		const credential = await performAuthentication(start.options);
+		// 3. Hand the signed assertion back for verification + a real token.
+		const res = await api.post<TokenResponse>('/api/auth/mfa/passkey/authenticate/verify', {
+			challenge_token: challengeToken,
+			credential,
+		});
+		setToken(res.access_token);
+		loggedIn = true;
+		await fetchUser();
+	}
+
+	// --- WebAuthn / passkey ENROLLMENT (authenticated, on the profile) -----
+
+	async function listPasskeys(): Promise<Passkey[]> {
+		return api.get<Passkey[]>('/api/auth/mfa/passkey');
+	}
+
+	async function registerPasskey(name: string): Promise<Passkey> {
+		const start = await api.post<{ options: any }>('/api/auth/mfa/passkey/register', {});
+		const credential = await performRegistration(start.options);
+		const saved = await api.post<Passkey>('/api/auth/mfa/passkey/register/verify', {
+			credential,
+			name,
+		});
+		// A new factor may change the displayed MFA state — refresh the user.
+		await fetchUser();
+		return saved;
+	}
+
+	async function deletePasskey(id: string): Promise<void> {
+		await api.delete(`/api/auth/mfa/passkey/${id}`);
+		await fetchUser();
 	}
 
 	async function fetchUser() {
@@ -107,6 +158,10 @@ function createAuthStore() {
 		login,
 		completeMfa,
 		requestEmailMfa,
+		completePasskey,
+		listPasskeys,
+		registerPasskey,
+		deletePasskey,
 		logout,
 		fetchUser,
 		hasRole,

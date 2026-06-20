@@ -3,8 +3,10 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 
+	type Method = 'totp' | 'passkey' | 'email';
+
 	let challenge = $state<MFAChallenge | null>(null);
-	let method = $state<'totp' | 'email'>('totp');
+	let method = $state<Method>('totp');
 	let code = $state('');
 	let error = $state('');
 	let loading = $state(false);
@@ -18,11 +20,29 @@
 		}
 		try {
 			challenge = JSON.parse(raw) as MFAChallenge;
-			method = challenge.methods.includes('totp') ? 'totp' : 'email';
+			// Prefer the strongest available factor: passkey > totp > email.
+			if (challenge.methods.includes('passkey')) method = 'passkey';
+			else if (challenge.methods.includes('totp')) method = 'totp';
+			else method = 'email';
 		} catch {
 			goto('/login');
 		}
 	});
+
+	async function verifyPasskey() {
+		if (!challenge) return;
+		error = '';
+		loading = true;
+		try {
+			await auth.completePasskey(challenge.mfa_challenge_token);
+			sessionStorage.removeItem('mfa_challenge');
+			goto(challenge.must_enroll ? '/profile' : '/');
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Passkey verification failed';
+		} finally {
+			loading = false;
+		}
+	}
 
 	async function sendEmailCode() {
 		if (!challenge) return;
@@ -38,6 +58,9 @@
 	async function handleSubmit(e: Event) {
 		e.preventDefault();
 		if (!challenge) return;
+		// The passkey factor has its own button (verifyPasskey); this code form
+		// only submits the totp / email code methods.
+		if (method === 'passkey') return;
 		error = '';
 		loading = true;
 		try {
@@ -57,7 +80,7 @@
 		}
 	}
 
-	function switchMethod(next: 'totp' | 'email') {
+	function switchMethod(next: Method) {
 		method = next;
 		code = '';
 		error = '';
@@ -69,7 +92,9 @@
 	<form class="login-card" onsubmit={handleSubmit}>
 		<h1>Two-factor verification</h1>
 		<p class="subtitle">
-			{#if method === 'totp'}
+			{#if method === 'passkey'}
+				Use your passkey (Touch ID, Windows Hello, or a security key).
+			{:else if method === 'totp'}
 				Enter the 6-digit code from your authenticator app.
 			{:else}
 				We'll email a one-time code to your account address.
@@ -89,13 +114,19 @@
 			</div>
 		{/if}
 
+		{#if method === 'passkey'}
+			<button type="button" onclick={verifyPasskey} disabled={loading}>
+				{loading ? 'Waiting for passkey…' : 'Verify with passkey'}
+			</button>
+		{/if}
+
 		{#if method === 'email' && !emailSent}
 			<button type="button" class="secondary" onclick={sendEmailCode}>
 				Email me a code
 			</button>
 		{/if}
 
-		{#if method === 'totp' || emailSent}
+		{#if method !== 'passkey' && (method === 'totp' || emailSent)}
 			<label>
 				<span>Verification code</span>
 				<input
@@ -115,13 +146,19 @@
 
 		{#if challenge && challenge.methods.length > 1}
 			<div class="divider"><span>or</span></div>
-			{#if method === 'totp'}
-				<button type="button" class="secondary" onclick={() => switchMethod('email')}>
-					Use email instead
+			{#if method !== 'passkey' && challenge.methods.includes('passkey')}
+				<button type="button" class="secondary" onclick={() => switchMethod('passkey')}>
+					Use a passkey
 				</button>
-			{:else}
+			{/if}
+			{#if method !== 'totp' && challenge.methods.includes('totp')}
 				<button type="button" class="secondary" onclick={() => switchMethod('totp')}>
 					Use authenticator app
+				</button>
+			{/if}
+			{#if method !== 'email' && challenge.methods.includes('email')}
+				<button type="button" class="secondary" onclick={() => switchMethod('email')}>
+					Use email instead
 				</button>
 			{/if}
 		{/if}
