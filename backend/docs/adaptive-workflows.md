@@ -435,6 +435,89 @@ Partial override (omit a key to inherit; unknown keys dropped — mirrors
 | `suggestion_min_history` | `12` | suggestion minimum approvals |
 | `suggestion_min_consistency_pct` | `95` | suggestion consistency gate |
 
+## Feedback loop — outcomes fold back into the recommendations
+
+The recommendations above are **forward-looking**: they read the *approval*
+history and project a routing/threshold suggestion. The feedback loop
+(`GET /api/adaptive/feedback`) closes the circle by reading what HAPPENED to the
+invoices that already sailed through — the human **overturns** the system never
+sees on the way in. It answers the roadmap's "corrections feed back into the
+model" ask **deterministically**, with no trainable model and no LLM: the
+realised outcomes self-correct the deterministic threshold recommendation, and a
+real accuracy figure replaces the old "Not yet measured" placeholder.
+
+> **Reframe.** There is no trainable model in this feature (it is all
+> statistics). "Feedback loop" here means: feed human OUTCOMES
+> (voids / re-rejections / corrections of *auto-approved* invoices) back into the
+> deterministic threshold recommendation so it self-corrects, and surface an
+> honest effectiveness signal — never a fabricated metric.
+
+### The outcome signal (read straight from `audit_log`, no new instrumentation)
+
+The population is the invoices the system **auto-approved** in the lookback
+window (`invoice.auto_approved` audit rows). For each, an *overturn* is read from
+that same invoice's later audit rows — all of which the app already writes:
+
+| Overturn | Audit signal |
+|---|---|
+| **voided** | `invoice.voided_return_to_approved` — a payment on it was voided, sending it back to `approved` (the strongest "should not have been paid as-is" signal) |
+| **rejected** | `invoice.rejected` after the auto-approval |
+| **corrected** | `invoice.approved` carrying `details.changes` after the auto-approval (the post-void re-review walked the extraction back) |
+
+An invoice is **overturned** if *any* of those fired (counted once regardless of
+how many). `overturn_rate_pct = overturned / auto_approved × 100`. A single
+LEFT-joined aggregate keeps it one round-trip; entity-scoped via the invoice
+join. Only overturn rows **at or after** the auto-approval count (a rejection
+that predates the auto-approval isn't an overturn *of* it).
+
+### Outcome-adjusted threshold (`outcome_adjusted_threshold`, pure)
+
+The forward `recommend_auto_approve_threshold` result is folded with the
+auto-approval overturn rate, in three bands (defaults shown):
+
+- **< 5 % overturn** — the auto-approved cohort is holding up; the forward
+  recommendation **passes through unchanged**.
+- **5 % – 15 %** (`outcome_pullback`) — overturns are climbing. The loop
+  **refuses to raise** — the recommendation is pulled back to a no-raise
+  (`should_raise=False`) with a rationale that cites the rate.
+- **≥ 15 %** (`outcome_freeze`) — the auto-approved population is being walked
+  back too often to trust *any* raise; identical no-raise outcome, stronger
+  rationale.
+
+Invariants: it **never lowers** the existing threshold (only declines to raise,
+consistent with the forward rule); and when the auto-approved sample is below the
+minimum (default 5), `insufficient_data` is True and the loop **leaves the
+forward recommendation untouched** — it never reacts to one-off noise. Pure /
+deterministic; the endpoint returns BOTH the base (history-only) and the adjusted
+recommendation so a held-back raise is **explainable** (mirroring how the anomaly
+surface returns the baseline it compared against).
+
+### A real effectiveness signal (`compute_effectiveness`, pure)
+
+Two metrics replace the "Not yet measured" placeholder — each carries an explicit
+**insufficient-data** state (a `null` value + a "not yet measurable" label)
+rather than a fabricated number:
+
+1. **`auto_approval_overturn_rate`** — of the invoices the system auto-approved,
+   the share a human later voided/corrected/rejected. The honest accuracy signal
+   for the auto-approve automation (lower is better). Insufficient when the
+   auto-approved sample is below the minimum (default 5).
+2. **`recommendation_acceptance_rate`** — of all advisory `workflow_suggestions`
+   surfaced, the share an admin actually applied (`status='applied'`). Measures
+   whether the recommendations are trusted; insufficient (no divide-by-zero) when
+   no suggestions have ever been surfaced.
+
+### Tunables / boundaries
+
+The bands (`pullback_overturn_pct` 5 %, `freeze_overturn_pct` 15 %) and the
+minimum sample (5) are function arguments with conservative defaults; no new
+`AP_` env var or migration. **Read-only** — the feedback endpoint never mutates
+workflow state. It is a sensitive read (it exposes the org's approval-control
+posture), so it writes a PII-free `adaptive_feedback.viewed` access-audit row
+(field-names / counts only — no amounts, vendor, or PII), mirroring the other
+SOX-instrumented reads. **Compute-on-read** over `audit_log` + the existing
+`workflow_suggestions` table — no new column or migration.
+
 ## Endpoints
 
 | Route | Method | RBAC | Notes |
@@ -447,6 +530,7 @@ Partial override (omit a key to inherit; unknown keys dropped — mirrors
 | `/api/adaptive/routing-suggestion/apply` | POST | admin / ap_manager | Body `{invoice_id}`, `?days=180`. Assigns the top recommendation via the audited `review.assign_reviewer`. 409 if not `ready_for_review`; 422 if no eligible approver; 404 outside tenant/entity; idempotent no-op when already assigned to the chosen approver. **Write surface — CFO excluded (read-only on routing).** |
 | `/api/adaptive/threshold-recommendation` | GET | admin / ap_manager / cfo | `?days=365` lookback, `?workflow_id=<uuid>` (defaults to active definition). Conservative recommended raise to `auto_approve_below` + evidence + rationale. Read-only — never mutates the definition |
 | `/api/adaptive/threshold-recommendation/apply` | POST | **admin only** | Body `{workflow_id?, expected_recommended_threshold?}`, `?days=365`. Raises `auto_approve_below` through the audited workflow-definition PATCH path (WorkflowVersion snapshot + audit rows). 409 if no definition / stale `expected_recommended_threshold`; idempotent no-op when the recommendation doesn't raise. **Write surface — matches who can edit workflow definitions; CFO/ap_manager excluded.** Affects only NEW invoices (frozen workflow snapshots) |
+| `/api/adaptive/feedback` | GET | admin / ap_manager / cfo | `?days=365` lookback, `?workflow_id=<uuid>` (defaults to active definition). The feedback loop — reads the realised OUTCOMES (voids/re-rejections/corrections) of auto-approved invoices from `audit_log`, returns the outcome tallies + two effectiveness metrics (each with an insufficient-data state) + BOTH the base and the outcome-adjusted threshold recommendation. **Read-only** — never mutates; writes a PII-free `adaptive_feedback.viewed` access-audit row |
 
 Read routes exclude `ap_clerk` — this is a manager/CFO surface, matching the
 analytics precedent. The **apply** POST is a *write*, gated to `admin` /
@@ -512,7 +596,19 @@ not apply.
   snapshot at creation; the results endpoint calls a winner past a minimum
   sample. `/api/experiments` + `services/workflow_experiments*.py` + migration
   0064 + the `/experiments` frontend surface.
-- **Model-retraining feedback loop.**
+- **Feedback loop — outcomes adjust the recommendations.** ✅ **Shipped** —
+  `GET /api/adaptive/feedback` reads the human OUTCOMES of auto-approved invoices
+  (voids / re-rejections / corrections) straight from `audit_log` and folds the
+  overturn rate back into the threshold recommendation (it pulls back to a
+  no-raise when overturns climb), plus a real `auto_approval_overturn_rate` +
+  `recommendation_acceptance_rate` effectiveness signal (each with an honest
+  insufficient-data state). Deterministic, no LLM, no migration. See § Feedback
+  loop above. Sub-follow-up: a per-vendor / per-approver outcome down-weighting in
+  the *routing* recommendation (the loop currently adjusts the *threshold*; the
+  router still ranks on approval history alone).
+- **Model-retraining feedback loop** (a *trainable* model). The deterministic
+  feedback loop above closes the "corrections feed back" ask without one; a real
+  trainable model is a far larger, separately-scoped effort and is not built here.
 - **LLM phrasing** of suggestion text — if added, must fail soft to the template
   with no key (mirror `services/audit_summary.py`).
 - Business-day-weighted time-to-approve (currently simple elapsed days).

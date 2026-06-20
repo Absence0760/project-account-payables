@@ -25,10 +25,13 @@ from app.services.adaptive_workflows import (
     VendorBaseline,
     _stdev,
     compute_approver_patterns,
+    compute_effectiveness,
+    compute_outcome_stats,
     compute_vendor_baseline,
     compute_vendor_patterns,
     derive_suggestions,
     detect_invoice_anomaly,
+    outcome_adjusted_threshold,
     recommend_approvers,
     recommend_auto_approve_threshold,
 )
@@ -1383,3 +1386,363 @@ async def test_threshold_apply_409_no_workflow(realdb):
     async with realdb.client(key="a", role="admin") as client:
         r = await client.post("/api/adaptive/threshold-recommendation/apply", json={})
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Feedback loop — outcome adjustment + effectiveness (pure-function tests)
+# ---------------------------------------------------------------------------
+
+
+def _outcome(inv_id, *, voided=False, corrected=False, rejected=False):
+    return {
+        "invoice_id": inv_id,
+        "voided": voided,
+        "corrected": corrected,
+        "rejected": rejected,
+    }
+
+
+def _raise_rec(*, recommended="5500.00", current="0"):
+    """A base ThresholdRecommendation that DOES raise — the input the outcome
+    adjuster pulls back."""
+    from app.services.adaptive_workflows import ThresholdRecommendation
+
+    return ThresholdRecommendation(
+        should_raise=True,
+        current_threshold=Decimal(current),
+        recommended_threshold=Decimal(recommended),
+        cap_threshold=Decimal("25000.00"),
+        qualifying_vendor_count=3,
+        total_clean_invoices=36,
+        evidence=[{"vendor_name": "Clean A"}],
+        rationale="history supports the raise",
+        reason_code="ok",
+    )
+
+
+def test_outcome_stats_counts_distinct_overturns():
+    # 10 auto-approved invoices; 2 voided (one also rejected → counted once), 1
+    # corrected. overturned = {v1, v2, c1} = 3.
+    rows = [_outcome(f"i{i}") for i in range(7)]
+    rows.append(_outcome("v1", voided=True))
+    rows.append(_outcome("v2", voided=True, rejected=True))  # one invoice, two signals
+    rows.append(_outcome("c1", corrected=True))
+    stats = compute_outcome_stats(rows)
+    assert stats.auto_approved_count == 10
+    assert stats.voided_count == 2
+    assert stats.rejected_count == 1
+    assert stats.corrected_count == 1
+    assert stats.overturned_count == 3  # distinct invoices, v2 counted once
+    assert stats.overturn_rate_pct == Decimal("30.0")
+    assert stats.insufficient_data is False
+
+
+def test_outcome_stats_dedupes_repeated_invoice_rows():
+    # The same invoice id appearing twice (defensive) is counted once.
+    rows = [_outcome("dup", voided=True), _outcome("dup", voided=True)]
+    stats = compute_outcome_stats(rows, min_sample=1)
+    assert stats.auto_approved_count == 1
+    assert stats.overturned_count == 1
+
+
+def test_outcome_stats_insufficient_data_below_min_sample():
+    rows = [_outcome("i0", voided=True), _outcome("i1")]
+    stats = compute_outcome_stats(rows, min_sample=5)
+    assert stats.insufficient_data is True
+    # The rate is still computed, but the caller treats it as unmeasurable.
+    assert stats.overturn_rate_pct == Decimal("50.0")
+
+
+def test_outcome_adjustment_passes_through_when_outcomes_clean():
+    # 0% overturn over a healthy sample → the raise stands.
+    stats = compute_outcome_stats([_outcome(f"i{i}") for i in range(10)])
+    base = _raise_rec()
+    adj = outcome_adjusted_threshold(base, stats)
+    assert adj is base  # unchanged passthrough
+    assert adj.should_raise is True
+
+
+def test_outcome_adjustment_pulls_back_on_elevated_overturns():
+    # 8% overturn (between 5% pullback and 15% freeze) → refuse to raise.
+    rows = [_outcome(f"i{i}") for i in range(25)]
+    for i in range(2):  # 2/25 = 8%
+        rows[i]["voided"] = True
+    stats = compute_outcome_stats(rows)
+    assert stats.overturn_rate_pct == Decimal("8.0")
+    base = _raise_rec(recommended="5500.00", current="2000")
+    adj = outcome_adjusted_threshold(base, stats)
+    assert adj.should_raise is False
+    assert adj.reason_code == "outcome_pullback"
+    # Never lowers — holds at current, does not raise.
+    assert adj.recommended_threshold == Decimal("2000")
+    assert adj.current_threshold == Decimal("2000")
+    assert "overturn rate" in adj.rationale
+
+
+def test_outcome_adjustment_freezes_on_high_overturns():
+    # 20% overturn (≥ 15% freeze) → freeze; stronger rationale, still no raise.
+    rows = [_outcome(f"i{i}") for i in range(10)]
+    for i in range(2):  # 2/10 = 20%
+        rows[i]["rejected"] = True
+    stats = compute_outcome_stats(rows)
+    assert stats.overturn_rate_pct == Decimal("20.0")
+    adj = outcome_adjusted_threshold(_raise_rec(), stats)
+    assert adj.should_raise is False
+    assert adj.reason_code == "outcome_freeze"
+    assert "too often" in adj.rationale
+
+
+def test_outcome_adjustment_no_pullback_on_thin_evidence():
+    # Only 2 auto-approvals — even at 50% overturn the loop won't react (noise).
+    rows = [_outcome("i0", voided=True), _outcome("i1")]
+    stats = compute_outcome_stats(rows, min_sample=5)
+    base = _raise_rec()
+    adj = outcome_adjusted_threshold(base, stats)
+    assert adj is base  # untouched — insufficient_data short-circuits
+
+
+def test_outcome_adjustment_noop_when_base_already_not_raising():
+    from app.services.adaptive_workflows import ThresholdRecommendation
+
+    rows = [_outcome(f"i{i}") for i in range(10)]
+    for i in range(3):
+        rows[i]["voided"] = True
+    stats = compute_outcome_stats(rows)  # 30% overturn
+    base = ThresholdRecommendation(
+        should_raise=False,
+        current_threshold=Decimal("8000"),
+        recommended_threshold=Decimal("8000"),
+        cap_threshold=Decimal("25000"),
+        qualifying_vendor_count=3,
+        total_clean_invoices=36,
+        evidence=[],
+        rationale="no increase",
+        reason_code="no_increase",
+    )
+    adj = outcome_adjusted_threshold(base, stats)
+    assert adj is base  # already not raising — nothing to pull back
+
+
+def test_effectiveness_overturn_metric_measured_and_insufficient():
+    # Measured: ≥ min_sample auto-approvals → a real overturn figure.
+    stats = compute_outcome_stats([_outcome(f"i{i}", voided=(i < 1)) for i in range(10)])
+    metrics = compute_effectiveness(stats, applied_suggestion_count=0, total_suggestion_count=0)
+    overturn = next(m for m in metrics if m.name == "auto_approval_overturn_rate")
+    assert overturn.insufficient_data is False
+    assert overturn.value_pct == Decimal("10.0")
+
+    # Insufficient: too few auto-approvals → no fabricated number.
+    thin = compute_outcome_stats([_outcome("i0", voided=True)], min_sample=5)
+    metrics2 = compute_effectiveness(thin, applied_suggestion_count=0, total_suggestion_count=0)
+    overturn2 = next(m for m in metrics2 if m.name == "auto_approval_overturn_rate")
+    assert overturn2.insufficient_data is True
+    assert overturn2.value_pct is None
+    assert "Not yet measurable" in overturn2.label
+
+
+def test_effectiveness_acceptance_metric():
+    stats = compute_outcome_stats([_outcome(f"i{i}") for i in range(10)])
+    # 3 of 10 suggestions applied → 30%.
+    metrics = compute_effectiveness(stats, applied_suggestion_count=3, total_suggestion_count=10)
+    acc = next(m for m in metrics if m.name == "recommendation_acceptance_rate")
+    assert acc.insufficient_data is False
+    assert acc.value_pct == Decimal("30.0")
+
+    # No suggestions surfaced → insufficient, never a divide-by-zero / fake 0%.
+    metrics2 = compute_effectiveness(stats, applied_suggestion_count=0, total_suggestion_count=0)
+    acc2 = next(m for m in metrics2 if m.name == "recommendation_acceptance_rate")
+    assert acc2.insufficient_data is True
+    assert acc2.value_pct is None
+
+
+# ---------------------------------------------------------------------------
+# Feedback loop — real-DB endpoint tests
+# ---------------------------------------------------------------------------
+
+
+async def _seed_auto_approved(
+    mk, org_id, *, count, voided_ids=(), rejected_ids=(), base_amount=4800
+):
+    """Seed `count` invoices each with an `invoice.auto_approved` audit row.
+    Invoices whose index is in `voided_ids` get a later
+    `invoice.voided_return_to_approved` row; `rejected_ids` get a later
+    `invoice.rejected`. Returns the list of invoice ids (by index)."""
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.workflow import AuditLog
+
+    base = datetime.now(UTC) - timedelta(days=20)
+    ids = []
+    async with mk() as s:
+        for i in range(count):
+            inv = Invoice(
+                organization_id=org_id,
+                invoice_number=f"AUTO-{i}",
+                vendor_name="Auto Vendor",
+                amount=Decimal(str(base_amount)),
+                status=InvoiceStatus.approved,
+            )
+            s.add(inv)
+            await s.flush()
+            ids.append(inv.id)
+            auto_at = base + timedelta(hours=i)
+            s.add(
+                AuditLog(
+                    organization_id=org_id,
+                    actor_id=None,
+                    action="invoice.auto_approved",
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    details={"auto_approved": True},
+                    created_at=auto_at,
+                )
+            )
+            if i in voided_ids:
+                s.add(
+                    AuditLog(
+                        organization_id=org_id,
+                        actor_id=None,
+                        action="invoice.voided_return_to_approved",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details={"void_reason": "duplicate"},
+                        created_at=auto_at + timedelta(days=1),
+                    )
+                )
+            if i in rejected_ids:
+                s.add(
+                    AuditLog(
+                        organization_id=org_id,
+                        actor_id=None,
+                        action="invoice.rejected",
+                        entity_type="invoice",
+                        entity_id=inv.id,
+                        details={"reason": "bad"},
+                        created_at=auto_at + timedelta(days=1),
+                    )
+                )
+        await s.commit()
+    return ids
+
+
+async def test_feedback_endpoint_measures_overturn_and_adjusts(realdb):
+    """With auto-approvals that were later voided/rejected, the feedback endpoint
+    reports a real overturn rate AND pulls the threshold recommendation back."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    await _seed_active_workflow(mk, org_id)
+    # Clean vendors → the base recommendation WOULD raise.
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    # 10 auto-approvals, 2 overturned (20% > 15% freeze).
+    await _seed_auto_approved(mk, org_id, count=10, voided_ids=(0,), rejected_ids=(1,))
+
+    async with realdb.client(key="a", role="cfo") as client:
+        r = await client.get("/api/adaptive/feedback")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["outcomes"]["auto_approved_count"] == 10
+    assert data["outcomes"]["overturned_count"] == 2
+    assert data["outcomes"]["overturn_rate_pct"] == "20.0"
+    # Base recommendation raised; adjusted pulled back (freeze ≥ 15%).
+    assert data["base_recommendation"]["should_raise"] is True
+    assert data["adjusted_recommendation"]["should_raise"] is False
+    assert data["adjusted_recommendation"]["reason_code"] == "outcome_freeze"
+    # Effectiveness metric is measured (10 ≥ min sample).
+    overturn = next(m for m in data["metrics"] if m["name"] == "auto_approval_overturn_rate")
+    assert overturn["insufficient_data"] is False
+    assert overturn["value_pct"] == "20.0"
+
+
+async def test_feedback_endpoint_clean_outcomes_keep_the_raise(realdb):
+    """Auto-approvals with NO overturns → the base raise survives the loop."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    await _seed_auto_approved(mk, org_id, count=8)  # all clean
+
+    async with realdb.client(key="a", role="admin") as client:
+        r = await client.get("/api/adaptive/feedback")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["outcomes"]["overturn_rate_pct"] == "0.0"
+    assert data["base_recommendation"]["should_raise"] is True
+    assert data["adjusted_recommendation"]["should_raise"] is True
+    assert data["adjusted_recommendation"]["reason_code"] == "ok"
+
+
+async def test_feedback_endpoint_insufficient_outcome_data(realdb):
+    """Too few auto-approvals → overturn metric is honestly 'not yet measurable'
+    and the loop does NOT pull back (it leaves the base recommendation alone)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    await _seed_active_workflow(mk, org_id)
+    await _seed_clean_vendors(
+        mk, org_id, actor_id, [("Clean A", 5000, 3), ("Clean B", 3000, 3), ("Clean C", 1000, 3)]
+    )
+    # Only 2 auto-approvals, both overturned — but below the min sample of 5.
+    await _seed_auto_approved(mk, org_id, count=2, voided_ids=(0, 1))
+
+    async with realdb.client(key="a", role="cfo") as client:
+        r = await client.get("/api/adaptive/feedback")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["outcomes"]["insufficient_data"] is True
+    overturn = next(m for m in data["metrics"] if m["name"] == "auto_approval_overturn_rate")
+    assert overturn["insufficient_data"] is True
+    assert overturn["value_pct"] is None
+    # Despite a high raw overturn, the loop leaves the raise intact (no noise reaction).
+    assert data["adjusted_recommendation"]["should_raise"] is True
+
+
+async def test_feedback_endpoint_writes_access_audit(realdb):
+    """The feedback read is sensitive → it writes a PII-free
+    `adaptive_feedback.viewed` audit row (SOX access auditing)."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_adaptive_min_history(realdb, org_id, 3)
+    await _seed_active_workflow(mk, org_id)
+
+    async with realdb.client(key="a", role="cfo") as client:
+        assert (await client.get("/api/adaptive/feedback")).status_code == 200
+
+    async with mk() as s:
+        rows = (
+            (await s.execute(select(AuditLog).where(AuditLog.action == "adaptive_feedback.viewed")))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        # PII-free — only scope metadata, no amounts/vendor/PII.
+        assert "lookback_days" in rows[0].details
+        assert "auto_approved_count" in rows[0].details
+
+
+async def test_feedback_endpoint_rbac_and_auth(realdb):
+    """Feedback is a manager/CFO read surface — clerk 403, anon 401, CFO 200."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _seed_active_workflow(mk, org_id)
+    path = "/api/adaptive/feedback"
+
+    async with realdb.client(key="a", role=None) as anon:
+        assert (await anon.get(path)).status_code == 401
+    async with realdb.client(key="a", role="ap_clerk") as clerk:
+        assert (await clerk.get(path)).status_code == 403
+    async with realdb.client(key="a", role="cfo") as cfo:
+        assert (await cfo.get(path)).status_code == 200
+    async with realdb.client(key="a", role="admin") as admin:
+        assert (await admin.get(path)).status_code == 200
