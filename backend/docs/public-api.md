@@ -1,9 +1,10 @@
 # Public Developer API & Webhooks
 
 Programmatic, versioned access to the platform for external integrators —
-authenticated with per-org **API keys** (not the SPA's JWT session). This is the
-**first slice**: API-key auth + key management + a small read-only `/api/v1`
-surface. Outbound webhooks and a published OpenAPI spec are **later slices** (see
+authenticated with per-org **API keys** (not the SPA's JWT session). The first
+slice shipped API-key auth + key management + a small read-only `/api/v1`
+surface; the second shipped **outbound webhooks** (see [Outbound
+webhooks](#outbound-webhooks)). A published OpenAPI spec is a later slice (see
 [Deferred](#deferred)).
 
 ## Auth model
@@ -106,13 +107,130 @@ rule has nothing to hold here.
 `organizations` table existing — mirrors `0021_scim_bearer_hash`); it does **not**
 fan out to tenant DBs.
 
+## Outbound webhooks
+
+The push counterpart of the `/api/v1` pull surface: an org's integrator
+subscribes to platform events, and the platform POSTs a **signed** JSON payload
+to the subscriber URL when an event fires — bounded retries, dead-letter, and a
+redelivery endpoint. Mirrors the inbound-webhook discipline (sign + dedupe).
+
+### Data model (control plane)
+
+Both tables live in the **control plane** keyed by `organization_id` — the SAME
+placement as `api_keys` (an outbound webhook is the push counterpart of the
+programmatic surface; a subscription belongs to an org, not a tenant DB). Added
+to `tenant_provisioning.CONTROL_TABLES`. Migration **0057** (control-plane-only,
+gated on the `organizations` table existing — mirrors 0055).
+
+- **`webhook_subscriptions`** — `id`, `organization_id`, `name`, `target_url`
+  (http(s)), `event_types` (JSONB subset of the catalog), `signing_secret`,
+  `secret_prefix`, `active`, timestamps.
+- **`webhook_deliveries`** — `id`, `subscription_id` (FK, `ON DELETE CASCADE`),
+  `organization_id`, `event_id`, `event_type`, `payload` (JSONB, frozen at emit),
+  `status` (`pending`/`delivered`/`failed`/`dead`), `attempt_count`,
+  `next_attempt_at`, `last_attempt_at`, `response_code`. Unique on
+  `(subscription_id, event_id)` (`uq_webhook_delivery_sub_event`) — the dedupe
+  guard so a re-fired/replayed event can't queue the same delivery twice.
+
+### Event catalog
+
+`invoice.approved`, `payment.settled`, `exception.raised` (see
+`app/models/webhook.py::WEBHOOK_EVENT_TYPES`). The catalog is plain strings, so
+adding one needs no migration.
+
+### Signing
+
+Each subscription has its own HMAC-SHA256 **signing secret**, generated at
+create time (`whsec_<…>`) and returned to the admin **exactly once** (like an
+API-key mint). It is stored verbatim because the dispatcher must sign with it —
+an HMAC verification key is *symmetric* by definition (the same trade-off the
+per-tenant inbound webhook secrets make). List/get responses carry only
+`secret_prefix`, never the full secret. The signature is the exact
+`webhook_security.verify_hmac_sha256` primitive (HMAC-SHA256 over the raw body,
+hex digest), sent in `X-Webhook-Signature`; the receiver re-derives it the same
+way. Headers also carry `X-Webhook-Event-Id` + `X-Webhook-Event-Type` so the
+receiver can dedupe.
+
+### Payload
+
+```jsonc
+{ "id": "invoice.approved:<invoice-id>", "type": "invoice.approved",
+  "created_at": "<iso8601>", "organization_id": "<org-id>",
+  "data": { "invoice_id": "…", "invoice_number": "…", "vendor_name": "…",
+            "amount": "123.45", "currency": "USD", "status": "approved" } }
+```
+
+`amount` is an **exact JSON string** (money-is-exact), not a float. Payloads are
+PII-free — invoice metadata only, no bank/tax/PAN fields.
+
+### Dispatch + retry + dead-letter
+
+`services/webhooks/` (new package):
+
+- **emit** (`dispatch.emit_event`) — the single chokepoint the event sources
+  call. Opens its OWN short-lived control-plane session (the caller's session is
+  tenant-scoped), inserts one `WebhookDelivery(status=pending)` per matching
+  active subscription (deduped on `(subscription_id, event_id)`), then kicks off
+  a fire-and-forget immediate delivery attempt on the running loop. **Never
+  raises into the caller** and is a silent no-op when `AP_WEBHOOKS_ENABLED` is
+  off (same best-effort contract as `notification_dispatch.notify_event`).
+- **deliver** (`delivery.process_delivery`) — signs the byte-identical frozen
+  payload, POSTs via `httpx` (10 s timeout), classifies the result. `2xx` →
+  `delivered`; otherwise increment `attempt_count` and, if attempts remain
+  (max 5), schedule `next_attempt_at` via exponential backoff
+  (`30s · 2^(n-1)`); once exhausted → `dead` (dead-letter). A transport error
+  (timeout / refused) is a failed attempt with a null `response_code`.
+- **retry sweep** (`delivery.run_webhook_delivery_loop`) — background loop, gated
+  behind `AP_WEBHOOKS_ENABLED` (OFF by default), re-attempts every due
+  `pending`/`failed` delivery. The durable backstop for retries; the immediate
+  emit attempt handles the happy path. Local-first: delivery is an in-process
+  `httpx` POST — no cloud queue.
+
+### Event sources wired
+
+The emit is hooked into `workflow_engine.transition_invoice` — the single
+invoice-status chokepoint — alongside the existing notification hook, keyed off
+the resulting status: `approved` → `invoice.approved`, `paid` →
+`payment.settled`. Every path that converges on those statuses (the ERP-sync /
+payment-webhook / direct-schedule paths) emits exactly once, here.
+
+**`exception.raised` is deferred this slice** — there is no single commit
+chokepoint for `Exception` creation (it's scattered across
+`invoice_warnings.py`, `extraction.py`, `review.py`, etc.), and the primary site
+(`invoice_warnings.py`) was being edited concurrently. The typed helper
+`dispatch.emit_exception_raised` already exists, so the follow-up only adds one
+emit line at a non-conflicting exception chokepoint. **Follow-up:** wire
+`exception.raised` from a single Exception-commit chokepoint (or add one) so the
+emit isn't duplicated across the scattered creation sites.
+
+### Management API (`/api/webhooks`)
+
+Admin-gated (JWT + `require_roles(ROLE_ADMIN)`), control-plane. Every mutation
+writes a PII-free audit row (`webhook_subscription.created/updated/deleted`,
+`webhook_delivery.redelivered`).
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `POST` | `/api/webhooks` | Create a subscription. Validates http(s) URL + known event types. Returns the `signing_secret` **once**. |
+| `GET` | `/api/webhooks` | List this org's subscriptions (metadata only — never the full secret). |
+| `PATCH` | `/api/webhooks/{id}` | Update name / target_url / event_types / active. |
+| `DELETE` | `/api/webhooks/{id}` | Delete (CASCADE removes its deliveries). 404 (opaque) for wrong-org. |
+| `GET` | `/api/webhooks/deliveries` | List deliveries (org-scoped), filter `subscription_id` / `status`, paginated. |
+| `POST` | `/api/webhooks/deliveries/{id}/redeliver` | Re-enqueue a `failed`/`dead` delivery (resets the counter) and attempt inline. `409` on an already-`delivered` row (would double-fire). |
+
+### Config
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AP_WEBHOOKS_ENABLED` | `false` | Master switch for outbound webhooks — gates BOTH `emit_event` (OFF → silent no-op, no outbound HTTP) and the background retry/delivery sweep. OFF by default so a fresh clone / `pnpm dev` never makes outbound calls. Flip on in deployed envs. No secret — each subscription's signing secret is generated at create time and stored on the row. |
+| `AP_WEBHOOKS_DELIVERY_INTERVAL_SECONDS` | `60` | Retry-sweep tick interval. |
+
 ## Deferred
 
-These are explicitly **out of scope** for this slice and tracked as later
-roadmap work:
+These are explicitly **out of scope** for the current slices and tracked as
+later roadmap work:
 
-- **Outbound webhooks** — registering subscriber URLs, signing event payloads
-  (the HMAC helpers already exist in `services/webhook_security.py`), retry/DLQ.
+- **`exception.raised` event source** — see [Event sources wired](#event-sources-wired).
 - **Published OpenAPI spec / contract** — a versioned, downloadable schema for
   the `/api/v1` surface and a developer portal.
 - **Write scopes + endpoints** — only `read` is minted today. The scope plumbing

@@ -921,13 +921,13 @@ Contract lifecycle management. Only enterprise tools (Coupa, Basware) have this 
 ---
 
 ### Public Developer API & Webhooks
-**Status:** In progress (first slice: API-key auth + `/api/v1` read surface + key management shipped; outbound webhooks + published OpenAPI deferred)
+**Status:** In progress (first slice: API-key auth + `/api/v1` read surface + key management shipped; second slice: outbound webhooks shipped; published OpenAPI deferred)
 
 The backend is a rich REST surface, but it's framed as an internal contract — CLAUDE.md notes "no OpenAPI published as the contract," and the `endpoint-inventory` skill exists precisely because integrators have no published spec. A first-class public API turns the platform into something customers and partners build on (ERP middleware, custom dashboards, RPA bots).
 
 - [x] API-key auth for programmatic access — per-tenant, scoped, revocable keys (control-plane `ApiKey`, migration 0055; sha256 + indexed prefix; `X-API-Key` resolves org→tenant via the existing chokepoint), admin-gated mint/list/revoke, audited. First slice also ships a stable `GET /api/v1/invoices(+/{id})` read surface behind `require_api_scope('read')`. Per-key rate-limiting deferred (the `rate_limit` primitive can key on `api_key_id`). See backend/docs/public-api.md
 - [ ] Published, versioned OpenAPI spec + a stable `/api/v1` contract surface (the `endpoint-inventory` output is the seed) with deprecation policy
-- [ ] **Outbound** webhooks — let customers subscribe to events (invoice approved, payment settled, exception raised); signed payloads (reuse `webhook_security.py` HMAC), delivery retries + dead-letter, a redelivery UI. Mirror of the inbound webhook discipline (sign + dedupe)
+- [x] **Outbound** webhooks (backend) — control-plane `WebhookSubscription` + `WebhookDelivery` (migration 0057, both in `CONTROL_TABLES`); per-subscription HMAC-SHA256 signing secret (returned once, reuses the `webhook_security.py` primitive), `X-Webhook-Signature`/`-Event-Id` headers; in-process dispatch (`services/webhooks/`) with bounded retries + exponential backoff → dead-letter; dedupe on `(subscription, event_id)`. Admin-gated `/api/webhooks` CRUD + delivery log + **redelivery** endpoint (audited, PII-free). Emits `invoice.approved` + `payment.settled` from the `transition_invoice` chokepoint. `AP_WEBHOOKS_ENABLED` kill switch (OFF in local dev). **Deferred:** `exception.raised` event source (no single Exception-commit chokepoint yet — `emit_exception_raised` helper ready) + a frontend redelivery UI. See backend/docs/public-api.md § Outbound webhooks
 - [ ] Developer docs + sandbox keys against the local-first stack; key-management UI in org settings
 - [ ] Per-key usage metering (feeds the billing track below)
 
