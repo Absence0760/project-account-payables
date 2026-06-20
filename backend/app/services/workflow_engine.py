@@ -223,7 +223,34 @@ async def transition_invoice(
         )
     except Exception:  # noqa: BLE001
         _log.exception("notification hook failed for invoice transition to %s", target_status.value)
+
+    # Best-effort outbound-webhook emit (the push counterpart of the /api/v1
+    # pull surface). Same chokepoint as the notification hook — keyed off the
+    # resulting status so every path that converges on `approved`/`paid` emits
+    # exactly once. `emit_event` opens its own control-plane session, never
+    # raises into here, and is a silent no-op when AP_WEBHOOKS_ENABLED is off.
+    try:
+        await _maybe_emit_webhook(invoice, target_status)
+    except Exception:  # noqa: BLE001 — a webhook emit must never break the transition
+        _log.exception("webhook emit hook failed for invoice transition to %s", target_status.value)
     return invoice
+
+
+async def _maybe_emit_webhook(invoice: Invoice, target_status: InvoiceStatus) -> None:
+    """Map an invoice status transition to an outbound webhook event + emit.
+
+    Only `approved` → `invoice.approved` and `paid` → `payment.settled` are
+    emitted this slice (exception.raised is deferred — see
+    backend/docs/public-api.md § Outbound webhooks).
+    """
+    if target_status is InvoiceStatus.approved:
+        from app.services.webhooks import emit_invoice_approved
+
+        await emit_invoice_approved(invoice)
+    elif target_status is InvoiceStatus.paid:
+        from app.services.webhooks import emit_payment_settled
+
+        await emit_payment_settled(invoice)
 
 
 async def _maybe_notify_transition(
