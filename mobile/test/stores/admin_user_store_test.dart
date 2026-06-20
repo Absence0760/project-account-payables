@@ -179,4 +179,110 @@ void main() {
       expect(store.error, isNotNull);
     });
   });
+
+  group('createUser', () {
+    test('POSTs the body, returns the temp password, and refreshes', () async {
+      Map<String, dynamic>? body;
+      var listCalls = 0;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' && req.url.path.endsWith('/admin/users')) {
+            body = jsonDecode(req.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({
+                ..._userJson('9', name: 'Ada', roles: ['ap_clerk']),
+                'temporary_password': 'Hunter2-temp-xyz',
+              }),
+              201,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (req.url.path.endsWith('/admin/roles')) return _roles();
+          listCalls++;
+          // The refetch should see the new user.
+          return _users([_userJson('9', name: 'Ada')]);
+        }),
+      );
+
+      final result = await store.createUser(
+        email: 'ada@example.com',
+        fullName: 'Ada Lovelace',
+        roleNames: ['ap_clerk'],
+      );
+
+      expect(result, isNotNull);
+      expect(result!.temporaryPassword, 'Hunter2-temp-xyz');
+      expect(body!['email'], 'ada@example.com');
+      expect(body!['full_name'], 'Ada Lovelace');
+      expect(body!['role_names'], ['ap_clerk']);
+      // The list was refetched and now carries the new user.
+      expect(listCalls, 1, reason: 'success triggers a refetch');
+      expect(store.users.any((u) => u.fullName == 'Ada 9'), isTrue);
+      expect(store.error, isNull);
+    });
+
+    test('returns null + records the error on a 409 (email in use)', () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST') {
+            return http.Response('{"detail":"Email already in use"}', 409);
+          }
+          return _users([]);
+        }),
+      );
+
+      final result = await store.createUser(
+        email: 'dup@example.com',
+        fullName: 'Dup',
+        roleNames: const [],
+      );
+
+      expect(result, isNull);
+      expect(store.error, isNotNull);
+      expect(store.error, contains('Email already in use'));
+    });
+  });
+
+  group('deleteUser', () {
+    test('DELETEs the user and refreshes the list', () async {
+      var deleteCalls = 0;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'DELETE') {
+            deleteCalls++;
+            expect(req.url.path, endsWith('/admin/users/7'));
+            return http.Response('', 204);
+          }
+          if (req.url.path.endsWith('/admin/roles')) return _roles();
+          // After delete, user 7 is gone.
+          return _users([_userJson('1')]);
+        }),
+      );
+
+      final ok = await store.deleteUser('7');
+
+      expect(ok, isTrue);
+      expect(deleteCalls, 1);
+      expect(store.users.any((u) => u.id == '7'), isFalse);
+      expect(store.users.any((u) => u.id == '1'), isTrue);
+    });
+
+    test('returns false + records the error on a 409 (self / referenced)',
+        () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'DELETE') {
+            return http.Response('{"detail":"Cannot delete yourself"}', 409);
+          }
+          return _users([]);
+        }),
+      );
+
+      final ok = await store.deleteUser('me');
+
+      expect(ok, isFalse);
+      expect(store.error, isNotNull);
+      expect(store.error, contains('Cannot delete yourself'));
+    });
+  });
 }

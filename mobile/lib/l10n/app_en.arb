@@ -480,6 +480,64 @@
       "error": { "type": "String" }
     }
   },
+  "adminUsersCreateUser": "Create user",
+  "adminUsersCreateTitle": "New user",
+  "adminUsersFieldFullName": "Full name",
+  "adminUsersFieldEmail": "Email",
+  "adminUsersFieldRoles": "Roles",
+  "adminUsersValidationNameRequired": "Full name is required",
+  "adminUsersValidationEmailRequired": "Email is required",
+  "adminUsersValidationEmailInvalid": "Enter a valid email address",
+  "adminUsersCreateSubmit": "Create",
+  "adminUsersCreating": "Creating…",
+  "adminUsersCreated": "Created {name}",
+  "@adminUsersCreated": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "adminUsersCreateFailed": "Failed to create user: {error}",
+  "@adminUsersCreateFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "adminUsersTempPasswordTitle": "User created",
+  "adminUsersTempPasswordBody": "Share this one-time password with {name}. They'll be asked to change it on first sign-in. It won't be shown again.",
+  "@adminUsersTempPasswordBody": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "adminUsersDelete": "Delete user",
+  "adminUsersDeleteHint": "Permanently removes this account",
+  "adminUsersCannotDeleteSelf": "You can't delete your own account",
+  "adminUsersDeleteConfirmTitle": "Delete {name}?",
+  "@adminUsersDeleteConfirmTitle": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "adminUsersDeleteConfirmBody": "This permanently removes {name} ({email}). This can't be undone.",
+  "@adminUsersDeleteConfirmBody": {
+    "placeholders": {
+      "name": { "type": "String" },
+      "email": { "type": "String" }
+    }
+  },
+  "adminUsersDeleted": "Deleted {name}",
+  "@adminUsersDeleted": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "adminUsersDeleteFailed": "Failed to delete {name}: {error}",
+  "@adminUsersDeleteFailed": {
+    "placeholders": {
+      "name": { "type": "String" },
+      "error": { "type": "String" }
+    }
+  },
 
   "orgSettingsTitle": "Organization Settings",
   "orgSettingsNoSettings": "No settings",

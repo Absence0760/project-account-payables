@@ -923,6 +923,45 @@ void main() {
       );
       handle.dispose();
     });
+
+    testWidgets('the create-user sheet meets tap-target + label + contrast',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.url.path.endsWith('/admin/roles')) {
+            return http.Response(
+              jsonEncode([
+                {'id': 'r1', 'name': 'admin', 'is_system': true},
+                {'id': 'r3', 'name': 'ap_clerk', 'is_system': true},
+              ]),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response(
+            jsonEncode({'items': [], 'total': 0, 'page': 1}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await tester.pumpWidget(_host(const AdminUsersScreen()));
+      await _pumpUntil(tester, find.text('No users found'));
+
+      await tester
+          .tap(find.widgetWithText(FloatingActionButton, 'Create user'));
+      await tester.pumpAndSettle();
+
+      // The form fields + role checkboxes + Create/Cancel actions clear the
+      // tap-target, label and contrast guidelines.
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      expect(find.text('New user'), findsOneWidget);
+      handle.dispose();
+    });
   });
 
   group('OrgSettingsScreen', () {

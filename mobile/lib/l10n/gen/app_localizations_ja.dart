@@ -1001,6 +1001,83 @@ class AppLocalizationsJa extends AppLocalizations {
   }
 
   @override
+  String get adminUsersCreateUser => 'ユーザーを作成';
+
+  @override
+  String get adminUsersCreateTitle => '新規ユーザー';
+
+  @override
+  String get adminUsersFieldFullName => '氏名';
+
+  @override
+  String get adminUsersFieldEmail => 'メールアドレス';
+
+  @override
+  String get adminUsersFieldRoles => 'ロール';
+
+  @override
+  String get adminUsersValidationNameRequired => '氏名は必須です';
+
+  @override
+  String get adminUsersValidationEmailRequired => 'メールアドレスは必須です';
+
+  @override
+  String get adminUsersValidationEmailInvalid => '有効なメールアドレスを入力してください';
+
+  @override
+  String get adminUsersCreateSubmit => '作成';
+
+  @override
+  String get adminUsersCreating => '作成中…';
+
+  @override
+  String adminUsersCreated(String name) {
+    return '$name を作成しました';
+  }
+
+  @override
+  String adminUsersCreateFailed(String error) {
+    return 'ユーザーの作成に失敗しました: $error';
+  }
+
+  @override
+  String get adminUsersTempPasswordTitle => 'ユーザーを作成しました';
+
+  @override
+  String adminUsersTempPasswordBody(String name) {
+    return 'このワンタイムパスワードを $name に共有してください。初回サインイン時に変更を求められます。再表示されません。';
+  }
+
+  @override
+  String get adminUsersDelete => 'ユーザーを削除';
+
+  @override
+  String get adminUsersDeleteHint => 'このアカウントを完全に削除します';
+
+  @override
+  String get adminUsersCannotDeleteSelf => '自分のアカウントは削除できません';
+
+  @override
+  String adminUsersDeleteConfirmTitle(String name) {
+    return '$name を削除しますか？';
+  }
+
+  @override
+  String adminUsersDeleteConfirmBody(String name, String email) {
+    return '$name（$email）を完全に削除します。元に戻せません。';
+  }
+
+  @override
+  String adminUsersDeleted(String name) {
+    return '$name を削除しました';
+  }
+
+  @override
+  String adminUsersDeleteFailed(String name, String error) {
+    return '$name の削除に失敗しました: $error';
+  }
+
+  @override
   String get orgSettingsTitle => '組織設定';
 
   @override

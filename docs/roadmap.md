@@ -604,9 +604,14 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
   reports deleted/updated + skipped counts. `BulkActionBar` widget +
   `InvoiceStore` selection state. See `mobile/CLAUDE.md`.
 - [x] Admin user management — `AdminUsersScreen` + `AdminUserStore` over
-  `/api/admin/*`: list/search users, edit roles (system roles only), activate /
-  deactivate. Admin-only, reached from Settings → Administration. (Create-user
-  + delete-user deferred — mobile focuses on the day-to-day role/status edits.)
+  `/api/admin/*`: list/search users, **create a user** (validated form sheet →
+  `POST /api/admin/users`; the server-generated one-time temporary password is
+  surfaced for the admin to hand over, then the list refreshes), edit roles
+  (system roles only), activate / deactivate, and **delete a user** (armed /
+  confirmed destructive action → `DELETE /api/admin/users/{id}`; self-delete
+  disabled client-side, the backend's 409 self / still-referenced reason
+  surfaces in the failure snackbar). Admin-only, reached from Settings →
+  Administration.
 - [x] Organization settings — `OrgSettingsScreen` + `OrgSettingsStore` read +
   edit the safe subset the web app exposes (company profile + invoice defaults)
   via `GET/PATCH /api/organization`; ERP/payment/SSO secrets deliberately not

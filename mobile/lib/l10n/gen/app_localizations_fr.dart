@@ -1032,6 +1032,85 @@ class AppLocalizationsFr extends AppLocalizations {
   }
 
   @override
+  String get adminUsersCreateUser => 'Créer un utilisateur';
+
+  @override
+  String get adminUsersCreateTitle => 'Nouvel utilisateur';
+
+  @override
+  String get adminUsersFieldFullName => 'Nom complet';
+
+  @override
+  String get adminUsersFieldEmail => 'E-mail';
+
+  @override
+  String get adminUsersFieldRoles => 'Rôles';
+
+  @override
+  String get adminUsersValidationNameRequired => 'Le nom complet est requis';
+
+  @override
+  String get adminUsersValidationEmailRequired => 'L\'e-mail est requis';
+
+  @override
+  String get adminUsersValidationEmailInvalid =>
+      'Saisissez une adresse e-mail valide';
+
+  @override
+  String get adminUsersCreateSubmit => 'Créer';
+
+  @override
+  String get adminUsersCreating => 'Création…';
+
+  @override
+  String adminUsersCreated(String name) {
+    return '$name créé';
+  }
+
+  @override
+  String adminUsersCreateFailed(String error) {
+    return 'Échec de la création de l\'utilisateur : $error';
+  }
+
+  @override
+  String get adminUsersTempPasswordTitle => 'Utilisateur créé';
+
+  @override
+  String adminUsersTempPasswordBody(String name) {
+    return 'Communiquez ce mot de passe à usage unique à $name. Il devra le changer à la première connexion. Il ne sera plus affiché.';
+  }
+
+  @override
+  String get adminUsersDelete => 'Supprimer l\'utilisateur';
+
+  @override
+  String get adminUsersDeleteHint => 'Supprime définitivement ce compte';
+
+  @override
+  String get adminUsersCannotDeleteSelf =>
+      'Vous ne pouvez pas supprimer votre propre compte';
+
+  @override
+  String adminUsersDeleteConfirmTitle(String name) {
+    return 'Supprimer $name ?';
+  }
+
+  @override
+  String adminUsersDeleteConfirmBody(String name, String email) {
+    return 'Cette action supprime définitivement $name ($email). Elle est irréversible.';
+  }
+
+  @override
+  String adminUsersDeleted(String name) {
+    return '$name supprimé';
+  }
+
+  @override
+  String adminUsersDeleteFailed(String name, String error) {
+    return 'Échec de la suppression de $name : $error';
+  }
+
+  @override
   String get orgSettingsTitle => 'Paramètres de l\'organisation';
 
   @override

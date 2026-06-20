@@ -1017,6 +1017,83 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get adminUsersCreateUser => 'Create user';
+
+  @override
+  String get adminUsersCreateTitle => 'New user';
+
+  @override
+  String get adminUsersFieldFullName => 'Full name';
+
+  @override
+  String get adminUsersFieldEmail => 'Email';
+
+  @override
+  String get adminUsersFieldRoles => 'Roles';
+
+  @override
+  String get adminUsersValidationNameRequired => 'Full name is required';
+
+  @override
+  String get adminUsersValidationEmailRequired => 'Email is required';
+
+  @override
+  String get adminUsersValidationEmailInvalid => 'Enter a valid email address';
+
+  @override
+  String get adminUsersCreateSubmit => 'Create';
+
+  @override
+  String get adminUsersCreating => 'Creating…';
+
+  @override
+  String adminUsersCreated(String name) {
+    return 'Created $name';
+  }
+
+  @override
+  String adminUsersCreateFailed(String error) {
+    return 'Failed to create user: $error';
+  }
+
+  @override
+  String get adminUsersTempPasswordTitle => 'User created';
+
+  @override
+  String adminUsersTempPasswordBody(String name) {
+    return 'Share this one-time password with $name. They\'ll be asked to change it on first sign-in. It won\'t be shown again.';
+  }
+
+  @override
+  String get adminUsersDelete => 'Delete user';
+
+  @override
+  String get adminUsersDeleteHint => 'Permanently removes this account';
+
+  @override
+  String get adminUsersCannotDeleteSelf => 'You can\'t delete your own account';
+
+  @override
+  String adminUsersDeleteConfirmTitle(String name) {
+    return 'Delete $name?';
+  }
+
+  @override
+  String adminUsersDeleteConfirmBody(String name, String email) {
+    return 'This permanently removes $name ($email). This can\'t be undone.';
+  }
+
+  @override
+  String adminUsersDeleted(String name) {
+    return 'Deleted $name';
+  }
+
+  @override
+  String adminUsersDeleteFailed(String name, String error) {
+    return 'Failed to delete $name: $error';
+  }
+
+  @override
   String get orgSettingsTitle => 'Organization Settings';
 
   @override

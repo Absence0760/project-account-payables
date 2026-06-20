@@ -1029,6 +1029,86 @@ class AppLocalizationsPt extends AppLocalizations {
   }
 
   @override
+  String get adminUsersCreateUser => 'Criar utilizador';
+
+  @override
+  String get adminUsersCreateTitle => 'Novo utilizador';
+
+  @override
+  String get adminUsersFieldFullName => 'Nome completo';
+
+  @override
+  String get adminUsersFieldEmail => 'E-mail';
+
+  @override
+  String get adminUsersFieldRoles => 'Funções';
+
+  @override
+  String get adminUsersValidationNameRequired =>
+      'O nome completo é obrigatório';
+
+  @override
+  String get adminUsersValidationEmailRequired => 'O e-mail é obrigatório';
+
+  @override
+  String get adminUsersValidationEmailInvalid =>
+      'Introduza um endereço de e-mail válido';
+
+  @override
+  String get adminUsersCreateSubmit => 'Criar';
+
+  @override
+  String get adminUsersCreating => 'A criar…';
+
+  @override
+  String adminUsersCreated(String name) {
+    return '$name criado';
+  }
+
+  @override
+  String adminUsersCreateFailed(String error) {
+    return 'Falha ao criar o utilizador: $error';
+  }
+
+  @override
+  String get adminUsersTempPasswordTitle => 'Utilizador criado';
+
+  @override
+  String adminUsersTempPasswordBody(String name) {
+    return 'Partilhe esta palavra-passe de uso único com $name. Ser-lhe-á pedido que a altere no primeiro início de sessão. Não será mostrada novamente.';
+  }
+
+  @override
+  String get adminUsersDelete => 'Eliminar utilizador';
+
+  @override
+  String get adminUsersDeleteHint => 'Remove permanentemente esta conta';
+
+  @override
+  String get adminUsersCannotDeleteSelf =>
+      'Não pode eliminar a sua própria conta';
+
+  @override
+  String adminUsersDeleteConfirmTitle(String name) {
+    return 'Eliminar $name?';
+  }
+
+  @override
+  String adminUsersDeleteConfirmBody(String name, String email) {
+    return 'Isto remove permanentemente $name ($email). Não pode ser anulado.';
+  }
+
+  @override
+  String adminUsersDeleted(String name) {
+    return '$name eliminado';
+  }
+
+  @override
+  String adminUsersDeleteFailed(String name, String error) {
+    return 'Falha ao eliminar $name: $error';
+  }
+
+  @override
   String get orgSettingsTitle => 'Configurações da organização';
 
   @override
@@ -2191,6 +2271,86 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
   @override
   String adminUsersUpdateFailed(String name, String error) {
     return 'Falha ao atualizar $name: $error';
+  }
+
+  @override
+  String get adminUsersCreateUser => 'Criar usuário';
+
+  @override
+  String get adminUsersCreateTitle => 'Novo usuário';
+
+  @override
+  String get adminUsersFieldFullName => 'Nome completo';
+
+  @override
+  String get adminUsersFieldEmail => 'E-mail';
+
+  @override
+  String get adminUsersFieldRoles => 'Funções';
+
+  @override
+  String get adminUsersValidationNameRequired =>
+      'O nome completo é obrigatório';
+
+  @override
+  String get adminUsersValidationEmailRequired => 'O e-mail é obrigatório';
+
+  @override
+  String get adminUsersValidationEmailInvalid =>
+      'Insira um endereço de e-mail válido';
+
+  @override
+  String get adminUsersCreateSubmit => 'Criar';
+
+  @override
+  String get adminUsersCreating => 'Criando…';
+
+  @override
+  String adminUsersCreated(String name) {
+    return '$name criado';
+  }
+
+  @override
+  String adminUsersCreateFailed(String error) {
+    return 'Falha ao criar o usuário: $error';
+  }
+
+  @override
+  String get adminUsersTempPasswordTitle => 'Usuário criado';
+
+  @override
+  String adminUsersTempPasswordBody(String name) {
+    return 'Compartilhe esta senha de uso único com $name. Será solicitado que a altere no primeiro login. Ela não será mostrada novamente.';
+  }
+
+  @override
+  String get adminUsersDelete => 'Excluir usuário';
+
+  @override
+  String get adminUsersDeleteHint => 'Remove permanentemente esta conta';
+
+  @override
+  String get adminUsersCannotDeleteSelf =>
+      'Você não pode excluir sua própria conta';
+
+  @override
+  String adminUsersDeleteConfirmTitle(String name) {
+    return 'Excluir $name?';
+  }
+
+  @override
+  String adminUsersDeleteConfirmBody(String name, String email) {
+    return 'Isso remove permanentemente $name ($email). Não pode ser desfeito.';
+  }
+
+  @override
+  String adminUsersDeleted(String name) {
+    return '$name excluído';
+  }
+
+  @override
+  String adminUsersDeleteFailed(String name, String error) {
+    return 'Falha ao excluir $name: $error';
   }
 
   @override
