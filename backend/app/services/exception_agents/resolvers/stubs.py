@@ -31,11 +31,6 @@ def _escalate_stub(etype: str, agent: str, reason: str):
 
 
 _escalate_stub(
-    "missing_data",
-    "missing_data_stub_v0",
-    "Missing-data auto-resolution is not yet available; escalating to a human.",
-)
-_escalate_stub(
     "duplicate",
     "duplicate_stub_v0",
     "Duplicate auto-merge is not yet available; escalating to a human.",
