@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { focusTrap } from '$lib/actions/focusTrap';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { PAYMENT_METHOD_LABELS } from '$lib/types/payment';
@@ -121,9 +122,7 @@
 		if (e.target === e.currentTarget) onclose();
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') onclose();
-	}
+	// Esc + focus trap/restore are handled by the shared `focusTrap` action.
 
 	function fmt(amount: number, currency?: string | null): string {
 		return formatMoney(amount, { currency });
@@ -146,11 +145,9 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
 <div class="backdrop" onclick={handleBackdrop} role="presentation">
-	<div class="modal" role="dialog" aria-label="Payment run">
+	<div use:focusTrap={{ onEscape: onclose }} class="modal" role="dialog" aria-label="Payment run" tabindex="-1">
 		<header>
 			<div class="title-block">
 				<h2>Payment Run</h2>

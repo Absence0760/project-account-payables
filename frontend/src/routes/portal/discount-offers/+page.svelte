@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { focusTrap } from '$lib/actions/focusTrap';
 	import Money from '$lib/components/ui/Money.svelte';
 	import {
 		listPortalDiscountOffers,
@@ -204,20 +205,22 @@
 </div>
 
 {#if accepting}
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 	<div
 		class="backdrop"
 		role="presentation"
-		onclick={closeAccept}
-		onkeydown={(e) => e.key === 'Escape' && closeAccept()}
+		onclick={(e) => {
+			if (e.target === e.currentTarget) closeAccept();
+		}}
 	>
+		<!-- focusTrap handles Esc + focus trap/restore. -->
 		<div
+			use:focusTrap={{ onEscape: closeAccept }}
 			class="dialog"
 			role="dialog"
 			tabindex="-1"
 			aria-modal="true"
 			aria-label="Accept early-payment discount"
-			onclick={(e) => e.stopPropagation()}
-			onkeydown={() => {}}
 		>
 			<h2>Accept early-payment discount</h2>
 			<p class="dlg-sub">

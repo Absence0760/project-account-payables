@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { focusTrap } from '$lib/actions/focusTrap';
 	import type { Invoice, AuditSummary } from '$lib/types/invoice';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import { invoiceStore } from '$lib/stores/invoices.svelte';
@@ -867,16 +868,19 @@
 		if (e.target === e.currentTarget) onclose();
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') onclose();
-	}
+	// Esc + focus trap/restore are handled by the shared `focusTrap` action.
 </script>
-
-<svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div class="backdrop" onclick={handleBackdrop}>
-	<div class="modal" class:fullscreen role="dialog" aria-label="Edit invoice {invoice.invoice_number}">
+	<div
+		use:focusTrap={{ onEscape: onclose }}
+		class="modal"
+		class:fullscreen
+		role="dialog"
+		aria-label="Edit invoice {invoice.invoice_number}"
+		tabindex="-1"
+	>
 		<header>
 			<h2>Edit Invoice &mdash; {invoice.invoice_number}</h2>
 			<div class="header-actions">

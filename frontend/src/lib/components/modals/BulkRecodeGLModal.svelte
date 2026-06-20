@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { focusTrap } from '$lib/actions/focusTrap';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 
@@ -93,14 +94,8 @@
 		}
 	}
 
-	// WCAG 2.1.2 — this dialog hand-rolls its shell (pending migration to
-	// ui/Modal), so Esc-to-close is wired explicitly to match every other modal.
-	function onKey(e: KeyboardEvent) {
-		if (e.key === 'Escape') onclose();
-	}
+	// Esc + focus trap/restore are handled by the shared `focusTrap` action.
 </script>
-
-<svelte:window onkeydown={onKey} />
 
 <div
 	class="backdrop"
@@ -109,7 +104,7 @@
 		if (e.target === e.currentTarget) onclose();
 	}}
 >
-	<div class="modal" role="dialog" aria-label="Bulk re-code GL">
+	<div use:focusTrap={{ onEscape: onclose }} class="modal" role="dialog" aria-label="Bulk re-code GL" tabindex="-1">
 		<header class="modal-header">
 			<h2>Bulk Re-code GL Codes</h2>
 			<button class="close-btn" onclick={onclose} aria-label="Close">&times;</button>
