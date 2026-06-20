@@ -199,6 +199,85 @@ def test_vendor_score_composite_with_na_ontime():
     assert score.composite == Decimal("89.9")
 
 
+def test_vendor_score_ontime_all_on_time():
+    score = compute_vendor_score(
+        vendor_id="v1",
+        vendor_name="Punctual Co",
+        accuracy_input={"approved_count": 0, "corrected_count": 0},  # N/A
+        dispute_input={"total_invoices": 0, "exception_invoices": 0},  # N/A
+        ontime_input={"gr_count": 5, "on_time_count": 5, "source": "expected_date"},
+    )
+    ontime = next(s for s in score.sub_scores if s.name == "on_time")
+    assert ontime.score == Decimal("100.0")
+    assert ontime.sample_size == 5
+    assert "expected" in ontime.detail.lower()
+    # Only on_time available → composite equals it.
+    assert score.composite == Decimal("100.0")
+
+
+def test_vendor_score_ontime_some_late():
+    score = compute_vendor_score(
+        vendor_id="v1",
+        vendor_name="Mixed Co",
+        accuracy_input={"approved_count": 0, "corrected_count": 0},
+        dispute_input={"total_invoices": 0, "exception_invoices": 0},
+        ontime_input={"gr_count": 4, "on_time_count": 3, "source": "expected_date"},
+    )
+    ontime = next(s for s in score.sub_scores if s.name == "on_time")
+    assert ontime.score == Decimal("75.0")  # 3 of 4
+    assert ontime.sample_size == 4
+
+
+def test_vendor_score_ontime_no_comparable_data_na():
+    """Zero comparable POs (none carry both an expected date and a receipt) →
+    honest N/A, never a misleading 0, never a divide-by-zero."""
+    score = compute_vendor_score(
+        vendor_id="v1",
+        vendor_name="No Data Co",
+        accuracy_input={"approved_count": 10, "corrected_count": 1},  # 90.0
+        dispute_input={"total_invoices": 0, "exception_invoices": 0},
+        ontime_input={"gr_count": 0, "on_time_count": 0, "source": "expected_date"},
+    )
+    ontime = next(s for s in score.sub_scores if s.name == "on_time")
+    assert ontime.score is None
+    assert ontime.sample_size == 0
+    assert "expected delivery date" in ontime.detail
+    # on_time drops out; composite is accuracy alone (the only available score).
+    assert score.composite == Decimal("90.0")
+
+
+def test_vendor_score_composite_includes_ontime():
+    """The composite folds in on-time at weight 0.3, renormalized over the three
+    available sub-scores: (0.4*90 + 0.3*80 + 0.3*100) / (0.4+0.3+0.3)."""
+    score = compute_vendor_score(
+        vendor_id="v1",
+        vendor_name="Full Co",
+        accuracy_input={"approved_count": 10, "corrected_count": 1},  # 90.0
+        dispute_input={"total_invoices": 10, "exception_invoices": 2},  # 80.0
+        ontime_input={"gr_count": 4, "on_time_count": 4, "source": "expected_date"},  # 100.0
+    )
+    # (36 + 24 + 30) / 1.0 = 90.0
+    assert score.composite == Decimal("90.0")
+    ontime = next(s for s in score.sub_scores if s.name == "on_time")
+    assert ontime.score == Decimal("100.0")
+
+
+def test_vendor_score_ontime_proxy_detail_distinct():
+    """When the source is the weak due-date proxy, the detail must say so (it
+    must not claim a PO expected delivery date it didn't use)."""
+    score = compute_vendor_score(
+        vendor_id="v1",
+        vendor_name="Proxy Co",
+        accuracy_input={"approved_count": 0, "corrected_count": 0},
+        dispute_input={"total_invoices": 0, "exception_invoices": 0},
+        ontime_input={"gr_count": 2, "on_time_count": 1, "source": "due_date_proxy"},
+    )
+    ontime = next(s for s in score.sub_scores if s.name == "on_time")
+    assert ontime.score == Decimal("50.0")
+    assert "proxy" in ontime.detail.lower()
+    assert "expected" not in ontime.detail.lower()
+
+
 def test_vendor_score_no_history_degrades_gracefully():
     score = compute_vendor_score(
         vendor_id="v1",
@@ -665,6 +744,84 @@ async def test_score_ontime_proxy_computes_when_gr_present(realdb):
     ontime = next(s for s in data["sub_scores"] if s["name"] == "on_time")
     assert ontime["sample_size"] == 2
     assert ontime["score"] == "50.0"  # 1 of 2 receipts on or before due date
+
+
+async def test_score_ontime_expected_date_computes_without_proxy(realdb):
+    """The real on-time signal: POs carrying an ``expected_delivery_date`` plus a
+    goods receipt, scored ``received_date <= expected_delivery_date``. NO org
+    flag needed — this is authoritative, not the opt-in proxy. Three POs: two on
+    time, one late → 66.7. A PO with an expected date but no receipt, and one
+    with a receipt but no expected date, contribute nothing."""
+    from datetime import date
+
+    from app.models.invoice import Invoice, InvoiceStatus
+    from app.models.procurement import GoodsReceipt, PurchaseOrder
+    from app.models.vendor import Vendor
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+
+    async with mk() as s:
+        vendor = Vendor(organization_id=org_id, name="Delivery Co", status="active")
+        s.add(vendor)
+        await s.commit()
+        await s.refresh(vendor)
+        vid = vendor.id
+
+        # (po_number, expected_delivery_date | None, received_date | None)
+        specs = [
+            ("EP-1", date(2026, 1, 10), date(2026, 1, 5)),  # on time
+            ("EP-2", date(2026, 2, 10), date(2026, 2, 10)),  # on time (== boundary)
+            ("EP-3", date(2026, 3, 1), date(2026, 3, 20)),  # late
+            ("EP-4", date(2026, 4, 1), None),  # expected date, no GR → excluded
+            ("EP-5", None, date(2026, 5, 1)),  # GR, no expected date → excluded
+        ]
+        for po_number, expected, received in specs:
+            po = PurchaseOrder(
+                organization_id=org_id,
+                po_number=po_number,
+                vendor_id=vid,
+                total=Decimal("100.00"),
+                status="open",
+                expected_delivery_date=expected,
+            )
+            s.add(po)
+            await s.commit()
+            await s.refresh(po)
+            if received is not None:
+                s.add(
+                    GoodsReceipt(
+                        organization_id=org_id,
+                        gr_number=f"GR-{po_number}",
+                        po_id=po.id,
+                        received_date=received,
+                        status="received",
+                    )
+                )
+        # Give the vendor an approved invoice so accuracy/dispute also score and
+        # we can assert on-time folds into a composite alongside them.
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number="DELIV-1",
+            vendor_name="Delivery Co",
+            vendor_id=vid,
+            amount=Decimal("100.00"),
+            status=InvoiceStatus.approved,
+        )
+        s.add(inv)
+        await s.commit()
+
+    # NO proxy flag flipped — the real expected-date signal must compute on its own.
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.get(f"/api/enrichment/vendors/{vid}/score")
+    assert r.status_code == 200
+    data = r.json()
+    ontime = next(s for s in data["sub_scores"] if s["name"] == "on_time")
+    assert ontime["sample_size"] == 3  # EP-4 / EP-5 excluded
+    assert ontime["score"] == "66.7"  # 2 of 3 on or before expected date
+    assert "expected delivery date" in ontime["detail"]
+    # On-time folds into the composite.
+    assert data["composite"] is not None
 
 
 async def test_score_accuracy_dedupes_multi_approval_invoice(realdb):
