@@ -259,6 +259,68 @@ async def test_export_unknown_report_404(realdb):
 
 
 # ---------------------------------------------------------------------------
+# White-label branding on the analytics exports (CSV provenance + PDF)
+# ---------------------------------------------------------------------------
+
+
+async def test_export_csv_carries_brand_provenance_block(realdb):
+    """The default CSV is prefixed with a `#`-comment provenance block (product
+    name + report + generated-at); the data grid below still parses."""
+    await _add_invoice(
+        realdb,
+        "a",
+        amount="250",
+        status=InvoiceStatus.approved.value,
+        due_date=_TODAY + timedelta(days=10),
+    )
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/export/invoice_register")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/csv")
+    lines = resp.text.splitlines()
+    assert lines[0].startswith("# ")
+    assert lines[0].endswith("Analytics Export")
+    assert any(ln.startswith("# Report: invoice_register") for ln in lines)
+    assert any(ln.startswith("# Generated:") for ln in lines)
+    # The data grid is intact below the comment block.
+    assert "invoice_id" in resp.text
+
+
+async def test_export_invoice_register_pdf(realdb):
+    """`format=pdf` returns application/pdf with a .pdf attachment filename."""
+    await _add_invoice(
+        realdb,
+        "a",
+        amount="250",
+        status=InvoiceStatus.approved.value,
+        due_date=_TODAY + timedelta(days=10),
+    )
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/export/invoice_register?format=pdf")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/pdf")
+    assert "attachment" in resp.headers["content-disposition"]
+    assert resp.headers["content-disposition"].endswith('.pdf"')
+    assert resp.content.startswith(b"%PDF")
+
+
+async def test_export_aging_snapshot_pdf(realdb):
+    """A second report renders as PDF too (no rows needed — cover + table)."""
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/export/aging_snapshot?format=pdf")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/pdf")
+    assert resp.content.startswith(b"%PDF")
+
+
+async def test_export_bad_format_422(realdb):
+    """An unsupported `format` is rejected by the route validator."""
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get("/api/analytics/export/invoice_register?format=xlsx")
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Tenant isolation
 # ---------------------------------------------------------------------------
 

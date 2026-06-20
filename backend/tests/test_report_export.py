@@ -19,8 +19,10 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+from app.services.branding import get_brand_context
 from app.services.report_export import (
     EXPORTERS,
+    brand_provenance_header,
     export_aging_snapshot,
     export_cashflow_forecast,
     export_invoice_register,
@@ -324,3 +326,75 @@ def test_aging_snapshot_empty_buckets_safe():
     """Empty input → zero row, not a crash."""
     out = _read(export_aging_snapshot({}))
     assert out[1][1:] == ["0.00", "0.00", "0.00", "0.00", "0.00", "0.00"]
+
+
+# ---------------------------------------------------------------------------
+# brand provenance header (white-label CSV branding)
+# ---------------------------------------------------------------------------
+
+
+def test_brand_provenance_header_none_brand_is_empty():
+    """No brand context → empty string, so the per-report exporters stay
+    byte-for-byte unchanged for any caller that doesn't thread brand through."""
+    assert brand_provenance_header(None, org_name="Acme", report="invoice_register") == ""
+
+
+def test_brand_provenance_header_carries_product_name_and_metadata():
+    brand = get_brand_context({"brand": {"product_name": "Acme Pay", "accent_color": "#112233"}})
+    at = datetime(2026, 6, 20, 14, 30, tzinfo=UTC)
+    header = brand_provenance_header(
+        brand, org_name="Acme Corp", report="invoice_register", generated_at=at
+    )
+    # Every line is a `#` comment; carries product name + org + report + time.
+    lines = header.splitlines()
+    assert all(ln.startswith("# ") for ln in lines)
+    assert "Acme Pay" in lines[0]
+    assert any("Acme Corp" in ln for ln in lines)
+    assert any("invoice_register" in ln for ln in lines)
+    assert any("2026-06-20 14:30 UTC" in ln for ln in lines)
+
+
+def test_brand_provenance_default_product_name_when_no_brand_configured():
+    """An org with no brand block → the platform default product name, no logo."""
+    brand = get_brand_context(None)
+    header = brand_provenance_header(brand, org_name="Acme", report="vendor_spend")
+    assert "Accounts Payable" in header.splitlines()[0]
+
+
+def test_branded_csv_data_grid_still_parses_column_positionally():
+    """The comment block precedes the data grid; a consumer skipping `#` lines
+    reads the exact same header + rows as the unbranded CSV."""
+    brand = get_brand_context({"brand": {"product_name": "Acme Pay"}})
+    invs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            invoice_number="INV-001",
+            vendor_name="Acme",
+            amount=Decimal("123.45"),
+            currency="USD",
+            status="approved",
+            invoice_date=date(2026, 5, 1),
+            due_date=date(2026, 6, 1),
+            created_at=datetime(2026, 5, 1, 10, tzinfo=UTC),
+            po_number="PO-9",
+        ),
+    ]
+    branded = brand_provenance_header(
+        brand, org_name="Acme", report="invoice_register"
+    ) + export_invoice_register(invs)
+    rows = [r for r in _read(branded) if not (r and r[0].startswith("#"))]
+    # Header row + one data row remain, in canonical column order.
+    assert rows[0][0] == "invoice_id"
+    assert rows[1][1] == "INV-001"
+    assert rows[1][3] == "123.45"
+
+
+def test_brand_provenance_sanitizes_org_name_newline_injection():
+    """A newline in the org name must not inject a fake comment/data line."""
+    brand = get_brand_context({"brand": {"product_name": "Acme Pay"}})
+    header = brand_provenance_header(
+        brand, org_name="Acme\nInjected: evil", report="invoice_register"
+    )
+    org_lines = [ln for ln in header.splitlines() if ln.startswith("# Organization:")]
+    assert len(org_lines) == 1
+    assert "Injected: evil" in org_lines[0]  # folded onto one line, not a new row

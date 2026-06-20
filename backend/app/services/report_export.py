@@ -24,8 +24,54 @@ from __future__ import annotations
 import csv
 import io
 from collections.abc import Callable, Iterable
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+
+from app.services.branding import BrandContext
+
+
+def brand_provenance_header(
+    brand: BrandContext | None,
+    *,
+    org_name: str | None = None,
+    report: str | None = None,
+    generated_at: datetime | None = None,
+) -> str:
+    """Build a CSV provenance / brand header block.
+
+    CSV has no visual chrome, so white-label branding here is a block of
+    leading **comment lines** (each prefixed with ``# ``) carrying the tenant's
+    product name, the org name, the report name, and the generation timestamp.
+    A leading ``#``-comment block is the standard CSV-export provenance
+    convention: the data grid (header row + rows) is **unchanged** and still
+    parses column-positionally — a consumer that doesn't recognise comments
+    skips the handful of leading ``#`` lines (csv.reader yields them as
+    single-cell rows starting with ``#``; pandas takes ``comment="#"``).
+
+    PII-free: only the product name + org name + report + timestamp — never a
+    bank number, tax id, or address. Returns ``""`` when ``brand`` is ``None``
+    so the pure per-report exporters stay byte-for-byte unchanged when no brand
+    context is threaded through (back-compat for the column-shape tests + any
+    caller that doesn't want a header).
+    """
+    if brand is None:
+        return ""
+    when = (generated_at or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [f"# {brand.product_name} — Analytics Export"]
+    if org_name:
+        lines.append(f"# Organization: {_sanitize_comment(org_name)}")
+    if report:
+        lines.append(f"# Report: {_sanitize_comment(report)}")
+    lines.append(f"# Generated: {when}")
+    # Each comment line is its own physical CSV line; the data grid follows.
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _sanitize_comment(value: str) -> str:
+    """Keep a comment line single-line — strip CR/LF so an org name with a
+    newline can't inject a fake data row. (Product name + report are
+    code/schema-controlled; org name is the only tenant-supplied field.)"""
+    return value.replace("\r", " ").replace("\n", " ").strip()
 
 
 def _writer(headers: list[str]) -> tuple[io.StringIO, csv.writer]:

@@ -108,12 +108,44 @@ empty for URLs), and never touches the network. Platform defaults: product name
 
 ### PDFs
 
-`remittance_pdf.py`, `tax_1099_forms.py`, and `audit_report_pdf.py` each take a
-resolved `BrandContext` on their render context (defaulting to the platform brand
-so an old call site still renders) and draw a branded header — the tenant **logo**
-when one is configured and embeddable, otherwise the tenant **product name** in
-the **accent color**. The remittance footer also appends the tenant's support
-URL when set.
+`remittance_pdf.py`, `tax_1099_forms.py`, `audit_report_pdf.py`, and
+`analytics_report_pdf.py` each take a resolved `BrandContext` on their render
+context (defaulting to the platform brand so an old call site still renders) and
+draw a branded header — the tenant **logo** when one is configured and
+embeddable, otherwise the tenant **product name** in the **accent color**. The
+remittance footer also appends the tenant's support URL when set.
+
+### Analytics report exports (CSV + PDF)
+
+The analytics export surface — `GET /api/analytics/export/{report}` for
+`invoice_register` / `vendor_spend` / `payment_register` / `aging_snapshot` /
+`cashflow_forecast` — is white-label branded through the same
+`get_brand_context` helper. The endpoint takes a `format` query param
+(`csv` default | `pdf`); RBAC + tenant-scoping are unchanged
+(admin/ap_manager/cfo, entity-scoped).
+
+- **PDF** (`?format=pdf`) — `services/analytics_report_pdf.render_analytics_report_pdf`
+  renders a branded, landscape, tabular PDF: a header with the tenant logo (when
+  configured + embeddable, via the shared size/time-bounded `build_logo_flowable`,
+  fail-soft to the product-name text in the accent color), the report title /
+  org / period / generated-at, then the data table. It re-parses the CSV the
+  exporter already produced into header + rows, so the PDF renders **exactly** the
+  same cells the CSV dialect emits — never broader, no PII beyond what the CSV
+  already carries.
+- **CSV** (default) — CSV has no visual chrome, so branding is a leading
+  **provenance comment block**: a handful of `# `-prefixed lines carrying the
+  tenant **product name**, the org name, the report name, and the generated-at
+  timestamp, prepended ahead of the unchanged data grid
+  (`report_export.brand_provenance_header`). A `#`-comment header is the standard
+  CSV-export provenance convention — the data grid (column header row + rows) is
+  byte-for-byte the same as before, so it still parses column-positionally: a
+  consumer that doesn't recognise comments skips the leading `#` lines
+  (`csv.reader` yields them as single-cell rows; pandas takes `comment="#"`). The
+  org name (the only tenant-supplied field in the block) is CR/LF-stripped so it
+  can't inject a fake row. PII-free: product name + org + report + timestamp only.
+  The pure per-report exporters in `report_export.py` are unchanged — the brand
+  block is composed in the route, so passing `brand=None` keeps the legacy
+  byte-for-byte output.
 
 **Logo embed is best-effort and bounded** (`fetch_logo_bytes` /
 `build_logo_flowable`): the fetch is time-bounded (`LOGO_FETCH_TIMEOUT_SECONDS`,
@@ -156,7 +188,15 @@ failure degrades to the platform brand, never breaking the send.
   `get_brand_context` resolution + platform-default + malformed-field fallback,
   the remittance / 1099 / audit PDFs rendering the product name (+ logo-fetch
   failure falling back to text), and the email adapters branding the From /
-  HTML header / support footer.
+  HTML header / support footer. **Analytics exports**:
+  `backend/tests/test_report_export.py` (the `brand_provenance_header` block —
+  product name + metadata, `None`-brand no-op, the data grid still parsing
+  column-positionally below the comment block, org-name newline-injection
+  sanitised), `backend/tests/test_analytics_report_pdf.py` (the pure PDF renderer
+  — real PDF bytes, configured + default brand, **logo-fetch failure fail-soft**,
+  empty rows), and `backend/tests/test_cashflow_forecast_api.py` (the route —
+  `format=pdf` content-type + filename, the branded CSV provenance block,
+  `format=xlsx` → 422).
 - Frontend: `frontend/src/lib/stores/brandTheme.test.ts` — the pure
   color-application / fallback logic (`isValidHexColor`, `brandThemeVars`).
 

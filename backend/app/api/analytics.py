@@ -1120,11 +1120,13 @@ async def export_report(
     period_days: int = Query(90, ge=1, le=730),
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     horizon_days: int = Query(90, ge=7, le=730),
+    format: str = Query("csv", pattern="^(csv|pdf)$"),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """CSV download. Supported reports:
+    """Analytics report download (CSV or PDF). Supported reports:
 
       - `invoice_register` — every invoice in the period
       - `vendor_spend` — per-vendor totals
@@ -1134,12 +1136,18 @@ async def export_report(
         (forward-looking; uses `granularity` + `horizon_days`, not
         `period_days`)
 
-    Returns `text/csv` with a Content-Disposition header so the
-    browser saves it with a sensible filename. AP-manager + CFO
-    can both pull these — they're operational reports, not
+    `format` selects `csv` (default) or `pdf`. Both carry the tenant's
+    white-label brand: the CSV is prefixed with a `#`-comment provenance block
+    (product name + org + report + generated-at — the data grid is unchanged and
+    still parses column-positionally); the PDF draws a branded header (logo when
+    embeddable, else product name in the accent color). Brand resolves through
+    the shared `services/branding.get_brand_context` helper.
+
+    AP-manager + CFO can both pull these — they're operational reports, not
     privileged CFO analytics.
     """
-    from app.services.report_export import EXPORTERS
+    from app.services.branding import get_brand_context
+    from app.services.report_export import EXPORTERS, brand_provenance_header
 
     if report not in EXPORTERS:
         raise HTTPException(
@@ -1238,9 +1246,58 @@ async def export_report(
                 buckets["days_90_plus"] += amount
         payload = EXPORTERS[report](buckets)
 
+    brand = get_brand_context(org.settings if org else None)
+    generated_at = datetime.now(UTC)
+    period_label = (
+        f"forward {horizon_days} days ({granularity})"
+        if report == "cashflow_forecast"
+        else f"trailing {period_days} days (since {period_start.isoformat()})"
+    )
+
+    if format == "pdf":
+        import csv as _csv
+        import io as _io
+
+        from app.services.analytics_report_pdf import (
+            AnalyticsReportContext,
+            render_analytics_report_pdf,
+        )
+
+        # Re-parse the CSV the exporter produced into header + rows so the PDF
+        # renders EXACTLY the same cells the CSV dialect emits — never broader.
+        parsed = list(_csv.reader(_io.StringIO(payload)))
+        header_row = parsed[0] if parsed else []
+        data_rows = parsed[1:] if len(parsed) > 1 else []
+        ctx = AnalyticsReportContext(
+            title=report.replace("_", " ").title(),
+            org_name=(org.name if org else "Organization"),
+            period_label=period_label,
+            generated_at=generated_at,
+            header=header_row,
+            rows=data_rows,
+            brand=brand,
+        )
+        pdf_bytes = render_analytics_report_pdf(ctx)
+        filename = f"{report}_{date.today().isoformat()}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # CSV: prepend the brand provenance comment block, then the data grid.
+    branded_csv = (
+        brand_provenance_header(
+            brand,
+            org_name=(org.name if org else None),
+            report=report,
+            generated_at=generated_at,
+        )
+        + payload
+    )
     filename = f"{report}_{date.today().isoformat()}.csv"
     return Response(
-        content=payload,
+        content=branded_csv,
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
