@@ -392,3 +392,173 @@ async def test_failed_usage_write_does_not_break_auth(monkeypatch):
     assert "read" in principal.scopes
     # The best-effort block caught the failure and rolled back (never raised).
     assert rollback_calls["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-key rate limiting (Redis sliding window keyed on api_key_id).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_429s_after_cap(realdb, monkeypatch):
+    """An authenticated key over its per-minute cap gets a 429 with Retry-After;
+    calls up to and including the cap succeed (the limit is inclusive)."""
+    from app.config import settings
+
+    mk = realdb.sessionmaker("a")
+    await _seed_invoice(mk, realdb.info("a").org_id, number="INV-RL-1")
+    await _grant_public_api(realdb, "a")
+    plaintext, _ = await _mint_key(realdb, "a", name="rl-bot")
+
+    # Tiny cap so the test is fast + deterministic. The autouse fake Redis is a
+    # single per-test instance, so the sliding window accumulates across calls.
+    monkeypatch.setattr(settings, "public_api_rate_limit_per_minute", 3)
+
+    async with _api_key_client(realdb, "a", api_key=plaintext) as c:
+        # 3 calls at limit=3 all pass (count > limit raises, so count == limit is OK).
+        for _ in range(3):
+            assert (await c.get("/api/v1/invoices")).status_code == 200
+        # The 4th call in the window is over the cap → 429 with Retry-After.
+        resp = await c.get("/api/v1/invoices")
+        assert resp.status_code == 429, resp.text
+        assert "retry-after" in {k.lower() for k in resp.headers}
+        retry_after = int(resp.headers["retry-after"])
+        assert 1 <= retry_after <= 60
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_is_per_key_not_global(realdb, monkeypatch):
+    """Key A hitting its limit must not 429 key B — the bucket is keyed on the
+    api_key_id, so one noisy key can't lock out another (even same-org)."""
+    from app.config import settings
+
+    mk = realdb.sessionmaker("a")
+    await _seed_invoice(mk, realdb.info("a").org_id, number="INV-RL-2")
+    await _grant_public_api(realdb, "a")
+    plaintext_a, _ = await _mint_key(realdb, "a", name="rl-a")
+    plaintext_b, _ = await _mint_key(realdb, "a", name="rl-b")
+
+    monkeypatch.setattr(settings, "public_api_rate_limit_per_minute", 2)
+
+    # Drive key A over its cap.
+    async with _api_key_client(realdb, "a", api_key=plaintext_a) as c:
+        for _ in range(2):
+            assert (await c.get("/api/v1/invoices")).status_code == 200
+        assert (await c.get("/api/v1/invoices")).status_code == 429
+
+    # Key B's own bucket is untouched — first call still succeeds.
+    async with _api_key_client(realdb, "a", api_key=plaintext_b) as c:
+        assert (await c.get("/api/v1/invoices")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_bad_key_gets_401_not_429(realdb, monkeypatch):
+    """The rate-limit check runs AFTER the key authenticates, so a garbage key
+    always gets the opaque 401 — never a 429 that would confirm a key exists."""
+    from app.config import settings
+
+    # Cap of 0 would 429 every *authenticated* call, but an unauthenticated key
+    # must never reach the limiter — it short-circuits on the 401.
+    monkeypatch.setattr(settings, "public_api_rate_limit_per_minute", 0)
+
+    async with _api_key_client(realdb, "a", api_key="ap_live_not-a-real-key") as c:
+        for _ in range(3):
+            resp = await c.get("/api/v1/invoices")
+            assert resp.status_code == 401, resp.text
+            assert resp.json()["detail"] == "Invalid API key"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_recovers_when_window_ages_out(realdb, _autouse_fake_redis, monkeypatch):
+    """Once the windowed entries age past the 60s window, the key can call again.
+
+    Drives the key to its cap, then walks the fake-Redis bucket timestamps back
+    beyond the window so the limiter's trim drops them — the next call passes.
+    """
+    from app.config import settings
+
+    fake = _autouse_fake_redis
+    mk = realdb.sessionmaker("a")
+    await _seed_invoice(mk, realdb.info("a").org_id, number="INV-RL-3")
+    await _grant_public_api(realdb, "a")
+    plaintext, _ = await _mint_key(realdb, "a", name="rl-recover")
+
+    monkeypatch.setattr(settings, "public_api_rate_limit_per_minute", 2)
+
+    async with _api_key_client(realdb, "a", api_key=plaintext) as c:
+        for _ in range(2):
+            assert (await c.get("/api/v1/invoices")).status_code == 200
+        assert (await c.get("/api/v1/invoices")).status_code == 429
+
+        # Age every entry in the public_api bucket back beyond the 60s window.
+        for bucket_key, entries in list(fake.sset.store.items()):
+            if "public_api" in bucket_key:
+                fake.sset.store[bucket_key] = [(m, s - 120) for m, s in entries]
+
+        # The trim now drops the stale entries, so the next call is under the cap.
+        assert (await c.get("/api/v1/invoices")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_fails_open_on_redis_outage(monkeypatch):
+    """A Redis outage during the rate-limit check must FAIL OPEN — an
+    otherwise-valid authenticated key still resolves a principal. Pure unit test
+    with a stub control session (mirrors test_failed_usage_write_does_not_break_auth).
+    """
+    import app.api.deps as deps
+    import app.services.rate_limit as rl
+    from app.api.deps import ApiKeyPrincipal, get_api_key_principal
+    from app.services.api_keys import generate_api_key
+
+    full_key, prefix, digest = generate_api_key()
+    org_id = uuid.uuid4()
+    key_id = uuid.uuid4()
+
+    matched = ApiKey(
+        id=key_id,
+        organization_id=org_id,
+        name="stub",
+        key_prefix=prefix,
+        key_hash=digest,
+        scopes=["read"],
+        revoked_at=None,
+    )
+    org = Organization(id=org_id, name="Stub", slug="stub", db_name="ap_stub")
+
+    class _StubResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [matched]
+
+    class _StubSession:
+        async def execute(self, *_a, **_k):
+            return _StubResult()
+
+        async def get(self, _model, _id):
+            return org
+
+        async def commit(self):
+            pass
+
+        async def rollback(self):
+            pass
+
+    # The usage meter is best-effort and irrelevant here — let it succeed.
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(deps, "_record_api_key_usage", _noop)
+
+    # Make the limiter's Redis unreachable.
+    async def _boom_redis():
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(rl, "get_redis", _boom_redis)
+
+    principal = await get_api_key_principal(x_api_key=full_key, db=_StubSession())
+
+    # Failed open — auth still succeeded despite the limiter outage.
+    assert isinstance(principal, ApiKeyPrincipal)
+    assert principal.api_key_id == key_id
