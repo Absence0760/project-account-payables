@@ -42,6 +42,11 @@ CONTROL_TABLES: frozenset[str] = frozenset(
         # app/models/assistant.py). Excluded here so tenant DBs don't get it;
         # the conversation/message tables ARE tenant-scoped and stay in.
         "assistant_usage",
+        # Platform billing & metering (see app/models/billing.py). A plan is a
+        # sellable tier; a subscription binds an org to a plan. Keyed off
+        # organizations — control-plane only, never fanned to tenant DBs.
+        "plans",
+        "subscriptions",
     }
 )
 

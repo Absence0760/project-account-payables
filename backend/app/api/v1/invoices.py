@@ -1,10 +1,11 @@
 """``/api/v1/invoices`` — public read-only invoice surface.
 
 Every route here is gated by ``require_api_scope("read")`` (which itself depends
-on ``get_api_key_principal``) AND reads through ``get_api_key_db`` — so the
-tenant is resolved from the API key at the data layer, never from a header the
-caller controls. Auth-before-everything holds: there is no unauthenticated path
-into this router.
+on ``get_api_key_principal``) AND ``require_api_entitlement("public_api")`` (the
+public API is a paid-plan feature → 402 when the plan doesn't include it) AND
+reads through ``get_api_key_db`` — so the tenant is resolved from the API key at
+the data layer, never from a header the caller controls. Auth-before-everything
+holds: there is no unauthenticated path into this router.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import (
     ApiKeyPrincipal,
     get_api_key_db,
+    require_api_entitlement,
     require_api_scope,
 )
 from app.models.invoice import Invoice
@@ -30,6 +32,9 @@ router = APIRouter(prefix="/v1", tags=["public-v1"])
 async def list_invoices(
     db: AsyncSession = Depends(get_api_key_db),
     _principal: ApiKeyPrincipal = Depends(require_api_scope("read")),
+    # Plan gate: the public API is a paid-plan feature. Composes WITH the scope
+    # check above — scope is who-can, entitlement is does-your-plan-include.
+    _entitled: ApiKeyPrincipal = Depends(require_api_entitlement("public_api")),
     status_filter: str | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -72,6 +77,7 @@ async def get_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_api_key_db),
     _principal: ApiKeyPrincipal = Depends(require_api_scope("read")),
+    _entitled: ApiKeyPrincipal = Depends(require_api_entitlement("public_api")),
 ) -> V1Invoice:
     """Fetch a single invoice by id, scoped to the API key's tenant.
 

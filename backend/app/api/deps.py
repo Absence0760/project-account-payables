@@ -317,3 +317,67 @@ def require_api_scope(scope: str):
         return principal
 
     return checker
+
+
+# ---------------------------------------------------------------------------
+# Plan entitlement gating (platform billing).
+#
+# Composes WITH auth/RBAC, never replaces it — the entitlement dependencies
+# below each depend on an already-authenticated identity (the JWT `User` or the
+# API-key principal), so a route still needs `require_roles(...)` /
+# `require_api_scope(...)` for who-can-call; entitlement answers does-your-plan-
+# include-this. A plan that lacks the feature yields HTTP 402 Payment Required
+# (the plan must be upgraded) — distinct from a 403 role denial.
+# ---------------------------------------------------------------------------
+
+
+def require_entitlement(feature: str):
+    """Dependency factory — require the org's active plan to grant ``feature``.
+
+    For the JWT (SPA) surface. Reads the org's live subscription → plan
+    entitlements from the control plane; 402 when the plan doesn't include the
+    feature. Fail-closed: an org with no live subscription has no entitlements.
+    Compose alongside ``require_roles(...)`` on the same route.
+    """
+
+    async def checker(
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_control_db),
+    ) -> User:
+        # Local import keeps the billing service out of deps.py's import graph
+        # for every consumer (mirrors the api_keys local import above).
+        from app.services.billing.entitlements import get_entitlements, has_entitlement
+
+        entitlements = await get_entitlements(db, user.organization_id)
+        if not has_entitlement(entitlements, feature):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Your plan does not include this feature.",
+            )
+        return user
+
+    return checker
+
+
+def require_api_entitlement(feature: str):
+    """Dependency factory — entitlement gate for the API-key (``/api/v1``) surface.
+
+    Same semantics as ``require_entitlement`` but keyed off the API-key
+    principal's org. Compose alongside ``require_api_scope(...)``.
+    """
+
+    async def checker(
+        principal: ApiKeyPrincipal = Depends(get_api_key_principal),
+        db: AsyncSession = Depends(get_control_db),
+    ) -> ApiKeyPrincipal:
+        from app.services.billing.entitlements import get_entitlements, has_entitlement
+
+        entitlements = await get_entitlements(db, principal.organization_id)
+        if not has_entitlement(entitlements, feature):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Your plan does not include this feature.",
+            )
+        return principal
+
+    return checker

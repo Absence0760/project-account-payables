@@ -57,6 +57,8 @@ def test_control_tables_are_the_expected_control_plane_set():
             "email_verifications",
             "assistant_usage",
             "api_keys",
+            "plans",
+            "subscriptions",
         }
     )
 

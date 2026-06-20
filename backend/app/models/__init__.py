@@ -3,6 +3,7 @@ from app.models.agent_decision import AgentDecision
 from app.models.api_key import ApiKey
 from app.models.assistant import AssistantUsage, Conversation, ConversationMessage
 from app.models.base import Base
+from app.models.billing import Plan, Subscription
 from app.models.contract import Contract, ContractLineItem, ContractStatus, ContractType
 from app.models.credit_memo import CreditMemo
 from app.models.data_subject_request import DataSubjectRequest
@@ -70,6 +71,8 @@ from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, 
 __all__ = [
     "Base",
     "ApiKey",
+    "Plan",
+    "Subscription",
     "Entity",
     "Organization",
     "User",
