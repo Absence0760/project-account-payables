@@ -12,11 +12,12 @@
 // written to accept a full Accept-Language-style q-list so the same parser
 // would work if a server surface ever needed it.
 //
-// First slice ships `en` + `de`; the structure (SUPPORTED_LOCALES + the
-// match maps below) is built so the full `en, de, fr, es, pt-BR, ja` set
-// drops in by extending the four tables, with no other changes.
+// The full `en, de, fr, es, pt-BR, ja` set now ships. Adding any further
+// locale (e.g. an RTL `ar`/`he`) means extending the four tables below + a
+// locales/<loc>.ts catalogue + a CATALOGUE_LOADERS entry, with no other
+// changes.
 
-export const SUPPORTED_LOCALES = ['en', 'de'] as const;
+export const SUPPORTED_LOCALES = ['en', 'de', 'fr', 'es', 'pt-BR', 'ja'] as const;
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
 export const DEFAULT_LOCALE: Locale = 'en';
 
@@ -25,21 +26,33 @@ export const DEFAULT_LOCALE: Locale = 'en';
 export const LOCALE_LABELS: Record<Locale, string> = {
 	en: 'English',
 	de: 'Deutsch',
+	fr: 'Français',
+	es: 'Español',
+	'pt-BR': 'Português (Brasil)',
+	ja: '日本語',
 };
 
 // Case-insensitive exact-tag map. Keys are lowercased; values are the
-// canonical-cased Locale we actually use (`pt-BR`, not `pt-br` — relevant
-// once that locale ships).
+// canonical-cased Locale we actually use (`pt-BR`, not `pt-br`).
 const EXACT: Record<string, Locale> = {
 	en: 'en',
 	de: 'de',
+	fr: 'fr',
+	es: 'es',
+	'pt-br': 'pt-BR',
+	ja: 'ja',
 };
 
-// Base-language fallback: a tag we don't carry exactly (de-AT, en-GB)
-// still resolves to the one variant we ship for that language.
+// Base-language fallback: a tag we don't carry exactly (de-AT, en-GB,
+// pt-PT, fr-CA) still resolves to the one variant we ship for that
+// language. `pt` (and any pt-* other than pt-BR) maps to our pt-BR.
 const BASE_TO_LOCALE: Record<string, Locale> = {
 	en: 'en',
 	de: 'de',
+	fr: 'fr',
+	es: 'es',
+	pt: 'pt-BR',
+	ja: 'ja',
 };
 
 // RTL base languages. None of the current set is RTL, but the switch-point

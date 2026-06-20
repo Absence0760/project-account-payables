@@ -15,4 +15,8 @@ import type { Locale } from './locale';
 export const CATALOGUE_LOADERS: Record<Locale, () => Promise<Messages>> = {
 	en: () => Promise.resolve(en),
 	de: () => import('./locales/de').then((m) => m.messages),
+	fr: () => import('./locales/fr').then((m) => m.messages),
+	es: () => import('./locales/es').then((m) => m.messages),
+	'pt-BR': () => import('./locales/pt-BR').then((m) => m.messages),
+	ja: () => import('./locales/ja').then((m) => m.messages),
 };

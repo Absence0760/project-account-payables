@@ -24,6 +24,17 @@ describe('message catalogue parity', () => {
 		expect(enKeys.length).toBeGreaterThan(0);
 	});
 
+	test('every shipped locale has a loader registered', () => {
+		// Guards against adding a locale to SUPPORTED_LOCALES without wiring its
+		// CATALOGUE_LOADERS entry (a missing loader would otherwise only surface
+		// as a runtime `undefined()` in the per-locale tests below).
+		for (const loc of SUPPORTED_LOCALES) {
+			expect(typeof CATALOGUE_LOADERS[loc], `${loc} has no loader`).toBe('function');
+		}
+		// The full starter set ships.
+		expect([...SUPPORTED_LOCALES]).toEqual(['en', 'de', 'fr', 'es', 'pt-BR', 'ja']);
+	});
+
 	for (const loc of SUPPORTED_LOCALES) {
 		test(`${loc}: loadable, complete, non-empty, placeholder-faithful`, async () => {
 			const dict = (await CATALOGUE_LOADERS[loc]()) as Record<string, string>;
