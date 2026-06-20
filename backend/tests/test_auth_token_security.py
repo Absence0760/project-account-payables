@@ -210,7 +210,9 @@ async def test_employee_endpoint_treats_missing_typ_as_user():
     user_id = uuid.UUID(payload["sub"])
     token = _mint(payload)
 
-    fake_user = SimpleNamespace(id=user_id, is_active=True, organization_id=uuid.uuid4())
+    # get_current_user computes user.effective_permissions = effective_permissions(
+    # user.roles) for the granular-permissions layer, so the resolved user needs roles.
+    fake_user = SimpleNamespace(id=user_id, is_active=True, organization_id=uuid.uuid4(), roles=[])
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=fake_user)
     db = AsyncMock()

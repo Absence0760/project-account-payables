@@ -48,6 +48,7 @@ def _fake_user(
         must_change_password=False,
         delegate_to_id=None,
         delegate_until=None,
+        locale=None,  # _user_response reads this (set-locale feature); None is fine
         roles=[],  # _user_response reads this; empty list is fine
     )
 

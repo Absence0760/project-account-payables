@@ -35,7 +35,12 @@ def _db_returning(user, org=None):
     user_result.scalar_one_or_none = MagicMock(return_value=user)
     org_result = MagicMock()
     org_result.scalar_one_or_none = MagicMock(return_value=org)
-    db.execute = AsyncMock(side_effect=[user_result, org_result])
+    # When MFA is enabled the login path also queries the user's passkeys
+    # (_user_passkeys → db.execute → result.scalars().all()). Provide an empty
+    # result as the third execute so the MFA path doesn't exhaust the mock.
+    passkeys_result = MagicMock()
+    passkeys_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    db.execute = AsyncMock(side_effect=[user_result, org_result, passkeys_result])
     # commit / refresh shouldn't be touched, but leave them as AsyncMock
     db.commit = AsyncMock()
     # Hash the user's password so verification works in the "success" path.

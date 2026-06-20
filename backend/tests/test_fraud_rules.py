@@ -110,6 +110,11 @@ def _make_db(*, vendor=None, dup_count=0, prior_remit=None, history_amounts=None
     db = MagicMock()
     db.execute = AsyncMock(side_effect=_execute)
     db.add = MagicMock()
+    # The shared exception-create chokepoint (services/exception_service
+    # .create_exception, used by invoice_warnings) flushes for the row id
+    # before best-effort emitting exception.raised — so flush must be awaitable
+    # on the mock session, like the real AsyncSession.
+    db.flush = AsyncMock()
     return db
 
 
