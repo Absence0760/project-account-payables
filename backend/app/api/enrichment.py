@@ -31,6 +31,7 @@ from app.api.deps import (
     ROLE_AP_CLERK,
     ROLE_AP_MANAGER,
     ROLE_CFO,
+    get_org_id,
     require_roles,
 )
 from app.models.exception import Exception as APException
@@ -43,9 +44,14 @@ from app.models.workflow import AuditLog
 from app.schemas.enrichment import (
     EnrichmentSuggestionsResponse,
     VendorConsolidationResponse,
+    VendorEnrichmentApplyRequest,
+    VendorEnrichmentApplyResponse,
     VendorEnrichmentResponse,
     VendorScoreResponse,
 )
+from app.schemas.vendor import VendorResponse
+from app.services.audit_access import build_field_diff
+from app.services.audit_dispatch import dispatch_audit
 from app.services.enrichment_adapters import (
     EnrichmentNotConfigured,
     VendorEnrichmentQuery,
@@ -563,13 +569,23 @@ def _domain_from_vendor(vendor: Vendor) -> str | None:
     return None
 
 
-# Vendor columns the firmographics map onto, for the advisory diff. We only ever
-# *suggest* — the enrichment path never writes back onto the Vendor row.
+# Vendor columns the firmographics may be APPLIED onto (via the apply endpoint).
+# tax_id is deliberately NOT here — a tax-id change is a fraud surface and goes
+# through the bank/tax change-request gate, never an enrichment auto-apply.
+# `legal_name` maps onto the vendor's `name` column.
+APPLYABLE_FIELDS: tuple[str, ...] = ("name", "address", "website")
+_APPLYABLE_SET = frozenset(APPLYABLE_FIELDS)
+
+
+# Vendor columns the firmographics map onto, for the advisory diff. The enrich
+# endpoint itself never writes back — it only *suggests*; the explicit apply
+# endpoint (POST .../apply) does the audited write of the steward's selection.
 def _build_suggestions(vendor: Vendor, firmo) -> list[dict]:  # noqa: ANN001
     out: list[dict] = []
     candidates = [
+        ("name", vendor.name, firmo.legal_name),
         ("address", vendor.address, firmo.address),
-        ("website", None, firmo.website),  # Vendor has no website column today
+        ("website", vendor.website, firmo.website),
     ]
     for field, current, suggested in candidates:
         if suggested and suggested != current:
@@ -643,4 +659,100 @@ async def enrich_vendor(
         },
         suggestions=_build_suggestions(vendor, firmo) if firmo.matched else [],
         generated_at=datetime.now(UTC).isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/enrichment/vendors/{vendor_id}/apply  — audited write of a selection
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/vendors/{vendor_id}/apply",
+    response_model=VendorEnrichmentApplyResponse,
+)
+async def apply_vendor_enrichment(
+    vendor_id: uuid.UUID,
+    body: VendorEnrichmentApplyRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),  # noqa: ARG001 — tenant chokepoint
+    entity_id: uuid.UUID | None = Depends(get_entity_id),  # noqa: ARG001 — tenant chokepoint
+    user: User = Depends(require_roles(*_ENRICH_ROLES)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Apply a steward-selected set of enrichment suggestions onto the vendor.
+
+    The caller lists EXACTLY which fields to write (from the enrich diff), so the
+    apply is non-destructive — only the named fields change, never a silent
+    overwrite of everything. Applyable columns are ``name`` / ``address`` /
+    ``website`` (``APPLYABLE_FIELDS``). ``tax_id`` is intentionally NOT applyable
+    here: a tax-id change is a fraud surface and must go through the bank/tax
+    change-request gate (``/api/vendors/change-requests/...``), never an
+    enrichment auto-apply — a 422 names the field as not applyable.
+
+    Audited: writes a ``vendor.updated`` audit row with the field-level
+    before/after diff (invariant #3 — a vendor field change is append-only).
+    Idempotent: re-applying the same values produces no diff and writes no
+    spurious audit row (200 with an empty ``applied`` map).
+
+    RBAC: admin / ap_manager / cfo (matches who can mutate vendors / who can run
+    the enrich action). Tenant-scoped via ``get_tenant_db`` + ``get_tenant``.
+    """
+    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    # Validate the selection: every named field must be applyable. tax_id (or any
+    # other non-applyable / unknown field) is rejected outright — fail closed
+    # rather than silently dropping it, so the caller knows it didn't land.
+    seen: set[str] = set()
+    cleaned: list[tuple[str, str | None]] = []
+    for item in body.fields:
+        field = item.field
+        if field not in _APPLYABLE_SET:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Field '{field}' is not applyable from enrichment. "
+                    f"Applyable fields: {', '.join(APPLYABLE_FIELDS)}."
+                ),
+            )
+        if field in seen:
+            raise HTTPException(status_code=422, detail=f"Duplicate field '{field}' in selection.")
+        seen.add(field)
+        # `name` is NOT NULL on the model — refuse to blank it out.
+        value = item.value
+        if field == "name" and (value is None or not str(value).strip()):
+            raise HTTPException(status_code=422, detail="Vendor name cannot be blanked.")
+        cleaned.append((field, value))
+
+    before = {f: getattr(vendor, f) for f, _ in cleaned}
+    for field, value in cleaned:
+        setattr(vendor, field, value)
+    after = {f: getattr(vendor, f) for f, _ in cleaned}
+
+    # Idempotent: only the genuinely-changed fields produce a diff (and audit).
+    applied = build_field_diff(before, after, [f for f, _ in cleaned])
+
+    if applied:
+        await db.flush()
+        await db.refresh(vendor)
+        await dispatch_audit(
+            db,
+            correlation_id=uuid.uuid4(),
+            organization_id=org_id,
+            actor_id=user.id,
+            action="vendor.updated",
+            entity_type="vendor",
+            entity_id=vendor.id,
+            details={"changes": applied, "source": "enrichment_apply"},
+        )
+        await db.commit()
+        await db.refresh(vendor)
+
+    return VendorEnrichmentApplyResponse(
+        vendor_id=str(vendor.id),
+        applied=applied,
+        vendor=VendorResponse.from_db(vendor),
+        applied_at=datetime.now(UTC).isoformat(),
     )

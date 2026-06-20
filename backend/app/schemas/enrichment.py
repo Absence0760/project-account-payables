@@ -8,7 +8,9 @@ models. N/A scores are typed ``str | None``.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.schemas.vendor import VendorResponse
 
 # ---------------------------------------------------------------------------
 # Suggestions (auto-fill + price variance)
@@ -146,6 +148,41 @@ class VendorEnrichmentResponse(BaseModel):
     generated_at: str
 
 
+# ---------------------------------------------------------------------------
+# Apply an enrichment suggestion onto the vendor (audited write)
+# ---------------------------------------------------------------------------
+
+
+class EnrichmentApplyField(BaseModel):
+    """One field the steward has explicitly accepted from the enrich diff.
+
+    ``field`` must be one of the applyable vendor columns (``name`` / ``address``
+    / ``website``); ``tax_id`` is intentionally NOT applyable here — a tax-id
+    change is a fraud surface and must go through the bank/tax change-request
+    gate, never an enrichment auto-apply."""
+
+    field: str
+    value: str | None = Field(default=None, max_length=500)
+
+
+class VendorEnrichmentApplyRequest(BaseModel):
+    """The steward's selection of enrichment fields to write onto the vendor.
+
+    Never auto-derived — the caller lists exactly which fields to apply, so the
+    apply is non-destructive (only the named fields change)."""
+
+    fields: list[EnrichmentApplyField] = Field(default_factory=list)
+
+
+class VendorEnrichmentApplyResponse(BaseModel):
+    vendor_id: str
+    # Field-level before/after diff actually written (PII-free — applyable
+    # fields are non-sensitive). Empty when the apply was a no-op (idempotent).
+    applied: dict[str, dict[str, str | None]]
+    vendor: VendorResponse
+    applied_at: str
+
+
 __all__ = [
     "FieldSuggestionOut",
     "PriceVarianceOut",
@@ -158,4 +195,7 @@ __all__ = [
     "VendorFirmographicsOut",
     "VendorEnrichmentResponse",
     "EnrichmentFieldSuggestionOut",
+    "EnrichmentApplyField",
+    "VendorEnrichmentApplyRequest",
+    "VendorEnrichmentApplyResponse",
 ]
