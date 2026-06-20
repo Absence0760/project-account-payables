@@ -42,8 +42,7 @@ _UPGRADE = [
     "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS screening_status "
     "varchar(20) NOT NULL DEFAULT 'unscreened'",
     "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS last_screened_at timestamptz",
-    "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS payments_blocked "
-    "boolean NOT NULL DEFAULT false",
+    "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS payments_blocked boolean NOT NULL DEFAULT false",
     "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS payments_blocked_reason varchar(255)",
     "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS payments_blocked_at timestamptz",
     "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS risk_score numeric(5, 2)",
@@ -52,10 +51,8 @@ _UPGRADE = [
     "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS risk_factors jsonb",
     "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS risk_scored_at timestamptz",
     # Review-queue / re-screen-sweep read patterns.
-    "CREATE INDEX IF NOT EXISTS ix_vendors_screening_status "
-    "ON vendors (screening_status)",
-    "CREATE INDEX IF NOT EXISTS ix_vendors_last_screened_at "
-    "ON vendors (last_screened_at)",
+    "CREATE INDEX IF NOT EXISTS ix_vendors_screening_status ON vendors (screening_status)",
+    "CREATE INDEX IF NOT EXISTS ix_vendors_last_screened_at ON vendors (last_screened_at)",
     # Partial index: the "blocked vendors" surface is small and hot.
     "CREATE INDEX IF NOT EXISTS ix_vendors_payments_blocked "
     "ON vendors (payments_blocked) WHERE payments_blocked",

@@ -48,9 +48,7 @@ class C2FOAdapter:
 
     def _require_key(self) -> None:
         if not self.api_key:
-            raise RuntimeError(
-                "c2fo financing adapter requires `api_key` in financing config"
-            )
+            raise RuntimeError("c2fo financing adapter requires `api_key` in financing config")
 
     async def quote(
         self,

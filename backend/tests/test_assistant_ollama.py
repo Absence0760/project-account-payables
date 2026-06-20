@@ -244,8 +244,7 @@ async def test_degenerate_answer_with_embedded_tool_call_falls_back_to_mock(monk
                 {
                     "message": {
                         "content": (
-                            '{"name": "list_pending_approvals", '
-                            '"arguments": {"assignee": "me"}}'
+                            '{"name": "list_pending_approvals", "arguments": {"assignee": "me"}}'
                         )
                     }
                 },

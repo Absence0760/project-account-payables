@@ -58,8 +58,7 @@ _STATEMENTS = [
         updated_at timestamptz NOT NULL DEFAULT now()
     )
     """,
-    "CREATE INDEX IF NOT EXISTS ix_webauthn_credentials_user_id "
-    "ON webauthn_credentials (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_webauthn_credentials_user_id ON webauthn_credentials (user_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_webauthn_credentials_credential_id "
     "ON webauthn_credentials (credential_id)",
 ]

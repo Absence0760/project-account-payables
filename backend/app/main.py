@@ -170,9 +170,7 @@ async def lifespan(app: FastAPI):
     # AP_WEBHOOKS_ENABLED on in deployed envs. The emit path delivers inline on
     # the running loop; this sweep is the durable retry backstop.
     if settings.webhooks_enabled:
-        webhooks_task = asyncio.create_task(
-            run_webhook_delivery_loop(), name="webhook-delivery"
-        )
+        webhooks_task = asyncio.create_task(run_webhook_delivery_loop(), name="webhook-delivery")
     # Billing dunning / past-due automation sweep. Disabled by default; flip
     # AP_BILLING_DUNNING_ENABLED on in deployed envs. Only cancels subscriptions
     # overdue past the grace window — never moves money (see dunning_sweep).

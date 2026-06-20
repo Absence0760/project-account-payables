@@ -287,9 +287,7 @@ async def run_discount_optimization_loop() -> None:
             try:
                 await run_auto_trigger_once()
             except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "[discount-auto-trigger] sweep raised: %s", exc.__class__.__name__
-                )
+                logger.error("[discount-auto-trigger] sweep raised: %s", exc.__class__.__name__)
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[discount-auto-trigger] shutting down")

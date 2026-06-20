@@ -359,12 +359,16 @@ async def update_custom_domains(
             # Already ours — no conflict possible.
             continue
         owner = (
-            await db.execute(
-                select(Organization.id).where(
-                    Organization.settings.contains({"brand": {"custom_domains": [host]}})
+            (
+                await db.execute(
+                    select(Organization.id).where(
+                        Organization.settings.contains({"brand": {"custom_domains": [host]}})
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if owner is not None and owner != org.id:
             # Generic message — do NOT echo the host, which would confirm to this
             # caller that a specific hostname is claimed by another tenant

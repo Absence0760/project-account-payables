@@ -58,9 +58,7 @@ class MockFinancingAdapter:
             Decimal(str(rate)) if rate is not None else _DEFAULT_ANNUAL_RATE_PERCENT
         )
         funding = self.config.get("mock_funding_date")
-        self._funding_date_override: date | None = (
-            date.fromisoformat(funding) if funding else None
-        )
+        self._funding_date_override: date | None = date.fromisoformat(funding) if funding else None
         ineligible = self.config.get("mock_ineligible_vendors") or []
         self._ineligible_vendors = {v.strip().lower() for v in ineligible}
 
@@ -102,12 +100,10 @@ class MockFinancingAdapter:
             # Nothing to accelerate — invoice is due now or overdue.
             return _ineligible("no_acceleration_window")
 
-        fee_percent = (
-            self.annual_rate_percent * Decimal(days_to_due) / Decimal(365)
-        ).quantize(_PCT, rounding=ROUND_HALF_UP)
-        fee_amount = (amount * fee_percent / Decimal(100)).quantize(
-            _CENTS, rounding=ROUND_HALF_UP
+        fee_percent = (self.annual_rate_percent * Decimal(days_to_due) / Decimal(365)).quantize(
+            _PCT, rounding=ROUND_HALF_UP
         )
+        fee_amount = (amount * fee_percent / Decimal(100)).quantize(_CENTS, rounding=ROUND_HALF_UP)
         advance_amount = (amount - fee_amount).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
         return FinancingQuote(

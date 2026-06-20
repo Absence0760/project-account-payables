@@ -214,8 +214,7 @@ _FR: dict[str, str] = {
     "signup.welcome.email_label": "E-mail",
     "signup.welcome.password_label": "Mot de passe",
     "signup.welcome.change_note": (
-        "Il vous sera demandé de changer votre mot de passe lors de votre "
-        "première connexion."
+        "Il vous sera demandé de changer votre mot de passe lors de votre première connexion."
     ),
     "signup.welcome.signoff": "Bienvenue à bord !",
 }
@@ -296,9 +295,7 @@ _PT_BR: dict[str, str] = {
     "signup.welcome.url_label": "URL",
     "signup.welcome.email_label": "E-mail",
     "signup.welcome.password_label": "Senha",
-    "signup.welcome.change_note": (
-        "Você será solicitado a alterar sua senha no primeiro login."
-    ),
+    "signup.welcome.change_note": ("Você será solicitado a alterar sua senha no primeiro login."),
     "signup.welcome.signoff": "Bem-vindo a bordo!",
 }
 

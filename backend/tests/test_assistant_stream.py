@@ -515,8 +515,10 @@ async def test_stream_claude_per_token_passthrough_through_orchestrator(realdb, 
         async with realdb.control_sessionmaker()() as control_db, mk_a() as tenant_db:
             org = await control_db.get(Organization, a.org_id)
             user = (
-                await control_db.execute(select(User).where(User.organization_id == a.org_id))
-            ).scalars().first()
+                (await control_db.execute(select(User).where(User.organization_id == a.org_id)))
+                .scalars()
+                .first()
+            )
             ent = await _default_entity_id(tenant_db, a.org_id)
 
             raw = "".join(

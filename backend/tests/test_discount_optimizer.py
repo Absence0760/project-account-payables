@@ -44,9 +44,7 @@ def _opp(
 
 
 def test_empty_input_returns_empty_result():
-    result = optimize(
-        [], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY
-    )
+    result = optimize([], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
     assert result.recommendations == []
     assert result.total_savings_available == Decimal("0.00")
     assert result.total_savings_selected == Decimal("0.00")
@@ -61,9 +59,7 @@ def test_no_budget_selects_every_worthwhile_opportunity():
         # 1% off, paid 20 days early → APR ~18% (worthwhile)
         _opp("b", base="5000.00", percent="1.00", pay_by=date(2026, 1, 21)),
     ]
-    result = optimize(
-        opps, cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY
-    )
+    result = optimize(opps, cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
     assert all(r.selected for r in result.recommendations)
     # savings = 1000*2% + 5000*1% = 20 + 50
     assert result.total_savings_selected == Decimal("70.00")
@@ -77,9 +73,7 @@ def test_ranking_is_annualized_return_descending():
         _opp("b", base="5000.00", percent="1.00", pay_by=date(2026, 1, 21)),
         _opp("a", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21)),
     ]
-    result = optimize(
-        opps, cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY
-    )
+    result = optimize(opps, cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
     ranked_ids = [r.opportunity.offer_id for r in result.recommendations]
     assert ranked_ids == ["a", "b"]
     assert (
@@ -92,9 +86,7 @@ def test_non_worthwhile_opportunities_are_never_selected():
     # A tiny 0.1% discount over the default 20-day horizon → APR ~1.8%, well
     # under an 8% cost of capital.
     opp = _opp("low", base="1000.00", percent="0.10", pay_by=date(2026, 2, 1))
-    result = optimize(
-        [opp], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY
-    )
+    result = optimize([opp], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
     rec = result.recommendations[0]
     assert rec.roi.worthwhile is False
     assert rec.selected is False
@@ -146,9 +138,7 @@ def test_budget_skips_unaffordable_then_takes_a_later_affordable_one():
 def test_cumulative_outlay_tracks_only_selected():
     a = _opp("a", base="1000.00", percent="2.00", pay_by=date(2026, 1, 21))
     b = _opp("b", base="2000.00", percent="2.00", pay_by=date(2026, 1, 21))
-    result = optimize(
-        [a, b], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY
-    )
+    result = optimize([a, b], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
     # ranked by APR desc; equal APR → larger savings first → 'b' (40) before 'a' (20).
     recs = result.recommendations
     assert recs[0].opportunity.offer_id == "b"
@@ -159,9 +149,7 @@ def test_cumulative_outlay_tracks_only_selected():
 
 def test_money_is_exact_decimal_no_float():
     opp = _opp("x", base="333.33", percent="3.00", pay_by=date(2026, 1, 11))
-    result = optimize(
-        [opp], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY
-    )
+    result = optimize([opp], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
     rec = result.recommendations[0]
     # 333.33 * 3% = 9.9999 → quantized to 10.00 by the ROI primitive.
     assert rec.roi.savings == Decimal("10.00")
@@ -175,9 +163,7 @@ def test_past_deadline_is_not_capturable_and_never_selected():
     # discount itself would be worthwhile, we can no longer capture it, so it is
     # never selected and contributes nothing to available savings.
     opp = _opp("late", base="1000.00", percent="2.00", pay_by=date(2025, 12, 25))
-    result = optimize(
-        [opp], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY
-    )
+    result = optimize([opp], cash_budget=None, cost_of_capital_pct=Decimal("8.00"), today=_TODAY)
     rec = result.recommendations[0]
     assert rec.roi.worthwhile is True  # the discount is economically good...
     assert rec.selected is False  # ...but the deadline has passed.

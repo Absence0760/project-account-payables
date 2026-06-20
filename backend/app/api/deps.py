@@ -369,9 +369,7 @@ async def get_api_key_principal(
     # otherwise valid authenticated request, so it's swallowed (PII-free log).
     now = datetime.now(UTC)
     try:
-        await db.execute(
-            update(ApiKey).where(ApiKey.id == matched.id).values(last_used_at=now)
-        )
+        await db.execute(update(ApiKey).where(ApiKey.id == matched.id).values(last_used_at=now))
         await _record_api_key_usage(db, api_key_id=matched.id, org_id=org.id, at=now)
         await db.commit()
     except Exception as exc:  # pragma: no cover - observability, not auth

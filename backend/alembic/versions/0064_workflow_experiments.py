@@ -63,8 +63,7 @@ _STATEMENTS = [
     "ON workflow_experiments (organization_id)",
     "CREATE INDEX IF NOT EXISTS ix_workflow_experiments_workflow_definition_id "
     "ON workflow_experiments (workflow_definition_id)",
-    "CREATE INDEX IF NOT EXISTS ix_workflow_experiments_status "
-    "ON workflow_experiments (status)",
+    "CREATE INDEX IF NOT EXISTS ix_workflow_experiments_status ON workflow_experiments (status)",
     "CREATE INDEX IF NOT EXISTS ix_workflow_experiments_org_status "
     "ON workflow_experiments (organization_id, status)",
     "CREATE INDEX IF NOT EXISTS ix_workflow_experiments_entity_id "

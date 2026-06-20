@@ -199,9 +199,7 @@ def accept_offer(offer, *, tier: dict, actor_id, now: datetime) -> None:
     percent). Raises ``ValueError`` if the offer is not currently ``offered``.
     """
     if offer.status != OFFER_STATUS_OFFERED:
-        raise ValueError(
-            f"cannot accept an offer in status {offer.status!r} (must be 'offered')"
-        )
+        raise ValueError(f"cannot accept an offer in status {offer.status!r} (must be 'offered')")
     offer.accepted_tier = normalize_tier(tier)
     offer.accepted_at = now
     offer.accepted_by = actor_id
@@ -211,9 +209,7 @@ def accept_offer(offer, *, tier: dict, actor_id, now: datetime) -> None:
 def decline_offer(offer, *, now: datetime) -> None:
     """Transition ``offered`` → ``declined``. Raises if not ``offered``."""
     if offer.status != OFFER_STATUS_OFFERED:
-        raise ValueError(
-            f"cannot decline an offer in status {offer.status!r} (must be 'offered')"
-        )
+        raise ValueError(f"cannot decline an offer in status {offer.status!r} (must be 'offered')")
     offer.status = OFFER_STATUS_DECLINED
 
 
@@ -223,9 +219,7 @@ def mark_captured(offer, *, captured_amount: Decimal, now: datetime) -> None:
     Raises ``ValueError`` if the offer is not currently ``accepted``.
     """
     if offer.status != OFFER_STATUS_ACCEPTED:
-        raise ValueError(
-            f"cannot capture an offer in status {offer.status!r} (must be 'accepted')"
-        )
+        raise ValueError(f"cannot capture an offer in status {offer.status!r} (must be 'accepted')")
     offer.captured_amount = _q_money(Decimal(captured_amount))
     offer.captured_at = now
     offer.status = OFFER_STATUS_CAPTURED

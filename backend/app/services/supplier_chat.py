@@ -230,11 +230,7 @@ async def notify_supplier_of_ap_message(
     line = translate("chat.portal_link.body", None, org=org_name, ref=inv_ref)
     cta = translate("chat.portal_link.cta", None)
     body_text = f"{greeting}\n\n{line}\n\n{cta}\n  {link}\n"
-    body_html = (
-        f"<p>{greeting}</p>"
-        f"<p>{line}</p>"
-        f'<p><a href="{link}">{cta}</a></p>'
-    )
+    body_html = f'<p>{greeting}</p><p>{line}</p><p><a href="{link}">{cta}</a></p>'
 
     try:
         adapter = get_email_adapter()

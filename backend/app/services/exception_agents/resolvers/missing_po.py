@@ -142,13 +142,17 @@ async def _candidate_pos(
         vendor_id = vendor.id
 
     rows = (
-        await db.execute(
-            select(PurchaseOrder).where(
-                PurchaseOrder.vendor_id == vendor_id,
-                PurchaseOrder.status == "open",
+        (
+            await db.execute(
+                select(PurchaseOrder).where(
+                    PurchaseOrder.vendor_id == vendor_id,
+                    PurchaseOrder.status == "open",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     candidates: list[PurchaseOrder] = []
     for po in rows:

@@ -130,9 +130,7 @@ def test_best_tier_window_measured_from_reference_date():
     ) == {"days": 10, "percent": "2.00"}
     # Day 12: every rung closed.
     assert (
-        do.best_tier_for_date(
-            tiers, as_of=date(2026, 1, 12), valid_until=None, reference_date=ref
-        )
+        do.best_tier_for_date(tiers, as_of=date(2026, 1, 12), valid_until=None, reference_date=ref)
         is None
     )
 
@@ -140,10 +138,7 @@ def test_best_tier_window_measured_from_reference_date():
 def test_best_tier_none_when_offer_window_passed():
     tiers = do.parse_tiers([{"days": 5, "percent": "3"}])
     assert (
-        do.best_tier_for_date(
-            tiers, as_of=date(2026, 2, 1), valid_until=date(2026, 1, 31)
-        )
-        is None
+        do.best_tier_for_date(tiers, as_of=date(2026, 2, 1), valid_until=date(2026, 1, 31)) is None
     )
 
 

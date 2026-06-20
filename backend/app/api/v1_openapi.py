@@ -122,9 +122,7 @@ def build_public_openapi(app: FastAPI) -> dict[str, Any]:
     return full
 
 
-def _referenced_schema_names(
-    paths: dict[str, Any], all_schemas: dict[str, Any]
-) -> set[str]:
+def _referenced_schema_names(paths: dict[str, Any], all_schemas: dict[str, Any]) -> set[str]:
     """Collect every component-schema name reachable from ``paths``.
 
     Walks the kept path items for ``$ref`` pointers into

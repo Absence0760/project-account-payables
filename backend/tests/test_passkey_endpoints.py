@@ -169,9 +169,7 @@ async def test_full_passkey_register_then_authenticate(_pin_settings_and_redis):
 
         # 2. register verify → persists the credential
         cred_meta = await auth_mod.passkey_register_finish(
-            body=WebAuthnRegisterFinishRequest(
-                credential=json.loads(reg_response), name="My Key"
-            ),
+            body=WebAuthnRegisterFinishRequest(credential=json.loads(reg_response), name="My Key"),
             user=user,
             db=db,
         )

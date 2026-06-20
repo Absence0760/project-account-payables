@@ -85,9 +85,7 @@ async def test_run_once_iterates_every_tenant():
             "control_session_factory",
             _fake_control_session(["ap_a", "ap_b", "ap_c"]),
         ),
-        patch.object(
-            discount_auto_trigger, "_sweep_tenant", AsyncMock(return_value=2)
-        ) as sweep,
+        patch.object(discount_auto_trigger, "_sweep_tenant", AsyncMock(return_value=2)) as sweep,
     ):
         result = await run_auto_trigger_once(today=_TODAY)
 
@@ -105,9 +103,7 @@ async def test_run_once_continues_after_one_tenant_fails():
             "control_session_factory",
             _fake_control_session(["ap_a", "ap_b", "ap_c"]),
         ),
-        patch.object(
-            discount_auto_trigger, "_sweep_tenant", AsyncMock(side_effect=side_effects)
-        ),
+        patch.object(discount_auto_trigger, "_sweep_tenant", AsyncMock(side_effect=side_effects)),
     ):
         result = await run_auto_trigger_once(today=_TODAY)
 
@@ -286,13 +282,17 @@ async def test_sweep_is_idempotent_no_double_accept(realdb):
 
     async with mk() as db:
         audits = (
-            await db.execute(
-                select(AuditLog).where(
-                    AuditLog.action == "discount_offer.auto_accepted",
-                    AuditLog.entity_id == offer_id,
+            (
+                await db.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "discount_offer.auto_accepted",
+                        AuditLog.entity_id == offer_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(audits) == 1  # exactly one accept audited, not two
 
 

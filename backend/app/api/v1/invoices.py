@@ -48,9 +48,7 @@ async def list_invoices(
     if status_filter is not None:
         query = query.where(Invoice.status == status_filter)
 
-    total = (
-        await db.execute(select(func.count()).select_from(query.subquery()))
-    ).scalar_one()
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
 
     rows = (
         (

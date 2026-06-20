@@ -98,9 +98,7 @@ async def test_slug_header_wins_and_skips_domain_lookup():
     from app.tenant import get_tenant_slug
 
     db = AsyncMock()  # must not be queried
-    slug = await get_tenant_slug(
-        x_tenant_slug="techflow", host="ap.acmecorp.com", db=db
-    )
+    slug = await get_tenant_slug(x_tenant_slug="techflow", host="ap.acmecorp.com", db=db)
     assert slug == "techflow"
     db.execute.assert_not_called()
 
@@ -141,9 +139,7 @@ async def test_missing_header_and_missing_host_is_400():
     from app.tenant import get_tenant_slug
 
     with pytest.raises(HTTPException) as exc:
-        await get_tenant_slug(
-            x_tenant_slug=None, host=None, db=_ctrl_db_for_domain_lookup(None)
-        )
+        await get_tenant_slug(x_tenant_slug=None, host=None, db=_ctrl_db_for_domain_lookup(None))
     assert exc.value.status_code == 400
 
 
@@ -176,9 +172,7 @@ async def test_custom_domain_path_still_enforces_jwt_org_cross_check():
 
     acme_id = uuid.uuid4()
     other_org_id = uuid.uuid4()
-    token = _mint(
-        {"sub": str(uuid.uuid4()), "org": str(other_org_id), "typ": "user", "jti": "cd1"}
-    )
+    token = _mint({"sub": str(uuid.uuid4()), "org": str(other_org_id), "typ": "user", "jti": "cd1"})
 
     # Simulate: get_tenant_slug already mapped the custom domain → "acme".
     with pytest.raises(HTTPException) as exc:

@@ -89,27 +89,33 @@ def test_not_yet_expired_token_accepted():
 
 
 def test_empty_key_fails_closed_on_build_and_verify():
-    assert build_action_token(
-        tenant_slug="a",
-        invoice_id=uuid.uuid4(),
-        actor_id=uuid.uuid4(),
-        action=ACTION_APPROVE,
-        signing_key="",
-        ttl_hours=24,
-    ) is None
+    assert (
+        build_action_token(
+            tenant_slug="a",
+            invoice_id=uuid.uuid4(),
+            actor_id=uuid.uuid4(),
+            action=ACTION_APPROVE,
+            signing_key="",
+            ttl_hours=24,
+        )
+        is None
+    )
     # Even a structurally valid token is rejected when no key is configured.
     assert verify_action_token(_build(), "") is None
 
 
 def test_invalid_action_not_built_or_verified():
-    assert build_action_token(
-        tenant_slug="a",
-        invoice_id=uuid.uuid4(),
-        actor_id=uuid.uuid4(),
-        action="delete",
-        signing_key=_KEY,
-        ttl_hours=24,
-    ) is None
+    assert (
+        build_action_token(
+            tenant_slug="a",
+            invoice_id=uuid.uuid4(),
+            actor_id=uuid.uuid4(),
+            action="delete",
+            signing_key=_KEY,
+            ttl_hours=24,
+        )
+        is None
+    )
 
 
 def test_malformed_tokens_rejected():
@@ -118,14 +124,17 @@ def test_malformed_tokens_rejected():
 
 
 def test_link_builder_returns_none_without_key():
-    assert build_email_action_links(
-        api_base_url="http://localhost:8000",
-        tenant_slug="acme",
-        invoice_id=uuid.uuid4(),
-        actor_id=uuid.uuid4(),
-        signing_key="",
-        ttl_hours=24,
-    ) is None
+    assert (
+        build_email_action_links(
+            api_base_url="http://localhost:8000",
+            tenant_slug="acme",
+            invoice_id=uuid.uuid4(),
+            actor_id=uuid.uuid4(),
+            signing_key="",
+            ttl_hours=24,
+        )
+        is None
+    )
 
 
 def test_link_builder_emits_both_valid_links():

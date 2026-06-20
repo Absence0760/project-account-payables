@@ -224,8 +224,10 @@ async def list_offers(
         query = query.where(DiscountOffer.vendor_id == vendor_id)
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
-    query = query.order_by(DiscountOffer.created_at.desc()).offset(pagination.offset).limit(
-        pagination.limit
+    query = (
+        query.order_by(DiscountOffer.created_at.desc())
+        .offset(pagination.offset)
+        .limit(pagination.limit)
     )
     rows = list((await db.execute(query)).scalars().all())
     vmap, imap = await _name_maps(db, rows)
@@ -396,9 +398,7 @@ async def invoice_roi(
 ):
     invoice = (
         await db.execute(
-            apply_entity_scope(
-                select(Invoice).where(Invoice.id == invoice_id), Invoice, entity_id
-            )
+            apply_entity_scope(select(Invoice).where(Invoice.id == invoice_id), Invoice, entity_id)
         )
     ).scalar_one_or_none()
     if invoice is None:

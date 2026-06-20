@@ -46,8 +46,7 @@ def test_spec_is_scoped_to_v1_paths_only():
     assert "/api/v1/docs" not in paths
     # No internal SPA routes leaked in.
     assert not any(
-        p.startswith(("/api/invoices", "/api/auth", "/api/admin", "/api/payments"))
-        for p in paths
+        p.startswith(("/api/invoices", "/api/auth", "/api/admin", "/api/payments")) for p in paths
     )
 
 

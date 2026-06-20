@@ -273,9 +273,7 @@ class _SpyAdapter:
 @pytest.mark.asyncio
 async def test_paid_emails_vendor_when_pref_on(realdb, monkeypatch):
     sent: list = []
-    monkeypatch.setattr(
-        "app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent)
-    )
+    monkeypatch.setattr("app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent))
 
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
@@ -303,9 +301,7 @@ async def test_paid_emails_vendor_when_pref_on(realdb, monkeypatch):
 @pytest.mark.asyncio
 async def test_rejected_suppressed_when_pref_off(realdb, monkeypatch):
     sent: list = []
-    monkeypatch.setattr(
-        "app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent)
-    )
+    monkeypatch.setattr("app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent))
 
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
@@ -318,9 +314,7 @@ async def test_rejected_suppressed_when_pref_off(realdb, monkeypatch):
 
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
-        await transition_invoice(
-            s, inv, InvoiceStatus.rejected, action_name="invoice.rejected"
-        )
+        await transition_invoice(s, inv, InvoiceStatus.rejected, action_name="invoice.rejected")
         await s.commit()
 
     await realdb.cleanup()
@@ -330,9 +324,7 @@ async def test_rejected_suppressed_when_pref_off(realdb, monkeypatch):
 @pytest.mark.asyncio
 async def test_inactive_vendor_user_not_emailed(realdb, monkeypatch):
     sent: list = []
-    monkeypatch.setattr(
-        "app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent)
-    )
+    monkeypatch.setattr("app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent))
 
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
@@ -400,9 +392,7 @@ async def test_other_vendors_users_not_emailed(realdb, monkeypatch):
     """The fan-out is scoped to the invoice's OWN vendor — a portal user of a
     different vendor never receives the email."""
     sent: list = []
-    monkeypatch.setattr(
-        "app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent)
-    )
+    monkeypatch.setattr("app.services.email_adapters.get_email_adapter", lambda: _SpyAdapter(sent))
 
     org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
@@ -445,8 +435,6 @@ async def test_direct_helper_only_fires_for_vendor_events(realdb):
     async with mk() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
         # invoice_approved is not a vendor-facing event → immediate no-op.
-        await vn.notify_vendor_of_invoice_event(
-            s, event_type="invoice_approved", invoice=inv
-        )
+        await vn.notify_vendor_of_invoice_event(s, event_type="invoice_approved", invoice=inv)
     await realdb.cleanup()
     assert sent == []

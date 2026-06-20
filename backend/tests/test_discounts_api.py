@@ -134,9 +134,7 @@ async def test_accept_specific_tier(realdb):
         ).json()["id"]
     # A CFO (who cannot create) is allowed to accept.
     async with realdb.client(key="a", role="cfo") as c:
-        resp = await c.post(
-            f"/api/discounts/offers/{offer_id}/accept", json={"tier_days": 10}
-        )
+        resp = await c.post(f"/api/discounts/offers/{offer_id}/accept", json={"tier_days": 10})
     assert resp.status_code == 200
     assert resp.json()["accepted_tier"]["days"] == 10
 

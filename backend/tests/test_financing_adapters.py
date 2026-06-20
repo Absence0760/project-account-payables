@@ -57,9 +57,7 @@ def test_dispatcher_falls_back_to_mock_on_unknown_provider():
 
 def test_dispatcher_resolves_named_providers():
     assert isinstance(get_financing_adapter({"provider": "mock"}), MockFinancingAdapter)
-    assert isinstance(
-        get_financing_adapter({"provider": "c2fo", "api_key": "k"}), C2FOAdapter
-    )
+    assert isinstance(get_financing_adapter({"provider": "c2fo", "api_key": "k"}), C2FOAdapter)
     # Case-insensitive provider key.
     assert isinstance(get_financing_adapter({"provider": "C2FO"}), C2FOAdapter)
 
@@ -85,9 +83,7 @@ async def test_mock_quote_advance_equals_amount_minus_fee():
     assert quote.repayment_date == _DUE
     assert quote.funding_date == date.fromisoformat(_FUNDING)
     # fee_percent = 6.0 * 90 / 365 = 1.4795...% → quantized to 4dp.
-    expected_pct = (Decimal("6.0") * Decimal(_DAYS) / Decimal(365)).quantize(
-        Decimal("0.0001")
-    )
+    expected_pct = (Decimal("6.0") * Decimal(_DAYS) / Decimal(365)).quantize(Decimal("0.0001"))
     assert quote.fee_percent == expected_pct
     assert quote.discount_percent == quote.fee_percent
     # fee_amount = amount * pct / 100, rounded to cents.

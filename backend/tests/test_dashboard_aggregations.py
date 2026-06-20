@@ -195,9 +195,9 @@ async def test_aging_buckets_treat_future_due_date_as_current():
 @pytest.mark.asyncio
 async def test_touchless_rate_counts_rejected_in_denominator():
     """80 reached a post-approval state, 20 were rejected (manual rework).
-      auto_processed = 80
-      reviewed_total = 80 + 20 = 100
-      rate = 80 / 100 * 100 = 80%
+    auto_processed = 80
+    reviewed_total = 80 + 20 = 100
+    rate = 80 / 100 * 100 = 80%
     """
     pipeline_rows = [
         (InvoiceStatus.approved, 30),

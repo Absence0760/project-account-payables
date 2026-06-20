@@ -429,8 +429,7 @@ def _ontime_subscore(ontime_input: dict | None) -> SubScore:
     score = _q1(Decimal(on_time_count) / Decimal(gr_count) * _HUNDRED)
     if source == "expected_date":
         detail = (
-            f"{on_time_count} of {gr_count} receipts on or before the PO expected "
-            f"delivery date"
+            f"{on_time_count} of {gr_count} receipts on or before the PO expected delivery date"
         )
     else:
         detail = (

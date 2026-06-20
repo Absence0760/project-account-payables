@@ -436,9 +436,7 @@ async def void_payment(
     # terminal status and 409s before touching the adapter. The Invoice is
     # fetched separately — Postgres can't `FOR UPDATE` the nullable side of
     # an outer join, and we don't need to lock the invoice here.
-    result = await db.execute(
-        select(Payment).where(Payment.id == payment_id).with_for_update()
-    )
+    result = await db.execute(select(Payment).where(Payment.id == payment_id).with_for_update())
     payment = result.scalar_one_or_none()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
@@ -874,9 +872,7 @@ async def execute_payment_run(
     # adapter call itself is also idempotency-keyed via
     # `PaymentPayload.correlation_id` — defense in depth for processors that
     # honor it, e.g. Modern Treasury / Column.)
-    result = await db.execute(
-        select(PaymentRun).where(PaymentRun.id == run_id).with_for_update()
-    )
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Payment run not found")

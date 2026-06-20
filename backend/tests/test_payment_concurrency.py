@@ -65,9 +65,7 @@ def _org(org_id: uuid.UUID, *, provider: str = "mock"):
     )
 
 
-async def _seed_invoice(
-    session_mk, org_id: uuid.UUID, *, amount: Decimal
-) -> SimpleNamespace:
+async def _seed_invoice(session_mk, org_id: uuid.UUID, *, amount: Decimal) -> SimpleNamespace:
     """Insert an approved invoice and return a detached snapshot (id +
     correlation_id) so callers never lazy-load against a closed
     NullPool connection."""
