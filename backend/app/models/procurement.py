@@ -30,6 +30,10 @@ class PurchaseOrder(Base, EntityMixin, TimestampMixin):
     )
     total: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="open")
+    # Promised / expected delivery date (nullable). Compared against a linked
+    # GoodsReceipt.received_date to compute the data-enrichment on-time-delivery
+    # vendor sub-score (migration 0060). NULL = no promised date → excluded.
+    expected_delivery_date: Mapped[date | None] = mapped_column(Date)
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
