@@ -49,6 +49,7 @@ export const en = {
 	'nav.roles': 'Roles',
 	'nav.auditTrail': 'Audit Trail',
 	'nav.workflows': 'Workflows',
+	'nav.experiments': 'Experiments',
 	'nav.apiKeys': 'API Keys',
 
 	// App shell / sidebar (Sidebar.svelte, +layout.svelte)

@@ -418,13 +418,27 @@ async def get_or_create_workflow_definition(
 
 async def create_workflow_instance(db: AsyncSession, invoice: Invoice) -> WorkflowInstance:
     defn = await get_or_create_workflow_definition(db, invoice.organization_id, invoice.entity_id)
+    # A/B testing: if a running experiment targets this definition, the invoice
+    # is deterministically assigned to a variant and that variant's config is
+    # frozen onto the snapshot (respecting the per-invoice snapshot invariant).
+    # Best-effort: a failure here never blocks invoice creation — the invoice
+    # falls back to the live definition's config.
+    snapshot = defn.steps_config
+    try:
+        from app.services.workflow_experiments_runtime import maybe_assign_experiment_variant
+
+        variant_config = await maybe_assign_experiment_variant(db, invoice, defn)
+        if variant_config is not None:
+            snapshot = variant_config
+    except Exception:  # noqa: BLE001 — experiment routing must never break creation
+        _log.exception("workflow-experiment assignment failed; using live config")
     instance = WorkflowInstance(
         correlation_id=invoice.correlation_id,
         definition_id=defn.id,
         invoice_id=invoice.id,
         current_step=0,
         state="active",
-        steps_config_snapshot=defn.steps_config,
+        steps_config_snapshot=snapshot,
     )
     db.add(instance)
     await db.flush()

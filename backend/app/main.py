@@ -63,6 +63,7 @@ from app.api import (
     webhooks,
     workflow,
     workflow_definitions,
+    workflow_experiments,
 )
 from app.api.v1 import router as public_v1_router
 from app.api.v1_openapi import router as public_v1_openapi_router
@@ -344,6 +345,7 @@ app.include_router(webhooks.router, prefix="/api")
 app.include_router(scim.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_definitions.router, prefix="/api")
+app.include_router(workflow_experiments.router, prefix="/api")
 app.include_router(portal_auth.router, prefix="/api")
 app.include_router(portal.router, prefix="/api")
 app.include_router(email_intake.public_router, prefix="/api")
