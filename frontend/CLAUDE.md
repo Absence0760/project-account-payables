@@ -18,6 +18,7 @@ pnpm dev              # dev server on :7777
 pnpm build            # production build (adapter-static)
 pnpm preview          # preview build on :8888
 pnpm check            # typecheck
+pnpm test:unit        # vitest unit tests (i18n parity + pure helpers)
 ```
 
 ## Routes → API mappings
@@ -83,6 +84,48 @@ All data fetching goes through this module. Never call `fetch()` directly for AP
 - Per-row amounts pass their own `currency` (invoices, credit memos, POs, cards, payments).
 - Tenant-wide roll-ups (dashboard KPIs, payment-summary totals, aging, CFO forecast) have no per-row currency, so they use the **org default** from the `orgCurrency` store (`src/lib/stores/orgSettings.svelte.ts`). It lazy-loads `Organization.settings.invoice_defaults.currency` from `GET /api/organization` once per session and falls back to USD for non-admin roles (403) or any error. Call `orgCurrency.ensureLoaded()` from the page's init `$effect` and read `orgCurrency.currency`.
 - `formatMoney` accepts `number | string-Decimal | null` and returns the placeholder (`—` by default) for null/empty/non-finite; a bad currency code falls back to USD rather than throwing.
+- **i18n-aware locale** — when a caller passes no explicit `locale`, `formatMoney` defaults to the active in-app locale (the i18n picker), read from `$lib/i18n/formatLocale.ts::getActiveFormatLocale()`. Until a locale is actively selected the holder is `undefined` (browser locale), so nothing changed pre-i18n. Selecting German in the picker makes `$1,234.50` render as `1.234,50 $`. (Date helpers — `utils/time.ts`, inline `toLocaleDateString` — are **not** yet locale-driven; that's a later slice.)
+
+### Internationalization (i18n) — `src/lib/i18n/`
+
+Client-side multi-language UI runtime. The frontend is adapter-static (GitHub
+Pages, no SSR), so locale is negotiated **client-side** — there is no
+`Accept-Language` SSR hook. English is statically bundled (the fallback dict +
+prerender default); every other locale is a lazy `import()` chunk, so a
+single-locale visitor downloads only their strings. **Shipped this slice: `en`
++ `de`**, structured so the full `en, de, fr, es, pt-BR, ja` set drops in later.
+
+**Public API (`store.svelte.ts`):**
+- `m(key, params?)` — reactive message lookup. `key` is a typed `MessageKey`
+  (a key of the English dict). Reading it in a template / `$derived`
+  re-renders when the locale changes. Falls back English-string → raw-key, so
+  an untranslated key degrades gracefully. `params` fills `{placeholder}`
+  tokens and drives ICU inline plurals (`{n, plural, one {…} other {…}}`,
+  resolved via `Intl.PluralRules` for the active locale).
+- `setLocale(locale)` — switch locale: lazy-loads the chunk (English is
+  synchronous), persists to `localStorage` (key `ap_locale`, device-scoped),
+  sets `<html lang/dir>`, and updates the active `Intl` format locale. Keeps
+  the current dict on a failed chunk fetch (never blanks the UI).
+- `initLocale()` — detect + apply on first client mount (stored choice →
+  `navigator.languages` → English). Called once from `routes/+layout.svelte`.
+- `currentLocale()` — the active `Locale` (reactive).
+
+**Files:**
+- `locale.ts` — **pure** negotiation: `SUPPORTED_LOCALES`, `negotiateLocale(stored, navigatorLanguages)`, `dirForLocale` (RTL switch-point present for a future `ar`/`he`), `LOCALE_LABELS` (endonyms), `isSupportedLocale`, `parseAcceptLanguage`.
+- `interpolate.ts` — **pure** `{placeholder}` substitution + ICU inline plurals.
+- `messages.ts` — `type Messages = typeof en` + `MessageKey`.
+- `catalogues.ts` — typed lazy-loader registry (`Record<Locale, () => Promise<Messages>>`): `en` static, others dynamic `import()`.
+- `locales/en.ts` (source of truth) + `locales/de.ts` (`satisfies Messages` — missing/extra key = compile error).
+- `formatLocale.ts` — tiny framework-free holder the `Intl` formatters read (so `money.ts` needn't import the Svelte runtime).
+- `store.svelte.ts` — the rune runtime (the API above). **Runes only.**
+
+**Adding a locale:** add it to `SUPPORTED_LOCALES` (+ `EXACT`/`BASE_TO_LOCALE`/`LOCALE_LABELS`) in `locale.ts`, add a `locales/<loc>.ts` that copies `en`'s keys and translates the values with `satisfies Messages`, and add its `CATALOGUE_LOADERS` entry. The compiler + the parity test then enforce completeness automatically.
+
+**Extracting a string:** add a flat, namespaced key (`nav.invoices`, `common.save`) to `locales/en.ts`, translate it in every other locale, and replace the hardcoded literal with `m('…')`. **This slice extracted the shell/nav only** (`$lib/nav.ts` carries a `labelKey` per entry; `Sidebar.svelte`, `SectionTabs.svelte`, the `+layout` skip-link, and the profile locale picker render via `m()`). The rest of the app stays English until later slices — the designed incremental path.
+
+**Locale picker:** `routes/profile/+page.svelte` — a `<select>` of endonyms (`LOCALE_LABELS`) bound to `currentLocale()`, persisting via `setLocale`.
+
+**Tests (vitest):** `pnpm test:unit` (or `pnpm exec vitest run`). `messages_parity.test.ts` iterates `SUPPORTED_LOCALES` through the loader registry and asserts every locale is loadable, key-complete vs `en`, non-empty, and placeholder-faithful. `interpolate.test.ts` + `locale.test.ts` cover the pure helpers. Config: `vitest.config.ts` (node env, separate from `vite.config.ts` — the tested modules are pure, no `$app/*` / Svelte compiler). Vitest is the unit-test framework for the frontend (don't add another).
 
 ### Tenant — `src/lib/tenant.ts`
 

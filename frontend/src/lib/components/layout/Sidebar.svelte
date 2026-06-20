@@ -6,6 +6,7 @@
 	import EntitySwitcher from '$lib/components/layout/EntitySwitcher.svelte';
 	import NotificationBell from '$lib/components/layout/NotificationBell.svelte';
 	import { NAV, groupHref, isEntryActive, isEntryVisible, type NavEntry } from '$lib/nav';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let collapsed = $derived(sidebar.collapsed);
 
@@ -52,7 +53,7 @@
 	<div class="sidebar-header" class:collapsed>
 		<div class="logo">
 			<span class="logo-mark">AP</span>
-			{#if !collapsed}<span class="logo-text">Account Payables</span>{/if}
+			{#if !collapsed}<span class="logo-text">{m('shell.appName')}</span>{/if}
 		</div>
 		<NotificationBell {collapsed} />
 	</div>
@@ -61,7 +62,7 @@
 
 	<!-- WCAG 1.3.1 / 4.1.2: name the landmark so it's distinguishable from the
 	     section sub-tab nav and the portal nav. -->
-	<nav class="nav-main" aria-label="Primary">
+	<nav class="nav-main" aria-label={m('shell.primaryNav')}>
 		{#each entries as entry, i (entry.label)}
 			{#if entry.kind === 'group' && entries[i - 1]?.kind === 'link'}
 				<!-- Divider sets the folded section areas off from the direct links. -->
@@ -71,7 +72,7 @@
 				href={hrefFor(entry)}
 				class="nav-item"
 				class:active={isEntryActive(entry, pathname)}
-				title={collapsed ? entry.label : ''}
+				title={collapsed ? m(entry.labelKey) : ''}
 			>
 				<span class="nav-icon">
 					{#if entry.icon === 'dashboard'}
@@ -95,7 +96,7 @@
 					{/if}
 				</span>
 				{#if !collapsed}
-					<span class="nav-label">{entry.label}</span>
+					<span class="nav-label">{m(entry.labelKey)}</span>
 				{/if}
 			</a>
 		{/each}
@@ -111,36 +112,36 @@
 					<div class="profile-email">{auth.user?.email ?? '—'}</div>
 				</div>
 				<a class="profile-action" href="/profile" onclick={() => (showProfile = false)}>
-					Profile & Security
+					{m('shell.profileAndSecurity')}
 				</a>
-				<button class="profile-logout" onclick={() => auth.logout()}>Log Out</button>
+				<button class="profile-logout" onclick={() => auth.logout()}>{m('shell.logOut')}</button>
 			</div>
 		{/if}
 		<button
 			bind:this={profileBtn}
 			class="profile-btn"
 			class:collapsed
-			title={collapsed ? 'Profile' : ''}
-			aria-label="Profile and account menu"
+			title={collapsed ? m('shell.profile') : ''}
+			aria-label={m('shell.profileMenu')}
 			aria-haspopup="menu"
 			aria-expanded={showProfile}
 			onclick={() => (showProfile = !showProfile)}
 		>
 			<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
 			{#if !collapsed}
-				<span class="profile-label">{auth.user?.full_name ?? 'Profile'}</span>
+				<span class="profile-label">{auth.user?.full_name ?? m('shell.profile')}</span>
 			{/if}
 		</button>
 	</div>
 
-	<button class="collapse-btn" class:collapsed onclick={() => sidebar.toggle()} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+	<button class="collapse-btn" class:collapsed onclick={() => sidebar.toggle()} aria-label={collapsed ? m('shell.expandSidebar') : m('shell.collapseSidebar')}>
 		<span class="nav-icon">
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:flipped={collapsed}>
 				<polyline points="15 18 9 12 15 6" />
 			</svg>
 		</span>
 		{#if !collapsed}
-			<span class="collapse-label">Collapse</span>
+			<span class="collapse-label">{m('shell.collapse')}</span>
 		{/if}
 	</button>
 </aside>

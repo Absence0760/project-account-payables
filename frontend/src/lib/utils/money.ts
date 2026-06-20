@@ -15,6 +15,8 @@
  * visitor and "1.234,50 £" for a de-DE visitor — both correct.
  */
 
+import { getActiveFormatLocale } from '$lib/i18n/formatLocale';
+
 /** ISO 4217 default when an amount arrives without an explicit currency. */
 export const DEFAULT_CURRENCY = 'USD';
 
@@ -63,6 +65,9 @@ export function formatMoney(
 	const n = toNumber(amount);
 	if (n === null) return placeholder;
 
+	// Default to the active in-app locale (i18n picker) when the caller
+	// passes none; falls back to `undefined` (browser locale) pre-selection.
+	const locale = options.locale ?? getActiveFormatLocale();
 	const currency = resolveCurrency(options.currency);
 	const fmtOptions: Intl.NumberFormatOptions = {
 		style: 'currency',
@@ -80,11 +85,11 @@ export function formatMoney(
 	}
 
 	try {
-		return new Intl.NumberFormat(options.locale, fmtOptions).format(n);
+		return new Intl.NumberFormat(locale, fmtOptions).format(n);
 	} catch {
 		// An invalid currency code throws RangeError. Fall back to the
 		// default currency rather than blow up a whole table render.
-		return new Intl.NumberFormat(options.locale, {
+		return new Intl.NumberFormat(locale, {
 			...fmtOptions,
 			currency: DEFAULT_CURRENCY
 		}).format(n);

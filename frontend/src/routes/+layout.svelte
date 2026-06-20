@@ -12,8 +12,16 @@
 	import { page } from '$app/stores';
 	import { getTenantSlug } from '$lib/tenant';
 	import { browser } from '$app/environment';
+	import { initLocale, m } from '$lib/i18n/store.svelte';
 
 	let tenant = $state<string | null | undefined>(undefined);
+
+	// Detect + apply the visitor's UI language once on first client mount
+	// (stored choice → navigator.languages → English). This also sets the
+	// <html lang/dir> attributes and the active Intl format locale.
+	$effect(() => {
+		if (browser) initLocale();
+	});
 
 	// Routes that render without a tenant context (signup flow).
 	const PUBLIC_PATHS = ['/signup', '/verify'];
@@ -108,7 +116,7 @@
 	<div class="app-shell">
 		<!-- WCAG 2.4.1 Bypass Blocks: first focusable element jumps past the
 		     sidebar nav straight to the page content. -->
-		<a href="#main-content" class="skip-link">Skip to main content</a>
+		<a href="#main-content" class="skip-link">{m('shell.skipToMain')}</a>
 		<Sidebar />
 		<main
 			id="main-content"

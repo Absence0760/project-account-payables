@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { groupForPath, sectionTabActive, visibleChildren } from '$lib/nav';
+	import { m } from '$lib/i18n/store.svelte';
 
 	// The grouped section (Procurement / Billing / Insights / Settings) that owns
 	// the current route, if any. Top-level links (Invoices, Payments, …) return
@@ -14,7 +15,7 @@
      accessible tab (e.g. a CFO's Settings = just Audit Trail) would just
      duplicate the page title, so we suppress it. -->
 {#if group && tabs.length > 1}
-	<nav class="section-tabs" aria-label={`${group.label} sections`}>
+	<nav class="section-tabs" aria-label={m('shell.sectionNav', { group: m(group.labelKey) })}>
 		<div class="section-tabs-inner">
 			{#each tabs as tab (tab.href)}
 				{@const active = sectionTabActive(tab, tabs, page.url)}
@@ -24,7 +25,7 @@
 					class:active
 					aria-current={active ? 'page' : undefined}
 				>
-					{tab.label}
+					{m(tab.labelKey)}
 				</a>
 			{/each}
 		</div>

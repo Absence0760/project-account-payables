@@ -2,6 +2,8 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { SUPPORTED_LOCALES, LOCALE_LABELS, type Locale } from '$lib/i18n/locale';
+	import { currentLocale, setLocale, m } from '$lib/i18n/store.svelte';
 	import { notificationStore } from '$lib/stores/notifications.svelte';
 	import {
 		EVENT_ORDER,
@@ -157,6 +159,16 @@
 		enrollment = null;
 		verifyCode = '';
 	}
+
+	// Display-language picker. `currentLocale()` reads the reactive i18n rune,
+	// so this stays in sync if the locale is changed elsewhere. The choice is
+	// persisted to localStorage by `setLocale` (device-scoped, not account-roamed).
+	const activeLocale = $derived(currentLocale());
+
+	async function onLocaleChange(e: Event) {
+		const value = (e.currentTarget as HTMLSelectElement).value as Locale;
+		await setLocale(value);
+	}
 </script>
 
 <div class="workspace">
@@ -165,6 +177,23 @@
 	</header>
 
 	<div class="sections">
+		<section class="card">
+			<h2>{m('profile.language.heading')}</h2>
+			<p class="hint">{m('profile.language.hint')}</p>
+			<label>
+				<span>{m('profile.language.label')}</span>
+				<select
+					value={activeLocale}
+					onchange={onLocaleChange}
+					aria-label={m('profile.language.label')}
+				>
+					{#each SUPPORTED_LOCALES as loc (loc)}
+						<option value={loc}>{LOCALE_LABELS[loc]}</option>
+					{/each}
+				</select>
+			</label>
+		</section>
+
 		<section class="card">
 			<h2>Account</h2>
 			<form
