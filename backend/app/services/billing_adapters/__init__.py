@@ -13,6 +13,7 @@ from app.services.billing_adapters.base import (
     BillingAdapter,
     BillingWebhookEvent,
     CreateSubscriptionRequest,
+    ProviderInvoice,
     ProviderSubscription,
     UsageReport,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "BillingAdapter",
     "BillingWebhookEvent",
     "CreateSubscriptionRequest",
+    "ProviderInvoice",
     "ProviderSubscription",
     "UsageReport",
     "get_billing_adapter",

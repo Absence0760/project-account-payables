@@ -12,12 +12,14 @@ It never moves money — there is no money to move locally.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.services.billing_adapters.base import (
     BillingAdapter,
     BillingWebhookEvent,
     CreateSubscriptionRequest,
+    ProviderInvoice,
     ProviderSubscription,
     UsageReport,
 )
@@ -54,6 +56,45 @@ class MockBillingAdapter(BillingAdapter):
             status="active",
             plan_code="",
         )
+
+    async def list_invoices(
+        self, *, customer_id: str | None, limit: int = 24
+    ) -> list[ProviderInvoice]:
+        """Deterministic synthetic billing invoices so the dev UI has data.
+
+        Returns ``[]`` when the org was never provisioned (no ``customer_id``),
+        mirroring the live adapter's no-customer case. Otherwise it fabricates a
+        short, stable run of monthly receipts ending in the current month — newest
+        first, the latest ``open`` and the rest ``paid`` — all $49.00 (the default
+        local plan price). No money moves; this is a read surface.
+        """
+        if not customer_id:
+            return []
+        now = datetime.now(UTC)
+        count = max(0, min(limit, 6))
+        invoices: list[ProviderInvoice] = []
+        for offset in range(count):
+            # Walk back month-by-month from the current month.
+            year = now.year
+            month = now.month - offset
+            while month <= 0:
+                month += 12
+                year -= 1
+            period = f"{year:04d}-{month:02d}"
+            created = datetime(year, month, 1, tzinfo=UTC)
+            invoices.append(
+                ProviderInvoice(
+                    external_invoice_id=f"mock_in_{customer_id}_{period}",
+                    number=f"MOCK-{period}",
+                    period=period,
+                    amount="49.00",
+                    currency="USD",
+                    status="open" if offset == 0 else "paid",
+                    hosted_url=None,
+                    created_at=created.isoformat(),
+                )
+            )
+        return invoices
 
     async def report_usage(self, report: UsageReport) -> None:
         # No-op: nothing to bill locally. Kept so the call site is identical to

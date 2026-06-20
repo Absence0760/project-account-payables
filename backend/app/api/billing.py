@@ -32,6 +32,7 @@ from app.services.billing import (
     get_active_subscription,
     rollup_usage,
 )
+from app.services.billing_adapters import get_billing_adapter
 from app.tenant import get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/billing", tags=["billing"])
@@ -180,4 +181,73 @@ async def change_subscription_plan(
             unused_days=result.proration.unused_days,
             period_days=result.proration.period_days,
         ),
+    )
+
+
+class BillingInvoiceView(BaseModel):
+    id: str
+    number: str | None
+    period: str | None
+    # Exact money as a decimal string — never float on a billing surface.
+    amount: str
+    currency: str
+    status: str  # paid | open | void
+    hosted_url: str | None
+    created_at: str | None
+
+
+class BillingInvoicesResponse(BaseModel):
+    provider: str
+    invoices: list[BillingInvoiceView]
+
+
+def _resolve_customer_id(org: Organization) -> str | None:
+    """The provider-side customer id persisted on `settings.billing`, if any.
+
+    `None` when the org was never provisioned with the billing provider — the
+    adapter then has nothing to list and returns an empty list (not a 500).
+    """
+    billing = (org.settings or {}).get("billing") or {}
+    return billing.get("stripe_customer_id")
+
+
+@router.get("/invoices", response_model=BillingInvoicesResponse)
+async def list_billing_invoices(
+    org: Organization = Depends(get_tenant),
+    _user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+) -> BillingInvoicesResponse:
+    """The org's past platform-billing invoices / receipts (newest first).
+
+    admin/cfo only (matches `GET /subscription`). Sourced through the org's
+    billing adapter (`mock` locally → deterministic synthetic receipts;
+    `stripe_billing` → the org's Stripe invoices). Graceful degradation: an org
+    never provisioned with the provider (no customer id) — or an unconfigured /
+    unavailable provider — yields an empty list, never a 500. Money is an exact
+    decimal string (this is a billing surface — exactness is the point).
+    """
+    provider = _resolve_provider(org)
+    adapter = get_billing_adapter(provider)
+    customer_id = _resolve_customer_id(org)
+    try:
+        provider_invoices = await adapter.list_invoices(customer_id=customer_id)
+    except Exception:  # noqa: BLE001
+        # The live provider fails closed (no key) or is unreachable — surface an
+        # empty list rather than a 500. PII-free: no provider detail is echoed.
+        provider_invoices = []
+
+    return BillingInvoicesResponse(
+        provider=provider,
+        invoices=[
+            BillingInvoiceView(
+                id=inv.external_invoice_id,
+                number=inv.number,
+                period=inv.period,
+                amount=inv.amount,
+                currency=inv.currency,
+                status=inv.status,
+                hosted_url=inv.hosted_url,
+                created_at=inv.created_at,
+            )
+            for inv in provider_invoices
+        ],
     )

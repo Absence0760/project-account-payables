@@ -49,6 +49,25 @@ class UsageReport:
 
 
 @dataclass(frozen=True)
+class ProviderInvoice:
+    """Normalized view of a provider-side billing invoice / receipt.
+
+    One past charge the platform raised against the org's customer account. Money
+    is an exact decimal STRING (never float) — this is a billing surface. The
+    hosted URL (if any) is the provider's customer-facing invoice/receipt page.
+    """
+
+    external_invoice_id: str
+    number: str | None  # provider-facing invoice number (may be absent for drafts)
+    period: str | None  # YYYY-MM the invoice covers, when derivable
+    amount: str  # exact decimal string, e.g. "49.00"
+    currency: str
+    status: str  # paid | open | void (provider-mapped)
+    hosted_url: str | None  # hosted invoice / receipt page, when the provider offers one
+    created_at: str | None  # ISO-8601 timestamp, when known
+
+
+@dataclass(frozen=True)
 class BillingWebhookEvent:
     """A verified, deduped provider webhook event."""
 
@@ -88,6 +107,22 @@ class BillingAdapter:
 
     async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription:
         raise NotImplementedError
+
+    async def list_invoices(
+        self, *, customer_id: str | None, limit: int = 24
+    ) -> list[ProviderInvoice]:
+        """List the org's past billing invoices / receipts (newest first).
+
+        ``customer_id`` is the provider-side customer the org is bound to (resolved
+        from ``Organization.settings.billing.stripe_customer_id``); ``None`` means
+        the org was never provisioned with the provider, in which case there is
+        nothing to list — return ``[]``, never raise.
+
+        Safe default: return ``[]``. An adapter without a real billing back-end
+        (or that hasn't implemented this) yields an empty list rather than a 500,
+        so the read surface degrades gracefully.
+        """
+        return []
 
     async def report_usage(self, report: UsageReport) -> None:
         raise NotImplementedError

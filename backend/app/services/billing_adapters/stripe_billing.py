@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
@@ -31,6 +32,7 @@ from app.services.billing_adapters.base import (
     BillingAdapter,
     BillingWebhookEvent,
     CreateSubscriptionRequest,
+    ProviderInvoice,
     ProviderSubscription,
     UsageReport,
 )
@@ -74,6 +76,27 @@ _STATUS_MAP = {
     "incomplete_expired": "canceled",
     "canceled": "canceled",
 }
+
+# Map Stripe invoice statuses → our three-state billing-invoice view.
+# ``draft`` collapses to ``open`` (not yet finalized, still owed);
+# ``uncollectible`` collapses to ``open`` (still owed, just written off at Stripe).
+_INVOICE_STATUS_MAP = {
+    "draft": "open",
+    "open": "open",
+    "paid": "paid",
+    "uncollectible": "open",
+    "void": "void",
+}
+
+
+def _from_minor_units(amount_minor: int) -> str:
+    """Convert integer minor units (cents) to an exact decimal STRING.
+
+    Decimal-exact: ``4900`` → ``"49.00"`` via ``Decimal`` quantize, never float.
+    Stripe invoice amounts (`amount_due` / `total`) are integer minor units.
+    """
+    value = (Decimal(amount_minor) / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return str(value)
 
 
 @register_billing_adapter("stripe_billing")
@@ -214,6 +237,63 @@ class StripeBillingAdapter(BillingAdapter):
             status=_STATUS_MAP.get(payload.get("status", ""), "past_due"),
             plan_code="",
         )
+
+    async def list_invoices(
+        self, *, customer_id: str | None, limit: int = 24
+    ) -> list[ProviderInvoice]:
+        """List the org's Stripe invoices (newest first) via the REST API.
+
+        Fails closed without a key (``BillingNotConfigured``), like the sibling
+        calls. ``customer_id is None`` means the org was never provisioned at the
+        provider — there is nothing to list, so return ``[]`` (the route surfaces
+        an empty list, not an error). Amounts come back as exact decimal strings
+        from integer minor units — never float.
+        """
+        self._require_key()
+        if not customer_id:
+            return []
+        # Stripe caps `limit` at 100; keep our own ceiling modest for the UI.
+        capped = max(1, min(int(limit), 100))
+        params = {"customer": str(customer_id), "limit": str(capped)}
+        async with self._client() as client:
+            resp = await client.get("/v1/invoices", params=params)
+        payload = self._json_or_raise(resp, "list_invoices")
+        out: list[ProviderInvoice] = []
+        for obj in payload.get("data") or []:
+            if not isinstance(obj, dict):
+                continue
+            raw_status = obj.get("status") or ""
+            # `total` is the authoritative minor-units amount on a Stripe invoice.
+            amount_minor = obj.get("total")
+            amount = (
+                _from_minor_units(int(amount_minor)) if isinstance(amount_minor, int) else "0.00"
+            )
+            created_raw = obj.get("created")
+            created_at = (
+                datetime.fromtimestamp(int(created_raw), tz=UTC).isoformat()
+                if isinstance(created_raw, int)
+                else None
+            )
+            period = obj.get("period_start")
+            period_str = (
+                datetime.fromtimestamp(int(period), tz=UTC).strftime("%Y-%m")
+                if isinstance(period, int)
+                else None
+            )
+            out.append(
+                ProviderInvoice(
+                    external_invoice_id=str(obj.get("id") or ""),
+                    number=obj.get("number"),
+                    period=period_str,
+                    amount=amount,
+                    currency=str(obj.get("currency") or "usd").upper(),
+                    status=_INVOICE_STATUS_MAP.get(raw_status, "open"),
+                    # Prefer the hosted invoice page; fall back to the PDF link.
+                    hosted_url=obj.get("hosted_invoice_url") or obj.get("invoice_pdf"),
+                    created_at=created_at,
+                )
+            )
+        return out
 
     async def report_usage(self, report: UsageReport) -> None:
         """Report per-meter usage to Stripe via the Billing Meter Events API.
