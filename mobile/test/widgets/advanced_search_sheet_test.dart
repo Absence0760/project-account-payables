@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/widgets/advanced_search_sheet.dart';
 
@@ -11,6 +12,8 @@ Widget _host(
   void Function(InvoiceSearchFilters?) onResult,
 ) {
   return MaterialApp(
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
     home: Scaffold(
       body: Builder(
         builder: (context) => Center(

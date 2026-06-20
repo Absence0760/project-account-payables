@@ -55,6 +55,15 @@ Widget _host(Widget child) => MaterialApp(
       home: Scaffold(body: child),
     );
 
+/// Like [_host] but mounts [screen] as the MaterialApp `home` directly (no extra
+/// Scaffold), for full screens that bring their own. Carries the localization
+/// delegates so a localized screen's `AppLocalizations.of(context)` resolves.
+Widget _screenHost(Widget screen) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: screen,
+    );
+
 Invoice _invoice() => Invoice(
       id: 'inv1',
       invoiceNumber: 'INV-001',
@@ -561,7 +570,7 @@ void main() {
         client: MockClient((req) async => _list([_invoiceJson('1')])),
       );
 
-      await tester.pumpWidget(const MaterialApp(home: ApprovalsScreen()));
+      await tester.pumpWidget(_screenHost(const ApprovalsScreen()));
       await _pumpUntil(tester, find.byType(InvoiceListTile));
 
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));

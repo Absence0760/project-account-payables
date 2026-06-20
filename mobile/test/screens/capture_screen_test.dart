@@ -3,7 +3,16 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/capture_screen.dart';
+
+/// Wraps the screen in a MaterialApp carrying the localization delegates so the
+/// localized `AppLocalizations.of(context)` resolves (defaults to English).
+Widget _localized() => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const CaptureScreen(),
+    );
 
 void main() {
   setUp(() {
@@ -12,14 +21,14 @@ void main() {
   });
 
   testWidgets('renders the app bar title', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     expect(find.widgetWithText(AppBar, 'Capture Invoice'), findsOneWidget);
   });
 
   testWidgets('shows the empty-state prompt and placeholder icon when no '
       'image is selected', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     expect(
       find.text('Take a photo, choose from gallery, or pick a file'),
@@ -31,7 +40,7 @@ void main() {
 
   testWidgets('offers Camera, Gallery and Choose file buttons in the empty '
       'state', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     expect(find.widgetWithText(FilledButton, 'Camera'), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, 'Gallery'), findsOneWidget);
@@ -40,7 +49,7 @@ void main() {
 
   testWidgets('advertises the supported document types in the empty state',
       (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     expect(find.text('Supports PDF, PNG, JPG and TIFF'), findsOneWidget);
     expect(
@@ -51,7 +60,7 @@ void main() {
 
   testWidgets('tapping Choose file does not throw or change the static layout '
       '(picker is a no-op platform channel in tests)', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     // FilePicker.pickFiles has no test platform implementation; the service
     // swallows the MissingPluginException and returns null, so the empty state
@@ -68,7 +77,7 @@ void main() {
 
   testWidgets('does not render the selected-image actions (Retake/Upload) '
       'before an image is picked', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     // Retake/Upload + the InteractiveViewer image only appear once a file is
     // selected via the (platform-channel) picker, which is unreachable here.
@@ -79,7 +88,7 @@ void main() {
   });
 
   testWidgets('does not show an error message on first render', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     // _error is null initially, so no red error text is painted.
     final errorText = tester
@@ -90,7 +99,7 @@ void main() {
 
   testWidgets('tapping Camera does not throw or change the static layout '
       '(picker is a no-op platform channel in tests)', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     // CameraCapture.pickImage swallows platform-channel failures and returns
     // null, so the empty state stays put and no exception escapes.
@@ -106,7 +115,7 @@ void main() {
 
   testWidgets('tapping Gallery does not throw or change the static layout',
       (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: CaptureScreen()));
+    await tester.pumpWidget(_localized());
 
     await tester.tap(find.widgetWithText(OutlinedButton, 'Gallery'));
     await tester.pump();
