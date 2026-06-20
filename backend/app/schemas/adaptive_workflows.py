@@ -142,6 +142,27 @@ class RoutingSuggestionResponse(BaseModel):
     candidates: list[RoutingCandidateResponse]
 
 
+class ApplyRoutingRequest(BaseModel):
+    """Body for the smart-routing apply path — assign the top-ranked eligible
+    approver to one invoice via the audited assignment service."""
+
+    invoice_id: uuid.UUID
+
+
+class ApplyRoutingResponse(BaseModel):
+    """Outcome of applying the routing recommendation.
+
+    ``assigned`` is False on the idempotent no-op (the invoice was already
+    assigned to the chosen approver — no second audit row is written)."""
+
+    invoice_id: str
+    assigned: bool
+    assigned_to_id: str
+    assigned_to_name: str | None = None
+    rank: int  # the chosen candidate's rank (always 1 — the top recommendation)
+    score: str  # the chosen candidate's routing score (string-Decimal)
+
+
 __all__ = [
     "ApproverPatternResponse",
     "VendorPatternResponse",
@@ -154,4 +175,6 @@ __all__ = [
     "SuggestionListResponse",
     "RoutingCandidateResponse",
     "RoutingSuggestionResponse",
+    "ApplyRoutingRequest",
+    "ApplyRoutingResponse",
 ]

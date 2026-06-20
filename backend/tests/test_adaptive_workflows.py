@@ -677,6 +677,234 @@ async def test_routing_suggestion_rbac_and_auth(realdb):
         assert (await cfo.get(path)).status_code == 200
 
 
+async def _seed_review_instance(mk, org_id, invoice_id):
+    """Give an in-review invoice a WorkflowInstance with an open `review` step —
+    the state a real `ready_for_review` invoice always has. `assign_reviewer`
+    needs the instance to assign the step AND to reach its audit-write tail (it
+    returns early, before the audit dispatch, when there is no instance)."""
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowStep
+
+    async with mk() as s:
+        defn = WorkflowDefinition(
+            organization_id=org_id,
+            name="Default",
+            steps_config={"steps": [{"type": "review"}]},
+            is_active=True,
+            is_default=True,
+        )
+        s.add(defn)
+        await s.commit()
+        await s.refresh(defn)
+        inst = WorkflowInstance(
+            definition_id=defn.id,
+            invoice_id=invoice_id,
+            current_step=1,
+            state="active",
+            steps_config_snapshot={"steps": [{"type": "review"}]},
+        )
+        s.add(inst)
+        await s.commit()
+        await s.refresh(inst)
+        s.add(
+            WorkflowStep(
+                instance_id=inst.id,
+                step_number=1,
+                step_type="review",
+            )
+        )
+        await s.commit()
+
+
+async def test_routing_apply_assigns_top_and_writes_audit(realdb):
+    """The apply path assigns the top-ranked approver via the audited
+    assign_reviewer service — the invoice's assigned_to_id is set AND an
+    invoice.assigned_for_review audit row lands (the manual-assign path's row)."""
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    # ap_manager has the full approval history + vendor familiarity → ranks #1.
+    vid = await _seed_approved_vendor(mk, org_id, actor_id, amounts=[Decimal("4800")] * 24)
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+    await _seed_review_instance(mk, org_id, inv_id)
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post(
+            "/api/adaptive/routing-suggestion/apply", json={"invoice_id": str(inv_id)}
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["assigned"] is True
+    assert body["assigned_to_id"] == str(actor_id)
+    assert body["rank"] == 1
+    assert isinstance(body["score"], str)
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.assigned_to_id == actor_id
+        rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_id == inv_id,
+                        AuditLog.action == "invoice.assigned_for_review",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Exactly one audit row written by the audited assign path.
+        assert len(rows) == 1
+        assert rows[0].details["reviewer_id"] == str(actor_id)
+
+
+async def test_routing_apply_idempotent_when_already_assigned(realdb):
+    """Re-applying when the invoice is already assigned to the chosen top
+    approver is a no-op: assigned=false and no second audit row."""
+    from sqlalchemy import select
+
+    from app.models.workflow import AuditLog
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    vid = await _seed_approved_vendor(mk, org_id, actor_id, amounts=[Decimal("4800")] * 24)
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+    await _seed_review_instance(mk, org_id, inv_id)
+    path = "/api/adaptive/routing-suggestion/apply"
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        first = await client.post(path, json={"invoice_id": str(inv_id)})
+        assert first.status_code == 200
+        assert first.json()["assigned"] is True
+
+        second = await client.post(path, json={"invoice_id": str(inv_id)})
+        assert second.status_code == 200
+        assert second.json()["assigned"] is False
+        assert second.json()["assigned_to_id"] == str(actor_id)
+
+    # Still exactly one assignment audit row after the second call.
+    async with mk() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_id == inv_id,
+                        AuditLog.action == "invoice.assigned_for_review",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+
+
+async def test_routing_apply_422_when_no_eligible_history(realdb):
+    """No eligible approver has any history to rank on → 422 (caller falls back
+    to manual assignment); nothing is assigned."""
+    from sqlalchemy import select
+
+    from app.models.invoice import Invoice
+    from app.models.vendor import Vendor
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    # A vendor + in-review invoice with ZERO approval history anywhere → all
+    # eligible approvers score on familiarity only (also 0) → insufficient_history.
+    async with mk() as s:
+        vendor = Vendor(organization_id=org_id, name="Fresh Vendor", status="active")
+        s.add(vendor)
+        await s.commit()
+        await s.refresh(vendor)
+        vid = vendor.id
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Fresh Vendor", amount="500", number="INV-FRESH"
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post(
+            "/api/adaptive/routing-suggestion/apply", json={"invoice_id": str(inv_id)}
+        )
+    assert r.status_code == 422
+
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.assigned_to_id is None
+
+
+async def test_routing_apply_409_when_not_ready_for_review(realdb):
+    """The apply path requires ready_for_review — same precondition + 409 as the
+    manual assign endpoint."""
+    from app.models.invoice import Invoice, InvoiceStatus
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    vid = await _seed_approved_vendor(mk, org_id, actor_id, amounts=[Decimal("4800")] * 24)
+    async with mk() as s:
+        inv = Invoice(
+            organization_id=org_id,
+            invoice_number="INV-APPROVED",
+            vendor_name="Acme Cleaning",
+            vendor_id=vid,
+            amount=Decimal("5000"),
+            status=InvoiceStatus.approved,  # NOT ready_for_review
+        )
+        s.add(inv)
+        await s.commit()
+        await s.refresh(inv)
+        inv_id = inv.id
+
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post(
+            "/api/adaptive/routing-suggestion/apply", json={"invoice_id": str(inv_id)}
+        )
+    assert r.status_code == 409
+
+
+async def test_routing_apply_404_outside_tenant(realdb):
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post(
+            "/api/adaptive/routing-suggestion/apply", json={"invoice_id": str(uuid.uuid4())}
+        )
+    assert r.status_code == 404
+
+
+async def test_routing_apply_rbac_and_auth(realdb):
+    """Apply is a write — admin/ap_manager only (matches the manual assign
+    endpoint). Clerk AND cfo are denied; anon is 401."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+    vid = await _seed_approved_vendor(mk, org_id, actor_id, amounts=[Decimal("4800")] * 24)
+    inv_id = await _seed_in_review_invoice(
+        mk, org_id, vendor_id=vid, vendor_name="Acme Cleaning", amount="5000"
+    )
+    path = "/api/adaptive/routing-suggestion/apply"
+    payload = {"invoice_id": str(inv_id)}
+
+    async with realdb.client(key="a", role=None) as anon:
+        assert (await anon.post(path, json=payload)).status_code == 401
+    async with realdb.client(key="a", role="ap_clerk") as clerk:
+        assert (await clerk.post(path, json=payload)).status_code == 403
+    # CFO can READ the recommendation but cannot APPLY it (write surface).
+    async with realdb.client(key="a", role="cfo") as cfo:
+        assert (await cfo.post(path, json=payload)).status_code == 403
+    # admin allowed.
+    async with realdb.client(key="a", role="admin") as admin:
+        assert (await admin.post(path, json=payload)).status_code == 200
+
+
 async def test_tenant_isolation(realdb):
     mk_a = realdb.sessionmaker("a")
     org_a = realdb.info("a").org_id

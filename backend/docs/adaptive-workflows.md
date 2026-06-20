@@ -1,12 +1,15 @@
 # Adaptive AI Workflows
 
-> **Advisory only.** Nothing in this feature approves an invoice, adjusts a
-> threshold, assigns an approver, or mutates a workflow definition. It is a set
-> of **read models** over approval history plus an **advisory** suggestion store.
-> Smart routing **recommends** approvers but never assigns one; the remaining
-> "act" surfaces (auto-adjusting thresholds, A/B testing, retraining, and the
-> apply path that actually assigns the routed approver) are tracked follow-ups,
-> not built here.
+> **Mostly advisory.** Nothing in this feature approves an invoice, adjusts a
+> threshold, or mutates a workflow definition. It is a set of **read models**
+> over approval history plus an **advisory** suggestion store — with **one**
+> explicit, opt-in act surface: the smart-routing **apply** path
+> (`POST /routing-suggestion/apply`) assigns the top-ranked recommended approver
+> **through the existing audited `review.assign_reviewer` service** (audit row +
+> notification + OOO delegation — never a raw `assigned_to_id` write). Everything
+> else stays advisory: smart routing's GET surface only **recommends**; the
+> remaining "act" surfaces (auto-adjusting thresholds, A/B testing, retraining)
+> are tracked follow-ups, not built here.
 
 > **Local-first / deterministic.** All learning and anomaly detection is plain
 > statistics (`Decimal`) over the tenant's own data. There is **no LLM call** and
@@ -164,9 +167,52 @@ deterministic). An eligible approver with **no** decision history still appears
 `insufficient_history` is True only when **no** eligible approver has any history
 to rank on — the caller should then fall back to its normal assignment policy.
 Each candidate carries a `reasons` list (deterministic human-readable strings)
-explaining its score. **The result never assigns anyone** — it's a ranked read
-model; the apply path that would actually set `assigned_to_id` routes through the
-future audited assignment slice.
+explaining its score. **The GET result never assigns anyone** — it's a ranked
+read model. The separate **apply** path below is what actually assigns.
+
+#### Smart routing — apply (`POST /routing-suggestion/apply`)
+
+The explicit, opt-in act path: take the recommendation and **assign the
+top-ranked eligible approver** to the invoice. Body `{ "invoice_id": <uuid> }`
+(`?days=` reuses the GET lookback). It re-runs the *identical* ranking
+(`_rank_for_invoice`, shared with the GET) and routes the chosen approver
+**through `services/review.assign_reviewer`** — the same audited service the
+manual `POST /api/workflow/{id}/assign` endpoint calls. That guarantees, with no
+new audit code here:
+
+- an immutable **`invoice.assigned_for_review` audit row** is written (the
+  append-only-audit invariant), recording the routed reviewer id;
+- the **assignee notification** fires (`EVENT_INVOICE_ASSIGNED`), best-effort;
+- **OOO delegation** is honoured (`approval_chain.resolve_assignee`) — if the
+  routed approver is out, the assignment redirects to their delegate and the
+  audit row records `delegated_from`. The response's `assigned_to_id` /
+  `assigned_to_name` reflect the *effective* (post-delegation) assignee.
+
+Behaviour / guards:
+
+- **RBAC** `admin` / `ap_manager` — a **write** surface, so it matches who can
+  already assign reviewers (`POST /api/workflow/{id}/assign`), **not** the
+  manager/CFO *read* roles. **CFO can read the recommendation but cannot apply
+  it** (403), exactly like the manual assign endpoint excludes CFO.
+- **Status precondition** — the invoice must be `ready_for_review`; otherwise
+  **409** (same precondition + message as the manual assign). The invoice is
+  fetched `WITH FOR UPDATE` (entity-scoped) to row-lock against a concurrent
+  assign/transition.
+- **No defensible pick → 422** — when `insufficient_history` (no eligible
+  approver has any history) or there are no candidates, the path refuses with
+  **422** rather than assigning arbitrarily; the caller falls back to manual
+  assignment.
+- **Idempotent** — if the invoice is **already** assigned to the chosen top
+  approver, it is a no-op: `assigned: false`, **no second audit row**, no
+  re-notify. (Re-assigning to a *different* current assignee does route through
+  `assign_reviewer` again, which re-resolves OOO — the manual endpoint allows
+  free re-assignment too.)
+- **404** when the invoice isn't in this tenant/entity.
+
+Response (`ApplyRoutingResponse`): `invoice_id`, `assigned` (bool — False on the
+no-op), `assigned_to_id`, `assigned_to_name`, `rank` (always 1 — the top pick),
+`score` (string-Decimal). The commit follows the manual-assign convention — the
+`get_tenant_db` dependency commits on a clean return.
 
 ## Tunables — `Organization.settings.adaptive`
 
@@ -191,9 +237,13 @@ Partial override (omit a key to inherit; unknown keys dropped — mirrors
 | `/api/adaptive/suggestions` | GET | admin / ap_manager / cfo | `?status=open|all` (default `open`), `?days=365`; **upserts** then returns |
 | `/api/adaptive/suggestions/{id}/dismiss` | POST | admin / ap_manager | idempotent; 404 outside tenant |
 | `/api/adaptive/routing-suggestion` | GET | admin / ap_manager / cfo | `?invoice_id=<uuid>` (required), `?days=180` lookback; 404 if the invoice isn't in this tenant/entity. Ranked, advisory — assigns nobody |
+| `/api/adaptive/routing-suggestion/apply` | POST | admin / ap_manager | Body `{invoice_id}`, `?days=180`. Assigns the top recommendation via the audited `review.assign_reviewer`. 409 if not `ready_for_review`; 422 if no eligible approver; 404 outside tenant/entity; idempotent no-op when already assigned to the chosen approver. **Write surface — CFO excluded (read-only on routing).** |
 
 Read routes exclude `ap_clerk` — this is a manager/CFO surface, matching the
-analytics precedent. Every route is behind `get_current_user` + `require_roles`.
+analytics precedent. The **apply** POST is a *write*, gated to `admin` /
+`ap_manager` (who can already assign reviewers), so CFO can read the
+recommendation but not apply it. Every route is behind `get_current_user` +
+`require_roles`.
 
 ## Persistence — `workflow_suggestions`
 
@@ -231,11 +281,10 @@ not apply.
 
 ## Deferred follow-ups
 
-- **Smart routing — apply path.** `GET /routing-suggestion` recommends approvers
-  (shipped); the **apply** path that actually sets `Invoice.assigned_to_id` to a
-  routed approver is not built. When built it MUST route through the audited
-  `review.assign_reviewer` so an assignment writes an audit row, exactly like the
-  threshold apply path below.
+- **Smart routing — apply path.** ✅ **Shipped** — `POST /routing-suggestion/apply`
+  assigns the top recommendation through the audited `review.assign_reviewer`
+  (audit row + notification + OOO delegation; never a raw `assigned_to_id`
+  write). See § Smart routing — apply above.
 - **Auto-adjusting thresholds** — when built, the **apply** path MUST route
   through the audited `review.approve_invoice` / workflow-definition PATCH so
   audit rows are written. `status='applied'` is the placeholder for this.

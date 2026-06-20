@@ -48,6 +48,8 @@ from app.models.user import Role, User, UserRole
 from app.models.workflow import AuditLog
 from app.schemas.adaptive_workflows import (
     AnomalyBatchResponse,
+    ApplyRoutingRequest,
+    ApplyRoutingResponse,
     ApprovalPatternsResponse,
     InvoiceAnomalyResponse,
     RoutingSuggestionResponse,
@@ -67,6 +69,7 @@ from app.services.adaptive_workflows import (
     detect_invoice_anomaly,
     recommend_approvers,
 )
+from app.services.review import assign_reviewer
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/adaptive", tags=["adaptive-workflows"])
@@ -692,25 +695,18 @@ def _routing_dict(s: RoutingSuggestion) -> dict:
     }
 
 
-@router.get("/routing-suggestion", response_model=RoutingSuggestionResponse)
-async def routing_suggestion(
-    invoice_id: uuid.UUID = Query(...),
-    days: int = Query(180, ge=1, le=730),
-    db: AsyncSession = Depends(get_tenant_db),
-    ctrl_db: AsyncSession = Depends(get_control_db),
-    entity_id: uuid.UUID | None = Depends(get_entity_id),
-    user: User = Depends(require_roles(*_READ_ROLES)),
-):
-    """Advisory: rank the org's eligible approvers by routing fit for this
-    invoice (fastest + most-consistent + most-familiar with the vendor), purely
-    from their approval history. **Read-only** — never assigns anyone or mutates
-    workflow state. The act/apply path is a future slice (see
-    backend/docs/adaptive-workflows.md § Smart routing)."""
-    q = apply_entity_scope(select(Invoice).where(Invoice.id == invoice_id), Invoice, entity_id)
-    inv = (await db.execute(q)).scalar_one_or_none()
-    if inv is None:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
+async def _rank_for_invoice(
+    db: AsyncSession,
+    ctrl_db: AsyncSession,
+    inv: Invoice,
+    *,
+    organization_id: uuid.UUID,
+    entity_id: uuid.UUID | None,
+    days: int,
+) -> RoutingSuggestion:
+    """Rank the org's eligible approvers for one invoice. Shared by the advisory
+    GET and the apply POST so both rank on the *identical* deterministic logic —
+    the apply path acts on exactly what the recommendation surface shows."""
     since = datetime.now(UTC) - timedelta(days=days)
     decisions = await _decision_rows(db, since=since, entity_id=entity_id)
 
@@ -732,7 +728,7 @@ async def routing_suggestion(
         if same_vendor:
             familiarity[d["approver_id"]] = familiarity.get(d["approver_id"], 0) + 1
 
-    names = await _eligible_approver_ids(ctrl_db, organization_id=user.organization_id)
+    names = await _eligible_approver_ids(ctrl_db, organization_id=organization_id)
     eligible = [
         EligibleApprover(
             approver_id=aid,
@@ -742,7 +738,7 @@ async def routing_suggestion(
         for aid, name in names.items()
     ]
 
-    suggestion = recommend_approvers(
+    return recommend_approvers(
         eligible,
         approvers,
         invoice_id=str(inv.id),
@@ -750,4 +746,130 @@ async def routing_suggestion(
         vendor_name=inv_vendor_name,
         amount=Decimal(str(inv.amount or 0)),
     )
+
+
+@router.get("/routing-suggestion", response_model=RoutingSuggestionResponse)
+async def routing_suggestion(
+    invoice_id: uuid.UUID = Query(...),
+    days: int = Query(180, ge=1, le=730),
+    db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+):
+    """Advisory: rank the org's eligible approvers by routing fit for this
+    invoice (fastest + most-consistent + most-familiar with the vendor), purely
+    from their approval history. **Read-only** — never assigns anyone or mutates
+    workflow state. The apply path is ``POST /routing-suggestion/apply`` (see
+    backend/docs/adaptive-workflows.md § Smart routing)."""
+    q = apply_entity_scope(select(Invoice).where(Invoice.id == invoice_id), Invoice, entity_id)
+    inv = (await db.execute(q)).scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    suggestion = await _rank_for_invoice(
+        db, ctrl_db, inv, organization_id=user.organization_id, entity_id=entity_id, days=days
+    )
     return RoutingSuggestionResponse(**_routing_dict(suggestion))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/adaptive/routing-suggestion/apply  (assigns through the audited path)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/routing-suggestion/apply", response_model=ApplyRoutingResponse)
+async def apply_routing_suggestion(
+    body: ApplyRoutingRequest,
+    days: int = Query(180, ge=1, le=730),
+    db: AsyncSession = Depends(get_tenant_db),
+    ctrl_db: AsyncSession = Depends(get_control_db),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_WRITE_ROLES)),
+):
+    """Apply the smart-routing recommendation: assign the **top-ranked** eligible
+    approver to the invoice **through the audited ``review.assign_reviewer``
+    path** — so the assignment writes an ``invoice.assigned_for_review`` audit
+    row, fires the assignee notification, and honours OOO delegation, exactly
+    like the manual ``POST /api/workflow/{id}/assign`` flow. Never writes
+    ``assigned_to_id`` directly.
+
+    Explicit / opt-in — the caller (admin / ap_manager, matching who can already
+    assign reviewers) triggers it. The invoice must be ``ready_for_review`` (409
+    otherwise — same precondition as the manual assign). When no eligible
+    approver has any history to rank on (``insufficient_history``) there is no
+    defensible top pick → 422; the caller falls back to its normal assignment
+    policy. Idempotent: if the invoice is **already** assigned to the chosen
+    top approver, it is a no-op (``assigned=false``, no second audit row)."""
+    # Row-lock the invoice (entity-scoped) so a concurrent assign/transition
+    # can't race this one — mirrors the manual assign path's get_invoice_for_update.
+    q = apply_entity_scope(
+        select(Invoice).where(Invoice.id == body.invoice_id).with_for_update(),
+        Invoice,
+        entity_id,
+    )
+    inv = (await db.execute(q)).scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if inv.status != InvoiceStatus.ready_for_review:
+        raise HTTPException(
+            status_code=409,
+            detail="Invoice must be in 'ready_for_review' to assign a reviewer",
+        )
+
+    suggestion = await _rank_for_invoice(
+        db, ctrl_db, inv, organization_id=user.organization_id, entity_id=entity_id, days=days
+    )
+    if suggestion.insufficient_history or not suggestion.candidates:
+        raise HTTPException(
+            status_code=422,
+            detail="No eligible approver to route to — fall back to manual assignment",
+        )
+
+    top = suggestion.candidates[0]
+    reviewer_id = uuid.UUID(top.approver_id)
+
+    # Idempotent no-op when already assigned to the chosen approver — don't write
+    # a duplicate audit row or re-notify. (Note: delegation may have redirected a
+    # prior assignment to a delegate, in which case assigned_to_id != the routed
+    # approver and we re-route through assign_reviewer, which re-resolves OOO.)
+    if inv.assigned_to_id == reviewer_id:
+        return ApplyRoutingResponse(
+            invoice_id=str(inv.id),
+            assigned=False,
+            assigned_to_id=top.approver_id,
+            assigned_to_name=top.approver_name,
+            rank=top.rank,
+            score=str(top.score),
+        )
+
+    # The routing pool is built from active control-plane Users holding an
+    # approval-capable role, so the chosen id resolves to a real User; re-read it
+    # for the canonical display name the audited path records.
+    reviewer = (
+        await ctrl_db.execute(select(User).where(User.id == reviewer_id))
+    ).scalar_one_or_none()
+    if reviewer is None:
+        raise HTTPException(status_code=404, detail="Recommended approver not found")
+
+    await assign_reviewer(
+        db,
+        inv,
+        actor_id=user.id,
+        reviewer_id=reviewer_id,
+        reviewer_name=reviewer.full_name,
+        control_db=ctrl_db,
+    )
+    # The tenant-DB session commits in the get_tenant_db dependency teardown on a
+    # clean return (mirrors the manual assign endpoint, which also relies on it).
+
+    return ApplyRoutingResponse(
+        invoice_id=str(inv.id),
+        # `inv.assigned_to_id` reflects the *effective* assignee after any OOO
+        # delegation resolved inside assign_reviewer.
+        assigned=True,
+        assigned_to_id=str(inv.assigned_to_id),
+        assigned_to_name=inv.assigned_to,
+        rank=top.rank,
+        score=str(top.score),
+    )
