@@ -97,6 +97,55 @@ class VendorConsolidationResponse(BaseModel):
     generated_at: str
 
 
+# ---------------------------------------------------------------------------
+# External vendor enrichment (firmographics from D&B / Clearbit / ...)
+# ---------------------------------------------------------------------------
+
+
+class VendorFirmographicsOut(BaseModel):
+    """Normalised firmographics returned by an external enrichment provider.
+
+    Advisory / suggestion-only — the API surfaces this for a steward to review;
+    the enrichment path NEVER writes it back onto the ``Vendor`` row. ``annual_revenue``
+    is a string (never a wire float). No raw ``tax_id`` ever appears — only the
+    masked ``tax_id_masked`` (``***<last4>``)."""
+
+    provider: str
+    matched: bool
+    legal_name: str | None = None
+    address: str | None = None
+    country: str | None = None
+    industry: str | None = None
+    sic_code: str | None = None
+    naics_code: str | None = None
+    employee_count: int | None = None
+    annual_revenue: str | None = None
+    website: str | None = None
+    duns_number: str | None = None
+    year_founded: int | None = None
+    tax_id_masked: str | None = None
+    confidence: int | None = None
+    extra: dict = {}
+
+
+class EnrichmentFieldSuggestionOut(BaseModel):
+    """A single advisory change a steward may choose to apply to the vendor."""
+
+    field: str  # vendor column the value maps to (address, website, ...)
+    current_value: str | None = None
+    suggested_value: str | None = None
+
+
+class VendorEnrichmentResponse(BaseModel):
+    vendor_id: str
+    vendor_name: str
+    firmographics: VendorFirmographicsOut
+    # Per-field advisory suggestions: where the provider's value differs from
+    # what we hold today, the steward can choose to apply it. Never auto-applied.
+    suggestions: list[EnrichmentFieldSuggestionOut]
+    generated_at: str
+
+
 __all__ = [
     "FieldSuggestionOut",
     "PriceVarianceOut",
@@ -106,4 +155,7 @@ __all__ = [
     "VendorClusterMemberOut",
     "VendorClusterOut",
     "VendorConsolidationResponse",
+    "VendorFirmographicsOut",
+    "VendorEnrichmentResponse",
+    "EnrichmentFieldSuggestionOut",
 ]

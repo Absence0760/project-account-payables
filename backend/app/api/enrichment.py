@@ -43,7 +43,13 @@ from app.models.workflow import AuditLog
 from app.schemas.enrichment import (
     EnrichmentSuggestionsResponse,
     VendorConsolidationResponse,
+    VendorEnrichmentResponse,
     VendorScoreResponse,
+)
+from app.services.enrichment_adapters import (
+    EnrichmentNotConfigured,
+    VendorEnrichmentQuery,
+    get_enrichment_adapter,
 )
 from app.services.vendor_consolidation import (
     VendorRecord,
@@ -68,6 +74,9 @@ _SCORE_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 # Vendor consolidation is a data-stewardship view (deduping the master vendor
 # list) — managerial, like the score; the clerk is excluded.
 _CONSOLIDATION_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
+# External enrichment (calling out to D&B / Clearbit) is a data-stewardship
+# action and may consume a metered external API — managerial, clerk excluded.
+_ENRICH_ROLES = (ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)
 
 # Approved-or-beyond — a human-accepted coding/price baseline. Draft / rejected
 # invoices are unreviewed noise and excluded. Mirrors adaptive_workflows.
@@ -498,5 +507,105 @@ async def vendor_consolidation_suggestions(
         vendor_count=len(records),
         cluster_count=len(clusters),
         truncated=truncated,
+        generated_at=datetime.now(UTC).isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/enrichment/vendors/{vendor_id}/enrich  — external firmographics
+# ---------------------------------------------------------------------------
+
+
+def _domain_from_vendor(vendor: Vendor) -> str | None:
+    """Best-effort domain for a domain-keyed provider (Clearbit). Prefers an
+    email host, else the website host. PII-safe — a public domain, not the
+    full address / contact."""
+    email = (vendor.email or "").strip()
+    if "@" in email:
+        host = email.rsplit("@", 1)[-1].strip().lower()
+        if host:
+            return host
+    return None
+
+
+# Vendor columns the firmographics map onto, for the advisory diff. We only ever
+# *suggest* — the enrichment path never writes back onto the Vendor row.
+def _build_suggestions(vendor: Vendor, firmo) -> list[dict]:  # noqa: ANN001
+    out: list[dict] = []
+    candidates = [
+        ("address", vendor.address, firmo.address),
+        ("website", None, firmo.website),  # Vendor has no website column today
+    ]
+    for field, current, suggested in candidates:
+        if suggested and suggested != current:
+            out.append({"field": field, "current_value": current, "suggested_value": suggested})
+    return out
+
+
+@router.post(
+    "/vendors/{vendor_id}/enrich",
+    response_model=VendorEnrichmentResponse,
+)
+async def enrich_vendor(
+    vendor_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),  # noqa: ARG001 — tenant chokepoint
+    user: User = Depends(require_roles(*_ENRICH_ROLES)),
+):
+    """Enrich a vendor's firmographics from an external source (D&B / Clearbit).
+
+    Pluggable adapter family (``services/enrichment_adapters/``); the provider is
+    chosen per-org via ``Organization.settings.enrichment.provider`` →
+    ``AP_VENDOR_ENRICHMENT_PROVIDER`` (default ``mock`` — deterministic, no
+    network/credential, the local-first default). The real providers fail closed
+    without a per-org ``api_key`` (no hardcoded fallback) → 422.
+
+    **Advisory only.** The response carries the looked-up firmographics plus a
+    per-field suggestion diff; nothing is written back onto the ``Vendor`` row —
+    a steward reviews and applies selectively. No raw ``tax_id`` ever leaves the
+    service: the input id is passed to the provider as a match key, but only a
+    masked ``***<last4>`` is ever returned, and no PII enters the logs.
+    """
+    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    enrichment_cfg = (org.settings or {}).get("enrichment") or {}
+    adapter = get_enrichment_adapter(enrichment_cfg)
+    query = VendorEnrichmentQuery(
+        vendor_name=vendor.name,
+        vendor_country=None,
+        vendor_tax_id=vendor.tax_id,
+        domain=_domain_from_vendor(vendor),
+    )
+    try:
+        firmo = await adapter.enrich_vendor(query)
+    except EnrichmentNotConfigured as exc:
+        # Fail closed with a PII-free message — the provider needs a key.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return VendorEnrichmentResponse(
+        vendor_id=str(vendor.id),
+        vendor_name=vendor.name,
+        firmographics={
+            "provider": firmo.provider,
+            "matched": firmo.matched,
+            "legal_name": firmo.legal_name,
+            "address": firmo.address,
+            "country": firmo.country,
+            "industry": firmo.industry,
+            "sic_code": firmo.sic_code,
+            "naics_code": firmo.naics_code,
+            "employee_count": firmo.employee_count,
+            "annual_revenue": firmo.annual_revenue,
+            "website": firmo.website,
+            "duns_number": firmo.duns_number,
+            "year_founded": firmo.year_founded,
+            "tax_id_masked": firmo.tax_id_masked,
+            "confidence": firmo.confidence,
+            "extra": firmo.extra,
+        },
+        suggestions=_build_suggestions(vendor, firmo) if firmo.matched else [],
         generated_at=datetime.now(UTC).isoformat(),
     )
