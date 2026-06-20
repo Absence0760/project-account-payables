@@ -101,9 +101,14 @@ async def test_stripe_adapter_fails_closed_without_key():
 
 
 def test_stripe_webhook_rejected_without_valid_hmac():
-    # No secret configured → HMAC verification fails closed → None.
+    # No secret configured → signature verification fails closed → None. Also a
+    # well-formed header with the wrong secret → None.
     adapter = StripeBillingAdapter({"stripe_api_key": "sk_test", "stripe_webhook_secret": ""})
-    assert adapter.parse_webhook({"Stripe-Signature": "deadbeef"}, b'{"id":"x","type":"y"}') is None
+    assert adapter.parse_webhook({"Stripe-Signature": "t=1,v1=deadbeef"}, b'{"id":"x"}') is None
+    adapter2 = StripeBillingAdapter({"stripe_api_key": "sk", "stripe_webhook_secret": "whsec"})
+    # Bare-hex (non-Stripe) header is rejected — Stripe signs t.body, not body.
+    bare = adapter2.parse_webhook({"Stripe-Signature": "deadbeef"}, b'{"id":"x","type":"y"}')
+    assert bare is None
 
 
 def test_stripe_webhook_accepts_valid_hmac():
@@ -115,9 +120,11 @@ def test_stripe_webhook_accepts_valid_hmac():
         b'{"id": "evt_9", "type": "customer.subscription.updated", '
         b'"data": {"object": {"id": "sub_9", "status": "past_due"}}}'
     )
-    sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    # Stripe signs the timestamp-prefixed payload `t.body`, header `t=...,v1=...`.
+    ts = "1700000000"
+    sig = hmac.new(secret.encode(), b"%s.%s" % (ts.encode(), body), hashlib.sha256).hexdigest()
     adapter = StripeBillingAdapter({"stripe_api_key": "sk", "stripe_webhook_secret": secret})
-    evt = adapter.parse_webhook({"Stripe-Signature": sig}, body)
+    evt = adapter.parse_webhook({"Stripe-Signature": f"t={ts},v1={sig}"}, body)
     assert evt is not None
     assert evt.event_id == "evt_9"
     assert evt.external_subscription_id == "sub_9"

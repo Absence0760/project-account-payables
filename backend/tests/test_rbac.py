@@ -29,6 +29,7 @@ from app.api import (
     auth_saml,
     auth_sso,
     billing,
+    billing_webhook,
     budgets,
     cards,
     catalogs,
@@ -148,6 +149,11 @@ NO_AUTH_REQUIRED = {
     # the Slack request signature (HMAC) + the signed single-use action token in
     # the button value (no JWT/session). Public-by-design (Slack POSTs it).
     ("POST", "/approvals/slack/interactivity"),
+    # billing_webhook.py — inbound billing-provider (Stripe) webhook; HMAC-verified
+    # inside the adapter's parse_webhook + deduped by event id, provider in URL
+    # path. Public-by-design (the billing provider POSTs it); resolves the
+    # control-plane Subscription by the provider id carried in the event.
+    ("POST", "/billing/webhook/{provider}"),
 }
 
 # Routers wired into the app at /api — same set as app/main.py.
@@ -162,6 +168,7 @@ ROUTERS = [
     auth_saml.router,
     auth_sso.router,
     billing.router,
+    billing_webhook.public_router,
     budgets.router,
     cards.router,
     catalogs.router,
