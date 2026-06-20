@@ -97,6 +97,17 @@ class PortalMeResponse(BaseModel):
     vendor_id: str
     vendor_name: str
     vendor_status: str
+    # Account-level email-language preference (NULL = English fallback). Drives
+    # outbound supplier email copy only — never portal UI. See
+    # docs/notifications.md § Localized email.
+    locale: str | None = None
+
+
+class PortalUpdateProfileRequest(BaseModel):
+    # The supplier user's email-language preference. Validated against the
+    # supported locale set at the route (422 on unknown); empty string clears it
+    # (→ English). The vendor sets their OWN locale (RBAC = the authed vendor).
+    locale: str | None = Field(default=None, max_length=16)
 
 
 class PortalInviteRequest(BaseModel):

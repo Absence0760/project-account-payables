@@ -31,7 +31,11 @@ from app.schemas.auth import (
 )
 from app.services import mfa
 from app.services.audit_dispatch import dispatch_auth_audit
-from app.services.email_adapters import EmailMessage, get_email_adapter
+from app.services.email_adapters import (
+    EmailMessage,
+    get_email_adapter,
+    is_supported_locale,
+)
 from app.services.rate_limit import check_rate_limit
 from app.services.session_management import end_session, register_session
 from app.services.sso import is_sso_only
@@ -66,6 +70,7 @@ def _user_response(user: User, org: Organization | None = None) -> UserResponse:
         mfa_enabled=user.mfa_enabled,
         mfa_required_by_org=org_required,
         roles=[r.name for r in user.roles],
+        locale=user.locale,
     )
 
 
@@ -435,6 +440,22 @@ async def update_me(
 ):
     if body.full_name is not None:
         user.full_name = body.full_name
+
+    # Email-language preference. `locale` in the explicitly-set fields means the
+    # caller wants to change it: a supported value sets it, an empty string
+    # clears it (→ English fallback), and an UNSUPPORTED value is rejected so the
+    # stored preference is always a known locale. Omitting the field leaves it
+    # untouched. The user sets their OWN locale (RBAC = the authenticated user).
+    if "locale" in body.model_fields_set:
+        if not body.locale:
+            user.locale = None
+        elif is_supported_locale(body.locale):
+            user.locale = body.locale
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported locale '{body.locale}'.",
+            )
 
     if body.password is not None:
         if not body.current_password:

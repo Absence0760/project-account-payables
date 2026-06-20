@@ -33,6 +33,10 @@ class UserResponse(BaseModel):
     mfa_enabled: bool = False
     mfa_required_by_org: bool = False
     roles: list[str] = []
+    # Account-level email-language preference (NULL = English fallback). Drives
+    # outbound email copy only — NOT in-app UI (the frontend's per-device locale
+    # picker owns that). See docs/notifications.md § Localized email.
+    locale: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -72,6 +76,9 @@ class UpdateProfileRequest(BaseModel):
     full_name: str | None = Field(default=None, max_length=255)
     password: str | None = Field(default=None, min_length=6)
     current_password: str | None = Field(default=None, min_length=1)
+    # Email-language preference. Validated against the supported locale set at
+    # the route (422 on an unknown value); empty string clears it (→ English).
+    locale: str | None = Field(default=None, max_length=16)
 
 
 class ChangePasswordRequest(BaseModel):

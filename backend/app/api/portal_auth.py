@@ -28,8 +28,10 @@ from app.schemas.portal import (
     PortalMFAEnrollStartResponse,
     PortalMFAVerifyRequest,
     PortalTokenResponse,
+    PortalUpdateProfileRequest,
 )
 from app.services import mfa
+from app.services.email_adapters import is_supported_locale
 from app.services.rate_limit import check_rate_limit
 from app.tenant import get_tenant_db
 from app.utils.passwords import (
@@ -111,6 +113,49 @@ async def portal_me(
         vendor_id=str(vendor.id),
         vendor_name=vendor.name,
         vendor_status=vendor.status,
+        locale=vu.locale,
+    )
+
+
+@router.patch("/me", response_model=PortalMeResponse)
+async def portal_update_me(
+    body: PortalUpdateProfileRequest,
+    vu: VendorUser = Depends(get_current_vendor_user),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Update the authenticated supplier user's profile preferences.
+
+    Currently only the email-language `locale`. The vendor sets their OWN
+    preference (RBAC = the authenticated vendor user); a supported value sets
+    it, an empty string clears it (→ English fallback), an unsupported value is
+    rejected (422). The pref drives outbound supplier email copy only — never
+    portal UI. See docs/notifications.md § Localized email.
+    """
+    if "locale" in body.model_fields_set:
+        if not body.locale:
+            vu.locale = None
+        elif is_supported_locale(body.locale):
+            vu.locale = body.locale
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported locale '{body.locale}'.",
+            )
+    await db.commit()
+
+    vendor = (
+        await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
+    ).scalar_one_or_none()
+    return PortalMeResponse(
+        id=str(vu.id),
+        email=vu.email,
+        full_name=vu.full_name,
+        must_change_password=vu.must_change_password,
+        mfa_enabled=vu.mfa_enabled,
+        vendor_id=str(vu.vendor_id),
+        vendor_name=vendor.name if vendor else "",
+        vendor_status=vendor.status if vendor else "unknown",
+        locale=vu.locale,
     )
 
 
@@ -144,6 +189,7 @@ async def portal_change_password(
         vendor_id=str(vu.vendor_id),
         vendor_name=vendor.name if vendor else "",
         vendor_status=vendor.status if vendor else "unknown",
+        locale=vu.locale,
     )
 
 
