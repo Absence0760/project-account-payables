@@ -8,6 +8,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { goto } from '$app/navigation';
 	import { timeAgo } from '$lib/utils/time';
+	import { m } from '$lib/i18n/store.svelte';
 	import { EVENT_LABELS } from '$lib/types/notification';
 	import type { Notification } from '$lib/types/notification';
 
@@ -42,7 +43,7 @@
 		try {
 			await notificationStore.loadMore({ unreadOnly: filter === 'unread' });
 		} catch {
-			toast('Failed to load more notifications', 'error');
+			toast(m('notifications.loadMoreFailed'), 'error');
 		}
 	}
 
@@ -61,39 +62,47 @@
 	async function markAll() {
 		try {
 			const updated = await notificationStore.markAllRead();
-			toast(updated > 0 ? `Marked ${updated} as read` : 'Nothing to mark', 'success');
+			toast(
+				updated > 0
+					? m('notifications.markedRead', { n: updated })
+					: m('notifications.nothingToMark'),
+				'success'
+			);
 		} catch {
-			toast('Failed to mark all read', 'error');
+			toast(m('notifications.markAllFailed'), 'error');
 		}
 	}
 
 	let chips = $derived([
-		{ key: 'all', label: 'All', count: total },
-		{ key: 'unread', label: 'Unread', count: unread },
+		{ key: 'all', label: m('notifications.filter.all'), count: total },
+		{ key: 'unread', label: m('notifications.filter.unread'), count: unread },
 	]);
 
-	const COLUMNS = [{ label: 'Notification' }, { label: 'When' }];
+	let COLUMNS = $derived([
+		{ label: m('notifications.col.notification') },
+		{ label: m('notifications.col.when') },
+	]);
 
 	let emptyMessage = $derived(
 		errored
-			? 'Could not load notifications. Try again.'
+			? m('notifications.empty.errored')
 			: filter === 'unread'
-				? 'No unread notifications.'
-				: 'No notifications yet.'
+				? m('notifications.empty.unread')
+				: m('notifications.empty.all')
 	);
 </script>
 
-<PageHeader title="Notifications">
+<PageHeader title={m('notifications.title')}>
 	{#snippet actions()}
 		<button class="btn-mark-all" onclick={markAll} disabled={unread === 0}>
-			Mark all read
+			{m('notifications.markAllRead')}
 		</button>
 	{/snippet}
 
 	<FilterChips {chips} bind:active={filter} />
 
 	{#if !initialLoaded && loading}
-		<p class="state-msg">Loading…</p>
+		<p class="state-msg">{m('common.loading')}</p>
 	{:else}
 		<DataTable columns={COLUMNS} isEmpty={items.length === 0} empty={emptyMessage} colspan={2}>
 			{#snippet body()}
@@ -107,7 +116,7 @@
 							<div class="notif-cell">
 								<span class="notif-dot" class:on={!n.read_at} aria-hidden="true"></span>
 								<div class="notif-text">
-									<RowLink onclick={() => open(n)} ariaLabel={`Open ${n.title}`}>
+									<RowLink onclick={() => open(n)} ariaLabel={m('notifications.open', { title: n.title })}>
 										<span class="notif-title">{n.title}</span>
 									</RowLink>
 									{#if n.body}<span class="notif-body">{n.body}</span>{/if}
@@ -124,14 +133,14 @@
 		{#if hasMore}
 			<div class="load-more-row">
 				<button class="btn-load-more" onclick={loadMore} disabled={loading}>
-					{loading ? 'Loading…' : `Load more (${items.length} of ${total})`}
+					{loading
+						? m('common.loading')
+						: m('notifications.loadMore', { shown: items.length, total })}
 				</button>
 			</div>
 		{:else if total > 0}
 			<div class="load-more-row">
-				<span class="load-more-end"
-					>Showing all {total} notification{total === 1 ? '' : 's'}</span
-				>
+				<span class="load-more-end">{m('notifications.showingAll', { total })}</span>
 			</div>
 		{/if}
 	{/if}

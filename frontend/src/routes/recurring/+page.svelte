@@ -25,26 +25,27 @@
 	import RecurringModal from '$lib/components/modals/RecurringModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 
 	const canCreate = $derived(auth.isManager);
 
-	const STATUS_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const STATUS_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...RECURRING_STATUSES.map((s) => ({ key: s, label: STATUS_LABELS[s] }))
-	];
+	]);
 
-	const COLUMNS = [
-		{ label: 'Name' },
-		{ label: 'Vendor' },
-		{ label: 'Amount', class: 'right' },
-		{ label: 'Cadence' },
-		{ label: 'Next run' },
-		{ label: 'Generated', class: 'right' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('recurring.col.name') },
+		{ label: m('recurring.col.vendor') },
+		{ label: m('recurring.col.amount'), class: 'right' },
+		{ label: m('recurring.col.cadence') },
+		{ label: m('recurring.col.nextRun') },
+		{ label: m('recurring.col.generated'), class: 'right' },
+		{ label: m('recurring.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	const PAGE_SIZE = 20;
 
@@ -98,7 +99,7 @@
 			pageNum = nextPage;
 		} catch (e) {
 			if (!opts.append) templates = [];
-			toast(e instanceof Error ? e.message : 'Failed to load templates', 'error');
+			toast(e instanceof Error ? e.message : m('recurring.toast.loadFailed'), 'error');
 		} finally {
 			loading = false;
 			loadingMore = false;
@@ -143,7 +144,7 @@
 		deepLinkLoaded = id;
 		getRecurring(id)
 			.then((t) => (editing = t))
-			.catch(() => toast('Template not found', 'error'));
+			.catch(() => toast(m('recurring.notFound'), 'error'));
 	});
 
 	async function openDetail(t: RecurringTemplate) {
@@ -206,7 +207,7 @@
 		busyId = t.id;
 		try {
 			await generateRecurringNow(t.id);
-			toast('Invoice generated', 'success');
+			toast(m('recurring.toast.generated'), 'success');
 			// Refresh the row so generated_count / next_run_on stay accurate.
 			try {
 				onSaved(await getRecurring(t.id));
@@ -214,7 +215,7 @@
 				/* the toast already confirmed success */
 			}
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not generate invoice', 'error');
+			toast(e instanceof Error ? e.message : m('recurring.toast.generateFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -229,7 +230,12 @@
 			return;
 		}
 		confirmEndId = null;
-		await runRowLifecycle(t, () => endRecurring(t.id), 'Template ended', 'End failed');
+		await runRowLifecycle(
+			t,
+			() => endRecurring(t.id),
+			m('recurring.toast.ended'),
+			m('recurring.toast.endFailed')
+		);
 	}
 
 	function statusBadgeClass(s: RecurringStatus): string {
@@ -249,9 +255,9 @@
 		const d = new Date(s);
 		if (Number.isNaN(d.getTime())) return '';
 		const days = Math.round((d.getTime() - Date.now()) / 86_400_000);
-		if (days === 0) return 'today';
-		if (days > 0) return `in ${days} day${days === 1 ? '' : 's'}`;
-		return `${-days} day${days === -1 ? '' : 's'} ago`;
+		if (days === 0) return m('recurring.rel.today');
+		if (days > 0) return m('recurring.rel.inDays', { n: days });
+		return m('recurring.rel.daysAgo', { n: -days });
 	}
 
 	function aggMoney(n: number): string {
@@ -295,36 +301,36 @@
 	}}
 />
 
-<PageHeader title="Recurring">
+<PageHeader title={m('recurring.title')}>
 	{#snippet actions()}
 		{#if canCreate}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ New template</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('recurring.action.new')}</button>
 		{/if}
 	{/snippet}
 
 	<!-- KPI row -->
 	<div class="kpi-row">
-		<KpiCard value={activeCount} label="Active templates" />
+		<KpiCard value={activeCount} label={m('recurring.kpi.activeTemplates')} />
 		<KpiCard
 			value={soonestNextRun ? formatDate(soonestNextRun.toISOString()) : '—'}
-			label="Next run"
+			label={m('recurring.kpi.nextRun')}
 		/>
 		<KpiCard
 			value={monthlyRecurringTotal > 0 ? aggMoney(monthlyRecurringTotal) : '—'}
-			label="Monthly recurring (est.)"
+			label={m('recurring.kpi.monthlyRecurring')}
 			highlight="green"
 		/>
 	</div>
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search templates..." ariaLabel="Search recurring templates" />
+		<SearchBox bind:value={search} placeholder={m('recurring.search.placeholder')} ariaLabel={m('recurring.search.aria')} />
 		<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 	</div>
 
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={!loading && templates.length === 0}
-		empty={loading ? 'Loading…' : 'No recurring templates match your filters.'}
+		empty={loading ? m('common.loading') : m('recurring.empty')}
 		colspan={8}
 	>
 		{#snippet body()}
@@ -338,7 +344,7 @@
 					<td>
 						<RowLink
 							onclick={() => openDetail(template)}
-							ariaLabel={`Open template ${template.name}`}
+							ariaLabel={m('recurring.row.open', { name: template.name })}
 						>
 							{template.name}
 						</RowLink>
@@ -347,7 +353,7 @@
 					<td class="right mono"><Money amount={template.amount} currency={template.currency} /></td>
 					<td>
 						<span class="cadence">{CADENCE_LABELS[template.cadence]}</span>
-						<span class="cadence-day">day {template.day_of_period}</span>
+						<span class="cadence-day">{m('recurring.dayOfPeriod', { day: template.day_of_period })}</span>
 					</td>
 					<td class="muted">
 						{formatDate(template.next_run_on)}
@@ -363,25 +369,25 @@
 								<RowAction
 									disabled={busyId === template.id}
 									onclick={() => generateNow(template)}
-									ariaLabel={`Generate invoice now for ${template.name}`}
+									ariaLabel={m('recurring.row.generateNowAria', { name: template.name })}
 								>
-									Generate now
+									{m('recurring.row.generateNow')}
 								</RowAction>
 								<RowAction
 									disabled={busyId === template.id}
-									onclick={() => runRowLifecycle(template, () => pauseRecurring(template.id), 'Template paused', 'Pause failed')}
-									ariaLabel={`Pause template ${template.name}`}
+									onclick={() => runRowLifecycle(template, () => pauseRecurring(template.id), m('recurring.toast.paused'), m('recurring.toast.pauseFailed'))}
+									ariaLabel={m('recurring.row.pauseAria', { name: template.name })}
 								>
-									Pause
+									{m('recurring.row.pause')}
 								</RowAction>
 							{:else if template.status === 'paused'}
 								<RowAction
 									variant="success"
 									disabled={busyId === template.id}
-									onclick={() => runRowLifecycle(template, () => resumeRecurring(template.id), 'Template resumed', 'Resume failed')}
-									ariaLabel={`Resume template ${template.name}`}
+									onclick={() => runRowLifecycle(template, () => resumeRecurring(template.id), m('recurring.toast.resumed'), m('recurring.toast.resumeFailed'))}
+									ariaLabel={m('recurring.row.resumeAria', { name: template.name })}
 								>
-									Resume
+									{m('recurring.row.resume')}
 								</RowAction>
 							{/if}
 							{#if template.status !== 'ended'}
@@ -390,9 +396,9 @@
 									armed={confirmEndId === template.id}
 									disabled={busyId === template.id}
 									onclick={() => endTemplate(template)}
-									ariaLabel={`End template ${template.name}`}
+									ariaLabel={m('recurring.row.endAria', { name: template.name })}
 								>
-									{confirmEndId === template.id ? 'Confirm' : 'End'}
+									{confirmEndId === template.id ? m('recurring.row.confirm') : m('recurring.row.end')}
 								</RowAction>
 							{/if}
 						{/if}
@@ -405,12 +411,12 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={() => load({ append: true })} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${templates.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('recurring.loadMore', { shown: templates.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} template{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('recurring.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>

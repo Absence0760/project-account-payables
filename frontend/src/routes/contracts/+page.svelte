@@ -15,25 +15,26 @@
 	import ContractModal from '$lib/components/modals/ContractModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 
 	const canCreate = $derived(auth.isManager);
 
-	const STATUS_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const STATUS_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...CONTRACT_STATUSES.map((s) => ({ key: s, label: STATUS_LABELS[s] }))
-	];
+	]);
 
-	const COLUMNS = [
-		{ label: 'Contract #' },
-		{ label: 'Vendor' },
-		{ label: 'Type' },
-		{ label: 'Status' },
-		{ label: 'End Date' },
-		{ label: 'Value', class: 'right' },
-		{ label: 'Spend', class: 'right' }
-	];
+	const COLUMNS = $derived([
+		{ label: m('contracts.col.contractNumber') },
+		{ label: m('contracts.col.vendor') },
+		{ label: m('contracts.col.type') },
+		{ label: m('contracts.col.status') },
+		{ label: m('contracts.col.endDate') },
+		{ label: m('contracts.col.value'), class: 'right' },
+		{ label: m('contracts.col.spend'), class: 'right' }
+	]);
 
 	interface VendorOption {
 		id: string;
@@ -103,7 +104,7 @@
 		deepLinkLoaded = id;
 		getContract(id)
 			.then((c) => (editing = c))
-			.catch(() => toast('Contract not found', 'error'));
+			.catch(() => toast(m('contracts.notFound'), 'error'));
 	});
 
 	async function openDetail(c: Contract) {
@@ -147,22 +148,22 @@
 	}
 </script>
 
-<PageHeader title="Contracts">
+<PageHeader title={m('contracts.title')}>
 	{#snippet actions()}
 		{#if canCreate}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Contract</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('contracts.action.new')}</button>
 		{/if}
 	{/snippet}
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search contracts..." ariaLabel="Search contracts" />
+		<SearchBox bind:value={search} placeholder={m('contracts.search.placeholder')} ariaLabel={m('contracts.search.aria')} />
 		<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 	</div>
 
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={contractStore.all.length === 0}
-		empty={contractStore.loading ? 'Loading…' : 'No contracts match your filters.'}
+		empty={contractStore.loading ? m('common.loading') : m('contracts.empty')}
 	>
 		{#snippet body()}
 			{#each contractStore.all as contract (contract.id)}
@@ -175,7 +176,7 @@
 					<td class="mono">
 						<RowLink
 							onclick={() => openDetail(contract)}
-							ariaLabel={`Open contract ${contract.contract_number}`}
+							ariaLabel={m('contracts.row.open', { number: contract.contract_number })}
 						>
 							{contract.contract_number}
 						</RowLink>
@@ -191,7 +192,7 @@
 								<Money amount={contract.spend.invoiced_total} currency={contract.currency} />
 							</span>
 							{#if contract.spend.over_limit}
-								<span class="over-tag" title="Over spend limit">!</span>
+								<span class="over-tag" title={m('contracts.overSpendLimit')}>!</span>
 							{/if}
 						{:else}
 							—
@@ -205,12 +206,14 @@
 	{#if contractStore.hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={() => contractStore.loadMore()} disabled={contractStore.loading}>
-				{contractStore.loading ? 'Loading…' : `Load more (${contractStore.all.length} of ${contractStore.total})`}
+				{contractStore.loading
+					? m('common.loading')
+					: m('contracts.loadMore', { shown: contractStore.all.length, total: contractStore.total })}
 			</button>
 		</div>
 	{:else if contractStore.total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {contractStore.total} contract{contractStore.total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('contracts.showingAll', { total: contractStore.total })}</span>
 		</div>
 	{/if}
 </PageHeader>
