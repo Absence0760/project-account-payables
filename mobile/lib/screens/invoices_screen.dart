@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/screens/capture_screen.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
@@ -34,9 +35,10 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Invoices'),
+        title: Text(l.invoicesTitle),
         actions: [
           // Advanced search (vendor / PO / amount range / due-date range).
           // A dot badge marks an active advanced filter so it's never invisible.
@@ -46,11 +48,11 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
               final active = !InvoiceStore.instance.filters.isEmpty;
               return Semantics(
                 label: active
-                    ? 'Advanced search, filters active'
-                    : 'Advanced search',
+                    ? l.invoicesAdvancedSearchActive
+                    : l.invoicesAdvancedSearch,
                 button: true,
                 child: IconButton(
-                  tooltip: 'Advanced Search',
+                  tooltip: l.invoicesAdvancedSearch,
                   icon: Badge(
                     isLabelVisible: active,
                     child: const Icon(Icons.tune),
@@ -63,11 +65,11 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
           // Explicit label is the screen-reader name (tooltip alone isn't
           // exposed as a semantics label on all platforms — WCAG 4.1.2).
           Semantics(
-            label: 'Capture invoice',
+            label: l.invoicesCaptureInvoiceLabel,
             button: true,
             child: IconButton(
               icon: const Icon(Icons.camera_alt),
-              tooltip: 'Capture Invoice',
+              tooltip: l.invoicesCaptureInvoice,
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const CaptureScreen()),
               ),
@@ -80,7 +82,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: SearchBar(
               controller: _searchController,
-              hintText: 'Search invoices...',
+              hintText: l.invoicesSearchHint,
               leading: const Icon(Icons.search, size: 20),
               onChanged: (q) => InvoiceStore.instance.setSearch(
                 q.isEmpty ? null : q,
@@ -103,13 +105,16 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   children: [
-                    _filterChip('All', null, current),
-                    _filterChip('New', 'new', current),
-                    _filterChip('Pending', 'pending', current),
-                    _filterChip('Review', 'ready_for_review', current),
-                    _filterChip('Approved', 'approved', current),
-                    _filterChip('Rejected', 'rejected', current),
-                    _filterChip('Paid', 'paid', current),
+                    _filterChip(l.invoicesFilterAll, null, current),
+                    _filterChip(l.invoicesFilterNew, 'new', current),
+                    _filterChip(l.invoicesFilterPending, 'pending', current),
+                    _filterChip(
+                        l.invoicesFilterReview, 'ready_for_review', current),
+                    _filterChip(
+                        l.invoicesFilterApproved, 'approved', current),
+                    _filterChip(
+                        l.invoicesFilterRejected, 'rejected', current),
+                    _filterChip(l.invoicesFilterPaid, 'paid', current),
                   ],
                 );
               },
@@ -128,7 +133,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                 }
 
                 if (store.invoices.isEmpty) {
-                  return const Center(child: Text('No invoices found'));
+                  return Center(child: Text(l.invoicesEmpty));
                 }
 
                 return RefreshIndicator(

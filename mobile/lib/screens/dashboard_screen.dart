@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/stores/dashboard_store.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
 
@@ -25,8 +26,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Dashboard')),
+      appBar: AppBar(title: Text(l.dashboardTitle)),
       body: ListenableBuilder(
         listenable: DashboardStore.instance,
         builder: (context, _) {
@@ -41,11 +43,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Error: ${store.error}'),
+                  Text(l.dashboardErrorPrefix('${store.error}')),
                   const SizedBox(height: 16),
                   FilledButton(
                     onPressed: store.fetch,
-                    child: const Text('Retry'),
+                    child: Text(l.commonRetry),
                   ),
                 ],
               ),
@@ -63,7 +65,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 // Offline indicator — data is being served from the local
                 // cache because the last refresh couldn't reach the server.
                 if (store.fromCache) ...[
-                  _cacheBanner(),
+                  _cacheBanner(l),
                   const SizedBox(height: 12),
                 ],
 
@@ -72,7 +74,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   children: [
                     Expanded(
                       child: KpiCard(
-                        title: 'Total Invoices',
+                        title: l.dashboardTotalInvoices,
                         value: data.totalInvoices.toString(),
                         subtitle: _currencyFormat.format(data.totalAmount),
                         icon: Icons.receipt_long,
@@ -82,7 +84,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: KpiCard(
-                        title: 'Upcoming',
+                        title: l.dashboardUpcoming,
                         value: data.upcoming.count.toString(),
                         subtitle: _currencyFormat
                             .format(data.upcoming.totalAmount),
@@ -97,7 +99,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   children: [
                     Expanded(
                       child: KpiCard(
-                        title: 'For Review',
+                        title: l.dashboardForReview,
                         value: (data.pipeline['ready_for_review'] ?? 0)
                             .toString(),
                         icon: Icons.rate_review,
@@ -107,7 +109,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: KpiCard(
-                        title: 'Approved',
+                        title: l.dashboardApproved,
                         value: (data.pipeline['approved'] ?? 0).toString(),
                         icon: Icons.check_circle,
                         color: Colors.green,
@@ -119,7 +121,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 // Aging
                 const SizedBox(height: 24),
                 Text(
-                  'Invoice Aging',
+                  l.dashboardAging,
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
@@ -134,22 +136,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: Row(
                       children: [
                         _agingBucket(
-                          'Current',
+                          l.dashboardAgingCurrent,
                           data.aging.current,
                           Colors.green,
                         ),
                         _agingBucket(
-                          '30 Days',
+                          l.dashboardAgingDays30,
                           data.aging.thirtyDays,
                           Colors.amber,
                         ),
                         _agingBucket(
-                          '60 Days',
+                          l.dashboardAgingDays60,
                           data.aging.sixtyDays,
                           Colors.orange,
                         ),
                         _agingBucket(
-                          '90+',
+                          l.dashboardAgingDays90plus,
                           data.aging.ninetyPlus,
                           Colors.red,
                         ),
@@ -161,7 +163,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 // Top vendors
                 const SizedBox(height: 24),
                 Text(
-                  'Top Vendors',
+                  l.dashboardTopVendors,
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
@@ -173,7 +175,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           _currencyFormat.format(v.totalAmount),
                           style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
-                        subtitle: Text('${v.invoiceCount} invoices'),
+                        subtitle: Text(l.dashboardInvoiceCount(v.invoiceCount)),
                       ),
                     ),
               ],
@@ -184,7 +186,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _cacheBanner() {
+  Widget _cacheBanner(AppLocalizations l) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -198,7 +200,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              "Showing cached data — couldn't reach the server",
+              l.dashboardCachedBanner,
               style: TextStyle(color: Colors.amber.shade900, fontSize: 13),
             ),
           ),

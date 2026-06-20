@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
 import 'package:ap_mobile/screens/contracts_screen.dart';
 import 'package:ap_mobile/screens/dashboard_screen.dart';
@@ -44,54 +45,55 @@ class _HomeScreenState extends State<HomeScreen> {
     return screens;
   }
 
-  List<BottomNavigationBarItem> get _navItems {
+  List<BottomNavigationBarItem> _buildNavItems(AppLocalizations l) {
     final items = <BottomNavigationBarItem>[
-      const BottomNavigationBarItem(
-        icon: Icon(Icons.dashboard),
-        label: 'Dashboard',
+      BottomNavigationBarItem(
+        icon: const Icon(Icons.dashboard),
+        label: l.navDashboard,
       ),
-      const BottomNavigationBarItem(
-        icon: Icon(Icons.receipt_long),
-        label: 'Invoices',
+      BottomNavigationBarItem(
+        icon: const Icon(Icons.receipt_long),
+        label: l.navInvoices,
       ),
-      const BottomNavigationBarItem(
-        icon: Icon(Icons.description),
-        label: 'Contracts',
+      BottomNavigationBarItem(
+        icon: const Icon(Icons.description),
+        label: l.navContracts,
       ),
     ];
     if (AuthStore.instance.canApprove) {
-      items.add(const BottomNavigationBarItem(
-        icon: Icon(Icons.check_circle),
-        label: 'Approvals',
+      items.add(BottomNavigationBarItem(
+        icon: const Icon(Icons.check_circle),
+        label: l.navApprovals,
       ));
-      items.add(const BottomNavigationBarItem(
-        icon: Icon(Icons.error_outline),
-        label: 'Exceptions',
+      items.add(BottomNavigationBarItem(
+        icon: const Icon(Icons.error_outline),
+        label: l.navExceptions,
       ));
     }
     if (AuthStore.instance.canViewPayments) {
-      items.add(const BottomNavigationBarItem(
-        icon: Icon(Icons.store),
-        label: 'Vendors',
+      items.add(BottomNavigationBarItem(
+        icon: const Icon(Icons.store),
+        label: l.navVendors,
       ));
-      items.add(const BottomNavigationBarItem(
-        icon: Icon(Icons.account_balance_wallet),
-        label: 'Pay',
+      items.add(BottomNavigationBarItem(
+        icon: const Icon(Icons.account_balance_wallet),
+        label: l.navPay,
       ));
-      items.add(const BottomNavigationBarItem(
-        icon: Icon(Icons.payments),
-        label: 'Payments',
+      items.add(BottomNavigationBarItem(
+        icon: const Icon(Icons.payments),
+        label: l.navPayments,
       ));
     }
-    items.add(const BottomNavigationBarItem(
-      icon: Icon(Icons.settings),
-      label: 'Settings',
+    items.add(BottomNavigationBarItem(
+      icon: const Icon(Icons.settings),
+      label: l.navSettings,
     ));
     return items;
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final screens = _screens;
     final safeIndex = _currentIndex.clamp(0, screens.length - 1);
 
@@ -106,7 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
         type: BottomNavigationBarType.fixed,
         selectedItemColor: Colors.blue,
         unselectedItemColor: Colors.grey,
-        items: _navItems,
+        items: _buildNavItems(l),
       ),
     );
   }

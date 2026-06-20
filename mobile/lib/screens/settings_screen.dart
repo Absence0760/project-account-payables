@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
 import 'package:ap_mobile/config.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/services/biometric_service.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
+import 'package:ap_mobile/stores/locale_store.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -36,9 +38,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final user = AuthStore.instance.user;
+    final l = AppLocalizations.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: Text(l.settingsTitle)),
       body: ListView(
         children: [
           // User info
@@ -94,22 +97,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           ListTile(
             leading: const Icon(Icons.business),
-            title: const Text('Tenant'),
-            subtitle: Text(AppConfig.tenantSlug ?? 'Not set'),
+            title: Text(l.settingsTenant),
+            subtitle: Text(AppConfig.tenantSlug ?? l.settingsTenantNotSet),
           ),
           ListTile(
             leading: const Icon(Icons.link),
-            title: const Text('API Server'),
+            title: Text(l.settingsApiServer),
             subtitle: Text(AppConfig.apiBaseUrl),
           ),
+
+          // Display language — a per-device choice (like the biometric toggle),
+          // persisted locally via LocaleStore and never sent to the backend.
+          const Divider(height: 32),
+          _languagePicker(context, l),
 
           // Security
           if (_bioAvailable) ...[
             const Divider(height: 32),
             SwitchListTile(
               secondary: const Icon(Icons.fingerprint),
-              title: const Text('Biometric Unlock'),
-              subtitle: const Text('Use fingerprint or face to unlock'),
+              title: Text(l.settingsBiometricUnlock),
+              subtitle: Text(l.settingsBiometricHint),
               value: _bioEnabled,
               onChanged: (enabled) async {
                 if (enabled) {
@@ -128,7 +136,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: Icon(Icons.logout, color: Colors.red.shade700),
             title: Text(
-              'Sign Out',
+              l.settingsSignOut,
               // shade700 keeps the destructive label at AA contrast.
               style: TextStyle(color: Colors.red.shade700),
             ),
@@ -144,6 +152,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Device display-language picker. Endonyms (each language's own name) plus a
+  /// "System default" option that clears the override (follow the OS locale).
+  /// Mirrors the web profile language `<select>`.
+  Widget _languagePicker(BuildContext context, AppLocalizations l) {
+    // The current persisted choice; `null` => follow the system default.
+    final current = LocaleStore.instance.locale;
+    final currentTag =
+        current == null ? null : LocaleStore.tagOf(current);
+
+    return ListTile(
+      leading: const Icon(Icons.language),
+      title: Text(l.settingsLanguage),
+      subtitle: Text(l.settingsLanguageHint),
+      trailing: DropdownButton<String?>(
+        value: currentTag,
+        // System default is the null entry.
+        hint: Text(l.settingsLanguageSystem),
+        onChanged: (tag) {
+          final locale = tag == null
+              ? null
+              : LocaleStore.supportedLocales.firstWhere(
+                  (loc) => LocaleStore.tagOf(loc) == tag,
+                );
+          LocaleStore.instance.setLocale(locale);
+        },
+        items: [
+          DropdownMenuItem<String?>(
+            value: null,
+            child: Text(l.settingsLanguageSystem),
+          ),
+          ...LocaleStore.supportedLocales.map((loc) {
+            final tag = LocaleStore.tagOf(loc);
+            return DropdownMenuItem<String?>(
+              value: tag,
+              child: Text(LocaleStore.endonyms[tag] ?? tag),
+            );
+          }),
         ],
       ),
     );

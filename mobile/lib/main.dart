@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/home_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
 import 'package:ap_mobile/services/biometric_service.dart';
 import 'package:ap_mobile/services/push_service.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
+import 'package:ap_mobile/stores/locale_store.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Load the device's persisted display-language choice before first build so
+  // MaterialApp.locale is correct on the very first frame.
+  await LocaleStore.instance.init();
   runApp(const APApp());
 }
 
@@ -16,18 +21,29 @@ class APApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Better AP',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          centerTitle: false,
-          elevation: 0,
-        ),
-      ),
-      home: const SplashScreen(),
+    // Rebuild MaterialApp whenever the device locale choice changes so the
+    // whole tree re-localizes live (no restart). `locale: null` follows the
+    // system locale (resolved against supportedLocales).
+    return ListenableBuilder(
+      listenable: LocaleStore.instance,
+      builder: (context, _) {
+        return MaterialApp(
+          title: 'Better AP',
+          debugShowCheckedModeBanner: false,
+          locale: LocaleStore.instance.locale,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          theme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+            useMaterial3: true,
+            appBarTheme: const AppBarTheme(
+              centerTitle: false,
+              elevation: 0,
+            ),
+          ),
+          home: const SplashScreen(),
+        );
+      },
     );
   }
 }
