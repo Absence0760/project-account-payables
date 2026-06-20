@@ -90,6 +90,14 @@ class User(Base, TimestampMixin):
         JSONB, nullable=False, default=dict, server_default="{}"
     )
 
+    # Account-level email language preference — "what language to email this
+    # person in" (signup/welcome, invoice notifications, supplier chat). NULL =
+    # English fallback. Validated against the supported set at the write path
+    # (PATCH /api/auth/me); read ONLY by the email-rendering path
+    # (services/email_adapters/email_catalogue.py), never to drive in-app UI —
+    # that's the frontend's separate per-device locale. See docs/notifications.md.
+    locale: Mapped[str | None] = mapped_column(String(16))
+
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )

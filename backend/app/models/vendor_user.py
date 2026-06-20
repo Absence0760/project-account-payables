@@ -52,4 +52,12 @@ class VendorUser(Base, TimestampMixin):
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mfa_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Account-level email language preference — "what language to email this
+    # supplier user in" (invoice paid/rejected notifications). NULL = English
+    # fallback. Mirrors `User.locale` (control plane) but vendor-scoped: set via
+    # PATCH /api/portal/auth/me, validated against the supported set, read ONLY
+    # by the email-rendering path — never to drive portal UI. See
+    # docs/notifications.md.
+    locale: Mapped[str | None] = mapped_column(String(16))
+
     vendor: Mapped["Vendor"] = relationship(back_populates="portal_users")  # noqa: F821
