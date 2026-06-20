@@ -76,6 +76,31 @@ is swallowed with a PII-free warning (the key id only, never the key material)
 and the request proceeds — a meter failure never breaks an otherwise valid
 authenticated call. Reads land via `GET /api/api-keys/{id}/usage` (above).
 
+### Per-key rate limiting
+
+Every authenticated `/api/v1` request is rate-limited **per API key** by the
+existing Redis sliding-window limiter (`services/rate_limit.py`), keyed on the
+`api_key_id` (not per-IP, not per-org — one key flooding the API can't lock out
+another key, even within the same org). The cap is
+`AP_PUBLIC_API_RATE_LIMIT_PER_MINUTE` (default **120 req/min**) over a fixed
+**60-second** window. A key over its cap gets an
+**HTTP `429 Too Many Requests`** with a **`Retry-After`** header (seconds until
+the oldest in-window request ages out).
+
+Ordering matters for non-enumeration: the limit is checked **after** the key
+authenticates, inside `get_api_key_principal` (just before the principal is
+returned). An unauthenticated / garbage / revoked key short-circuits on the
+opaque `401` above and never reaches the limiter — so a `429` only ever confirms
+a **valid** key that is over its limit, never that a key exists.
+
+**Fails open on a Redis outage.** The limiter raises `RateLimitExceeded` (the
+429) which is allowed to propagate, but any *other* failure in the check — e.g.
+Redis unreachable — is swallowed with a PII-free warning (the key id only) and
+the request proceeds. A Redis blip must not deny otherwise-valid authenticated
+API access; this matches the best-effort posture of the adjacent usage meter.
+The limiter is also gated by the global `AP_RATE_LIMIT_ENABLED` master switch
+(CI's e2e suite flips it off).
+
 ### Failure mode
 
 Every API-key failure (missing header, unknown prefix, bad digest, revoked key,
@@ -184,6 +209,7 @@ build against it safely:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `AP_PUBLIC_API_ENABLED` | `true` | Platform kill switch for the `/api/v1` surface — the read routes **and** the published spec/docs (`/api/v1/openapi.json`, `/api/v1/docs`). The surface is auth-gated regardless; when `false` every key fails closed with the opaque 401 and the spec/docs 404. No secret — API keys are minted per-org and stored hashed. |
+| `AP_PUBLIC_API_RATE_LIMIT_PER_MINUTE` | `120` | Per-API-key request cap on `/api/v1`, over a fixed 60-second window, enforced by the Redis sliding-window limiter keyed on `api_key_id`. A key over its cap gets a 429 + `Retry-After`. Checked after the key authenticates (a bad key still gets the opaque 401, never a 429). Fails open on a Redis outage; gated by the global `AP_RATE_LIMIT_ENABLED` master switch. No secret. |
 
 There is no API-key secret in config or `.env` — each key is generated at mint
 time and only its hash persists, so the secrets-via-sops / no-hardcoded-fallback
@@ -337,10 +363,6 @@ later roadmap work:
   changelog, API-key self-service from the docs) is later work.
 - **Write scopes + endpoints** — only `read` is minted today. The scope plumbing
   (`scopes` column + `require_api_scope`) is in place for it.
-- **Per-key rate limiting** — the repo has a Redis sliding-window limiter
-  (`services/rate_limit.py`) that a future slice should key on `api_key_id`; not
-  wired in this slice to avoid inventing a new policy surface prematurely. The
-  `api_key_usage` meter now in place is the natural input for a per-key quota.
 - **Frontend key-management UI** — the API-key mint / list / revoke / **usage**
   surface is fully built on the backend (`/api/api-keys/*`, admin-gated), but the
   SvelteKit admin screen to drive it (show the per-key usage chart from
