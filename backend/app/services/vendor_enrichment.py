@@ -23,8 +23,11 @@ invariant). All money / price math is ``Decimal``; nothing is ever ``float``.
      that deviate beyond a tolerance. Returned inline (read-only); it does NOT
      write ``Invoice.warnings`` or raise ``Exception`` rows this slice.
   3. **Vendor scoring** — ``compute_vendor_score`` combines accuracy + dispute
-     (+ optional on-time) sub-scores into a renormalized composite, with clean
-     N/A handling for missing data. Compute-on-read; nothing is persisted.
+     + on-time sub-scores into a renormalized composite, with clean N/A handling
+     for missing data. On-time delivery is real once a PO carries an
+     ``expected_delivery_date`` (vs the linked goods receipt's ``received_date``);
+     N/A when no PO has both an expected date and a receipt. Compute-on-read;
+     nothing is persisted.
 
 Amount-deviation / per-vendor amount-outlier detection is intentionally NOT
 here — that already shipped in ``adaptive_workflows.detect_invoice_anomaly``.
@@ -387,40 +390,54 @@ def _dispute_subscore(total_invoices: int, exception_invoices: int) -> SubScore:
 
 
 def _ontime_subscore(ontime_input: dict | None) -> SubScore:
-    """On-time delivery. N/A by default this slice — there is no PO-side
-    expected/promised date to compare a goods-receipt ``received_date`` against.
+    """On-time delivery — the fraction of the vendor's deliveries received on or
+    before their promised date.
 
-    Only computed when the caller passes the opt-in ``due_date`` proxy result
-    (``{"gr_count", "on_time_count"}``); otherwise N/A. The proxy
-    (received_date <= invoice.due_date) is a weak approximation and is gated
-    behind the ``ontime_use_due_date_proxy`` org flag, default off.
+    ``ontime_input`` (computed by the API layer) is either ``None`` (no
+    comparable data → N/A) or ``{"gr_count", "on_time_count", "source"}`` where:
+
+      * ``source == "expected_date"`` — the **authoritative** signal: over the
+        vendor's POs that carry a ``PurchaseOrder.expected_delivery_date`` AND a
+        goods receipt, ``received_date <= expected_delivery_date`` (migration
+        0060 added the column). This is real on-time delivery.
+      * ``source == "due_date_proxy"`` — the **opt-in** weak fallback used only
+        when no expected-date data exists and the org flag
+        ``ontime_use_due_date_proxy`` is on: ``received_date <=
+        invoice.due_date`` (invoice due date is not the promised delivery date).
+
+    A ``gr_count`` of 0 (no comparable deliveries) is honest N/A — never a
+    misleading 0 — and never divides by zero. The composite renormalizes over
+    the available sub-scores, so an N/A on-time component drops out cleanly.
     """
     if not ontime_input:
         return SubScore(
             name="on_time",
             score=None,
             sample_size=0,
-            detail="On-time delivery requires PO expected dates, not tracked yet",
+            detail="No POs with an expected delivery date and a goods receipt to compare",
         )
     gr_count = int(ontime_input.get("gr_count", 0))
     on_time_count = int(ontime_input.get("on_time_count", 0))
+    source = ontime_input.get("source", "expected_date")
     if gr_count <= 0:
-        return SubScore(
-            name="on_time",
-            score=None,
-            sample_size=0,
-            detail="No goods receipts with a comparable invoice due date",
+        detail = (
+            "No POs with an expected delivery date and a goods receipt to compare"
+            if source == "expected_date"
+            else "No goods receipts with a comparable invoice due date"
         )
+        return SubScore(name="on_time", score=None, sample_size=0, detail=detail)
     score = _q1(Decimal(on_time_count) / Decimal(gr_count) * _HUNDRED)
-    return SubScore(
-        name="on_time",
-        score=score,
-        sample_size=gr_count,
-        detail=(
+    if source == "expected_date":
+        detail = (
+            f"{on_time_count} of {gr_count} receipts on or before the PO expected "
+            f"delivery date"
+        )
+    else:
+        detail = (
             f"{on_time_count} of {gr_count} receipts on or before the invoice due "
             f"date (due-date proxy)"
-        ),
-    )
+        )
+    return SubScore(name="on_time", score=score, sample_size=gr_count, detail=detail)
 
 
 def compute_vendor_score(

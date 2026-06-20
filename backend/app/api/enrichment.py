@@ -341,13 +341,41 @@ async def _dispute_input(
     }
 
 
-async def _ontime_input(
+async def _ontime_expected_date_input(
     db: AsyncSession, *, vendor_id: uuid.UUID, entity_id: uuid.UUID | None
 ) -> dict:
-    """Opt-in due-date proxy for on-time delivery (gated; only called when the
-    org flag is on). Joins GR → PO (vendor) → Invoice (po_number) and compares
-    ``received_date <= invoice.due_date``. A weak proxy — invoice due date is
-    not the delivery-promised date — hence opt-in only."""
+    """Real on-time delivery: over the vendor's POs that carry both an
+    ``expected_delivery_date`` AND a goods receipt with a ``received_date``, the
+    fraction received on or before the expected date (``received_date <=
+    expected_delivery_date``). The authoritative signal (migration 0060). A PO
+    with no expected date, or no goods receipt, contributes nothing — never a
+    misleading on-time/late, never a divide-by-zero (``gr_count == 0`` → N/A in
+    the pure scorer)."""
+    q = (
+        select(GoodsReceipt.received_date, PurchaseOrder.expected_delivery_date)
+        .join(PurchaseOrder, PurchaseOrder.id == GoodsReceipt.po_id)
+        .where(
+            PurchaseOrder.vendor_id == vendor_id,
+            PurchaseOrder.expected_delivery_date.is_not(None),
+            GoodsReceipt.received_date.is_not(None),
+        )
+    )
+    # PurchaseOrder carries the EntityMixin scope (the GR rides its PO's entity).
+    q = apply_entity_scope(q, PurchaseOrder, entity_id)
+    rows = (await db.execute(q)).all()
+    gr_count = len(rows)
+    on_time_count = sum(1 for received, expected in rows if received <= expected)
+    return {"gr_count": gr_count, "on_time_count": on_time_count, "source": "expected_date"}
+
+
+async def _ontime_due_date_proxy_input(
+    db: AsyncSession, *, vendor_id: uuid.UUID, entity_id: uuid.UUID | None
+) -> dict:
+    """Opt-in due-date proxy for on-time delivery (gated; only used as a weak
+    fallback when no expected-date data exists and the org flag is on). Joins
+    GR → PO (vendor) → Invoice (po_number) and compares ``received_date <=
+    invoice.due_date``. A weak proxy — invoice due date is not the
+    delivery-promised date — hence opt-in only."""
     q = (
         select(GoodsReceipt.received_date, Invoice.due_date)
         .join(PurchaseOrder, PurchaseOrder.id == GoodsReceipt.po_id)
@@ -362,7 +390,7 @@ async def _ontime_input(
     rows = (await db.execute(q)).all()
     gr_count = len(rows)
     on_time_count = sum(1 for received, due in rows if received <= due)
-    return {"gr_count": gr_count, "on_time_count": on_time_count}
+    return {"gr_count": gr_count, "on_time_count": on_time_count, "source": "due_date_proxy"}
 
 
 @router.get("/vendors/{vendor_id}/score", response_model=VendorScoreResponse)
@@ -380,9 +408,16 @@ async def vendor_score(
     cfg = _enrichment_settings(org)
     accuracy_input = await _accuracy_input(db, vendor_id=vendor_id, entity_id=entity_id)
     dispute_input = await _dispute_input(db, vendor_id=vendor_id, entity_id=entity_id)
-    ontime_input = None
-    if cfg["ontime_use_due_date_proxy"]:
-        ontime_input = await _ontime_input(db, vendor_id=vendor_id, entity_id=entity_id)
+
+    # On-time delivery: prefer the authoritative PO expected-date signal (always
+    # computed). Only when it finds no comparable POs do we fall back to the weak
+    # invoice-due-date proxy, and only if the org has opted into it. No real
+    # on-time data → N/A (excluded from the composite), never a misleading score.
+    ontime_input = await _ontime_expected_date_input(db, vendor_id=vendor_id, entity_id=entity_id)
+    if ontime_input["gr_count"] == 0 and cfg["ontime_use_due_date_proxy"]:
+        ontime_input = await _ontime_due_date_proxy_input(
+            db, vendor_id=vendor_id, entity_id=entity_id
+        )
 
     score = compute_vendor_score(
         vendor_id=str(vendor.id),
