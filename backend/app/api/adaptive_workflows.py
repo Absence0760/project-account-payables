@@ -53,6 +53,7 @@ from app.schemas.adaptive_workflows import (
     ApplyThresholdRequest,
     ApplyThresholdResponse,
     ApprovalPatternsResponse,
+    FeedbackResponse,
     InvoiceAnomalyResponse,
     RoutingSuggestionResponse,
     SuggestionListResponse,
@@ -60,20 +61,26 @@ from app.schemas.adaptive_workflows import (
 )
 from app.services.adaptive_workflows import (
     DerivedSuggestion,
+    EffectivenessMetric,
     EligibleApprover,
     InvoiceAnomaly,
+    OutcomeStats,
     RoutingSuggestion,
     ThresholdRecommendation,
     VendorBaseline,
     _decimal_days,
     compute_approver_patterns,
+    compute_effectiveness,
+    compute_outcome_stats,
     compute_vendor_baseline,
     compute_vendor_patterns,
     derive_suggestions,
     detect_invoice_anomaly,
+    outcome_adjusted_threshold,
     recommend_approvers,
     recommend_auto_approve_threshold,
 )
+from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.review import assign_reviewer
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
@@ -1151,4 +1158,217 @@ async def apply_threshold_recommendation(
         reason_code=rec.reason_code,
         rationale=rec.rationale,
         version_number=version.version_number,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/adaptive/feedback  (the feedback loop — outcomes adjust the recos)
+# ---------------------------------------------------------------------------
+#
+# Closes the adaptive loop: it reads the human OUTCOMES of invoices the system
+# already auto-approved (voids / re-rejections / corrections) straight from
+# audit_log — no new instrumentation — and (1) folds that overturn signal back
+# into the forward threshold recommendation so it pulls BACK when the
+# auto-approved population is being walked back, and (2) computes an honest
+# effectiveness signal (auto-approval overturn rate + recommendation-acceptance
+# rate), with an explicit "insufficient data" state where the evidence is thin
+# rather than a fabricated figure. Read-only; never mutates workflow state.
+
+# The minimum auto-approved sample below which the overturn rate is "not yet
+# measurable" — keeps the loop from reacting to one-off noise.
+_FEEDBACK_MIN_SAMPLE = 5
+
+
+async def _auto_approval_outcome_rows(
+    db: AsyncSession, *, since: datetime, entity_id: uuid.UUID | None
+) -> list[dict]:
+    """Build the per-invoice outcome rows the feedback math consumes.
+
+    The population is the invoices the system **auto-approved** in the window
+    (``invoice.auto_approved`` audit rows). For each, an overturn is read from
+    the SAME invoice's later audit rows:
+
+      * **voided** — a payment on it was voided, sending it back to ``approved``
+        (``invoice.voided_return_to_approved``);
+      * **rejected** — it was later rejected (``invoice.rejected``);
+      * **corrected** — it was later re-approved with field corrections
+        (``invoice.approved`` carrying ``details.changes`` — the post-void
+        re-review walked the extraction back).
+
+    A single LEFT-joined aggregate keeps this one round-trip: we group the
+    overturn signals by invoice and OR them together. Entity-scoped via the
+    invoice join."""
+    auto = (
+        select(AuditLog.entity_id.label("inv_id"), func.min(AuditLog.created_at).label("auto_at"))
+        .where(
+            AuditLog.entity_type == "invoice",
+            AuditLog.action == "invoice.auto_approved",
+            AuditLog.created_at >= since,
+        )
+        .group_by(AuditLog.entity_id)
+        .subquery()
+    )
+
+    # Overturn signals on the SAME invoice, occurring AT OR AFTER its
+    # auto-approval (a rejection that predates the auto-approval isn't an
+    # overturn of it).
+    overturn = AuditLog.__table__.alias("overturn")
+    is_void = overturn.c.action == "invoice.voided_return_to_approved"
+    is_reject = overturn.c.action == "invoice.rejected"
+    is_correct = (overturn.c.action == "invoice.approved") & (
+        overturn.c.details["changes"].isnot(None)
+    )
+
+    q = (
+        select(
+            auto.c.inv_id,
+            func.bool_or(case((is_void, True), else_=False)).label("voided"),
+            func.bool_or(case((is_reject, True), else_=False)).label("rejected"),
+            func.bool_or(case((is_correct, True), else_=False)).label("corrected"),
+        )
+        .select_from(auto)
+        .join(Invoice, Invoice.id == auto.c.inv_id)
+        .join(
+            overturn,
+            (overturn.c.entity_id == auto.c.inv_id)
+            & (overturn.c.entity_type == "invoice")
+            & (overturn.c.created_at >= auto.c.auto_at)
+            & (is_void | is_reject | is_correct),
+            isouter=True,
+        )
+        .group_by(auto.c.inv_id)
+    )
+    q = apply_entity_scope(q, Invoice, entity_id)
+    rows = (await db.execute(q)).all()
+    return [
+        {
+            "invoice_id": str(inv_id),
+            "voided": bool(voided),
+            "rejected": bool(rejected),
+            "corrected": bool(corrected),
+        }
+        for inv_id, voided, rejected, corrected in rows
+    ]
+
+
+async def _suggestion_acceptance_counts(db: AsyncSession, *, org_id: uuid.UUID) -> tuple[int, int]:
+    """(applied_count, total_count) over the org's persisted ``WorkflowSuggestion``
+    rows — the recommendation-acceptance denominator. ``applied`` is the share an
+    admin actually acted on (``status='applied'``). Org-scoped (the table carries
+    ``organization_id``)."""
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(WorkflowSuggestion)
+            .where(WorkflowSuggestion.organization_id == org_id)
+        )
+    ).scalar() or 0
+    applied = (
+        await db.execute(
+            select(func.count())
+            .select_from(WorkflowSuggestion)
+            .where(
+                WorkflowSuggestion.organization_id == org_id,
+                WorkflowSuggestion.status == "applied",
+            )
+        )
+    ).scalar() or 0
+    return int(applied), int(total)
+
+
+def _outcome_stats_dict(o: OutcomeStats) -> dict:
+    return {
+        "auto_approved_count": o.auto_approved_count,
+        "voided_count": o.voided_count,
+        "corrected_count": o.corrected_count,
+        "rejected_count": o.rejected_count,
+        "overturned_count": o.overturned_count,
+        "overturn_rate_pct": str(o.overturn_rate_pct),
+        "insufficient_data": o.insufficient_data,
+    }
+
+
+def _metric_dict(m: EffectivenessMetric) -> dict:
+    return {
+        "name": m.name,
+        "value_pct": None if m.value_pct is None else str(m.value_pct),
+        "sample_size": m.sample_size,
+        "insufficient_data": m.insufficient_data,
+        "label": m.label,
+    }
+
+
+@router.get("/feedback", response_model=FeedbackResponse)
+async def feedback(
+    days: int = Query(365, ge=1, le=730),
+    workflow_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+    user: User = Depends(require_roles(*_READ_ROLES)),
+):
+    """The adaptive feedback loop: fold the realised human OUTCOMES of
+    auto-approved invoices back into the threshold recommendation, and surface an
+    honest effectiveness signal.
+
+    **Read-only** — never mutates workflow state. Returns the outcome tallies,
+    the two effectiveness metrics (each with an explicit insufficient-data
+    state), and BOTH the base (approval-history-only) threshold recommendation
+    and the outcome-adjusted one — so a held-back raise is explainable (it shows
+    *why* the loop pulled back). The current threshold is read off the active (or
+    specified) workflow definition's approval step. Manager/CFO read surface."""
+    since = datetime.now(UTC) - timedelta(days=days)
+
+    # 1. The forward (approval-history-only) threshold recommendation.
+    defn = await _active_workflow_definition(db, org.id, workflow_id=workflow_id)
+    current = _approval_auto_below(defn.steps_config) if defn else Decimal("0")
+    decisions = await _decision_rows(db, since=since, entity_id=entity_id)
+    base_rec = _recommend_threshold(org, decisions, current)
+
+    # 2. The realised outcomes of the auto-approved population.
+    outcome_rows = await _auto_approval_outcome_rows(db, since=since, entity_id=entity_id)
+    outcomes = compute_outcome_stats(outcome_rows, min_sample=_FEEDBACK_MIN_SAMPLE)
+
+    # 3. Fold the outcome signal back into the recommendation.
+    adjusted_rec = outcome_adjusted_threshold(base_rec, outcomes)
+
+    # 4. Effectiveness metrics (overturn rate + recommendation acceptance).
+    applied_n, total_n = await _suggestion_acceptance_counts(db, org_id=org.id)
+    metrics = compute_effectiveness(
+        outcomes,
+        applied_suggestion_count=applied_n,
+        total_suggestion_count=total_n,
+        min_sample=_FEEDBACK_MIN_SAMPLE,
+    )
+
+    # Sensitive read (it exposes the org's approval-control posture) — audit the
+    # access, field-NAME only, no PII. Commit the GET session so the row lands.
+    await log_access(
+        db,
+        user=user,
+        organization_id=org.id,
+        entity_type="adaptive_feedback",
+        entity_id=org.id,
+        extra={
+            "lookback_days": days,
+            "auto_approved_count": outcomes.auto_approved_count,
+            "overturn_rate_pct": str(outcomes.overturn_rate_pct),
+        },
+    )
+    await db.commit()
+
+    base_payload = _threshold_response_dict(base_rec)
+    base_payload["workflow_id"] = str(defn.id) if defn else None
+    base_payload["lookback_days"] = days
+    adjusted_payload = _threshold_response_dict(adjusted_rec)
+    adjusted_payload["workflow_id"] = str(defn.id) if defn else None
+    adjusted_payload["lookback_days"] = days
+
+    return FeedbackResponse(
+        lookback_days=days,
+        entity_id=str(entity_id) if entity_id else None,
+        outcomes=_outcome_stats_dict(outcomes),
+        metrics=[_metric_dict(m) for m in metrics],
+        base_recommendation=ThresholdRecommendationResponse(**base_payload),
+        adjusted_recommendation=ThresholdRecommendationResponse(**adjusted_payload),
     )

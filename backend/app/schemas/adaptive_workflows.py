@@ -225,6 +225,53 @@ class ApplyThresholdResponse(BaseModel):
     version_number: int | None = None  # the WorkflowVersion snapshot written on apply
 
 
+# ---------------------------------------------------------------------------
+# Feedback loop (outcome-adjusted)
+# ---------------------------------------------------------------------------
+
+
+class OutcomeStatsResponse(BaseModel):
+    """Overturn tallies over the auto-approved invoice population — the cohort a
+    raised auto-approve threshold creates."""
+
+    auto_approved_count: int
+    voided_count: int
+    corrected_count: int
+    rejected_count: int
+    overturned_count: int
+    overturn_rate_pct: str  # string-Decimal
+    insufficient_data: bool
+
+
+class EffectivenessMetricResponse(BaseModel):
+    """One effectiveness figure. ``value_pct`` is null when ``insufficient_data``
+    is true — the metric is honestly "not yet measurable", never a fabricated
+    number."""
+
+    name: str
+    value_pct: str | None = None  # string-Decimal, or null when insufficient_data
+    sample_size: int
+    insufficient_data: bool
+    label: str
+
+
+class FeedbackResponse(BaseModel):
+    """The feedback-loop read model under ``GET /api/adaptive/feedback``.
+
+    ``base_recommendation`` is the forward (approval-history-only) threshold
+    recommendation; ``adjusted_recommendation`` is the same recommendation after
+    the realised auto-approval outcomes are folded in (it pulls back to a no-raise
+    when overturns are climbing). Surfacing both makes the loop explainable —
+    *why* a raise the history supported was held back."""
+
+    lookback_days: int
+    entity_id: str | None = None
+    outcomes: OutcomeStatsResponse
+    metrics: list[EffectivenessMetricResponse]
+    base_recommendation: ThresholdRecommendationResponse
+    adjusted_recommendation: ThresholdRecommendationResponse
+
+
 __all__ = [
     "ApproverPatternResponse",
     "VendorPatternResponse",
@@ -243,4 +290,7 @@ __all__ = [
     "ThresholdRecommendationResponse",
     "ApplyThresholdRequest",
     "ApplyThresholdResponse",
+    "OutcomeStatsResponse",
+    "EffectivenessMetricResponse",
+    "FeedbackResponse",
 ]

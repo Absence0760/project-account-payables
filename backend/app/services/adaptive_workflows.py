@@ -52,6 +52,9 @@ __all__ = [
     "RoutingCandidate",
     "RoutingSuggestion",
     "ThresholdRecommendation",
+    "OutcomeStats",
+    "EffectivenessMetric",
+    "FeedbackSignal",
     "compute_approver_patterns",
     "compute_vendor_patterns",
     "compute_vendor_baseline",
@@ -59,6 +62,9 @@ __all__ = [
     "derive_suggestions",
     "recommend_auto_approve_threshold",
     "recommend_approvers",
+    "compute_outcome_stats",
+    "outcome_adjusted_threshold",
+    "compute_effectiveness",
     "_decimal_days",
 ]
 
@@ -887,3 +893,268 @@ def recommend_approvers(
         candidates=ranked,
         insufficient_history=not any_history,
     )
+
+
+# ---------------------------------------------------------------------------
+# Feedback loop — fold human OUTCOMES back into the recommendations
+# ---------------------------------------------------------------------------
+#
+# The recommendations above are forward-looking: they read the *approval*
+# history and project a routing/threshold suggestion. The feedback loop closes
+# the circle by reading what HAPPENED to the invoices that already sailed
+# through — the human overturns the system never sees on the way in:
+#
+#   * a payment that was VOIDED (`invoice.voided_return_to_approved`) — the
+#     strongest "this should not have been paid as-is" signal;
+#   * an auto-approval that was later CORRECTED or REJECTED.
+#
+# These outcomes already live in ``audit_log`` (no new instrumentation). The two
+# pure functions here turn them into (1) an *outcome-adjusted* threshold that
+# pulls BACK when the auto-approved population is being overturned, and (2) an
+# honest *effectiveness* metric (post-apply overturn rate + recommendation
+# acceptance rate) with an explicit "insufficient data" state — never a
+# fabricated figure. Both are deterministic, no-LLM, no-IO; the API layer pulls
+# the rows and hands them in already shaped.
+
+
+@dataclass(frozen=True)
+class OutcomeStats:
+    """Outcome tallies over a population of *auto-approved* invoices — the cohort
+    a raised auto-approve threshold actually creates. ``overturned`` = the union
+    of voided / corrected / rejected auto-approvals (each invoice counted once).
+    ``overturn_rate_pct`` is the share of the auto-approved population that a
+    human later had to walk back. ``insufficient_data`` is True when there are
+    too few auto-approvals to read a meaningful rate (the caller then leaves the
+    forward recommendation untouched rather than pulling back on noise)."""
+
+    auto_approved_count: int
+    voided_count: int
+    corrected_count: int
+    rejected_count: int
+    overturned_count: int  # distinct invoices in {voided ∪ corrected ∪ rejected}
+    overturn_rate_pct: Decimal  # overturned / auto_approved * 100, 0.1
+    insufficient_data: bool
+
+
+def compute_outcome_stats(
+    outcome_rows: list,
+    *,
+    min_sample: int = 5,
+) -> OutcomeStats:
+    """Tally overturns over the auto-approved population.
+
+    Each ``outcome_row`` is one auto-approved invoice, duck-typed with:
+      * ``invoice_id`` — identity (de-dupes multiple outcome signals per invoice);
+      * ``voided`` (bool) — a payment on it was later voided;
+      * ``corrected`` (bool) — an approval carried field corrections
+        (``details.changes`` present) — the extraction was overturned;
+      * ``rejected`` (bool) — the invoice was later rejected.
+
+    An invoice is **overturned** if any of those is true; it's counted once
+    regardless of how many signals fired. Pure / deterministic.
+    """
+    auto_n = 0
+    voided = corrected = rejected = overturned = 0
+    seen: set[str] = set()
+    for r in outcome_rows:
+        inv_id = str(_get(r, "invoice_id"))
+        if inv_id in seen:
+            continue
+        seen.add(inv_id)
+        auto_n += 1
+        v = bool(_get(r, "voided"))
+        c = bool(_get(r, "corrected"))
+        j = bool(_get(r, "rejected"))
+        voided += 1 if v else 0
+        corrected += 1 if c else 0
+        rejected += 1 if j else 0
+        if v or c or j:
+            overturned += 1
+
+    rate = _q1(Decimal(overturned) / Decimal(auto_n) * Decimal("100")) if auto_n else Decimal("0")
+    return OutcomeStats(
+        auto_approved_count=auto_n,
+        voided_count=voided,
+        corrected_count=corrected,
+        rejected_count=rejected,
+        overturned_count=overturned,
+        overturn_rate_pct=rate,
+        insufficient_data=auto_n < min_sample,
+    )
+
+
+def outcome_adjusted_threshold(
+    base: ThresholdRecommendation,
+    outcomes: OutcomeStats,
+    *,
+    pullback_overturn_pct: Decimal = Decimal("5.0"),
+    freeze_overturn_pct: Decimal = Decimal("15.0"),
+) -> ThresholdRecommendation:
+    """Fold the auto-approval overturn signal back into the forward threshold
+    recommendation, so accuracy *measured from outcomes* — not just clean
+    approval history — governs whether the limit rises.
+
+    Three bands, by the measured overturn rate of the auto-approved population:
+
+      * **below ``pullback_overturn_pct``** (default 5%) — the auto-approved
+        cohort is holding up; the forward recommendation passes through unchanged.
+      * **between the two thresholds** — elevated overturns. The raise is
+        *capped at the current threshold's clean candidate* but never withdrawn
+        below current: concretely we refuse to RAISE — the recommendation is
+        pulled back to ``no_increase`` (the system stops widening auto-approve
+        while overturns are climbing), with a rationale that cites the rate.
+      * **at/above ``freeze_overturn_pct``** (default 15%) — the auto-approved
+        population is being walked back too often to trust *any* raise; identical
+        no-raise outcome, stronger rationale (a freeze recommendation).
+
+    When ``outcomes.insufficient_data`` is True (too few auto-approvals to read a
+    rate) the base recommendation is returned untouched — we never pull back on
+    noise. **Never lowers** the existing threshold (consistent with the forward
+    rule); it only declines to raise. Pure / deterministic.
+    """
+    # Not enough outcome evidence, or the base already isn't raising → nothing to
+    # adjust. (A base that's already `no_increase`/`insufficient_evidence` stays
+    # as-is; pulling it back further would be meaningless.)
+    if outcomes.insufficient_data or not base.should_raise:
+        return base
+
+    rate = outcomes.overturn_rate_pct
+    if rate < pullback_overturn_pct:
+        return base  # outcomes confirm the raise is safe — pass through
+
+    frozen = rate >= freeze_overturn_pct
+    reason = "outcome_freeze" if frozen else "outcome_pullback"
+    verb = (
+        "is being overturned too often to widen auto-approve at all"
+        if frozen
+        else "has started to climb"
+    )
+    rationale = (
+        f"Outcome feedback: {outcomes.overturned_count} of "
+        f"{outcomes.auto_approved_count} auto-approved invoices were later "
+        f"voided, corrected, or rejected ({rate}% overturn rate) — the "
+        f"auto-approved population {verb}. Holding the auto-approve threshold at "
+        f"the current ${base.current_threshold:,.0f} instead of raising to "
+        f"${base.recommended_threshold:,.0f}; the approval history alone supported "
+        f"the raise, but the realised outcomes do not. Re-evaluate once the "
+        f"overturn rate falls below {pullback_overturn_pct}%."
+    )
+    return ThresholdRecommendation(
+        should_raise=False,
+        current_threshold=base.current_threshold,
+        recommended_threshold=base.current_threshold,  # never lowers; declines to raise
+        cap_threshold=base.cap_threshold,
+        qualifying_vendor_count=base.qualifying_vendor_count,
+        total_clean_invoices=base.total_clean_invoices,
+        evidence=base.evidence,
+        rationale=rationale,
+        reason_code=reason,
+    )
+
+
+@dataclass(frozen=True)
+class EffectivenessMetric:
+    """One measured effectiveness figure with an honest insufficient-data guard.
+
+    ``value_pct`` is meaningful only when ``insufficient_data`` is False;
+    otherwise it is ``None`` and ``label`` carries the deterministic "not yet
+    measurable" explanation. ``sample_size`` is the denominator the figure (or
+    the data shortfall) is computed over."""
+
+    name: str  # machine key, e.g. "auto_approval_overturn_rate"
+    value_pct: Decimal | None  # None ⇔ insufficient_data
+    sample_size: int
+    insufficient_data: bool
+    label: str  # deterministic human-readable description / shortfall reason
+
+
+@dataclass(frozen=True)
+class FeedbackSignal:
+    """The full feedback-loop read model: the outcome tallies, the two
+    effectiveness metrics, and the outcome-adjusted threshold recommendation —
+    plus the base (history-only) recommendation it adjusted, so the UI can show
+    *why* the loop pulled back (explainability, mirroring how the anomaly surface
+    returns the baseline it compared against)."""
+
+    outcomes: OutcomeStats
+    metrics: list[EffectivenessMetric]
+    base_recommendation: ThresholdRecommendation
+    adjusted_recommendation: ThresholdRecommendation
+
+
+def compute_effectiveness(
+    outcomes: OutcomeStats,
+    *,
+    applied_suggestion_count: int,
+    total_suggestion_count: int,
+    min_sample: int = 5,
+) -> list[EffectivenessMetric]:
+    """Compute the effectiveness metrics that replace the old "Not yet measured"
+    placeholder — each with an explicit insufficient-data state rather than a
+    fabricated number.
+
+      1. **auto_approval_overturn_rate** — of the invoices the system
+         auto-approved, the share a human later voided/corrected/rejected. The
+         honest accuracy signal for the auto-approve automation; lower is better.
+         Insufficient when the auto-approved sample is below ``min_sample``.
+      2. **recommendation_acceptance_rate** — of all advisory suggestions
+         surfaced, the share an admin actually applied (``status='applied'``).
+         Measures whether the recommendations are trusted; insufficient when no
+         suggestions have ever been surfaced.
+
+    Pure / deterministic.
+    """
+    # 1. Auto-approval overturn rate (inverse-accuracy of the automation).
+    if outcomes.insufficient_data:
+        overturn = EffectivenessMetric(
+            name="auto_approval_overturn_rate",
+            value_pct=None,
+            sample_size=outcomes.auto_approved_count,
+            insufficient_data=True,
+            label=(
+                f"Not yet measurable — only {outcomes.auto_approved_count} "
+                f"auto-approved invoice(s) so far (need {min_sample}). The "
+                f"overturn rate appears once enough invoices have been "
+                f"auto-approved to read a stable figure."
+            ),
+        )
+    else:
+        overturn = EffectivenessMetric(
+            name="auto_approval_overturn_rate",
+            value_pct=outcomes.overturn_rate_pct,
+            sample_size=outcomes.auto_approved_count,
+            insufficient_data=False,
+            label=(
+                f"{outcomes.overturned_count} of {outcomes.auto_approved_count} "
+                f"auto-approved invoices were later voided, corrected, or "
+                f"rejected ({outcomes.overturn_rate_pct}%). Lower is better."
+            ),
+        )
+
+    # 2. Recommendation acceptance rate (are the suggestions trusted?).
+    if total_suggestion_count <= 0:
+        acceptance = EffectivenessMetric(
+            name="recommendation_acceptance_rate",
+            value_pct=None,
+            sample_size=0,
+            insufficient_data=True,
+            label=(
+                "Not yet measurable — no workflow suggestions have been surfaced "
+                "yet, so there is nothing to have accepted."
+            ),
+        )
+    else:
+        applied = max(0, min(applied_suggestion_count, total_suggestion_count))
+        pct = _q1(Decimal(applied) / Decimal(total_suggestion_count) * Decimal("100"))
+        acceptance = EffectivenessMetric(
+            name="recommendation_acceptance_rate",
+            value_pct=pct,
+            sample_size=total_suggestion_count,
+            insufficient_data=False,
+            label=(
+                f"{applied} of {total_suggestion_count} workflow suggestion(s) "
+                f"applied ({pct}%). Higher means the recommendations are trusted."
+            ),
+        )
+
+    return [overturn, acceptance]
