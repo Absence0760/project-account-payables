@@ -15,9 +15,15 @@ from app.api.deps import (
     ROLE_AP_MANAGER,
     ROLE_CFO,
     get_org_id,
+    require_permission,
     require_roles,
 )
 from app.api.pagination import PaginationParams, paginated, pagination_params
+from app.api.permissions import (
+    PERM_VENDOR_BANK_CHANGE_APPROVE,
+    PERM_VENDOR_BLOCK,
+    PERM_VENDOR_MANAGE,
+)
 from app.config import settings
 from app.models.contract import Contract
 from app.models.credit_memo import CreditMemo
@@ -355,7 +361,9 @@ async def create_vendor(
     body: VendorCreate,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # vendor.manage defaults to admin/ap_manager (unchanged) — splittable so an
+    # org can grant master-data management without payment authority.
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
@@ -409,7 +417,7 @@ async def update_vendor(
     body: VendorUpdate,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(select(Vendor).where(Vendor.id == vendor_id))
@@ -641,7 +649,7 @@ async def block_vendor_payments(
     vendor_id: uuid.UUID,
     body: VendorBlockRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    user: User = Depends(require_permission(PERM_VENDOR_BLOCK)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Manually block all payments to a vendor. The block is sticky —
@@ -674,7 +682,7 @@ async def unblock_vendor_payments(
     vendor_id: uuid.UUID,
     body: VendorBlockRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    user: User = Depends(require_permission(PERM_VENDOR_BLOCK)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Lift a payment block. Clears the block flag, reason, and timestamp."""
@@ -705,7 +713,7 @@ async def unblock_vendor_payments(
 async def verify_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Verify an unverified vendor — makes them eligible for payment."""
@@ -741,7 +749,7 @@ async def verify_vendor(
 async def reject_vendor(
     vendor_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Reject an unverified vendor — marks as invalid/duplicate."""
@@ -1027,7 +1035,10 @@ async def approve_change_request(
     body: VendorChangeReviewRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
+    # The BEC / bank-redirect fraud gate. SoD-splittable from payment.execute so
+    # the person who can redirect where money goes can't also send it. Defaults
+    # to admin/ap_manager (unchanged).
+    user: User = Depends(require_permission(PERM_VENDOR_BANK_CHANGE_APPROVE)),
 ):
     """Apply the staged change to the vendor and mark the request approved.
 

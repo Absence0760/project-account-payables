@@ -15,9 +15,15 @@ from app.api.deps import (
     ROLE_AP_MANAGER,
     ROLE_CFO,
     get_org_id,
+    require_permission,
     require_roles,
 )
 from app.api.pagination import PaginationParams, pagination_params
+from app.api.permissions import (
+    PERM_PAYMENT_EXECUTE,
+    PERM_PAYMENT_RUN_APPROVE,
+    PERM_PAYMENT_VOID,
+)
 from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
@@ -410,7 +416,8 @@ async def void_payment(
     body: VoidPaymentRequest,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+    # Defaults map to admin/cfo (unchanged) — see ROLE_DEFAULT_PERMISSIONS.
+    user: User = Depends(require_permission(PERM_PAYMENT_VOID)),
 ):
     """Void a completed or in-flight payment.
 
@@ -594,7 +601,10 @@ async def create_payment_run(
     body: CreatePaymentRunRequest,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # SoD-splittable: creating (approving) a payment run is the gate before
+    # execution. Defaults map to admin/ap_manager/cfo (unchanged); a custom role
+    # can be granted run-approval WITHOUT execution, and vice versa.
+    user: User = Depends(require_permission(PERM_PAYMENT_RUN_APPROVE)),
     org_id: uuid.UUID = Depends(get_org_id),
     entity_id: uuid.UUID = Depends(get_write_entity_id),
 ):
@@ -836,7 +846,9 @@ async def execute_payment_run(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_tenant_db),
     org: Organization = Depends(get_tenant),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # The money-moving end of the payment SoD split. Defaults map to
+    # admin/ap_manager/cfo (unchanged); split from run-approval / bank-change.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
 ):
     """Execute a draft payment run via the configured payment adapter.
 

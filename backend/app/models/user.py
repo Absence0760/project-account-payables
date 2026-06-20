@@ -41,6 +41,14 @@ class Role(Base, TimestampMixin):
     # two orgs can both define their own "Approver" without collision.
     organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
 
+    # Granular permissions for a CUSTOM role (a list of dotted permission
+    # strings from `app.api.permissions.ALL_PERMISSIONS`). NULL = a system
+    # role, which resolves its permissions from the static
+    # `ROLE_DEFAULT_PERMISSIONS` map instead — never from this column. A custom
+    # role with an empty list grants nothing (the inert default, unchanged).
+    # See migration 0062 + `app/api/permissions.py`.
+    permissions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
     users: Mapped[list["User"]] = relationship(secondary="user_roles", back_populates="roles")
 
 
@@ -104,3 +112,10 @@ class User(Base, TimestampMixin):
 
     organization: Mapped["Organization"] = relationship(back_populates="users")  # noqa: F821
     roles: Mapped[list[Role]] = relationship(secondary="user_roles", back_populates="users")
+
+    # Transient (non-persisted) request-scoped cache of the user's effective
+    # granular permissions — the union over `roles`, computed in
+    # `get_current_user`. NOT a DB column; just a plain attribute the auth path
+    # populates so `require_permission` / `/auth/me` read it without recomputing
+    # or re-querying. Defaults to an empty frozenset on a freshly-built User.
+    effective_permissions: frozenset[str] = frozenset()

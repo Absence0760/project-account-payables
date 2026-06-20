@@ -13,6 +13,11 @@ class RoleResponse(BaseModel):
     # ap_clerk, cfo) — those gate hardcoded routes and can't be edited
     # or deleted. False for org-minted custom roles.
     is_system: bool = False
+    # The role's effective granular permissions (a list of catalog strings).
+    # For a system role this is its static default set; for a custom role it's
+    # the stored list. Drives the /admin/roles permission checkboxes + makes a
+    # custom role's grants visible.
+    permissions: list[str] = []
 
     model_config = {"from_attributes": True}
 
@@ -20,10 +25,23 @@ class RoleResponse(BaseModel):
 class CreateRoleRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
     description: str | None = Field(default=None, max_length=255)
+    # Granular permissions to grant this custom role. Sanitized to the known
+    # catalog server-side; an unknown / empty value grants nothing.
+    permissions: list[str] = []
 
 
 class UpdateRoleRequest(BaseModel):
     description: str | None = Field(default=None, max_length=255)
+    # Omitted (None) → leave permissions untouched. A provided list (even empty)
+    # replaces the role's permissions. Sanitized to the catalog server-side.
+    permissions: list[str] | None = Field(default=None)
+
+
+class PermissionCatalogEntry(BaseModel):
+    """One row of the granular-permission catalog the role editor renders."""
+
+    key: str
+    label: str
 
 
 class AdminUserResponse(BaseModel):

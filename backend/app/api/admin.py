@@ -10,8 +10,21 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import ALL_ROLES, ROLE_ADMIN, get_org_id, require_roles
+from app.api.deps import (
+    ALL_ROLES,
+    ROLE_ADMIN,
+    get_org_id,
+    require_permission,
+    require_roles,
+)
 from app.api.pagination import PaginationParams, pagination_params
+from app.api.permissions import (
+    ALL_PERMISSIONS,
+    PERM_USER_MANAGE,
+    PERMISSION_LABELS,
+    effective_permissions,
+    sanitize_permissions,
+)
 from app.database import get_control_db, get_tenant_engine
 from app.models.organization import Organization
 from app.models.user import Role, User, UserRole
@@ -21,6 +34,7 @@ from app.schemas.admin import (
     CreateRoleRequest,
     CreateUserRequest,
     CreateUserResponse,
+    PermissionCatalogEntry,
     RoleResponse,
     UpdateRoleRequest,
     UpdateUserRequest,
@@ -37,11 +51,17 @@ def _generate_temp_password(length: int = 12) -> str:
 
 
 def _role_to_response(role: Role) -> RoleResponse:
+    # System role → its static default permission set; custom role → its stored
+    # (sanitized) list. `effective_permissions` over a single role yields the
+    # same union, so it's the one place this resolution lives.
+    perms = effective_permissions([role])
     return RoleResponse(
         id=str(role.id),
         name=role.name,
         description=role.description,
         is_system=role.organization_id is None,
+        # Sort by catalog order for a stable, predictable UI.
+        permissions=[p for p in ALL_PERMISSIONS if p in perms],
     )
 
 
@@ -105,6 +125,20 @@ async def list_roles(
     return [_role_to_response(r) for r in result.scalars().all()]
 
 
+@router.get("/permissions", response_model=list[PermissionCatalogEntry])
+async def list_permission_catalog(
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+):
+    """The granular-permission catalog (key + human label), in display order.
+
+    Drives the permission checkboxes in the /admin/roles create/edit modal so
+    the frontend never hardcodes the catalog. Admin-only (it's the role editor's
+    companion); it's static data, no DB read."""
+    return [
+        PermissionCatalogEntry(key=key, label=PERMISSION_LABELS[key]) for key in ALL_PERMISSIONS
+    ]
+
+
 @router.post("/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
 async def create_role(
     body: CreateRoleRequest,
@@ -116,11 +150,12 @@ async def create_role(
     system role, since the route-level RBAC gates would silently treat the
     custom role as the built-in one.
 
-    NOTE: a custom role confers NO permissions today — `require_roles(...)`
-    only ever matches the four system-role names, so a user holding only
-    custom roles passes no gate. Custom roles are organizational labels until
-    the planned permission layer lands (see roadmap "Granular permissions /
-    segregation of duties" + docs/authentication.md § RBAC)."""
+    A custom role grants exactly the granular permissions in `body.permissions`
+    (sanitized to the catalog). With an empty list it's an inert organizational
+    label, exactly as before this layer; with permissions it lets the org SPLIT
+    fraud-sensitive duties (e.g. approve invoices but not execute payments). See
+    roadmap "Granular permissions / segregation of duties" + docs/authentication.md
+    § RBAC."""
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Role name cannot be empty")
@@ -135,7 +170,12 @@ async def create_role(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Role name already exists for this org")
 
-    role = Role(name=name, description=body.description, organization_id=org_id)
+    role = Role(
+        name=name,
+        description=body.description,
+        organization_id=org_id,
+        permissions=sanitize_permissions(body.permissions),
+    )
     db.add(role)
     await db.commit()
     await db.refresh(role)
@@ -150,11 +190,11 @@ async def update_role(
     user: User = Depends(require_roles(ROLE_ADMIN)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
-    """Edit a custom role. System roles are read-only — renaming `admin`
-    would silently break every `require_roles(ROLE_ADMIN)` gate. Only the
-    description is mutable on custom roles too, since the name is
-    referenced by approval-chain configs and changing it would break
-    them."""
+    """Edit a custom role — its description and/or granular permissions. The
+    name is immutable (it's referenced by approval-chain configs) and system
+    roles are read-only entirely (renaming `admin` would silently break every
+    `require_roles(ROLE_ADMIN)` gate; their permissions come from the static
+    default map, not this column)."""
     role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
@@ -165,6 +205,10 @@ async def update_role(
 
     if body.description is not None:
         role.description = body.description
+    # A provided list (even empty) replaces the grants; omitting it (None)
+    # leaves them untouched. Sanitized to the known catalog.
+    if body.permissions is not None:
+        role.permissions = sanitize_permissions(body.permissions)
     await db.commit()
     await db.refresh(role)
     return _role_to_response(role)
@@ -208,7 +252,9 @@ async def delete_role(
 async def create_user(
     body: CreateUserRequest,
     db: AsyncSession = Depends(get_control_db),
-    user: User = Depends(require_roles(ROLE_ADMIN)),
+    # user.manage defaults to admin-only (unchanged) — a custom role can be
+    # granted user management without inheriting the rest of `admin`.
+    user: User = Depends(require_permission(PERM_USER_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     # Check email uniqueness
@@ -258,7 +304,7 @@ async def update_user(
     user_id: uuid.UUID,
     body: UpdateUserRequest,
     db: AsyncSession = Depends(get_control_db),
-    current_user: User = Depends(require_roles(ROLE_ADMIN)),
+    current_user: User = Depends(require_permission(PERM_USER_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(
@@ -392,7 +438,7 @@ async def _user_reference_counts(db_name: str, user_id: uuid.UUID) -> UserDelete
 async def delete_user(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_control_db),
-    current_user: User = Depends(require_roles(ROLE_ADMIN)),
+    current_user: User = Depends(require_permission(PERM_USER_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     result = await db.execute(
@@ -454,7 +500,7 @@ class BulkDeleteResponse(BaseModel):
 async def bulk_delete_users(
     body: BulkDeleteRequest,
     db: AsyncSession = Depends(get_control_db),
-    current_user: User = Depends(require_roles(ROLE_ADMIN)),
+    current_user: User = Depends(require_permission(PERM_USER_MANAGE)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     """Best-effort delete of multiple users.
