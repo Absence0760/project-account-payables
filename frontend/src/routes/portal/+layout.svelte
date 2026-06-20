@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
+	import { portalBrand } from '$lib/stores/portalBrand.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
@@ -9,6 +10,14 @@
 
 	$effect(() => {
 		if (browser) tenant = getTenantSlug();
+	});
+
+	// Apply the tenant's white-label brand (accent colors + logo + product name +
+	// <title>) across the WHOLE portal — the unauthenticated login page AND the
+	// authed pages. The read is the public `GET /api/portal/branding`, so it works
+	// before a vendor signs in. Fail-soft: any failure leaves the default theme.
+	$effect(() => {
+		if (tenant) portalBrand.ensureLoadedAndApply();
 	});
 
 	$effect(() => {
@@ -43,7 +52,7 @@
 </script>
 
 <svelte:head>
-	<title>Supplier Portal</title>
+	<title>{portalBrand.productName} — Supplier Portal</title>
 </svelte:head>
 
 {#if tenant === undefined}
@@ -60,8 +69,13 @@
 		<a href="#main-content" class="skip-link">Skip to main content</a>
 		<header class="portal-header">
 			<div class="brand">
-				<strong>Supplier Portal</strong>
-				<span class="vendor">{portalAuth.user.vendor_name}</span>
+				{#if portalBrand.logoUrl}
+					<img class="brand-logo" src={portalBrand.logoUrl} alt={portalBrand.productName} />
+				{/if}
+				<div class="brand-text">
+					<strong>{portalBrand.productName}</strong>
+					<span class="vendor">{portalAuth.user.vendor_name}</span>
+				</div>
 			</div>
 			<nav aria-label="Supplier portal">
 				<a href="/portal/invoices" class:active={$page.url.pathname.startsWith('/portal/invoices')}
@@ -121,6 +135,20 @@
 	}
 
 	.brand {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		line-height: 1.2;
+	}
+
+	.brand-logo {
+		height: 28px;
+		width: auto;
+		max-width: 140px;
+		object-fit: contain;
+	}
+
+	.brand-text {
 		display: flex;
 		flex-direction: column;
 		line-height: 1.2;
