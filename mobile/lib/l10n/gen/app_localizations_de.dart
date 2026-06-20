@@ -66,6 +66,9 @@ class AppLocalizationsDe extends AppLocalizations {
   String get commonApply => 'Anwenden';
 
   @override
+  String get commonClose => 'Schließen';
+
+  @override
   String get settingsTitle => 'Einstellungen';
 
   @override
@@ -373,4 +376,126 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get paymentStatusCancelled => 'Storniert';
+
+  @override
+  String get approvalsTitle => 'Ausstehende Freigaben';
+
+  @override
+  String get approvalsAllCaughtUp => 'Alles erledigt!';
+
+  @override
+  String get approvalsNoneWaiting => 'Keine Rechnungen warten auf Freigabe';
+
+  @override
+  String approvalsPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Rechnungen ausstehend',
+      one: '$count Rechnung ausstehend',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get approvalActionApprove => 'Freigeben';
+
+  @override
+  String get approvalActionReject => 'Ablehnen';
+
+  @override
+  String get approvalApproved => 'Rechnung freigegeben';
+
+  @override
+  String get captureTitle => 'Rechnung erfassen';
+
+  @override
+  String get captureChange => 'Ändern';
+
+  @override
+  String get captureUpload => 'Hochladen';
+
+  @override
+  String get captureUploading => 'Wird hochgeladen …';
+
+  @override
+  String get captureEmptyPrompt =>
+      'Foto aufnehmen, aus der Galerie wählen oder eine Datei auswählen';
+
+  @override
+  String get captureCamera => 'Kamera';
+
+  @override
+  String get captureGallery => 'Galerie';
+
+  @override
+  String get captureChooseFile => 'Datei auswählen';
+
+  @override
+  String get captureSupportedFormats => 'Unterstützt PDF, PNG, JPG und TIFF';
+
+  @override
+  String get captureUploadSuccess => 'Rechnung erfolgreich hochgeladen';
+
+  @override
+  String captureUploadFailedStatus(int status, String message) {
+    return 'Hochladen fehlgeschlagen ($status): $message';
+  }
+
+  @override
+  String captureUploadFailed(String error) {
+    return 'Hochladen fehlgeschlagen: $error';
+  }
+
+  @override
+  String captureSelectedDocument(String name) {
+    return 'Ausgewähltes Dokument: $name';
+  }
+
+  @override
+  String get capturePdfReady => 'PDF-Dokument bereit zum Hochladen';
+
+  @override
+  String get advSearchTitle => 'Erweiterte Suche';
+
+  @override
+  String get advSearchClose => 'Erweiterte Suche schließen';
+
+  @override
+  String get advSearchVendor => 'Lieferant';
+
+  @override
+  String get advSearchPoNumber => 'Bestellnummer';
+
+  @override
+  String get advSearchMinAmount => 'Mindestbetrag';
+
+  @override
+  String get advSearchMaxAmount => 'Höchstbetrag';
+
+  @override
+  String get advSearchDueFrom => 'Fällig ab';
+
+  @override
+  String get advSearchDueTo => 'Fällig bis';
+
+  @override
+  String get advSearchAny => 'Beliebig';
+
+  @override
+  String get advSearchInvalidAmount => 'Gültigen Betrag eingeben (z. B. 1000)';
+
+  @override
+  String get advSearchMinMaxError =>
+      'Minimum darf das Maximum nicht überschreiten';
+
+  @override
+  String advSearchClearField(String label) {
+    return '$label löschen';
+  }
+
+  @override
+  String advSearchDateFieldHint(String label, String value) {
+    return '$label, aktuell $value. Zum Ändern doppeltippen.';
+  }
 }

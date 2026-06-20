@@ -66,6 +66,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get commonApply => '適用';
 
   @override
+  String get commonClose => '閉じる';
+
+  @override
   String get settingsTitle => '設定';
 
   @override
@@ -365,4 +368,123 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get paymentStatusCancelled => 'キャンセル済み';
+
+  @override
+  String get approvalsTitle => '承認待ち';
+
+  @override
+  String get approvalsAllCaughtUp => 'すべて完了しました！';
+
+  @override
+  String get approvalsNoneWaiting => '承認待ちの請求書はありません';
+
+  @override
+  String approvalsPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count件の請求書が承認待ち',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get approvalActionApprove => '承認';
+
+  @override
+  String get approvalActionReject => '却下';
+
+  @override
+  String get approvalApproved => '請求書を承認しました';
+
+  @override
+  String get captureTitle => '請求書を撮影';
+
+  @override
+  String get captureChange => '変更';
+
+  @override
+  String get captureUpload => 'アップロード';
+
+  @override
+  String get captureUploading => 'アップロード中…';
+
+  @override
+  String get captureEmptyPrompt => '写真を撮影、ギャラリーから選択、またはファイルを選択してください';
+
+  @override
+  String get captureCamera => 'カメラ';
+
+  @override
+  String get captureGallery => 'ギャラリー';
+
+  @override
+  String get captureChooseFile => 'ファイルを選択';
+
+  @override
+  String get captureSupportedFormats => 'PDF、PNG、JPG、TIFFに対応';
+
+  @override
+  String get captureUploadSuccess => '請求書を正常にアップロードしました';
+
+  @override
+  String captureUploadFailedStatus(int status, String message) {
+    return 'アップロードに失敗しました（$status）: $message';
+  }
+
+  @override
+  String captureUploadFailed(String error) {
+    return 'アップロードに失敗しました: $error';
+  }
+
+  @override
+  String captureSelectedDocument(String name) {
+    return '選択した書類: $name';
+  }
+
+  @override
+  String get capturePdfReady => 'PDF書類をアップロードする準備ができました';
+
+  @override
+  String get advSearchTitle => '詳細検索';
+
+  @override
+  String get advSearchClose => '詳細検索を閉じる';
+
+  @override
+  String get advSearchVendor => '取引先';
+
+  @override
+  String get advSearchPoNumber => '発注番号';
+
+  @override
+  String get advSearchMinAmount => '最小金額';
+
+  @override
+  String get advSearchMaxAmount => '最大金額';
+
+  @override
+  String get advSearchDueFrom => '期限開始';
+
+  @override
+  String get advSearchDueTo => '期限終了';
+
+  @override
+  String get advSearchAny => '指定なし';
+
+  @override
+  String get advSearchInvalidAmount => '有効な金額を入力してください（例: 1000）';
+
+  @override
+  String get advSearchMinMaxError => '最小値は最大値を超えてはいけません';
+
+  @override
+  String advSearchClearField(String label) {
+    return '$labelをクリア';
+  }
+
+  @override
+  String advSearchDateFieldHint(String label, String value) {
+    return '$label、現在 $value。ダブルタップで変更します。';
+  }
 }

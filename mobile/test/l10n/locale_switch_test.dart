@@ -129,6 +129,52 @@ void main() {
     expect(find.text('完了'), findsOneWidget); // paymentStatusCompleted
   });
 
+  testWidgets(
+      'the latest extraction batch (approvals / capture / advanced search) '
+      'switches with the locale', (tester) async {
+    // Guards the screen keys added in the approvals / capture / advanced-search
+    // batch. Proves the new keys re-localize live (not just that they parse),
+    // including the plural (approvalsPendingCount) and a placeholder string
+    // (captureSelectedDocument).
+    final probe = Builder(
+      builder: (context) {
+        final l = AppLocalizations.of(context);
+        return Scaffold(
+          body: Column(
+            children: [
+              Text(l.approvalsTitle),
+              Text(l.approvalsPendingCount(2)),
+              Text(l.captureTitle),
+              Text(l.captureSelectedDocument('foo.pdf')),
+              Text(l.advSearchTitle),
+            ],
+          ),
+        );
+      },
+    );
+
+    await LocaleStore.instance.setLocale(const Locale('en'));
+    await tester.pumpWidget(host(probe));
+    await tester.pump();
+    expect(find.text('Pending Approvals'), findsOneWidget); // approvalsTitle
+    expect(find.text('2 invoices pending'), findsOneWidget); // plural
+    expect(find.text('Capture Invoice'), findsOneWidget); // captureTitle
+    expect(find.text('Selected document: foo.pdf'), findsOneWidget); // placeholder
+    expect(find.text('Advanced Search'), findsOneWidget); // advSearchTitle
+
+    await LocaleStore.instance.setLocale(const Locale('de'));
+    await tester.pump();
+    expect(find.text('Ausstehende Freigaben'), findsOneWidget); // approvalsTitle
+    expect(find.text('Rechnung erfassen'), findsOneWidget); // captureTitle
+    expect(find.text('Erweiterte Suche'), findsOneWidget); // advSearchTitle
+    expect(find.text('Pending Approvals'), findsNothing);
+
+    await LocaleStore.instance.setLocale(const Locale('ja'));
+    await tester.pump();
+    expect(find.text('承認待ち'), findsOneWidget); // approvalsTitle
+    expect(find.text('詳細検索'), findsOneWidget); // advSearchTitle
+  });
+
   testWidgets('the choice persists and reloads via init()', (tester) async {
     await LocaleStore.instance.setLocale(const Locale('fr'));
     expect(LocaleStore.tagOf(LocaleStore.instance.locale!), 'fr');

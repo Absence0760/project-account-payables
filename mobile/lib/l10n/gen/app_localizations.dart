@@ -221,6 +221,12 @@ abstract class AppLocalizations {
   /// **'Apply'**
   String get commonApply;
 
+  /// No description provided for @commonClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get commonClose;
+
   /// No description provided for @settingsTitle.
   ///
   /// In en, this message translates to:
@@ -796,6 +802,210 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Cancelled'**
   String get paymentStatusCancelled;
+
+  /// No description provided for @approvalsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending Approvals'**
+  String get approvalsTitle;
+
+  /// No description provided for @approvalsAllCaughtUp.
+  ///
+  /// In en, this message translates to:
+  /// **'All caught up!'**
+  String get approvalsAllCaughtUp;
+
+  /// No description provided for @approvalsNoneWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'No invoices waiting for approval'**
+  String get approvalsNoneWaiting;
+
+  /// No description provided for @approvalsPendingCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} invoice pending} other {{count} invoices pending}}'**
+  String approvalsPendingCount(int count);
+
+  /// No description provided for @approvalActionApprove.
+  ///
+  /// In en, this message translates to:
+  /// **'Approve'**
+  String get approvalActionApprove;
+
+  /// No description provided for @approvalActionReject.
+  ///
+  /// In en, this message translates to:
+  /// **'Reject'**
+  String get approvalActionReject;
+
+  /// No description provided for @approvalApproved.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice approved'**
+  String get approvalApproved;
+
+  /// No description provided for @captureTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Capture Invoice'**
+  String get captureTitle;
+
+  /// No description provided for @captureChange.
+  ///
+  /// In en, this message translates to:
+  /// **'Change'**
+  String get captureChange;
+
+  /// No description provided for @captureUpload.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload'**
+  String get captureUpload;
+
+  /// No description provided for @captureUploading.
+  ///
+  /// In en, this message translates to:
+  /// **'Uploading…'**
+  String get captureUploading;
+
+  /// No description provided for @captureEmptyPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Take a photo, choose from gallery, or pick a file'**
+  String get captureEmptyPrompt;
+
+  /// No description provided for @captureCamera.
+  ///
+  /// In en, this message translates to:
+  /// **'Camera'**
+  String get captureCamera;
+
+  /// No description provided for @captureGallery.
+  ///
+  /// In en, this message translates to:
+  /// **'Gallery'**
+  String get captureGallery;
+
+  /// No description provided for @captureChooseFile.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose file'**
+  String get captureChooseFile;
+
+  /// No description provided for @captureSupportedFormats.
+  ///
+  /// In en, this message translates to:
+  /// **'Supports PDF, PNG, JPG and TIFF'**
+  String get captureSupportedFormats;
+
+  /// No description provided for @captureUploadSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice uploaded successfully'**
+  String get captureUploadSuccess;
+
+  /// No description provided for @captureUploadFailedStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload failed ({status}): {message}'**
+  String captureUploadFailedStatus(int status, String message);
+
+  /// No description provided for @captureUploadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload failed: {error}'**
+  String captureUploadFailed(String error);
+
+  /// No description provided for @captureSelectedDocument.
+  ///
+  /// In en, this message translates to:
+  /// **'Selected document: {name}'**
+  String captureSelectedDocument(String name);
+
+  /// No description provided for @capturePdfReady.
+  ///
+  /// In en, this message translates to:
+  /// **'PDF document ready to upload'**
+  String get capturePdfReady;
+
+  /// No description provided for @advSearchTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Advanced Search'**
+  String get advSearchTitle;
+
+  /// No description provided for @advSearchClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close advanced search'**
+  String get advSearchClose;
+
+  /// No description provided for @advSearchVendor.
+  ///
+  /// In en, this message translates to:
+  /// **'Vendor'**
+  String get advSearchVendor;
+
+  /// No description provided for @advSearchPoNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'PO Number'**
+  String get advSearchPoNumber;
+
+  /// No description provided for @advSearchMinAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Min amount'**
+  String get advSearchMinAmount;
+
+  /// No description provided for @advSearchMaxAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Max amount'**
+  String get advSearchMaxAmount;
+
+  /// No description provided for @advSearchDueFrom.
+  ///
+  /// In en, this message translates to:
+  /// **'Due from'**
+  String get advSearchDueFrom;
+
+  /// No description provided for @advSearchDueTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Due to'**
+  String get advSearchDueTo;
+
+  /// No description provided for @advSearchAny.
+  ///
+  /// In en, this message translates to:
+  /// **'Any'**
+  String get advSearchAny;
+
+  /// No description provided for @advSearchInvalidAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a valid amount (e.g. 1000)'**
+  String get advSearchInvalidAmount;
+
+  /// No description provided for @advSearchMinMaxError.
+  ///
+  /// In en, this message translates to:
+  /// **'Min must not exceed max'**
+  String get advSearchMinMaxError;
+
+  /// No description provided for @advSearchClearField.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear {label}'**
+  String advSearchClearField(String label);
+
+  /// No description provided for @advSearchDateFieldHint.
+  ///
+  /// In en, this message translates to:
+  /// **'{label}, currently {value}. Double tap to change.'**
+  String advSearchDateFieldHint(String label, String value);
 }
 
 class _AppLocalizationsDelegate

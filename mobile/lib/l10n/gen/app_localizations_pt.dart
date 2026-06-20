@@ -66,6 +66,9 @@ class AppLocalizationsPt extends AppLocalizations {
   String get commonApply => 'Aplicar';
 
   @override
+  String get commonClose => 'Fechar';
+
+  @override
   String get settingsTitle => 'Configurações';
 
   @override
@@ -374,6 +377,127 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String get paymentStatusCancelled => 'Cancelado';
+
+  @override
+  String get approvalsTitle => 'Aprovações pendentes';
+
+  @override
+  String get approvalsAllCaughtUp => 'Tudo em dia!';
+
+  @override
+  String get approvalsNoneWaiting => 'Nenhuma fatura aguardando aprovação';
+
+  @override
+  String approvalsPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count faturas pendentes',
+      one: '$count fatura pendente',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get approvalActionApprove => 'Aprovar';
+
+  @override
+  String get approvalActionReject => 'Rejeitar';
+
+  @override
+  String get approvalApproved => 'Fatura aprovada';
+
+  @override
+  String get captureTitle => 'Capturar fatura';
+
+  @override
+  String get captureChange => 'Alterar';
+
+  @override
+  String get captureUpload => 'Enviar';
+
+  @override
+  String get captureUploading => 'Enviando…';
+
+  @override
+  String get captureEmptyPrompt =>
+      'Tire uma foto, escolha da galeria ou selecione um arquivo';
+
+  @override
+  String get captureCamera => 'Câmera';
+
+  @override
+  String get captureGallery => 'Galeria';
+
+  @override
+  String get captureChooseFile => 'Escolher arquivo';
+
+  @override
+  String get captureSupportedFormats => 'Compatível com PDF, PNG, JPG e TIFF';
+
+  @override
+  String get captureUploadSuccess => 'Fatura enviada com sucesso';
+
+  @override
+  String captureUploadFailedStatus(int status, String message) {
+    return 'Falha no envio ($status): $message';
+  }
+
+  @override
+  String captureUploadFailed(String error) {
+    return 'Falha no envio: $error';
+  }
+
+  @override
+  String captureSelectedDocument(String name) {
+    return 'Documento selecionado: $name';
+  }
+
+  @override
+  String get capturePdfReady => 'Documento PDF pronto para envio';
+
+  @override
+  String get advSearchTitle => 'Busca avançada';
+
+  @override
+  String get advSearchClose => 'Fechar busca avançada';
+
+  @override
+  String get advSearchVendor => 'Fornecedor';
+
+  @override
+  String get advSearchPoNumber => 'Número do pedido';
+
+  @override
+  String get advSearchMinAmount => 'Valor mínimo';
+
+  @override
+  String get advSearchMaxAmount => 'Valor máximo';
+
+  @override
+  String get advSearchDueFrom => 'Vencimento de';
+
+  @override
+  String get advSearchDueTo => 'Vencimento até';
+
+  @override
+  String get advSearchAny => 'Qualquer';
+
+  @override
+  String get advSearchInvalidAmount => 'Insira um valor válido (ex.: 1000)';
+
+  @override
+  String get advSearchMinMaxError => 'O mínimo não deve exceder o máximo';
+
+  @override
+  String advSearchClearField(String label) {
+    return 'Limpar $label';
+  }
+
+  @override
+  String advSearchDateFieldHint(String label, String value) {
+    return '$label, atualmente $value. Toque duas vezes para alterar.';
+  }
 }
 
 /// The translations for Portuguese, as used in Brazil (`pt_BR`).
@@ -438,6 +562,9 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
   String get commonApply => 'Aplicar';
 
   @override
+  String get commonClose => 'Fechar';
+
+  @override
   String get settingsTitle => 'Configurações';
 
   @override
@@ -746,4 +873,125 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
 
   @override
   String get paymentStatusCancelled => 'Cancelado';
+
+  @override
+  String get approvalsTitle => 'Aprovações pendentes';
+
+  @override
+  String get approvalsAllCaughtUp => 'Tudo em dia!';
+
+  @override
+  String get approvalsNoneWaiting => 'Nenhuma fatura aguardando aprovação';
+
+  @override
+  String approvalsPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count faturas pendentes',
+      one: '$count fatura pendente',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get approvalActionApprove => 'Aprovar';
+
+  @override
+  String get approvalActionReject => 'Rejeitar';
+
+  @override
+  String get approvalApproved => 'Fatura aprovada';
+
+  @override
+  String get captureTitle => 'Capturar fatura';
+
+  @override
+  String get captureChange => 'Alterar';
+
+  @override
+  String get captureUpload => 'Enviar';
+
+  @override
+  String get captureUploading => 'Enviando…';
+
+  @override
+  String get captureEmptyPrompt =>
+      'Tire uma foto, escolha da galeria ou selecione um arquivo';
+
+  @override
+  String get captureCamera => 'Câmera';
+
+  @override
+  String get captureGallery => 'Galeria';
+
+  @override
+  String get captureChooseFile => 'Escolher arquivo';
+
+  @override
+  String get captureSupportedFormats => 'Compatível com PDF, PNG, JPG e TIFF';
+
+  @override
+  String get captureUploadSuccess => 'Fatura enviada com sucesso';
+
+  @override
+  String captureUploadFailedStatus(int status, String message) {
+    return 'Falha no envio ($status): $message';
+  }
+
+  @override
+  String captureUploadFailed(String error) {
+    return 'Falha no envio: $error';
+  }
+
+  @override
+  String captureSelectedDocument(String name) {
+    return 'Documento selecionado: $name';
+  }
+
+  @override
+  String get capturePdfReady => 'Documento PDF pronto para envio';
+
+  @override
+  String get advSearchTitle => 'Busca avançada';
+
+  @override
+  String get advSearchClose => 'Fechar busca avançada';
+
+  @override
+  String get advSearchVendor => 'Fornecedor';
+
+  @override
+  String get advSearchPoNumber => 'Número do pedido';
+
+  @override
+  String get advSearchMinAmount => 'Valor mínimo';
+
+  @override
+  String get advSearchMaxAmount => 'Valor máximo';
+
+  @override
+  String get advSearchDueFrom => 'Vencimento de';
+
+  @override
+  String get advSearchDueTo => 'Vencimento até';
+
+  @override
+  String get advSearchAny => 'Qualquer';
+
+  @override
+  String get advSearchInvalidAmount => 'Insira um valor válido (ex.: 1000)';
+
+  @override
+  String get advSearchMinMaxError => 'O mínimo não deve exceder o máximo';
+
+  @override
+  String advSearchClearField(String label) {
+    return 'Limpar $label';
+  }
+
+  @override
+  String advSearchDateFieldHint(String label, String value) {
+    return '$label, atualmente $value. Toque duas vezes para alterar.';
+  }
 }

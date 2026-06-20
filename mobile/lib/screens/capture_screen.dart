@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/services/camera_capture.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
@@ -53,6 +54,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
   Future<void> _upload() async {
     if (_selectedFile == null) return;
 
+    // Resolve the localizations before the first await — context lookups after
+    // an async gap are flagged by use_build_context_synchronously.
+    final l = AppLocalizations.of(context);
+
     setState(() {
       _uploading = true;
       _error = null;
@@ -65,7 +70,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
       if (mounted) {
         final message =
-            result['message'] as String? ?? 'Invoice uploaded successfully';
+            result['message'] as String? ?? l.captureUploadSuccess;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(message)),
         );
@@ -75,8 +80,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
     } catch (e) {
       final message = e is ApiException
-          ? 'Upload failed (${e.statusCode}): ${e.message}'
-          : 'Upload failed: $e';
+          ? l.captureUploadFailedStatus(e.statusCode, e.message)
+          : l.captureUploadFailed(e.toString());
       if (!mounted) return;
       setState(() {
         _uploading = false;
@@ -88,14 +93,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Capture Invoice')),
+      appBar: AppBar(title: Text(l.captureTitle)),
       body: Column(
         children: [
           Expanded(
             child: _selectedFile != null
-                ? (_selectedIsPdf ? _buildPdfPreview() : _buildImagePreview())
-                : _buildEmptyState(),
+                ? (_selectedIsPdf
+                      ? _buildPdfPreview(l)
+                      : _buildImagePreview())
+                : _buildEmptyState(l),
           ),
           if (_error != null)
             Padding(
@@ -119,7 +127,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                       child: OutlinedButton.icon(
                         onPressed: _uploading ? null : _changeSource,
                         icon: const Icon(Icons.refresh),
-                        label: const Text('Change'),
+                        label: Text(l.captureChange),
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -136,7 +144,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
                                 ),
                               )
                             : const Icon(Icons.upload),
-                        label: Text(_uploading ? 'Uploading...' : 'Upload'),
+                        label: Text(
+                          _uploading ? l.captureUploading : l.captureUpload,
+                        ),
                       ),
                     ),
                   ],
@@ -150,7 +160,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   /// Empty state — offers all three sources: camera, gallery, and a file
   /// picker for documents (PDF / PNG / JPG / TIFF).
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState(AppLocalizations l) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -165,9 +175,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            const Text(
-              'Take a photo, choose from gallery, or pick a file',
-              style: TextStyle(fontSize: 16),
+            Text(
+              l.captureEmptyPrompt,
+              style: const TextStyle(fontSize: 16),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
@@ -179,23 +189,23 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 FilledButton.icon(
                   onPressed: () => _capture(fromCamera: true),
                   icon: const Icon(Icons.camera_alt),
-                  label: const Text('Camera'),
+                  label: Text(l.captureCamera),
                 ),
                 OutlinedButton.icon(
                   onPressed: () => _capture(fromCamera: false),
                   icon: const Icon(Icons.photo_library),
-                  label: const Text('Gallery'),
+                  label: Text(l.captureGallery),
                 ),
                 OutlinedButton.icon(
                   onPressed: _pickDocument,
                   icon: const Icon(Icons.upload_file),
-                  label: const Text('Choose file'),
+                  label: Text(l.captureChooseFile),
                 ),
               ],
             ),
             const SizedBox(height: 12),
             Text(
-              'Supports PDF, PNG, JPG and TIFF',
+              l.captureSupportedFormats,
               style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
             ),
           ],
@@ -218,11 +228,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
   /// [Image.file]. Shows the file name so the user can confirm their choice
   /// before uploading; the rendered PDF is viewable on the invoice detail
   /// screen after extraction.
-  Widget _buildPdfPreview() {
+  Widget _buildPdfPreview(AppLocalizations l) {
     final name = p.basename(_selectedFile!.path);
     return Center(
       child: Semantics(
-        label: 'Selected document: $name',
+        label: l.captureSelectedDocument(name),
         excludeSemantics: true,
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -238,7 +248,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            const Text('PDF document ready to upload'),
+            Text(l.capturePdfReady),
           ],
         ),
       ),
@@ -248,6 +258,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   /// Re-open a source chooser so the user can swap the selected file before
   /// uploading. Covers all three sources (camera / gallery / file).
   Future<void> _changeSource() async {
+    final l = AppLocalizations.of(context);
     final choice = await showModalBottomSheet<String>(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -256,17 +267,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.camera_alt),
-              title: const Text('Camera'),
+              title: Text(l.captureCamera),
               onTap: () => Navigator.pop(sheetContext, 'camera'),
             ),
             ListTile(
               leading: const Icon(Icons.photo_library),
-              title: const Text('Gallery'),
+              title: Text(l.captureGallery),
               onTap: () => Navigator.pop(sheetContext, 'gallery'),
             ),
             ListTile(
               leading: const Icon(Icons.upload_file),
-              title: const Text('Choose file'),
+              title: Text(l.captureChooseFile),
               onTap: () => Navigator.pop(sheetContext, 'file'),
             ),
           ],

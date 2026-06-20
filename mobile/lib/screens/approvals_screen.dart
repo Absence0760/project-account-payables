@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/screens/invoice_detail_screen.dart';
 import 'package:ap_mobile/stores/invoice_store.dart';
@@ -25,8 +26,9 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Pending Approvals')),
+      appBar: AppBar(title: Text(l.approvalsTitle)),
       body: ListenableBuilder(
         listenable: InvoiceStore.instance,
         builder: (context, _) {
@@ -38,18 +40,21 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
           }
 
           if (pending.isEmpty) {
-            return const Center(
+            return Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.check_circle, size: 64, color: Colors.green),
-                  SizedBox(height: 16),
+                  const Icon(Icons.check_circle, size: 64, color: Colors.green),
+                  const SizedBox(height: 16),
                   Text(
-                    'All caught up!',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                    l.approvalsAllCaughtUp,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                  SizedBox(height: 4),
-                  Text('No invoices waiting for approval'),
+                  const SizedBox(height: 4),
+                  Text(l.approvalsNoneWaiting),
                 ],
               ),
             );
@@ -63,7 +68,7 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                   child: Text(
-                    '${pending.length} invoice${pending.length == 1 ? '' : 's'} pending',
+                    l.approvalsPendingCount(pending.length),
                     style: TextStyle(
                       // shade700 clears AA contrast (shade600 is 4.38:1 at 14px).
                       color: Colors.grey.shade700,
@@ -83,13 +88,13 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
                           Colors.green.shade700,
                           Icons.check,
                           Alignment.centerLeft,
-                          'Approve',
+                          l.approvalActionApprove,
                         ),
                         secondaryBackground: _swipeBackground(
                           Colors.red.shade700,
                           Icons.close,
                           Alignment.centerRight,
-                          'Reject',
+                          l.approvalActionReject,
                         ),
                         confirmDismiss: (direction) async {
                           if (direction == DismissDirection.startToEnd) {
@@ -99,7 +104,7 @@ class _ApprovalsScreenState extends State<ApprovalsScreen> {
                               // Announce the result for assistive tech — the
                               // row vanishing is not announced on its own
                               // (WCAG 4.1.3).
-                              A11y.announce(context, 'Invoice approved');
+                              A11y.announce(context, l.approvalApproved);
                             }
                             return ok;
                           }
