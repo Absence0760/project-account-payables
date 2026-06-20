@@ -20,6 +20,8 @@ from app.services.billing_adapters.base import (
     BillingWebhookEvent,
     CreateSubscriptionRequest,
     ProviderInvoice,
+    ProviderPaymentMethod,
+    ProviderSetupIntent,
     ProviderSubscription,
     UsageReport,
 )
@@ -100,6 +102,38 @@ class MockBillingAdapter(BillingAdapter):
         # No-op: nothing to bill locally. Kept so the call site is identical to
         # the live adapter.
         return None
+
+    async def create_setup_intent(self, customer_id: str | None) -> ProviderSetupIntent | None:
+        """Deterministic synthetic SetupIntent so the dev UI can exercise the
+        add-card flow. No customer (never provisioned) → ``None``, mirroring the
+        live adapter's no-customer case. The ``client_secret`` is synthetic and
+        single-use-shaped — no real card can be confirmed against it locally."""
+        if not customer_id:
+            return None
+        return ProviderSetupIntent(
+            external_setup_intent_id=f"mock_seti_{customer_id}",
+            client_secret=f"mock_seti_{customer_id}_secret",
+            status="requires_payment_method",
+        )
+
+    async def list_payment_methods(
+        self, customer_id: str | None
+    ) -> list[ProviderPaymentMethod]:
+        """Deterministic synthetic saved card (visa ****4242) so the dev UI has
+        data. PII-safe — brand/last4/exp only, never a PAN. No customer →
+        ``[]``."""
+        if not customer_id:
+            return []
+        return [
+            ProviderPaymentMethod(
+                external_payment_method_id=f"mock_pm_{customer_id}",
+                brand="visa",
+                last4="4242",
+                exp_month=12,
+                exp_year=2030,
+                is_default=True,
+            )
+        ]
 
     def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None:
         """Parse a dev JSON envelope:

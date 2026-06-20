@@ -30,7 +30,12 @@ from app.models.virtual_card import CardRebate
 from app.services.billing.entitlements import has_entitlement
 from app.services.billing.usage_rollup import UsageRollup, rollup_usage
 from app.services.billing_adapters import get_billing_adapter
-from app.services.billing_adapters.base import CreateSubscriptionRequest, ProviderInvoice
+from app.services.billing_adapters.base import (
+    CreateSubscriptionRequest,
+    ProviderInvoice,
+    ProviderPaymentMethod,
+    ProviderSetupIntent,
+)
 from app.services.billing_adapters.mock_adapter import MockBillingAdapter
 from app.services.billing_adapters.stripe_billing import (
     BillingNotConfigured,
@@ -243,6 +248,149 @@ async def test_stripe_list_invoices_maps_shape():
     # No customer → [] without any HTTP call (handler never re-invoked).
     captured.clear()
     assert await adapter.list_invoices(customer_id=None) == []
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_mock_setup_intent_is_deterministic():
+    adapter = MockBillingAdapter()
+    a = await adapter.create_setup_intent("mock_cus_org-1")
+    b = await adapter.create_setup_intent("mock_cus_org-1")
+    assert a == b  # frozen dataclass → value-equality, fully deterministic
+    assert isinstance(a, ProviderSetupIntent)
+    assert a.external_setup_intent_id == "mock_seti_mock_cus_org-1"
+    assert a.client_secret == "mock_seti_mock_cus_org-1_secret"
+    assert a.status == "requires_payment_method"
+    # No customer (never provisioned) → None, not an error.
+    assert await adapter.create_setup_intent(None) is None
+    assert await adapter.create_setup_intent("") is None
+
+
+@pytest.mark.asyncio
+async def test_mock_list_payment_methods_is_deterministic_and_pii_safe():
+    adapter = MockBillingAdapter()
+    a = await adapter.list_payment_methods("mock_cus_org-1")
+    b = await adapter.list_payment_methods("mock_cus_org-1")
+    assert a == b
+    assert len(a) == 1
+    pm = a[0]
+    assert isinstance(pm, ProviderPaymentMethod)
+    assert pm.brand == "visa"
+    assert pm.last4 == "4242"
+    assert pm.exp_month == 12
+    assert pm.exp_year == 2030
+    assert pm.is_default is True
+    # PII-safe: no attribute carries a full PAN.
+    assert not any("pan" in f.lower() for f in vars(pm))
+    # No customer → empty list.
+    assert await adapter.list_payment_methods(None) == []
+    assert await adapter.list_payment_methods("") == []
+
+
+@pytest.mark.asyncio
+async def test_stripe_setup_intent_fails_closed_without_key():
+    adapter = StripeBillingAdapter({"stripe_api_key": "", "stripe_webhook_secret": ""})
+    with pytest.raises(BillingNotConfigured):
+        await adapter.create_setup_intent("cus_1")
+
+
+@pytest.mark.asyncio
+async def test_stripe_list_payment_methods_fails_closed_without_key():
+    adapter = StripeBillingAdapter({"stripe_api_key": "", "stripe_webhook_secret": ""})
+    with pytest.raises(BillingNotConfigured):
+        await adapter.list_payment_methods("cus_1")
+
+
+@pytest.mark.asyncio
+async def test_stripe_setup_intent_maps_shape():
+    """Stripe /v1/setup_intents POST → normalized ProviderSetupIntent, against a
+    mocked transport (no network). No-customer short-circuits to None."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return httpx.Response(
+            200,
+            json={
+                "id": "seti_123",
+                "client_secret": "seti_123_secret_abc",
+                "status": "requires_payment_method",
+            },
+        )
+
+    adapter = StripeBillingAdapter({"stripe_api_key": "sk_live", "stripe_webhook_secret": "whsec"})
+    transport = httpx.MockTransport(handler)
+    adapter._client = lambda: httpx.AsyncClient(  # type: ignore[method-assign]
+        base_url="https://api.stripe.test", auth=(adapter._api_key, ""), transport=transport
+    )
+
+    intent = await adapter.create_setup_intent("cus_42")
+    assert captured["path"] == "/v1/setup_intents"
+    assert intent is not None
+    assert intent.external_setup_intent_id == "seti_123"
+    assert intent.client_secret == "seti_123_secret_abc"
+    assert intent.status == "requires_payment_method"
+
+    captured.clear()
+    assert await adapter.create_setup_intent(None) is None
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_stripe_list_payment_methods_maps_shape_pii_safe():
+    """Stripe /v1/payment_methods GET → normalized cards, against a mocked
+    transport. Brand/last4/exp only — never a full PAN."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["query"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {
+                        "id": "pm_1",
+                        "card": {
+                            "brand": "visa",
+                            "last4": "4242",
+                            "exp_month": 12,
+                            "exp_year": 2030,
+                        },
+                    },
+                    {
+                        "id": "pm_2",
+                        "card": {
+                            "brand": "mastercard",
+                            "last4": "5454",
+                            "exp_month": 6,
+                            "exp_year": 2029,
+                        },
+                    },
+                ],
+            },
+        )
+
+    adapter = StripeBillingAdapter({"stripe_api_key": "sk_live", "stripe_webhook_secret": "whsec"})
+    transport = httpx.MockTransport(handler)
+    adapter._client = lambda: httpx.AsyncClient(  # type: ignore[method-assign]
+        base_url="https://api.stripe.test", auth=(adapter._api_key, ""), transport=transport
+    )
+
+    methods = await adapter.list_payment_methods("cus_42")
+    assert captured["path"] == "/v1/payment_methods"
+    assert captured["query"]["customer"] == "cus_42"
+    assert captured["query"]["type"] == "card"
+    assert [m.external_payment_method_id for m in methods] == ["pm_1", "pm_2"]
+    assert methods[0].brand == "visa"
+    assert methods[0].last4 == "4242"
+    assert methods[0].exp_month == 12
+    assert methods[0].exp_year == 2030
+    assert methods[1].brand == "mastercard"
+
+    captured.clear()
+    assert await adapter.list_payment_methods(None) == []
     assert captured == {}
 
 
@@ -517,6 +665,142 @@ async def test_billing_invoices_endpoint_admin_or_cfo_only(realdb):
         assert resp.status_code == 403
         async with realdb.client(key="a", role="cfo") as c:
             resp = await c.get("/api/billing/invoices")
+        assert resp.status_code == 200
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+async def _set_customer_id(realdb, org_id, customer_id):
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.organization import Organization
+
+    async with realdb.control_sessionmaker()() as s:
+        org = await s.get(Organization, uuid.UUID(str(org_id)))
+        settings_dict = dict(org.settings or {})
+        settings_dict["billing"] = {
+            **(settings_dict.get("billing") or {}),
+            "stripe_customer_id": customer_id,
+        }
+        org.settings = settings_dict
+        flag_modified(org, "settings")
+        await s.commit()
+
+
+async def _clear_billing_settings(realdb, org_id):
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.organization import Organization
+
+    async with realdb.control_sessionmaker()() as s:
+        org = await s.get(Organization, uuid.UUID(str(org_id)))
+        settings_dict = dict(org.settings or {})
+        settings_dict.pop("billing", None)
+        org.settings = settings_dict
+        flag_modified(org, "settings")
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_setup_intent_endpoint_returns_client_secret(realdb):
+    """POST /api/billing/payment-method/setup-intent returns the mock adapter's
+    deterministic client_secret once a customer id is persisted."""
+    org_id = realdb.info("a").org_id
+    try:
+        await _set_customer_id(realdb, org_id, "mock_cus_test")
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.post("/api/billing/payment-method/setup-intent")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["provider"] == "mock"
+        assert body["configured"] is True
+        assert body["client_secret"] == "mock_seti_mock_cus_test_secret"
+        assert body["setup_intent_id"] == "mock_seti_mock_cus_test"
+    finally:
+        await _clear_billing_settings(realdb, org_id)
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_setup_intent_endpoint_no_customer_yields_not_configured(realdb):
+    """No customer id → configured=false, null client_secret, HTTP 200 (never 500)."""
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.post("/api/billing/payment-method/setup-intent")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["configured"] is False
+        assert body["client_secret"] is None
+        assert body["setup_intent_id"] is None
+        assert body["provider"] == "mock"
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_setup_intent_endpoint_admin_or_cfo_only(realdb):
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.client(key="a", role="ap_clerk") as c:
+            resp = await c.post("/api/billing/payment-method/setup-intent")
+        assert resp.status_code == 403
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.post("/api/billing/payment-method/setup-intent")
+        assert resp.status_code == 200
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_payment_methods_endpoint_returns_pii_safe_list(realdb):
+    """GET /api/billing/payment-methods returns brand/last4/exp only — never a PAN."""
+    org_id = realdb.info("a").org_id
+    try:
+        await _set_customer_id(realdb, org_id, "mock_cus_test")
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.get("/api/billing/payment-methods")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["provider"] == "mock"
+        assert len(body["payment_methods"]) == 1
+        pm = body["payment_methods"][0]
+        assert pm["brand"] == "visa"
+        assert pm["last4"] == "4242"
+        assert pm["exp_month"] == 12
+        assert pm["exp_year"] == 2030
+        assert pm["is_default"] is True
+        # PII-safe: no full PAN field is serialized.
+        assert "pan" not in {k.lower() for k in pm}
+        assert "number" not in {k.lower() for k in pm}
+    finally:
+        await _clear_billing_settings(realdb, org_id)
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_payment_methods_endpoint_no_customer_yields_empty_list(realdb):
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.client(key="a", role="admin") as c:
+            resp = await c.get("/api/billing/payment-methods")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["payment_methods"] == []
+        assert body["provider"] == "mock"
+    finally:
+        await _cleanup_billing(realdb, org_id)
+
+
+@pytest.mark.asyncio
+async def test_payment_methods_endpoint_admin_or_cfo_only(realdb):
+    org_id = realdb.info("a").org_id
+    try:
+        async with realdb.client(key="a", role="ap_clerk") as c:
+            resp = await c.get("/api/billing/payment-methods")
+        assert resp.status_code == 403
+        async with realdb.client(key="a", role="cfo") as c:
+            resp = await c.get("/api/billing/payment-methods")
         assert resp.status_code == 200
     finally:
         await _cleanup_billing(realdb, org_id)

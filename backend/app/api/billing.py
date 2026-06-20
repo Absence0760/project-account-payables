@@ -251,3 +251,97 @@ async def list_billing_invoices(
             for inv in provider_invoices
         ],
     )
+
+
+class SetupIntentResponse(BaseModel):
+    provider: str
+    # True once a SetupIntent could be started (org provisioned + provider
+    # configured). False → `client_secret` is None and the UI shows a clear
+    # "billing not configured" state rather than an error.
+    configured: bool
+    # Single-use secret the frontend confirms the card with (via the provider's
+    # JS SDK). None when not configured. NEVER a long-lived secret or a PAN.
+    client_secret: str | None
+    setup_intent_id: str | None
+
+
+@router.post("/payment-method/setup-intent", response_model=SetupIntentResponse)
+async def create_payment_method_setup_intent(
+    org: Organization = Depends(get_tenant),
+    _user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+) -> SetupIntentResponse:
+    """Start a SetupIntent so the org can add or replace a saved card.
+
+    admin/cfo only (matches the other billing routes). Returns the provider's
+    single-use `client_secret`; the frontend confirms the card against it with
+    the provider's JS SDK — no charge, no PAN ever touches our backend. Graceful
+    degradation: an org never provisioned with the provider (no customer id) — or
+    an unconfigured / unavailable provider — yields `configured=false` with a
+    null `client_secret`, never a 500.
+    """
+    provider = _resolve_provider(org)
+    adapter = get_billing_adapter(provider)
+    customer_id = _resolve_customer_id(org)
+    try:
+        intent = await adapter.create_setup_intent(customer_id)
+    except Exception:  # noqa: BLE001
+        # The live provider fails closed (no key) or is unreachable — surface a
+        # not-configured shape rather than a 500. PII-free: no provider detail.
+        intent = None
+
+    return SetupIntentResponse(
+        provider=provider,
+        configured=intent is not None,
+        client_secret=intent.client_secret if intent else None,
+        setup_intent_id=intent.external_setup_intent_id if intent else None,
+    )
+
+
+class PaymentMethodView(BaseModel):
+    id: str
+    # PII-safe card metadata ONLY — brand / last4 / expiry. NEVER a full PAN.
+    brand: str | None
+    last4: str | None
+    exp_month: int | None
+    exp_year: int | None
+    is_default: bool
+
+
+class PaymentMethodsResponse(BaseModel):
+    provider: str
+    payment_methods: list[PaymentMethodView]
+
+
+@router.get("/payment-methods", response_model=PaymentMethodsResponse)
+async def list_payment_methods(
+    org: Organization = Depends(get_tenant),
+    _user: User = Depends(require_roles(ROLE_ADMIN, ROLE_CFO)),
+) -> PaymentMethodsResponse:
+    """The org's saved cards — PII-safe metadata only (brand / last4 / expiry).
+
+    admin/cfo only. NEVER returns or logs a full card number. Graceful
+    degradation: an org never provisioned with the provider (no customer id) — or
+    an unconfigured / unavailable provider — yields an empty list, never a 500.
+    """
+    provider = _resolve_provider(org)
+    adapter = get_billing_adapter(provider)
+    customer_id = _resolve_customer_id(org)
+    try:
+        methods = await adapter.list_payment_methods(customer_id)
+    except Exception:  # noqa: BLE001
+        methods = []
+
+    return PaymentMethodsResponse(
+        provider=provider,
+        payment_methods=[
+            PaymentMethodView(
+                id=pm.external_payment_method_id,
+                brand=pm.brand,
+                last4=pm.last4,
+                exp_month=pm.exp_month,
+                exp_year=pm.exp_year,
+                is_default=pm.is_default,
+            )
+            for pm in methods
+        ],
+    )
