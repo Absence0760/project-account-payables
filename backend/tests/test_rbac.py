@@ -98,6 +98,11 @@ NO_AUTH_REQUIRED = {
     ("POST", "/auth/login"),
     ("POST", "/auth/mfa/challenge/email"),
     ("POST", "/auth/mfa/verify"),
+    # WebAuthn / passkey LOGIN ceremony — gated by the login-issued MFA
+    # challenge token (the same pre-access-token credential as /mfa/verify),
+    # not a JWT. The register/list/delete passkey endpoints DO require JWT.
+    ("POST", "/auth/mfa/passkey/authenticate"),
+    ("POST", "/auth/mfa/passkey/authenticate/verify"),
     ("POST", "/auth/logout"),  # uses Bearer header but not as a Depends
     # cards.py — webhook authenticated by provider signature
     ("POST", "/cards/webhook/{provider}"),

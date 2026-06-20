@@ -416,9 +416,38 @@ TOTP-based two-factor with optional email backup. Per-user opt-in by default; ad
 | Factor | Identifier | Notes |
 |---|---|---|
 | **TOTP** | `totp` | RFC 6238, 30-second window, ±1 step skew tolerance. `pyotp` under the hood. Compatible with Google Authenticator, 1Password, Authy, Microsoft Authenticator. |
+| **Passkey / WebAuthn** | `passkey` | FIDO2 / WebAuthn — a platform authenticator (Touch ID, Face ID, Windows Hello) or a roaming security key. `py_webauthn` under the hood. A **separate code path** from TOTP (`services/webauthn.py`), opt-in and additive: a user can register one or many passkeys alongside or instead of TOTP. |
 | **Email OTP** | `email` | 6-digit code emailed via the configured `AP_EMAIL_PROVIDER`. Lives in Redis with a `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL (default 6 minutes). Only the SHA-256 of the code is stored — Redis dumps don't reveal codes. Single-use. |
 
 Email is offered as a backup so a lost phone doesn't lock the account out. It's also the only available factor for users under org-enforcement who haven't enrolled TOTP yet (verifying email proves inbox ownership before they're allowed to enroll).
+
+### Passkeys (WebAuthn)
+
+Passkeys are an additional second factor, gated by the same `AP_MFA_ENABLED` master switch. They use the standard two-ceremony WebAuthn protocol:
+
+**Registration (enroll a passkey — authenticated, on `/profile`):**
+
+```
+POST /api/auth/mfa/passkey/register          # mints PublicKeyCredentialCreationOptions
+  (browser runs navigator.credentials.create())
+POST /api/auth/mfa/passkey/register/verify   # verifies + persists a WebAuthnCredential row
+GET  /api/auth/mfa/passkey                    # list this account's passkeys (metadata only)
+DELETE /api/auth/mfa/passkey/{id}             # remove one (blocked if it's the last factor under org enforcement)
+```
+
+**Authentication (passkey LOGIN — the passkey method of the MFA step):**
+
+```
+POST /api/auth/mfa/passkey/authenticate         {challenge_token}  # → PublicKeyCredentialRequestOptions
+  (browser runs navigator.credentials.get())
+POST /api/auth/mfa/passkey/authenticate/verify  {challenge_token, credential}  # → {access_token, ...}
+```
+
+Both authenticate endpoints are **pre-access-token, public-by-design**: the login-issued MFA challenge token (`typ: mfa_challenge`, the same credential the `/mfa/verify` path uses) IS the gate; there is no JWT yet. The register / list / delete endpoints require the normal JWT.
+
+The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:{reg,auth}_challenge:<user_id>`, `AP_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins are configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`); the dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account.
+
+Stored material — the credential id, COSE public key, and counter — is not secret in the password sense (the private key never leaves the authenticator) and is never logged. The login challenge offers `passkey` as a method whenever the user has at least one registered credential.
 
 ### Login flow
 
@@ -434,9 +463,16 @@ POST /api/auth/login {email, password}
 POST /api/auth/mfa/challenge/email {challenge_token}    # only if user picks email
   └─ 204 No Content (issues + emails a 6-digit code)
 
-POST /api/auth/mfa/verify {challenge_token, code, method}
+POST /api/auth/mfa/verify {challenge_token, code, method}    # totp / email factors
+  └─ 200 {access_token, token_type, must_change_password}
+
+# OR — the passkey factor (when methods includes "passkey"):
+POST /api/auth/mfa/passkey/authenticate {challenge_token}    # → request options
+POST /api/auth/mfa/passkey/authenticate/verify {challenge_token, credential}
   └─ 200 {access_token, token_type, must_change_password}
 ```
+
+`methods` in the challenge response lists which factors the user can submit (`totp` / `passkey` / `email`), so a user who has registered only a passkey (no TOTP) still trips the MFA gate and is offered `passkey`.
 
 The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`, default 5 minutes) with `typ: mfa_challenge`. That keeps the flow stateless — no DB row to garbage-collect, no Redis lookup on every check. A regular access token won't satisfy the challenge endpoint and vice versa.
 
@@ -466,8 +502,10 @@ Disable requires password re-entry — a stolen session shouldn't be able to sil
 |---|---|---|
 | `User.mfa_secret` (base32) | control-plane DB | Per-user, durable, written once at enrollment. |
 | `User.mfa_enabled`, `mfa_enrolled_at` | control-plane DB | Drives login-flow decisions. |
+| `WebAuthnCredential` rows (credential id, COSE public key, sign counter) | control-plane DB (`webauthn_credentials`, migration 0062) | One row per registered passkey, keyed by `user_id` (control-plane, never tenant-fanned). Not secret in the password sense; never logged. |
 | `Organization.settings.mfa.required` | control-plane DB (JSONB) | Org-wide policy; lives next to other settings. |
 | Email-OTP hash | Redis (`mfa:email_otp:<user_id>`) | Short-lived, single-use, no need to persist. |
+| WebAuthn ceremony challenge | Redis (`webauthn:{reg,auth}_challenge:<user_id>`) | Short-lived, single-use; the verify call rejects an attacker-chosen challenge. |
 | MFA challenge token | client only (sessionStorage) | Stateless JWT — server doesn't need to remember it. |
 
 ### SSO + MFA

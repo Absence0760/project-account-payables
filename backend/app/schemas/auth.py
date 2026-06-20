@@ -73,6 +73,53 @@ class MFAVerifyRequest(BaseModel):
     method: str = Field(..., pattern="^(totp|email)$")
 
 
+# ---- WebAuthn / passkeys (additional MFA factor) ------------------------
+
+
+class WebAuthnRegisterStartResponse(BaseModel):
+    """First step of passkey enrollment — server-minted
+    ``navigator.credentials.create()`` options, already in the WebAuthn wire
+    shape. The frontend passes ``options`` straight to the browser API."""
+
+    options: dict
+
+
+class WebAuthnRegisterFinishRequest(BaseModel):
+    """The browser's ``create()`` response, serialized. ``credential`` is the
+    JSON the WebAuthn API returns; ``name`` labels the passkey in the UI."""
+
+    credential: dict
+    name: str = Field(default="Passkey", max_length=120)
+
+
+class WebAuthnCredentialResponse(BaseModel):
+    """A registered passkey, metadata only — never the public key or counter."""
+
+    id: str
+    name: str
+    transports: str | None = None
+    created_at: str | None = None
+    last_used_at: str | None = None
+
+
+class WebAuthnAuthStartRequest(BaseModel):
+    """Begin a passkey login challenge. ``challenge_token`` is the same
+    short-lived MFA challenge JWT minted by /auth/login."""
+
+    challenge_token: str = Field(..., min_length=1)
+
+
+class WebAuthnAuthStartResponse(BaseModel):
+    """Server-minted ``navigator.credentials.get()`` options."""
+
+    options: dict
+
+
+class WebAuthnAuthFinishRequest(BaseModel):
+    challenge_token: str = Field(..., min_length=1)
+    credential: dict
+
+
 class MFAEmailChallengeRequest(BaseModel):
     challenge_token: str = Field(..., min_length=1)
 

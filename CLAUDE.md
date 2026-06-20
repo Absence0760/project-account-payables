@@ -109,7 +109,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 
 | Prefix | Purpose |
 |--------|---------|
-| `/auth` | Login, logout, profile (JWT + Redis blocklist), MFA enroll/verify/disable, MFA challenge |
+| `/auth` | Login, logout, profile (JWT + Redis blocklist), MFA enroll/verify/disable, MFA challenge; WebAuthn/passkey MFA (`/auth/mfa/passkey/{register,register/verify}`, `GET/DELETE /auth/mfa/passkey[/{id}]`, `/auth/mfa/passkey/authenticate[/verify]` — passkey is a separate code path, gated by `AP_MFA_ENABLED`; authenticate endpoints are challenge-token-gated/public, register/list/delete are JWT) |
 | `/auth/sso` | OIDC SSO — config (public), authorize (302 to IdP), callback (JIT-provision + mint JWT) |
 | `/auth/saml` | SAML 2.0 SSO — config (public), login (302 AuthnRequest), acs (verify + JIT + mint), exchange (one-time-code → JWT), metadata. SP-initiated; reuses the OIDC JIT/session tail |
 | `/scim/v2` | SCIM 2.0 user provisioning from Okta/Entra/Authentik — list/get/create/PUT/PATCH/delete (per-tenant bearer auth) |
@@ -228,7 +228,7 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 
 ### Data models
 
-**Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate, ApiKey, ApiKeyUsage, Plan, Subscription, WebhookSubscription, WebhookDelivery
+**Control plane**: Organization, User, Role, UserRole, ExtractionUsage, CardRebate, ApiKey, ApiKeyUsage, Plan, Subscription, WebhookSubscription, WebhookDelivery, WebAuthnCredential
 **Tenant-scoped**: Entity, Invoice, InvoiceLineItem, InvoiceExtractionResult, Vendor, VendorChangeRequest, PurchaseOrder, POLineItem, GoodsReceipt, GRLineItem, QualityInspection, GLAccount, PaymentRun, PaymentSchedule, Payment, VirtualCard, WorkflowDefinition, WorkflowInstance, WorkflowStep, AuditLog, Exception, AgentDecision, Notification, Contract, ContractLineItem, SupplierChatThread, SupplierChatMessage, ExpenseReport, Expense, ExpensePolicy, CorporateCardTransaction, ExpensePreapproval, DiscountOffer, RecurringInvoiceTemplate, VendorStatementReconciliation, VendorStatementReconLine
 
 **Multi-entity**: business tables (Invoice, Vendor, PurchaseOrder, GoodsReceipt, Payment, PaymentRun, CreditMemo, Exception, GLAccount, WorkflowDefinition, VirtualCard) carry a nullable `entity_id` FK (`EntityMixin`) to the tenant-local `Entity` (subsidiary). Every tenant has one `is_default` Entity; rows backfill to it (GLAccount stays NULL = shared chart). Phase 2 + 2b scope reads/writes (incl. the dashboard + CFO analytics) by the `X-Entity-ID` header (`app/tenant.py` → `get_entity_id` / `get_write_entity_id` / `apply_entity_scope`) with a sidebar entity switcher. Phase 3 wires the entity-level chart of accounts (shared NULL ∪ entity) into the AI extraction GL catalog + bulk-recode validation and selects the entity's own `WorkflowDefinition` (shared fallback; one default per `(org, entity)` via `uq_workflow_definitions_one_default`, migration 0050). Phase 4 adds inter-company invoice routing (`counterparty_entity_id` / `intercompany_mirror_id`, migration 0051) + cross-entity consolidated reporting (`GET /analytics/by-entity`). Multi-entity is **complete** (Phases 1–4). See `docs/multi-entity.md`.
@@ -258,7 +258,11 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_REDIS_URL` | `redis://localhost:6379` | Token blocklist |
 | `AP_LITHIC_API_KEY` | (empty) | Lithic virtual cards |
 | `AP_NIUM_CLIENT_*` | (empty) | Nium virtual cards |
-| `AP_MFA_ENABLED` | `false` | Master MFA switch — keep `false` in local dev, flip on in deployed envs |
+| `AP_MFA_ENABLED` | `false` | Master MFA switch (gates TOTP, email-OTP, AND WebAuthn/passkeys) — keep `false` in local dev, flip on in deployed envs |
+| `AP_WEBAUTHN_RP_ID` | `localhost` | WebAuthn/passkey Relying Party ID — the registrable domain a passkey is bound to. A bare host (no scheme/port). `localhost` works across every tenant subdomain in dev; set to your apex (e.g. `app.example.com`) in deployed envs. See `docs/authentication.md` § Passkeys. |
+| `AP_WEBAUTHN_RP_NAME` | `Account Payables` | Human-readable Relying Party name the authenticator UI shows. |
+| `AP_WEBAUTHN_ORIGINS` | `http://localhost:7777` | Comma-separated allowed origins (scheme+host+port) the passkey register/authenticate ceremonies are verified against. Each tenant subdomain is its own origin in dev. No secret. |
+| `AP_WEBAUTHN_CHALLENGE_TTL_SECONDS` | `300` | Lifetime of the server-minted WebAuthn ceremony challenge stashed in Redis (single-use). |
 | `AP_API_PUBLIC_URL` | `http://localhost:8000` | Externally-reachable backend base URL. Builds the SAML SP entityId + ACS URL the IdP POSTs to (unlike OIDC's frontend redirect). Set to the real API host in deployed envs |
 | `AP_SAML_ACS_PATH` | `/login/saml-callback` | Frontend SPA bridge route the SAML ACS 303-redirects to (with a one-time handoff code) |
 | `AP_SAML_SP_PRIVATE_KEY` / `AP_SAML_SP_CERT` | (empty) | Optional SP signing keypair — only when an IdP requires SP-signed AuthnRequests. Real secret → sops; empty by default (local Keycloak runs with SP signing off) |

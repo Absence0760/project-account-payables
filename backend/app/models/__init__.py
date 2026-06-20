@@ -66,6 +66,7 @@ from app.models.vendor_statement_recon import (
     VendorStatementReconLine,
 )
 from app.models.vendor_user import VendorUser
+from app.models.webauthn_credential import WebAuthnCredential
 from app.models.webhook import WebhookDelivery, WebhookSubscription
 from app.models.workflow import AuditLog, WorkflowDefinition, WorkflowInstance, WorkflowStep
 
@@ -150,4 +151,5 @@ __all__ = [
     "AssistantUsage",
     "WebhookSubscription",
     "WebhookDelivery",
+    "WebAuthnCredential",
 ]

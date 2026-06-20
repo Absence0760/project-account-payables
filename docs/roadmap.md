@@ -517,7 +517,7 @@ No SSO = no enterprise sale. OIDC (Okta + Entra), SAML 2.0, and SCIM 2.0 user pr
 - [x] SCIM `/Groups` — IdP groups → RBAC roles. Group state JSONB on `settings.sso.scim_groups`; `scim_group_role_map` (`{displayName: role}`) drives idempotent role reconciliation (only mapped roles are added/removed; manual/JIT assignments untouched). Full list/get/create/PUT/PATCH/delete. `services/scim_groups.py`
 - [x] SSO-only mode — `settings.sso.sso_only` (covers OIDC + SAML) closes password login org-wide: `/api/auth/login` 403s with an `sso_only` audit reason, and the login page hides the password form. `sso_only` is echoed on the public `/config` endpoints only when the IdP config resolves, so a broken config can't lock everyone out. `services.sso.is_sso_only`
 - [x] MFA — TOTP enrollment + email-OTP backup, opt-in per user with org-level enforcement toggle (`AP_MFA_ENABLED` master switch; default off in dev)
-- [ ] MFA — WebAuthn / passkeys (TOTP shipped first; passkeys are a separate code path)
+- [x] MFA — WebAuthn / passkeys (separate code path from TOTP; `services/webauthn.py` + `py_webauthn`, control-plane `WebAuthnCredential` table migration 0062, register/list/delete + authenticate endpoints under `/api/auth/mfa/passkey/*`, login challenge offers `passkey`, profile + MFA-login UI, RP ID/origin configurable for localhost dev). See `docs/authentication.md` § Passkeys.
 - [ ] MFA — mobile app support (Flutter login currently expects `TokenResponse` only)
 - [x] Session management — per-user concurrent session cap + forced logout on role change / deactivation (see SOC 2 Readiness below)
 

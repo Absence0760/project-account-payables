@@ -40,6 +40,9 @@ dependencies = [
     "lxml>=5.0,<7",
     "pyotp>=2.9,<3",
     "qrcode[pil]>=8.2,<9",
+    # WebAuthn / passkeys — the second MFA factor alongside pyotp's TOTP.
+    # Wraps the FIDO2 register/authenticate ceremonies (services/webauthn.py).
+    "webauthn>=2.5,<3",
     "reportlab>=4.5.1,<5",
     # Loaded by the local-dev entrypoint (main.py) to read .env.development /
     # .env. Already pulled in transitively by uvicorn[standard]; declared here

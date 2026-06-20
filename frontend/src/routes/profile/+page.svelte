@@ -160,6 +160,57 @@
 		verifyCode = '';
 	}
 
+	// --- Passkeys (WebAuthn) — an additional MFA factor ----------------------
+	import { isWebAuthnSupported } from '$lib/webauthn';
+	import type { Passkey } from '$lib/stores/auth.svelte';
+
+	let passkeys = $state<Passkey[] | null>(null);
+	let passkeyName = $state('');
+	let registeringPasskey = $state(false);
+	let passkeysLoaded = $state(false);
+	const webAuthnOk = isWebAuthnSupported();
+
+	$effect(() => {
+		if (!passkeysLoaded) {
+			void loadPasskeys();
+		}
+	});
+
+	async function loadPasskeys() {
+		try {
+			passkeys = await auth.listPasskeys();
+		} catch {
+			passkeys = [];
+		} finally {
+			passkeysLoaded = true;
+		}
+	}
+
+	async function addPasskey() {
+		registeringPasskey = true;
+		try {
+			await auth.registerPasskey(passkeyName.trim() || 'Passkey');
+			passkeyName = '';
+			await loadPasskeys();
+			toast('Passkey added', 'success');
+		} catch (err) {
+			// A user cancelling the browser prompt throws too — show a soft message.
+			toast(err instanceof Error ? err.message : 'Failed to add passkey', 'error');
+		} finally {
+			registeringPasskey = false;
+		}
+	}
+
+	async function removePasskey(id: string) {
+		try {
+			await auth.deletePasskey(id);
+			await loadPasskeys();
+			toast('Passkey removed', 'success');
+		} catch (err) {
+			toast(err instanceof Error ? err.message : 'Failed to remove passkey', 'error');
+		}
+	}
+
 	// Display-language picker. `currentLocale()` reads the reactive i18n rune,
 	// so this stays in sync if the locale is changed elsewhere. The choice is
 	// persisted to localStorage by `setLocale` (device-scoped, not account-roamed).
@@ -360,6 +411,67 @@
 				<button onclick={startEnroll} disabled={loading}>
 					{loading ? 'Loading...' : 'Set up two-factor'}
 				</button>
+			{/if}
+		</section>
+
+		<section class="card">
+			<h2>Passkeys</h2>
+			<p class="hint">
+				Sign in with a passkey — Touch ID, Face ID, Windows Hello, or a hardware
+				security key — instead of typing a code. Passkeys are a second factor
+				alongside (or in place of) an authenticator app.
+			</p>
+
+			{#if !webAuthnOk}
+				<div class="status disabled">This browser doesn't support passkeys.</div>
+			{:else}
+				{#if passkeys && passkeys.length > 0}
+					<ul class="passkey-list">
+						{#each passkeys as pk (pk.id)}
+							<li>
+								<div class="passkey-meta">
+									<span class="passkey-name">{pk.name}</span>
+									{#if pk.last_used_at}
+										<span class="passkey-sub">
+											Last used {new Date(pk.last_used_at).toLocaleDateString()}
+										</span>
+									{:else}
+										<span class="passkey-sub">Never used</span>
+									{/if}
+								</div>
+								<button
+									type="button"
+									class="danger small"
+									onclick={() => removePasskey(pk.id)}
+								>
+									Remove
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{:else if passkeysLoaded}
+					<div class="status disabled">No passkeys yet</div>
+				{/if}
+
+				<form
+					onsubmit={(e) => {
+						e.preventDefault();
+						addPasskey();
+					}}
+				>
+					<label>
+						<span>Passkey name (optional)</span>
+						<input
+							type="text"
+							bind:value={passkeyName}
+							maxlength="120"
+							placeholder="e.g. MacBook Touch ID"
+						/>
+					</label>
+					<button type="submit" disabled={registeringPasskey}>
+						{registeringPasskey ? 'Waiting for passkey…' : 'Add a passkey'}
+					</button>
+				</form>
 			{/if}
 		</section>
 
@@ -614,6 +726,47 @@
 
 	button.danger {
 		background: #e04040;
+	}
+
+	button.small {
+		padding: 5px 12px;
+		font-size: 0.8rem;
+	}
+
+	.passkey-list {
+		list-style: none;
+		margin: 0 0 16px;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.passkey-list li {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 10px 14px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg);
+	}
+
+	.passkey-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.passkey-name {
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.passkey-sub {
+		font-size: 0.78rem;
+		color: var(--text-muted);
 	}
 
 	.prefs-table {
