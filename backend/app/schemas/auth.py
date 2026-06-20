@@ -33,6 +33,11 @@ class UserResponse(BaseModel):
     mfa_enabled: bool = False
     mfa_required_by_org: bool = False
     roles: list[str] = []
+    # The user's effective granular permissions — the union over their roles
+    # (system roles via the static default map, custom roles via their stored
+    # list). Drives the frontend `can(perm)` gate for the split sensitive
+    # controls; `roles` still drives everything not yet migrated to permissions.
+    permissions: list[str] = []
     # Account-level email-language preference (NULL = English fallback). Drives
     # outbound email copy only — NOT in-app UI (the frontend's per-device locale
     # picker owns that). See docs/notifications.md § Localized email.

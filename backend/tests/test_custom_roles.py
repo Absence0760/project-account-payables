@@ -106,6 +106,46 @@ async def test_create_role_persists_with_org_id():
     assert resp.is_system is False
 
 
+@pytest.mark.asyncio
+async def test_create_role_stores_sanitized_permissions():
+    """A custom role can now be minted WITH granular permissions — the teeth.
+    Unknown entries are dropped; known ones are stored on the row."""
+    from app.api.admin import create_role
+    from app.api.permissions import PERM_INVOICE_APPROVE
+    from app.schemas.admin import CreateRoleRequest
+
+    db, user, org_id = _ctx()
+    db.execute = AsyncMock(return_value=_execute_returning(scalar=None))
+    db.add = MagicMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    body = CreateRoleRequest(name="Approver", permissions=[PERM_INVOICE_APPROVE, "bogus.perm"])
+    resp = await create_role(body, db=db, user=user, org_id=org_id)
+
+    persisted = db.add.call_args.args[0]
+    assert persisted.permissions == [PERM_INVOICE_APPROVE]  # bogus dropped
+    assert resp.permissions == [PERM_INVOICE_APPROVE]
+    assert resp.is_system is False
+
+
+@pytest.mark.asyncio
+async def test_create_role_defaults_to_no_permissions():
+    """Omitting permissions keeps the inert pre-feature default (empty list)."""
+    from app.api.admin import create_role
+    from app.schemas.admin import CreateRoleRequest
+
+    db, user, org_id = _ctx()
+    db.execute = AsyncMock(return_value=_execute_returning(scalar=None))
+    db.add = MagicMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    resp = await create_role(CreateRoleRequest(name="Label"), db=db, user=user, org_id=org_id)
+    assert db.add.call_args.args[0].permissions == []
+    assert resp.permissions == []
+
+
 # ---------- update_role --------------------------------------------------
 
 
@@ -148,6 +188,53 @@ async def test_update_role_404_for_other_orgs_role():
             org_id=org_id,
         )
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_role_replaces_permissions():
+    """A provided permission list (even empty) replaces the role's grants."""
+    from app.api.admin import update_role
+    from app.api.permissions import PERM_VENDOR_MANAGE
+    from app.models.user import Role
+    from app.schemas.admin import UpdateRoleRequest
+
+    db, user, org_id = _ctx()
+    role = Role(
+        id=uuid.uuid4(), name="Approver", organization_id=org_id, permissions=["invoice.approve"]
+    )
+    db.execute = AsyncMock(return_value=_execute_returning(scalar=role))
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    resp = await update_role(
+        role.id,
+        UpdateRoleRequest(permissions=[PERM_VENDOR_MANAGE]),
+        db=db,
+        user=user,
+        org_id=org_id,
+    )
+    assert role.permissions == [PERM_VENDOR_MANAGE]
+    assert resp.permissions == [PERM_VENDOR_MANAGE]
+
+
+@pytest.mark.asyncio
+async def test_update_role_omitting_permissions_leaves_them_untouched():
+    from app.api.admin import update_role
+    from app.models.user import Role
+    from app.schemas.admin import UpdateRoleRequest
+
+    db, user, org_id = _ctx()
+    role = Role(
+        id=uuid.uuid4(), name="Approver", organization_id=org_id, permissions=["invoice.approve"]
+    )
+    db.execute = AsyncMock(return_value=_execute_returning(scalar=role))
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    await update_role(
+        role.id, UpdateRoleRequest(description="new desc"), db=db, user=user, org_id=org_id
+    )
+    assert role.permissions == ["invoice.approve"]  # untouched
 
 
 # ---------- delete_role --------------------------------------------------

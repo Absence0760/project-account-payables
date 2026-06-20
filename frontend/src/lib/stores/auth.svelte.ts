@@ -10,6 +10,10 @@ interface User {
 	mfa_enabled: boolean;
 	mfa_required_by_org: boolean;
 	roles: string[];
+	// Effective granular permissions (the union over the user's roles), from
+	// GET /api/auth/me. Drives `can(perm)` for the split sensitive controls.
+	// Older tokens / responses may omit it — treated as "no granular perms".
+	permissions?: string[];
 }
 
 interface TokenResponse {
@@ -97,6 +101,16 @@ function createAuthStore() {
 		return roles.some((r) => hasRole(r));
 	}
 
+	/** True if the user's effective granular permissions include `perm`.
+	 * Mirrors the backend `require_permission(...)` gate so the gated UI
+	 * control and the API gate can't drift. Use this for the split sensitive
+	 * actions (payment execute/void, run approve, vendor bank-change approve,
+	 * vendor block/unblock, user management); keep `isManager`/`isCfo` for
+	 * everything still on `require_roles`. */
+	function can(perm: string): boolean {
+		return user?.permissions?.includes(perm) ?? false;
+	}
+
 	return {
 		get user() { return user; },
 		get loggedIn() { return loggedIn; },
@@ -111,6 +125,7 @@ function createAuthStore() {
 		fetchUser,
 		hasRole,
 		hasAnyRole,
+		can,
 	};
 }
 

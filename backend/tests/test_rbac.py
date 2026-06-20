@@ -339,6 +339,79 @@ async def test_require_roles_logs_denials(caplog):
     assert any("RBAC denied" in rec.message for rec in caplog.records)
 
 
+# ---------- Permission gating on the split sensitive endpoints --------------
+
+# The endpoints migrated off `require_roles` onto `require_permission` — the
+# fraud-sensitive, SoD-splittable set. Each must carry a permission-backed
+# `checker` whose closure cell references the catalog permission(s) it needs.
+# (method, path) → the permission expected on the gate.
+from app.api import permissions as perm_catalog  # noqa: E402
+
+_PERMISSION_GATED_ENDPOINTS = {
+    ("POST", "/payments/runs"): perm_catalog.PERM_PAYMENT_RUN_APPROVE,
+    ("POST", "/payments/runs/{run_id}/execute"): perm_catalog.PERM_PAYMENT_EXECUTE,
+    ("POST", "/payments/{payment_id}/void"): perm_catalog.PERM_PAYMENT_VOID,
+    ("POST", "/vendors/change-requests/{request_id}/approve"): (
+        perm_catalog.PERM_VENDOR_BANK_CHANGE_APPROVE
+    ),
+    ("POST", "/vendors/{vendor_id}/block"): perm_catalog.PERM_VENDOR_BLOCK,
+    ("POST", "/vendors/{vendor_id}/unblock"): perm_catalog.PERM_VENDOR_BLOCK,
+    ("POST", "/vendors"): perm_catalog.PERM_VENDOR_MANAGE,
+    ("PATCH", "/vendors/{vendor_id}"): perm_catalog.PERM_VENDOR_MANAGE,
+    ("POST", "/vendors/{vendor_id}/verify"): perm_catalog.PERM_VENDOR_MANAGE,
+    ("POST", "/vendors/{vendor_id}/reject"): perm_catalog.PERM_VENDOR_MANAGE,
+    ("POST", "/admin/users"): perm_catalog.PERM_USER_MANAGE,
+    ("PATCH", "/admin/users/{user_id}"): perm_catalog.PERM_USER_MANAGE,
+    ("DELETE", "/admin/users/{user_id}"): perm_catalog.PERM_USER_MANAGE,
+    ("POST", "/admin/users/bulk-delete"): perm_catalog.PERM_USER_MANAGE,
+}
+
+
+def _gate_permissions(endpoint: callable) -> set[str] | None:
+    """Return the set of permission strings a `require_permission(...)` gate on
+    this endpoint requires, or None if the endpoint isn't permission-gated.
+
+    `require_permission` closes over `needed_set` (a frozenset of permission
+    strings); read it out of the `checker` closure's cells so the test verifies
+    the *actual* gate, not just that some auth dep exists."""
+    sig = inspect.signature(endpoint)
+    for p in sig.parameters.values():
+        dep = getattr(p.default, "dependency", None)
+        if dep is None or getattr(dep, "__name__", "") != "checker":
+            continue
+        closure = getattr(dep, "__closure__", None) or ()
+        for cell in closure:
+            val = cell.cell_contents
+            if isinstance(val, frozenset) and val and all(isinstance(v, str) for v in val):
+                # The require_roles checker also closes over a frozenset
+                # (allowed roles); distinguish by membership in the catalog.
+                if val <= set(perm_catalog.ALL_PERMISSIONS):
+                    return set(val)
+    return None
+
+
+def test_split_endpoints_are_permission_gated():
+    """Every migrated sensitive endpoint gates on the expected catalog
+    permission via `require_permission` — not just on `require_roles`. This is
+    the SoD enforcement contract; a regression that reverts one of these to a
+    role gate (or drops the permission) fails here."""
+    by_path = {(m, p): ep for m, p, ep in _iter_endpoints(ROUTERS)}
+    failures: list[str] = []
+    for key, expected_perm in _PERMISSION_GATED_ENDPOINTS.items():
+        endpoint = by_path.get(key)
+        if endpoint is None:
+            failures.append(f"{key[0]} {key[1]} — route no longer exists")
+            continue
+        gate = _gate_permissions(endpoint)
+        if gate is None:
+            failures.append(
+                f"{key[0]} {key[1]} — not permission-gated (reverted to require_roles?)"
+            )
+        elif expected_perm not in gate:
+            failures.append(f"{key[0]} {key[1]} — gate {sorted(gate)} missing {expected_perm!r}")
+    assert not failures, "Permission-gate regressions:\n  " + "\n  ".join(failures)
+
+
 # ---------- Sanity check on role constants ---------------------------------
 
 

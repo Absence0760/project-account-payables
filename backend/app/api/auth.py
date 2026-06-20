@@ -12,6 +12,7 @@ from app.api.deps import (
     decode_token,
     get_current_user,
 )
+from app.api.permissions import effective_permissions
 from app.config import settings
 from app.database import get_control_db
 from app.models.organization import Organization
@@ -70,6 +71,11 @@ def _user_response(user: User, org: Organization | None = None) -> UserResponse:
         mfa_enabled=user.mfa_enabled,
         mfa_required_by_org=org_required,
         roles=[r.name for r in user.roles],
+        # Effective granular permissions for the SPA's `can(perm)` gate. Resolved
+        # off the user's roles (system via the default map, custom via their
+        # stored list) — the same union `require_permission` enforces server-side,
+        # so the UI gate and the backend gate can't drift.
+        permissions=sorted(effective_permissions(user.roles)),
         locale=user.locale,
     )
 

@@ -6,6 +6,7 @@
 	// unblock) are role-gated to admin / ap_manager via the auth store and emit
 	// the updated vendor (or refreshed risk) back to the parent list.
 	import { auth } from '$lib/stores/auth.svelte';
+	import { PERM_VENDOR_BLOCK } from '$lib/types/admin';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -44,7 +45,10 @@
 		onupdated: (v: Vendor) => void;
 	} = $props();
 
-	const canMutate = $derived(auth.isManager); // admin | ap_manager
+	const canMutate = $derived(auth.isManager); // admin | ap_manager (re-screen/recompute)
+	// Block/unblock moved to the granular permission so an org can split it from
+	// the rest of vendor management. Defaults to admin/ap_manager (unchanged).
+	const canBlock = $derived(auth.can(PERM_VENDOR_BLOCK));
 
 	let history = $state<SanctionsCheck[]>([]);
 	let loadingHistory = $state(true);
@@ -173,6 +177,8 @@
 				<RowAction onclick={recompute} disabled={busy !== ''}>
 					{busy === 'risk' ? 'Recomputing…' : 'Recompute risk'}
 				</RowAction>
+			{/if}
+			{#if canBlock}
 				<RowAction
 					variant="danger"
 					onclick={toggleBlock}
@@ -184,8 +190,9 @@
 						{vendor.payments_blocked ? 'Unblock payments' : 'Block payments'}
 					{/if}
 				</RowAction>
-			{:else}
-				<span class="muted">Re-screen, recompute, and block actions need the admin or AP manager role.</span>
+			{/if}
+			{#if !canMutate && !canBlock}
+				<span class="muted">Re-screen, recompute, and block actions need the right permission.</span>
 			{/if}
 		</div>
 	</section>

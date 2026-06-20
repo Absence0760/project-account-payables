@@ -1,4 +1,4 @@
-import type { AdminUser, Role } from '$lib/types/admin';
+import type { AdminUser, PermissionCatalogEntry, Role } from '$lib/types/admin';
 import { api } from '$lib/api';
 
 interface AdminUserListResponse {
@@ -20,6 +20,7 @@ interface FetchUsersOptions {
 function createAdminStore() {
 	let users = $state<AdminUser[]>([]);
 	let roles = $state<Role[]>([]);
+	let permissionCatalog = $state<PermissionCatalogEntry[]>([]);
 	let loading = $state(false);
 	let total = $state(0);
 	let page = $state(1);
@@ -52,6 +53,16 @@ function createAdminStore() {
 			roles = await api.get<Role[]>('/api/admin/roles');
 		} catch {
 			// non-critical
+		}
+	}
+
+	async function fetchPermissionCatalog() {
+		// Cache for the session — the catalog is static. Refetch only if empty.
+		if (permissionCatalog.length > 0) return;
+		try {
+			permissionCatalog = await api.get<PermissionCatalogEntry[]>('/api/admin/permissions');
+		} catch {
+			// non-critical — the role editor degrades to no checkboxes
 		}
 	}
 
@@ -111,13 +122,20 @@ function createAdminStore() {
 		return result;
 	}
 
-	async function createRole(data: { name: string; description?: string }): Promise<Role> {
+	async function createRole(data: {
+		name: string;
+		description?: string;
+		permissions?: string[];
+	}): Promise<Role> {
 		const created = await api.post<Role>('/api/admin/roles', data);
 		roles = [...roles, created];
 		return created;
 	}
 
-	async function updateRole(id: string, changes: { description?: string }): Promise<Role> {
+	async function updateRole(
+		id: string,
+		changes: { description?: string; permissions?: string[] }
+	): Promise<Role> {
 		const updated = await api.patch<Role>(`/api/admin/roles/${id}`, changes);
 		roles = roles.map((r) => (r.id === id ? updated : r));
 		return updated;
@@ -131,6 +149,7 @@ function createAdminStore() {
 	return {
 		get users() { return users; },
 		get roles() { return roles; },
+		get permissionCatalog() { return permissionCatalog; },
 		get loading() { return loading; },
 		get total() { return total; },
 		get page() { return page; },
@@ -139,6 +158,7 @@ function createAdminStore() {
 		fetchUsers,
 		loadMoreUsers,
 		fetchRoles,
+		fetchPermissionCatalog,
 		createUser,
 		updateUser,
 		deleteUser,

@@ -114,6 +114,16 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    # Compute the user's effective granular permissions once, here, off the
+    # eager-loaded roles (system roles via the static default map, custom roles
+    # via their stored list). Stash the frozenset on a transient attribute so
+    # `require_permission` and the `/auth/me` serializer read it without a
+    # re-query. Local import avoids a module-load cycle (permissions.py imports
+    # the ROLE_* constants from this module).
+    from app.api.permissions import effective_permissions
+
+    user.effective_permissions = effective_permissions(user.roles)
     return user
 
 
@@ -165,6 +175,60 @@ def require_roles(*allowed: str):
             user.organization_id,
             sorted(held),
             sorted(allowed_set),
+            request.method,
+            request.url.path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your role does not permit this action.",
+        )
+
+    return checker
+
+
+def require_permission(*needed: str):
+    """Dependency factory — restrict an endpoint to users holding ANY of the
+    given granular permissions. 403 on miss.
+
+    This is the segregation-of-duties counterpart to ``require_roles``: it gates
+    on the user's *effective permissions* (the union over their roles — system
+    roles via the static default map, custom roles via their stored list,
+    computed in ``get_current_user``) rather than on a role NAME. It lets an org
+    SPLIT fraud-sensitive duties that share one system role today (e.g. approving
+    a vendor bank-detail change vs. executing a payment run, both ``ap_manager``).
+
+    Backward-compatible: ``ROLE_DEFAULT_PERMISSIONS`` reproduces the current RBAC
+    matrix exactly, so on a route migrated from ``require_roles(...)`` to
+    ``require_permission(...)`` the four system roles behave identically — only a
+    deliberately-configured custom role changes the outcome.
+
+    "Any-of," like ``require_roles``. Permission names are validated against the
+    catalog at import time so a typo is a startup ``ValueError``, not a silent
+    always-deny. Misses log at WARNING (attack-shaped events) — PII-free.
+    """
+    from app.api.permissions import ALL_PERMISSIONS
+
+    if not needed:
+        raise ValueError("require_permission() needs at least one permission")
+    unknown = set(needed) - set(ALL_PERMISSIONS)
+    if unknown:
+        raise ValueError(f"Unknown permission(s) in require_permission: {sorted(unknown)}")
+
+    needed_set = frozenset(needed)
+
+    async def checker(
+        request: Request,
+        user: User = Depends(get_current_user),
+    ) -> User:
+        held = getattr(user, "effective_permissions", frozenset())
+        if held & needed_set:
+            return user
+        logger.warning(
+            "RBAC denied (permission): user=%s org=%s perms=%s required_any=%s %s %s",
+            user.id,
+            user.organization_id,
+            sorted(held),
+            sorted(needed_set),
             request.method,
             request.url.path,
         )

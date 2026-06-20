@@ -6,6 +6,7 @@
 	import { PAYMENT_METHOD_LABELS } from '$lib/types/payment';
 	import type { PaymentMethod } from '$lib/types/payment';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { PERM_PAYMENT_EXECUTE } from '$lib/types/admin';
 	import { formatMoney } from '$lib/utils/money';
 
 	let {
@@ -255,14 +256,16 @@
 							{approving ? 'Approving…' : 'Approve as CFO'}
 						</button>
 					{/if}
-					<button
-						class="btn-execute"
-						disabled={executing || cancelling || pendingCfo}
-						title={pendingCfo ? 'Awaiting CFO approval' : ''}
-						onclick={execute}
-					>
-						{executing ? 'Executing…' : `Execute · ${fmt(run.total_amount)}`}
-					</button>
+					{#if auth.can(PERM_PAYMENT_EXECUTE)}
+						<button
+							class="btn-execute"
+							disabled={executing || cancelling || pendingCfo}
+							title={pendingCfo ? 'Awaiting CFO approval' : ''}
+							onclick={execute}
+						>
+							{executing ? 'Executing…' : `Execute · ${fmt(run.total_amount)}`}
+						</button>
+					{/if}
 				</div>
 			{:else}
 				<div class="actions">

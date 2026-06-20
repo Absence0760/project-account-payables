@@ -150,16 +150,18 @@ Current state: manual, specific, auto, and chain approval strategies. Amount-bas
 - [x] Log unauthorized access attempts at WARN level (sufficient for monitoring; persistent audit-log entries deferred to SOC 2 prep)
 - [x] Segregation of duties enforcement (approver ≠ creator) — default-on baseline; `check_segregation` runs on every `approve_invoice` call. Opt-out per workflow via `require_segregation: false` for single-operator orgs
 - [x] Per-org custom-role *CRUD* — `Role.organization_id` nullable (NULL = system, non-NULL = org-scoped). Admin CRUD at `/api/admin/roles` (POST / PATCH / DELETE) refuses to touch system rows and rejects creation under reserved names. Frontend surface at `/admin/roles` with a system / custom split.
-- [ ] Per-org custom roles **with teeth** — custom roles are inert today: `require_roles(...)` and the frontend gates only recognize the four hardcoded system roles, so a user holding only custom roles passes no gate. The UI/docs were corrected to say so; making them grant access is its own item — see *Granular permissions / segregation of duties* below.
+- [x] Per-org custom roles **with teeth** — *Done.* Custom roles now grant access via the granular permission layer (`roles.permissions` + `require_permission`), so an org can split fraud-sensitive duties. See *Granular permissions / segregation of duties* below.
 
 **Files:** `backend/app/api/deps.py`, every `backend/app/api/*.py` router, `backend/tests/test_rbac.py`, `frontend/src/routes/admin/roles/+page.svelte`
 
 ---
 
 ### Granular permissions / segregation of duties
-**Status:** Planned (demand-gated — build when SoD/SOX is a real buyer or
-compliance requirement; the 4 system roles + multi-role assignment cover
-smaller orgs today).
+**Status:** Done — the additive permission layer below shipped. Custom roles now
+grant access; the fraud-sensitive splittable endpoints are gated by
+`require_permission`. The four system roles are unchanged (their defaults
+reproduce the prior `require_roles` matrix exactly). See
+`docs/authentication.md` § Granular permissions / segregation of duties.
 
 **Why this and not "custom roles inherit system roles":** users can already
 hold multiple system roles (the assignment UI checkboxes them; `require_roles`
@@ -173,44 +175,49 @@ role-bundling can *split* it. Only a permission layer can. This composes with
 the existing instance-level SoD (`check_segregation`, approver ≠ creator).
 
 **Design (additive, backward-compatible — existing behavior unchanged until a
-custom role is deliberately given a permission):**
+custom role is deliberately given a permission). All shipped:**
 
-- **Permission catalog** — named constants in `app/api/permissions.py`
-  (e.g. `invoice.approve`, `payment.execute`, `payment.void`,
-  `vendor.bank_change.approve`, `vendor.manage`, `user.manage`,
-  `payment_run.approve`). Start with the *sensitive, splittable* set, not an
-  exhaustive catalog.
-- **System-role → default permissions map** — a static dict that reproduces
-  today's matrix exactly, so the four system roles behave identically with zero
-  migration of their semantics.
-- **Custom-role permissions** — new JSONB column `roles.permissions` (control
-  plane; single migration, control-plane-only since `roles` is control-plane).
-  System roles leave it NULL (they resolve via the default map); custom roles
-  store an explicit permission list.
-- **Effective permissions** — union over all the user's roles: system roles via
-  the default map, custom roles via their stored list. Computed once in
-  `get_current_user` / exposed on the user.
-- **Enforcement** — add `require_permission(*perms)` alongside `require_roles`.
-  Migrate **only the splittable sensitive endpoints** to it first (payment
-  execute/void, payment-run approve, vendor bank-change approve, vendor
-  block/unblock, user management); everything else stays on `require_roles`.
-  Keep `test_rbac.py`'s coverage gate (every route still needs *some* gate).
-- **Frontend** — `GET /api/auth/me` returns the effective `permissions` array;
-  add a `can(perm)` helper to the auth store and convert the specific gated
-  controls. The existing `isManager`/`isCfo` gates keep working for everything
-  not yet split.
-- **Custom-role UI** — permission checkboxes in the `/admin/roles` create/edit
-  modal; revert the "custom roles confer no permissions" copy once they do.
+- [x] **Permission catalog** — named constants in `app/api/permissions.py`
+  (`invoice.approve`, `payment_run.approve`, `payment.execute`, `payment.void`,
+  `vendor.bank_change.approve`, `vendor.block`, `vendor.manage`, `user.manage`)
+  + labels + `GET /api/admin/permissions`. The *sensitive, splittable* set.
+- [x] **System-role → default permissions map** — `ROLE_DEFAULT_PERMISSIONS`
+  reproduces today's matrix exactly, so the four system roles behave
+  identically with zero migration of their semantics.
+- [x] **Custom-role permissions** — JSONB column `roles.permissions` (migration
+  `0062_role_permissions`, control-plane-only since `roles` is control-plane).
+  System roles leave it NULL (resolve via the default map); custom roles store
+  an explicit, sanitized list.
+- [x] **Effective permissions** — union over all the user's roles (system via
+  the default map, custom via their stored list). Computed once in
+  `get_current_user`, cached on `User.effective_permissions`.
+- [x] **Enforcement** — `require_permission(*perms)` alongside `require_roles`.
+  Migrated **only the splittable sensitive endpoints** (payment-run
+  approve/execute, payment void, vendor bank-change approve, vendor
+  block/unblock, vendor manage, user management); everything else stays on
+  `require_roles`. `test_rbac.py`'s coverage gate stays green.
+- [x] **Frontend** — `GET /api/auth/me` returns the effective `permissions`
+  array; `auth.can(perm)` helper added; the Execute / Void / vendor
+  Block-Unblock controls converted. `isManager`/`isCfo` keep working for
+  everything not yet split.
+- [x] **Custom-role UI** — permission checkboxes in the `/admin/roles`
+  create/edit modal; the "custom roles confer no permissions" copy reverted.
 
-**Tests:** permission-resolution unit tests (system default map + custom union);
-`test_rbac.py` extended so split endpoints assert permission gating; one e2e —
-a custom role granted only `invoice.approve` can approve an invoice but gets 403
-on payment execution.
+**Tests:** permission-resolution unit tests (`tests/test_permissions.py` —
+system default map + custom union + sanitize + `require_permission` semantics);
+`test_rbac.py` extended (`test_split_endpoints_are_permission_gated`) so the
+split endpoints assert permission gating; the SoD guarantee — a custom role
+granted only `invoice.approve` is 403'd on payment execution — is asserted at
+the dependency level (`test_require_permission_rejects_non_holder`).
 
-**Files (when built):** `backend/app/api/permissions.py` (new), `app/api/deps.py`,
-the sensitive routers (`payments.py`, `vendors.py`, `admin.py`), a control-plane
-migration, `frontend/src/lib/stores/auth.svelte.ts`,
-`frontend/src/routes/admin/roles/+page.svelte`, `docs/authentication.md`.
+**Files:** `backend/app/api/permissions.py` (new), `app/api/deps.py`,
+`app/api/{payments,vendors,admin,auth}.py`, `app/models/user.py`,
+`app/schemas/{admin,auth}.py`, migration `0062_role_permissions`,
+`frontend/src/lib/stores/auth.svelte.ts`,
+`frontend/src/lib/types/admin.ts`, `frontend/src/lib/stores/admin.svelte.ts`,
+`frontend/src/lib/components/admin/RolesPanel.svelte`, the converted controls
+(`modals/RunDetailModal.svelte`, `modals/VendorModal.svelte`,
+`routes/payments/+page.svelte`), `docs/authentication.md`.
 
 ---
 
