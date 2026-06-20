@@ -304,6 +304,17 @@
 		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 18px 20px;
+		/* WCAG 1.4.10: grid items default to min-width:auto, which keeps the
+		   chart at its intrinsic width and scrolls the whole page on a narrow
+		   viewport. min-width:0 lets the track (and chart) shrink to reflow. */
+		min-width: 0;
+	}
+
+	/* Single column on narrow viewports so the two-up charts reflow. */
+	@media (max-width: 700px) {
+		.charts-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.chart-card.wide {

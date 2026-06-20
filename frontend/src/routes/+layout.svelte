@@ -57,6 +57,21 @@
 		}
 	});
 
+	// WCAG 1.4.10 Reflow: on narrow viewports collapse the sidebar to its icon
+	// rail so the 220px panel doesn't force the page wider than the screen. Nav
+	// stays reachable (icon rail), the user can still expand it. Desktop is
+	// unaffected — the breakpoint only fires below 700px.
+	$effect(() => {
+		if (!browser) return;
+		const mq = window.matchMedia('(max-width: 700px)');
+		const apply = () => {
+			if (mq.matches && !sidebar.collapsed) sidebar.toggle();
+		};
+		apply();
+		mq.addEventListener('change', apply);
+		return () => mq.removeEventListener('change', apply);
+	});
+
 	// Drive the sidebar's unread-notification badge. Start the 60s poll once the
 	// user is fully signed in (and past the change-password gate); stop it on
 	// logout so a stale timer doesn't fire 401s after the token is cleared.

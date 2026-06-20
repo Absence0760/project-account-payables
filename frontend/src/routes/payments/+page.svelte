@@ -900,6 +900,9 @@
 		display: flex;
 		gap: 0;
 		border-bottom: 1px solid var(--border);
+		/* WCAG 1.4.10: let the tab row wrap rather than push the page wider
+		   than a narrow viewport. */
+		flex-wrap: wrap;
 	}
 
 	.tab {
