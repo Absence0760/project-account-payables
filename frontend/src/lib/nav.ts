@@ -121,6 +121,9 @@ export const NAV: NavEntry[] = [
 			{ label: 'Experiments', labelKey: 'nav.experiments', href: '/experiments', roles: ['admin', 'ap_manager', 'cfo'] },
 			// Developer-API key management — admin only (the backend 403s the rest).
 			{ label: 'API Keys', labelKey: 'nav.apiKeys', href: '/admin/api-keys', roles: ['admin'] },
+			// Outbound-webhook subscriptions + delivery log / redelivery — admin
+			// only (the backend /api/webhooks surface 403s the rest).
+			{ label: 'Webhooks', labelKey: 'nav.webhooks', href: '/admin/webhooks', roles: ['admin'] },
 			// Partner / reseller multi-tenant admin — manage branded child tenants.
 			// Admin only (the backend /api/partner surface 403s the rest). A
 			// standalone org sees an empty "not a partner" state.

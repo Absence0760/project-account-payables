@@ -46,6 +46,7 @@ export const messages = {
 	'nav.workflows': 'ワークフロー',
 	'nav.experiments': '実験',
 	'nav.apiKeys': 'APIキー',
+	'nav.webhooks': 'Webhook',
 	'nav.partner': 'パートナー管理',
 
 	// App shell / sidebar
