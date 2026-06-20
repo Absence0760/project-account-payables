@@ -6,8 +6,8 @@ credential is bound to a control-plane ``User`` (``user_id`` FK), exactly where
 ``User.mfa_secret`` lives; it must NOT fan out to per-tenant DBs (registered in
 ``tenant_provisioning.CONTROL_TABLES``).
 
-Revision ID: 0062_webauthn_credentials
-Revises: 0061_vendor_website
+Revision ID: 0063_webauthn_credentials
+Revises: 0062_role_permissions
 Create Date: 2026-06-20
 
 Control-plane DB only (gated on the ``organizations`` table existing, so it
@@ -22,8 +22,8 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "0062_webauthn_credentials"
-down_revision = "0061_vendor_website"
+revision = "0063_webauthn_credentials"
+down_revision = "0062_role_permissions"
 branch_labels = None
 depends_on = None
 

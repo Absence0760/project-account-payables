@@ -1,7 +1,7 @@
 """A/B testing for workflow rules: workflow_experiments table (tenant-scoped).
 
-Revision ID: 0062_workflow_experiments
-Revises: 0061_vendor_website
+Revision ID: 0064_workflow_experiments
+Revises: 0063_webauthn_credentials
 Create Date: 2026-06-20
 
 Tenant DB only (gated on the ``invoices`` table, so it no-ops on the control
@@ -18,8 +18,8 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "0062_workflow_experiments"
-down_revision = "0061_vendor_website"
+revision = "0064_workflow_experiments"
+down_revision = "0063_webauthn_credentials"
 branch_labels = None
 depends_on = None
 
