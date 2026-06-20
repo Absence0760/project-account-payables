@@ -619,12 +619,20 @@ inherit it for free. Reuse these; don't re-solve them per page.
   `@media (prefers-reduced-motion: reduce)` block near-zeroes all
   animation/transition durations. Don't gate functionality on a
   transition finishing.
-- **Modal** (`ui/Modal.svelte`; WCAG 2.1.2 / 2.4.3) — on open, focus
-  moves into the dialog (first focusable, else the dialog box, which
-  has `tabindex="-1"`); Tab / Shift+Tab are trapped with wrap-around;
-  on close, focus restores to the element that opened it. Esc +
-  backdrop-click still close. Every dialog reuses this, so every dialog
-  gets focus management — never hand-roll a modal shell.
+- **Modal / focus trap** (`ui/Modal.svelte` + `$lib/actions/focusTrap.ts`;
+  WCAG 2.1.2 / 2.4.3) — `use:focusTrap={{ onEscape }}` on a dialog box
+  (with `tabindex="-1"`) moves focus in on open, traps Tab / Shift+Tab
+  with wrap-around, closes on Esc, and restores focus to the trigger on
+  close. `ui/Modal` uses it, and so do the four pre-existing hand-rolled
+  feature shells (`InvoiceModal`, `RunDetailModal`, `BulkRecodeGLModal`,
+  portal discount-accept) so every dialog gets identical focus management.
+  Prefer `ui/Modal` for new dialogs; if you must hand-roll a shell, add
+  `use:focusTrap` rather than re-implementing it.
+- **Reorder controls** (WCAG 2.5.7 Dragging Movements) — any drag-to-reorder
+  needs a single-pointer + keyboard alternative. The workflow-builder
+  `StepNode` pairs its drag handle with per-node Move ↑ / Move ↓ buttons
+  (`onmoveup`/`onmovedown` over the canvas `onreorder`). Mirror this for any
+  new drag interaction; don't ship drag as the only path.
 - **Toast** (`ui/Toast.svelte`; WCAG 4.1.3) — `role="region"` +
   two persistent live containers (`aria-live="assertive"` for errors,
   `"polite"` for the rest). Each toast has a real `<button>` dismiss

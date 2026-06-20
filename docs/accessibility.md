@@ -45,15 +45,23 @@ kinds of human review:
    broken landmark/heading structure, undersized target) fails CI. Run it
    locally with `pnpm test:e2e:a11y` (needs the local stack up — see
    `frontend/tests-e2e/README.md`).
-2. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
-   `Semantics` tree and widget semantics tests to assert that interactive
-   widgets expose labels, roles, and state to TalkBack / VoiceOver.
-3. **Manual screen-reader passes.** Periodic keyboard-only and screen-reader
-   walkthroughs of the core flows: **VoiceOver** (macOS Safari + iOS),
-   **NVDA** (Windows Firefox/Chrome), and **TalkBack** (Android). Automated
-   tooling catches roughly a third to a half of WCAG issues; the manual passes
-   cover the rest — focus order, reading order, meaningful announcements,
-   focus-not-obscured, consistent help, and accessible authentication.
+2. **Navigability tests (web).** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
+   asserts the structural semantics a screen-reader/keyboard user relies on:
+   skip link + named landmarks + a single `<h1>`, no positive tabindex, 320px
+   reflow with no horizontal scroll, and dialog focus-trap + focus-restore on
+   Esc. `workflow-builder.spec.ts` covers the keyboard step-reorder path.
+3. **Flutter semantics tests (mobile).** The mobile app uses Flutter's
+   `Semantics` tree and `meetsGuideline` widget tests (`mobile/test/a11y/`) to
+   assert that interactive widgets expose labels, roles, and state to TalkBack /
+   VoiceOver, plus tap-target size and contrast.
+4. **Manual screen-reader passes.** Keyboard-only and screen-reader walkthroughs
+   of the core flows — **VoiceOver** (macOS Safari + iOS), **NVDA** (Windows
+   Firefox/Chrome), **TalkBack** (Android) — run from the repeatable
+   [screen-reader checklist](./accessibility-screen-reader-checklist.md) before a
+   release touching the core flow, navigation, modals, or forms. Automated
+   tooling catches roughly a third to a half of WCAG issues; this pass covers the
+   rest — announcement quality, reading order as heard, focus-not-obscured,
+   consistent help, and accessible authentication.
 
 ### What the automated guard cannot catch
 
@@ -142,6 +150,9 @@ five business days.
 
 - [Accessibility Conformance Report (VPAT / ACR)](./accessibility-vpat.md) —
   the criterion-by-criterion WCAG 2.2 AA edition table.
-- `frontend/tests-e2e/a11y/axe.spec.ts` — the automated regression guard.
+- [Screen-reader test checklist](./accessibility-screen-reader-checklist.md) —
+  the repeatable manual VoiceOver / NVDA / TalkBack pass.
+- `frontend/tests-e2e/a11y/axe.spec.ts` + `screen-reader.spec.ts` — the
+  automated regression guards (axe + navigability/reflow/focus-trap).
 - `frontend/tests-e2e/README.md` — how to run the e2e suite (incl. the a11y
   guard) locally and in CI.

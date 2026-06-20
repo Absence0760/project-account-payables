@@ -76,11 +76,11 @@ and the manual audit is the tracked outstanding work.
 | 1.2.4 Captions (Live) | AA | Not Applicable | No live multimedia. |
 | 1.2.5 Audio Description (Prerecorded) | AA | Not Applicable | No pre-recorded multimedia. |
 | 1.3.4 Orientation | AA | Supports | Layout works in both portrait and landscape; no orientation lock (mobile + responsive web). |
-| 1.3.5 Identify Input Purpose | AA | Partially Supports | Common fields use appropriate `type`/`name`; a full `autocomplete`-token audit on auth and vendor forms is part of the manual pass. |
+| 1.3.5 Identify Input Purpose | AA | Supports | Auth + onboarding fields carry `autocomplete` tokens (`email`, `current-password`, `new-password`, `organization`, `name`, `one-time-code`); inputs use the matching `type`. |
 | 1.4.3 Contrast (Minimum) | AA | Supports | Dark-theme text and UI components meet 4.5:1 / 3:1; enforced by the axe `color-contrast` rule on every CI run. |
 | 1.4.4 Resize Text | AA | Supports | Layout uses relative units and reflows; text scales to 200% without loss of content. |
 | 1.4.5 Images of Text | AA | Supports | Text is real text, not images of text. |
-| 1.4.10 Reflow | AA | Partially Supports | Content reflows to a single column on narrow viewports; wide data grids may scroll horizontally — verified down to 320px CSS width as part of the manual pass. |
+| 1.4.10 Reflow | AA | Supports | Content reflows to a single column at 320px with no page-level horizontal scroll (sidebar auto-collapses to its icon rail; chart grids and the payments tab row reflow); data grids scroll within their own `overflow-x` container (the permitted exception). Guarded by `screen-reader.spec.ts`. |
 | 1.4.11 Non-text Contrast | AA | Supports | UI component boundaries, focus indicators, and graphical controls meet 3:1; verified by axe. |
 | 1.4.12 Text Spacing | AA | Supports | No loss of content when user text-spacing overrides are applied (no fixed-height text containers clipping). |
 | 1.4.13 Content on Hover or Focus | AA | Partially Supports | Popovers/tooltips are dismissible and hoverable; full verification of every hover surface is part of the manual pass. |
@@ -111,7 +111,7 @@ likeliest gaps in an older codebase:
 | 2.4.11 Focus Not Obscured (Minimum) | AA | Partially Supports | Sticky headers / modals must not hide the focused control — manual check pending. |
 | 2.4.12 Focus Not Obscured (Enhanced) | AAA | Not Applicable | Above the AA target. |
 | 2.4.13 Focus Appearance | AAA | Not Applicable | Above the AA target. |
-| 2.5.7 Dragging Movements | AA | Partially Supports | Workflow-builder drag-and-drop needs a single-pointer alternative. |
+| 2.5.7 Dragging Movements | AA | Supports | The workflow-builder canvas drag-to-reorder has a per-node single-pointer + keyboard alternative — Move ↑ / Move ↓ buttons on every step (and in the step config panel). Covered by `workflow-builder.spec.ts`. |
 | 2.5.8 Target Size (Minimum) | AA | Supports | 24×24px minimum; guarded by axe `target-size`. |
 | 3.2.6 Consistent Help | AA | Partially Supports | Consistent placement of help/feedback affordance — manual check pending. |
 | 3.3.7 Redundant Entry | AA | Partially Supports | Don't re-ask for known info in multi-step flows — manual check pending. |
@@ -120,26 +120,48 @@ likeliest gaps in an older codebase:
 
 ## Outstanding work (tracked)
 
-1. **Complete the manual screen-reader audit** (VoiceOver / NVDA / TalkBack)
-   over the core invoice → approve → pay flow, the supplier portal, and the
-   mobile app. This converts the **Partially Supports** rows above to a
-   verified status. *Largest single item.*
-2. **Workflow-builder drag-and-drop alternative** — add a single-pointer
-   (click-to-add / keyboard-reorder) path to satisfy **2.5.7** at
-   `/workflows/[id]`.
-3. **`autocomplete`-token and 320px-reflow sweep** on the auth and vendor
-   forms (**1.3.5**, **1.4.10**).
+The structural follow-ups from the initial pass are now **resolved**:
 
-These are accessibility follow-ups to be tracked as issues/tickets per the
-project's no-dangling-findings rule; this ACR is the record of what's
-outstanding, not the resolution of it.
+- ~~Workflow-builder drag alternative (2.5.7)~~ — **Done.** Per-node Move ↑/↓
+  buttons (keyboard + single-pointer) on every step; covered by
+  `workflow-builder.spec.ts`.
+- ~~Hand-rolled-modal focus management (2.1.2 / 2.4.3)~~ — **Done.** The shared
+  `$lib/actions/focusTrap` action gives `InvoiceModal`, `RunDetailModal`,
+  `BulkRecodeGLModal`, and the portal discount-accept dialog the same focus
+  trap + restore as `ui/Modal`; covered by `screen-reader.spec.ts`.
+- ~~`autocomplete` tokens (1.3.5)~~ and ~~320px reflow (1.4.10)~~ — **Done** and
+  guarded by `screen-reader.spec.ts`.
+
+Remaining:
+
+1. **Execute the manual screen-reader pass on real devices** (VoiceOver / NVDA /
+   TalkBack) using
+   [docs/accessibility-screen-reader-checklist.md](./accessibility-screen-reader-checklist.md).
+   The programmatic semantics it depends on (names, roles, landmarks, headings,
+   focus trap/restore, reflow, no positive tabindex) are locked by the automated
+   guards; this pass is the human-judgement layer (announcement quality, reading
+   order as heard) and is what converts the few remaining **Partially Supports**
+   rows (2.4.11 Focus Not Obscured, 3.2.6 Consistent Help, 3.3.7 Redundant
+   Entry, 3.3.8 Accessible Authentication) to a verified status. It needs real
+   AT hardware, so it can't run in CI.
+
+Per the project's no-dangling-findings rule, the device pass is a documented,
+repeatable procedure (the checklist), not an open-ended TODO.
 
 ## Evaluation evidence
 
-- **Automated:** `frontend/tests-e2e/a11y/axe.spec.ts` runs `axe-core` at the
-  `wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa` tag set against the dashboard,
+- **Automated (axe):** `frontend/tests-e2e/a11y/axe.spec.ts` runs `axe-core` at
+  the `wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa` tag set against the dashboard,
   invoices list, vendors, payments, exceptions, the invoice detail modal, and
   the two login surfaces, asserting zero violations on every CI push. Run
   locally: `pnpm test:e2e:a11y`.
-- **Mobile:** Flutter semantics widget tests assert label/role/state exposure.
-- **Manual:** keyboard-only + screen-reader walkthroughs (in progress).
+- **Automated (navigability):** `frontend/tests-e2e/a11y/screen-reader.spec.ts`
+  asserts the skip link + named landmarks + single `<h1>`, no positive tabindex,
+  320px reflow with no horizontal scroll, and dialog focus-trap + Esc focus
+  restore — the programmatic semantics the manual SR pass relies on.
+  `workflow-builder.spec.ts` covers the keyboard step-reorder path.
+- **Mobile:** Flutter `meetsGuideline` widget tests (`mobile/test/a11y/`) assert
+  label/role/state exposure, tap-target size, and contrast.
+- **Manual:** keyboard-only + screen-reader walkthroughs per
+  [docs/accessibility-screen-reader-checklist.md](./accessibility-screen-reader-checklist.md)
+  (device pass — run before a release touching the core flow/nav/modals/forms).
