@@ -16,7 +16,8 @@ forecast variance). Both are computed by pure functions in
 | Operational dashboard | `app/api/dashboard.py` | Pipeline / aging / processing time / approval bottleneck / discount capture (AP clerk + manager + CFO) |
 | CFO dashboard | `app/api/analytics.py::get_cfo_analytics` | DPO + trend, CCC, accruals, working-capital impact, supplier concentration, fraud-rate trend, rebate yield (admin + CFO only) |
 | Drill-through | `/api/analytics/drill/*` | Per-metric "show me the rows" endpoints (spend_concentration, dpo) |
-| Cash-flow forecasting | `/api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}` | Predictive AP outflow buckets, payment-timing what-if, running cash position (admin + CFO only). Web dashboard at `/cfo`. |
+| Cash-flow forecasting | `/api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}` | Predictive AP outflow buckets, payment-timing what-if, running cash position with bank-balance auto-sync (admin + CFO only). Web dashboard at `/cfo`. |
+| Cash-position thresholds | `/api/analytics/cash-position-settings` (GET/PUT) | Persisted per-org low-balance alert threshold on `settings.cashflow` (no migration). |
 | CSV export | `app/services/report_export.py` + `/api/analytics/export/{report}` | invoice_register, vendor_spend, payment_register, aging_snapshot, cashflow_forecast |
 | Scheduled delivery | `app/services/scheduled_reports.py` + migration 0020 | Per-tenant cron-like subscriptions; daily / weekly / monthly cadence; email via existing adapter |
 
@@ -155,16 +156,56 @@ and bucketed `periods`:
   without a discount fall back to the due date at full amount.
 - `late` — pay `due_date + grace_days`, full amount, discount forfeited.
 
-`GET /cash_position?granularity=…&horizon_days=N&opening_balance=STR&min_balance_threshold=STR`
+`GET /cash_position?granularity=…&horizon_days=N&opening_balance=STR&min_balance_threshold=STR&seed_balance=bool`
 — running balance carried forward per period
 (`closing = opening − outflow`; receivables/inflows aren't modelled in an
-AP-only product). The opening balance is bring-your-own: the
-`opening_balance` query param wins, else
-`Organization.settings.cashflow.opening_balance`, else `0` with
-`opening_balance_source: "none"` so the UI prompts for one. Periods that
-close below `min_balance_threshold` are flagged (`below_threshold`) and
-collected in `breaches[]` with the `shortfall`. Money params are parsed as
-`Decimal` strings (never floats); garbage → 400.
+AP-only product). Periods that close below the effective threshold are flagged
+(`below_threshold`) and collected in `breaches[]` with the `shortfall`. Money
+params are parsed as `Decimal` strings (never floats); garbage → 400.
+
+**Opening balance — resolution order** (first hit wins; the chosen source is
+echoed as `opening_balance_source`):
+
+1. `opening_balance` query param — explicit bring-your-own override → `"query"`.
+2. **Bank-balance auto-sync** — pulled from the org's configured
+   payment/banking provider via the optional `PaymentAdapter.get_balance`
+   capability → `"provider"` (with `opening_balance_currency`). Only attempted
+   when the org has a `settings.payments` provider configured and
+   `seed_balance` is true (default). **Best-effort** — an adapter that doesn't
+   implement the capability, or a fetch that fails, silently falls through to
+   the next source; the dashboard never 500s on a bank-link outage, and nothing
+   logs the balance figure or any account number. The local-first `mock` adapter
+   returns a deterministic figure (250000.00) so `pnpm dev` needs no real bank
+   credential. Pass `seed_balance=false` to skip the provider call.
+3. Persisted `Organization.settings.cashflow.opening_balance` → `"settings"`.
+4. `0` with `opening_balance_source: "none"` so the UI prompts for one.
+
+**Threshold** — the `min_balance_threshold` query param when supplied, else the
+org's persisted `settings.cashflow.min_balance_threshold` (see below).
+
+`get_balance` is an OPTIONAL adapter capability (`services/payment_adapters/base.py`
+→ `BalanceResult`): the base-class default reports `available=False`, so existing
+adapters that don't implement it are unaffected. The best-effort fetch +
+fallback chain live in `services/cashflow.fetch_provider_balance` (returns `None`
+on unsupported / failure — never raises).
+
+### Persisted cash-position thresholds (`/api/analytics/cash-position-settings`)
+
+Per-org alert thresholds persisted on `Organization.settings.cashflow` (JSON —
+**no migration**), so the CFO sets them once instead of passing
+`min_balance_threshold` on every request. CFO + admin (same surface as the
+cash-position view); the PUT is audited (`organization.cash_thresholds_updated`,
+PII-free).
+
+- `GET /cash-position-settings` → `{ "min_balance_threshold": "STR" | null }`.
+- `PUT /cash-position-settings` body `{ "min_balance_threshold": "STR" | null }`
+  — money is an exact `Decimal` serialised as a JSON string (never a float);
+  `null` clears it; a negative value → 422. The write preserves any other
+  `cashflow` keys (e.g. a manually set `opening_balance`).
+
+The resolver/store helpers (`services/cashflow.resolve_cash_thresholds` /
+`store_cash_thresholds`) tolerate a missing/malformed `cashflow` block by
+returning "no threshold" rather than raising.
 
 ## CSV export
 
@@ -229,4 +270,6 @@ is stored.
 | `tests/test_report_export.py` | 11 cases — registry pins all four reports; per-report header column-order pinned; enum-status reads `.value`; missing fields emit empty (not "None"); orphan payment-with-null-invoice still emitted |
 | `tests/test_scheduled_reports.py` | 11 cases — cadence delta math; unknown-cadence fallback; happy-path generates → emails every recipient → updates next_run_at; generator-error / empty-recipients / email-adapter-error all persist a failure marker without raising; PII guardrail (no SMTP transport details in `last_run_error`); five-consecutive-failures disables the row, first failure leaves enabled alone |
 | `tests/test_dashboard_aggregations.py` | Existing — extended through the new branches via the try/except absorption pattern |
+| `tests/test_cashflow_balance.py` | Unit — `get_balance` capability (base-class default unsupported; mock deterministic + config override + simulated-unsupported); `fetch_provider_balance` best-effort (mock balance, None on unsupported, swallows adapter error); persisted-threshold resolve/store round-trip + garbage tolerance + key preservation/clear |
+| `tests/test_cashflow_forecast_api.py` (cash-position additions) | API — auto-seed opening balance from the mock provider (`source: provider`); `seed_balance=false` skips it; query param beats provider; provider-unsupported falls back to `settings`; persisted threshold applied without a query override; `cash-position-settings` GET/PUT round-trip; negative → 422; RBAC (ap_clerk 403, admin/cfo 200) |
 | `tests/test_analytics_by_entity.py` | `/by-entity` — per-entity spend/invoice-count scoping for two entities; `consolidated` equals the cross-entity sum; open-exceptions scope per entity; single-entity tenant returns a coherent one-row breakdown; RBAC (ap_clerk/ap_manager 403, cfo 200); the endpoint ignores `X-Entity-ID` |
