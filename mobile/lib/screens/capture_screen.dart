@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
 import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/services/camera_capture.dart';
@@ -28,6 +29,25 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _error = null;
       });
     }
+  }
+
+  /// Pick a document file (PDF / PNG / JPG / TIFF) from the device's storage.
+  Future<void> _pickDocument() async {
+    final file = await CameraCapture.pickDocument();
+    if (file != null) {
+      setState(() {
+        _selectedFile = file;
+        _error = null;
+      });
+    }
+  }
+
+  /// True when the selected file is a PDF — it can't render via [Image.file],
+  /// so the preview shows a document placeholder instead of the bitmap.
+  bool get _selectedIsPdf {
+    final file = _selectedFile;
+    if (file == null) return false;
+    return p.extension(file.path).toLowerCase() == '.pdf';
   }
 
   Future<void> _upload() async {
@@ -74,48 +94,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
         children: [
           Expanded(
             child: _selectedFile != null
-                ? InteractiveViewer(
-                    child: Image.file(
-                      _selectedFile!,
-                      fit: BoxFit.contain,
-                    ),
-                  )
-                : Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const ExcludeSemantics(
-                          child: Icon(
-                            Icons.camera_alt,
-                            size: 80,
-                            color: Colors.grey, // decorative placeholder
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Take a photo or choose from gallery',
-                          style: TextStyle(fontSize: 16),
-                        ),
-                        const SizedBox(height: 32),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            FilledButton.icon(
-                              onPressed: () => _capture(fromCamera: true),
-                              icon: const Icon(Icons.camera_alt),
-                              label: const Text('Camera'),
-                            ),
-                            const SizedBox(width: 16),
-                            OutlinedButton.icon(
-                              onPressed: () => _capture(fromCamera: false),
-                              icon: const Icon(Icons.photo_library),
-                              label: const Text('Gallery'),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+                ? (_selectedIsPdf ? _buildPdfPreview() : _buildImagePreview())
+                : _buildEmptyState(),
           ),
           if (_error != null)
             Padding(
@@ -137,9 +117,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: _uploading ? null : () => _capture(),
+                        onPressed: _uploading ? null : _changeSource,
                         icon: const Icon(Icons.refresh),
-                        label: const Text('Retake'),
+                        label: const Text('Change'),
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -166,5 +146,140 @@ class _CaptureScreenState extends State<CaptureScreen> {
         ],
       ),
     );
+  }
+
+  /// Empty state — offers all three sources: camera, gallery, and a file
+  /// picker for documents (PDF / PNG / JPG / TIFF).
+  Widget _buildEmptyState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ExcludeSemantics(
+              child: Icon(
+                Icons.camera_alt,
+                size: 80,
+                color: Colors.grey, // decorative placeholder
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Take a photo, choose from gallery, or pick a file',
+              style: TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 32),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 16,
+              runSpacing: 12,
+              children: [
+                FilledButton.icon(
+                  onPressed: () => _capture(fromCamera: true),
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('Camera'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _capture(fromCamera: false),
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Gallery'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _pickDocument,
+                  icon: const Icon(Icons.upload_file),
+                  label: const Text('Choose file'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Supports PDF, PNG, JPG and TIFF',
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Image preview for a picked photo / image file.
+  Widget _buildImagePreview() {
+    return InteractiveViewer(
+      child: Image.file(
+        _selectedFile!,
+        fit: BoxFit.contain,
+      ),
+    );
+  }
+
+  /// Document placeholder preview for a picked PDF — a PDF can't render via
+  /// [Image.file]. Shows the file name so the user can confirm their choice
+  /// before uploading; the rendered PDF is viewable on the invoice detail
+  /// screen after extraction.
+  Widget _buildPdfPreview() {
+    final name = p.basename(_selectedFile!.path);
+    return Center(
+      child: Semantics(
+        label: 'Selected document: $name',
+        excludeSemantics: true,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.picture_as_pdf, size: 80, color: Colors.redAccent),
+            const SizedBox(height: 16),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                name,
+                style: const TextStyle(fontSize: 16),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text('PDF document ready to upload'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Re-open a source chooser so the user can swap the selected file before
+  /// uploading. Covers all three sources (camera / gallery / file).
+  Future<void> _changeSource() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Camera'),
+              onTap: () => Navigator.pop(sheetContext, 'camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Gallery'),
+              onTap: () => Navigator.pop(sheetContext, 'gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.upload_file),
+              title: const Text('Choose file'),
+              onTap: () => Navigator.pop(sheetContext, 'file'),
+            ),
+          ],
+        ),
+      ),
+    );
+    switch (choice) {
+      case 'camera':
+        await _capture(fromCamera: true);
+      case 'gallery':
+        await _capture(fromCamera: false);
+      case 'file':
+        await _pickDocument();
+    }
   }
 }

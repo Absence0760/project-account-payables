@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
@@ -13,6 +14,18 @@ import 'package:ap_mobile/config.dart';
 /// Camera capture and invoice upload service.
 class CameraCapture {
   static final _picker = ImagePicker();
+
+  /// Document file extensions the backend extraction pipeline accepts. Mirrors
+  /// the server's `ALLOWED_CONTENT_TYPES` (PDF / PNG / JPEG / TIFF) — the
+  /// picker rejects anything else up-front so the upload can't 422 on type.
+  static const documentExtensions = <String>[
+    'pdf',
+    'png',
+    'jpg',
+    'jpeg',
+    'tiff',
+    'tif',
+  ];
 
   /// Pick an image from camera or gallery.
   /// Returns the file, or null if cancelled.
@@ -28,6 +41,26 @@ class CameraCapture {
       return File(image.path);
     } catch (e) {
       debugPrint('[camera] Pick image failed: $e');
+      return null;
+    }
+  }
+
+  /// Pick a document file (PDF / PNG / JPG / JPEG / TIFF) from the device's
+  /// file system. Returns the file, or null if the user cancelled. Runs the
+  /// same upload path as the camera capture, so the backend extraction pipeline
+  /// treats both identically.
+  static Future<File?> pickDocument() async {
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: documentExtensions,
+        withData: false, // we upload by path; avoid buffering the whole file
+      );
+      final path = result?.files.single.path;
+      if (path == null) return null;
+      return File(path);
+    } catch (e) {
+      debugPrint('[camera] Pick document failed: $e');
       return null;
     }
   }
