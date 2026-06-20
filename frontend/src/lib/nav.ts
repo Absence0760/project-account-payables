@@ -86,6 +86,10 @@ export const NAV: NavEntry[] = [
 			{ label: 'Recurring', labelKey: 'nav.recurring', href: '/recurring', roles: ['admin', 'ap_manager', 'cfo'] },
 			{ label: 'Statements', labelKey: 'nav.statements', href: '/vendor-statements', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Positive Pay', labelKey: 'nav.positivePay', href: '/positive-pay', roles: ['admin', 'ap_manager', 'cfo'] },
+			// Platform billing — the AP platform's OWN subscription / plan / usage
+			// (control-plane), distinct from the customer AP money path above.
+			// Admin/CFO only (the backend GET /api/billing/subscription 403s the rest).
+			{ label: 'Subscription', labelKey: 'nav.platformBilling', href: '/billing', roles: ['admin', 'cfo'] },
 		],
 	},
 	{

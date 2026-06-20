@@ -31,6 +31,7 @@ export const messages = {
 	'nav.recurring': 'Recurrentes',
 	'nav.statements': 'Estados de cuenta',
 	'nav.positivePay': 'Positive Pay',
+	'nav.platformBilling': 'Suscripción',
 	'nav.aiAssistant': 'Asistente de IA',
 	'nav.cashFlow': 'Flujo de caja',
 	'nav.taxReporting': 'Informe 1099',

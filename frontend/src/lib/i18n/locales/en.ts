@@ -40,6 +40,7 @@ export const en = {
 	'nav.recurring': 'Recurring',
 	'nav.statements': 'Statements',
 	'nav.positivePay': 'Positive Pay',
+	'nav.platformBilling': 'Subscription',
 	'nav.aiAssistant': 'AI Assistant',
 	'nav.cashFlow': 'Cash Flow',
 	'nav.taxReporting': '1099 Reporting',

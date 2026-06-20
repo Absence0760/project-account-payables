@@ -35,6 +35,7 @@ export const messages = {
 	'nav.recurring': '定期',
 	'nav.statements': '明細書',
 	'nav.positivePay': 'ポジティブペイ',
+	'nav.platformBilling': 'サブスクリプション',
 	'nav.aiAssistant': 'AIアシスタント',
 	'nav.cashFlow': 'キャッシュフロー',
 	'nav.taxReporting': '1099報告',
