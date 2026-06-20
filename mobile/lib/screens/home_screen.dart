@@ -5,8 +5,10 @@ import 'package:ap_mobile/screens/contracts_screen.dart';
 import 'package:ap_mobile/screens/dashboard_screen.dart';
 import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
+import 'package:ap_mobile/screens/payment_queue_screen.dart';
 import 'package:ap_mobile/screens/payments_screen.dart';
 import 'package:ap_mobile/screens/settings_screen.dart';
+import 'package:ap_mobile/screens/vendors_screen.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -32,6 +34,10 @@ class _HomeScreenState extends State<HomeScreen> {
       screens.add(const ExceptionsScreen());
     }
     if (AuthStore.instance.canViewPayments) {
+      // Vendor reads + payment queue/runs are admin/ap_manager/cfo on the
+      // backend — same gate as the payments tab.
+      screens.add(const VendorsScreen());
+      screens.add(const PaymentQueueScreen());
       screens.add(const PaymentsScreen());
     }
     screens.add(const SettingsScreen());
@@ -64,6 +70,14 @@ class _HomeScreenState extends State<HomeScreen> {
       ));
     }
     if (AuthStore.instance.canViewPayments) {
+      items.add(const BottomNavigationBarItem(
+        icon: Icon(Icons.store),
+        label: 'Vendors',
+      ));
+      items.add(const BottomNavigationBarItem(
+        icon: Icon(Icons.account_balance_wallet),
+        label: 'Pay',
+      ));
       items.add(const BottomNavigationBarItem(
         icon: Icon(Icons.payments),
         label: 'Payments',
