@@ -14,7 +14,7 @@ key. See [§ External enrichment (D&B / Clearbit)](#external-enrichment-db--clea
 |---|---|---|
 | **Auto-fill** | Suggests the dominant historical `gl_account` / `cost_center` / `payment_terms` for a draft invoice's vendor | No — advisory |
 | **Price variance** | Flags draft line items whose unit price deviates from the vendor's per-item historical median | Yes — also persisted as a warning + `price_variance` exception on every invoice mutation (returned inline too) |
-| **Vendor scoring** | Accuracy + dispute (+ optional on-time) sub-scores → renormalized composite | No — compute-on-read |
+| **Vendor scoring** | Accuracy + dispute + on-time sub-scores → renormalized composite | No — compute-on-read |
 | **Vendor consolidation** | Clusters likely-duplicate / similar vendors so the master list can be deduped | No — advisory, never merges |
 
 Pure statistics live in `app/services/vendor_enrichment.py` (sync, DB-free,
@@ -124,25 +124,38 @@ carried changes. `approved_count == 0` → N/A.
 vendor's total invoice count (any status, status-agnostic — friction that
 *happened* counts). `total_invoices == 0` → N/A.
 
-### On-time delivery — **N/A by default**
-`PurchaseOrder` has **no expected / promised / due-date column**, and
-`GoodsReceipt.received_date` has nothing on the PO side to compare against. So
-on-time is honestly **N/A and excluded from the composite** by default — a
-vendor with no comparable data must not be punished.
+### On-time delivery — `received_date <= PurchaseOrder.expected_delivery_date`
+**Real on-time delivery, computed from `PurchaseOrder.expected_delivery_date`**
+(nullable `Date`, added in **migration 0060** — a tenant-scoped column that fans
+out to every tenant DB). Over the vendor's POs that carry **both** an
+`expected_delivery_date` **and** a goods receipt (`GoodsReceipt.received_date`),
+the sub-score is the fraction received on or before the expected date
+(`received_date <= expected_delivery_date`; the boundary day counts as on time).
+Deterministic, compute-on-read, evidence-backed (the count rides in `detail`),
+no LLM.
+
+A PO with no expected date, or no goods receipt, contributes **nothing** — it is
+not counted as on-time *or* late. When **no** PO has both, the sub-score is
+honest **N/A** (`null`, `sample_size: 0`, `detail` says so) and is excluded from
+the composite — a vendor with no comparable data is never punished, and the math
+never divides by zero. This is the authoritative signal and needs no org flag.
 
 An **opt-in** due-date proxy (org flag `ontime_use_due_date_proxy`, default
-`false`) approximates on-time as `received_date <= invoice.due_date` (GR → PO by
-vendor → Invoice by `po_number`). This is a weak proxy (invoice due date is not
-the delivery-promised date), so it ships disabled and never silently produces a
-misleading score. Making on-time real needs a PO expected-date column — a
-tracked follow-up below.
+`false`) remains as a **weak fallback**, used **only** when the authoritative
+expected-date signal finds no comparable POs *and* the flag is on. It
+approximates on-time as `received_date <= invoice.due_date` (GR → PO by vendor →
+Invoice by `po_number`). The invoice due date is not the delivery-promised date,
+so this proxy stays opt-in and its `detail` string says "(due-date proxy)" so it
+can never be mistaken for the real signal.
 
 ### Composite (renormalized over available sub-scores)
 Weights `{accuracy: 0.4, dispute: 0.3, on_time: 0.3}`, renormalized over only
 the non-N/A sub-scores so an N/A component drops out cleanly:
-`composite = (Σ wᵢ·scoreᵢ for available) / (Σ wᵢ for available)`. With on-time
-N/A (the default), `composite = (0.4·accuracy + 0.3·dispute) / 0.7`. `None` when
-no sub-score is available.
+`composite = (Σ wᵢ·scoreᵢ for available) / (Σ wᵢ for available)`. With all three
+available, `composite = 0.4·accuracy + 0.3·dispute + 0.3·on_time`. When on-time
+is N/A (no PO carries both an expected date and a receipt),
+`composite = (0.4·accuracy + 0.3·dispute) / 0.7`. `None` when no sub-score is
+available.
 
 ### Missing-data handling
 
@@ -150,12 +163,14 @@ no sub-score is available.
 |---|---|
 | Vendor with no invoices at all | all sub-scores N/A, `composite = null`, 200 OK with explanatory `detail`s |
 | Invoices but no approvals | accuracy N/A; dispute computed; composite = dispute alone |
-| No goods receipts | on-time N/A (always N/A this slice regardless) |
+| No PO carries both an expected date and a goods receipt | on-time N/A (excluded from the composite) |
 | Unknown `vendor_id` | 404 |
 | `vendor_id` in another tenant | 404 (tenant-DB scoping makes it not-found, not 403) |
 
-**Compute-on-read, no migration.** The score is a deterministic pure function of
-data already in the tenant DB; caching would add a staleness/invalidation
+**Compute-on-read.** The score is a deterministic pure function of data already
+in the tenant DB (the on-time leg reads `PurchaseOrder.expected_delivery_date`,
+added in migration 0060, vs `GoodsReceipt.received_date` — no per-score row is
+stored); caching would add a staleness/invalidation
 problem (every approval, correction, exception, or GR would have to bump it) for
 no correctness gain. The endpoint is on-demand, not a hot list path. If a future
 dashboard needs to *sort many vendors by score*, that is the trigger to add a
@@ -252,8 +267,8 @@ Roles: `admin`, `ap_manager`, `cfo` (managerial — clerk excluded).
      "detail": "22 of 25 approved invoices needed no corrections"},
     {"name": "dispute", "score": "92.5", "sample_size": 40,
      "detail": "3 of 40 invoices raised an exception"},
-    {"name": "on_time", "score": null, "sample_size": 0,
-     "detail": "On-time delivery requires PO expected dates, not tracked yet"}
+    {"name": "on_time", "score": "66.7", "sample_size": 3,
+     "detail": "2 of 3 receipts on or before the PO expected delivery date"}
   ],
   "computed_at": "2026-06-13T…Z"
 }
@@ -378,8 +393,15 @@ unknown keys dropped, numeric coercion guarded — like `_adaptive_settings`):
   `Exception`)~~ — **DONE.** `_refresh_price_variance` reuses the pure
   `detect_price_variance` at the `refresh_warnings` chokepoint; see the Price
   variance section above.
-- **PO expected-date column** to make on-time delivery real (adds a column +
-  migration + extraction mapping); on-time stays N/A until then.
+- ~~**PO expected-date column** to make on-time delivery real~~ — **DONE.**
+  Migration 0060 adds the nullable `PurchaseOrder.expected_delivery_date`
+  (tenant-scoped, fans out to every tenant DB); the on-time sub-score is now
+  computed from `received_date <= expected_delivery_date` and folds into the
+  composite at weight 0.3. See [§ On-time delivery](#on-time-delivery--received_date--purchaseorderexpected_delivery_date)
+  above. Remaining: the extraction / PO-ingest path does not yet populate
+  `expected_delivery_date` automatically — it is set via the model/API today;
+  wiring it into ERP PO sync + AI extraction is a follow-up (until a PO carries
+  the date, that PO simply doesn't contribute to the on-time sample).
 - **Cached `vendor_scores` table** for multi-vendor sorting (trigger: a
   sort-by-score dashboard); reuses the pure scorer behind a refresh writer.
 - ~~**External enrichment** (D&B / Clearbit)~~ — **DONE.** Built as a pluggable
