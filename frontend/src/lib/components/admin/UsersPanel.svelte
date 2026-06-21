@@ -13,6 +13,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let showCreateModal = $state(false);
 	let editingUser = $state<AdminUser | null>(null);
@@ -97,34 +98,37 @@
 			const result = await adminStore.bulkDeleteUsers([...selectedIds]);
 			selectedIds = new Set();
 			if (result.failed.length === 0) {
-				toast(`Deleted ${result.deleted.length} user${result.deleted.length === 1 ? '' : 's'}`, 'success');
+				toast(m('admin.users.toast.deleted', { n: result.deleted.length }), 'success');
 			} else if (result.deleted.length === 0) {
 				const reason = describeBulkFailure(result.failed[0]);
-				toast(`No users deleted — ${reason}`, 'error');
+				toast(m('admin.users.toast.noneDeleted', { reason }), 'error');
 			} else {
 				toast(
-					`Deleted ${result.deleted.length}; ${result.failed.length} blocked (in-flight references)`,
+					m('admin.users.toast.partialDeleted', {
+						deleted: result.deleted.length,
+						blocked: result.failed.length,
+					}),
 					'success',
 				);
 			}
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Bulk delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('admin.users.toast.bulkFailed'), 'error');
 		} finally {
 			bulkDeleting = false;
 		}
 	}
 
 	function describeBulkFailure(f: { reason: string; references: { open_invoice_assignments: number; pending_approval_steps: number; active_workflow_approver_in: number } | null }): string {
-		if (f.reason === 'self') return 'cannot delete yourself';
-		if (f.reason === 'not_found') return 'user not found';
+		if (f.reason === 'self') return m('admin.users.fail.self');
+		if (f.reason === 'not_found') return m('admin.users.fail.notFound');
 		if (f.reason === 'blocked' && f.references) {
 			const parts: string[] = [];
-			if (f.references.open_invoice_assignments) parts.push(`${f.references.open_invoice_assignments} open invoice${f.references.open_invoice_assignments === 1 ? '' : 's'}`);
-			if (f.references.pending_approval_steps) parts.push(`${f.references.pending_approval_steps} pending approval${f.references.pending_approval_steps === 1 ? '' : 's'}`);
-			if (f.references.active_workflow_approver_in) parts.push(`${f.references.active_workflow_approver_in} active workflow${f.references.active_workflow_approver_in === 1 ? '' : 's'}`);
-			return `still referenced by ${parts.join(', ')}`;
+			if (f.references.open_invoice_assignments) parts.push(m('admin.users.fail.openInvoices', { n: f.references.open_invoice_assignments }));
+			if (f.references.pending_approval_steps) parts.push(m('admin.users.fail.pendingApprovals', { n: f.references.pending_approval_steps }));
+			if (f.references.active_workflow_approver_in) parts.push(m('admin.users.fail.activeWorkflows', { n: f.references.active_workflow_approver_in }));
+			return m('admin.users.fail.referenced', { parts: parts.join(', ') });
 		}
-		return 'blocked';
+		return m('admin.users.fail.blocked');
 	}
 
 	/** Open the Invite-User modal. Exposed so the tabbed host's PageHeader
@@ -159,7 +163,7 @@
 				password: (result as unknown as { temporary_password: string }).temporary_password,
 			};
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to create user', 'error');
+			toast(err instanceof Error ? err.message : m('admin.users.toast.createFailed'), 'error');
 		} finally {
 			saving = false;
 		}
@@ -178,10 +182,10 @@
 				changes.password = editPassword;
 			}
 			await adminStore.updateUser(editingUser.id, changes);
-			toast('User updated', 'success');
+			toast(m('admin.users.toast.updated'), 'success');
 			editingUser = null;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to update user', 'error');
+			toast(err instanceof Error ? err.message : m('admin.users.toast.updateFailed'), 'error');
 		} finally {
 			saving = false;
 		}
@@ -190,19 +194,19 @@
 	async function toggleActive(user: AdminUser) {
 		try {
 			await adminStore.updateUser(user.id, { is_active: !user.is_active });
-			toast(user.is_active ? 'User deactivated' : 'User activated', 'success');
+			toast(user.is_active ? m('admin.users.toast.deactivated') : m('admin.users.toast.activated'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to update user', 'error');
+			toast(err instanceof Error ? err.message : m('admin.users.toast.updateFailed'), 'error');
 		}
 	}
 
 	async function handleDelete(id: string) {
 		try {
 			await adminStore.deleteUser(id);
-			toast('User deleted', 'success');
+			toast(m('admin.users.toast.singleDeleted'), 'success');
 			confirmDeleteId = null;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to delete user', 'error');
+			toast(err instanceof Error ? err.message : m('admin.users.toast.deleteFailed'), 'error');
 		}
 	}
 
@@ -229,8 +233,8 @@
 <div class="filter-row">
 	<SearchBox
 		bind:value={search}
-		placeholder="Search name or email..."
-		ariaLabel="Search users"
+		placeholder={m('admin.users.search.placeholder')}
+		ariaLabel={m('admin.users.search.aria')}
 	/>
 </div>
 
@@ -239,12 +243,12 @@
 		<BulkDeleteButton
 			onconfirm={handleBulkDelete}
 			disabled={bulkDeleting}
-			label={`Delete ${selectedIds.size}`}
+			label={m('admin.users.bulk.delete', { n: selectedIds.size })}
 		/>
 	{/snippet}
 </BulkBar>
 
-<DataTable isEmpty={adminStore.users.length === 0} empty="No users found." colspan={7}>
+<DataTable isEmpty={adminStore.users.length === 0} empty={m('admin.users.empty')} colspan={7}>
 	{#snippet header()}
 		<tr>
 			<th class="checkbox-col">
@@ -252,14 +256,14 @@
 					type="checkbox"
 					checked={allSelected}
 					onchange={toggleSelectAll}
-					aria-label="Select all users"
+					aria-label={m('admin.users.selectAllAria')}
 				/>
 			</th>
-			<th>Name</th>
-			<th>Email</th>
-			<th>Roles</th>
-			<th>Status</th>
-			<th>Created</th>
+			<th>{m('admin.users.col.name')}</th>
+			<th>{m('admin.users.col.email')}</th>
+			<th>{m('admin.users.col.roles')}</th>
+			<th>{m('admin.users.col.status')}</th>
+			<th>{m('admin.users.col.created')}</th>
 			<th></th>
 		</tr>
 	{/snippet}
@@ -279,16 +283,16 @@
 							type="checkbox"
 							checked={selectedIds.has(user.id)}
 							onchange={() => toggleSelect(user.id)}
-							aria-label="Select {user.full_name}"
+							aria-label={m('admin.users.selectAria', { name: user.full_name })}
 						/>
 					{/if}
 				</td>
 				<td class="name-cell">
-					<RowLink onclick={() => openEdit(user)} ariaLabel={`Edit user ${user.full_name}`}>
+					<RowLink onclick={() => openEdit(user)} ariaLabel={m('admin.users.editAria', { name: user.full_name })}>
 						{user.full_name}
 					</RowLink>
 					{#if isSelf(user.id)}
-						<span class="you-badge">You</span>
+						<span class="you-badge">{m('admin.users.you')}</span>
 					{/if}
 				</td>
 				<td class="email-cell">{user.email}</td>
@@ -297,19 +301,19 @@
 						{#each user.roles as role}
 							<span class="role-badge">{ROLE_LABELS[role.name] ?? role.name}</span>
 						{:else}
-							<span class="no-roles">No roles</span>
+							<span class="no-roles">{m('admin.users.noRoles')}</span>
 						{/each}
 					</div>
 				</td>
 				<td>
 					<span class="status-dot" class:active={user.is_active} class:deactivated={!user.is_active}>
-						{user.is_active ? 'Active' : 'Inactive'}
+						{user.is_active ? m('admin.users.statusActive') : m('admin.users.statusInactive')}
 					</span>
 				</td>
 				<td class="date-cell">{formatDate(user.created_at)}</td>
 				<td class="actions">
 					<RowAction onclick={() => toggleActive(user)}>
-						{user.is_active ? 'Deactivate' : 'Activate'}
+						{user.is_active ? m('admin.users.row.deactivate') : m('admin.users.row.activate')}
 					</RowAction>
 					{#if !isSelf(user.id)}
 						<RowAction
@@ -324,7 +328,7 @@
 								}
 							}}
 						>
-							{confirmDeleteId === user.id ? 'Confirm' : 'Delete'}
+							{confirmDeleteId === user.id ? m('admin.users.row.confirm') : m('admin.users.row.delete')}
 						</RowAction>
 					{/if}
 				</td>
@@ -336,31 +340,31 @@
 {#if adminStore.hasMore}
 	<div class="load-more-row">
 		<button class="btn-load-more" onclick={loadMore} disabled={adminStore.loading}>
-			{adminStore.loading ? 'Loading…' : `Load more (${adminStore.users.length} of ${adminStore.total})`}
+			{adminStore.loading ? m('common.loading') : m('admin.users.loadMore', { shown: adminStore.users.length, total: adminStore.total })}
 		</button>
 	</div>
 {:else if adminStore.total > 0}
 	<div class="load-more-row">
-		<span class="load-more-end">Showing all {adminStore.total} user{adminStore.total === 1 ? '' : 's'}</span>
+		<span class="load-more-end">{m('admin.users.showingAll', { total: adminStore.total })}</span>
 	</div>
 {/if}
 
 <!-- Invite User Modal -->
-<Modal open={showCreateModal} ariaLabel="Invite user" width="sm" onclose={() => (showCreateModal = false)}>
-	<h2>Invite User</h2>
-	<p class="modal-hint">A temporary password will be generated automatically.</p>
+<Modal open={showCreateModal} ariaLabel={m('admin.users.modal.invite.aria')} width="sm" onclose={() => (showCreateModal = false)}>
+	<h2>{m('admin.users.modal.invite.heading')}</h2>
+	<p class="modal-hint">{m('admin.users.modal.invite.hint')}</p>
 	<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 		<label>
-			<span>Full Name <em class="required">*</em></span>
+			<span>{m('admin.users.field.fullName')} <em class="required">*</em></span>
 			<input type="text" bind:value={newName} required />
 		</label>
 		<label>
-			<span>Email <em class="required">*</em></span>
+			<span>{m('admin.users.field.email')} <em class="required">*</em></span>
 			<input type="email" bind:value={newEmail} required />
 		</label>
 		<fieldset>
-			<legend>Roles</legend>
-			<p class="modal-hint">Only the four system roles grant access. Custom roles are labels and confer no permissions.</p>
+			<legend>{m('admin.users.roles.legend')}</legend>
+			<p class="modal-hint">{m('admin.users.roles.hint')}</p>
 			<div class="role-checks">
 				{#each adminStore.roles as role}
 					<label class="check-label">
@@ -375,59 +379,59 @@
 			</div>
 		</fieldset>
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (showCreateModal = false)}>Cancel</button>
+			<button type="button" class="btn-cancel" onclick={() => (showCreateModal = false)}>{m('common.cancel')}</button>
 			<button type="submit" class="btn-primary" disabled={saving}>
-				{saving ? 'Creating...' : 'Create User'}
+				{saving ? m('admin.users.modal.invite.creating') : m('admin.users.modal.invite.create')}
 			</button>
 		</div>
 	</form>
 </Modal>
 
 <!-- Created Credentials Modal -->
-<Modal open={createdCredentials !== null} ariaLabel="User created" width="sm" onclose={() => (createdCredentials = null)}>
+<Modal open={createdCredentials !== null} ariaLabel={m('admin.users.modal.created.aria')} width="sm" onclose={() => (createdCredentials = null)}>
 	{#if createdCredentials}
-		<h2>User Created</h2>
-		<p class="modal-hint">Share these credentials with the new user. The password is shown only once.</p>
+		<h2>{m('admin.users.modal.created.heading')}</h2>
+		<p class="modal-hint">{m('admin.users.modal.created.hint')}</p>
 		<div class="credentials-box">
 			<div class="credential-row">
-				<span class="credential-label">Email</span>
+				<span class="credential-label">{m('admin.users.modal.created.email')}</span>
 				<code class="credential-value">{createdCredentials.email}</code>
 			</div>
 			<div class="credential-row">
-				<span class="credential-label">Temporary Password</span>
+				<span class="credential-label">{m('admin.users.modal.created.tempPassword')}</span>
 				<code class="credential-value password">{createdCredentials.password}</code>
 			</div>
 		</div>
 		<div class="modal-footer">
 			<button class="btn-primary" onclick={() => {
 				navigator.clipboard.writeText(`Email: ${createdCredentials?.email}\nPassword: ${createdCredentials?.password}`);
-				toast('Copied to clipboard', 'success');
-			}}>Copy to Clipboard</button>
-			<button class="btn-cancel" onclick={() => (createdCredentials = null)}>Done</button>
+				toast(m('admin.users.toast.copied'), 'success');
+			}}>{m('admin.users.modal.created.copy')}</button>
+			<button class="btn-cancel" onclick={() => (createdCredentials = null)}>{m('admin.users.modal.created.done')}</button>
 		</div>
 	{/if}
 </Modal>
 
 <!-- Edit User Modal -->
-<Modal open={editingUser !== null} ariaLabel="Edit user" width="sm" onclose={() => (editingUser = null)}>
+<Modal open={editingUser !== null} ariaLabel={m('admin.users.modal.edit.aria')} width="sm" onclose={() => (editingUser = null)}>
 	{#if editingUser}
-		<h2>Edit User</h2>
+		<h2>{m('admin.users.modal.edit.heading')}</h2>
 		<form onsubmit={(e) => { e.preventDefault(); handleUpdate(); }}>
 			<label>
-				<span>Full Name</span>
+				<span>{m('admin.users.field.fullName')}</span>
 				<input type="text" bind:value={editName} required />
 			</label>
 			<label>
-				<span>Email</span>
+				<span>{m('admin.users.field.email')}</span>
 				<input type="email" bind:value={editEmail} required />
 			</label>
 			<label>
-				<span>Reset Password <em class="hint">(leave blank to keep current)</em></span>
+				<span>{m('admin.users.field.resetPassword')} <em class="hint">{m('admin.users.field.resetPasswordHint')}</em></span>
 				<input type="password" bind:value={editPassword} minlength="6" />
 			</label>
 			<fieldset>
-				<legend>Roles</legend>
-				<p class="modal-hint">Only the four system roles grant access. Custom roles are labels and confer no permissions.</p>
+				<legend>{m('admin.users.roles.legend')}</legend>
+				<p class="modal-hint">{m('admin.users.roles.hint')}</p>
 				<div class="role-checks">
 					{#each adminStore.roles as role}
 						<label class="check-label">
@@ -442,9 +446,9 @@
 				</div>
 			</fieldset>
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (editingUser = null)}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={() => (editingUser = null)}>{m('common.cancel')}</button>
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving...' : 'Save Changes'}
+					{saving ? m('admin.users.modal.edit.saving') : m('admin.users.modal.edit.save')}
 				</button>
 			</div>
 		</form>

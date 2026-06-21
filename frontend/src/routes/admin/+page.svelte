@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { m } from '$lib/i18n/store.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import UsersPanel from '$lib/components/admin/UsersPanel.svelte';
 	import RolesPanel from '$lib/components/admin/RolesPanel.svelte';
@@ -19,12 +20,12 @@
 	let rolesPanel = $state<RolesPanel>();
 </script>
 
-<PageHeader title="Users & Roles">
+<PageHeader title={m('admin.usersRoles.title')}>
 	{#snippet actions()}
 		{#if tab === 'users'}
-			<button class="btn-primary" onclick={() => usersPanel?.openCreate()}>+ Invite User</button>
+			<button class="btn-primary" onclick={() => usersPanel?.openCreate()}>{m('admin.usersRoles.inviteUser')}</button>
 		{:else}
-			<button class="btn-primary" onclick={() => rolesPanel?.openCreate()}>+ Create Role</button>
+			<button class="btn-primary" onclick={() => rolesPanel?.openCreate()}>{m('admin.usersRoles.createRole')}</button>
 		{/if}
 	{/snippet}
 

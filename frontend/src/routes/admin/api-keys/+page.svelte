@@ -7,6 +7,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import {
 		listApiKeys,
@@ -27,15 +28,16 @@
 		if (userLoaded && !allowed) goto('/');
 	});
 
-	const COLUMNS = [
-		{ label: 'Name' },
-		{ label: 'Key prefix' },
-		{ label: 'Scopes' },
-		{ label: 'Created' },
-		{ label: 'Last used' },
-		{ label: 'Status' },
+	// $derived so the column headers re-render when the locale changes.
+	let COLUMNS = $derived([
+		{ label: m('admin.apiKeys.col.name') },
+		{ label: m('admin.apiKeys.col.keyPrefix') },
+		{ label: m('admin.apiKeys.col.scopes') },
+		{ label: m('admin.apiKeys.col.created') },
+		{ label: m('admin.apiKeys.col.lastUsed') },
+		{ label: m('admin.apiKeys.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	let keys = $state<ApiKey[]>([]);
 	let loading = $state(true);
@@ -68,7 +70,7 @@
 		try {
 			keys = await listApiKeys();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load API keys.';
+			error = e instanceof Error ? e.message : m('admin.apiKeys.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -98,7 +100,7 @@
 			minted = created;
 			await load();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to create key', 'error');
+			toast(e instanceof Error ? e.message : m('admin.apiKeys.toast.createFailed'), 'error');
 		} finally {
 			saving = false;
 		}
@@ -109,9 +111,9 @@
 		try {
 			await navigator.clipboard.writeText(minted.key);
 			copied = true;
-			toast('API key copied to clipboard', 'success');
+			toast(m('admin.apiKeys.toast.copied'), 'success');
 		} catch {
-			toast('Copy failed — select and copy the key manually', 'error');
+			toast(m('admin.apiKeys.toast.copyFailed'), 'error');
 		}
 	}
 
@@ -124,10 +126,10 @@
 	async function handleRevoke(id: string) {
 		try {
 			await revokeApiKey(id);
-			toast('API key revoked', 'success');
+			toast(m('admin.apiKeys.toast.revoked'), 'success');
 			await load();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to revoke key', 'error');
+			toast(e instanceof Error ? e.message : m('admin.apiKeys.toast.revokeFailed'), 'error');
 		} finally {
 			confirmRevokeId = null;
 		}
@@ -141,7 +143,7 @@
 		try {
 			usage = await getApiKeyUsage(key.id, 30);
 		} catch (e) {
-			usageError = e instanceof Error ? e.message : 'Failed to load usage.';
+			usageError = e instanceof Error ? e.message : m('admin.apiKeys.toast.usageFailed');
 		} finally {
 			usageLoading = false;
 		}
@@ -167,29 +169,27 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<PageHeader title="API Keys">
+<PageHeader title={m('admin.apiKeys.title')}>
 	{#snippet actions()}
-		<button class="btn-primary" onclick={openCreate}>+ Create key</button>
+		<button class="btn-primary" onclick={openCreate}>{m('admin.apiKeys.createKey')}</button>
 	{/snippet}
 
 	<p class="page-hint">
-		Programmatic keys authenticate the public Developer API (<code>X-API-Key</code>). Each key is
-		scoped to this workspace and carries read access. The full key is shown only once at
-		creation — store it somewhere safe.
+		{m('admin.apiKeys.hintPre')}<code>X-API-Key</code>{m('admin.apiKeys.hintPost')}
 	</p>
 
 	{#if loading}
-		<p class="state" data-testid="api-keys-loading">Loading API keys…</p>
+		<p class="state" data-testid="api-keys-loading">{m('admin.apiKeys.loading')}</p>
 	{:else if error}
 		<div class="state error" data-testid="api-keys-error" role="alert">
 			<p>{error}</p>
-			<button type="button" class="btn-cancel" onclick={load}>Retry</button>
+			<button type="button" class="btn-cancel" onclick={load}>{m('admin.apiKeys.retry')}</button>
 		</div>
 	{:else}
 		<DataTable
 			columns={COLUMNS}
 			isEmpty={keys.length === 0}
-			empty="No API keys yet. Create one to use the Developer API."
+			empty={m('admin.apiKeys.empty')}
 		>
 			{#snippet body()}
 				{#each keys as key (key.id)}
@@ -201,7 +201,7 @@
 						}}
 					>
 						<td>
-							<RowLink onclick={() => openUsage(key)} ariaLabel={`View usage for ${key.name}`}>
+							<RowLink onclick={() => openUsage(key)} ariaLabel={m('admin.apiKeys.viewUsageAria', { name: key.name })}>
 								{key.name}
 							</RowLink>
 						</td>
@@ -211,9 +211,9 @@
 						<td>{fmtDate(key.last_used_at)}</td>
 						<td>
 							{#if isRevoked(key)}
-								<span class="status-pill revoked">Revoked</span>
+								<span class="status-pill revoked">{m('admin.apiKeys.statusRevoked')}</span>
 							{:else}
-								<span class="status-pill active">Active</span>
+								<span class="status-pill active">{m('admin.apiKeys.statusActive')}</span>
 							{/if}
 						</td>
 						<td class="actions">
@@ -230,7 +230,7 @@
 										}
 									}}
 								>
-									{confirmRevokeId === key.id ? 'Confirm' : 'Revoke'}
+									{confirmRevokeId === key.id ? m('admin.apiKeys.row.confirm') : m('admin.apiKeys.row.revoke')}
 								</RowAction>
 							{/if}
 						</td>
@@ -242,11 +242,10 @@
 </PageHeader>
 
 <!-- Create key modal -->
-<Modal open={creating} ariaLabel="Create API key" width="sm" onclose={() => (creating = false)}>
-	<h2>Create API key</h2>
+<Modal open={creating} ariaLabel={m('admin.apiKeys.create.aria')} width="sm" onclose={() => (creating = false)}>
+	<h2>{m('admin.apiKeys.create.heading')}</h2>
 	<p class="modal-hint">
-		Give the key a descriptive name (e.g. the integration or script that will use it). It will
-		be minted with <strong>read</strong> scope.
+		{m('admin.apiKeys.create.hintPre')} <strong>{m('admin.apiKeys.create.hintScope')}</strong> {m('admin.apiKeys.create.hintPost')}
 	</p>
 	<form
 		onsubmit={(e) => {
@@ -255,13 +254,13 @@
 		}}
 	>
 		<label>
-			<span>Name <em class="required">*</em></span>
-			<input type="text" bind:value={newName} required maxlength="120" placeholder="e.g. Reporting sync" />
+			<span>{m('admin.apiKeys.field.name')} <em class="required">*</em></span>
+			<input type="text" bind:value={newName} required maxlength="120" placeholder={m('admin.apiKeys.field.namePlaceholder')} />
 		</label>
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (creating = false)}>Cancel</button>
+			<button type="button" class="btn-cancel" onclick={() => (creating = false)}>{m('common.cancel')}</button>
 			<button type="submit" class="btn-primary" disabled={!newName.trim() || saving}>
-				{saving ? 'Creating…' : 'Create'}
+				{saving ? m('admin.apiKeys.create.creating') : m('admin.apiKeys.create.create')}
 			</button>
 		</div>
 	</form>
@@ -270,73 +269,72 @@
 <!-- One-time plaintext reveal -->
 <Modal
 	open={minted !== null}
-	ariaLabel="API key created"
+	ariaLabel={m('admin.apiKeys.reveal.aria')}
 	width="md"
 	onclose={dismissMinted}
 >
 	{#if minted}
-		<h2>API key created</h2>
+		<h2>{m('admin.apiKeys.reveal.heading')}</h2>
 		<div class="reveal-warning" role="alert">
-			<strong>Copy this key now.</strong> For security it is shown only once and can never be
-			retrieved again. If you lose it, revoke it and create a new one.
+			<strong>{m('admin.apiKeys.reveal.warningStrong')}</strong> {m('admin.apiKeys.reveal.warning')}
 		</div>
 		<div class="key-reveal">
 			<code class="key-value" data-testid="minted-key">{minted.key}</code>
 			<button type="button" class="btn-primary copy-btn" onclick={copyKey}>
-				{copied ? 'Copied' : 'Copy'}
+				{copied ? m('admin.apiKeys.reveal.copied') : m('admin.apiKeys.reveal.copy')}
 			</button>
 		</div>
 		<dl class="reveal-meta">
 			<div>
-				<dt>Name</dt>
+				<dt>{m('admin.apiKeys.reveal.name')}</dt>
 				<dd>{minted.api_key.name}</dd>
 			</div>
 			<div>
-				<dt>Prefix</dt>
+				<dt>{m('admin.apiKeys.reveal.prefix')}</dt>
 				<dd class="mono">{minted.api_key.key_prefix}…</dd>
 			</div>
 		</dl>
 		<div class="modal-footer">
-			<button type="button" class="btn-primary" onclick={dismissMinted}>Done</button>
+			<button type="button" class="btn-primary" onclick={dismissMinted}>{m('admin.apiKeys.reveal.done')}</button>
 		</div>
 	{/if}
 </Modal>
 
 <!-- Per-key usage view -->
-<Modal open={usageKey !== null} ariaLabel="API key usage" width="md" onclose={() => (usageKey = null)}>
+<Modal open={usageKey !== null} ariaLabel={m('admin.apiKeys.usage.aria')} width="md" onclose={() => (usageKey = null)}>
 	{#if usageKey}
-		<h2>Usage — {usageKey.name}</h2>
+		<h2>{m('admin.apiKeys.usage.heading', { name: usageKey.name })}</h2>
 		{#if usageLoading}
-			<p class="state" data-testid="usage-loading">Loading usage…</p>
+			<p class="state" data-testid="usage-loading">{m('admin.apiKeys.usage.loading')}</p>
 		{:else if usageError}
 			<div class="state error" role="alert">
 				<p>{usageError}</p>
-				<button type="button" class="btn-cancel" onclick={() => openUsage(usageKey!)}>Retry</button>
+				<button type="button" class="btn-cancel" onclick={() => openUsage(usageKey!)}>{m('admin.apiKeys.retry')}</button>
 			</div>
 		{:else if usage}
 			<div class="usage-totals" data-testid="usage-totals">
 				<div class="usage-stat">
 					<span class="usage-num">{usage.total_requests.toLocaleString()}</span>
-					<span class="usage-lbl">Total requests</span>
+					<span class="usage-lbl">{m('admin.apiKeys.usage.totalRequests')}</span>
 				</div>
 				<div class="usage-stat">
 					<span class="usage-num">{usage.window_requests.toLocaleString()}</span>
-					<span class="usage-lbl">Last {usage.window_days} days</span>
+					<span class="usage-lbl">{m('admin.apiKeys.usage.windowDays', { days: usage.window_days })}</span>
 				</div>
 				<div class="usage-stat">
 					<span class="usage-num">{fmtDate(usage.last_used_at)}</span>
-					<span class="usage-lbl">Last used</span>
+					<span class="usage-lbl">{m('admin.apiKeys.usage.lastUsed')}</span>
 				</div>
 			</div>
 
-			<h3 class="usage-heading">Recent activity</h3>
+			<h3 class="usage-heading">{m('admin.apiKeys.usage.recentActivity')}</h3>
 			{#if usage.daily.length === 0}
-				<p class="state">No requests recorded yet.</p>
+				<p class="state">{m('admin.apiKeys.usage.noRequests')}</p>
 			{:else}
 				<DataTable
-					columns={[{ label: 'Date' }, { label: 'Requests', class: 'num-col' }]}
+					columns={[{ label: m('admin.apiKeys.usage.col.date') }, { label: m('admin.apiKeys.usage.col.requests'), class: 'num-col' }]}
 					isEmpty={usageDays.length === 0}
-					empty="No requests recorded yet."
+					empty={m('admin.apiKeys.usage.noRequests')}
 				>
 					{#snippet body()}
 						{#each usageDays as day (day.usage_date)}
@@ -350,7 +348,7 @@
 			{/if}
 		{/if}
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (usageKey = null)}>Close</button>
+			<button type="button" class="btn-cancel" onclick={() => (usageKey = null)}>{m('admin.apiKeys.usage.close')}</button>
 		</div>
 	{/if}
 </Modal>

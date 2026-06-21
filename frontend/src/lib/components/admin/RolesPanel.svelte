@@ -4,15 +4,17 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import type { Role } from '$lib/types/admin';
 
-	const SYSTEM_COLUMNS = [{ label: 'Name' }, { label: 'Description' }];
-	const CUSTOM_COLUMNS = [
-		{ label: 'Name' },
-		{ label: 'Description' },
-		{ label: 'Permissions' },
+	// $derived so the column headers re-render when the locale changes.
+	let SYSTEM_COLUMNS = $derived([{ label: m('admin.roles.col.name') }, { label: m('admin.roles.col.description') }]);
+	let CUSTOM_COLUMNS = $derived([
+		{ label: m('admin.roles.col.name') },
+		{ label: m('admin.roles.col.description') },
+		{ label: m('admin.roles.col.permissions') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	let creating = $state(false);
 	let newName = $state('');
@@ -56,7 +58,7 @@
 				description: newDescription.trim() || undefined,
 				permissions: [...newPermissions],
 			});
-			toast(`Role "${name}" created`, 'success');
+			toast(m('admin.roles.toast.created', { name }), 'success');
 			creating = false;
 			newName = '';
 			newDescription = '';
@@ -82,7 +84,7 @@
 				description: editDescription.trim() || undefined,
 				permissions: [...editPermissions],
 			});
-			toast('Role updated', 'success');
+			toast(m('admin.roles.toast.updated'), 'success');
 			editing = null;
 		} catch (err) {
 			toast(extractError(err), 'error');
@@ -101,7 +103,7 @@
 	async function handleDelete(id: string) {
 		try {
 			await adminStore.deleteRole(id);
-			toast('Role deleted', 'success');
+			toast(m('admin.roles.toast.deleted'), 'success');
 		} catch (err) {
 			toast(extractError(err), 'error');
 		} finally {
@@ -120,7 +122,7 @@
 
 	function extractError(err: unknown): string {
 		const e = err as { detail?: string; message?: string } | null;
-		return e?.detail ?? e?.message ?? 'Request failed';
+		return e?.detail ?? e?.message ?? m('admin.roles.toast.requestFailed');
 	}
 
 	let systemRoles = $derived(adminStore.roles.filter((r) => r.is_system));
@@ -131,12 +133,12 @@
 
 <section class="role-section">
 	<div class="section-header">
-		<h2>System roles</h2>
+		<h2>{m('admin.roles.system.heading')}</h2>
 		<p class="section-hint">
-			Built-in roles gate hardcoded routes and cannot be edited or deleted.
+			{m('admin.roles.system.hint')}
 		</p>
 	</div>
-	<DataTable columns={SYSTEM_COLUMNS} isEmpty={systemRoles.length === 0} empty="No system roles configured.">
+	<DataTable columns={SYSTEM_COLUMNS} isEmpty={systemRoles.length === 0} empty={m('admin.roles.system.empty')}>
 		{#snippet body()}
 			{#each systemRoles as role (role.id)}
 				<tr>
@@ -152,15 +154,14 @@
 
 <section class="role-section">
 	<div class="section-header">
-		<h2>Custom roles</h2>
+		<h2>{m('admin.roles.custom.heading')}</h2>
 		<p class="section-hint">
-			Roles you define for your organization. Grant each one specific
-			<strong>permissions</strong> below to split fraud-sensitive duties — e.g. a role that
-			approves invoices but cannot execute payment runs. A role with no permissions selected
-			is an organizational label only and grants no access.
+			{m('admin.roles.custom.hintPre')}
+			<strong>{m('admin.roles.custom.hintPermissions')}</strong>
+			{m('admin.roles.custom.hintPost')}
 		</p>
 	</div>
-	<DataTable columns={CUSTOM_COLUMNS} isEmpty={customRoles.length === 0} empty="No custom roles yet.">
+	<DataTable columns={CUSTOM_COLUMNS} isEmpty={customRoles.length === 0} empty={m('admin.roles.custom.empty')}>
 		{#snippet body()}
 			{#each customRoles as role (role.id)}
 				<tr>
@@ -176,11 +177,11 @@
 								{/each}
 							</div>
 						{:else}
-							<span class="muted-cell">No permissions</span>
+							<span class="muted-cell">{m('admin.roles.noPermissions')}</span>
 						{/if}
 					</td>
 					<td class="actions">
-						<RowAction onclick={() => openEdit(role)}>Edit</RowAction>
+						<RowAction onclick={() => openEdit(role)}>{m('admin.roles.row.edit')}</RowAction>
 						<RowAction
 							variant="danger"
 							armed={confirmDeleteId === role.id}
@@ -193,7 +194,7 @@
 								}
 							}}
 						>
-							{confirmDeleteId === role.id ? 'Confirm' : 'Delete'}
+							{confirmDeleteId === role.id ? m('admin.roles.row.confirm') : m('admin.roles.row.delete')}
 						</RowAction>
 					</td>
 				</tr>
@@ -204,26 +205,25 @@
 
 <Modal
 	open={creating}
-	ariaLabel="Create role"
+	ariaLabel={m('admin.roles.modal.create.aria')}
 	width="sm"
 	onclose={() => (creating = false)}
 >
-	<h2>Create role</h2>
+	<h2>{m('admin.roles.modal.create.heading')}</h2>
 	<p class="modal-hint">
-		Pick the permissions this role grants. Leave them all unchecked to create an
-		organizational label that grants no access.
+		{m('admin.roles.modal.create.hint')}
 	</p>
 	<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 		<label>
-			<span>Name</span>
-			<input type="text" bind:value={newName} required maxlength="50" placeholder="e.g. Approver" />
+			<span>{m('admin.roles.field.name')}</span>
+			<input type="text" bind:value={newName} required maxlength="50" placeholder={m('admin.roles.field.namePlaceholder')} />
 		</label>
 		<label>
-			<span>Description</span>
-			<input type="text" bind:value={newDescription} maxlength="255" placeholder="Optional" />
+			<span>{m('admin.roles.field.description')}</span>
+			<input type="text" bind:value={newDescription} maxlength="255" placeholder={m('admin.roles.field.descriptionPlaceholder')} />
 		</label>
 		<fieldset class="perm-fieldset">
-			<legend>Permissions</legend>
+			<legend>{m('admin.roles.field.permissions')}</legend>
 			{#each adminStore.permissionCatalog as perm (perm.key)}
 				<label class="perm-option">
 					<input
@@ -236,9 +236,9 @@
 			{/each}
 		</fieldset>
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (creating = false)}>Cancel</button>
+			<button type="button" class="btn-cancel" onclick={() => (creating = false)}>{m('common.cancel')}</button>
 			<button type="submit" class="btn-primary" disabled={!newName.trim() || saving}>
-				{saving ? 'Creating…' : 'Create'}
+				{saving ? m('admin.roles.modal.create.creating') : m('admin.roles.modal.create.create')}
 			</button>
 		</div>
 	</form>
@@ -246,22 +246,22 @@
 
 <Modal
 	open={editing !== null}
-	ariaLabel="Edit role"
+	ariaLabel={m('admin.roles.modal.edit.aria')}
 	width="sm"
 	onclose={() => (editing = null)}
 >
 	{#if editing}
-		<h2>Edit "{editing.name}"</h2>
+		<h2>{m('admin.roles.modal.edit.heading', { name: editing.name })}</h2>
 		<p class="modal-hint">
-			Role names are immutable once created — edit the description and permissions only.
+			{m('admin.roles.modal.edit.hint')}
 		</p>
 		<form onsubmit={(e) => { e.preventDefault(); handleEdit(); }}>
 			<label>
-				<span>Description</span>
+				<span>{m('admin.roles.field.description')}</span>
 				<input type="text" bind:value={editDescription} maxlength="255" />
 			</label>
 			<fieldset class="perm-fieldset">
-				<legend>Permissions</legend>
+				<legend>{m('admin.roles.field.permissions')}</legend>
 				{#each adminStore.permissionCatalog as perm (perm.key)}
 					<label class="perm-option">
 						<input
@@ -274,9 +274,9 @@
 				{/each}
 			</fieldset>
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (editing = null)}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={() => (editing = null)}>{m('common.cancel')}</button>
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving…' : 'Save'}
+					{saving ? m('admin.roles.modal.edit.saving') : m('admin.roles.modal.edit.save')}
 				</button>
 			</div>
 		</form>
