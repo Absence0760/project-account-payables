@@ -357,3 +357,62 @@ async def test_rerun_on_resolved_exception_is_noop(realdb):
         assert len(decisions) == 1
         inv = await s.get(Invoice, inv_id)
         assert inv.status == InvoiceStatus.approved
+
+
+async def _set_cfo_threshold(mk, invoice_id, *, require_cfo_above: float) -> None:
+    """Stamp a ``require_cfo_above`` onto the invoice's frozen workflow snapshot's
+    approval step so the resolver's CFO gate has a threshold to read (numeric,
+    matching the ``ApprovalStepConfig`` schema)."""
+    from app.services.workflow_engine import get_workflow_instance
+
+    async with mk() as s:
+        instance = await get_workflow_instance(s, invoice_id)
+        snapshot = dict(instance.steps_config_snapshot)
+        steps = [dict(step) for step in snapshot["steps"]]
+        for step in steps:
+            if step.get("type") == "approval":
+                cfg = dict(step.get("config") or {})
+                cfg["require_cfo_above"] = require_cfo_above
+                step["config"] = cfg
+        snapshot["steps"] = steps
+        instance.steps_config_snapshot = snapshot
+        await s.commit()
+
+
+async def test_cfo_gate_uses_invoice_amount_not_po_total(realdb):
+    """The CFO gate must be measured against the amount that actually gets
+    APPROVED — the invoice's own amount, which ``missing_po_v1`` never changes —
+    not the linked PO total. With a PO total *below* the CFO threshold but an
+    invoice amount *above* it (the two differ by up to the tolerance band), the
+    agent must escalate, not auto-approve past CFO sign-off."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+
+    # Invoice 10,400 vs single PO 10,000 → ~3.85% variance over the PO, inside the
+    # 5% band so the PO is a confident link candidate. CFO threshold 10,200 sits
+    # BETWEEN the PO total (10,000) and the invoice amount (10,400): gating on the
+    # PO total would wrongly clear it; gating on the invoice amount (correct) must
+    # escalate, because the invoice is approved at its own 10,400.
+    inv_id, _corr, exc_id = await _seed_missing_po(
+        mk,
+        org_id,
+        invoice_amount=Decimal("10400.00"),
+        po_totals=[Decimal("10000.00")],
+        number="INV-MPO-CFO",
+    )
+    await _set_cfo_threshold(mk, inv_id, require_cfo_above=10200.0)
+
+    org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
+    async with mk() as s:
+        exc = await s.get(APException, exc_id)
+        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        assert result.decision.action_taken == ACTION_ESCALATED
+
+    async with mk() as s:
+        inv = await s.get(Invoice, inv_id)
+        # NOT auto-approved — the CFO gate held against the invoice amount.
+        assert inv.status == InvoiceStatus.ready_for_review
+        assert inv.po_number == "PO-DOES-NOT-EXIST-INV-MPO-CFO"
+        exc = await s.get(APException, exc_id)
+        assert exc.status == "escalated"
