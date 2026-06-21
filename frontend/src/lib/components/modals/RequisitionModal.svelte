@@ -7,6 +7,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { createRequisition, updateRequisition } from '$lib/api/requisitions';
 	import type { GlAccountOption } from '$lib/api/expenses';
 
@@ -136,11 +137,11 @@
 					line_items: lineItems
 				});
 			}
-			toast(isCreate ? 'Requisition created' : 'Requisition saved', 'success');
+			toast(isCreate ? m('requisitions.modal.toast.created') : m('requisitions.modal.toast.saved'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, isCreate ? 'Create failed' : 'Save failed');
+			handleError(err, isCreate ? m('requisitions.modal.toast.createFailed') : m('requisitions.modal.toast.saveFailed'));
 		} finally {
 			saving = false;
 		}
@@ -148,12 +149,12 @@
 
 	const modalTitle = $derived(
 		isCreate
-			? 'New Requisition'
+			? m('requisitions.modal.title.new')
 			: editable
-				? `Edit Requisition — ${requisition!.requisition_number}`
-				: `Requisition — ${requisition!.requisition_number}`
+				? m('requisitions.modal.title.edit', { number: requisition!.requisition_number })
+				: m('requisitions.modal.title.view', { number: requisition!.requisition_number })
 	);
-	const ariaLabel = $derived(isCreate ? 'New requisition' : 'Requisition detail');
+	const ariaLabel = $derived(isCreate ? m('requisitions.modal.aria.new') : m('requisitions.modal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
@@ -162,41 +163,41 @@
 			<div class="status-row">
 				<span class="badge {status}">{REQUISITION_STATUS_LABELS[status as keyof typeof REQUISITION_STATUS_LABELS] ?? status}</span>
 				{#if requisition?.converted_po_id}
-					<span class="muted">→ PO created</span>
+					<span class="muted">{m('requisitions.modal.poCreatedNote')}</span>
 				{/if}
 				{#if requisition?.rejection_reason}
-					<span class="muted">Rejected: {requisition.rejection_reason}</span>
+					<span class="muted">{m('requisitions.modal.rejectedNote', { reason: requisition.rejection_reason })}</span>
 				{/if}
 			</div>
 		{/if}
 
 		<div class="form-grid">
 			<label>
-				<span>Requisition Number <em class="required">*</em></span>
+				<span>{m('requisitions.modal.field.requisitionNumber')} <em class="required">*</em></span>
 				<input type="text" bind:value={requisition_number} required disabled={!editable} />
 			</label>
 			<label>
-				<span>Title</span>
+				<span>{m('requisitions.modal.field.title')}</span>
 				<input type="text" bind:value={title} disabled={!editable} />
 			</label>
 			<label>
-				<span>Department</span>
+				<span>{m('requisitions.modal.field.department')}</span>
 				<input type="text" bind:value={department} disabled={!editable} />
 			</label>
 			<label>
-				<span>Needed By</span>
+				<span>{m('requisitions.modal.field.neededBy')}</span>
 				<input type="date" bind:value={needed_by} disabled={!editable} />
 			</label>
 			<label>
-				<span>Currency</span>
+				<span>{m('requisitions.modal.field.currency')}</span>
 				<input type="text" bind:value={currency} maxlength="3" disabled={!editable} />
 			</label>
 			<label class="full-width">
-				<span>Justification</span>
+				<span>{m('requisitions.modal.field.justification')}</span>
 				<textarea bind:value={justification} rows="2" disabled={!editable}></textarea>
 			</label>
 			<label class="full-width">
-				<span>Notes</span>
+				<span>{m('requisitions.modal.field.notes')}</span>
 				<textarea bind:value={notes} rows="2" disabled={!editable}></textarea>
 			</label>
 		</div>
@@ -204,24 +205,24 @@
 		<!-- Line items -->
 		<div class="lines-section">
 			<div class="lines-head">
-				<span class="lines-title">Line Items</span>
+				<span class="lines-title">{m('requisitions.modal.lineItems')}</span>
 				{#if editable}
-					<button type="button" class="btn-add-line" onclick={addLine}>+ Add line</button>
+					<button type="button" class="btn-add-line" onclick={addLine}>{m('requisitions.modal.addLine')}</button>
 				{/if}
 			</div>
 
 			{#if lines.length === 0}
-				<p class="muted">No line items.</p>
+				<p class="muted">{m('requisitions.modal.noLineItems')}</p>
 			{:else}
 				<table class="lines-table">
 					<thead>
 						<tr>
-							<th>Description</th>
-							<th class="right">Qty</th>
-							<th class="right">Unit Price</th>
-							<th>UoM</th>
-							<th>GL</th>
-							<th class="right">Total</th>
+							<th>{m('requisitions.modal.col.description')}</th>
+							<th class="right">{m('requisitions.modal.col.qty')}</th>
+							<th class="right">{m('requisitions.modal.col.unitPrice')}</th>
+							<th>{m('requisitions.modal.col.uom')}</th>
+							<th>{m('requisitions.modal.col.gl')}</th>
+							<th class="right">{m('requisitions.modal.col.total')}</th>
 							{#if editable}<th></th>{/if}
 						</tr>
 					</thead>
@@ -233,8 +234,8 @@
 										<input
 											type="text"
 											bind:value={l.description}
-											placeholder="Item description"
-											aria-label={`Line ${i + 1} description`}
+											placeholder={m('requisitions.modal.line.descriptionPlaceholder')}
+											aria-label={m('requisitions.modal.line.descriptionAria', { n: i + 1 })}
 										/>
 									{:else}
 										{l.description || '—'}
@@ -247,7 +248,7 @@
 											step="0.0001"
 											min="0"
 											class="num"
-											aria-label={`Line ${i + 1} quantity`}
+											aria-label={m('requisitions.modal.line.quantityAria', { n: i + 1 })}
 											value={l.quantity ?? ''}
 											oninput={(e) => (l.quantity = numOrNull(e.currentTarget.value))}
 										/>
@@ -262,7 +263,7 @@
 											step="0.01"
 											min="0"
 											class="num"
-											aria-label={`Line ${i + 1} unit price`}
+											aria-label={m('requisitions.modal.line.unitPriceAria', { n: i + 1 })}
 											value={l.unit_price ?? ''}
 											oninput={(e) => (l.unit_price = numOrNull(e.currentTarget.value))}
 										/>
@@ -276,8 +277,8 @@
 											type="text"
 											class="uom"
 											bind:value={l.uom}
-											placeholder="ea"
-											aria-label={`Line ${i + 1} unit of measure`}
+											placeholder={m('requisitions.modal.line.uomPlaceholder')}
+											aria-label={m('requisitions.modal.line.uomAria', { n: i + 1 })}
 										/>
 									{:else}
 										{l.uom || '—'}
@@ -285,7 +286,7 @@
 								</td>
 								<td>
 									{#if editable}
-										<select bind:value={l.gl_account_id} aria-label={`Line ${i + 1} GL account`}>
+										<select bind:value={l.gl_account_id} aria-label={m('requisitions.modal.line.glAria', { n: i + 1 })}>
 											<option value="">—</option>
 											{#each glAccounts as g (g.id)}
 												<option value={g.id}>{g.code}</option>
@@ -298,7 +299,7 @@
 								<td class="right mono">{formatMoney(lineTotal(l), { currency })}</td>
 								{#if editable}
 									<td>
-										<button type="button" class="btn-remove-line" onclick={() => removeLine(i)} aria-label="Remove line">×</button>
+										<button type="button" class="btn-remove-line" onclick={() => removeLine(i)} aria-label={m('requisitions.modal.line.removeAria')}>×</button>
 									</td>
 								{/if}
 							</tr>
@@ -306,7 +307,7 @@
 					</tbody>
 					<tfoot>
 						<tr>
-							<td colspan={editable ? 5 : 5} class="right total-label">Total</td>
+							<td colspan={editable ? 5 : 5} class="right total-label">{m('requisitions.modal.totalLabel')}</td>
 							<td class="right mono total-value"><Money amount={computedTotal} {currency} /></td>
 							{#if editable}<td></td>{/if}
 						</tr>
@@ -316,10 +317,10 @@
 		</div>
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('requisitions.modal.close')}</button>
 			{#if editable}
 				<button type="submit" class="btn-primary" disabled={saving || !requisition_number.trim()}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving ? m('requisitions.modal.saving') : isCreate ? m('requisitions.modal.create') : m('requisitions.modal.save')}
 				</button>
 			{/if}
 		</div>
