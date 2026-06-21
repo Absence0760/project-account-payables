@@ -1919,6 +1919,132 @@ abstract class AppLocalizations {
   /// **'Failed to update {name}: {error}'**
   String adminUsersUpdateFailed(String name, String error);
 
+  /// No description provided for @adminUsersCreateUser.
+  ///
+  /// In en, this message translates to:
+  /// **'Create user'**
+  String get adminUsersCreateUser;
+
+  /// No description provided for @adminUsersCreateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'New user'**
+  String get adminUsersCreateTitle;
+
+  /// No description provided for @adminUsersFieldFullName.
+  ///
+  /// In en, this message translates to:
+  /// **'Full name'**
+  String get adminUsersFieldFullName;
+
+  /// No description provided for @adminUsersFieldEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Email'**
+  String get adminUsersFieldEmail;
+
+  /// No description provided for @adminUsersFieldRoles.
+  ///
+  /// In en, this message translates to:
+  /// **'Roles'**
+  String get adminUsersFieldRoles;
+
+  /// No description provided for @adminUsersValidationNameRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Full name is required'**
+  String get adminUsersValidationNameRequired;
+
+  /// No description provided for @adminUsersValidationEmailRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Email is required'**
+  String get adminUsersValidationEmailRequired;
+
+  /// No description provided for @adminUsersValidationEmailInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a valid email address'**
+  String get adminUsersValidationEmailInvalid;
+
+  /// No description provided for @adminUsersCreateSubmit.
+  ///
+  /// In en, this message translates to:
+  /// **'Create'**
+  String get adminUsersCreateSubmit;
+
+  /// No description provided for @adminUsersCreating.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating…'**
+  String get adminUsersCreating;
+
+  /// No description provided for @adminUsersCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Created {name}'**
+  String adminUsersCreated(String name);
+
+  /// No description provided for @adminUsersCreateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to create user: {error}'**
+  String adminUsersCreateFailed(String error);
+
+  /// No description provided for @adminUsersTempPasswordTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'User created'**
+  String get adminUsersTempPasswordTitle;
+
+  /// No description provided for @adminUsersTempPasswordBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Share this one-time password with {name}. They\'ll be asked to change it on first sign-in. It won\'t be shown again.'**
+  String adminUsersTempPasswordBody(String name);
+
+  /// No description provided for @adminUsersDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete user'**
+  String get adminUsersDelete;
+
+  /// No description provided for @adminUsersDeleteHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Permanently removes this account'**
+  String get adminUsersDeleteHint;
+
+  /// No description provided for @adminUsersCannotDeleteSelf.
+  ///
+  /// In en, this message translates to:
+  /// **'You can\'t delete your own account'**
+  String get adminUsersCannotDeleteSelf;
+
+  /// No description provided for @adminUsersDeleteConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete {name}?'**
+  String adminUsersDeleteConfirmTitle(String name);
+
+  /// No description provided for @adminUsersDeleteConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This permanently removes {name} ({email}). This can\'t be undone.'**
+  String adminUsersDeleteConfirmBody(String name, String email);
+
+  /// No description provided for @adminUsersDeleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted {name}'**
+  String adminUsersDeleted(String name);
+
+  /// No description provided for @adminUsersDeleteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to delete {name}: {error}'**
+  String adminUsersDeleteFailed(String name, String error);
+
   /// No description provided for @orgSettingsTitle.
   ///
   /// In en, this message translates to:

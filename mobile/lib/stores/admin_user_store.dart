@@ -77,6 +77,45 @@ class AdminUserStore extends ChangeNotifier {
   Future<bool> setActive(String userId, bool active) =>
       _act(() => AdminApi.setActive(userId, active));
 
+  /// Create a user, then refetch the list. Returns the [CreateUserResult]
+  /// (carrying the one-time temporary password) on success, or null on
+  /// failure — in which case [error] holds the reason (e.g. a 409 for an
+  /// email already in use).
+  Future<CreateUserResult?> createUser({
+    required String email,
+    required String fullName,
+    required List<String> roleNames,
+  }) async {
+    try {
+      final result = await AdminApi.createUser(
+        email: email,
+        fullName: fullName,
+        roleNames: roleNames,
+      );
+      await fetch();
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// Delete [userId], then refetch. Returns true on success; records the
+  /// backend's error (self-delete / still-referenced 409) and returns false
+  /// otherwise.
+  Future<bool> deleteUser(String userId) async {
+    try {
+      await AdminApi.deleteUser(userId);
+      await fetch();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> _act(Future<AdminUser> Function() action) async {
     try {
       await action();

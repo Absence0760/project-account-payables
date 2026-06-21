@@ -585,6 +585,29 @@ class AdminApi {
   /// Activate / deactivate the user (`PATCH .../users/{id}`).
   static Future<AdminUser> setActive(String id, bool active) =>
       updateUser(id, {'is_active': active});
+
+  /// `POST /api/admin/users` — create a user. The backend generates a
+  /// temporary password (the user is forced to change it on first login) and
+  /// returns it EXACTLY once in the response, so the result carries it for the
+  /// admin to hand over. 409 if the email is already in use.
+  static Future<CreateUserResult> createUser({
+    required String email,
+    required String fullName,
+    required List<String> roleNames,
+  }) async {
+    final data = await _api.post('/admin/users', {
+      'email': email,
+      'full_name': fullName,
+      'role_names': roleNames,
+    });
+    return CreateUserResult.fromJson(data);
+  }
+
+  /// `DELETE /api/admin/users/{id}` — delete a user. 204 on success; the
+  /// backend 409s on self-delete or when the user is still referenced by
+  /// in-flight work (open assignments / pending approvals / active-workflow
+  /// approver), surfacing the reason in the response body.
+  static Future<void> deleteUser(String id) => _api.delete('/admin/users/$id');
 }
 
 /// Organization settings (`/api/organization`). GET is readable by any authed

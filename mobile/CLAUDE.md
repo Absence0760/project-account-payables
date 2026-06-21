@@ -150,7 +150,7 @@ The mobile app talks to the same FastAPI backend as the web frontend:
 | Dashboard | `GET /api/dashboard` |
 | Cash Flow | `GET /api/analytics/cashflow_forecast` + `GET /api/analytics/cash_position` (both `horizon_days` + `granularity`; CFO/admin) |
 | Invoices | `GET /api/invoices` (advanced search adds `vendor` / `po_number` / `amount_min` / `amount_max` / `due_date_from` / `due_date_to`); bulk ops `POST /api/invoices/bulk/delete` + `POST /api/invoices/bulk/status` + `POST /api/invoices/bulk/export` (CSV/XML → share sheet; admin/ap_manager/cfo) |
-| Admin — User Management | `GET /api/admin/users` (`search`/paginated), `GET /api/admin/roles`, `PATCH /api/admin/users/{id}` (`role_names` / `is_active`) — admin only |
+| Admin — User Management | `GET /api/admin/users` (`search`/paginated), `GET /api/admin/roles`, `POST /api/admin/users` (`email` / `full_name` / `role_names` → returns a one-time `temporary_password`), `PATCH /api/admin/users/{id}` (`role_names` / `is_active`), `DELETE /api/admin/users/{id}` — admin only |
 | Admin — Organization Settings | `GET /api/organization`, `PATCH /api/organization` (`{name, settings:{company, invoice_defaults}}` — shallow-merged; admin only) |
 | Admin — Workflows (read-only) | `GET /api/workflows` (list), `GET /api/workflows/{id}` (detail) — reads open to any authed role; the mobile entry point is admin-only (mirrors web nav `roles: ['admin']`). No create/edit on mobile |
 | Invoice Detail | `GET /api/invoices/{id}` (carries `warnings` + `po_match`), `POST /api/invoices/{id}/approve`, `POST /api/invoices/{id}/reject`, `PATCH /api/invoices/{id}` (edit fields — admin/ap_manager/cfo, hidden in immutable statuses), `GET /api/invoices/{id}/audit-log` (activity timeline + ERP-status derivation, any authenticated role) |
@@ -283,8 +283,15 @@ everyone else.
   simulate / import-export — stays on the web; mobile is a viewer. Not
   offline-cached (privileged admin read).
 - **Admin user management** — `AdminUsersScreen` over `/api/admin/*`: list/search
-  users, edit a user's roles (system roles only — custom roles confer no access
-  today), activate/deactivate. Admin-only; reached from Settings → Administration.
+  users, **create a user** (a FAB opens a validated form sheet — full name +
+  email + system-role pick → `POST /api/admin/users`; the server-generated
+  one-time temporary password is surfaced in a dialog for the admin to hand
+  over, then the list refreshes), edit a user's roles (system roles only —
+  custom roles confer no access today), activate/deactivate, and **delete a
+  user** (an armed/confirmed destructive action in the per-user sheet →
+  `DELETE /api/admin/users/{id}`; self-delete is disabled client-side and the
+  backend's 409 — self / still-referenced-by-in-flight-work — surfaces in the
+  failure snackbar). Admin-only; reached from Settings → Administration.
 - **Organization settings** — `OrgSettingsScreen` reads + edits the safe subset
   the web app exposes (company profile + invoice defaults) via `GET/PATCH
   /api/organization`. ERP credentials, payment/webhook secrets, extraction keys

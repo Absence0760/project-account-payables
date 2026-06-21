@@ -44,6 +44,27 @@ class AdminUser {
       fullName.isNotEmpty ? fullName[0].toUpperCase() : '?';
 }
 
+/// The result of `POST /api/admin/users` — the created user plus the
+/// server-generated `temporaryPassword`. The backend returns the temp password
+/// EXACTLY once (the user must change it on first login), so the create flow
+/// surfaces it to the admin to hand over.
+class CreateUserResult {
+  final AdminUser user;
+  final String temporaryPassword;
+
+  const CreateUserResult({
+    required this.user,
+    required this.temporaryPassword,
+  });
+
+  factory CreateUserResult.fromJson(Map<String, dynamic> json) {
+    return CreateUserResult(
+      user: AdminUser.fromJson(json),
+      temporaryPassword: json['temporary_password'] as String? ?? '',
+    );
+  }
+}
+
 /// A role definition from `GET /api/admin/roles`. `isSystem` marks the four
 /// built-ins (admin/ap_manager/ap_clerk/cfo) that gate hardcoded routes.
 class AdminRole {

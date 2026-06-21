@@ -40,6 +40,11 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _createUser,
+        icon: const Icon(Icons.person_add_alt_1),
+        label: Text(l.adminUsersCreateUser),
+      ),
       appBar: AppBar(
         title: Text(l.adminUsersTitle),
         bottom: PreferredSize(
@@ -146,6 +151,23 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   _toggleActive(user);
                 },
               ),
+              ListTile(
+                leading: Icon(
+                  Icons.delete_outline,
+                  color: isSelf ? null : Colors.red.shade700,
+                ),
+                title: Text(l.adminUsersDelete),
+                subtitle: isSelf
+                    ? Text(l.adminUsersCannotDeleteSelf)
+                    : Text(l.adminUsersDeleteHint),
+                // The backend 409s on self-delete; disable it here so the
+                // admin can't lock themselves out of their own account.
+                enabled: !isSelf,
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _deleteUser(user);
+                },
+              ),
             ],
           ),
         );
@@ -190,6 +212,284 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
     A11y.announce(context, message);
+  }
+
+  Future<void> _createUser() async {
+    final l = AppLocalizations.of(context);
+    final available = AdminUserStore.instance.systemRoleNames;
+    final draft = await showModalBottomSheet<_NewUserDraft>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => _CreateUserSheet(availableRoles: available),
+    );
+    if (draft == null || !mounted) return;
+
+    final result = await AdminUserStore.instance.createUser(
+      email: draft.email,
+      fullName: draft.fullName,
+      roleNames: draft.roleNames,
+    );
+    if (!mounted) return;
+
+    if (result == null) {
+      final message =
+          l.adminUsersCreateFailed(AdminUserStore.instance.error ?? '');
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+      A11y.announce(context, message);
+      return;
+    }
+
+    final message = l.adminUsersCreated(result.user.fullName);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+    A11y.announce(context, message);
+    // Surface the one-time temp password so the admin can hand it over.
+    await _showTempPassword(result);
+  }
+
+  Future<void> _showTempPassword(CreateUserResult result) async {
+    final l = AppLocalizations.of(context);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l.adminUsersTempPasswordTitle),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(l.adminUsersTempPasswordBody(result.user.fullName)),
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Theme.of(dialogContext).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                result.temporaryPassword,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(AppLocalizations.of(dialogContext).commonClose),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteUser(AdminUser user) async {
+    final l = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l.adminUsersDeleteConfirmTitle(user.fullName)),
+        content: Text(
+          l.adminUsersDeleteConfirmBody(user.fullName, user.email),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(l.commonCancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.red.shade700,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l.adminUsersDelete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final ok = await AdminUserStore.instance.deleteUser(user.id);
+    if (!mounted) return;
+    final message = ok
+        ? l.adminUsersDeleted(user.fullName)
+        : l.adminUsersDeleteFailed(
+            user.fullName, AdminUserStore.instance.error ?? '');
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+    A11y.announce(context, message);
+  }
+}
+
+/// The validated output of [_CreateUserSheet] — a new user's details ready to
+/// POST. Returned via `Navigator.pop` (Create) or null (Cancel / dismiss).
+class _NewUserDraft {
+  final String email;
+  final String fullName;
+  final List<String> roleNames;
+
+  const _NewUserDraft({
+    required this.email,
+    required this.fullName,
+    required this.roleNames,
+  });
+}
+
+/// Create-user form sheet — full name + email (validated) + a checkbox per
+/// available system role. Returns a [_NewUserDraft] on Create, or null on
+/// Cancel / dismiss. Mirrors the `_RoleEditor` shape + the backend
+/// `CreateUserRequest` (email + full_name + role_names; the temp password is
+/// server-generated).
+class _CreateUserSheet extends StatefulWidget {
+  final List<String> availableRoles;
+
+  const _CreateUserSheet({required this.availableRoles});
+
+  @override
+  State<_CreateUserSheet> createState() => _CreateUserSheetState();
+}
+
+class _CreateUserSheetState extends State<_CreateUserSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
+  late final Set<String> _selectedRoles = {};
+
+  // Pragmatic email shape check (a backend re-validates). Mirrors the spirit of
+  // the web client's check — not a full RFC 5322 parser.
+  static final _emailRegExp = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _emailController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    Navigator.of(context).pop(
+      _NewUserDraft(
+        email: _emailController.text.trim(),
+        fullName: _nameController.text.trim(),
+        roleNames: _selectedRoles.toList(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    // Lift the sheet above the keyboard.
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    l.adminUsersCreateTitle,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  child: TextFormField(
+                    controller: _nameController,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: l.adminUsersFieldFullName,
+                    ),
+                    validator: (v) => (v == null || v.trim().isEmpty)
+                        ? l.adminUsersValidationNameRequired
+                        : null,
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: TextFormField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    autocorrect: false,
+                    decoration: InputDecoration(
+                      labelText: l.adminUsersFieldEmail,
+                    ),
+                    validator: (v) {
+                      final value = v?.trim() ?? '';
+                      if (value.isEmpty) {
+                        return l.adminUsersValidationEmailRequired;
+                      }
+                      if (!_emailRegExp.hasMatch(value)) {
+                        return l.adminUsersValidationEmailInvalid;
+                      }
+                      return null;
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                  child: Text(
+                    l.adminUsersFieldRoles,
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                for (final role in widget.availableRoles)
+                  CheckboxListTile(
+                    value: _selectedRoles.contains(role),
+                    title: Text(role),
+                    onChanged: (checked) => setState(() {
+                      if (checked == true) {
+                        _selectedRoles.add(role);
+                      } else {
+                        _selectedRoles.remove(role);
+                      }
+                    }),
+                  ),
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text(l.commonCancel),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: _submit,
+                        child: Text(l.adminUsersCreateSubmit),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
