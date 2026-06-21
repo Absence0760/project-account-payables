@@ -50,6 +50,14 @@ Invoice has po_number?
                                                                        quality_hold (error) raised
 ```
 
+A PO may have **several** goods receipts (a PO filled by multiple shipments);
+the 3-way leg sums `quantity_received` across **every** GR for the PO, so a PO
+fully received over two deliveries reads as `matched`, not `partial`. The most
+recent GR is the representative row (`gr_id`) for the 4-way inspection lookup.
+The PO lookup and the GR lookup both pick a single deterministic row when a
+`po_number` / `gr_number` is non-unique — neither column is unique, so they
+cannot crash on a duplicate.
+
 The 4-way leg runs **after** the 3-way GR block. It looks up the most recent
 `QualityInspection` — preferring the matched GR (`gr_id`), falling back to the
 PO (`po_id`). A `fail` blocks the invoice; a `partial` surfaces the accepted

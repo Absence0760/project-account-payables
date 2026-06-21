@@ -216,12 +216,17 @@ rather than escalating a blank.
   `invoice_warnings.refresh_warnings` to refresh `po_match`, and requires the
   post-link match to be a clean `matched` before approving through
   `review.approve_invoice` (`actor_roles={"ap_manager"}`). It **never adjusts the
-  amount** — it only links. The CFO/maximum gate is honoured exactly as in
-  amount-mismatch (escalate, never self-approve past a threshold). Idempotent:
-  a re-run after the link finds the live match no longer `no_po` and bails, and
-  the coordinator's exception row-lock already prevents a second decision on a
-  resolved exception. Writes the two audit rows (`invoice.approved` + the
-  `AgentDecision`, the latter recording `changes={"po_number": {...}}`).
+  amount** — it only links. The CFO/maximum gate is honoured (escalate, never
+  self-approve past a threshold) and — because the link does **not** change the
+  invoice amount — the gate is measured against the **invoice's own amount**, not
+  the linked PO total (unlike `amount_mismatch_v1`, which snaps the amount to the
+  PO total and so legitimately gates on it; this matches `multi_po_split_v1`). The
+  gate is also checked **before** any `po_number`/`po_match` mutation, so an
+  escalation never leaves a half-applied PO link in the committed state.
+  Idempotent: a re-run after the link finds the live match no longer `no_po` and
+  bails, and the coordinator's exception row-lock already prevents a second
+  decision on a resolved exception. Writes the two audit rows (`invoice.approved`
+  + the `AgentDecision`, the latter recording `changes={"po_number": {...}}`).
 
 ## The multi-PO split resolver (`multi_po_split_v1`)
 
