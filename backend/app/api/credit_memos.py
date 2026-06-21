@@ -220,6 +220,14 @@ async def apply_credit_memo(
             status_code=409,
             detail="Credit memo vendor does not match invoice vendor",
         )
+    # Currencies must match — the remaining-balance arithmetic below subtracts
+    # the memo amount from the invoice amount directly, so applying a EUR memo to
+    # a USD invoice would silently mix currencies and corrupt the balance.
+    if memo.currency and invoice.currency and memo.currency != invoice.currency:
+        raise HTTPException(
+            status_code=409,
+            detail="Credit memo currency does not match invoice currency",
+        )
 
     # Over-application guard: the sum of credits applied to an invoice can never
     # exceed what's owed on it. A credit beyond the invoice balance would create
