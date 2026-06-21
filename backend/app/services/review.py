@@ -69,23 +69,34 @@ async def _enforce_approval_thresholds(
     # invoice amount can misjudge a boundary amount against the CFO/max gate.
     amount = Decimal(str(invoice.amount or 0))
 
-    # Hard reject if over max
+    # Hard reject if over max. Coerce the threshold to Decimal ONCE and both
+    # compare AND format against that Decimal — the JSONB config value may be a
+    # string (a hand-edited / imported steps_config), which the comparison
+    # already tolerates; formatting the raw value with `:,.2f` would otherwise
+    # raise ValueError and turn this gate into a 500 instead of the intended
+    # reject.
     max_amount = config.get("max_invoice_amount")
-    if max_amount is not None and amount > Decimal(str(max_amount)):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount:,.2f}."),
-        )
+    if max_amount is not None:
+        max_amount_dec = Decimal(str(max_amount))
+        if amount > max_amount_dec:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Invoice amount ${amount:,.2f} exceeds maximum allowed "
+                    f"${max_amount_dec:,.2f}."
+                ),
+            )
 
     # CFO role gate for high-value invoices
     cfo_threshold = config.get("require_cfo_above")
-    if cfo_threshold is not None and amount > Decimal(str(cfo_threshold)):
-        if "cfo" not in actor_roles:
+    if cfo_threshold is not None:
+        cfo_threshold_dec = Decimal(str(cfo_threshold))
+        if amount > cfo_threshold_dec and "cfo" not in actor_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
                     f"Invoice amount ${amount:,.2f} exceeds"
-                    f" ${cfo_threshold:,.2f}. CFO approval required."
+                    f" ${cfo_threshold_dec:,.2f}. CFO approval required."
                 ),
             )
 

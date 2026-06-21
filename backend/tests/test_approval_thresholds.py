@@ -203,3 +203,43 @@ async def test_both_max_amount_and_cfo_gate_enforced():
 
     # max_invoice_amount check comes first in the source, so we expect 422
     assert exc_info.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_string_cfo_threshold_blocks_non_cfo_without_500():
+    """A `require_cfo_above` stored as a STRING in the JSONB config (a
+    hand-edited / imported steps_config) must still enforce the gate and return
+    a clean 403 — not crash with a ValueError 500 from formatting the raw string
+    with `:,.2f`. The comparison already coerces via Decimal(str(...)); the error
+    message must format the same coerced Decimal."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=50000)
+    instance = _make_instance({"require_cfo_above": "10000"})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
+
+    assert exc_info.value.status_code == 403
+    assert "CFO" in exc_info.value.detail
+    assert "10,000.00" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_string_max_amount_rejects_without_500():
+    """A `max_invoice_amount` stored as a STRING must reject with a clean 422,
+    not crash formatting the raw string."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=50000)
+    instance = _make_instance({"max_invoice_amount": "10000"})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_approval_thresholds(db, invoice, actor_roles=set())
+
+    assert exc_info.value.status_code == 422
+    assert "10,000.00" in exc_info.value.detail

@@ -50,8 +50,11 @@ from app.services.po_matching import match_invoice_to_po
 def _mk_db(*, po=None, gr=None, inspection=None):
     po_res = MagicMock()
     po_res.scalar_one_or_none = MagicMock(return_value=po)
+    # The GR leg fetches ALL receipts via `.scalars().all()` now.
     gr_res = MagicMock()
-    gr_res.scalar_one_or_none = MagicMock(return_value=gr)
+    gr_scalars = MagicMock()
+    gr_scalars.all = MagicMock(return_value=[gr] if gr is not None else [])
+    gr_res.scalars = MagicMock(return_value=gr_scalars)
     insp_res = MagicMock()
     insp_res.scalar_one_or_none = MagicMock(return_value=inspection)
     db = AsyncMock()
@@ -423,3 +426,84 @@ async def test_realdb_missing_po_reports_no_po(realdb):
 
     assert match.status == "no_po"
     assert any("PO-DOES-NOT-EXIST" in i for i in match.issues)
+
+
+@pytest.mark.asyncio
+async def test_realdb_multiple_goods_receipts_aggregate_received_qty(realdb):
+    """A PO with TWO goods receipts (the normal partial-delivery case: a PO is
+    filled by several shipments, each a separate GR) must not crash the matcher
+    AND must aggregate received quantity across every GR. The GR lookup selected
+    a single row via scalar_one_or_none() with no LIMIT, so a second GR raised
+    MultipleResultsFound — taking down PO matching and the whole refresh_warnings
+    pipeline on every mutation of such an invoice. With the fix, 6 + 4 of 10
+    ordered = fully received → `matched`, not falsely `partial`."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(
+            s, org_id, ent, po_number="PO-MULTIGR", total="1000.00", lines=["10.0000"]
+        )
+        # Two separate receipts against the same PO (6 then 4 of the 10 ordered).
+        await _add_gr(s, org_id, ent, po.id, received=["6.0000"])
+        await _add_gr(s, org_id, ent, po.id, received=["4.0000"])
+        inv = await _add_invoice(s, org_id, ent, po_number="PO-MULTIGR", amount="1000.00")
+        await s.commit()
+
+        # Must not raise MultipleResultsFound.
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.match_type == "3-way"
+    assert match.gr_id is not None
+    # 6 + 4 == 10 ordered → fully received across both GRs → matched.
+    assert match.status == "matched"
+    assert not any("Partial receipt" in i for i in match.issues)
+
+
+@pytest.mark.asyncio
+async def test_realdb_multiple_goods_receipts_partial_sum_downgrades(realdb):
+    """Two GRs that together still fall short of the ordered quantity (6 + 2 of
+    10) downgrade to `partial` — proving the aggregation counts every GR, not
+    just the newest (the newest alone would be 2 → a different percentage)."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(
+            s, org_id, ent, po_number="PO-MULTIGR-SHORT", total="1000.00", lines=["10.0000"]
+        )
+        await _add_gr(s, org_id, ent, po.id, received=["6.0000"])
+        await _add_gr(s, org_id, ent, po.id, received=["2.0000"])
+        inv = await _add_invoice(s, org_id, ent, po_number="PO-MULTIGR-SHORT", amount="1000.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.match_type == "3-way"
+    assert match.status == "partial"
+    # 6 + 2 == 8 of 10 → 80% received (not 20% from the newest GR alone).
+    assert any("80%" in i and "Partial receipt" in i for i in match.issues)
+
+
+@pytest.mark.asyncio
+async def test_realdb_duplicate_po_number_no_vendor_does_not_crash(realdb):
+    """An invoice with NO vendor_id citing a po_number shared by two POs (e.g.
+    two entities / a re-used number) must not crash. The unscoped PO lookup used
+    scalar_one_or_none() with no LIMIT, so two same-numbered POs raised
+    MultipleResultsFound instead of degrading to a safe verdict."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        await _add_po(s, org_id, ent, po_number="PO-DUPNUM", total="1000.00")
+        await _add_po(s, org_id, ent, po_number="PO-DUPNUM", total="2000.00")
+        # Invoice has NO vendor_id, so the PO lookup is NOT vendor-scoped.
+        inv = await _add_invoice(s, org_id, ent, po_number="PO-DUPNUM", amount="1000.00")
+        await s.commit()
+
+        # Must not raise MultipleResultsFound.
+        match = await match_invoice_to_po(s, inv)
+
+    # A deterministic single PO is chosen; matching still returns a verdict.
+    assert match.po_number == "PO-DUPNUM"
+    assert match.status in ("matched", "mismatch")

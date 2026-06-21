@@ -285,6 +285,29 @@ class MissingPOResolver(ExceptionResolver):
         if po is None or po.status != "open":
             raise _NotApprovable(locked.status)
 
+        # CFO / maximum gate: never self-approve past a threshold. Checked BEFORE
+        # any mutation so an escalation never leaks a half-applied link into the
+        # committed state (the coordinator catches _NotApprovable and commits the
+        # escalation — anything we mutated before raising would ride along).
+        #
+        # The gate is measured against the amount that actually gets APPROVED —
+        # the invoice's OWN amount, which this resolver never changes (it links a
+        # PO, it does not snap the amount to the PO total). Gating on the PO total
+        # would be wrong: the invoice amount may differ from the PO total by up to
+        # the tolerance band, so a PO total below the threshold could clear an
+        # invoice whose own amount is above it — bypassing CFO sign-off (and then
+        # tripping `approve_invoice`'s own gate with an uncaught 403 mid-run).
+        # (amount_mismatch can gate on the PO total because it snaps the amount to
+        # exactly that; here we must use the invoice amount, like multi_po_split.)
+        config = await _approval_thresholds(db, locked)
+        invoice_amount = Decimal(str(locked.amount)).quantize(_CENTS)
+        max_amount = config.get("max_invoice_amount")
+        cfo_threshold = config.get("require_cfo_above")
+        if (max_amount is not None and invoice_amount > Decimal(str(max_amount))) or (
+            cfo_threshold is not None and invoice_amount > Decimal(str(cfo_threshold))
+        ):
+            raise _NotApprovable(locked.status)
+
         # Link by po_number (+ align vendor_id so the matcher's vendor leg holds).
         locked.po_number = po.po_number
         if locked.vendor_id is None and po.vendor_id is not None:
@@ -298,17 +321,6 @@ class MissingPOResolver(ExceptionResolver):
         # mismatch, partial receipt) means a human should look — escalate.
         post = await match_invoice_to_po(db, locked)
         if post.status != "matched":
-            raise _NotApprovable(locked.status)
-
-        # CFO / maximum gate: never self-approve past a threshold (mirrors
-        # amount_mismatch). Read the workflow snapshot's approval config.
-        config = await _approval_thresholds(db, locked)
-        po_total = Decimal(str(po.total)).quantize(_CENTS)
-        max_amount = config.get("max_invoice_amount")
-        cfo_threshold = config.get("require_cfo_above")
-        if (max_amount is not None and po_total > Decimal(str(max_amount))) or (
-            cfo_threshold is not None and po_total > Decimal(str(cfo_threshold))
-        ):
             raise _NotApprovable(locked.status)
 
         await approve_invoice(

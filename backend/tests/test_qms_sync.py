@@ -239,3 +239,43 @@ def select_qi(org_id):
     from sqlalchemy import select
 
     return select(QualityInspection).where(QualityInspection.organization_id == org_id)
+
+
+@pytest.mark.asyncio
+async def test_doc_resolvers_bound_lookup_to_a_single_row():
+    """``po_number`` / ``gr_number`` are NOT unique (they can repeat across
+    vendors / entities). The doc resolvers selected a single id via
+    ``scalar_one_or_none()``; without a ``LIMIT`` a duplicate number made it
+    raise ``MultipleResultsFound``, failing the ENTIRE tenant sweep (every
+    inspection lost). The lookup must be capped at one deterministic row.
+
+    Pure unit (no DB): captures the SQL the resolver builds and asserts it is
+    ordered + LIMITed — the structural guarantee that the underlying
+    ``scalar_one_or_none()`` can never see more than one row, regardless of how
+    many same-numbered POs/GRs exist."""
+    captured: dict = {}
+    res = MagicMock()
+    res.scalar_one_or_none = MagicMock(return_value=uuid.uuid4())
+
+    async def fake_execute(stmt):
+        captured["stmt"] = stmt
+        return res
+
+    db = MagicMock()
+    db.execute = fake_execute
+
+    from app.services.qms_sync import _resolve_gr_id, _resolve_po_id
+
+    await _resolve_po_id(db, uuid.uuid4(), "PO-DUP")
+    po_sql = str(captured["stmt"].compile()).upper()
+    assert "LIMIT" in po_sql
+    assert "ORDER BY" in po_sql
+
+    await _resolve_gr_id(db, uuid.uuid4(), "GR-DUP")
+    gr_sql = str(captured["stmt"].compile()).upper()
+    assert "LIMIT" in gr_sql
+    assert "ORDER BY" in gr_sql
+
+    # A blank number short-circuits to None without touching the DB.
+    assert await _resolve_po_id(db, uuid.uuid4(), None) is None
+    assert await _resolve_gr_id(db, uuid.uuid4(), "") is None
