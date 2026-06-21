@@ -52,6 +52,91 @@ def test_per_invoice_fields_are_not_cacheable():
     assert not overlap, f"Per-invoice fields mustn't be cached: {overlap}"
 
 
+# ---------- overlay confidence gating --------------------------------------
+
+
+def _run_apply_priors(invoice, result, priors):
+    """Drive apply_priors_to_invoice with _get_priors stubbed (DB-free)."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.services import vendor_priors
+
+    with patch.object(vendor_priors, "_get_priors", AsyncMock(return_value=priors)):
+        return asyncio.run(
+            vendor_priors.apply_priors_to_invoice(SimpleNamespace(), invoice, result)
+        )
+
+
+def test_high_confidence_gl_suggestion_not_clobbered_by_prior():
+    """A confident AI GL suggestion must NOT be overwritten by a cached prior.
+
+    Regression: apply_priors read `getattr(result, "gl_account")` — but the AI
+    GL code lives on `result.suggested_gl_account`. The missing attribute made
+    confidence read 0.0, so the prior ALWAYS overlaid, clobbering even a 0.99
+    suggestion. Same bug for cost_center → suggested_cost_center.
+    """
+    import uuid
+    from types import SimpleNamespace
+
+    from app.models.vendor_priors import VendorExtractionPrior
+    from app.services.extraction_adapters.base import ExtractedField, ExtractionResult
+
+    result = ExtractionResult(success=True)
+    result.suggested_gl_account = ExtractedField("6200", 0.99)  # confident AI pick
+    result.suggested_cost_center = ExtractedField("CC-100", 0.95)
+
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        vendor_id=uuid.uuid4(),
+        gl_account="6200",  # AI already applied its confident suggestion
+        cost_center="CC-100",
+    )
+    priors = {
+        "gl_account": VendorExtractionPrior(
+            vendor_id=invoice.vendor_id, field_name="gl_account", value="9999"
+        ),
+        "cost_center": VendorExtractionPrior(
+            vendor_id=invoice.vendor_id, field_name="cost_center", value="CC-999"
+        ),
+    }
+
+    applied = _run_apply_priors(invoice, result, priors)
+
+    assert "gl_account" not in applied
+    assert "cost_center" not in applied
+    assert invoice.gl_account == "6200"  # untouched
+    assert invoice.cost_center == "CC-100"
+
+
+def test_low_confidence_gl_suggestion_is_overlaid_by_prior():
+    """The overlay must still fire when the AI's GL suggestion is uncertain."""
+    import uuid
+    from types import SimpleNamespace
+
+    from app.models.vendor_priors import VendorExtractionPrior
+    from app.services.extraction_adapters.base import ExtractedField, ExtractionResult
+
+    result = ExtractionResult(success=True)
+    result.suggested_gl_account = ExtractedField("6200", 0.40)  # uncertain
+
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        vendor_id=uuid.uuid4(),
+        gl_account="6200",
+    )
+    priors = {
+        "gl_account": VendorExtractionPrior(
+            vendor_id=invoice.vendor_id, field_name="gl_account", value="6100"
+        ),
+    }
+
+    applied = _run_apply_priors(invoice, result, priors)
+
+    assert "gl_account" in applied
+    assert invoice.gl_account == "6100"  # prior won (low-confidence extraction)
+
+
 # ---------- models ---------------------------------------------------------
 
 

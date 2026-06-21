@@ -48,6 +48,17 @@ CACHEABLE_FIELDS: frozenset[str] = frozenset(
 # already done in services/review.py approve_invoice().
 CORRECTION_FIELD_ALIASES: dict[str, str] = {"vendor": "vendor_name"}
 
+# Map an Invoice/cacheable field name → the corresponding ExtractedField
+# attribute on ExtractionResult, where the two differ. The AI-suggested GL
+# code + cost center land on `suggested_gl_account` / `suggested_cost_center`
+# (the Invoice columns are `gl_account` / `cost_center`). Without this remap,
+# `getattr(result, "gl_account")` returns None → confidence reads 0.0 → the
+# cached prior ALWAYS overlays, clobbering even a high-confidence AI suggestion.
+_RESULT_FIELD_ALIASES: dict[str, str] = {
+    "gl_account": "suggested_gl_account",
+    "cost_center": "suggested_cost_center",
+}
+
 # Fields stored as Decimal on Invoice. Others are plain strings/text.
 _DECIMAL_FIELDS: frozenset[str] = frozenset({"tax_rate"})
 
@@ -157,7 +168,8 @@ async def apply_priors_to_invoice(
         if prior is None:
             continue
 
-        extracted = getattr(result, field, None)
+        result_attr = _RESULT_FIELD_ALIASES.get(field, field)
+        extracted = getattr(result, result_attr, None)
         confidence = getattr(extracted, "confidence", 0.0) if extracted is not None else 0.0
         current_value = getattr(invoice, field, None)
 
