@@ -36,6 +36,7 @@ def _run(*, status: str = "draft", requires_cfo: bool = False, cfo_at=None):
         status=status,
         total_amount=Decimal("1000.00"),
         organization_id=uuid.uuid4(),
+        initiated_by=uuid.uuid4(),
         requires_cfo_approval=requires_cfo,
         cfo_approved_at=cfo_at,
         cfo_approved_by=None,

@@ -177,6 +177,27 @@ The flow is split into **create draft** and **execute** so a CFO can review what
 
 The same Run Detail modal is reachable by clicking any row in the **Runs** tab — for completed runs it shows the payments + references; for stale drafts it offers Execute.
 
+### Segregation of duties on payment runs (maker-checker)
+
+The user who **creates** a payment run cannot also **execute** it (the
+money-movement step) or **CFO-approve** it. Enforced in
+`services/payment_controls.check_run_segregation` by comparing the actor's id to
+the run's `initiated_by`, wired into both `POST /runs/{id}/execute` and
+`POST /runs/{id}/approve` (both return **403** for the run's creator). A
+different user must perform the second step.
+
+This is **orthogonal to the role/permission split**. `require_permission`
+separates `payment_run.approve` from `payment_execute` by *role*, but the
+default `ap_manager` holds both, so without this identity check a single
+`ap_manager` could create a run and immediately execute it — the entire payment
+lifecycle with no second human. The control mirrors the invoice-approval
+`check_segregation` (uploader ≠ approver).
+
+**Default-on.** Single-operator accounts opt out per-org with
+`Organization.settings.payments.require_run_segregation: false` (any value other
+than an explicit `false` keeps the secure default). A legacy run with a NULL
+`initiated_by` is never blocked (nothing to compare against).
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:

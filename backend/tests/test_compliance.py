@@ -402,6 +402,7 @@ async def test_execute_payment_run_refuses_sanctions_matched_vendor_without_call
         status="draft",
         total_amount=Decimal("1000.00"),
         organization_id=uuid.uuid4(),
+        initiated_by=uuid.uuid4(),
         requires_cfo_approval=False,
         cfo_approved_at=None,
         cfo_approved_by=None,

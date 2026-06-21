@@ -103,6 +103,11 @@ async def test_concurrent_execute_run_charges_adapter_exactly_once(realdb):
     info = realdb.info("a")
     org_id = info.org_id
     admin_id = info.users["admin"]
+    # Maker-checker: the run's creator must differ from the executor (admin),
+    # else the segregation control 403s both racers before the adapter is ever
+    # reached. The creator here is a different real user; this test is about the
+    # FOR UPDATE double-execute race, not SoD.
+    creator_id = info.users["ap_manager"]
     mk = realdb.sessionmaker("a")
 
     inv = await _seed_invoice(mk, org_id, amount=Decimal("100.00"))
@@ -116,7 +121,7 @@ async def test_concurrent_execute_run_charges_adapter_exactly_once(realdb):
                 organization_id=org_id,
                 status="draft",
                 total_amount=Decimal("100.00"),
-                initiated_by=admin_id,
+                initiated_by=creator_id,
                 requires_cfo_approval=False,
             )
         )

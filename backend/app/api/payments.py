@@ -43,6 +43,7 @@ from app.services.payment_adapters import (
     PaymentStatus,
     get_payment_adapter,
 )
+from app.services.payment_controls import check_run_segregation
 from app.services.workflow_engine import transition_invoice
 from app.tenant import (
     apply_entity_scope,
@@ -825,6 +826,14 @@ async def approve_payment_run(
         )
     if run.cfo_approved_at is not None:
         raise HTTPException(status_code=409, detail="Run is already CFO-approved")
+    # Maker-checker: the user who created the run cannot also sign it off — a
+    # self-approval defeats the entire purpose of the CFO gate.
+    check_run_segregation(
+        run.initiated_by,
+        user.id,
+        (org.settings or {}).get("payments"),
+        action="approve",
+    )
 
     now = datetime.now(UTC)
     run.cfo_approved_by = user.id
@@ -951,6 +960,17 @@ async def execute_payment_run(
         raise HTTPException(
             status_code=409, detail=f"Can only execute 'draft' runs, not '{run.status}'"
         )
+    # Maker-checker: the user who created the run cannot also execute it (the
+    # money-movement step). Default-on; per-org opt-out for single-operator
+    # accounts. The role/permission split can't enforce this — one user holding
+    # both perms (the default ap_manager) would otherwise run the whole payment
+    # lifecycle solo.
+    check_run_segregation(
+        run.initiated_by,
+        user.id,
+        (org.settings or {}).get("payments"),
+        action="execute",
+    )
     if run.requires_cfo_approval and run.cfo_approved_at is None:
         raise HTTPException(
             status_code=403,

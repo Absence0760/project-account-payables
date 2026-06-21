@@ -361,6 +361,7 @@ def _run():
         status="draft",
         total_amount=Decimal("1000.00"),
         organization_id=uuid.uuid4(),
+        initiated_by=uuid.uuid4(),
         requires_cfo_approval=False,
         cfo_approved_at=None,
         cfo_approved_by=None,
