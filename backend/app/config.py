@@ -685,5 +685,23 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _require_real_secret_key_in_deployed_envs(self) -> "Settings":
+        # The JWT signing key is the root of the whole auth system. The default
+        # `change-me-in-production` is in the public repo, so a deployed instance
+        # that never set AP_SECRET_KEY would let anyone forge a token for any
+        # user/org with HS256 + the known string. Refuse to boot rather than ship
+        # that silently (mirrors the captcha guard above). A too-short key is
+        # likewise rejected — HS256 wants at least 256 bits of entropy.
+        if self.is_deployed and (
+            self.secret_key == "change-me-in-production" or len(self.secret_key) < 32
+        ):
+            raise ValueError(
+                "AP_SECRET_KEY must be set to a cryptographically random value of "
+                f"at least 32 chars when AP_ENVIRONMENT is deployed ({self.environment!r}); "
+                "refusing to boot with the default / weak JWT signing key."
+            )
+        return self
+
 
 settings = Settings()
