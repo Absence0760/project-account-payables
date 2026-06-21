@@ -53,6 +53,7 @@ app/services/exception_agents/
     ├── po_mismatch.py      # dispatcher registered for `po_mismatch` — tries each delegate
     ├── amount_mismatch.py  # delegate: po_mismatch amount variance (snap + approve)
     ├── missing_po.py       # delegate: missing/unresolved PO (link by vendor+amount+date)
+    ├── multi_po_split.py   # delegate: consolidated invoice spanning a unique PO set (sum match)
     ├── missing_data.py     # dispatcher registered for `missing_data` — tries each delegate
     ├── gl_coding.py        # delegate: GL-coding fix/correct from vendor history (+ approve)
     └── stubs.py            # escalate-only stubs (duplicate, fraud_flag)
@@ -76,11 +77,19 @@ resolver registered for `po_mismatch`; it owns an ordered list of delegate
 resolvers and, in `evaluate`, tries each until one recommends `auto_resolved`.
 That delegate's recommendation **and its `agent_type`** become the dispatcher's
 result, so the coordinator records the real resolver (`amount_mismatch_v1` /
-`missing_po_v1`) in the `AgentDecision`; `apply` is forwarded to the selected
-delegate. The delegates are **disjoint by live match status** — `matched` →
-amount-mismatch, `no_po` → missing-PO — so at most one ever fires; ordering only
-decides the rationale carried on a full escalation. The dispatcher never mutates
-state itself.
+`missing_po_v1` / `multi_po_split_v1`) in the `AgentDecision`; `apply` is
+forwarded to the selected delegate. The delegates are **disjoint**:
+
+- `matched` live status → `amount_mismatch_v1`;
+- `no_po` + exactly **one** PO matching the full amount → `missing_po_v1`;
+- `no_po` + **no** single PO matching but a **unique** PO *set* summing to the
+  total within tolerance → `multi_po_split_v1`.
+
+`multi_po_split_v1` explicitly defers (recommends nothing) when a single PO
+matches the full amount, and the dispatcher tries the single-PO resolver first,
+so single-PO always wins that case. At most one delegate ever fires; ordering
+only decides the rationale carried on a full escalation. The dispatcher never
+mutates state itself.
 
 ### Coordinator flow
 
@@ -213,6 +222,64 @@ rather than escalating a blank.
   the coordinator's exception row-lock already prevents a second decision on a
   resolved exception. Writes the two audit rows (`invoice.approved` + the
   `AgentDecision`, the latter recording `changes={"po_number": {...}}`).
+
+## The multi-PO split resolver (`multi_po_split_v1`)
+
+Handles `exception_type == "po_mismatch"` where the live match status is `no_po`
+**and** no single PO under the vendor matches the invoice total on its own — but
+a **set** of the vendor's open POs sums (within the resolved tolerance) to the
+invoice total. The classic case is one consolidated invoice raised against two
+or three POs. This is the deferred *"Multi-PO split matching"* follow-up to
+`missing_po_v1`.
+
+- **Disjoint from `missing_po_v1`.** Both fire on `no_po`, but they never overlap:
+  `missing_po_v1` owns the case where exactly **one** PO matches the full amount;
+  `multi_po_split_v1` fires only when **no** single PO matches but a **unique** PO
+  *set* of size ≥ 2 sums to the total. The resolver explicitly **defers**
+  (recommends nothing) when any single candidate PO matches the full amount, and
+  the dispatcher tries the single-PO resolver first, so a 1:1 link always wins.
+- **Set search — pure + bounded** (`find_po_subset`, no DB / clock / randomness):
+  - **Candidate pool:** the vendor's open POs (same vendor leg as `missing_po_v1`
+    — exact `vendor_id`, else a ≥ 0.8 `vendor_name` match, else nothing) inside
+    the same asymmetric date window (`[invoice_date − lookback, invoice_date + 5d]`,
+    `lookback` default 90 days, override `po_match_window_days`).
+  - **Tolerance:** the **combined** PO total must fall within the org's effective
+    PO-match tolerance band of the invoice total — resolved via
+    `matching_rules.resolve_match_rule` (same per-vendor / per-commodity resolver
+    the matcher uses; default 5%). Money is `Decimal`.
+  - **Combinatorial bound:** the pool is capped at **`_MAX_CANDIDATES = 12`** POs
+    and the subset size at **`_MAX_SET_SIZE = 4`** (worst case
+    C(12,2)+C(12,3)+C(12,4) = 781 tiny combinations). A pool **larger than 12 is
+    NOT truncated** — truncation could hide the real set or invent a false
+    "unique" one — so the resolver **escalates with a logged rationale**
+    (`SubsetSearchTooLarge`) instead of searching a partial pool. Size-1 subsets
+    are excluded by construction (that's `missing_po_v1`'s job).
+- **Ambiguity / none → escalate.** `find_po_subset` returns the single matching
+  set only when **exactly one** distinct subset sums within tolerance; **more than
+  one** (ambiguous) or **zero** → `None` → escalate. It never picks arbitrarily.
+- **Confidence.** A split is weaker evidence than a single exact PO, so it sits
+  one band below `missing_po_v1`: **`0.90`** dated (auto at `balanced`/`aggressive`),
+  **`0.80`** undated (auto only under `aggressive`).
+- **`apply` — link the set + approve via the audited path.** Re-locks the invoice,
+  re-asserts `ready_for_review` and a still-`no_po` live single-PO match, re-fetches
+  the **exact** PO set chosen in `evaluate` (bailing if any vanished / is no longer
+  `open`), re-derives the unique sum under the lock (bail on drift), honours the
+  CFO / maximum gate exactly as the single-PO resolvers (the gate is on the
+  **invoice** amount, which never changes — the combined PO total is informational),
+  sets `invoice.po_number` to a combined `"PO-A,PO-B"` reference + aligns
+  `vendor_id`, and writes a **multi-PO match snapshot** onto `invoice.po_match`
+  (`match_type: "multi-po-split"`, the PO ids/numbers + combined total) for the
+  modal. The single-PO matcher can't produce a `matched` for a split, so the
+  snapshot is written **directly** — `refresh_warnings` is deliberately **not**
+  called (it would re-run the single-PO matcher and re-raise a `no_po` exception).
+  It then approves through `review.approve_invoice` (`actor_roles={"ap_manager"}`).
+  **It NEVER adjusts the invoice amount** — the sum only *selects* the set; the
+  amount is left exactly as-is, so the invoice is approved at its own face value.
+  Idempotent: a re-run finds the live match no longer `no_po` (or not
+  `ready_for_review`) and bails, and the coordinator's exception row-lock prevents
+  a second decision. Writes the two audit rows (`invoice.approved` + the
+  `AgentDecision`, the latter recording `changes={"po_number": {...}}` with the
+  combined reference).
 
 ## The GL-coding resolver (`gl_coding_v1`)
 
@@ -350,6 +417,9 @@ and the dashboard shows "Not yet measured" rather than a fabricated figure.
 GL-coding follow-ups: per-line GL coding (multi-line invoices coded per item),
 and learned per-vendor dominance thresholds instead of the static bands.
 
-Missing-PO follow-ups (out of this slice): line-level (multi-PO) split matching —
-one invoice spanning several POs; matching against `created`/non-`open` POs; and
-a learned date window / amount band per vendor instead of the static defaults.
+Missing-PO follow-ups: **multi-PO split matching** (one invoice spanning several
+POs) is now **shipped** as `multi_po_split_v1` (see [The multi-PO split
+resolver](#the-multi-po-split-resolver-multi_po_split_v1)). Still deferred:
+**line-level** split matching (which PO each invoice *line* belongs to, vs. the
+header-amount set match shipped here); matching against `created`/non-`open` POs;
+and a learned date window / amount band per vendor instead of the static defaults.
