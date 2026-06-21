@@ -1348,4 +1348,28 @@ export const messages = {
 	'auth.callback.failed': 'Échec de la connexion.',
 	'auth.callback.failedHeading': 'Échec de la connexion',
 	'auth.callback.backToSignIn': 'Retour à la connexion',
+
+	// Auth — signup (routes/signup/+page.svelte)
+	'auth.signup.pageTitle': 'Inscription — Better AP',
+	'auth.signup.successHeading': 'Vérifiez votre e-mail',
+	'auth.signup.successNext':
+		'Ensuite : cliquez sur le lien dans cet e-mail pour finaliser la création de votre espace de travail. Nous vous enverrons vos identifiants une fois qu\'il sera prêt.',
+	'auth.signup.successSpamPre': 'Pas reçu ? Vérifiez vos spams, ou ',
+	'auth.signup.successSpamLink': 'réessayez',
+	'auth.signup.heading': 'Créez votre espace de travail',
+	'auth.signup.subtitle': 'Obtenez votre propre espace de travail AP en moins d\'une minute.',
+	'auth.signup.failed': 'Échec de l\'inscription.',
+	'auth.signup.captchaRequired': 'Veuillez compléter le captcha.',
+	'auth.signup.companyName': 'Nom de l\'entreprise',
+	'auth.signup.workspaceUrl': 'URL de l\'espace de travail',
+	'auth.signup.slugChecking': 'Vérification de la disponibilité…',
+	'auth.signup.slugAvailable': 'Disponible',
+	'auth.signup.slugUnavailable': 'Indisponible.',
+	'auth.signup.slugHint': '3 à 30 lettres minuscules, chiffres, traits d\'union. Commence par une lettre.',
+	'auth.signup.yourName': 'Votre nom',
+	'auth.signup.email': 'E-mail',
+	'auth.signup.submit': 'Envoyer l\'e-mail de vérification',
+	'auth.signup.submitting': 'Envoi de la vérification…',
+	'auth.signup.footerPre': 'Vous avez déjà un espace de travail ? Rendez-vous sur ',
+	'auth.signup.footerPost': ' pour vous connecter.',
 } satisfies Messages;

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { onMount } from 'svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface PublicConfig {
 		hcaptcha_sitekey: string;
@@ -93,7 +94,7 @@
 				slugError = null;
 			} else {
 				slugStatus = 'bad';
-				slugError = res.reason || 'Unavailable.';
+				slugError = res.reason || m('auth.signup.slugUnavailable');
 			}
 		} catch {
 			slugStatus = 'idle';
@@ -106,7 +107,7 @@
 		submitting = true;
 		try {
 			if (captchaSitekey && !captchaToken) {
-				throw new Error('Please complete the captcha.');
+				throw new Error(m('auth.signup.captchaRequired'));
 			}
 			const res = await api.post<StartResponse>('/api/signup/start', {
 				company_name: companyName,
@@ -117,7 +118,7 @@
 			});
 			successMessage = res.message;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Signup failed.';
+			error = err instanceof Error ? err.message : m('auth.signup.failed');
 		} finally {
 			submitting = false;
 		}
@@ -125,24 +126,23 @@
 </script>
 
 <svelte:head>
-	<title>Sign up — Better AP</title>
+	<title>{m('auth.signup.pageTitle')}</title>
 </svelte:head>
 
 <div class="page">
 	{#if successMessage}
 		<div class="card success">
-			<h1>Check your email</h1>
+			<h1>{m('auth.signup.successHeading')}</h1>
 			<p>{successMessage}</p>
 			<p class="sub next">
-				Next: click the link in that email to finish creating your workspace. We'll send your
-				sign-in details once it's ready.
+				{m('auth.signup.successNext')}
 			</p>
-			<p class="sub">Didn't receive it? Check spam, or <a href="/signup">try again</a>.</p>
+			<p class="sub">{m('auth.signup.successSpamPre')}<a href="/signup">{m('auth.signup.successSpamLink')}</a>.</p>
 		</div>
 	{:else}
 		<form class="card" onsubmit={onSubmit}>
-			<h1>Create your workspace</h1>
-			<p class="sub">Get your own AP workspace in under a minute.</p>
+			<h1>{m('auth.signup.heading')}</h1>
+			<p class="sub">{m('auth.signup.subtitle')}</p>
 
 			<div role="alert" aria-live="assertive">
 				{#if error}
@@ -151,12 +151,12 @@
 			</div>
 
 			<label>
-				<span>Company name</span>
+				<span>{m('auth.signup.companyName')}</span>
 				<input bind:value={companyName} required maxlength="255" autocomplete="organization" />
 			</label>
 
 			<label>
-				<span>Workspace URL</span>
+				<span>{m('auth.signup.workspaceUrl')}</span>
 				<div class="slug-row">
 					<input
 						class="slug-input"
@@ -176,26 +176,24 @@
 				</div>
 				<div id="slug-hint" aria-live="polite">
 					{#if slugStatus === 'checking'}
-						<small class="hint">Checking availability…</small>
+						<small class="hint">{m('auth.signup.slugChecking')}</small>
 					{:else if slugStatus === 'ok'}
-						<small class="hint ok">Available</small>
+						<small class="hint ok">{m('auth.signup.slugAvailable')}</small>
 					{:else if slugStatus === 'bad'}
 						<small class="hint bad">{slugError}</small>
 					{:else}
-						<small class="hint"
-							>3–30 lowercase letters, digits, hyphens. Starts with a letter.</small
-						>
+						<small class="hint">{m('auth.signup.slugHint')}</small>
 					{/if}
 				</div>
 			</label>
 
 			<label>
-				<span>Your name</span>
+				<span>{m('auth.signup.yourName')}</span>
 				<input bind:value={adminName} required maxlength="255" autocomplete="name" />
 			</label>
 
 			<label>
-				<span>Email</span>
+				<span>{m('auth.signup.email')}</span>
 				<input type="email" bind:value={adminEmail} required maxlength="320" autocomplete="email" />
 			</label>
 
@@ -209,11 +207,11 @@
 			{/if}
 
 			<button type="submit" disabled={submitting || slugStatus === 'bad'}>
-				{submitting ? 'Sending verification…' : 'Send verification email'}
+				{submitting ? m('auth.signup.submitting') : m('auth.signup.submit')}
 			</button>
 
 			<p class="footer">
-				Already have a workspace? Visit <code>{tenantExampleHost}</code> to sign in.
+				{m('auth.signup.footerPre')}<code>{tenantExampleHost}</code>{m('auth.signup.footerPost')}
 			</p>
 		</form>
 	{/if}

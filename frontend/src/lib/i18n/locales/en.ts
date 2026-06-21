@@ -1406,4 +1406,28 @@ export const en = {
 	'auth.callback.failed': 'Sign-in failed.',
 	'auth.callback.failedHeading': 'Sign-in failed',
 	'auth.callback.backToSignIn': 'Back to sign in',
+
+	// Auth — signup (routes/signup/+page.svelte)
+	'auth.signup.pageTitle': 'Sign up — Better AP',
+	'auth.signup.successHeading': 'Check your email',
+	'auth.signup.successNext':
+		"Next: click the link in that email to finish creating your workspace. We'll send your sign-in details once it's ready.",
+	'auth.signup.successSpamPre': "Didn't receive it? Check spam, or ",
+	'auth.signup.successSpamLink': 'try again',
+	'auth.signup.heading': 'Create your workspace',
+	'auth.signup.subtitle': 'Get your own AP workspace in under a minute.',
+	'auth.signup.failed': 'Signup failed.',
+	'auth.signup.captchaRequired': 'Please complete the captcha.',
+	'auth.signup.companyName': 'Company name',
+	'auth.signup.workspaceUrl': 'Workspace URL',
+	'auth.signup.slugChecking': 'Checking availability…',
+	'auth.signup.slugAvailable': 'Available',
+	'auth.signup.slugUnavailable': 'Unavailable.',
+	'auth.signup.slugHint': '3–30 lowercase letters, digits, hyphens. Starts with a letter.',
+	'auth.signup.yourName': 'Your name',
+	'auth.signup.email': 'Email',
+	'auth.signup.submit': 'Send verification email',
+	'auth.signup.submitting': 'Sending verification…',
+	'auth.signup.footerPre': 'Already have a workspace? Visit ',
+	'auth.signup.footerPost': ' to sign in.',
 } satisfies Record<string, string>;

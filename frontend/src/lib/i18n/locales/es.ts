@@ -1379,4 +1379,28 @@ export const messages = {
 	'auth.callback.failed': 'Error al iniciar sesión.',
 	'auth.callback.failedHeading': 'Error al iniciar sesión',
 	'auth.callback.backToSignIn': 'Volver al inicio de sesión',
+
+	// Auth — signup (routes/signup/+page.svelte)
+	'auth.signup.pageTitle': 'Registrarse — Better AP',
+	'auth.signup.successHeading': 'Revisa tu correo',
+	'auth.signup.successNext':
+		'A continuación: haz clic en el enlace de ese correo para terminar de crear tu espacio de trabajo. Te enviaremos tus datos de acceso en cuanto esté listo.',
+	'auth.signup.successSpamPre': '¿No lo recibiste? Revisa el spam o ',
+	'auth.signup.successSpamLink': 'inténtalo de nuevo',
+	'auth.signup.heading': 'Crea tu espacio de trabajo',
+	'auth.signup.subtitle': 'Consigue tu propio espacio de trabajo AP en menos de un minuto.',
+	'auth.signup.failed': 'Error en el registro.',
+	'auth.signup.captchaRequired': 'Por favor, completa el captcha.',
+	'auth.signup.companyName': 'Nombre de la empresa',
+	'auth.signup.workspaceUrl': 'URL del espacio de trabajo',
+	'auth.signup.slugChecking': 'Comprobando disponibilidad…',
+	'auth.signup.slugAvailable': 'Disponible',
+	'auth.signup.slugUnavailable': 'No disponible.',
+	'auth.signup.slugHint': '3 a 30 letras minúsculas, dígitos, guiones. Empieza con una letra.',
+	'auth.signup.yourName': 'Tu nombre',
+	'auth.signup.email': 'Correo electrónico',
+	'auth.signup.submit': 'Enviar correo de verificación',
+	'auth.signup.submitting': 'Enviando verificación…',
+	'auth.signup.footerPre': '¿Ya tienes un espacio de trabajo? Visita ',
+	'auth.signup.footerPost': ' para iniciar sesión.',
 } satisfies Messages;

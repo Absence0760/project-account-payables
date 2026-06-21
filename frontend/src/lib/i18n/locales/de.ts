@@ -1349,4 +1349,28 @@ export const messages = {
 	'auth.callback.failed': 'Anmeldung fehlgeschlagen.',
 	'auth.callback.failedHeading': 'Anmeldung fehlgeschlagen',
 	'auth.callback.backToSignIn': 'Zurück zur Anmeldung',
+
+	// Auth — signup (routes/signup/+page.svelte)
+	'auth.signup.pageTitle': 'Registrieren — Better AP',
+	'auth.signup.successHeading': 'Prüfen Sie Ihre E-Mail',
+	'auth.signup.successNext':
+		'Als Nächstes: Klicken Sie auf den Link in dieser E-Mail, um Ihren Arbeitsbereich fertig einzurichten. Sobald er bereit ist, senden wir Ihnen Ihre Anmeldedaten.',
+	'auth.signup.successSpamPre': 'Nicht erhalten? Prüfen Sie den Spam-Ordner oder ',
+	'auth.signup.successSpamLink': 'versuchen Sie es erneut',
+	'auth.signup.heading': 'Erstellen Sie Ihren Arbeitsbereich',
+	'auth.signup.subtitle': 'Richten Sie Ihren eigenen AP-Arbeitsbereich in unter einer Minute ein.',
+	'auth.signup.failed': 'Registrierung fehlgeschlagen.',
+	'auth.signup.captchaRequired': 'Bitte schließen Sie das Captcha ab.',
+	'auth.signup.companyName': 'Firmenname',
+	'auth.signup.workspaceUrl': 'Arbeitsbereich-URL',
+	'auth.signup.slugChecking': 'Verfügbarkeit wird geprüft…',
+	'auth.signup.slugAvailable': 'Verfügbar',
+	'auth.signup.slugUnavailable': 'Nicht verfügbar.',
+	'auth.signup.slugHint': '3–30 Kleinbuchstaben, Ziffern, Bindestriche. Beginnt mit einem Buchstaben.',
+	'auth.signup.yourName': 'Ihr Name',
+	'auth.signup.email': 'E-Mail',
+	'auth.signup.submit': 'Bestätigungs-E-Mail senden',
+	'auth.signup.submitting': 'Bestätigung wird gesendet…',
+	'auth.signup.footerPre': 'Haben Sie bereits einen Arbeitsbereich? Besuchen Sie ',
+	'auth.signup.footerPost': ', um sich anzumelden.',
 } satisfies Messages;

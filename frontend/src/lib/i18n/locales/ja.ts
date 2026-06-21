@@ -1371,4 +1371,28 @@ export const messages = {
 	'auth.callback.failed': 'サインインに失敗しました。',
 	'auth.callback.failedHeading': 'サインインに失敗しました',
 	'auth.callback.backToSignIn': 'サインインに戻る',
+
+	// Auth — signup (routes/signup/+page.svelte)
+	'auth.signup.pageTitle': 'サインアップ — Better AP',
+	'auth.signup.successHeading': 'メールをご確認ください',
+	'auth.signup.successNext':
+		'次に、そのメール内のリンクをクリックしてワークスペースの作成を完了してください。準備ができ次第、サインイン情報をお送りします。',
+	'auth.signup.successSpamPre': '届きませんか？迷惑メールをご確認いただくか、',
+	'auth.signup.successSpamLink': 'もう一度お試しください',
+	'auth.signup.heading': 'ワークスペースを作成',
+	'auth.signup.subtitle': '1分以内に専用のAPワークスペースを手に入れましょう。',
+	'auth.signup.failed': 'サインアップに失敗しました。',
+	'auth.signup.captchaRequired': 'キャプチャを完了してください。',
+	'auth.signup.companyName': '会社名',
+	'auth.signup.workspaceUrl': 'ワークスペースURL',
+	'auth.signup.slugChecking': '利用可能か確認しています…',
+	'auth.signup.slugAvailable': '利用可能',
+	'auth.signup.slugUnavailable': '利用できません。',
+	'auth.signup.slugHint': '3〜30文字の小文字・数字・ハイフン。先頭は英字。',
+	'auth.signup.yourName': 'お名前',
+	'auth.signup.email': 'メールアドレス',
+	'auth.signup.submit': '確認メールを送信',
+	'auth.signup.submitting': '確認メールを送信しています…',
+	'auth.signup.footerPre': 'すでにワークスペースをお持ちですか？',
+	'auth.signup.footerPost': 'にアクセスしてサインインしてください。',
 } satisfies Messages;
