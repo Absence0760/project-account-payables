@@ -11,11 +11,18 @@ final _currencyFormat = NumberFormat.currency(symbol: '\$');
 class ExceptionListTile extends StatelessWidget {
   final ApException exception;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+
+  /// In multi-select mode, whether this row is in the selection — renders a
+  /// leading checkbox and exposes a `checked` Semantics state.
+  final bool selected;
 
   const ExceptionListTile({
     super.key,
     required this.exception,
     this.onTap,
+    this.onLongPress,
+    this.selected = false,
   });
 
   // Map severity to a darkened accent that clears AA contrast at 12px on white.
@@ -46,10 +53,16 @@ class ExceptionListTile extends StatelessWidget {
     return Semantics(
       label: _semanticLabel,
       button: onTap != null,
+      selected: selected,
       excludeSemantics: true,
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         onTap: onTap,
+        onLongPress: onLongPress,
+        selected: selected,
+        leading: selected
+            ? const Icon(Icons.check_circle, color: Colors.blue)
+            : null,
         title: Row(
           children: [
             Expanded(

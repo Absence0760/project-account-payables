@@ -14,11 +14,21 @@ class ExceptionStore extends ChangeNotifier {
   String? _statusFilter;
   bool _fromCache = false;
 
+  // Multi-select mode for bulk resolve/escalate/dismiss. Mirrors InvoiceStore:
+  // the set holds the selected exception ids; the screen drives the toggles.
+  bool _selectionMode = false;
+  final Set<String> _selectedIds = <String>{};
+
   List<ApException> get exceptions => _exceptions;
   bool get loading => _loading;
   String? get error => _error;
   String? get statusFilter => _statusFilter;
   bool get fromCache => _fromCache;
+
+  bool get selectionMode => _selectionMode;
+  Set<String> get selectedIds => Set.unmodifiable(_selectedIds);
+  int get selectedCount => _selectedIds.length;
+  bool isSelected(String id) => _selectedIds.contains(id);
 
   /// Test seam: clear all in-memory state so tests aren't coupled to the order
   /// they run in (this is a process-lifetime singleton). Not used in production.
@@ -29,6 +39,30 @@ class ExceptionStore extends ChangeNotifier {
     _error = null;
     _statusFilter = null;
     _fromCache = false;
+    _selectionMode = false;
+    _selectedIds.clear();
+  }
+
+  // ----- Selection mutators (mirror InvoiceStore) -----
+
+  /// Enter multi-select mode (no-op if already on); optionally seed the first
+  /// selected id (e.g. from a long-press on a row).
+  void enterSelectionMode([String? firstId]) {
+    _selectionMode = true;
+    if (firstId != null) _selectedIds.add(firstId);
+    notifyListeners();
+  }
+
+  /// Leave multi-select mode and clear the selection.
+  void exitSelectionMode() {
+    _selectionMode = false;
+    _selectedIds.clear();
+    notifyListeners();
+  }
+
+  void toggleSelected(String id) {
+    if (!_selectedIds.remove(id)) _selectedIds.add(id);
+    notifyListeners();
   }
 
   void setStatusFilter(String? status) {
@@ -106,6 +140,64 @@ class ExceptionStore extends ChangeNotifier {
     }
   }
 
+  /// Load one exception's full detail (used by the detail screen). Returns null
+  /// + records the error on failure (e.g. 404 / network).
+  Future<ApException?> getById(String id) async {
+    try {
+      return await ExceptionApi.getById(id);
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// Assign (or unassign with [userId] == null) an exception. Returns the
+  /// updated exception on success (so the caller can reflect the new assignee),
+  /// null + records the error on failure. Patches the in-memory row in place so
+  /// the list reflects the change without a full refetch.
+  Future<ApException?> assign(String id, {String? userId}) async {
+    try {
+      final updated = await ExceptionApi.assign(id, userId: userId);
+      final idx = _exceptions.indexWhere((e) => e.id == id);
+      if (idx != -1) {
+        _exceptions[idx] = updated;
+        notifyListeners();
+      }
+      return updated;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// Bulk resolve/escalate/dismiss the currently-selected exceptions. On a
+  /// successful call exits selection mode and refetches; returns the partial
+  /// `{updated, skipped}` result so the screen can announce counts. Returns null
+  /// + records the error on failure. No-op (null) when nothing is selected.
+  Future<BulkResolveResult?> bulkResolveSelected({
+    String action = 'resolve',
+    String resolution = 'Bulk-resolved on mobile',
+  }) async {
+    if (_selectedIds.isEmpty) return null;
+    final ids = _selectedIds.toList();
+    try {
+      final result = await ExceptionApi.bulkResolve(
+        ids,
+        action: action,
+        resolution: resolution,
+      );
+      exitSelectionMode();
+      await fetch();
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
   Map<String, dynamic> _exceptionToJson(ApException e) => {
         'id': e.id,
         'invoice_id': e.invoiceId,
@@ -119,7 +211,12 @@ class ExceptionStore extends ChangeNotifier {
         'status': e.status.value,
         'resolution': e.resolution,
         'assigned_to': e.assignedTo,
+        'assigned_to_user_id': e.assignedToUserId,
         'is_overdue': e.isOverdue,
         'created_at': e.createdAt.toIso8601String(),
+        'resolved_by': e.resolvedBy,
+        'resolved_at': e.resolvedAt?.toIso8601String(),
+        'due_at': e.dueAt?.toIso8601String(),
+        'time_to_resolution_hours': e.timeToResolutionHours,
       };
 }

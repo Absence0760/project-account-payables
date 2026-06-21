@@ -71,8 +71,21 @@ class ApException {
   final ApExceptionStatus status;
   final String? resolution;
   final String? assignedTo;
+
+  /// The assignee's user id (control-plane user UUID), or null when unassigned.
+  /// Carried so the assignee picker can mark the current selection. Populated by
+  /// both the list and the single-exception detail endpoints.
+  final String? assignedToUserId;
   final bool isOverdue;
   final DateTime createdAt;
+
+  // ----- Detail-only fields (populated by GET /exceptions/{id}) -----
+  // The list endpoint also returns these, but they're surfaced primarily on the
+  // detail screen. All nullable so a row built from the list still constructs.
+  final String? resolvedBy;
+  final DateTime? resolvedAt;
+  final DateTime? dueAt;
+  final double? timeToResolutionHours;
 
   ApException({
     required this.id,
@@ -87,9 +100,19 @@ class ApException {
     required this.status,
     this.resolution,
     this.assignedTo,
+    this.assignedToUserId,
     this.isOverdue = false,
     required this.createdAt,
+    this.resolvedBy,
+    this.resolvedAt,
+    this.dueAt,
+    this.timeToResolutionHours,
   });
+
+  static DateTime? _parseDate(Object? raw) {
+    if (raw is! String || raw.isEmpty) return null;
+    return DateTime.tryParse(raw);
+  }
 
   factory ApException.fromJson(Map<String, dynamic> json) {
     final type = json['exception_type'] as String? ?? 'unknown';
@@ -106,11 +129,15 @@ class ApException {
       status: ApExceptionStatus.fromString(json['status'] as String? ?? 'open'),
       resolution: json['resolution'] as String?,
       assignedTo: json['assigned_to'] as String?,
+      assignedToUserId: json['assigned_to_user_id'] as String?,
       isOverdue: json['is_overdue'] as bool? ?? false,
-      createdAt: json['created_at'] != null &&
-              (json['created_at'] as String).isNotEmpty
-          ? DateTime.parse(json['created_at'] as String)
-          : DateTime.fromMillisecondsSinceEpoch(0),
+      createdAt: _parseDate(json['created_at']) ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      resolvedBy: json['resolved_by'] as String?,
+      resolvedAt: _parseDate(json['resolved_at']),
+      dueAt: _parseDate(json['due_at']),
+      timeToResolutionHours:
+          (json['time_to_resolution_hours'] as num?)?.toDouble(),
     );
   }
 }

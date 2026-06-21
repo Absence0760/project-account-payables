@@ -288,6 +288,14 @@ class ExceptionApi {
         .toList();
   }
 
+  /// `GET /api/exceptions/{id}` — single-exception detail (+ its invoice), for
+  /// the detail screen. Same `_exception_dict` shape as the list rows, with the
+  /// detail-only fields (resolved_by/at, due_at, time_to_resolution) populated.
+  static Future<ApException> getById(String id) async {
+    final data = await _api.get('/exceptions/$id');
+    return ApException.fromJson(data);
+  }
+
   /// Resolve / escalate / dismiss an exception. The backend route is
   /// `POST /exceptions/{id}/resolve` with `{action, resolution}` (action is one
   /// of resolve | escalate | dismiss); a missing resolution is rejected.
@@ -300,6 +308,57 @@ class ExceptionApi {
       'action': action,
       'resolution': resolution,
     });
+  }
+
+  /// `POST /api/exceptions/{id}/assign` with `{user_id}` (null to unassign).
+  /// Returns the updated exception (the backend echoes the full
+  /// `_exception_dict`, with the new assignee resolved server-side).
+  static Future<ApException> assign(String id, {String? userId}) async {
+    final data = await _api.post('/exceptions/$id/assign', {'user_id': userId});
+    return ApException.fromJson(data);
+  }
+
+  /// `POST /api/exceptions/bulk/resolve` with `{ids, action, resolution}`.
+  /// Parses the partial-success envelope `{updated, skipped:[{id,reason}]}`.
+  static Future<BulkResolveResult> bulkResolve(
+    List<String> ids, {
+    required String action,
+    required String resolution,
+  }) async {
+    final data = await _api.post('/exceptions/bulk/resolve', {
+      'ids': ids,
+      'action': action,
+      'resolution': resolution,
+    });
+    return BulkResolveResult.fromJson(data);
+  }
+}
+
+/// The result of a bulk exception resolve/escalate/dismiss — how many rows were
+/// updated plus the per-row skips (already-terminal / not-found), each carrying
+/// the offending id + a reason. Mirrors the backend `BulkResolveResponse`.
+class BulkResolveResult {
+  final int updated;
+  final List<({String id, String reason})> skipped;
+
+  const BulkResolveResult({required this.updated, required this.skipped});
+
+  int get skippedCount => skipped.length;
+
+  factory BulkResolveResult.fromJson(Map<String, dynamic> json) {
+    final raw = json['skipped'];
+    return BulkResolveResult(
+      updated: (json['updated'] as num?)?.toInt() ?? 0,
+      skipped: raw is List
+          ? raw.map((e) {
+              final m = e as Map<String, dynamic>;
+              return (
+                id: m['id']?.toString() ?? '',
+                reason: m['reason']?.toString() ?? 'skipped',
+              );
+            }).toList()
+          : const [],
+    );
   }
 }
 

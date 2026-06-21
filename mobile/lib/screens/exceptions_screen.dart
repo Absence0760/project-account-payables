@@ -3,8 +3,11 @@ import 'package:flutter/scheduler.dart';
 
 import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/exception.dart';
+import 'package:ap_mobile/screens/exception_detail_screen.dart';
+import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
+import 'package:ap_mobile/widgets/bulk_action_bar.dart';
 import 'package:ap_mobile/widgets/exception_list_tile.dart';
 
 /// Exception queue — list flagged invoices with status filters and act on each
@@ -19,6 +22,10 @@ class ExceptionsScreen extends StatefulWidget {
 }
 
 class _ExceptionsScreenState extends State<ExceptionsScreen> {
+  // Admin / AP manager can act on exceptions (mirrors the backend
+  // require_roles(ROLE_ADMIN, ROLE_AP_MANAGER) on the assign / bulk routes).
+  bool get _canBulk => AuthStore.instance.canApprove;
+
   @override
   void initState() {
     super.initState();
@@ -28,12 +35,72 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
   }
 
   @override
+  void dispose() {
+    // Leave selection mode behind so re-entering the tab starts clean (the
+    // store is a process-lifetime singleton).
+    if (ExceptionStore.instance.selectionMode) {
+      ExceptionStore.instance.exitSelectionMode();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    return Scaffold(
-      appBar: AppBar(title: Text(l.exceptionsTitle)),
-      body: Column(
-        children: [
+    return ListenableBuilder(
+      listenable: ExceptionStore.instance,
+      builder: (context, _) {
+        final selecting = ExceptionStore.instance.selectionMode;
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(
+              selecting
+                  ? '${ExceptionStore.instance.selectedCount} selected'
+                  : l.exceptionsTitle,
+            ),
+            leading: selecting
+                ? Semantics(
+                    label: 'Cancel selection',
+                    button: true,
+                    child: IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: 'Cancel selection',
+                      onPressed: ExceptionStore.instance.exitSelectionMode,
+                    ),
+                  )
+                : null,
+            actions: [
+              if (!selecting && _canBulk)
+                Semantics(
+                  label: 'Select exceptions',
+                  button: true,
+                  child: IconButton(
+                    icon: const Icon(Icons.checklist),
+                    tooltip: 'Select exceptions',
+                    onPressed: () =>
+                        ExceptionStore.instance.enterSelectionMode(),
+                  ),
+                ),
+            ],
+          ),
+          bottomNavigationBar: selecting
+              ? BulkActionBar(
+                  selectedCount: ExceptionStore.instance.selectedCount,
+                  busy: ExceptionStore.instance.loading,
+                  // Reuse the shared bar: Status → resolve, Delete → dismiss.
+                  onStatusChange: () => _bulkResolve('resolve'),
+                  onDelete: () => _bulkResolve('dismiss'),
+                )
+              : null,
+          body: _buildBody(l),
+        );
+      },
+    );
+  }
+
+  Widget _buildBody(AppLocalizations l) {
+    return Column(
+      children: [
           // Status filter chips.
           SizedBox(
             height: 48,
@@ -107,19 +174,27 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
             ),
           ),
         ],
-      ),
     );
   }
 
   Widget _buildRow(ApException exc) {
     final l = AppLocalizations.of(context);
+    final store = ExceptionStore.instance;
+    final selecting = store.selectionMode;
+
     final tile = ExceptionListTile(
       exception: exc,
-      onTap: () => _showActions(exc),
+      selected: selecting && store.isSelected(exc.id),
+      onTap: selecting
+          ? () => store.toggleSelected(exc.id)
+          : () => _openDetail(exc),
+      onLongPress: _canBulk && !selecting && exc.status.isActionable
+          ? () => store.enterSelectionMode(exc.id)
+          : null,
     );
 
-    // Terminal exceptions (resolved / dismissed) are read-only — no swipe.
-    if (!exc.status.isActionable) {
+    // In selection mode, or for terminal (read-only) rows, no swipe.
+    if (selecting || !exc.status.isActionable) {
       return tile;
     }
 
@@ -181,63 +256,38 @@ class _ExceptionsScreenState extends State<ExceptionsScreen> {
     );
   }
 
-  /// Bottom-sheet action menu — surfaces all three actions (escalate has no
-  /// swipe) and stays reachable for terminal rows that show details only.
-  void _showActions(ApException exc) {
-    if (!exc.status.isActionable) return;
-    final l = AppLocalizations.of(context);
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.check, color: Colors.green),
-                title: Text(l.exceptionActionResolve),
-                onTap: () => _runAction(sheetContext, exc, 'resolve'),
-              ),
-              ListTile(
-                leading: Icon(Icons.arrow_upward, color: Colors.red.shade700),
-                title: Text(l.exceptionActionEscalate),
-                onTap: () => _runAction(sheetContext, exc, 'escalate'),
-              ),
-              ListTile(
-                leading: Icon(Icons.block, color: Colors.blueGrey.shade700),
-                title: Text(l.exceptionActionDismiss),
-                onTap: () => _runAction(sheetContext, exc, 'dismiss'),
-              ),
-            ],
-          ),
-        );
-      },
+  /// Open the full detail screen for a row. On return (an action was taken
+  /// there) the list refetches so the row reflects the new state.
+  Future<void> _openDetail(ApException exc) async {
+    final acted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ExceptionDetailScreen(exceptionId: exc.id),
+      ),
     );
+    if (acted == true && mounted) {
+      await ExceptionStore.instance.fetch();
+    }
   }
 
-  Future<void> _runAction(
-    BuildContext sheetContext,
-    ApException exc,
-    String action,
-  ) async {
-    Navigator.of(sheetContext).pop();
+  /// Bulk resolve/dismiss the current selection → snackbar reports the
+  /// updated/skipped counts (partial-success contract).
+  Future<void> _bulkResolve(String action) async {
     final l = AppLocalizations.of(context);
-    final store = ExceptionStore.instance;
-    final ok = switch (action) {
-      'resolve' => await store.resolve(exc.id),
-      'escalate' => await store.escalate(exc.id),
-      _ => await store.dismiss(exc.id),
-    };
-    if (!mounted) return;
-    final successMessage = switch (action) {
-      'resolve' => l.exceptionResolved,
-      'escalate' => l.exceptionEscalated,
-      _ => l.exceptionDismissed,
-    };
-    A11y.announce(
-      context,
-      ok ? successMessage : l.exceptionActionFailed,
+    final result = await ExceptionStore.instance.bulkResolveSelected(
+      action: action,
     );
+    if (!mounted || result == null) {
+      if (mounted) A11y.announce(context, l.exceptionActionFailed);
+      return;
+    }
+    final verb = action == 'dismiss' ? 'Dismissed' : 'Resolved';
+    final base = '$verb ${result.updated} exception'
+        '${result.updated == 1 ? '' : 's'}';
+    final message =
+        result.skippedCount == 0 ? base : '$base (${result.skippedCount} skipped)';
+    A11y.announce(context, message);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _filterChip(String label, String? value, String? current) {
