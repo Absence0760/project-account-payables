@@ -100,6 +100,8 @@ export const messages = {
 	'dashboard.aging.days90': '61–90 Tage',
 	'dashboard.aging.days90plus': 'über 90 Tage',
 	'dashboard.overdue': 'Überfällig',
+	'dashboard.error.loadFailed': 'Dashboard konnte nicht geladen werden.',
+	'dashboard.error.retry': 'Erneut versuchen',
 
 	// Invoices list
 	'invoices.title': 'Rechnungen',

@@ -40,15 +40,25 @@
 
 	let data = $state<DashboardData | null>(null);
 	let loading = $state(true);
+	let error = $state(false);
 
-	$effect(() => {
-		orgCurrency.ensureLoaded();
+	function load() {
+		loading = true;
+		error = false;
 		api.get<DashboardData>('/api/dashboard').then((res) => {
 			data = res;
 			loading = false;
 		}).catch(() => {
+			// Surface a recoverable error instead of a blank page: without an
+			// {:else} branch a failed fetch left data=null and rendered nothing.
+			error = true;
 			loading = false;
 		});
+	}
+
+	$effect(() => {
+		orgCurrency.ensureLoaded();
+		load();
 	});
 
 	// Dashboard figures are tenant-wide roll-ups with no per-row currency,
@@ -117,6 +127,11 @@
 <PageHeader title={m('dashboard.title')}>
 	{#if loading}
 		<p class="loading">{m('common.loading')}</p>
+	{:else if error}
+		<div class="dashboard-error" role="alert">
+			<p>{m('dashboard.error.loadFailed')}</p>
+			<button class="btn-primary" onclick={load}>{m('dashboard.error.retry')}</button>
+		</div>
 	{:else if data}
 		<!-- KPI Cards -->
 		<div class="kpi-row">
@@ -273,6 +288,15 @@
 
 	.loading {
 		color: var(--text-muted);
+	}
+
+	.dashboard-error {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 12px;
+		color: var(--text-muted);
+		padding: 24px 0;
 	}
 
 	.empty {

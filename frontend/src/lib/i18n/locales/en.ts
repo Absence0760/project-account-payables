@@ -109,6 +109,8 @@ export const en = {
 	'dashboard.aging.days90': '61-90 days',
 	'dashboard.aging.days90plus': '90+ days',
 	'dashboard.overdue': 'Overdue',
+	'dashboard.error.loadFailed': 'Couldn’t load the dashboard.',
+	'dashboard.error.retry': 'Retry',
 
 	// Invoices list (routes/invoices/+page.svelte)
 	'invoices.title': 'Invoices',

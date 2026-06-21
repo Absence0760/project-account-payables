@@ -101,6 +101,8 @@ export const messages = {
 	'dashboard.aging.days90': '61 a 90 dias',
 	'dashboard.aging.days90plus': 'mais de 90 dias',
 	'dashboard.overdue': 'Vencida',
+	'dashboard.error.loadFailed': 'Não foi possível carregar o painel.',
+	'dashboard.error.retry': 'Tentar novamente',
 
 	// Invoices list
 	'invoices.title': 'Faturas',

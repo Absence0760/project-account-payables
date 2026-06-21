@@ -100,6 +100,8 @@ export const messages = {
 	'dashboard.aging.days90': '61 à 90 jours',
 	'dashboard.aging.days90plus': 'plus de 90 jours',
 	'dashboard.overdue': 'En retard',
+	'dashboard.error.loadFailed': 'Impossible de charger le tableau de bord.',
+	'dashboard.error.retry': 'Réessayer',
 
 	// Invoices list
 	'invoices.title': 'Factures',

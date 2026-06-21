@@ -104,6 +104,8 @@ export const messages = {
 	'dashboard.aging.days90': '61〜90日',
 	'dashboard.aging.days90plus': '90日以上',
 	'dashboard.overdue': '期限超過',
+	'dashboard.error.loadFailed': 'ダッシュボードを読み込めませんでした。',
+	'dashboard.error.retry': '再試行',
 
 	// Invoices list
 	'invoices.title': '請求書',
