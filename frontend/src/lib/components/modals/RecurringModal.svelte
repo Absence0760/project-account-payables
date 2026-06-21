@@ -13,6 +13,7 @@
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import {
 		createRecurring,
 		updateRecurring,
@@ -182,13 +183,6 @@
 	$effect(() => {
 		if (template) loadPreviews();
 	});
-
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		const d = new Date(s);
-		if (Number.isNaN(d.getTime())) return s;
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
 
 	const modalTitle = $derived(
 		isCreate
