@@ -7,6 +7,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { get1099Report } from '$lib/api/tax';
+	import { m } from '$lib/i18n/store.svelte';
 	import type { Report1099, Vendor1099Row } from '$lib/types/tax';
 
 	// Year selector — current year and the prior five (1099s are filed for
@@ -31,7 +32,7 @@
 			report = await get1099Report(year);
 		} catch (e) {
 			report = null;
-			error = e instanceof Error ? e.message : 'Could not load the 1099 report';
+			error = e instanceof Error ? e.message : m('tax.error.load');
 		} finally {
 			loading = false;
 		}
@@ -67,15 +68,16 @@
 		});
 	});
 
-	const COLUMNS = [
-		{ label: 'Vendor' },
-		{ label: 'Classification' },
-		{ label: '1099', class: 'center' },
-		{ label: 'W-9', class: 'center' },
-		{ label: 'TIN', class: 'center' },
-		{ label: 'Payments', class: 'right' },
-		{ label: 'YTD Paid', class: 'right' }
-	];
+	// $derived so the column headers re-render when the locale changes.
+	let COLUMNS = $derived([
+		{ label: m('tax.col.vendor') },
+		{ label: m('tax.col.classification') },
+		{ label: m('tax.col.1099'), class: 'center' },
+		{ label: m('tax.col.w9'), class: 'center' },
+		{ label: m('tax.col.tin'), class: 'center' },
+		{ label: m('tax.col.payments'), class: 'right' },
+		{ label: m('tax.col.ytdPaid'), class: 'right' }
+	]);
 
 	function fmtDate(s: string | null): string {
 		if (!s) return '—';
@@ -94,11 +96,11 @@
 	let thresholdLabel = $derived(report ? `$${report.threshold_usd}` : '$600');
 </script>
 
-<PageHeader title="1099 Reporting">
+<PageHeader title={m('tax.title')}>
 	{#snippet actions()}
 		<label class="year-select">
-			<span class="year-label">Tax year</span>
-			<select bind:value={year} aria-label="Tax year">
+			<span class="year-label">{m('tax.taxYear')}</span>
+			<select bind:value={year} aria-label={m('tax.taxYear')}>
 				{#each YEARS as y (y)}
 					<option value={y}>{y}</option>
 				{/each}
@@ -109,58 +111,58 @@
 	{#if error}
 		<div class="state-card error" role="alert">
 			<p>{error}</p>
-			<button class="btn-primary" onclick={load}>Retry</button>
+			<button class="btn-primary" onclick={load}>{m('tax.retry')}</button>
 		</div>
 	{:else if loading && !report}
-		<div class="state-card" aria-busy="true">Loading {year} 1099 report…</div>
+		<div class="state-card" aria-busy="true">{m('tax.loadingReport', { year })}</div>
 	{:else if report}
 		<div class="kpi-row">
-			<KpiCard value={String(report.vendor_count_total)} label="Vendors with payments" />
+			<KpiCard value={String(report.vendor_count_total)} label={m('tax.kpi.vendorsWithPayments')} />
 			<KpiCard
 				value={String(report.vendor_count_eligible_over_threshold)}
-				label={`Reportable (1099 + over $${report.threshold_usd})`}
+				label={m('tax.kpi.reportableOver', { threshold: report.threshold_usd })}
 				highlight="green"
 			/>
 			<KpiCard
 				value={String(report.vendor_count_over_threshold_without_w9)}
-				label="Reportable without W-9"
+				label={m('tax.kpi.reportableWithoutW9')}
 				highlight={report.vendor_count_over_threshold_without_w9 > 0 ? 'red' : null}
 			/>
-			<KpiCard value={formatMoney(report.total_reportable_usd)} label="Total reportable" />
+			<KpiCard value={formatMoney(report.total_reportable_usd)} label={m('tax.kpi.totalReportable')} />
 		</div>
 
 		<div class="toolbar-row">
 			<FilterChips
 				chips={[
-					{ key: 'all', label: 'All', count: report.rows.length },
+					{ key: 'all', label: m('common.all'), count: report.rows.length },
 					{
 						key: 'reportable',
-						label: 'Reportable',
+						label: m('tax.filter.reportable'),
 						count: report.rows.filter(isReportable).length
 					},
 					{
 						key: 'missing_w9',
-						label: 'Missing W-9',
+						label: m('tax.filter.missingW9'),
 						count: report.rows.filter((r) => isReportable(r) && !r.w9_on_file).length,
 						alert: report.vendor_count_over_threshold_without_w9 > 0
 					},
 					{
 						key: 'over_threshold',
-						label: `Over $${report.threshold_usd}`,
+						label: m('tax.filter.overThreshold', { threshold: report.threshold_usd }),
 						count: report.rows.filter((r) => r.over_threshold).length
 					}
 				]}
 				bind:active={rowFilter}
 			/>
-			<SearchBox bind:value={search} placeholder="Search vendors…" ariaLabel="Search vendors" />
+			<SearchBox bind:value={search} placeholder={m('tax.searchPlaceholder')} ariaLabel={m('tax.searchAria')} />
 		</div>
 
 		<DataTable
 			columns={COLUMNS}
 			isEmpty={filteredRows.length === 0}
 			empty={report.rows.length === 0
-				? 'No vendors yet. Add vendors to see 1099 reporting.'
-				: 'No vendors match this filter.'}
+				? m('tax.empty.noVendors')
+				: m('tax.empty.noMatch')}
 		>
 			{#snippet body()}
 				{#each filteredRows as r (r.vendor_id)}
@@ -169,23 +171,23 @@
 						<td class="muted">{r.tax_classification ?? '—'}</td>
 						<td class="center">
 							{#if r.is_1099_eligible}
-								<span class="chip chip-on">Eligible</span>
+								<span class="chip chip-on">{m('tax.chip.eligible')}</span>
 							{:else}
-								<span class="chip chip-off">No</span>
+								<span class="chip chip-off">{m('tax.chip.no')}</span>
 							{/if}
 						</td>
 						<td class="center">
 							{#if r.w9_on_file}
-								<span class="chip chip-on" title={fmtDate(r.w9_received_date)}>On file</span>
+								<span class="chip chip-on" title={fmtDate(r.w9_received_date)}>{m('tax.chip.onFile')}</span>
 							{:else}
-								<span class="chip chip-warn">Missing</span>
+								<span class="chip chip-warn">{m('tax.chip.missing')}</span>
 							{/if}
 						</td>
 						<td class="center">
 							{#if hasTin(r)}
-								<span class="chip chip-on">Verified</span>
+								<span class="chip chip-on">{m('tax.chip.verified')}</span>
 							{:else}
-								<span class="chip chip-warn">Missing</span>
+								<span class="chip chip-warn">{m('tax.chip.missing')}</span>
 							{/if}
 						</td>
 						<td class="right mono">{r.payment_count}</td>
@@ -196,7 +198,7 @@
 							{#if r.over_threshold}
 								<span
 									class="threshold-flag"
-									title={`Over the ${thresholdLabel} filing threshold`}>▲</span
+									title={m('tax.thresholdFlag', { threshold: thresholdLabel })}>▲</span
 								>
 							{/if}
 						</td>
@@ -206,10 +208,12 @@
 		</DataTable>
 
 		<p class="report-meta">
-			Report generated {fmtDate(report.generated_at)}. Reportable = 1099-eligible vendors paid more
-			than ${report.threshold_usd} in completed payments during {year}.
+			{m('tax.reportMeta', {
+				generated: fmtDate(report.generated_at),
+				threshold: report.threshold_usd,
+				year
+			})}
 		</p>
-		<!-- $ above is a literal dollar sign; {report.threshold_usd} is the interpolated value. -->
 	{/if}
 </PageHeader>
 

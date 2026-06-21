@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { UsageResponse } from '$lib/types/assistant';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let { usage }: { usage: UsageResponse | null } = $props();
 
@@ -20,12 +21,12 @@
 {#if usage}
 	<div class="usage-meter" data-testid="usage-meter" class:over class:near>
 		<div class="usage-head">
-			<span class="usage-label">AI usage ({usage.period})</span>
+			<span class="usage-label">{m('assistant.usage.label', { period: usage.period })}</span>
 			<span class="usage-figs">
 				{#if unlimited}
-					{fmt(usage.total_tokens)} tokens
+					{m('assistant.usage.tokens', { total: fmt(usage.total_tokens) })}
 				{:else}
-					{fmt(usage.total_tokens)} / {fmt(usage.budget)} tokens
+					{m('assistant.usage.tokensOf', { total: fmt(usage.total_tokens), budget: fmt(usage.budget) })}
 				{/if}
 			</span>
 		</div>
@@ -34,12 +35,12 @@
 				<div class="usage-fill" style="width:{pct}%"></div>
 			</div>
 			{#if over}
-				<span class="usage-note">Monthly AI budget reached.</span>
+				<span class="usage-note">{m('assistant.usage.budgetReached')}</span>
 			{:else if near}
-				<span class="usage-note">{fmt(usage.remaining)} tokens remaining.</span>
+				<span class="usage-note">{m('assistant.usage.remaining', { remaining: fmt(usage.remaining) })}</span>
 			{/if}
 		{:else}
-			<span class="usage-note muted">Unlimited budget</span>
+			<span class="usage-note muted">{m('assistant.usage.unlimited')}</span>
 		{/if}
 	</div>
 {/if}

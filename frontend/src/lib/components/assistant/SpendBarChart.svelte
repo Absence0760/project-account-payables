@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { m } from '$lib/i18n/store.svelte';
+
 	type Bar = {
 		/** Row label (vendor name, period). */
 		label: string;
@@ -22,7 +24,7 @@
 </script>
 
 {#if bars.length === 0}
-	<p class="chart-empty">No data for this period.</p>
+	<p class="chart-empty">{m('assistant.chart.noData')}</p>
 {:else}
 	<div class="chart-bars" role="list">
 		{#each bars as bar (bar.label)}

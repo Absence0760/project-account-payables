@@ -3,6 +3,7 @@
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import SpendBarChart from '$lib/components/assistant/SpendBarChart.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { m } from '$lib/i18n/store.svelte';
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import { STATUS_LABELS } from '$lib/types/invoice';
 	import type {
@@ -16,13 +17,14 @@
 
 	let { invocation }: { invocation: ToolInvocation } = $props();
 
-	const TOOL_TITLES: Record<string, string> = {
-		get_vendor_spend: 'Vendor spend',
-		get_payment_forecast: 'Payment forecast',
-		list_invoices: 'Invoices',
-		list_pending_approvals: 'Pending approvals',
-		find_invoices_by_text: 'Matching invoices'
-	};
+	// $derived so titles re-render when the locale changes.
+	let TOOL_TITLES = $derived<Record<string, string>>({
+		get_vendor_spend: m('assistant.tool.vendorSpend'),
+		get_payment_forecast: m('assistant.tool.paymentForecast'),
+		list_invoices: m('assistant.tool.invoices'),
+		list_pending_approvals: m('assistant.tool.pendingApprovals'),
+		find_invoices_by_text: m('assistant.tool.matchingInvoices')
+	});
 
 	let title = $derived(TOOL_TITLES[invocation.tool] ?? invocation.tool);
 
@@ -86,7 +88,7 @@
 					label: fmtDate(b.period),
 					value: numOf(b.amount),
 					amountLabel: formatMoney(b.amount, { currency: forecast!.currency, whole: true }),
-					sub: `${b.count} inv`
+					sub: m('assistant.tool.invCount', { count: b.count })
 				}))
 			: []
 	);
@@ -97,14 +99,14 @@
 		<div class="tool-head">
 			<span class="tool-title">{title}</span>
 		</div>
-		<p class="tool-err">Tool error: {invocation.error}</p>
+		<p class="tool-err">{m('assistant.tool.error', { error: invocation.error })}</p>
 	{:else if spend}
 		<div class="tool-head">
 			<span class="tool-title">{title}</span>
 			<span class="tool-meta">
-				{spend.period_label} · total {formatMoney(spend.total_spend, {
-					currency: spend.currency,
-					whole: true
+				{m('assistant.tool.meta', {
+					label: spend.period_label,
+					total: formatMoney(spend.total_spend, { currency: spend.currency, whole: true })
 				})}
 			</span>
 		</div>
@@ -113,9 +115,9 @@
 		<div class="tool-head">
 			<span class="tool-title">{title}</span>
 			<span class="tool-meta">
-				{forecast.horizon_label} · total {formatMoney(forecast.total, {
-					currency: forecast.currency,
-					whole: true
+				{m('assistant.tool.meta', {
+					label: forecast.horizon_label,
+					total: formatMoney(forecast.total, { currency: forecast.currency, whole: true })
 				})}
 			</span>
 		</div>
@@ -123,14 +125,14 @@
 	{:else if invoiceList}
 		<div class="tool-head">
 			<span class="tool-title">{title}</span>
-			<span class="tool-meta">{invoiceList.total} total</span>
+			<span class="tool-meta">{m('assistant.tool.totalCount', { total: invoiceList.total })}</span>
 		</div>
 		{#if invoiceList.items.length === 0}
-			<p class="tool-empty">No invoices matched.</p>
+			<p class="tool-empty">{m('assistant.tool.noInvoicesMatched')}</p>
 		{:else}
 			<table class="mini-table">
 				<thead>
-					<tr><th>Invoice</th><th>Vendor</th><th class="num">Amount</th><th>Status</th><th>Due</th></tr>
+					<tr><th>{m('assistant.tool.col.invoice')}</th><th>{m('assistant.tool.col.vendor')}</th><th class="num">{m('assistant.tool.col.amount')}</th><th>{m('assistant.tool.col.status')}</th><th>{m('assistant.tool.col.due')}</th></tr>
 				</thead>
 				<tbody>
 					{#each invoiceList.items as row (row.id)}
@@ -148,14 +150,14 @@
 	{:else if approvals}
 		<div class="tool-head">
 			<span class="tool-title">{title}</span>
-			<span class="tool-meta">{approvals.total} total</span>
+			<span class="tool-meta">{m('assistant.tool.totalCount', { total: approvals.total })}</span>
 		</div>
 		{#if approvals.items.length === 0}
-			<p class="tool-empty">Nothing pending.</p>
+			<p class="tool-empty">{m('assistant.tool.nothingPending')}</p>
 		{:else}
 			<table class="mini-table">
 				<thead>
-					<tr><th>Invoice</th><th>Vendor</th><th class="num">Amount</th><th>Waiting since</th></tr>
+					<tr><th>{m('assistant.tool.col.invoice')}</th><th>{m('assistant.tool.col.vendor')}</th><th class="num">{m('assistant.tool.col.amount')}</th><th>{m('assistant.tool.col.waitingSince')}</th></tr>
 				</thead>
 				<tbody>
 					{#each approvals.items as row (row.invoice_id)}
@@ -172,19 +174,19 @@
 	{:else if textSearch}
 		<div class="tool-head">
 			<span class="tool-title">{title}</span>
-			<span class="tool-meta">{textSearch.matches.length} match{textSearch.matches.length === 1 ? '' : 'es'}</span>
+			<span class="tool-meta">{m('assistant.tool.matchCount', { count: textSearch.matches.length })}</span>
 		</div>
 		{#if textSearch.matches.length === 0}
-			<p class="tool-empty">No matching invoices found.</p>
+			<p class="tool-empty">{m('assistant.tool.noMatchingInvoices')}</p>
 		{:else}
 			<div class="match-list">
-				{#each textSearch.matches as m (m.invoice_id)}
+				{#each textSearch.matches as match (match.invoice_id)}
 					<div class="match-card">
 						<div class="match-head">
-							<span class="match-vendor">{m.vendor_name ?? 'Unknown vendor'}</span>
-							<span class="match-sim">{(m.similarity * 100).toFixed(0)}% match</span>
+							<span class="match-vendor">{match.vendor_name ?? m('assistant.tool.unknownVendor')}</span>
+							<span class="match-sim">{m('assistant.tool.percentMatch', { percent: (match.similarity * 100).toFixed(0) })}</span>
 						</div>
-						<p class="match-snippet">{m.snippet}</p>
+						<p class="match-snippet">{match.snippet}</p>
 					</div>
 				{/each}
 			</div>

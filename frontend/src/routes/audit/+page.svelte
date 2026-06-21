@@ -5,6 +5,7 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	// RBAC parity with the backend: the auditor export is admin/CFO only (the
 	// backend 403s everyone else). Gate the page content on the loaded user's
@@ -14,13 +15,14 @@
 	const userLoaded = $derived(auth.user !== null);
 	const allowed = $derived(auth.isCfo);
 
-	const COLUMNS = [
-		{ label: 'When' },
-		{ label: 'Action' },
-		{ label: 'Entity' },
-		{ label: 'Actor' },
-		{ label: 'Changes' }
-	];
+	// $derived so the column headers re-render when the locale changes.
+	let COLUMNS = $derived([
+		{ label: m('audit.col.when') },
+		{ label: m('audit.col.action') },
+		{ label: m('audit.col.entity') },
+		{ label: m('audit.col.actor') },
+		{ label: m('audit.col.changes') }
+	]);
 
 	const today = new Date().toISOString().slice(0, 10);
 	function daysAgo(n: number): string {
@@ -53,7 +55,7 @@
 
 	async function runQuery() {
 		if (mode === 'invoice' && !invoiceId.trim()) {
-			error = 'Enter an invoice ID.';
+			error = m('audit.error.enterInvoiceId');
 			return;
 		}
 		error = '';
@@ -62,7 +64,7 @@
 		try {
 			entries = await getAuditExport(currentParams());
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Query failed.';
+			error = e instanceof Error ? e.message : m('audit.error.queryFailed');
 			entries = [];
 		} finally {
 			loading = false;
@@ -81,7 +83,7 @@
 			a.remove();
 			URL.revokeObjectURL(url);
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Download failed.', 'error');
+			toast(e instanceof Error ? e.message : m('audit.error.downloadFailed'), 'error');
 		}
 	}
 
@@ -92,65 +94,64 @@
 	}
 </script>
 
-<PageHeader title="Audit Trail">
+<PageHeader title={m('audit.title')}>
 	{#snippet actions()}
 		{#if userLoaded && allowed}
 			<button class="btn-primary" onclick={downloadCsv} disabled={!ran || entries.length === 0}>
-				Download CSV
+				{m('audit.downloadCsv')}
 			</button>
 		{/if}
 	{/snippet}
 
 	{#if userLoaded && !allowed}
 		<p class="audit-denied" role="alert">
-			You do not have permission to view the audit trail. This console is
-			limited to admins and CFOs.
+			{m('audit.denied')}
 		</p>
 	{:else if !userLoaded}
-		<p class="audit-loading">Loading…</p>
+		<p class="audit-loading">{m('common.loading')}</p>
 	{:else}
 	<div class="audit-controls">
-		<div class="mode-toggle" role="tablist" aria-label="Audit query mode">
+		<div class="mode-toggle" role="tablist" aria-label={m('audit.queryMode')}>
 			<button
 				role="tab"
 				aria-selected={mode === 'range'}
 				class:active={mode === 'range'}
-				onclick={() => (mode = 'range')}>Date range</button
+				onclick={() => (mode = 'range')}>{m('audit.mode.dateRange')}</button
 			>
 			<button
 				role="tab"
 				aria-selected={mode === 'invoice'}
 				class:active={mode === 'invoice'}
-				onclick={() => (mode = 'invoice')}>By invoice</button
+				onclick={() => (mode = 'invoice')}>{m('audit.mode.byInvoice')}</button
 			>
 		</div>
 
 		{#if mode === 'range'}
 			<label>
-				From
+				{m('audit.field.from')}
 				<input type="date" bind:value={start} max={end} />
 			</label>
 			<label>
-				To
+				{m('audit.field.to')}
 				<input type="date" bind:value={end} min={start} max={today} />
 			</label>
 			<label>
-				Entity
+				{m('audit.field.entity')}
 				<input
 					type="text"
 					bind:value={entityType}
-					placeholder="all (e.g. invoice, payment, vendor)"
+					placeholder={m('audit.field.entityPlaceholder')}
 				/>
 			</label>
 		{:else}
 			<label class="invoice-input">
-				Invoice ID
-				<input type="text" bind:value={invoiceId} placeholder="UUID" />
+				{m('audit.field.invoiceId')}
+				<input type="text" bind:value={invoiceId} placeholder={m('audit.field.invoiceIdPlaceholder')} />
 			</label>
 		{/if}
 
 		<button class="btn-primary" onclick={runQuery} disabled={loading}>
-			{loading ? 'Loading…' : 'Run query'}
+			{loading ? m('common.loading') : m('audit.runQuery')}
 		</button>
 	</div>
 
@@ -161,7 +162,7 @@
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={ran && !loading && entries.length === 0}
-		empty="No audit entries for this query."
+		empty={m('audit.empty')}
 	>
 		{#snippet body()}
 			{#each entries as entry (entry.id)}
@@ -183,7 +184,7 @@
 								{/each}
 							</ul>
 						{:else if entry.details?.fields}
-							<span class="muted">viewed: {(entry.details.fields as string[]).join(', ')}</span>
+							<span class="muted">{m('audit.viewed', { fields: (entry.details.fields as string[]).join(', ') })}</span>
 						{:else}
 							<span class="muted">—</span>
 						{/if}

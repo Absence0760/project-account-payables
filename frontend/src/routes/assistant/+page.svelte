@@ -5,6 +5,7 @@
 	import ChatMessage from '$lib/components/assistant/ChatMessage.svelte';
 	import ExamplePrompts from '$lib/components/assistant/ExamplePrompts.svelte';
 	import UsageMeter from '$lib/components/assistant/UsageMeter.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import type {
 		ChatResponse,
 		ConversationDetail,
@@ -77,7 +78,7 @@
 			budgetNotice = null;
 			await scrollToBottom();
 		} catch {
-			budgetNotice = 'Could not load that conversation.';
+			budgetNotice = m('assistant.error.loadConversation');
 		}
 	}
 
@@ -158,7 +159,7 @@
 					onError: (frame) => {
 						const msg = messages[assistantIdx];
 						if (msg && !sawContent) {
-							msg.error = frame.detail || 'The assistant hit an error.';
+							msg.error = frame.detail || m('assistant.error.generic');
 							msg.streaming = false;
 						}
 					}
@@ -166,7 +167,10 @@
 			);
 		} catch (err) {
 			if (err instanceof AssistantBudgetError) {
-				budgetNotice = `Monthly AI budget reached (${err.used.toLocaleString()} / ${err.budget.toLocaleString()} tokens). Resets next period.`;
+				budgetNotice = m('assistant.budget.reached', {
+					used: err.used.toLocaleString(),
+					budget: err.budget.toLocaleString()
+				});
 				// Drop the empty in-progress assistant bubble.
 				messages.splice(assistantIdx, 1);
 			} else if (!sawContent) {
@@ -176,16 +180,19 @@
 					await fallbackChat(message, assistantIdx);
 				} catch (fallbackErr) {
 					if (fallbackErr instanceof AssistantBudgetError) {
-						budgetNotice = `Monthly AI budget reached (${fallbackErr.used.toLocaleString()} / ${fallbackErr.budget.toLocaleString()} tokens). Resets next period.`;
+						budgetNotice = m('assistant.budget.reached', {
+								used: fallbackErr.used.toLocaleString(),
+								budget: fallbackErr.budget.toLocaleString()
+							});
 						messages.splice(assistantIdx, 1);
 					} else {
 						const msg = messages[assistantIdx];
 						const detail =
-							fallbackErr instanceof Error ? fallbackErr.message : 'Something went wrong.';
+							fallbackErr instanceof Error ? fallbackErr.message : m('assistant.error.somethingWrong');
 						if (msg) {
 							msg.error = detail.includes('budget')
 								? detail
-								: `The assistant could not answer: ${detail}`;
+								: m('assistant.error.couldNotAnswer', { detail });
 							msg.streaming = false;
 						}
 					}
@@ -210,17 +217,17 @@
 	}
 </script>
 
-<PageHeader title="AI Assistant">
+<PageHeader title={m('assistant.title')}>
 	{#snippet actions()}
-		<button type="button" class="btn-secondary" onclick={newChat} disabled={busy}>+ New chat</button>
+		<button type="button" class="btn-secondary" onclick={newChat} disabled={busy}>{m('assistant.newChat')}</button>
 	{/snippet}
 
 	<div class="assistant-layout">
 		<aside class="convo-rail">
 			<UsageMeter {usage} />
-			<div class="convo-head">Recent</div>
+			<div class="convo-head">{m('assistant.recent')}</div>
 			{#if conversations.length === 0}
-				<p class="convo-empty">No conversations yet.</p>
+				<p class="convo-empty">{m('assistant.noConversations')}</p>
 			{:else}
 				<ul class="convo-list">
 					{#each conversations as c (c.id)}
@@ -232,8 +239,8 @@
 								onclick={() => openConversation(c.id)}
 								disabled={busy}
 							>
-								<span class="convo-title">{c.title || 'Untitled chat'}</span>
-								<span class="convo-count">{c.message_count} msg</span>
+								<span class="convo-title">{c.title || m('assistant.untitledChat')}</span>
+								<span class="convo-count">{m('assistant.msgCount', { count: c.message_count })}</span>
 							</button>
 						</li>
 					{/each}
@@ -274,13 +281,13 @@
 				<textarea
 					bind:value={input}
 					onkeydown={onKeydown}
-					placeholder="Ask about spend, approvals, forecasts, invoices…"
+					placeholder={m('assistant.composer.placeholder')}
 					rows="1"
-					aria-label="Message the assistant"
+					aria-label={m('assistant.composer.ariaLabel')}
 					disabled={busy}
 				></textarea>
 				<button type="submit" class="btn-primary" disabled={busy || input.trim().length === 0}>
-					{busy ? 'Thinking…' : 'Send'}
+					{busy ? m('assistant.thinking') : m('assistant.send')}
 				</button>
 			</form>
 		</section>

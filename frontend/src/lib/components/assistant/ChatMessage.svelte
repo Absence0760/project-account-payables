@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ToolResultView from '$lib/components/assistant/ToolResultView.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import type { UiMessage } from '$lib/types/assistant';
 
 	let { message }: { message: UiMessage } = $props();
@@ -8,7 +9,7 @@
 </script>
 
 <div class="msg" class:user={isUser} class:assistant={!isUser}>
-	<div class="msg-role">{isUser ? 'You' : 'Assistant'}</div>
+	<div class="msg-role">{isUser ? m('assistant.role.you') : m('assistant.role.assistant')}</div>
 	<div class="msg-bubble">
 		<!-- Tool results render before the prose so charts/tables appear as
 		     they stream in, ahead of the narrated answer. -->
@@ -25,7 +26,7 @@
 		{/if}
 
 		{#if message.streaming && !message.content && message.tools.length === 0}
-			<span class="typing" role="img" aria-label="Assistant is thinking">
+			<span class="typing" role="img" aria-label={m('assistant.thinkingAria')}>
 				<span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"
 				></span>
 			</span>
