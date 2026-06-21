@@ -38,8 +38,11 @@ class RoutingRule(BaseModel):
 class ApprovalLevelConfig(BaseModel):
     """One level in a multi-level approval chain."""
 
-    min_amount: float | None = None
-    max_amount: float | None = None
+    # Money is exact — never float (project invariant). The routing engine reads
+    # these off the JSONB snapshot via `_to_decimal`, which already coerces
+    # str/number/Decimal; typing them Decimal keeps the API boundary exact too.
+    min_amount: Decimal | None = None
+    max_amount: Decimal | None = None
     approver_ids: list[str] = []
     required_approvals: int = 1
     name: str = ""
@@ -62,9 +65,11 @@ class ApprovalStepConfig(BaseModel):
     approver_id: str | None = None  # deprecated, use approver_ids
     approver_ids: list[str] = []
     approver_strategy: str = "manual"  # "manual", "specific", "auto", "chain"
-    auto_approve_below: float | None = None  # auto-approve invoices below this amount
-    require_cfo_above: float | None = None  # require CFO approval above this amount
-    max_invoice_amount: float | None = None  # reject invoices above this amount
+    # Money is exact — never float (project invariant). Consumed off the JSONB
+    # snapshot by `decide_auto_approve` / `_to_decimal`, which coerce safely.
+    auto_approve_below: Decimal | None = None  # auto-approve invoices below this amount
+    require_cfo_above: Decimal | None = None  # require CFO approval above this amount
+    max_invoice_amount: Decimal | None = None  # reject invoices above this amount
     approval_chain: list[ApprovalLevelConfig] = []  # used when strategy="chain"
     require_segregation: bool = True  # approver ≠ uploader (classic AP invariant; SOC 2 baseline)
 
