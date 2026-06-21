@@ -150,6 +150,13 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
     polled = 0
     resolved = 0
     aged_out = 0
+    # Runs holding a payment the sweep just settled to `completed`. After the
+    # commit we hand these to dispatch_payment_sync — the exact downstream the
+    # webhook path fires — so the invoice flips payment_scheduled → paid and the
+    # ERP is notified. Without this the reconciler settled the payment row but
+    # left the invoice stuck in payment_scheduled forever (the missed-webhook
+    # case is precisely what the reconciler exists to handle).
+    runs_to_sync: set = set()
 
     try:
         async with factory() as db:
@@ -236,6 +243,8 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     payment.status = upstream.value
                     payment.completed_at = now
                     resolved += 1
+                    if payment.status == "completed" and payment.payment_run_id:
+                        runs_to_sync.add(payment.payment_run_id)
                     await _audit_reconcile_transition(
                         db,
                         org=org,
@@ -248,6 +257,22 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                 await db.commit()
     finally:
         await engine.dispose()
+
+    # Mirror the webhook's downstream: flip each completed payment's invoice to
+    # `paid` and notify the ERP. Runs after the commit so the sync sees the
+    # settled status. Best-effort — a sync failure must not abort the sweep.
+    if runs_to_sync:
+        from app.services.payment_erp_sync import dispatch_payment_sync
+
+        for run_id in runs_to_sync:
+            try:
+                await dispatch_payment_sync(run_id, org.id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[payment-reconciler] payment-sync dispatch failed for run %s: %s",
+                    run_id,
+                    exc.__class__.__name__,
+                )
 
     return {"polled": polled, "resolved": resolved, "aged_out": aged_out}
 

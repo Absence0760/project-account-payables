@@ -109,6 +109,7 @@ async def test_reconciler_accepts_terminal_status_from_adapter():
         patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
         patch("app.services.payment_reconciler.async_sessionmaker", return_value=factory),
         patch("app.services.payment_reconciler.get_payment_adapter") as mk_adapter,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync"),
     ):
         mk_engine.return_value = MagicMock(dispose=AsyncMock())
         adapter = MagicMock()
@@ -205,6 +206,7 @@ async def test_reconciler_poll_resolution_writes_audit_row():
         patch("app.services.payment_reconciler.async_sessionmaker", return_value=factory),
         patch("app.services.payment_reconciler.get_payment_adapter") as mk_adapter,
         patch("app.services.audit_dispatch.dispatch_audit") as mk_audit,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync"),
     ):
         mk_engine.return_value = MagicMock(dispose=AsyncMock())
         adapter = MagicMock()
@@ -221,6 +223,81 @@ async def test_reconciler_poll_resolution_writes_audit_row():
     assert kwargs["details"]["previous_status"] == "submitted"
     assert kwargs["details"]["source"] == "reconciler_poll"
     assert kwargs["details"]["amount"] == "1000.00"
+
+
+@pytest.mark.asyncio
+async def test_reconciler_completion_dispatches_payment_sync():
+    """A reconciler poll that settles `submitted → completed` must hand the
+    payment's run to `dispatch_payment_sync` — the exact downstream the webhook
+    fires — so the invoice flips payment_scheduled → paid and the ERP is told.
+    Before the fix the reconciler settled the payment row but left the invoice
+    stuck in payment_scheduled (the missed-webhook case it exists to handle)."""
+    from app.services.payment_adapters import PaymentStatus
+    from app.services.payment_reconciler import _reconcile_tenant
+
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        db_name="ap_acme",
+        settings={"payments": {"provider": "mock"}},
+    )
+    old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=_result_with([old]))
+
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=fake_db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
+        patch("app.services.payment_reconciler.async_sessionmaker", return_value=factory),
+        patch("app.services.payment_reconciler.get_payment_adapter") as mk_adapter,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync") as mk_sync,
+    ):
+        mk_engine.return_value = MagicMock(dispose=AsyncMock())
+        adapter = MagicMock()
+        adapter.get_payment_status = AsyncMock(return_value=PaymentStatus.completed)
+        adapter.provider_name = "mock"
+        mk_adapter.return_value = adapter
+
+        await _reconcile_tenant(org, datetime.now(UTC))
+
+    mk_sync.assert_awaited_once_with(old.payment_run_id, org.id)
+
+
+@pytest.mark.asyncio
+async def test_reconciler_aged_out_does_not_dispatch_payment_sync():
+    """A force-fail at max age never settles money, so it must NOT trigger an
+    ERP/invoice sync (that would mark the invoice paid for a failed payment)."""
+    from app.services.payment_reconciler import _reconcile_tenant
+
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        db_name="ap_acme",
+        settings={"payments": {"provider": "mock"}},
+    )
+    ancient = _payment(submitted_at=datetime.now(UTC) - timedelta(days=10))
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=_result_with([ancient]))
+
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=fake_db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
+        patch("app.services.payment_reconciler.async_sessionmaker", return_value=factory),
+        patch("app.services.payment_reconciler.get_payment_adapter") as mk_adapter,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync") as mk_sync,
+    ):
+        mk_engine.return_value = MagicMock(dispose=AsyncMock())
+        adapter = MagicMock()
+        adapter.get_payment_status = AsyncMock()
+        mk_adapter.return_value = adapter
+
+        await _reconcile_tenant(org, datetime.now(UTC))
+
+    mk_sync.assert_not_awaited()
 
 
 @pytest.mark.asyncio
