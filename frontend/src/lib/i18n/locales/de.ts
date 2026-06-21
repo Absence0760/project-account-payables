@@ -2222,6 +2222,7 @@ export const messages = {
 	'workflows.builder.toast.notFound': 'Workflow nicht gefunden',
 	'workflows.builder.toast.saveFailed': 'Speichern fehlgeschlagen',
 	'workflows.builder.toast.saved': 'Workflow gespeichert',
+	'workflows.builder.unsavedConfirm': 'Sie haben nicht gespeicherte Workflow-Änderungen. Ohne Speichern verlassen?',
 	'workflows.builder.toast.updateFailed': 'Aktualisierung fehlgeschlagen',
 	'workflows.builder.webhook.addHeader': '+ Header hinzufügen',
 	'workflows.builder.webhook.bodyHint': 'Local-first: Der Webhook wird in Entwicklung und Simulation aufgezeichnet (nicht gesendet), sofern er nicht in der bereitgestellten Umgebung aktiviert ist.',

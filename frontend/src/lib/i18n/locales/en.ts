@@ -2279,6 +2279,7 @@ export const en = {
 	'workflows.builder.toast.notFound': 'Workflow not found',
 	'workflows.builder.toast.saveFailed': 'Failed to save',
 	'workflows.builder.toast.saved': 'Workflow saved',
+	'workflows.builder.unsavedConfirm': 'You have unsaved workflow changes. Leave without saving?',
 	'workflows.builder.toast.updateFailed': 'Failed to update',
 	'workflows.builder.webhook.addHeader': '+ Add header',
 	'workflows.builder.webhook.bodyHint': 'Local-first: the webhook is recorded (not sent) in dev and simulation unless enabled in the deployed environment.',

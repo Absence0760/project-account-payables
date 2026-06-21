@@ -2252,6 +2252,7 @@ export const messages = {
 	'workflows.builder.toast.notFound': 'Flujo de trabajo no encontrado',
 	'workflows.builder.toast.saveFailed': 'Error al guardar',
 	'workflows.builder.toast.saved': 'Flujo de trabajo guardado',
+	'workflows.builder.unsavedConfirm': 'Tiene cambios de flujo de trabajo sin guardar. ¿Salir sin guardar?',
 	'workflows.builder.toast.updateFailed': 'Error al actualizar',
 	'workflows.builder.webhook.addHeader': '+ Añadir encabezado',
 	'workflows.builder.webhook.bodyHint': 'Local primero: el webhook se registra (no se envía) en desarrollo y simulación, salvo que se habilite en el entorno desplegado.',

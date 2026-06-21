@@ -2252,6 +2252,7 @@ export const messages = {
 	'workflows.builder.toast.notFound': 'Fluxo de trabalho não encontrado',
 	'workflows.builder.toast.saveFailed': 'Falha ao salvar',
 	'workflows.builder.toast.saved': 'Fluxo de trabalho salvo',
+	'workflows.builder.unsavedConfirm': 'Você tem alterações de fluxo de trabalho não salvas. Sair sem salvar?',
 	'workflows.builder.toast.updateFailed': 'Falha ao atualizar',
 	'workflows.builder.webhook.addHeader': '+ Adicionar cabeçalho',
 	'workflows.builder.webhook.bodyHint': 'Local primeiro: o webhook é registrado (não enviado) em desenvolvimento e simulação, a menos que seja habilitado no ambiente implantado.',

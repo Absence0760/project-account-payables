@@ -2221,6 +2221,7 @@ export const messages = {
 	'workflows.builder.toast.notFound': 'Flux de travail introuvable',
 	'workflows.builder.toast.saveFailed': 'Échec de l\'enregistrement',
 	'workflows.builder.toast.saved': 'Flux de travail enregistré',
+	'workflows.builder.unsavedConfirm': 'Vous avez des modifications de workflow non enregistrées. Quitter sans enregistrer ?',
 	'workflows.builder.toast.updateFailed': 'Échec de la mise à jour',
 	'workflows.builder.webhook.addHeader': '+ Ajouter un en-tête',
 	'workflows.builder.webhook.bodyHint': 'Local d\'abord : le webhook est enregistré (non envoyé) en développement et en simulation, sauf s\'il est activé dans l\'environnement déployé.',

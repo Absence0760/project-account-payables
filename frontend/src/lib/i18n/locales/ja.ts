@@ -2244,6 +2244,7 @@ export const messages = {
 	'workflows.builder.toast.notFound': 'ワークフローが見つかりません',
 	'workflows.builder.toast.saveFailed': '保存に失敗しました',
 	'workflows.builder.toast.saved': 'ワークフローを保存しました',
+	'workflows.builder.unsavedConfirm': '保存されていないワークフローの変更があります。保存せずに移動しますか？',
 	'workflows.builder.toast.updateFailed': '更新に失敗しました',
 	'workflows.builder.webhook.addHeader': '+ ヘッダーを追加',
 	'workflows.builder.webhook.bodyHint': 'ローカルファースト: Webhook は、デプロイ環境で有効化されていない限り、開発およびシミュレーションでは記録され（送信されません）。',
