@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import extract, func, select
@@ -34,6 +34,26 @@ from app.schemas.virtual_card import (
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/cards", tags=["cards"])
+
+# Platform default rebate rate when the org has no negotiated rate on file.
+_DEFAULT_REBATE_RATE = Decimal("0.0100")  # 1%
+
+
+def _resolve_rebate_rate(card_config: dict) -> Decimal:
+    """The org's negotiated rebate rate from `settings.cards.rebate_rate`,
+    falling back to the 1% platform default. Parsed defensively (a malformed
+    or out-of-range value must never break payment settlement) and clamped to
+    a sane 0–10% band."""
+    raw = (card_config or {}).get("rebate_rate")
+    if raw is None:
+        return _DEFAULT_REBATE_RATE
+    try:
+        rate = Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        return _DEFAULT_REBATE_RATE
+    if rate < 0 or rate > Decimal("0.10"):
+        return _DEFAULT_REBATE_RATE
+    return rate
 
 
 def _resolve_card_config(org: Organization) -> dict:
@@ -515,9 +535,14 @@ async def card_webhook(provider: str, request: Request):
                     )
                 elif is_settled and card.status == "charged":
                     card.status = "completed"
-                    # Create rebate
-                    rebate_rate = Decimal("0.0100")  # 1% default
-                    rebate_amount = (card.amount_charged or card.amount_limit) * rebate_rate
+                    # Create rebate at the org's negotiated rate (not a hardcoded
+                    # 1%), quantized to cents — the rate field was documented on
+                    # settings.cards but never read, so every org earned 1%.
+                    rebate_rate = _resolve_rebate_rate(card_config)
+                    _rebate_base = card.amount_charged or card.amount_limit
+                    rebate_amount = (_rebate_base * rebate_rate).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
                     rebate = CardRebate(
                         virtual_card_id=card.id,
                         amount=rebate_amount,
