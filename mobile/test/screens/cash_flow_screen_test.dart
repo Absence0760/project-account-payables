@@ -7,9 +7,16 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ap_mobile/api/api_client.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/cash_flow_screen.dart';
 import 'package:ap_mobile/stores/cash_flow_store.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
+
+Widget _localized(Widget home) => MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: home,
+    );
 
 http.Response _json(Object body, [int status = 200]) => http.Response(
       jsonEncode(body),
@@ -92,7 +99,7 @@ void main() {
     final gate = Completer<http.Response>();
     ApiClient().debugConfigure(client: MockClient((req) async => gate.future));
 
-    await tester.pumpWidget(const MaterialApp(home: CashFlowScreen()));
+    await tester.pumpWidget(_localized(const CashFlowScreen()));
     await tester.pump();
     await tester.pump();
 
@@ -109,7 +116,7 @@ void main() {
       client: MockClient((req) async => throw Exception('offline')),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: CashFlowScreen()));
+    await tester.pumpWidget(_localized(const CashFlowScreen()));
     await _pumpUntil(tester, find.text('Retry'));
 
     expect(find.textContaining('Error:'), findsOneWidget);
@@ -120,7 +127,7 @@ void main() {
   testWidgets('renders the KPI summary and forecast/position rows', (tester) async {
     ApiClient().debugConfigure(client: _client());
 
-    await tester.pumpWidget(const MaterialApp(home: CashFlowScreen()));
+    await tester.pumpWidget(_localized(const CashFlowScreen()));
     await _pumpUntil(tester, find.byType(KpiCard));
 
     // Four KPI cards: Opening, Projected End, Committed Out, Pending Out.
@@ -157,7 +164,7 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: CashFlowScreen()));
+    await tester.pumpWidget(_localized(const CashFlowScreen()));
     await _pumpUntil(tester, find.text('Low balance alert'));
 
     expect(find.text('Low balance alert'), findsOneWidget);
@@ -194,7 +201,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: CashFlowScreen()));
+    await tester.pumpWidget(_localized(const CashFlowScreen()));
     await _pumpUntil(tester, find.byType(KpiCard));
 
     expect(find.text('No projected outflows in this horizon.'), findsOneWidget);
@@ -217,7 +224,7 @@ void main() {
       }),
     );
 
-    await tester.pumpWidget(const MaterialApp(home: CashFlowScreen()));
+    await tester.pumpWidget(_localized(const CashFlowScreen()));
     await _pumpUntil(tester, find.byType(KpiCard));
     expect(horizons, contains('90')); // initial fetch
 
