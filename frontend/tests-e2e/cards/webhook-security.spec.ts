@@ -81,6 +81,17 @@ function chargeBody(eventId: string): string {
 	});
 }
 
+/** Lithic-shaped DECLINED authorization — must NOT charge the card. */
+function declineBody(eventId: string): string {
+	return JSON.stringify({
+		card_token: TOKEN,
+		type: 'authorization.decline',
+		event_id: eventId,
+		amount: 100000,
+		merchant: { descriptor: 'ACME VENDOR' }
+	});
+}
+
 function sign(rawBody: string, secret = SECRET): string {
 	return createHmac('sha256', secret).update(rawBody).digest('hex');
 }
@@ -157,6 +168,74 @@ test.describe('card webhook HMAC + dedup', () => {
 			expect(audit).not.toMatch(/4242424242424242/);
 		} finally {
 			purge(cardId);
+		}
+	});
+
+	test('declined authorization is signed+valid but does NOT charge the card', async ({
+		request
+	}) => {
+		// Regression: a naive `"auth" in event_type` substring match treated
+		// `authorization.decline` as a real charge, flipping the card to
+		// `charged` on money that never moved (and minting a rebate on it).
+		const cardId = seedCard();
+		try {
+			const body = declineBody(randomUUID());
+			const resp = await request.post(`${API_BASE}/api/cards/webhook/lithic`, {
+				headers: { 'Content-Type': 'application/json', 'Webhook-Signature': sign(body) },
+				data: body
+			});
+			// Valid signature, but a decline is neither a charge nor a settlement.
+			expect(resp.status()).toBe(204);
+			expect(cardStatus(cardId)).toBe('active');
+			// No charge amount, no rebate.
+			const charged = tenantPsql(
+				`SELECT amount_charged FROM virtual_cards WHERE id = '${cardId}'`
+			).trim();
+			expect(charged).toBe(''); // NULL
+			const rebates = tenantPsql(
+				`SELECT count(*) FROM card_rebates WHERE virtual_card_id = '${cardId}'`
+			).trim();
+			expect(rebates).toBe('0');
+		} finally {
+			purge(cardId);
+		}
+	});
+
+	test('Nium charge is recorded in MAJOR units (not divided by 100)', async ({ request }) => {
+		// Regression: the handler divided every charge amount by 100, but only
+		// Lithic sends minor units (cents). Nium sends major units, so a $50.50
+		// charge was being recorded as $0.51.
+		const niumToken = `e2e-wh-nium-${randomUUID()}`;
+		tenantPsql(
+			`INSERT INTO virtual_cards (id, invoice_id, organization_id, card_provider, provider_card_id, amount_limit, currency, status, last_four, created_at, updated_at)
+			 SELECT gen_random_uuid(), i.id, i.organization_id, 'nium', '${niumToken}', 1000.00, 'USD', 'active', '4242', now(), now()
+			 FROM invoices i LIMIT 1`
+		);
+		const cardId = tenantPsql(
+			`SELECT id FROM virtual_cards WHERE provider_card_id = '${niumToken}'`
+		).trim();
+		try {
+			const body = JSON.stringify({
+				cardHashId: niumToken,
+				eventType: 'authorization',
+				webhookId: randomUUID(),
+				amount: 50.5, // MAJOR units → $50.50
+				merchantName: 'ACME VENDOR'
+			});
+			const resp = await request.post(`${API_BASE}/api/cards/webhook/nium`, {
+				headers: { 'Content-Type': 'application/json', 'Webhook-Signature': sign(body) },
+				data: body
+			});
+			expect(resp.status()).toBe(204);
+			expect(cardStatus(cardId)).toBe('charged');
+			const charged = tenantPsql(
+				`SELECT amount_charged FROM virtual_cards WHERE id = '${cardId}'`
+			).trim();
+			// $50.50 stays $50.50 — NOT $0.51 (the /100 bug).
+			expect(charged).toBe('50.50');
+		} finally {
+			tenantPsql(`DELETE FROM card_rebates WHERE virtual_card_id = '${cardId}'`);
+			tenantPsql(`DELETE FROM virtual_cards WHERE id = '${cardId}'`);
 		}
 	});
 
