@@ -343,8 +343,13 @@ async def _execute_email(config: dict, ctx: dict, *, dry_run: bool) -> dict:
         for addr in recipients:
             await adapter.send(EmailMessage(to=addr, subject=subject, body_text=body))
     except Exception as exc:  # noqa: BLE001 — a bad email step must not abort the run
-        logger.warning("[workflow_builder] email step send failed: %s", exc)
-        return {"type": "email", "status": "error", "detail": f"email send failed: {exc}"}
+        # PII guard: the raw exception can embed a recipient email address
+        # (the adapter echoes the address on a bad-recipient error). The result
+        # detail is stored in WorkflowInstance.step_results JSONB and the log is
+        # shipped to CloudWatch — keep the address out of both. Type only.
+        err = exc.__class__.__name__
+        logger.warning("[workflow_builder] email step send failed: %s", err)
+        return {"type": "email", "status": "error", "detail": f"email send failed: {err}"}
 
     return {
         "type": "email",

@@ -527,3 +527,38 @@ def test_engine_knows_builder_step_types():
     assert is_known_step_type("extraction") is True
     assert is_known_step_type("review") is True  # legacy alias → approval
     assert is_known_step_type("not_a_step") is False
+
+
+# ---------------------------------------------------------------------------
+# PII guard — a failed email step must not leak the recipient address
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_email_step_failure_detail_omits_recipient_address():
+    """When the email adapter raises with the recipient embedded in its message
+    (SES/SMTP echo the address on a bad-recipient error), the step result detail
+    — stored in WorkflowInstance.step_results JSONB and logged to CloudWatch —
+    must carry only the exception class name, never the address (PII invariant)."""
+    from app.services.workflow_builder import _execute_email
+
+    leaky = "SMTPRecipientsRefused: vendor-secret@example.com rejected"
+
+    class _BoomAdapter:
+        async def send(self, *_a, **_k):
+            raise RuntimeError(leaky)
+
+    config = {
+        "to": "custom",
+        "to_addresses": ["vendor-secret@example.com"],
+        "subject": "Hi",
+        "body_template": "body",
+    }
+
+    with patch("app.services.email_adapters.get_email_adapter", return_value=_BoomAdapter()):
+        result = await _execute_email(config, {}, dry_run=False)
+
+    assert result["status"] == "error"
+    assert "vendor-secret@example.com" not in result["detail"]
+    assert "example.com" not in result["detail"]
+    assert "RuntimeError" in result["detail"]

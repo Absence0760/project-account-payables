@@ -266,5 +266,11 @@ async def notify_vendor_of_card(
         )
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[card_issuance] vendor email send failed for card %s: %s", card.id, exc)
+        # PII guard: the raw exception can embed the vendor's email address
+        # (SES/SMTP echo the recipient in the error). Log the type only.
+        logger.warning(
+            "[card_issuance] vendor email send failed for card %s: %s",
+            card.id,
+            exc.__class__.__name__,
+        )
         return False
