@@ -15,6 +15,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { formatDate } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_PAYMENT_VOID } from '$lib/types/admin';
@@ -406,10 +407,6 @@
 		return formatMoney(amount, { currency: currency ?? orgCurrency.currency });
 	}
 
-	function formatDate(dateStr: string | null): string {
-		if (!dateStr) return '—';
-		return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
 
 	function methodLabel(method: string | null): string {
 		if (!method) return '—';

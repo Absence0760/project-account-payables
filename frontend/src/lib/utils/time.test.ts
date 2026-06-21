@@ -37,6 +37,46 @@ describe('formatDate', () => {
 		expect(en).toContain('Mar');
 		expect(de).toContain('März');
 	});
+
+	it('honours an opts override that drops the year (dashboard due-date cell)', () => {
+		setActiveFormatLocale('en-US');
+		const out = formatDate('2026-06-20T12:00:00Z', '—', { month: 'short', day: 'numeric' });
+		expect(out).toBe('Jun 20');
+		expect(out).not.toContain('2026');
+	});
+
+	it('renders a time component when opts asks for hour/minute (switches to toLocaleString)', () => {
+		setActiveFormatLocale('en-US');
+		// 15:45 UTC is past noon, so the calendar day is stable across timezones
+		// behind UTC; assert the date parts + that a time is present.
+		const out = formatDate('2026-06-20T15:45:00Z', '—', {
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+		expect(out).toContain('Jun');
+		// A ":" only appears once the time component is rendered — proving the
+		// date-only `toLocaleDateString` path was NOT taken.
+		expect(out).toContain(':');
+	});
+
+	it('opts override still localizes off the active locale', () => {
+		const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+		setActiveFormatLocale('en-US');
+		const en = formatDate('2026-03-20T12:00:00Z', '—', opts);
+		setActiveFormatLocale('de-DE');
+		const de = formatDate('2026-03-20T12:00:00Z', '—', opts);
+		expect(en).not.toBe(de);
+		expect(en).toContain('Mar');
+		expect(de).toContain('März');
+	});
+
+	it('still returns the placeholder with opts for null/invalid', () => {
+		const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+		expect(formatDate(null, '—', opts)).toBe('—');
+		expect(formatDate('not-a-date', 'n/a', opts)).toBe('n/a');
+	});
 });
 
 describe('formatPeriod', () => {

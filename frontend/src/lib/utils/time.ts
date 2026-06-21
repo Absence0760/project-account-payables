@@ -33,6 +33,13 @@ function parseLocalDate(value: string): Date | null {
 	return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Default short-date parts (e.g. "Jun 20, 2026" / "20 juin 2026"). */
+const DEFAULT_DATE_OPTS: Intl.DateTimeFormatOptions = {
+	month: 'short',
+	day: 'numeric',
+	year: 'numeric'
+};
+
 /**
  * Locale-aware short calendar date (e.g. "Jun 20, 2026" / "20 juin 2026").
  *
@@ -42,18 +49,30 @@ function parseLocalDate(value: string): Date | null {
  * Until a locale is actively selected the holder is `undefined`, so the
  * browser/runtime locale is used (the pre-i18n behaviour — nothing regresses).
  *
+ * Pass `opts` to vary the parts a caller needs — a list row that wants no year
+ * (`{month:'short', day:'numeric'}`) or a date+time (`…, hour:'numeric',
+ * minute:'2-digit'}`) — while still localizing off the active locale. Omit it
+ * for the standard short date. When `opts.hour`/`minute` is present a date-only
+ * key (`YYYY-MM-DD`) still renders at local midnight; an ISO timestamp keeps its
+ * exact instant.
+ *
  * Returns the `placeholder` (default `—`) for a null/empty/unparseable value.
  * Read it inside a `$derived` / template so a locale switch re-renders.
  */
-export function formatDate(value: string | null | undefined, placeholder = '—'): string {
+export function formatDate(
+	value: string | null | undefined,
+	placeholder = '—',
+	opts: Intl.DateTimeFormatOptions = DEFAULT_DATE_OPTS
+): string {
 	if (!value) return placeholder;
 	const d = parseLocalDate(value);
 	if (!d) return placeholder;
-	return d.toLocaleDateString(getActiveFormatLocale(), {
-		month: 'short',
-		day: 'numeric',
-		year: 'numeric'
-	});
+	// `toLocaleDateString` ignores time parts; switch to `toLocaleString` when a
+	// caller asks for hour/minute/second (e.g. a "Jun 20, 3:45 PM" datetime cell).
+	const locale = getActiveFormatLocale();
+	return opts.hour || opts.minute || opts.second
+		? d.toLocaleString(locale, opts)
+		: d.toLocaleDateString(locale, opts);
 }
 
 /**

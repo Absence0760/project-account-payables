@@ -5,6 +5,7 @@
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { formatDate } from '$lib/utils/time';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 
@@ -60,9 +61,10 @@
 		return formatMoney(n, { currency: orgCurrency.currency });
 	}
 
-	function formatDate(iso: string | null): string {
-		if (!iso) return '—';
-		return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+	// Due-date cell: locale-aware short date, no year (the shared helper drives
+	// its locale off the active i18n picker).
+	function fmtDue(iso: string | null): string {
+		return formatDate(iso, '—', { month: 'short', day: 'numeric' });
 	}
 
 	// Pipeline order
@@ -222,7 +224,7 @@
 								</div>
 								<span class="upcoming-amount">{fmtFull(inv.amount)}</span>
 								<span class="upcoming-date" class:overdue-text={inv.is_overdue}>
-									{formatDate(inv.due_date)}
+									{fmtDue(inv.due_date)}
 									{#if inv.is_overdue}
 										<span class="overdue-badge">{m('dashboard.overdue')}</span>
 									{/if}
