@@ -334,3 +334,33 @@ async def test_overall_confidence_recomputed():
     # The recomputed value comes from only fields with non-None values;
     # due_date was penalised so the average must be lower than the original.
     assert result.overall_confidence < original_overall
+
+
+@pytest.mark.asyncio
+async def test_overall_confidence_recompute_never_raises():
+    """A self-correction that FINDS a violation must never *raise* overall
+    confidence. The recompute averages only the 5 key fields, which can exceed
+    the adapter's original overall (dragged down by uncertain non-key fields).
+    Left unclamped, a flagged-suspect extraction would become MORE eligible for
+    touchless auto-approve — the opposite of the intended effect."""
+    li = ExtractedLineItem(
+        line_number=1,
+        quantity=_field("2", confidence=0.9),
+        unit_price=_field("10", confidence=0.9),
+        total=_field("999", confidence=0.9),  # 2*10=20 != 999 → violation
+    )
+    result = _result(
+        overall_confidence=0.55,  # low original (many uncertain non-key fields)
+        invoice_number=_field("INV-1", confidence=0.9),
+        vendor_name=_field("Acme", confidence=0.9),
+        amount=_field("20", confidence=0.9),
+        invoice_date=_field("2024-01-01", confidence=0.9),
+        due_date=_field("2024-02-01", confidence=0.9),
+        line_items=[li],
+    )
+    original_overall = result.overall_confidence
+
+    report = await run_self_correction(result)
+
+    assert report.corrected  # a violation fired
+    assert result.overall_confidence <= original_overall  # never raised
