@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -478,6 +479,10 @@ async def test_webhook_only_touches_the_url_path_tenant_db():
         completed_at=None,
         reference=None,
         failure_reason=None,
+        # Money-path fields the settle-path audit row reads off a real Payment.
+        correlation_id=uuid.uuid4(),
+        amount=Decimal("500.00"),
+        method="ach",
     )
 
     adapter = MagicMock()
@@ -508,3 +513,130 @@ async def test_webhook_only_touches_the_url_path_tenant_db():
     # The engine was requested for acme's DB, not techflow's.
     assert mk_engine.call_count == 1
     assert mk_engine.call_args[0][0] == "ap_acme"
+
+
+# ---------------------------------------------------------------------------
+# Audit trail (project invariant: a money-status change touching the
+# regulated `completed_at` must produce an append-only audit row).
+# The processor's webhook is the production path that settles a payment.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_webhook_settle_writes_audit_row():
+    """A `submitted → completed` webhook stamps the regulated `completed_at`,
+    so it MUST write a `payment.completed` audit row. Before the fix the
+    handler flipped the status + timestamp with no audit row at all — the
+    one place the real processor confirms money moved was untraced."""
+    from app.api.payments import payment_webhook
+    from app.services.payment_adapters import PaymentStatus
+
+    org = _org(slug="acme")
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_settle",
+        payment_run_id=uuid.uuid4(),
+        status="submitted",
+        completed_at=None,
+        reference=None,
+        failure_reason=None,
+        correlation_id=uuid.uuid4(),
+        amount=Decimal("1234.56"),
+        method="ach",
+    )
+
+    adapter = MagicMock()
+    adapter.parse_webhook = MagicMock(
+        return_value=SimpleNamespace(
+            provider_payment_id="px_settle",
+            event_id="evt_settle",
+            status=PaymentStatus.completed,
+            reference="REF-OK",
+            failure_reason=None,
+        )
+    )
+
+    tenant_factory, db = _tenant_session_factory(payment)
+    with (
+        patch("app.database.control_session_factory", _ctrl_session_factory(org)),
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+        patch("app.services.audit_dispatch.dispatch_audit") as mk_audit,
+        patch("app.services.payment_erp_sync.dispatch_payment_sync"),
+    ):
+        await payment_webhook(
+            tenant_slug="acme",
+            provider="modern_treasury",
+            request=_fake_request(),
+        )
+
+    assert payment.status == "completed"
+    db.commit.assert_called_once()
+    mk_audit.assert_called_once()
+    kwargs = mk_audit.call_args.kwargs
+    assert kwargs["action"] == "payment.completed"
+    assert kwargs["entity_type"] == "payment"
+    assert kwargs["entity_id"] == payment.id
+    assert kwargs["organization_id"] == org.id
+    # System-initiated (the processor, not a user).
+    assert kwargs["actor_id"] is None
+    details = kwargs["details"]
+    assert details["status"] == "completed"
+    assert details["previous_status"] == "submitted"
+    assert details["source"] == "webhook"
+    # PII-free: amount is the Decimal serialised to a string, no bank values.
+    assert details["amount"] == "1234.56"
+    assert "iban" not in details and "account" not in details
+
+
+@pytest.mark.asyncio
+async def test_webhook_rejected_path_writes_no_audit_row():
+    """A re-delivered `completed` against an already-terminal `voided`
+    payment must NOT write an audit row — nothing changed, so the trail
+    stays clean (and no commit fires)."""
+    from app.api.payments import payment_webhook
+    from app.services.payment_adapters import PaymentStatus
+
+    org = _org()
+    voided = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_void2",
+        payment_run_id=uuid.uuid4(),
+        status="voided",
+        completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        reference="REF-VOID",
+        failure_reason="Voided by AP: duplicate",
+        correlation_id=uuid.uuid4(),
+        amount=Decimal("10.00"),
+        method="ach",
+    )
+
+    adapter = MagicMock()
+    adapter.parse_webhook = MagicMock(
+        return_value=SimpleNamespace(
+            provider_payment_id="px_void2",
+            event_id="evt_void2",
+            status=PaymentStatus.completed,
+            reference="REF-NEW",
+            failure_reason=None,
+        )
+    )
+
+    tenant_factory, db = _tenant_session_factory(voided)
+    with (
+        patch("app.database.control_session_factory", _ctrl_session_factory(org)),
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+        patch("app.services.audit_dispatch.dispatch_audit") as mk_audit,
+    ):
+        await payment_webhook(
+            tenant_slug="acme",
+            provider="modern_treasury",
+            request=_fake_request(),
+        )
+
+    assert voided.status == "voided"
+    db.commit.assert_not_called()
+    mk_audit.assert_not_called()

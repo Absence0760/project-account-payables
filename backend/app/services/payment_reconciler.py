@@ -44,6 +44,46 @@ class ReconcileResult:
     failures: int = 0  # tenants we couldn't reach
 
 
+async def _audit_reconcile_transition(
+    db,
+    *,
+    org: Organization,
+    payment: Payment,
+    previous_status: str | None,
+    source: str,
+) -> None:
+    """Append-only audit row for a reconciler-driven terminal transition.
+
+    The backstop sweep flips an in-flight payment to its terminal status and
+    stamps the regulated ``completed_at`` exactly like the webhook path does;
+    per the project invariant that money-status change must produce an audit
+    row. Actor is None (system-initiated by the sweep, not a user). PII-free:
+    only ids, status, the Decimal amount as a string, and the reference.
+    """
+    import uuid as _uuid
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=payment.correlation_id or _uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=None,
+        action=f"payment.{payment.status}",
+        entity_type="payment",
+        entity_id=payment.id,
+        details={
+            "status": payment.status,
+            "previous_status": previous_status or "unknown",
+            "method": payment.method,
+            "amount": str(payment.amount),
+            "reference": payment.reference,
+            "source": source,
+            "payment_run_id": str(payment.payment_run_id) if payment.payment_run_id else None,
+        },
+    )
+
+
 async def reconcile_once(*, now: datetime | None = None) -> ReconcileResult:
     """One sweep across every tenant. Safe for direct CLI invocation."""
     now = now or datetime.now(UTC)
@@ -132,12 +172,20 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     continue
                 # Past the absolute max age — give up and mark failed.
                 if age > max_age:
+                    previous_status = payment.status
                     payment.status = "failed"
                     payment.failure_reason = (
                         f"reconciler_max_age_exceeded after {age.total_seconds() / 3600:.1f}h"
                     )
                     payment.completed_at = now
                     aged_out += 1
+                    await _audit_reconcile_transition(
+                        db,
+                        org=org,
+                        payment=payment,
+                        previous_status=previous_status,
+                        source="reconciler_aged_out",
+                    )
                     continue
 
                 if not payment.provider_payment_id:
@@ -168,9 +216,17 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     PaymentStatus.failed,
                     PaymentStatus.cancelled,
                 ):
+                    previous_status = payment.status
                     payment.status = upstream.value
                     payment.completed_at = now
                     resolved += 1
+                    await _audit_reconcile_transition(
+                        db,
+                        org=org,
+                        payment=payment,
+                        previous_status=previous_status,
+                        source="reconciler_poll",
+                    )
 
             if polled or aged_out:
                 await db.commit()

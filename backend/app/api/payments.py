@@ -1351,6 +1351,7 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
         if payment.status not in ("pending", "submitted", "processing"):
             return
 
+        previous_status = payment.status
         payment.status = event.status.value
         if event.reference:
             payment.reference = event.reference
@@ -1358,6 +1359,36 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             payment.failure_reason = event.failure_reason
         if payment.status in ("completed", "failed", "cancelled"):
             payment.completed_at = datetime.now(UTC)
+
+        # Append-only audit trail for the webhook-driven status transition.
+        # This is the production money-movement event — the processor's
+        # webhook is what flips a real payment to `completed`/`failed` and
+        # sets the regulated `completed_at`. Per the project invariant, a
+        # status change touching `completed_at` without an audit row is
+        # Critical. Actor is None (system-initiated by the processor, not a
+        # user). PII-free: only ids, status, the Decimal amount as a string,
+        # and the reference ever enter `details`.
+        from app.services.audit_dispatch import dispatch_audit
+
+        await dispatch_audit(
+            db,
+            correlation_id=payment.correlation_id or uuid.uuid4(),
+            organization_id=org.id,
+            actor_id=None,
+            action=f"payment.{payment.status}",
+            entity_type="payment",
+            entity_id=payment.id,
+            details={
+                "status": payment.status,
+                "previous_status": previous_status or "unknown",
+                "method": payment.method,
+                "amount": str(payment.amount),
+                "reference": payment.reference,
+                "source": "webhook",
+                "provider": provider,
+                "payment_run_id": str(payment.payment_run_id) if payment.payment_run_id else None,
+            },
+        )
 
         run_id = payment.payment_run_id if payment.status == "completed" else None
         await db.commit()

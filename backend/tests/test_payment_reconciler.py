@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +22,9 @@ import pytest
 
 
 def _payment(*, status="submitted", submitted_at=None, provider_payment_id="px_123"):
+    # Mirror the real Payment ORM row's money-path fields. The reconciler reads
+    # them when it writes the terminal-transition audit row (correlation_id /
+    # method / amount / payment_run_id), so the stand-in must carry them too.
     return SimpleNamespace(
         id=uuid.uuid4(),
         status=status,
@@ -28,6 +32,11 @@ def _payment(*, status="submitted", submitted_at=None, provider_payment_id="px_1
         provider_payment_id=provider_payment_id,
         completed_at=None,
         failure_reason=None,
+        reference=None,
+        correlation_id=uuid.uuid4(),
+        method="ach",
+        amount=Decimal("1000.00"),
+        payment_run_id=uuid.uuid4(),
     )
 
 
@@ -114,6 +123,89 @@ async def test_reconciler_accepts_terminal_status_from_adapter():
     assert old.status == "completed"
     assert old.completed_at is not None
     fake_db.commit.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconciler_poll_resolution_writes_audit_row():
+    """A reconciler poll that flips `submitted → completed` stamps the
+    regulated `completed_at`, so it MUST write a `payment.completed` audit
+    row — the backstop sweep is a real money-status transition, just like
+    the webhook. Before the fix it mutated state with no audit row."""
+    from app.services.payment_adapters import PaymentStatus
+    from app.services.payment_reconciler import _reconcile_tenant
+
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        db_name="ap_acme",
+        settings={"payments": {"provider": "mock"}},
+    )
+    old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=_result_with([old]))
+
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=fake_db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
+        patch("app.services.payment_reconciler.async_sessionmaker", return_value=factory),
+        patch("app.services.payment_reconciler.get_payment_adapter") as mk_adapter,
+        patch("app.services.audit_dispatch.dispatch_audit") as mk_audit,
+    ):
+        mk_engine.return_value = MagicMock(dispose=AsyncMock())
+        adapter = MagicMock()
+        adapter.get_payment_status = AsyncMock(return_value=PaymentStatus.completed)
+        adapter.provider_name = "mock"
+        mk_adapter.return_value = adapter
+
+        await _reconcile_tenant(org, datetime.now(UTC))
+
+    mk_audit.assert_awaited_once()
+    kwargs = mk_audit.call_args.kwargs
+    assert kwargs["action"] == "payment.completed"
+    assert kwargs["actor_id"] is None
+    assert kwargs["details"]["previous_status"] == "submitted"
+    assert kwargs["details"]["source"] == "reconciler_poll"
+    assert kwargs["details"]["amount"] == "1000.00"
+
+
+@pytest.mark.asyncio
+async def test_reconciler_aged_out_writes_audit_row():
+    """The force-fail-on-max-age path stamps `completed_at` + flips to
+    `failed`, so it MUST write a `payment.failed` audit row too."""
+    from app.services.payment_reconciler import _reconcile_tenant
+
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        db_name="ap_acme",
+        settings={"payments": {"provider": "mock"}},
+    )
+    ancient = _payment(submitted_at=datetime.now(UTC) - timedelta(days=10))
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=_result_with([ancient]))
+
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=fake_db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
+        patch("app.services.payment_reconciler.async_sessionmaker", return_value=factory),
+        patch("app.services.payment_reconciler.get_payment_adapter") as mk_adapter,
+        patch("app.services.audit_dispatch.dispatch_audit") as mk_audit,
+    ):
+        mk_engine.return_value = MagicMock(dispose=AsyncMock())
+        adapter = MagicMock()
+        adapter.get_payment_status = AsyncMock()
+        mk_adapter.return_value = adapter
+
+        await _reconcile_tenant(org, datetime.now(UTC))
+
+    mk_audit.assert_awaited_once()
+    kwargs = mk_audit.call_args.kwargs
+    assert kwargs["action"] == "payment.failed"
+    assert kwargs["details"]["source"] == "reconciler_aged_out"
 
 
 @pytest.mark.asyncio
