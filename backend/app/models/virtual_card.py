@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,6 +13,20 @@ from app.models.base import Base, EntityMixin, TimestampMixin
 
 class VirtualCard(Base, EntityMixin, TimestampMixin):
     __tablename__ = "virtual_cards"
+
+    # At most one LIVE (non-cancelled) card per invoice — the DB-level
+    # idempotency backstop so a retried issuance can't mint a second provider
+    # card. Mirrors migration 0067; a cancelled card is excluded so a
+    # cancel-then-reissue still works. (Declared here so fresh tenants built via
+    # create_all in tenant_provisioning get it too, not only migrated ones.)
+    __table_args__ = (
+        Index(
+            "uq_virtual_cards_one_live_per_invoice",
+            "invoice_id",
+            unique=True,
+            postgresql_where=text("status <> 'cancelled'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(

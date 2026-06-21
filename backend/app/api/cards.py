@@ -6,6 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import extract, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -263,8 +264,28 @@ async def generate_cards(
     result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
     invoices = result.scalars().all()
 
+    # Idempotency: skip invoices that already have a LIVE (non-cancelled) card so
+    # a retried request (network timeout, double-click) doesn't mint a second
+    # provider card. The partial unique index uq_virtual_cards_one_live_per_invoice
+    # is the hard backstop against a concurrent race; this pre-check avoids the
+    # wasted provider call on the common sequential-retry case.
+    already_carded = set(
+        (
+            await db.execute(
+                select(VirtualCard.invoice_id).where(
+                    VirtualCard.invoice_id.in_(ids),
+                    VirtualCard.status != "cancelled",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     cards: list[VirtualCard] = []
     for inv in invoices:
+        if inv.id in already_carded:
+            continue
         payload = VirtualCardPayload(
             correlation_id=str(inv.correlation_id),
             invoice_id=str(inv.id),
@@ -295,9 +316,17 @@ async def generate_cards(
             entity_id=inv.entity_id,  # card follows the invoice it pays (P2)
         )
         db.add(card)
+        # Flush inside a savepoint so a concurrent duplicate (caught by the
+        # partial unique index) skips just that card instead of aborting the
+        # whole batch and orphaning the other freshly-minted provider cards.
+        try:
+            async with db.begin_nested():
+                await db.flush()
+        except IntegrityError:
+            already_carded.add(inv.id)
+            continue
         cards.append(card)
 
-    await db.flush()
     await db.commit()
 
     return CardListResponse(

@@ -137,13 +137,15 @@ async def test_sync_virtual_cards_creates_and_dedupes(realdb):
     org_id = realdb.info("a").org_id
     async with mk() as s:
         ent = await _default_entity_id(s)
-        inv_id = await _seed_invoice_id(s, org_id)
+        # One card per invoice — production issues a single live card per
+        # invoice (enforced by uq_virtual_cards_one_live_per_invoice), so each
+        # seeded card gets its own invoice.
         for n, amt in (("pc1", "120.00"), ("pc2", "75.50")):
             s.add(
                 VirtualCard(
                     organization_id=org_id,
                     entity_id=ent,
-                    invoice_id=inv_id,
+                    invoice_id=await _seed_invoice_id(s, org_id),
                     card_provider="mock",
                     provider_card_id=n,
                     amount_limit=Decimal("500.00"),
@@ -160,7 +162,7 @@ async def test_sync_virtual_cards_creates_and_dedupes(realdb):
             VirtualCard(
                 organization_id=org_id,
                 entity_id=ent,
-                invoice_id=inv_id,
+                invoice_id=await _seed_invoice_id(s, org_id),
                 card_provider="mock",
                 provider_card_id="pc3",
                 amount_limit=Decimal("500.00"),
