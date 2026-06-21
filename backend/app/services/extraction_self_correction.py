@@ -219,7 +219,15 @@ async def run_self_correction(
     _check_line_items_sum(result, report)
     _check_line_item_math(result, report)
 
-    # Recompute overall confidence after penalties
+    # Recompute overall confidence after penalties.
+    #
+    # The recompute averages only the 5 key fields, which can be HIGHER than the
+    # adapter's original overall (computed across the full field set, possibly
+    # dragged down by many uncertain non-key fields). A self-correction that
+    # FOUND violations must never *raise* the confidence the auto-approve gate
+    # reads — that would make a flagged-suspect extraction more eligible for
+    # touchless approval. Clamp to the original so a violation can only lower
+    # (or hold) it, never increase it.
     if report.corrected:
         fields = [
             result.invoice_number,
@@ -229,6 +237,8 @@ async def run_self_correction(
             result.due_date,
         ]
         confidences = [f.confidence for f in fields if f.value is not None]
-        result.overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        if confidences:
+            recomputed = sum(confidences) / len(confidences)
+            result.overall_confidence = min(result.overall_confidence, recomputed)
 
     return report

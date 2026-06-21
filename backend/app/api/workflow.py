@@ -418,11 +418,24 @@ async def complete_invoice(
         # Check auto_approve_below — skip review for small invoices
         instance = await get_workflow_instance(db, invoice.id)
         approval_config: dict = {}
+        extraction_config: dict = {}
         if instance and instance.steps_config_snapshot:
             approval_config = get_step_config(instance.steps_config_snapshot, "approval")
+            extraction_config = get_step_config(instance.steps_config_snapshot, "extraction")
 
         auto_below = approval_config.get("auto_approve_below")
-        if auto_below is not None and float(invoice.amount or 0) < auto_below:
+        # Use the shared, gated decision so the amount-floor auto-approve still
+        # honours the max_invoice_amount / require_cfo_above money-control gates
+        # (a misconfigured high `auto_approve_below` must not slip a CFO-gated
+        # amount past review). confidence 0.0 → only the amount floor can fire.
+        from app.services.extraction import decide_auto_approve
+
+        if decide_auto_approve(
+            extraction_config,
+            approval_config,
+            overall_confidence=0.0,
+            amount=invoice.amount,
+        ):
             from datetime import date
 
             invoice.approval_date = date.today()
@@ -436,7 +449,7 @@ async def complete_invoice(
                 details={
                     "reason": "below_threshold",
                     "threshold": auto_below,
-                    "amount": float(invoice.amount),
+                    "amount": str(invoice.amount),
                 },
             )
             if instance:

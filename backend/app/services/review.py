@@ -366,11 +366,14 @@ async def assign_reviewer(
     # Find the current review step and assign it
     from app.models.workflow import WorkflowStep
 
+    # Steps are now persisted under the canonical "approval" type, but rows
+    # written before that normalisation may still carry the legacy "review"
+    # alias — match both so reassignment finds either.
     result = await db.execute(
         select(WorkflowStep)
         .where(
             WorkflowStep.instance_id == instance.id,
-            WorkflowStep.step_type == "review",
+            WorkflowStep.step_type.in_(("approval", "review")),
             WorkflowStep.completed_at.is_(None),
         )
         .order_by(WorkflowStep.created_at.desc())

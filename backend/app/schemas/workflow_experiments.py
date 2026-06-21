@@ -10,7 +10,30 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _validate_variant_config(v: dict | None) -> dict | None:
+    """A variant config must be a full ``steps_config`` (same shape the workflow
+    definition stores) — ``{"steps": [ {step}, ... ]}``.
+
+    It is frozen verbatim onto the invoice's ``steps_config_snapshot`` and read
+    back through ``workflow_engine.get_step_config``, which keys off ``steps``.
+    A config without a ``steps`` list (or with non-dict step entries) would make
+    every step lookup return ``{}`` for assigned invoices — silently disabling
+    auto-approve, the approval thresholds (max-amount / CFO gate), and
+    segregation. Reject it at the boundary rather than freeze an unreadable
+    snapshot.
+    """
+    if v is None:
+        return v
+    steps = v.get("steps")
+    if not isinstance(steps, list):
+        raise ValueError("variant config must contain a 'steps' list (a full steps_config)")
+    for step in steps:
+        if not isinstance(step, dict) or "type" not in step:
+            raise ValueError("each step in a variant config must be an object with a 'type'")
+    return v
 
 
 class ExperimentCreate(BaseModel):
@@ -23,6 +46,11 @@ class ExperimentCreate(BaseModel):
     primary_metric: str = "time_to_approval_days"
     min_sample_per_variant: int = Field(default=10, ge=1, le=10000)
 
+    @field_validator("config_a", "config_b")
+    @classmethod
+    def _check_config(cls, v: dict) -> dict:
+        return _validate_variant_config(v)
+
 
 class ExperimentUpdate(BaseModel):
     """Partial update — only allowed while the experiment is ``draft``."""
@@ -34,6 +62,11 @@ class ExperimentUpdate(BaseModel):
     split_a_pct: int | None = Field(default=None, ge=0, le=100)
     primary_metric: str | None = None
     min_sample_per_variant: int | None = Field(default=None, ge=1, le=10000)
+
+    @field_validator("config_a", "config_b")
+    @classmethod
+    def _check_config(cls, v: dict | None) -> dict | None:
+        return _validate_variant_config(v)
 
 
 class ExperimentResponse(BaseModel):

@@ -152,28 +152,32 @@ async def test_create_workflow_step_uses_canonical_step_number_from_step_types()
 
 
 @pytest.mark.parametrize(
-    "alias,canonical_number",
+    "alias,canonical_type,canonical_number",
     [
-        ("upload", 1),  # alias for extraction
-        ("review", 2),  # alias for approval
-        ("erp_push", 3),  # alias for erp_export
+        ("upload", "extraction", 1),  # alias for extraction
+        ("review", "approval", 2),  # alias for approval
+        ("erp_push", "erp_export", 3),  # alias for erp_export
     ],
 )
 @pytest.mark.asyncio
-async def test_create_workflow_step_honors_legacy_aliases(alias, canonical_number):
-    """Old workflow definitions used `upload`/`review`/`erp_push`;
-    the new names are `extraction`/`approval`/`erp_export`. The
-    helper translates so callers can still pass either. A regression
-    here orphans old WorkflowSteps from their definitions."""
+async def test_create_workflow_step_canonicalizes_legacy_aliases(
+    alias, canonical_type, canonical_number
+):
+    """Old workflow definitions used `upload`/`review`/`erp_push`; the new names
+    are `extraction`/`approval`/`erp_export`. The helper translates so callers
+    can still pass either — and persists the CANONICAL name. Storing the raw
+    alias would make every query that filters on the canonical type (dashboard
+    pending-approvals / analytics / assistant `step_type == "approval"`) silently
+    miss alias-named rows."""
     db = AsyncMock()
     db.add = MagicMock()
     db.flush = AsyncMock()
     inst = _instance()
 
     step = await create_workflow_step(db, inst, alias)
-    # step_type field is kept verbatim (so the old data round-trips
-    # without rewriting), but the step_number is canonicalized.
-    assert step.step_type == alias
+    # Both the step_type and step_number are canonicalized so the persisted row
+    # is consistent regardless of which alias the caller passed.
+    assert step.step_type == canonical_type
     assert step.step_number == canonical_number
 
 
@@ -273,9 +277,10 @@ async def test_advance_workflow_closes_current_and_opens_next_step():
 
 @pytest.mark.asyncio
 async def test_advance_workflow_honors_legacy_alias_in_next_step_type():
-    """Caller passes `review` (legacy alias for `approval`). The
-    step row records `review` verbatim but the instance.current_step
-    is computed via the canonical name (so the index is right)."""
+    """Caller passes `review` (legacy alias for `approval`). The new step row
+    records the CANONICAL `approval` (so a dashboard/analytics/assistant query on
+    `step_type == "approval"` finds it), and instance.current_step is the
+    canonical index."""
     close_result = MagicMock()
     close_result.scalar_one_or_none = MagicMock(return_value=None)
 
@@ -285,9 +290,10 @@ async def test_advance_workflow_honors_legacy_alias_in_next_step_type():
     db.flush = AsyncMock()
     inst = _instance(current_step=0)
 
-    await advance_workflow(db, inst, "review", action="extracted")
+    new_step = await advance_workflow(db, inst, "review", action="extracted")
 
     assert inst.current_step == STEP_TYPES.index("approval")
+    assert new_step.step_type == "approval"  # canonical, not the "review" alias
 
 
 # ---------------------------------------------------------------------------

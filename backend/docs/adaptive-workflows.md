@@ -379,7 +379,7 @@ shaping in `api/workflow_experiments.py`.
 | Field | Meaning |
 |---|---|
 | `workflow_definition_id` | The definition under test — only invoices whose resolved definition is this one get assigned. |
-| `config_a` / `config_b` | The two variant `steps_config` JSONBs (same shape the definition stores). `config_a` is the control. |
+| `config_a` / `config_b` | The two variant `steps_config` JSONBs (same shape the definition stores — a `{"steps": [ {step}, ... ]}` object; **validated at create / PATCH**, 422 on a config without a `steps` list or with a step entry lacking `type`). The chosen variant is frozen verbatim onto the invoice's `steps_config_snapshot` and read back via `get_step_config`, so an unreadable config would silently disable auto-approve / the approval thresholds / segregation for assigned invoices — hence the boundary check. `config_a` is the control. |
 | `split_a_pct` | Percent of invoices routed to A (0–100; 50 = even). |
 | `primary_metric` | The metric the winner is called on — `time_to_approval_days` \| `touchless_rate_pct` \| `exception_rate_pct` \| `rejection_rate_pct`. |
 | `min_sample_per_variant` | Minimum *completed* invoices per arm before a winner is called. |
