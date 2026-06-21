@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface CompleteResponse {
 		status: string;
@@ -18,7 +19,7 @@
 		const token = $page.url.searchParams.get('token');
 		if (!token) {
 			phase = 'error';
-			errorMessage = 'No verification token in the URL.';
+			errorMessage = m('auth.verify.noToken');
 			return;
 		}
 		try {
@@ -26,43 +27,40 @@
 			phase = 'success';
 		} catch (err) {
 			phase = 'error';
-			errorMessage = err instanceof Error ? err.message : 'Verification failed.';
+			errorMessage = err instanceof Error ? err.message : m('auth.verify.failed');
 		}
 	});
 </script>
 
 <svelte:head>
-	<title>Verifying — Better AP</title>
+	<title>{m('auth.verify.pageTitle')}</title>
 </svelte:head>
 
 <div class="page">
 	<div class="card" aria-live="polite">
 		{#if phase === 'pending'}
-			<h1>Creating your workspace…</h1>
+			<h1>{m('auth.verify.pendingHeading')}</h1>
 			<p class="sub">
-				This usually takes a few seconds — we're provisioning your database and sending
-				your credentials.
+				{m('auth.verify.pendingSub')}
 			</p>
 			<div class="spinner"></div>
 		{:else if phase === 'success' && result}
-			<h1>Your workspace is ready</h1>
+			<h1>{m('auth.verify.successHeading')}</h1>
 			<p class="sub">
-				We emailed your sign-in link and a temporary password to
-				<strong>{result.admin_email}</strong>. Use that password to sign in for the first
-				time — you'll set your own right after.
+				{m('auth.verify.successSubPre')}<strong>{result.admin_email}</strong>{m('auth.verify.successSubPost')}
 			</p>
 			<ol class="steps">
-				<li>Open the welcome email and copy the temporary password.</li>
-				<li>Sign in at your workspace below.</li>
-				<li>Choose a new password — then you're in.</li>
+				<li>{m('auth.verify.step1')}</li>
+				<li>{m('auth.verify.step2')}</li>
+				<li>{m('auth.verify.step3')}</li>
 			</ol>
 			<div class="next">
-				<a class="primary" href={result.tenant_url}>Continue to {result.slug} →</a>
+				<a class="primary" href={result.tenant_url}>{m('auth.verify.continueTo', { slug: result.slug })}</a>
 			</div>
 		{:else}
-			<h1>Something went wrong</h1>
+			<h1>{m('auth.verify.errorHeading')}</h1>
 			<p class="error">{errorMessage}</p>
-			<a href="/signup">Start over</a>
+			<a href="/signup">{m('auth.verify.startOver')}</a>
 		{/if}
 	</div>
 </div>

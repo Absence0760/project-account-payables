@@ -5,6 +5,7 @@
 	import { api } from '$lib/api';
 	import { getTenantSlug } from '$lib/tenant';
 	import { PUBLIC_API_URL } from '$env/static/public';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface SSOConfigPublic {
 		enabled: boolean;
@@ -95,7 +96,7 @@
 			}
 			goto('/');
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Login failed';
+			error = err instanceof Error ? err.message : m('auth.login.failed');
 		} finally {
 			loading = false;
 		}
@@ -104,8 +105,8 @@
 
 <div class="login-page">
 	<form class="login-card" onsubmit={handleSubmit}>
-		<h1>Account Payables</h1>
-		<p class="subtitle">Sign in to continue</p>
+		<h1>{m('auth.login.heading')}</h1>
+		<p class="subtitle">{m('auth.login.subtitle')}</p>
 
 		<div role="alert" aria-live="assertive">
 			{#if error}
@@ -115,32 +116,32 @@
 
 		{#if !ssoOnly}
 			<label>
-				<span>Email</span>
+				<span>{m('auth.login.email')}</span>
 				<input type="email" bind:value={email} required autocomplete="email" />
 			</label>
 			<label>
-				<span>Password</span>
+				<span>{m('auth.login.password')}</span>
 				<input type="password" bind:value={password} required autocomplete="current-password" />
 			</label>
 
 			<button type="submit" disabled={loading}>
-				{loading ? 'Signing in...' : 'Sign in'}
+				{loading ? m('auth.login.signingIn') : m('auth.login.signIn')}
 			</button>
 		{:else}
-			<p class="sso-only-note">This workspace uses single sign-on.</p>
+			<p class="sso-only-note">{m('auth.login.ssoOnly')}</p>
 		{/if}
 
 		{#if !ssoOnly && (ssoEnabled || samlEnabled)}
-			<div class="divider"><span>or</span></div>
+			<div class="divider"><span>{m('auth.login.or')}</span></div>
 		{/if}
 		{#if ssoEnabled}
 			<button type="button" class="sso-btn" onclick={signInWithSSO}>
-				Sign in with {ssoProviderLabel}
+				{m('auth.login.signInWith', { provider: ssoProviderLabel })}
 			</button>
 		{/if}
 		{#if samlEnabled}
 			<button type="button" class="sso-btn" onclick={signInWithSAML}>
-				Sign in with {samlProviderLabel}
+				{m('auth.login.signInWith', { provider: samlProviderLabel })}
 			</button>
 		{/if}
 	</form>

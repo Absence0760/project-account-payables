@@ -2,6 +2,7 @@
 	import { auth, type MFAChallenge } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Method = 'totp' | 'passkey' | 'email';
 
@@ -38,7 +39,7 @@
 			sessionStorage.removeItem('mfa_challenge');
 			goto(challenge.must_enroll ? '/profile' : '/');
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Passkey verification failed';
+			error = err instanceof Error ? err.message : m('auth.mfa.error.passkey');
 		} finally {
 			loading = false;
 		}
@@ -51,7 +52,7 @@
 			await auth.requestEmailMfa(challenge.mfa_challenge_token);
 			emailSent = true;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to send email code';
+			error = err instanceof Error ? err.message : m('auth.mfa.error.emailSend');
 		}
 	}
 
@@ -74,7 +75,7 @@
 				goto('/');
 			}
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Verification failed';
+			error = err instanceof Error ? err.message : m('auth.mfa.error.verify');
 		} finally {
 			loading = false;
 		}
@@ -90,14 +91,14 @@
 
 <div class="login-page">
 	<form class="login-card" onsubmit={handleSubmit}>
-		<h1>Two-factor verification</h1>
+		<h1>{m('auth.mfa.heading')}</h1>
 		<p class="subtitle">
 			{#if method === 'passkey'}
-				Use your passkey (Touch ID, Windows Hello, or a security key).
+				{m('auth.mfa.subtitle.passkey')}
 			{:else if method === 'totp'}
-				Enter the 6-digit code from your authenticator app.
+				{m('auth.mfa.subtitle.totp')}
 			{:else}
-				We'll email a one-time code to your account address.
+				{m('auth.mfa.subtitle.email')}
 			{/if}
 		</p>
 
@@ -109,26 +110,25 @@
 
 		{#if challenge && challenge.must_enroll && method === 'email'}
 			<div class="info">
-				Your organization requires MFA. After verifying with email, you'll be
-				asked to set up an authenticator app.
+				{m('auth.mfa.enrollNotice')}
 			</div>
 		{/if}
 
 		{#if method === 'passkey'}
 			<button type="button" onclick={verifyPasskey} disabled={loading}>
-				{loading ? 'Waiting for passkey…' : 'Verify with passkey'}
+				{loading ? m('auth.mfa.waitingForPasskey') : m('auth.mfa.verifyWithPasskey')}
 			</button>
 		{/if}
 
 		{#if method === 'email' && !emailSent}
 			<button type="button" class="secondary" onclick={sendEmailCode}>
-				Email me a code
+				{m('auth.mfa.emailMeCode')}
 			</button>
 		{/if}
 
 		{#if method !== 'passkey' && (method === 'totp' || emailSent)}
 			<label>
-				<span>Verification code</span>
+				<span>{m('auth.mfa.codeLabel')}</span>
 				<input
 					type="text"
 					inputmode="numeric"
@@ -140,25 +140,25 @@
 				/>
 			</label>
 			<button type="submit" disabled={loading || code.length < 6}>
-				{loading ? 'Verifying...' : 'Verify'}
+				{loading ? m('auth.mfa.verifying') : m('auth.mfa.verify')}
 			</button>
 		{/if}
 
 		{#if challenge && challenge.methods.length > 1}
-			<div class="divider"><span>or</span></div>
+			<div class="divider"><span>{m('auth.mfa.or')}</span></div>
 			{#if method !== 'passkey' && challenge.methods.includes('passkey')}
 				<button type="button" class="secondary" onclick={() => switchMethod('passkey')}>
-					Use a passkey
+					{m('auth.mfa.usePasskey')}
 				</button>
 			{/if}
 			{#if method !== 'totp' && challenge.methods.includes('totp')}
 				<button type="button" class="secondary" onclick={() => switchMethod('totp')}>
-					Use authenticator app
+					{m('auth.mfa.useTotp')}
 				</button>
 			{/if}
 			{#if method !== 'email' && challenge.methods.includes('email')}
 				<button type="button" class="secondary" onclick={() => switchMethod('email')}>
-					Use email instead
+					{m('auth.mfa.useEmail')}
 				</button>
 			{/if}
 		{/if}
