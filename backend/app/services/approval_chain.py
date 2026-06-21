@@ -262,6 +262,24 @@ def advance_approval_chain(
     current_level = levels[current_idx]
     now_iso = datetime.now(UTC).isoformat()
 
+    # Segregation across levels. A multi-level chain exists precisely to require
+    # DISTINCT sign-offs at each tier (e.g. manager -> director -> CFO). Without
+    # this guard, one approver who satisfied an earlier level could keep
+    # approving and single-handedly clear every remaining level — collapsing the
+    # whole chain to one person and defeating the control. (`check_segregation`
+    # only blocks the uploader; it says nothing about reuse across levels.) An
+    # approver who already acted on a different level is refused here.
+    actor_str = str(actor_id)
+    for idx, lvl in enumerate(levels):
+        if idx == current_idx:
+            continue
+        if any(a.get("user_id") == actor_str for a in lvl.get("approvals", [])):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You already approved an earlier level of this chain; "
+                "a different approver is required.",
+            )
+
     # Record this approval
     current_level["approvals"].append(
         {

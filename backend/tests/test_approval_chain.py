@@ -405,6 +405,40 @@ def test_multiple_approvals_required():
     assert second_result is True
 
 
+def test_same_actor_cannot_satisfy_two_levels():
+    """A multi-level chain requires distinct approvers per level. The actor who
+    cleared level 0 must NOT be able to advance level 1 alone — that would
+    collapse a 3-eye control to a single person."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.services.approval_chain import advance_approval_chain, init_chain_state
+
+    instance = _make_instance(state_data=None)
+    init_chain_state(
+        instance,
+        [
+            {"name": "L1", "required_approvals": 1, "approver_ids": []},
+            {"name": "L2", "required_approvals": 1, "approver_ids": []},
+        ],
+    )
+
+    actor = uuid.uuid4()
+    # Actor clears level 0 (advances, not complete).
+    assert advance_approval_chain(instance, actor) is False
+    assert instance.state_data["approval_levels"]["current_level"] == 1
+
+    # The SAME actor trying to clear level 1 is refused with 403, and the chain
+    # stays on level 1 (no silent self-advance).
+    with pytest.raises(HTTPException) as exc:
+        advance_approval_chain(instance, actor)
+    assert exc.value.status_code == 403
+    assert instance.state_data["approval_levels"]["current_level"] == 1
+
+    # A different approver clears level 1 → chain completes.
+    assert advance_approval_chain(instance, uuid.uuid4()) is True
+
+
 def test_empty_chain_state_returns_true():
     """An instance with no approval_levels in state_data is treated as complete."""
     from app.services.approval_chain import advance_approval_chain
