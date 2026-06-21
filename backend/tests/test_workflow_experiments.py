@@ -149,6 +149,68 @@ def test_metrics_tie():
 
 
 # ---------------------------------------------------------------------------
+# Variant-config shape validation (pure schema — no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_experiment_create_accepts_full_steps_config():
+    from app.schemas.workflow_experiments import ExperimentCreate
+
+    exp = ExperimentCreate(
+        name="x",
+        workflow_definition_id=uuid.uuid4(),
+        config_a={"steps": [{"type": "approval", "config": {"auto_approve_below": 100}}]},
+        config_b={"steps": [{"type": "approval", "config": {"auto_approve_below": 5000}}]},
+    )
+    assert exp.config_a["steps"][0]["type"] == "approval"
+
+
+def test_experiment_create_rejects_config_without_steps():
+    """A variant config without a 'steps' list is frozen onto the invoice
+    snapshot but unreadable by get_step_config → silently disables auto-approve,
+    the approval thresholds, and segregation. Must be rejected at the boundary."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.workflow_experiments import ExperimentCreate
+
+    with pytest.raises(ValidationError):
+        ExperimentCreate(
+            name="x",
+            workflow_definition_id=uuid.uuid4(),
+            config_a={"approval": {"auto_approve_below": 100}},  # no "steps" key
+            config_b={"steps": [{"type": "approval"}]},
+        )
+
+
+def test_experiment_create_rejects_malformed_step_entry():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.workflow_experiments import ExperimentCreate
+
+    with pytest.raises(ValidationError):
+        ExperimentCreate(
+            name="x",
+            workflow_definition_id=uuid.uuid4(),
+            config_a={"steps": [{"name": "no type here"}]},  # step missing "type"
+            config_b={"steps": [{"type": "approval"}]},
+        )
+
+
+def test_experiment_update_validates_config_when_present():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.workflow_experiments import ExperimentUpdate
+
+    # None is allowed (partial update leaves the config untouched).
+    assert ExperimentUpdate(config_a=None).config_a is None
+    with pytest.raises(ValidationError):
+        ExperimentUpdate(config_a={"not_steps": []})
+
+
+# ---------------------------------------------------------------------------
 # Real-DB / API tests (realdb fixture)
 # ---------------------------------------------------------------------------
 
