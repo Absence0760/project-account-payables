@@ -8,6 +8,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_PAYMENT_EXECUTE } from '$lib/types/admin';
 	import { formatMoney } from '$lib/utils/money';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let {
 		runId,
@@ -57,7 +58,7 @@
 		try {
 			run = await api.get<RunDetail>(`/api/payments/runs/${runId}`);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to load payment run';
+			error = err instanceof Error ? err.message : m('paymentRuns.runDetail.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -77,7 +78,7 @@
 			await load();
 			onchange?.();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Execution failed', 'error');
+			toast(err instanceof Error ? err.message : m('paymentRuns.runDetail.executeFailed'), 'error');
 		} finally {
 			executing = false;
 		}
@@ -90,12 +91,12 @@
 		approving = true;
 		try {
 			await api.post(`/api/payments/runs/${runId}/approve`, {});
-			toast('Run approved by CFO', 'success');
+			toast(m('paymentRuns.runDetail.approvedToast'), 'success');
 			await load();
 			onchange?.();
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
-			toast(e?.detail ?? e?.message ?? 'Approve failed', 'error');
+			toast(e?.detail ?? e?.message ?? m('paymentRuns.runDetail.approveFailed'), 'error');
 		} finally {
 			approving = false;
 		}
@@ -113,7 +114,7 @@
 			onchange?.();
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Cancel failed', 'error');
+			toast(err instanceof Error ? err.message : m('paymentRuns.runDetail.cancelFailed'), 'error');
 		} finally {
 			cancelling = false;
 		}
@@ -151,30 +152,30 @@
 	<div use:focusTrap={{ onEscape: onclose }} class="modal" role="dialog" aria-label="Payment run" tabindex="-1">
 		<header>
 			<div class="title-block">
-				<h2>Payment Run</h2>
+				<h2>{m('paymentRuns.runDetail.title')}</h2>
 				{#if run}
 					<span class="run-id">{run.id.slice(0, 8)}</span>
 					<span class="status-badge {run.status}">{run.status}</span>
 				{/if}
 			</div>
-			<button class="close-btn" onclick={onclose} aria-label="Close">&times;</button>
+			<button class="close-btn" onclick={onclose} aria-label={m('paymentRuns.runDetail.close')}>&times;</button>
 		</header>
 
 		<div class="body">
 			{#if loading}
-				<div class="loading">Loading…</div>
+				<div class="loading">{m('common.loading')}</div>
 			{:else if error}
 				<div class="error" role="alert">{error}</div>
 			{:else if run}
 				<dl class="meta">
-					<dt>Total</dt>
+					<dt>{m('paymentRuns.runDetail.total')}</dt>
 					<dd class="total">{fmt(run.total_amount)}</dd>
-					<dt>Payments</dt>
+					<dt>{m('paymentRuns.runDetail.payments')}</dt>
 					<dd>{run.payments.length}</dd>
-					<dt>Created</dt>
+					<dt>{m('paymentRuns.runDetail.created')}</dt>
 					<dd>{fmtDate(run.created_at)}</dd>
 					{#if run.executed_at}
-						<dt>Executed</dt>
+						<dt>{m('paymentRuns.runDetail.executed')}</dt>
 						<dd>{fmtDate(run.executed_at)}</dd>
 					{/if}
 				</dl>
@@ -182,12 +183,12 @@
 				<table>
 					<thead>
 						<tr>
-							<th>Invoice</th>
-							<th>Vendor</th>
-							<th class="right">Amount</th>
-							<th>Method</th>
-							<th>Status</th>
-							<th>Reference</th>
+							<th>{m('paymentRuns.runDetail.colInvoice')}</th>
+							<th>{m('paymentRuns.runDetail.colVendor')}</th>
+							<th class="right">{m('paymentRuns.runDetail.colAmount')}</th>
+							<th>{m('paymentRuns.runDetail.colMethod')}</th>
+							<th>{m('paymentRuns.runDetail.colStatus')}</th>
+							<th>{m('paymentRuns.runDetail.colReference')}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -213,30 +214,27 @@
 
 				{#if pendingCfo}
 					<p class="footer-note pending">
-						<strong>Pending CFO approval.</strong> This run exceeds the org's
-						high-value threshold; a user with the CFO role must sign off before it can
-						execute.
+						<strong>{m('paymentRuns.runDetail.pendingCfoStrong')}</strong> {m('paymentRuns.runDetail.pendingCfoBody')}
 					</p>
 				{:else if cfoApproved}
 					<p class="footer-note approved">
-						✓ CFO-approved {fmtDate(run.cfo_approved_at)} · ready to execute.
+						{m('paymentRuns.runDetail.cfoApprovedNote', { date: fmtDate(run.cfo_approved_at) })}
 					</p>
 				{:else}
 					<p class="footer-note">
-						This run is still a <strong>draft</strong>. No money will move until you
-						execute it.
+						{m('paymentRuns.runDetail.draftNotePre')}<strong>{m('paymentRuns.runDetail.draftWord')}</strong>{m('paymentRuns.runDetail.draftNotePost')}
 					</p>
 				{/if}
 
 				<div class="actions">
-					<button class="btn-cancel" onclick={onclose}>Close</button>
+					<button class="btn-cancel" onclick={onclose}>{m('paymentRuns.runDetail.close')}</button>
 					{#if confirmCancel}
 						<button
 							class="btn-discard armed"
 							disabled={cancelling}
 							onclick={cancelDraft}
 						>
-							{cancelling ? 'Cancelling…' : 'Confirm cancel'}
+							{cancelling ? m('paymentRuns.runDetail.cancelling') : m('paymentRuns.runDetail.confirmCancel')}
 						</button>
 					{:else}
 						<button
@@ -244,7 +242,7 @@
 							disabled={cancelling || executing || approving}
 							onclick={() => (confirmCancel = true)}
 						>
-							Cancel run
+							{m('paymentRuns.runDetail.cancelRun')}
 						</button>
 					{/if}
 					{#if pendingCfo && auth.isCfo}
@@ -253,23 +251,23 @@
 							disabled={approving}
 							onclick={approveCfo}
 						>
-							{approving ? 'Approving…' : 'Approve as CFO'}
+							{approving ? m('paymentRuns.runDetail.approving') : m('paymentRuns.runDetail.approveAsCfo')}
 						</button>
 					{/if}
 					{#if auth.can(PERM_PAYMENT_EXECUTE)}
 						<button
 							class="btn-execute"
 							disabled={executing || cancelling || pendingCfo}
-							title={pendingCfo ? 'Awaiting CFO approval' : ''}
+							title={pendingCfo ? m('paymentRuns.runDetail.awaitingCfo') : ''}
 							onclick={execute}
 						>
-							{executing ? 'Executing…' : `Execute · ${fmt(run.total_amount)}`}
+							{executing ? m('paymentRuns.runDetail.executing') : m('paymentRuns.runDetail.executeAmount', { amount: fmt(run.total_amount) })}
 						</button>
 					{/if}
 				</div>
 			{:else}
 				<div class="actions">
-					<button class="btn-cancel" onclick={onclose}>Close</button>
+					<button class="btn-cancel" onclick={onclose}>{m('paymentRuns.runDetail.close')}</button>
 				</div>
 			{/if}
 		</footer>

@@ -28,6 +28,7 @@
 		type ScreeningStatus,
 		type EnrichmentFieldSuggestion
 	} from '$lib/types/vendor';
+	import { m } from '$lib/i18n/store.svelte';
 
 	const SCREENING_RESULTS: ScreeningStatus[] = ['unscreened', 'clear', 'review', 'match'];
 
@@ -70,7 +71,7 @@
 				history = rows;
 			})
 			.catch(() => {
-				toast('Failed to load screening history', 'error');
+				toast(m('vendors.modal.historyLoadFailed'), 'error');
 			})
 			.finally(() => {
 				loadingHistory = false;
@@ -99,9 +100,9 @@
 			const updated = await screenVendor(vendor.id);
 			onupdated(updated);
 			history = await getScreeningHistory(vendor.id);
-			toast('Vendor re-screened', 'success');
+			toast(m('vendors.modal.rescreenedToast'), 'success');
 		} catch (err) {
-			toast(errMsg(err, 'Screening failed'), 'error');
+			toast(errMsg(err, m('vendors.modal.screeningFailed')), 'error');
 		} finally {
 			busy = '';
 		}
@@ -112,9 +113,9 @@
 		try {
 			const risk = await recomputeVendorRisk(vendor.id);
 			onupdated({ ...vendor, risk_score: risk.risk_score, risk_level: risk.risk_level });
-			toast('Risk recomputed', 'success');
+			toast(m('vendors.modal.riskRecomputedToast'), 'success');
 		} catch (err) {
-			toast(errMsg(err, 'Recompute failed'), 'error');
+			toast(errMsg(err, m('vendors.modal.recomputeFailed')), 'error');
 		} finally {
 			busy = '';
 		}
@@ -127,9 +128,9 @@
 				? await unblockVendor(vendor.id)
 				: await blockVendor(vendor.id, 'Blocked from vendor screening review');
 			onupdated(updated);
-			toast(updated.payments_blocked ? 'Payments blocked' : 'Payments unblocked', 'success');
+			toast(updated.payments_blocked ? m('vendors.modal.paymentsBlockedToast') : m('vendors.modal.paymentsUnblockedToast'), 'success');
 		} catch (err) {
-			toast(errMsg(err, 'Update failed'), 'error');
+			toast(errMsg(err, m('vendors.modal.updateFailed')), 'error');
 		} finally {
 			busy = '';
 		}
@@ -159,12 +160,12 @@
 			selected = new Set(res.suggestions.map((s) => s.field));
 			enriched = true;
 			if (!res.firmographics.matched) {
-				toast('No external match found for this vendor', 'info');
+				toast(m('vendors.modal.enrichNoMatch'), 'info');
 			} else if (res.suggestions.length === 0) {
-				toast('Vendor already matches the external source', 'info');
+				toast(m('vendors.modal.enrichAlreadyMatches'), 'info');
 			}
 		} catch (err) {
-			toast(errMsg(err, 'Enrichment failed'), 'error');
+			toast(errMsg(err, m('vendors.modal.enrichmentFailed')), 'error');
 		} finally {
 			busy = '';
 		}
@@ -189,8 +190,8 @@
 			const count = Object.keys(res.applied).length;
 			toast(
 				count > 0
-					? `Applied ${count} field${count === 1 ? '' : 's'} to the vendor`
-					: 'No changes to apply (already up to date)',
+					? m('vendors.modal.appliedFields', { count })
+					: m('vendors.modal.noChangesToApply'),
 				'success'
 			);
 			// Clear the diff — the applied values are now the vendor's current
@@ -199,7 +200,7 @@
 			selected = new Set();
 			enriched = false;
 		} catch (err) {
-			toast(errMsg(err, 'Apply failed'), 'error');
+			toast(errMsg(err, m('vendors.modal.applyFailed')), 'error');
 		} finally {
 			busy = '';
 		}
@@ -210,21 +211,21 @@
 	<h2>{vendor.name}</h2>
 
 	<section class="panel">
-		<h3>Screening &amp; Risk</h3>
+		<h3>{m('vendors.modal.screeningRiskHeading')}</h3>
 
 		<div class="kv-grid">
 			<div class="kv">
-				<span class="kv-label">Screening status</span>
+				<span class="kv-label">{m('vendors.modal.screeningStatus')}</span>
 				<span class="kv-value">
 					<ScreeningBadge screening={vendor.screening_status} blocked={vendor.payments_blocked} />
 				</span>
 			</div>
 			<div class="kv">
-				<span class="kv-label">Last screened</span>
+				<span class="kv-label">{m('vendors.modal.lastScreened')}</span>
 				<span class="kv-value">{fmt(vendor.last_screened_at)}</span>
 			</div>
 			<div class="kv">
-				<span class="kv-label">Risk level</span>
+				<span class="kv-label">{m('vendors.modal.riskLevel')}</span>
 				<span class="kv-value">
 					{RISK_LEVEL_LABELS[vendor.risk_level]}{#if vendor.risk_score}
 						<span class="muted"> · {vendor.risk_score}</span>
@@ -232,15 +233,15 @@
 				</span>
 			</div>
 			<div class="kv">
-				<span class="kv-label">Payments</span>
+				<span class="kv-label">{m('vendors.modal.payments')}</span>
 				<span class="kv-value">
 					{#if vendor.payments_blocked}
-						<span class="blocked-text">Blocked</span>
+						<span class="blocked-text">{m('vendors.modal.blocked')}</span>
 						{#if vendor.payments_blocked_reason}
 							<span class="muted"> — {vendor.payments_blocked_reason}</span>
 						{/if}
 					{:else}
-						Allowed
+						{m('vendors.modal.allowed')}
 					{/if}
 				</span>
 			</div>
@@ -249,10 +250,10 @@
 		<div class="actions-row">
 			{#if canMutate}
 				<RowAction onclick={reScreen} disabled={busy !== ''}>
-					{busy === 'screen' ? 'Screening…' : 'Re-screen now'}
+					{busy === 'screen' ? m('vendors.modal.screening') : m('vendors.modal.rescreenNow')}
 				</RowAction>
 				<RowAction onclick={recompute} disabled={busy !== ''}>
-					{busy === 'risk' ? 'Recomputing…' : 'Recompute risk'}
+					{busy === 'risk' ? m('vendors.modal.recomputing') : m('vendors.modal.recomputeRisk')}
 				</RowAction>
 			{/if}
 			{#if canBlock}
@@ -262,44 +263,42 @@
 					disabled={busy !== ''}
 				>
 					{#if busy === 'block'}
-						Working…
+						{m('vendors.modal.working')}
 					{:else}
-						{vendor.payments_blocked ? 'Unblock payments' : 'Block payments'}
+						{vendor.payments_blocked ? m('vendors.modal.unblockPayments') : m('vendors.modal.blockPayments')}
 					{/if}
 				</RowAction>
 			{/if}
 			{#if !canMutate && !canBlock}
-				<span class="muted">Re-screen, recompute, and block actions need the right permission.</span>
+				<span class="muted">{m('vendors.modal.noPermission')}</span>
 			{/if}
 		</div>
 	</section>
 
 	{#if canEnrich}
 		<section class="panel">
-			<h3>External enrichment</h3>
+			<h3>{m('vendors.modal.externalEnrichment')}</h3>
 			<p class="hint muted">
-				Look up this vendor's firmographics from an external source (D&amp;B / Clearbit). Nothing
-				is changed automatically — review the suggestions below and choose which to apply. Tax ID
-				is never applied here; it goes through the bank/tax change-request gate.
+				{m('vendors.modal.enrichmentHint')}
 			</p>
 
 			<div class="actions-row">
 				<RowAction onclick={runEnrich} disabled={busy !== ''}>
-					{busy === 'enrich' ? 'Looking up…' : 'Enrich from external source'}
+					{busy === 'enrich' ? m('vendors.modal.lookingUp') : m('vendors.modal.enrichFromSource')}
 				</RowAction>
 			</div>
 
 			{#if enriched}
 				{#if enrichSuggestions.length === 0}
-					<p class="muted enrich-empty">No suggested changes — the vendor already matches.</p>
+					<p class="muted enrich-empty">{m('vendors.modal.noSuggestedChanges')}</p>
 				{:else}
 					<table class="enrich-diff">
 						<thead>
 							<tr>
-								<th class="enrich-pick"><span class="visually-hidden">Apply</span></th>
-								<th>Field</th>
-								<th>Current</th>
-								<th>Suggested</th>
+								<th class="enrich-pick"><span class="visually-hidden">{m('vendors.modal.apply')}</span></th>
+								<th>{m('vendors.modal.colField')}</th>
+								<th>{m('vendors.modal.colCurrent')}</th>
+								<th>{m('vendors.modal.colSuggested')}</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -310,7 +309,7 @@
 											type="checkbox"
 											checked={selected.has(s.field)}
 											onchange={() => toggleField(s.field)}
-											aria-label={`Apply ${ENRICHABLE_FIELD_LABELS[s.field]}`}
+											aria-label={m('vendors.modal.applyFieldAria', { field: ENRICHABLE_FIELD_LABELS[s.field] })}
 										/>
 									</td>
 									<td>{ENRICHABLE_FIELD_LABELS[s.field]}</td>
@@ -327,7 +326,7 @@
 
 					<div class="actions-row">
 						<RowAction onclick={applySelected} disabled={busy !== '' || selected.size === 0}>
-							{busy === 'apply' ? 'Applying…' : `Apply selected (${selected.size})`}
+							{busy === 'apply' ? m('vendors.modal.applying') : m('vendors.modal.applySelected', { count: selected.size })}
 						</RowAction>
 					</div>
 				{/if}
@@ -336,11 +335,11 @@
 	{/if}
 
 	<section class="panel">
-		<h3>Screening history</h3>
+		<h3>{m('vendors.modal.screeningHistory')}</h3>
 		{#if loadingHistory}
-			<p class="muted">Loading…</p>
+			<p class="muted">{m('common.loading')}</p>
 		{:else if history.length === 0}
-			<p class="muted">No screening checks yet.</p>
+			<p class="muted">{m('vendors.modal.noChecks')}</p>
 		{:else}
 			<ul class="timeline">
 				{#each history as check (check.id)}
@@ -355,10 +354,10 @@
 							{/if}
 							<span class="muted">{check.provider} · {check.check_type}</span>
 							{#if check.matched_list}
-								<span class="matched-list">matched: {check.matched_list}</span>
+								<span class="matched-list">{m('vendors.modal.matchedLabel', { list: check.matched_list })}</span>
 							{/if}
 							{#if check.risk_score}
-								<span class="muted">score {check.risk_score}</span>
+								<span class="muted">{m('vendors.modal.scoreLabel', { score: check.risk_score })}</span>
 							{/if}
 						</span>
 					</li>
@@ -368,7 +367,7 @@
 	</section>
 
 	<div class="modal-footer">
-		<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+		<button type="button" class="btn-cancel" onclick={onclose}>{m('vendors.modal.close')}</button>
 	</div>
 </Modal>
 

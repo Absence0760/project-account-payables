@@ -10,6 +10,7 @@
 		ROUTING_OPERATOR_LABELS,
 	} from '$lib/types/workflow';
 	import type { AdminUser } from '$lib/types/admin';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Props = {
 		chain: ApprovalLevelConfig[];
@@ -23,7 +24,7 @@
 
 	function newLevel(): ApprovalLevelConfig {
 		return {
-			name: `Level ${chain.length + 1}`,
+			name: m('approvalMatrix.defaultLevelName', { n: chain.length + 1 }),
 			min_amount: null,
 			max_amount: null,
 			approver_ids: [],
@@ -127,8 +128,8 @@
 				<input
 					class="level-name"
 					type="text"
-					placeholder="Level name"
-					aria-label={`Approval level ${levelIdx + 1} name`}
+					placeholder={m('approvalMatrix.levelNamePlaceholder')}
+					aria-label={m('approvalMatrix.levelNameAria', { n: levelIdx + 1 })}
 					value={level.name}
 					oninput={(e) => patchLevel(levelIdx, { name: e.currentTarget.value })}
 				/>
@@ -136,24 +137,24 @@
 					<button
 						type="button"
 						class="icon-btn"
-						title="Move up"
-						aria-label="Move level up"
+						title={m('approvalMatrix.moveUp')}
+						aria-label={m('approvalMatrix.moveUp')}
 						disabled={levelIdx === 0}
 						onclick={() => moveLevel(levelIdx, -1)}
 					>↑</button>
 					<button
 						type="button"
 						class="icon-btn"
-						title="Move down"
-						aria-label="Move level down"
+						title={m('approvalMatrix.moveDown')}
+						aria-label={m('approvalMatrix.moveDown')}
 						disabled={levelIdx === chain.length - 1}
 						onclick={() => moveLevel(levelIdx, 1)}
 					>↓</button>
 					<button
 						type="button"
 						class="icon-btn danger"
-						title="Remove level"
-						aria-label="Remove level"
+						title={m('approvalMatrix.removeLevel')}
+						aria-label={m('approvalMatrix.removeLevel')}
 						onclick={() => removeLevel(levelIdx)}
 					>×</button>
 				</div>
@@ -161,12 +162,12 @@
 
 			<div class="row">
 				<label class="field">
-					<span>Min amount ($)</span>
+					<span>{m('approvalMatrix.minAmount')}</span>
 					<input
 						type="number"
 						step="0.01"
 						min="0"
-						placeholder="No min"
+						placeholder={m('approvalMatrix.noMin')}
 						value={level.min_amount ?? ''}
 						oninput={(e) =>
 							patchLevel(levelIdx, {
@@ -177,12 +178,12 @@
 					/>
 				</label>
 				<label class="field">
-					<span>Max amount ($)</span>
+					<span>{m('approvalMatrix.maxAmount')}</span>
 					<input
 						type="number"
 						step="0.01"
 						min="0"
-						placeholder="No max"
+						placeholder={m('approvalMatrix.noMax')}
 						value={level.max_amount ?? ''}
 						oninput={(e) =>
 							patchLevel(levelIdx, {
@@ -195,7 +196,7 @@
 			</div>
 
 			<div class="field">
-				<span class="field-label">Approvers</span>
+				<span class="field-label">{m('approvalMatrix.approvers')}</span>
 				<div class="user-chips">
 					{#each users.filter((u) => u.is_active) as u}
 						<button
@@ -212,7 +213,7 @@
 
 			<div class="row">
 				<label class="field">
-					<span>Parallel mode</span>
+					<span>{m('approvalMatrix.parallelMode')}</span>
 					<select
 						value={level.parallel_mode}
 						onchange={(e) =>
@@ -220,13 +221,13 @@
 								parallel_mode: e.currentTarget.value as 'any' | 'all',
 							})}
 					>
-						<option value="any">Any (count below)</option>
-						<option value="all">All listed approvers</option>
+						<option value="any">{m('approvalMatrix.parallelAny')}</option>
+						<option value="all">{m('approvalMatrix.parallelAll')}</option>
 					</select>
 				</label>
 				{#if level.parallel_mode === 'any'}
 					<label class="field">
-						<span>Required approvals</span>
+						<span>{m('approvalMatrix.requiredApprovals')}</span>
 						<input
 							type="number"
 							min="1"
@@ -242,19 +243,19 @@
 
 			<div class="field">
 				<div class="field-label-row">
-					<span class="field-label">Routing rules</span>
+					<span class="field-label">{m('approvalMatrix.routingRules')}</span>
 					<button type="button" class="link-btn" onclick={() => addRule(levelIdx)}>
-						+ Add rule
+						{m('approvalMatrix.addRule')}
 					</button>
 				</div>
 				{#if level.routing_rules.length === 0}
-					<p class="hint">No routing rules — level applies to every invoice in the amount range.</p>
+					<p class="hint">{m('approvalMatrix.noRules')}</p>
 				{/if}
 				{#each level.routing_rules as rule, ruleIdx}
 					<div class="rule-row">
 						<select
 							value={rule.field}
-							aria-label="Routing rule field"
+							aria-label={m('approvalMatrix.ruleFieldAria')}
 							onchange={(e) =>
 								patchRule(levelIdx, ruleIdx, { field: e.currentTarget.value as RoutingField })}
 						>
@@ -264,7 +265,7 @@
 						</select>
 						<select
 							value={rule.operator}
-							aria-label="Routing rule operator"
+							aria-label={m('approvalMatrix.ruleOperatorAria')}
 							onchange={(e) =>
 								operatorChanged(levelIdx, ruleIdx, e.currentTarget.value as RoutingOperator)}
 						>
@@ -274,8 +275,8 @@
 						</select>
 						<input
 							type="text"
-							placeholder={SET_OPERATORS.includes(rule.operator) ? 'comma, separated' : 'value'}
-							aria-label="Routing rule value"
+							placeholder={SET_OPERATORS.includes(rule.operator) ? m('approvalMatrix.ruleValueSetPlaceholder') : m('approvalMatrix.ruleValuePlaceholder')}
+							aria-label={m('approvalMatrix.ruleValueAria')}
 							value={ruleValueForInput(rule)}
 							oninput={(e) =>
 								patchRule(levelIdx, ruleIdx, {
@@ -285,8 +286,8 @@
 						<button
 							type="button"
 							class="icon-btn danger"
-							title="Remove rule"
-							aria-label="Remove rule"
+							title={m('approvalMatrix.removeRule')}
+							aria-label={m('approvalMatrix.removeRule')}
 							onclick={() => removeRule(levelIdx, ruleIdx)}
 						>×</button>
 					</div>
@@ -295,11 +296,11 @@
 
 			<div class="row">
 				<label class="field">
-					<span>Escalate after (hours)</span>
+					<span>{m('approvalMatrix.escalateAfter')}</span>
 					<input
 						type="number"
 						min="1"
-						placeholder="Disabled"
+						placeholder={m('approvalMatrix.disabled')}
 						value={level.escalation_hours ?? ''}
 						oninput={(e) =>
 							patchLevel(levelIdx, {
@@ -313,7 +314,7 @@
 
 			{#if level.escalation_hours}
 				<div class="field">
-					<span class="field-label">Escalate to</span>
+					<span class="field-label">{m('approvalMatrix.escalateTo')}</span>
 					<div class="user-chips">
 						{#each users.filter((u) => u.is_active) as u}
 							<button
@@ -327,8 +328,7 @@
 						{/each}
 					</div>
 					<p class="hint">
-						If this level still hasn't satisfied after {level.escalation_hours} hour(s), the selected users are
-						added to the approver list so they can unblock the chain.
+						{m('approvalMatrix.escalateHint', { hours: level.escalation_hours })}
 					</p>
 				</div>
 			{/if}
@@ -336,7 +336,7 @@
 	{/each}
 
 	<button type="button" class="add-level-btn" onclick={addLevel}>
-		+ Add approval level
+		{m('approvalMatrix.addLevel')}
 	</button>
 </div>
 

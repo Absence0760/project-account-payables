@@ -7,6 +7,8 @@
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
+	import type { MessageKey } from '$lib/i18n/messages';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
 
 	import type { AuditEntry, AuditFieldChange } from '$lib/types/audit';
@@ -31,36 +33,47 @@
 		return Object.entries(changes as Record<string, AuditFieldChange>);
 	}
 
-	const FIELD_LABELS: Record<string, string> = {
-		vendor_name: 'Vendor',
-		amount: 'Amount',
-		invoice_number: 'Invoice #',
-		invoice_date: 'Invoice date',
-		due_date: 'Due date',
-		gl_account: 'GL account'
+	// Field + action labels are looked up reactively (via m()) so they switch
+	// with the active locale. The maps below carry the i18n key per code value;
+	// an unknown value falls back to the raw value (mirrors the prior ?? raw).
+	const FIELD_LABEL_KEYS: Record<string, MessageKey> = {
+		vendor_name: 'invoices.modal.field.vendorName',
+		amount: 'invoices.modal.field.amountLabel',
+		invoice_number: 'invoices.modal.field.invoiceNumberLabel',
+		invoice_date: 'invoices.modal.field.invoiceDate',
+		due_date: 'invoices.modal.field.dueDateLabel',
+		gl_account: 'invoices.modal.field.glAccountLabel'
 	};
+	function fieldLabel(field: string): string {
+		const key = FIELD_LABEL_KEYS[field];
+		return key ? m(key) : field;
+	}
 
-	const ACTION_LABELS: Record<string, string> = {
-		'invoice.uploaded': 'Uploaded invoice',
-		'invoice.submitted_for_review': 'Submitted for review',
-		'invoice.approved': 'Approved',
-		'invoice.rejected': 'Rejected',
-		'invoice.resubmitted': 'Resubmitted for review',
-		'invoice.assigned_for_review': 'Assigned for review',
-		'invoice.erp_submitted': 'Sent to ERP',
-		'invoice.extraction_dispatched': 'Extraction started',
-		'invoice.extraction_reset': 'Extraction reset',
-		'invoice.extraction_triggered': 'Extraction triggered manually',
-		'invoice.extraction_completed': 'Extraction completed',
-		'invoice.extraction_failed': 'Extraction failed',
-		'invoice.completed': 'Marked complete',
-		'invoice.edited': 'Edited fields',
-		'audit.viewed': 'Audit trail viewed',
-		'audit.exported': 'Audit trail exported',
-		'chat_message_posted': 'Posted a chat message',
-		'chat_thread_resolved': 'Resolved chat thread',
-		'chat_thread_reopened': 'Reopened chat thread',
+	const ACTION_LABEL_KEYS: Record<string, MessageKey> = {
+		'invoice.uploaded': 'invoices.modal.action.uploaded',
+		'invoice.submitted_for_review': 'invoices.modal.action.submittedForReview',
+		'invoice.approved': 'invoices.modal.action.approved',
+		'invoice.rejected': 'invoices.modal.action.rejected',
+		'invoice.resubmitted': 'invoices.modal.action.resubmitted',
+		'invoice.assigned_for_review': 'invoices.modal.action.assignedForReview',
+		'invoice.erp_submitted': 'invoices.modal.action.erpSubmitted',
+		'invoice.extraction_dispatched': 'invoices.modal.action.extractionStarted',
+		'invoice.extraction_reset': 'invoices.modal.action.extractionReset',
+		'invoice.extraction_triggered': 'invoices.modal.action.extractionTriggered',
+		'invoice.extraction_completed': 'invoices.modal.action.extractionCompleted',
+		'invoice.extraction_failed': 'invoices.modal.action.extractionFailed',
+		'invoice.completed': 'invoices.modal.action.markedComplete',
+		'invoice.edited': 'invoices.modal.action.editedFields',
+		'audit.viewed': 'invoices.modal.action.auditViewed',
+		'audit.exported': 'invoices.modal.action.auditExported',
+		'chat_message_posted': 'invoices.modal.action.chatPosted',
+		'chat_thread_resolved': 'invoices.modal.action.chatResolved',
+		'chat_thread_reopened': 'invoices.modal.action.chatReopened',
 	};
+	function actionLabel(action: string): string {
+		const key = ACTION_LABEL_KEYS[action];
+		return key ? m(key) : action;
+	}
 
 	let {
 		invoice,
@@ -182,9 +195,9 @@
 			status = 'failed' as typeof status;
 			extracting = false;
 			extractionStatus = '';
-			toast('Extraction reset — you can re-extract or edit manually', 'success');
+			toast(m('invoices.modal.toast.extractionReset'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Reset failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.resetFailed'), 'error');
 		} finally {
 			resettingExtraction = false;
 		}
@@ -213,16 +226,16 @@
 	);
 
 	let submitLabel = $derived.by(() => {
-		if (status === 'new' && activeSteps.approval) return 'Submit for Review';
-		if (status === 'approved' && activeSteps.erp_export) return 'Send to ERP';
-		return 'Mark Complete';
+		if (status === 'new' && activeSteps.approval) return m('invoices.modal.submit.forReview');
+		if (status === 'approved' && activeSteps.erp_export) return m('invoices.modal.submit.toErp');
+		return m('invoices.modal.submit.markComplete');
 	});
 
 	let missingFields = $derived.by(() => {
 		const missing: string[] = [];
-		if (!vendor.trim()) missing.push('Vendor');
-		if (!invoice_number.trim()) missing.push('Invoice #');
-		if (!amount || amount <= 0) missing.push('Amount');
+		if (!vendor.trim()) missing.push(m('invoices.modal.field.vendor'));
+		if (!invoice_number.trim()) missing.push(m('invoices.modal.field.invoiceNumber'));
+		if (!amount || amount <= 0) missing.push(m('invoices.modal.field.amount'));
 		return missing;
 	});
 
@@ -250,10 +263,10 @@
 				department: department || null,
 				project: project || null,
 			});
-			toast('Invoice saved', 'success');
+			toast(m('invoices.modal.toast.saved'), 'success');
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
 		} finally {
 			saving = false;
 		}
@@ -287,10 +300,10 @@
 				await api.post(`/api/invoices/${invoice.id}/assign`, { user_id: selectedApproverId });
 			}
 			await invoiceStore.fetch();
-			toast('Invoice submitted', 'success');
+			toast(m('invoices.modal.toast.submitted'), 'success');
 			onclose();
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : 'Submit failed';
+			const msg = err instanceof Error ? err.message : m('invoices.modal.toast.submitFailed');
 			// Don't toast field validation errors — the form highlights them already
 			if (!msg.toLowerCase().includes('missing') && !msg.toLowerCase().includes('required field')) {
 				toast(msg, 'error');
@@ -304,14 +317,14 @@
 		reviewing = true;
 		try {
 			await api.post(`/api/invoices/${invoice.id}/approve`, {});
-			toast('Invoice approved', 'success');
+			toast(m('invoices.modal.toast.approved'), 'success');
 			// The host (/invoices) refetches the list with ITS active filters
 			// in closeInvoiceModal. Firing an unfiltered invoiceStore.fetch()
 			// here races that filtered refetch and can leave the just-approved
 			// row visible under an active status chip — so let the host own it.
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.approveFailed'), 'error');
 		} finally {
 			reviewing = false;
 		}
@@ -322,11 +335,11 @@
 		reviewing = true;
 		try {
 			await api.post(`/api/invoices/${invoice.id}/reject`, { reason: rejectReason.trim() });
-			toast('Invoice rejected', 'success');
+			toast(m('invoices.modal.toast.rejected'), 'success');
 			// Host refetches with its active filters on close (see approve).
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.rejectFailed'), 'error');
 		} finally {
 			reviewing = false;
 		}
@@ -337,10 +350,10 @@
 		try {
 			await api.post(`/api/invoices/${invoice.id}/retry-erp`, {});
 			await invoiceStore.fetch();
-			toast('ERP retry initiated', 'success');
+			toast(m('invoices.modal.toast.erpRetryInitiated'), 'success');
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Retry failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.retryFailed'), 'error');
 		} finally {
 			retryingErp = false;
 		}
@@ -350,13 +363,13 @@
 
 	async function handleExtract() {
 		extracting = true;
-		extractionStatus = 'Triggering extraction...';
+		extractionStatus = m('invoices.modal.extraction.triggering');
 		try {
 			await api.post(`/api/invoices/${invoice.id}/extract`, {});
-			extractionStatus = 'Extracting fields...';
+			extractionStatus = m('invoices.modal.extraction.extractingFields');
 			await pollForCompletion();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Extraction failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.extractionFailed'), 'error');
 			extracting = false;
 			extractionStatus = '';
 		}
@@ -399,9 +412,9 @@
 					await loadAuditLog();
 
 					if (updated.status === 'ready_for_review') {
-						toast('Extraction complete — fields populated', 'success');
+						toast(m('invoices.modal.toast.extractionComplete'), 'success');
 					} else if (updated.status === 'failed') {
-						toast('Extraction failed — check the activity log', 'error');
+						toast(m('invoices.modal.toast.extractionFailedLog'), 'error');
 					}
 
 					extracting = false;
@@ -409,7 +422,7 @@
 					return;
 				}
 
-				extractionStatus = `Extracting fields... (${i + 1}s)`;
+				extractionStatus = m('invoices.modal.extraction.extractingProgress', { n: i + 1 });
 			} catch {
 				// Poll failed — keep trying
 			}
@@ -418,7 +431,7 @@
 		// Timeout
 		extracting = false;
 		extractionStatus = '';
-		toast('Extraction is taking longer than expected. Refresh the page to check.', 'warning');
+		toast(m('invoices.modal.toast.extractionTimeout'), 'warning');
 		await invoiceStore.fetch();
 	}
 
@@ -427,10 +440,10 @@
 		try {
 			await api.delete(`/api/invoices/${invoice.id}`);
 			await invoiceStore.fetch();
-			toast('Invoice deleted', 'success');
+			toast(m('invoices.modal.toast.deleted'), 'success');
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.deleteFailed'), 'error');
 		} finally {
 			deleting = false;
 			confirmDelete = false;
@@ -462,7 +475,7 @@
 				triggerDownload(blob, `invoice-${invoice.invoice_number || invoice.id}.${ext}`);
 			}
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Export failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.exportFailed'), 'error');
 		}
 	}
 
@@ -524,9 +537,9 @@
 			contractId = pickContractId;
 			pickContractId = '';
 			await invoiceStore.fetch();
-			toast('Contract linked', 'success');
+			toast(m('invoices.modal.toast.contractLinked'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Link failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.linkFailed'), 'error');
 		} finally {
 			linkingContract = false;
 		}
@@ -538,9 +551,9 @@
 			await api.post(`/api/invoices/${invoice.id}/unlink-contract`, {});
 			contractId = null;
 			await invoiceStore.fetch();
-			toast('Contract unlinked', 'success');
+			toast(m('invoices.modal.toast.contractUnlinked'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Unlink failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.unlinkFailed'), 'error');
 		} finally {
 			linkingContract = false;
 		}
@@ -585,10 +598,10 @@
 				gl_account: li.gl_account,
 			})));
 			lineItemsDirty = false;
-			toast('Line items saved', 'success');
+			toast(m('invoices.modal.toast.lineItemsSaved'), 'success');
 			await loadLineItems();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Save failed', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
 		} finally {
 			savingLines = false;
 		}
@@ -764,7 +777,7 @@
 				{}
 			);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Could not regenerate summary', 'error');
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.summaryFailed'), 'error');
 		} finally {
 			summaryRegenerating = false;
 		}
@@ -844,11 +857,11 @@
 	}
 
 	function confidenceLabel(score: number): string {
-		if (score >= 0.95) return 'Very high';
-		if (score >= 0.85) return 'High';
-		if (score >= 0.7) return 'Medium';
-		if (score >= 0.5) return 'Low';
-		return 'Very low';
+		if (score >= 0.95) return m('invoices.modal.confidence.veryHigh');
+		if (score >= 0.85) return m('invoices.modal.confidence.high');
+		if (score >= 0.7) return m('invoices.modal.confidence.medium');
+		if (score >= 0.5) return m('invoices.modal.confidence.low');
+		return m('invoices.modal.confidence.veryLow');
 	}
 
 	function confidenceColor(score: number): string {
@@ -882,9 +895,9 @@
 		tabindex="-1"
 	>
 		<header>
-			<h2>Edit Invoice &mdash; {invoice.invoice_number}</h2>
+			<h2>{m('invoices.modal.header', { number: invoice.invoice_number })}</h2>
 			<div class="header-actions">
-				<button class="icon-btn" onclick={toggleFullscreen} aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+				<button class="icon-btn" onclick={toggleFullscreen} aria-label={fullscreen ? m('invoices.modal.exitFullscreen') : m('invoices.modal.fullscreen')}>
 					{#if fullscreen}
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
 							<polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
@@ -897,7 +910,7 @@
 						</svg>
 					{/if}
 				</button>
-				<button class="icon-btn close-btn" onclick={onclose} aria-label="Close">&times;</button>
+				<button class="icon-btn close-btn" onclick={onclose} aria-label={m('invoices.modal.close')}>&times;</button>
 			</div>
 		</header>
 
@@ -906,13 +919,13 @@
 				{#if invoice.file_url}
 					{@const isImage = /\.(png|jpg|jpeg|tiff?)$/i.test(invoice.file_url)}
 					{#if fileLoadError}
-						<div class="no-pdf">Failed to load file. Try refreshing.</div>
+						<div class="no-pdf">{m('invoices.modal.fileLoadError')}</div>
 					{:else if !fileBlobUrl}
-						<div class="no-pdf">Loading…</div>
+						<div class="no-pdf">{m('common.loading')}</div>
 					{:else if isImage}
-						<img src={fileBlobUrl} alt="Invoice — {invoice.invoice_number}" class="invoice-image" />
+						<img src={fileBlobUrl} alt={m('invoices.modal.imageAlt', { number: invoice.invoice_number })} class="invoice-image" />
 					{:else}
-						<iframe src={fileBlobUrl} title="Invoice PDF — {invoice.invoice_number}"></iframe>
+						<iframe src={fileBlobUrl} title={m('invoices.modal.pdfTitle', { number: invoice.invoice_number })}></iframe>
 					{/if}
 				{:else}
 					<div class="no-pdf">
@@ -921,7 +934,7 @@
 							<polyline points="14 2 14 8 20 8" />
 							<line x1="9" y1="15" x2="15" y2="15" />
 						</svg>
-						<span>No PDF attached</span>
+						<span>{m('invoices.modal.noPdf')}</span>
 					</div>
 				{/if}
 			</div>
@@ -936,9 +949,9 @@
 							<div class="audit-summary-skeleton short"></div>
 						</div>
 					{:else if summary}
-						<section class="audit-summary" data-testid="audit-summary" aria-label="Invoice summary">
+						<section class="audit-summary" data-testid="audit-summary" aria-label={m('invoices.modal.summaryAria')}>
 							<div class="audit-summary-head">
-								<span class="audit-summary-label">Summary</span>
+								<span class="audit-summary-label">{m('invoices.modal.summary')}</span>
 								{#if canRegenerateSummary}
 									<button
 										type="button"
@@ -947,7 +960,7 @@
 										disabled={summaryRegenerating}
 										data-testid="audit-summary-regenerate"
 									>
-										{summaryRegenerating ? 'Regenerating…' : 'Regenerate'}
+										{summaryRegenerating ? m('invoices.modal.regenerating') : m('invoices.modal.regenerate')}
 									</button>
 								{/if}
 							</div>
@@ -964,28 +977,28 @@
 
 					<div class="form-grid">
 						<label class:field-error={canSubmitStatus && !vendor.trim()}>
-							<span>Vendor <em class="required">*</em> {#if dot('vendor_name', vendor)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_name)}" data-tip="{Math.round(fieldConfidence.vendor_name * 100)}% — {confidenceLabel(fieldConfidence.vendor_name)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.vendor')} <em class="required">*</em> {#if dot('vendor_name', vendor)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_name)}" data-tip="{Math.round(fieldConfidence.vendor_name * 100)}% — {confidenceLabel(fieldConfidence.vendor_name)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor} required />
 						</label>
 						<label class:field-error={canSubmitStatus && !invoice_number.trim()}>
-							<span>Invoice # <em class="required">*</em> {#if dot('invoice_number', invoice_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.invoice_number)}" data-tip="{Math.round(fieldConfidence.invoice_number * 100)}% — {confidenceLabel(fieldConfidence.invoice_number)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.invoiceNumber')} <em class="required">*</em> {#if dot('invoice_number', invoice_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.invoice_number)}" data-tip="{Math.round(fieldConfidence.invoice_number * 100)}% — {confidenceLabel(fieldConfidence.invoice_number)}"></span>{/if}</span>
 							<input type="text" bind:value={invoice_number} required />
 						</label>
 						<label class:field-error={canSubmitStatus && (!amount || amount <= 0)}>
-							<span>Amount <em class="required">*</em> {#if dot('amount', amount)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.amount)}" data-tip="{Math.round(fieldConfidence.amount * 100)}% — {confidenceLabel(fieldConfidence.amount)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.amount')} <em class="required">*</em> {#if dot('amount', amount)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.amount)}" data-tip="{Math.round(fieldConfidence.amount * 100)}% — {confidenceLabel(fieldConfidence.amount)}"></span>{/if}</span>
 							<input type="number" step="0.01" bind:value={amount} required />
 						</label>
 						<label>
-							<span>Due Date {#if dot('due_date', due_date)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.due_date)}" data-tip="{Math.round(fieldConfidence.due_date * 100)}% — {confidenceLabel(fieldConfidence.due_date)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.dueDate')} {#if dot('due_date', due_date)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.due_date)}" data-tip="{Math.round(fieldConfidence.due_date * 100)}% — {confidenceLabel(fieldConfidence.due_date)}"></span>{/if}</span>
 							<input type="date" bind:value={due_date} />
 						</label>
 						<label>
-							<span>PO Number {#if dot('po_number', po_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.po_number)}" data-tip="{Math.round(fieldConfidence.po_number * 100)}% — {confidenceLabel(fieldConfidence.po_number)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.poNumber')} {#if dot('po_number', po_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.po_number)}" data-tip="{Math.round(fieldConfidence.po_number * 100)}% — {confidenceLabel(fieldConfidence.po_number)}"></span>{/if}</span>
 							<input type="text" bind:value={po_number} />
 						</label>
 						{#if !isClerkOnly}
 							<label>
-								<span>Status</span>
+								<span>{m('invoices.modal.field.status')}</span>
 								<select bind:value={status}>
 									{#each INVOICE_STATUSES as s}
 										<option value={s}>{STATUS_LABELS[s]}</option>
@@ -994,76 +1007,76 @@
 							</label>
 						{:else}
 							<label>
-								<span>Status</span>
+								<span>{m('invoices.modal.field.status')}</span>
 								<input type="text" value={STATUS_LABELS[status]} disabled />
 							</label>
 						{/if}
 						<label>
-							<span>Reference # {#if dot('reference_number', reference_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.reference_number)}" data-tip="{Math.round(fieldConfidence.reference_number * 100)}% — {confidenceLabel(fieldConfidence.reference_number)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.referenceNumber')} {#if dot('reference_number', reference_number)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.reference_number)}" data-tip="{Math.round(fieldConfidence.reference_number * 100)}% — {confidenceLabel(fieldConfidence.reference_number)}"></span>{/if}</span>
 							<input type="text" bind:value={reference_number} />
 						</label>
 						<label>
-							<span>Payment Method {#if dot('payment_method', payment_method)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.payment_method)}" data-tip="{Math.round(fieldConfidence.payment_method * 100)}% — {confidenceLabel(fieldConfidence.payment_method)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.paymentMethod')} {#if dot('payment_method', payment_method)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.payment_method)}" data-tip="{Math.round(fieldConfidence.payment_method * 100)}% — {confidenceLabel(fieldConfidence.payment_method)}"></span>{/if}</span>
 							<select bind:value={payment_method}>
 								<option value="">—</option>
-								<option value="ach">ACH</option>
-								<option value="wire">Wire Transfer</option>
-								<option value="check">Check</option>
-								<option value="credit_card">Credit Card</option>
-								<option value="other">Other</option>
+								<option value="ach">{m('invoices.modal.method.ach')}</option>
+								<option value="wire">{m('invoices.modal.method.wire')}</option>
+								<option value="check">{m('invoices.modal.method.check')}</option>
+								<option value="credit_card">{m('invoices.modal.method.creditCard')}</option>
+								<option value="other">{m('invoices.modal.method.other')}</option>
 							</select>
 						</label>
 						<label>
-							<span>Tax Rate (%) {#if dot('tax_rate', tax_rate)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.tax_rate)}" data-tip="{Math.round(fieldConfidence.tax_rate * 100)}% — {confidenceLabel(fieldConfidence.tax_rate)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.taxRate')} {#if dot('tax_rate', tax_rate)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.tax_rate)}" data-tip="{Math.round(fieldConfidence.tax_rate * 100)}% — {confidenceLabel(fieldConfidence.tax_rate)}"></span>{/if}</span>
 							<input type="number" step="0.01" min="0" max="100" bind:value={tax_rate} />
 						</label>
 						<label>
-							<span>Vendor Tax ID {#if dot('vendor_tax_id', vendor_tax_id)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_tax_id)}" data-tip="{Math.round(fieldConfidence.vendor_tax_id * 100)}% — {confidenceLabel(fieldConfidence.vendor_tax_id)}"></span>{/if}</span>
-							<input type="text" bind:value={vendor_tax_id} placeholder="EIN / VAT #" />
+							<span>{m('invoices.modal.field.vendorTaxId')} {#if dot('vendor_tax_id', vendor_tax_id)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_tax_id)}" data-tip="{Math.round(fieldConfidence.vendor_tax_id * 100)}% — {confidenceLabel(fieldConfidence.vendor_tax_id)}"></span>{/if}</span>
+							<input type="text" bind:value={vendor_tax_id} placeholder={m('invoices.modal.field.vendorTaxIdPlaceholder')} />
 						</label>
 						<label class="full-width">
-							<span>Vendor Address {#if dot('vendor_address', vendor_address)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_address)}" data-tip="{Math.round(fieldConfidence.vendor_address * 100)}% — {confidenceLabel(fieldConfidence.vendor_address)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.vendorAddress')} {#if dot('vendor_address', vendor_address)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.vendor_address)}" data-tip="{Math.round(fieldConfidence.vendor_address * 100)}% — {confidenceLabel(fieldConfidence.vendor_address)}"></span>{/if}</span>
 							<input type="text" bind:value={vendor_address} />
 						</label>
 						<label class="full-width">
-							<span>Ship-to Address {#if dot('ship_to_address', ship_to_address)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.ship_to_address)}" data-tip="{Math.round(fieldConfidence.ship_to_address * 100)}% — {confidenceLabel(fieldConfidence.ship_to_address)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.shipToAddress')} {#if dot('ship_to_address', ship_to_address)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.ship_to_address)}" data-tip="{Math.round(fieldConfidence.ship_to_address * 100)}% — {confidenceLabel(fieldConfidence.ship_to_address)}"></span>{/if}</span>
 							<input type="text" bind:value={ship_to_address} />
 						</label>
 						<label class="full-width">
-							<span>Description {#if dot('description', description)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.description)}" data-tip="{Math.round(fieldConfidence.description * 100)}% — {confidenceLabel(fieldConfidence.description)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.description')} {#if dot('description', description)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.description)}" data-tip="{Math.round(fieldConfidence.description * 100)}% — {confidenceLabel(fieldConfidence.description)}"></span>{/if}</span>
 							<input type="text" bind:value={description} />
 						</label>
 						<label>
-							<span>GL Account {#if dot('suggested_gl_account', gl_account)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_gl_account)}" data-tip="{Math.round(fieldConfidence.suggested_gl_account * 100)}% — {confidenceLabel(fieldConfidence.suggested_gl_account)}"></span>{/if}</span>
+							<span>{m('invoices.modal.field.glAccount')} {#if dot('suggested_gl_account', gl_account)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_gl_account)}" data-tip="{Math.round(fieldConfidence.suggested_gl_account * 100)}% — {confidenceLabel(fieldConfidence.suggested_gl_account)}"></span>{/if}</span>
 							{#if glAccounts.length > 0}
 								<select bind:value={gl_account}>
-									<option value="">— Select —</option>
+									<option value="">{m('invoices.modal.field.glSelect')}</option>
 									{#each glAccounts as acct}
 										<option value={acct.code}>{acct.code} — {acct.name}</option>
 									{/each}
 								</select>
 							{:else}
-								<input type="text" bind:value={gl_account} placeholder="e.g. 6100" />
+								<input type="text" bind:value={gl_account} placeholder={m('invoices.modal.field.glPlaceholder')} />
 							{/if}
 						</label>
 						<label>
-							<span>Cost Center {#if dot('suggested_cost_center', cost_center)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_cost_center)}" data-tip="{Math.round(fieldConfidence.suggested_cost_center * 100)}% — {confidenceLabel(fieldConfidence.suggested_cost_center)}"></span>{/if}</span>
-							<input type="text" bind:value={cost_center} placeholder="e.g. ADMIN" />
+							<span>{m('invoices.modal.field.costCenter')} {#if dot('suggested_cost_center', cost_center)}<span class="confidence-dot" style="background:{confidenceColor(fieldConfidence.suggested_cost_center)}" data-tip="{Math.round(fieldConfidence.suggested_cost_center * 100)}% — {confidenceLabel(fieldConfidence.suggested_cost_center)}"></span>{/if}</span>
+							<input type="text" bind:value={cost_center} placeholder={m('invoices.modal.field.costCenterPlaceholder')} />
 						</label>
 						<label>
-							<span>Department</span>
-							<input type="text" bind:value={department} placeholder="e.g. Engineering" />
+							<span>{m('invoices.modal.field.department')}</span>
+							<input type="text" bind:value={department} placeholder={m('invoices.modal.field.departmentPlaceholder')} />
 						</label>
 						<label>
-							<span>Project</span>
-							<input type="text" bind:value={project} placeholder="e.g. Project X" />
+							<span>{m('invoices.modal.field.project')}</span>
+							<input type="text" bind:value={project} placeholder={m('invoices.modal.field.projectPlaceholder')} />
 						</label>
 					</div>
 
 					<div class="line-items-section">
 						<div class="line-items-header">
-							<span class="line-items-title">Line Items</span>
-							<button type="button" class="btn-add-line" onclick={addLineItem}>+ Add Line</button>
+							<span class="line-items-title">{m('invoices.modal.lineItems.title')}</span>
+							<button type="button" class="btn-add-line" onclick={addLineItem}>{m('invoices.modal.lineItems.addLine')}</button>
 						</div>
 						{#if lineItems.length > 0}
 							<div class="line-items-scroll">
@@ -1071,12 +1084,12 @@
 								<thead>
 									<tr>
 										<th>#</th>
-										<th>Description</th>
-										<th class="right">Qty</th>
-										<th class="right">Unit Price</th>
-										<th class="right">Tax</th>
-										<th class="right">Total</th>
-										<th>GL</th>
+										<th>{m('invoices.modal.lineItems.colDescription')}</th>
+										<th class="right">{m('invoices.modal.lineItems.colQty')}</th>
+										<th class="right">{m('invoices.modal.lineItems.colUnitPrice')}</th>
+										<th class="right">{m('invoices.modal.lineItems.colTax')}</th>
+										<th class="right">{m('invoices.modal.lineItems.colTotal')}</th>
+										<th>{m('invoices.modal.lineItems.colGl')}</th>
 										<th></th>
 									</tr>
 								</thead>
@@ -1084,25 +1097,25 @@
 									{#each lineItems as li, idx}
 										<tr>
 											<td class="li-num">{idx + 1}</td>
-											<td><input type="text" class="li-input" aria-label={`Line ${idx + 1} description`} value={li.description ?? ''} oninput={(e) => updateLineItem(idx, 'description', e.currentTarget.value)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} quantity`} value={li.quantity ?? ''} oninput={(e) => updateLineItem(idx, 'quantity', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} unit price`} value={li.unit_price ?? ''} oninput={(e) => updateLineItem(idx, 'unit_price', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} tax`} value={li.tax ?? ''} oninput={(e) => updateLineItem(idx, 'tax', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
-											<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} total`} value={li.total ?? ''} oninput={(e) => updateLineItem(idx, 'total', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="text" class="li-input" aria-label={m('invoices.modal.lineItems.descriptionAria', { n: idx + 1 })} value={li.description ?? ''} oninput={(e) => updateLineItem(idx, 'description', e.currentTarget.value)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={m('invoices.modal.lineItems.quantityAria', { n: idx + 1 })} value={li.quantity ?? ''} oninput={(e) => updateLineItem(idx, 'quantity', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={m('invoices.modal.lineItems.unitPriceAria', { n: idx + 1 })} value={li.unit_price ?? ''} oninput={(e) => updateLineItem(idx, 'unit_price', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={m('invoices.modal.lineItems.taxAria', { n: idx + 1 })} value={li.tax ?? ''} oninput={(e) => updateLineItem(idx, 'tax', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
+											<td><input type="number" class="li-input right" step="0.01" aria-label={m('invoices.modal.lineItems.totalAria', { n: idx + 1 })} value={li.total ?? ''} oninput={(e) => updateLineItem(idx, 'total', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)} /></td>
 											<td>
 											{#if glAccounts.length > 0}
-												<select class="li-input li-gl" aria-label={`Line ${idx + 1} GL account`} value={li.gl_account ?? ''} onchange={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)}>
+												<select class="li-input li-gl" aria-label={m('invoices.modal.lineItems.glAria', { n: idx + 1 })} value={li.gl_account ?? ''} onchange={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)}>
 													<option value="">—</option>
 													{#each glAccounts as acct}
 														<option value={acct.code}>{acct.code}</option>
 													{/each}
 												</select>
 											{:else}
-												<input type="text" class="li-input li-gl" aria-label={`Line ${idx + 1} GL account`} value={li.gl_account ?? ''} oninput={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)} />
+												<input type="text" class="li-input li-gl" aria-label={m('invoices.modal.lineItems.glAria', { n: idx + 1 })} value={li.gl_account ?? ''} oninput={(e) => updateLineItem(idx, 'gl_account', e.currentTarget.value)} />
 											{/if}
 										</td>
 											<td>
-												<button type="button" class="li-delete" aria-label={`Remove line ${idx + 1}`} onclick={() => removeLineItem(idx)}>&times;</button>
+												<button type="button" class="li-delete" aria-label={m('invoices.modal.lineItems.removeAria', { n: idx + 1 })} onclick={() => removeLineItem(idx)}>&times;</button>
 											</td>
 										</tr>
 									{/each}
@@ -1110,37 +1123,37 @@
 							</table>
 							</div>
 						{:else}
-							<p class="line-items-empty">No line items. Click "+ Add Line" to add one.</p>
+							<p class="line-items-empty">{m('invoices.modal.lineItems.empty')}</p>
 						{/if}
 						{#if lineItemsDirty}
 							<div class="line-items-actions">
 								<button type="button" class="btn-save-lines" disabled={savingLines} onclick={saveLineItems}>
-									{savingLines ? 'Saving...' : 'Save Line Items'}
+									{savingLines ? m('invoices.modal.lineItems.saving') : m('invoices.modal.lineItems.save')}
 								</button>
 							</div>
 						{/if}
 					</div>
 
 					<div class="contract-section">
-						<span class="contract-label">Contract</span>
+						<span class="contract-label">{m('invoices.modal.contract.label')}</span>
 						{#if contractId}
-							<span class="contract-linked mono">{linkedContract?.contract_number ?? 'Linked'}</span>
+							<span class="contract-linked mono">{linkedContract?.contract_number ?? m('invoices.modal.contract.linked')}</span>
 							{#if !isClerkOnly}
 								<button type="button" class="btn-contract-unlink" disabled={linkingContract} onclick={unlinkContract}>
-									{linkingContract ? '…' : 'Unlink'}
+									{linkingContract ? '…' : m('invoices.modal.contract.unlink')}
 								</button>
 							{/if}
 						{:else if isClerkOnly}
-							<span class="contract-empty">No contract linked.</span>
+							<span class="contract-empty">{m('invoices.modal.contract.empty')}</span>
 						{:else}
-							<select class="contract-select" aria-label="Select contract to link" bind:value={pickContractId}>
-								<option value="">Select contract…</option>
+							<select class="contract-select" aria-label={m('invoices.modal.contract.selectAria')} bind:value={pickContractId}>
+								<option value="">{m('invoices.modal.contract.selectPlaceholder')}</option>
 								{#each contracts as c (c.id)}
 									<option value={c.id}>{c.contract_number}{c.vendor_name ? ` — ${c.vendor_name}` : ''}</option>
 								{/each}
 							</select>
 							<button type="button" class="btn-contract-link" disabled={linkingContract || !pickContractId} onclick={linkContract}>
-								{linkingContract ? '…' : 'Link'}
+								{linkingContract ? '…' : m('invoices.modal.contract.link')}
 							</button>
 						{/if}
 					</div>
@@ -1159,71 +1172,71 @@
 					{/if}
 
 					{#if invoice.po_match}
-						{@const m = invoice.po_match}
-						<div class="po-match {m.status}">
+						{@const pm = invoice.po_match}
+						<div class="po-match {pm.status}">
 							<div class="po-match-header">
-								<span class="po-match-title">PO Match</span>
-								<span class="po-match-status {m.status}">
-									{#if m.status === 'matched'}Matched
-									{:else if m.status === 'mismatch'}Mismatch
-									{:else if m.status === 'partial'}Partial Receipt
-									{:else}PO Not Found
+								<span class="po-match-title">{m('invoices.modal.poMatch.title')}</span>
+								<span class="po-match-status {pm.status}">
+									{#if pm.status === 'matched'}{m('invoices.modal.poMatch.matched')}
+									{:else if pm.status === 'mismatch'}{m('invoices.modal.poMatch.mismatch')}
+									{:else if pm.status === 'partial'}{m('invoices.modal.poMatch.partialReceipt')}
+									{:else}{m('invoices.modal.poMatch.notFound')}
 									{/if}
 								</span>
-								{#if m.match_type !== 'none'}
-									<span class="po-match-type">{m.match_type}</span>
+								{#if pm.match_type !== 'none'}
+									<span class="po-match-type">{pm.match_type}</span>
 								{/if}
 							</div>
-							{#if m.po_number}
+							{#if pm.po_number}
 								<div class="po-match-grid">
 									<div>
-										<span class="po-match-label">PO #</span>
-										<span class="po-match-value mono">{m.po_number}</span>
+										<span class="po-match-label">{m('invoices.modal.poMatch.poNumber')}</span>
+										<span class="po-match-value mono">{pm.po_number}</span>
 									</div>
-									{#if m.po_total !== null}
+									{#if pm.po_total !== null}
 										<div>
-											<span class="po-match-label">PO Total</span>
-											<span class="po-match-value mono">${m.po_total.toFixed(2)}</span>
+											<span class="po-match-label">{m('invoices.modal.poMatch.poTotal')}</span>
+											<span class="po-match-value mono">${pm.po_total.toFixed(2)}</span>
 										</div>
 									{/if}
-									{#if m.amount_variance !== 0}
+									{#if pm.amount_variance !== 0}
 										<div>
-											<span class="po-match-label">Variance</span>
+											<span class="po-match-label">{m('invoices.modal.poMatch.variance')}</span>
 											<span
 												class="po-match-value mono"
-												class:variance-pos={m.amount_variance > 0}
-												class:variance-neg={m.amount_variance < 0}
+												class:variance-pos={pm.amount_variance > 0}
+												class:variance-neg={pm.amount_variance < 0}
 											>
-												{m.amount_variance > 0 ? '+' : ''}${m.amount_variance.toFixed(2)}
-												({m.amount_variance_pct > 0 ? '+' : ''}{m.amount_variance_pct.toFixed(1)}%)
+												{pm.amount_variance > 0 ? '+' : ''}${pm.amount_variance.toFixed(2)}
+												({pm.amount_variance_pct > 0 ? '+' : ''}{pm.amount_variance_pct.toFixed(1)}%)
 											</span>
 										</div>
 									{/if}
 								</div>
 							{/if}
-							{#if m.match_type === '4-way' || m.inspection_result || m.inspection_required}
+							{#if pm.match_type === '4-way' || pm.inspection_result || pm.inspection_required}
 								<div class="po-match-inspection">
-									<span class="po-match-label">Quality Inspection</span>
-									{#if m.inspection_result}
-										<span class="inspection-badge {m.inspection_result}">
-											{#if m.inspection_result === 'pass'}Passed
-											{:else if m.inspection_result === 'fail'}Failed
-											{:else}Partial
+									<span class="po-match-label">{m('invoices.modal.poMatch.qualityInspection')}</span>
+									{#if pm.inspection_result}
+										<span class="inspection-badge {pm.inspection_result}">
+											{#if pm.inspection_result === 'pass'}{m('invoices.modal.poMatch.passed')}
+											{:else if pm.inspection_result === 'fail'}{m('invoices.modal.poMatch.failed')}
+											{:else}{m('invoices.modal.poMatch.partial')}
 											{/if}
 										</span>
-										{#if m.inspection_accepted_quantity !== null}
+										{#if pm.inspection_accepted_quantity !== null}
 											<span class="po-match-value mono">
-												{m.inspection_accepted_quantity} accepted
+												{m('invoices.modal.poMatch.accepted', { qty: pm.inspection_accepted_quantity })}
 											</span>
 										{/if}
-									{:else if m.inspection_required}
-										<span class="inspection-badge missing">Required — Missing</span>
+									{:else if pm.inspection_required}
+										<span class="inspection-badge missing">{m('invoices.modal.poMatch.requiredMissing')}</span>
 									{/if}
 								</div>
 							{/if}
-							{#if m.issues.length > 0}
+							{#if pm.issues.length > 0}
 								<ul class="po-match-issues">
-									{#each m.issues as issue}
+									{#each pm.issues as issue}
 										<li>{issue}</li>
 									{/each}
 								</ul>
@@ -1232,20 +1245,20 @@
 					{/if}
 
 					{#if canSubmitStatus && missingFields.length > 0}
-						<div class="validation-hint">Required: {missingFields.join(', ')}</div>
+						<div class="validation-hint">{m('invoices.modal.requiredHint', { fields: missingFields.join(', ') })}</div>
 					{/if}
 
 					{#if invoice.approved_by || invoice.rejected_by || invoice.assigned_to}
 						<div class="meta-section">
 							{#if invoice.assigned_to}
 								<div class="meta-item">
-									<span class="meta-label">Assigned to</span>
+									<span class="meta-label">{m('invoices.modal.meta.assignedTo')}</span>
 									<span class="meta-value">{invoice.assigned_to}</span>
 								</div>
 							{/if}
 							{#if invoice.approved_by}
 								<div class="meta-item">
-									<span class="meta-label">Approved by</span>
+									<span class="meta-label">{m('invoices.modal.meta.approvedBy')}</span>
 									<span class="meta-value approved">{invoice.approved_by}</span>
 									{#if invoice.approval_date}
 										<span class="meta-date">{invoice.approval_date}</span>
@@ -1254,7 +1267,7 @@
 							{/if}
 							{#if invoice.rejected_by}
 								<div class="meta-item">
-									<span class="meta-label">Rejected by</span>
+									<span class="meta-label">{m('invoices.modal.meta.rejectedBy')}</span>
 									<span class="meta-value rejected">{invoice.rejected_by}</span>
 								</div>
 							{/if}
@@ -1263,23 +1276,23 @@
 
 					{#if isErpStatus || (status === 'failed' && erpInfo)}
 						<div class="erp-section">
-							<div class="erp-title">ERP Status</div>
+							<div class="erp-title">{m('invoices.modal.erp.title')}</div>
 							<div class="erp-details">
 								{#if erpInfo?.erp_reference}
 									<div class="erp-row">
-										<span class="erp-label">ERP Reference</span>
+										<span class="erp-label">{m('invoices.modal.erp.reference')}</span>
 										<code class="erp-value">{erpInfo.erp_reference}</code>
 									</div>
 								{/if}
 								{#if erpInfo?.erp_document_id}
 									<div class="erp-row">
-										<span class="erp-label">Document ID</span>
+										<span class="erp-label">{m('invoices.modal.erp.documentId')}</span>
 										<code class="erp-value">{erpInfo.erp_document_id}</code>
 									</div>
 								{/if}
 								{#if erpInfo?.last_error}
 									<div class="erp-row erp-error">
-										<span class="erp-label">Error</span>
+										<span class="erp-label">{m('invoices.modal.erp.error')}</span>
 										<span class="erp-value">{erpInfo.last_error}</span>
 									</div>
 								{/if}
@@ -1287,7 +1300,7 @@
 							{#if canRetryErp}
 								<button type="button" class="btn-retry-erp" disabled={retryingErp} onclick={handleRetryErp}>
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-									{retryingErp ? 'Retrying...' : 'Retry ERP Send'}
+									{retryingErp ? m('invoices.modal.erp.retrying') : m('invoices.modal.erp.retrySend')}
 								</button>
 							{/if}
 						</div>
@@ -1301,13 +1314,13 @@
 								onclick={() => (priorsOpen = !priorsOpen)}
 								aria-expanded={priorsOpen}
 							>
-								<span class="priors-title">Extraction priors</span>
+								<span class="priors-title">{m('invoices.modal.priors.title')}</span>
 								<span class="priors-chips">
 									{#if priors.vendor_cache_applied.length > 0}
-										<span class="priors-chip">Vendor cache · {priors.vendor_cache_applied.length}</span>
+										<span class="priors-chip">{m('invoices.modal.priors.vendorCacheChip', { count: priors.vendor_cache_applied.length })}</span>
 									{/if}
 									{#if priors.rag_neighbors.length > 0}
-										<span class="priors-chip">RAG · {priors.rag_neighbors.length} similar</span>
+										<span class="priors-chip">{m('invoices.modal.priors.ragChip', { count: priors.rag_neighbors.length })}</span>
 									{/if}
 								</span>
 								<span class="priors-caret">{priorsOpen ? '▾' : '▸'}</span>
@@ -1317,29 +1330,28 @@
 								<div class="priors-body">
 									{#if priors.vendor_cache_applied.length > 0}
 										<div class="priors-group">
-											<div class="priors-group-title">Applied from vendor cache</div>
+											<div class="priors-group-title">{m('invoices.modal.priors.cacheGroupTitle')}</div>
 											<div class="priors-tags">
 												{#each priors.vendor_cache_applied as field}
 													<span class="priors-tag">{field}</span>
 												{/each}
 											</div>
 											<div class="priors-help">
-												These fields were pulled from previous corrections for this vendor
-												because the AI's confidence was below threshold.
+												{m('invoices.modal.priors.cacheHelp')}
 											</div>
 										</div>
 									{/if}
 
 									{#if priors.rag_neighbors.length > 0}
 										<div class="priors-group">
-											<div class="priors-group-title">Similar past invoices used as hints</div>
+											<div class="priors-group-title">{m('invoices.modal.priors.ragGroupTitle')}</div>
 											<table class="priors-table">
 												<thead>
 													<tr>
-														<th>Similarity</th>
-														<th>Vendor</th>
-														<th>Invoice #</th>
-														<th>Amount</th>
+														<th>{m('invoices.modal.priors.colSimilarity')}</th>
+														<th>{m('invoices.modal.priors.colVendor')}</th>
+														<th>{m('invoices.modal.priors.colInvoice')}</th>
+														<th>{m('invoices.modal.priors.colAmount')}</th>
 													</tr>
 												</thead>
 												<tbody>
@@ -1354,8 +1366,7 @@
 												</tbody>
 											</table>
 											<div class="priors-help">
-												Semantic neighbors from this tenant's approved history. Included in
-												the extraction prompt as few-shot examples.
+												{m('invoices.modal.priors.ragHelp')}
 											</div>
 										</div>
 									{/if}
@@ -1366,27 +1377,27 @@
 
 					{#if auditLog.length > 0}
 						<div class="activity-section">
-							<div class="activity-title">Activity</div>
+							<div class="activity-title">{m('invoices.modal.activity.title')}</div>
 							<div class="activity-list">
 								{#each auditLog as entry}
 									<div class="activity-item">
 										<div class="activity-dot"></div>
 										<div class="activity-content">
-											<span class="activity-action">{ACTION_LABELS[entry.action] ?? entry.action}</span>
+											<span class="activity-action">{actionLabel(entry.action)}</span>
 											{#if entry.actor_name}
-												<span class="activity-actor">by {entry.actor_name}</span>
+												<span class="activity-actor">{m('invoices.modal.activity.by', { actor: entry.actor_name })}</span>
 											{/if}
 											{#if entry.details?.reason}
 												<span class="activity-detail">— {entry.details.reason}</span>
 											{/if}
 											{#if entry.action === 'invoice.extraction_completed' && entry.details?.confidence}
-												<span class="activity-detail">— {entry.details.method} ({Math.round((entry.details.confidence as number) * 100)}% confidence)</span>
+												<span class="activity-detail">{m('invoices.modal.activity.confidence', { method: String(entry.details.method), pct: Math.round((entry.details.confidence as number) * 100) })}</span>
 											{/if}
 											{#if entry.action === 'invoice.extraction_completed' && entry.details?.gl_suggested}
-												<span class="activity-detail">GL suggested: {entry.details.gl_suggested}</span>
+												<span class="activity-detail">{m('invoices.modal.activity.glSuggested', { gl: String(entry.details.gl_suggested) })}</span>
 											{/if}
 											{#if entry.action === 'invoice.extraction_completed' && entry.details?.vendor_action === 'created'}
-												<span class="activity-detail">New vendor created (unverified)</span>
+												<span class="activity-detail">{m('invoices.modal.activity.newVendor')}</span>
 											{/if}
 											{#if entry.action === 'invoice.extraction_failed' && entry.details?.error}
 												<span class="activity-detail error">— {entry.details.error}</span>
@@ -1395,7 +1406,7 @@
 												<ul class="activity-changes">
 													{#each fieldChanges(entry) as [field, change] (field)}
 														<li>
-															<span class="change-field">{FIELD_LABELS[field] ?? field}:</span>
+															<span class="change-field">{fieldLabel(field)}:</span>
 															<span class="change-old">{change.old ?? '—'}</span>
 															<span class="change-arrow">→</span>
 															<span class="change-new">{change.new ?? '—'}</span>
@@ -1428,20 +1439,20 @@
 
 					{#if canReview}
 						<div class="review-section">
-							<div class="review-title">Review</div>
+							<div class="review-title">{m('invoices.modal.review.title')}</div>
 							{#if showRejectForm}
 								<div class="reject-form">
 									<textarea
 										class="reject-input"
-										placeholder="Reason for rejection..."
-										aria-label="Reason for rejection"
+										placeholder={m('invoices.modal.review.rejectPlaceholder')}
+										aria-label={m('invoices.modal.review.rejectAria')}
 										bind:value={rejectReason}
 										rows="2"
 									></textarea>
 									<div class="reject-actions">
-										<button type="button" class="btn-cancel-sm" onclick={() => { showRejectForm = false; rejectReason = ''; }}>Cancel</button>
+										<button type="button" class="btn-cancel-sm" onclick={() => { showRejectForm = false; rejectReason = ''; }}>{m('common.cancel')}</button>
 										<button type="button" class="btn-reject" disabled={reviewing || !rejectReason.trim()} onclick={handleReject}>
-											{reviewing ? 'Rejecting...' : 'Confirm Reject'}
+											{reviewing ? m('invoices.modal.review.rejecting') : m('invoices.modal.review.confirmReject')}
 										</button>
 									</div>
 								</div>
@@ -1449,56 +1460,56 @@
 								<div class="review-actions">
 									<button type="button" class="btn-approve" disabled={reviewing} onclick={handleApprove}>
 										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-										{reviewing ? 'Approving...' : 'Approve'}
+										{reviewing ? m('invoices.modal.review.approving') : m('invoices.modal.review.approve')}
 									</button>
 									<button type="button" class="btn-reject-outline" disabled={reviewing} onclick={() => (showRejectForm = true)}>
 										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-										Reject
+										{m('invoices.modal.review.reject')}
 									</button>
 								</div>
 							{/if}
 						</div>
 					{:else if isReadyForReview && invoice.assigned_to}
 						<div class="review-section">
-							<p class="review-assigned-hint">Assigned to <strong>{invoice.assigned_to}</strong> for review.</p>
+							<p class="review-assigned-hint">{m('invoices.modal.review.assignedHintPre')}<strong>{invoice.assigned_to}</strong>{m('invoices.modal.review.assignedHintPost')}</p>
 						</div>
 					{/if}
 
 					<footer>
 						<div class="footer-right">
-							<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
+							<button type="button" class="btn-cancel" onclick={onclose}>{m('common.cancel')}</button>
 							{#if canExtract || extracting}
 								<button type="button" class="btn-extract" disabled={extracting} onclick={handleExtract}>
 									{#if extracting}
 										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
-										{extractionStatus || 'Extracting...'}
+										{extractionStatus || m('invoices.modal.extracting')}
 									{:else}
 										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-										{status === 'failed' ? 'Re-extract' : 'Extract'}
+										{status === 'failed' ? m('invoices.modal.reExtract') : m('invoices.modal.extract')}
 									{/if}
 								</button>
 							{/if}
 							{#if isExtracting && !extracting}
 								<button type="button" class="btn-reset" disabled={resettingExtraction} onclick={handleResetExtraction}>
-									{resettingExtraction ? 'Resetting...' : 'Reset'}
+									{resettingExtraction ? m('invoices.modal.resetting') : m('invoices.modal.reset')}
 								</button>
 							{/if}
 							{#if !isDone}
 								<button type="submit" class="btn-save" disabled={saving}>
-									{saving ? 'Saving...' : 'Save'}
+									{saving ? m('common.saving') : m('common.save')}
 								</button>
 							{/if}
 							{#if canSubmit}
 								{#if needsApproverSelect}
-									<select class="approver-select" aria-label="Assign approver" bind:value={selectedApproverId}>
-										<option value="">Approver...</option>
+									<select class="approver-select" aria-label={m('invoices.modal.assignApprover')} bind:value={selectedApproverId}>
+										<option value="">{m('invoices.modal.approverPlaceholder')}</option>
 										{#each adminStore.users.filter(u => u.is_active && u.id !== auth.user?.id) as user}
 											<option value={user.id}>{user.full_name}</option>
 										{/each}
 									</select>
 								{/if}
 								<button type="button" class="btn-submit" disabled={submitting || (needsApproverSelect && !selectedApproverId)} onclick={submitDone}>
-									{submitting ? 'Submitting...' : submitLabel}
+									{submitting ? m('invoices.modal.submitting') : submitLabel}
 								</button>
 							{/if}
 						</div>

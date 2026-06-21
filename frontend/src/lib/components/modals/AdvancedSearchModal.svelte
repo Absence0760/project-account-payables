@@ -2,6 +2,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { INVOICE_STATUSES, STATUS_LABELS } from '$lib/types/invoice';
 	import type { AdvancedSearchFilters, InvoiceStatus } from '$lib/types/invoice';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let {
 		filters,
@@ -59,45 +60,45 @@
 	}
 </script>
 
-<Modal ariaLabel="Advanced search" title="Advanced Search" onclose={onclose}>
+<Modal ariaLabel="Advanced search" title={m('advancedSearch.title')} onclose={onclose}>
 	<form onsubmit={(e) => { e.preventDefault(); apply(); }}>
 		<div class="form-grid">
 			<label>
-				<span>Vendor</span>
-				<input type="text" placeholder="e.g. Acme Corp" bind:value={vendor} />
+				<span>{m('advancedSearch.vendor')}</span>
+				<input type="text" placeholder={m('advancedSearch.vendorPlaceholder')} bind:value={vendor} />
 			</label>
 			<label>
-				<span>Invoice #</span>
-				<input type="text" placeholder="e.g. INV-2024-001" bind:value={invoice_number} />
+				<span>{m('advancedSearch.invoiceNumber')}</span>
+				<input type="text" placeholder={m('advancedSearch.invoiceNumberPlaceholder')} bind:value={invoice_number} />
 			</label>
 			<label>
-				<span>PO Number</span>
-				<input type="text" placeholder="e.g. PO-1001" bind:value={po_number} />
+				<span>{m('advancedSearch.poNumber')}</span>
+				<input type="text" placeholder={m('advancedSearch.poNumberPlaceholder')} bind:value={po_number} />
 			</label>
 			<label>
-				<span>Description</span>
-				<input type="text" placeholder="Keywords..." bind:value={description} />
+				<span>{m('advancedSearch.description')}</span>
+				<input type="text" placeholder={m('advancedSearch.descriptionPlaceholder')} bind:value={description} />
 			</label>
 			<label>
-				<span>Amount Min</span>
+				<span>{m('advancedSearch.amountMin')}</span>
 				<input type="number" step="0.01" placeholder="0.00" bind:value={amount_min} />
 			</label>
 			<label>
-				<span>Amount Max</span>
-				<input type="number" step="0.01" placeholder="Any" bind:value={amount_max} />
+				<span>{m('advancedSearch.amountMax')}</span>
+				<input type="number" step="0.01" placeholder={m('advancedSearch.amountMaxPlaceholder')} bind:value={amount_max} />
 			</label>
 			<label>
-				<span>Due Date From</span>
+				<span>{m('advancedSearch.dueDateFrom')}</span>
 				<input type="date" bind:value={due_date_from} />
 			</label>
 			<label>
-				<span>Due Date To</span>
+				<span>{m('advancedSearch.dueDateTo')}</span>
 				<input type="date" bind:value={due_date_to} />
 			</label>
 		</div>
 
 		<fieldset>
-			<legend>Status</legend>
+			<legend>{m('advancedSearch.status')}</legend>
 			<div class="status-chips">
 				{#each INVOICE_STATUSES as s}
 					<button
@@ -113,10 +114,10 @@
 		</fieldset>
 
 		<footer>
-			<button type="button" class="btn-clear" onclick={clear}>Clear All</button>
+			<button type="button" class="btn-clear" onclick={clear}>{m('advancedSearch.clearAll')}</button>
 			<div class="footer-right">
-				<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
-				<button type="submit" class="btn-apply">Apply Filters</button>
+				<button type="button" class="btn-cancel" onclick={onclose}>{m('common.cancel')}</button>
+				<button type="submit" class="btn-apply">{m('advancedSearch.applyFilters')}</button>
 			</div>
 		</footer>
 	</form>
