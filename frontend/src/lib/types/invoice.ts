@@ -55,10 +55,13 @@ export const SYSTEM_MANAGED_STATUSES: Set<InvoiceStatus> = new Set([
 
 /** Valid manual status transitions per source status. */
 export const VALID_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
-	new: ['ready_for_review', 'rejected', 'done'],
+	// Mirror the backend workflow_engine VALID_TRANSITIONS. `rejected` is only
+	// reachable from `ready_for_review` (the review chokepoint) — offering it
+	// from `new` or `approved` produced a guaranteed 409 on every selected row.
+	new: ['ready_for_review', 'done'],
 	pending: [],
 	ready_for_review: ['approved', 'rejected'],
-	approved: ['rejected', 'done'],
+	approved: ['done'],
 	rejected: ['new', 'ready_for_review'],
 	sending_to_erp: [],
 	sent_to_erp: [],
@@ -66,7 +69,9 @@ export const VALID_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
 	payment_scheduled: [],
 	paid: [],
 	done: [],
-	failed: ['new', 'pending'],
+	// Backend allows failed → {pending, sending_to_erp}; `new` is not reachable
+	// (offering it 409s). `pending` is the user-meaningful retry.
+	failed: ['pending'],
 };
 
 /**
