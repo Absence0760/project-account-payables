@@ -168,10 +168,14 @@ async def test_portal_endpoint_dep_rejects_employee_token():
 
     from app.api import portal
 
-    # `/portal/cards/{token}` is intentionally no-auth — the token
-    # IS the credential. Every other portal route must require
-    # vendor-user auth.
-    NO_AUTH_PORTAL_ROUTES = {"/portal/cards/{token}"}
+    # Intentionally no-auth portal routes (mirrors test_rbac.NO_AUTH_REQUIRED):
+    #   - `/portal/cards/{token}` — the single-use card-reveal token IS the
+    #     credential (no JWT, no vendor auth).
+    #   - `/portal/branding` — public-by-design white-label brand read for the
+    #     unauthenticated supplier-portal login page; returns only non-sensitive
+    #     BrandConfig fields, tenant resolved by `get_tenant`. See docs/white-label.md.
+    # Every OTHER portal route must require vendor-user auth.
+    NO_AUTH_PORTAL_ROUTES = {"/portal/cards/{token}", "/portal/branding"}
 
     portal_routes = [r for r in portal.router.routes if isinstance(r, APIRoute)]
     for route in portal_routes:
@@ -205,3 +209,89 @@ def test_card_reveal_endpoint_does_not_take_vendor_id_param():
         f"reveal_card grew unsafe parameter(s) {leaks} — the token alone authorises;"
         f" any other identity input is a pivot vector."
     )
+
+
+# ---------------------------------------------------------------------------
+# Chat-attachment download — the key must belong to the OWNED invoice,
+# not merely share the tenant's org prefix (cross-vendor IDOR guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_file_download_rejects_other_invoice_key_in_same_org():
+    """A vendor passes their OWN invoice id in the path (ownership check
+    passes) but a `file_key` pointing at ANOTHER invoice's chat attachment
+    in the same tenant. Chat keys are `<org>/chat/<invoice>/<msg>/<file>`
+    and every vendor in a tenant shares the same `<org>` segment, so an
+    org-prefix-only check would serve the victim's file. The handler must
+    bind the key to the ownership-checked invoice and 404 otherwise."""
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.api import portal
+
+    org_id = uuid.uuid4()
+    my_invoice_id = uuid.uuid4()
+    victim_invoice_id = uuid.uuid4()
+    my_vendor_id = uuid.uuid4()
+    my_inv = SimpleNamespace(id=my_invoice_id, organization_id=org_id, vendor_id=my_vendor_id)
+    vu = SimpleNamespace(vendor_id=my_vendor_id)
+
+    # Key for a DIFFERENT invoice in the SAME org.
+    victim_key = f"{org_id}/chat/{victim_invoice_id}/{uuid.uuid4()}/secret.pdf"
+
+    async def _own_invoice(db, invoice_id, _vu):
+        assert invoice_id == my_invoice_id
+        return my_inv
+
+    served = {"called": False}
+
+    def _fake_get_file(_key):
+        served["called"] = True
+        return b"VICTIM-BYTES", "application/pdf"
+
+    from fastapi import HTTPException
+
+    with (
+        patch.object(portal, "_portal_invoice_or_404", _own_invoice),
+        patch.object(portal, "get_file", _fake_get_file),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await portal.get_portal_chat_file(
+                invoice_id=my_invoice_id, file_key=victim_key, db=AsyncMock(), vu=vu
+            )
+    assert exc.value.status_code == 404
+    # The fix must short-circuit BEFORE touching storage — otherwise the bytes
+    # left S3 even if the response is a 404.
+    assert served["called"] is False, "victim attachment was fetched from storage"
+
+
+@pytest.mark.asyncio
+async def test_chat_file_download_serves_own_invoice_key():
+    """Positive control — a key under the vendor's OWN invoice prefix is
+    served, so the guard above isn't passing for the wrong reason."""
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.api import portal
+
+    org_id = uuid.uuid4()
+    my_invoice_id = uuid.uuid4()
+    my_vendor_id = uuid.uuid4()
+    my_inv = SimpleNamespace(id=my_invoice_id, organization_id=org_id, vendor_id=my_vendor_id)
+    vu = SimpleNamespace(vendor_id=my_vendor_id)
+    own_key = f"{org_id}/chat/{my_invoice_id}/{uuid.uuid4()}/mine.pdf"
+
+    async def _own_invoice(db, invoice_id, _vu):
+        return my_inv
+
+    with (
+        patch.object(portal, "_portal_invoice_or_404", _own_invoice),
+        patch.object(portal, "get_file", lambda _k: (b"MINE", "application/pdf")),
+    ):
+        resp = await portal.get_portal_chat_file(
+            invoice_id=my_invoice_id, file_key=own_key, db=AsyncMock(), vu=vu
+        )
+    assert resp.body == b"MINE"

@@ -1796,11 +1796,19 @@ async def get_portal_chat_file(
     vu: VendorUser = Depends(get_current_vendor_user),
 ):
     """Download a chat attachment. The invoice must be the vendor's own, and the
-    key's leading org segment must match the invoice's org — wrong-org / missing
-    both 404 (no enumeration)."""
+    key must belong to THAT invoice — wrong-org / wrong-invoice / missing all
+    404 (no enumeration).
+
+    The org-prefix check alone is NOT enough on the portal surface: chat keys are
+    ``<org_id>/chat/<invoice_id>/<message_id>/<file>`` and every vendor in a
+    tenant shares the same ``<org_id>`` segment. Without binding the key's
+    ``<invoice_id>`` segment to the ownership-checked invoice, a vendor could pass
+    their OWN ``invoice_id`` in the path (ownership passes) but a ``file_key``
+    pointing at another vendor's invoice in the same tenant — a cross-vendor
+    IDOR. Require the key to live under this exact invoice's prefix."""
     inv = await _portal_invoice_or_404(db, invoice_id, vu)
-    prefix = file_key.split("/", 1)[0]
-    if prefix != str(inv.organization_id):
+    expected_prefix = f"{inv.organization_id}/chat/{inv.id}/"
+    if not file_key.startswith(expected_prefix):
         raise HTTPException(status_code=404, detail="File not found")
     try:
         content, content_type = get_file(file_key)
