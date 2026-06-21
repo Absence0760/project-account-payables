@@ -100,6 +100,32 @@ class VendorConsolidationResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Vendor consolidation — execute (merge duplicates into one canonical vendor)
+# ---------------------------------------------------------------------------
+
+
+class VendorMergeRequest(BaseModel):
+    """The steward's explicit merge: fold ``duplicate_vendor_ids`` into
+    ``canonical_vendor_id``. The advisory ``consolidation-suggestions`` endpoint
+    proposes the cluster + canonical pick; this is the deliberate execute."""
+
+    canonical_vendor_id: str
+    duplicate_vendor_ids: list[str] = Field(default_factory=list)
+
+
+class VendorMergeResponse(BaseModel):
+    canonical_vendor_id: str
+    duplicate_vendor_ids: list[str]
+    # Per-table reassigned row counts (PII-free — table name → rows moved).
+    reassigned: dict[str, int]
+    total_reassigned: int
+    # Duplicate ids THIS call flipped active → inactive (empty on an idempotent
+    # re-run where they were already retired).
+    deactivated_vendor_ids: list[str]
+    merged_at: str
+
+
+# ---------------------------------------------------------------------------
 # External vendor enrichment (firmographics from D&B / Clearbit / ...)
 # ---------------------------------------------------------------------------
 
@@ -192,6 +218,8 @@ __all__ = [
     "VendorClusterMemberOut",
     "VendorClusterOut",
     "VendorConsolidationResponse",
+    "VendorMergeRequest",
+    "VendorMergeResponse",
     "VendorFirmographicsOut",
     "VendorEnrichmentResponse",
     "EnrichmentFieldSuggestionOut",
