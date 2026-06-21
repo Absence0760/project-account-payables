@@ -8,6 +8,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { pruneSelection } from '$lib/utils/selection';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -95,6 +96,18 @@
 	// Run detail modal — opened both after creating a draft from the queue
 	// and when clicking a row in the Runs tab.
 	let activeRunId = $state<string | null>(null);
+
+	// Prune the queue selection to ids still in the queue whenever it reloads
+	// (after an execute/void via onRunChanged/commitVoid drops the just-handled
+	// invoice). Otherwise the pay-bar count (`selectedQueue.size`) outruns the
+	// rows the money totals actually sum over. No-op (same Set) when clean.
+	$effect(() => {
+		const pruned = pruneSelection(
+			selectedQueue,
+			queue.map((q) => q.id)
+		);
+		if (pruned !== selectedQueue) selectedQueue = pruned;
+	});
 
 	let allQueueSelected = $derived(
 		queue.length > 0 && queue.every(q => selectedQueue.has(q.id))

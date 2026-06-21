@@ -11,6 +11,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { pruneSelection } from '$lib/utils/selection';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -207,6 +208,20 @@
 	let bulkBusy = $state(false);
 	let bulkStatusValue = $state<InvoiceStatus>('approved');
 	let showBulkStatusSelect = $state(false);
+
+	// Prune the selection to ids still visible whenever the list refetches
+	// (status chip, search, advanced filter, modal-close re-apply, load-more).
+	// Otherwise `selected` retains ids that fell off the list — inflating the
+	// bulk-bar count and feeding invisible ids into bulk delete/status/export
+	// (the same guard the exceptions queue applies). `pruneSelection` returns the
+	// same Set when nothing went stale, so the guarded reassignment never loops.
+	$effect(() => {
+		const pruned = pruneSelection(
+			selected,
+			invoiceStore.all.map((inv) => inv.id)
+		);
+		if (pruned !== selected) selected = pruned;
+	});
 
 	let selectableInvoices = $derived(
 		invoiceStore.all.filter((inv) => !SYSTEM_MANAGED_STATUSES.has(inv.status))
