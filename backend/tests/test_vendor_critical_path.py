@@ -364,3 +364,80 @@ async def test_match_vendor_address_only_boosts_never_penalizes(realdb, mk):
     # Perfect normalized-name match: the stale address must not erode it.
     # Old (buggy) blend would have produced 0.8; the fix keeps it at 1.0.
     assert conf == 1.0, f"stale address must not penalize a perfect name match (got {conf})"
+
+
+# ===========================================================================
+# GET /api/vendors/counts — status tallies span the WHOLE set, not one page.
+# Regression for the filter-chip undercount: the "Unverified" attention badge
+# was computed from the loaded page (size 20), so it silently missed
+# unverified vendors past page 1.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_vendor_counts_span_all_pages(realdb, mk):
+    """Insert more unverified vendors than fit on one page; the counts endpoint
+    must report every one of them (not the 20-row page cap)."""
+    async with mk() as s:
+        entity_id = await _default_entity_id(s)
+        org_id = (await s.execute(select(Vendor.organization_id).limit(1))).scalar()
+        if org_id is None:
+            # Derive org from the tenant info if the table is empty.
+            org_id = realdb.info(TENANT).org_id
+        for i in range(25):
+            s.add(
+                Vendor(
+                    name=f"Unverified Co {i:03d}",
+                    code=f"UVC{i:03d}",
+                    status="unverified",
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                )
+            )
+        for i in range(3):
+            s.add(
+                Vendor(
+                    name=f"Active Co {i:03d}",
+                    code=f"ACT{i:03d}",
+                    status="active",
+                    organization_id=org_id,
+                    entity_id=entity_id,
+                )
+            )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.get("/api/vendors/counts")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The 25 unverified vendors are all counted, even though the list page caps
+    # at 20 — the chip badge can't undercount anymore.
+    assert body["by_status"].get("unverified", 0) >= 25
+    assert body["by_status"].get("active", 0) >= 3
+    assert body["total"] == sum(body["by_status"].values())
+
+
+@pytest.mark.asyncio
+async def test_vendor_counts_respect_search(realdb, mk):
+    """The counts honour the same `search` filter as the list, so the chips
+    stay consistent with a filtered table."""
+    async with mk() as s:
+        entity_id = await _default_entity_id(s)
+        org_id = realdb.info(TENANT).org_id
+        s.add(
+            Vendor(
+                name="ZZZ Searchable Unverified",
+                code="ZZZSRCH",
+                status="unverified",
+                organization_id=org_id,
+                entity_id=entity_id,
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.get("/api/vendors/counts?search=ZZZ Searchable")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["by_status"] == {"unverified": 1}
+    assert body["total"] == 1

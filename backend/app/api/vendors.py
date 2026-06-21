@@ -231,6 +231,35 @@ async def list_vendors(
     return paginated(items, total, pagination)
 
 
+@router.get("/counts")
+async def vendor_status_counts(
+    search: str | None = None,
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Status tallies for the vendor filter chips.
+
+    Computed over the WHOLE entity-scoped (and optionally searched) vendor set,
+    not the loaded page — so the chip counts, and in particular the red
+    "Unverified" attention badge, can't undercount when the list paginates past
+    one page. Mirrors GET /api/invoices/counts. Registered before the
+    `/{vendor_id}` route so the literal path isn't swallowed by the UUID param.
+    """
+    query = apply_entity_scope(
+        select(Vendor.status, func.count()).select_from(Vendor), Vendor, entity_id
+    )
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(
+            Vendor.name.ilike(pattern) | Vendor.code.ilike(pattern) | Vendor.email.ilike(pattern)
+        )
+    query = query.group_by(Vendor.status)
+    rows = (await db.execute(query)).all()
+    by_status = {str(status): int(n) for status, n in rows}
+    return {"total": sum(by_status.values()), "by_status": by_status}
+
+
 async def _vendor_name(db: AsyncSession, vendor_id: uuid.UUID) -> str | None:
     return (
         await db.execute(select(Vendor.name).where(Vendor.id == vendor_id))

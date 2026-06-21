@@ -91,6 +91,12 @@
 	let loadingMore = $state(false);
 	let hasMore = $derived(vendors.length < total);
 
+	// Status tallies over the WHOLE (search-scoped) vendor set, from
+	// GET /api/vendors/counts — so the chip counts (and the red Unverified
+	// attention badge) reflect every page, not just the loaded one.
+	let statusCounts = $state<Record<string, number>>({});
+	let countsTotal = $state(0);
+
 	const STATUS_LABELS: Record<string, string> = {
 		active: 'Active',
 		unverified: 'Unverified',
@@ -129,6 +135,7 @@
 			vendors = opts.append ? [...vendors, ...data.items] : data.items;
 			total = data.total;
 			page = nextPage;
+			if (!opts.append) fetchCounts();
 		} catch {
 			toast('Failed to load vendors', 'error');
 		}
@@ -140,6 +147,23 @@
 			await fetchVendors({ append: true, nextPage: page + 1 });
 		} finally {
 			loadingMore = false;
+		}
+	}
+
+	async function fetchCounts() {
+		try {
+			const params = new URLSearchParams();
+			if (search.trim()) params.set('search', search.trim());
+			const qs = params.toString();
+			const data = await api.get<{ total: number; by_status: Record<string, number> }>(
+				`/api/vendors/counts${qs ? `?${qs}` : ''}`
+			);
+			statusCounts = data.by_status ?? {};
+			countsTotal = data.total ?? 0;
+		} catch {
+			// Non-fatal: chips fall back to the loaded-page tallies below.
+			statusCounts = {};
+			countsTotal = 0;
 		}
 	}
 
@@ -176,10 +200,15 @@
 		}
 	}
 
-	let unverifiedCount = $derived(vendors.filter(v => v.status === 'unverified').length);
+	// Prefer the server-side tallies (whole set); fall back to the loaded page
+	// only if the counts endpoint failed (countsTotal === 0 with rows present).
+	let allCount = $derived(countsTotal || vendors.length);
+	let unverifiedCount = $derived(
+		statusCounts.unverified ?? vendors.filter((v) => v.status === 'unverified').length
+	);
 
 	let statusChips = $derived([
-		{ key: 'all', label: m('common.all'), count: vendors.length },
+		{ key: 'all', label: m('common.all'), count: allCount },
 		{
 			key: 'unverified',
 			label: m('vendors.filter.unverified'),
