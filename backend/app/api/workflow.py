@@ -13,8 +13,10 @@ from app.api.deps import (
     ROLE_CFO,
     get_current_user,
     get_org_id,
+    require_permission,
     require_roles,
 )
+from app.api.permissions import PERM_INVOICE_APPROVE
 from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceExtractionResult, InvoiceStatus
 from app.models.organization import Organization
@@ -268,7 +270,7 @@ async def approve_invoice(
     invoice_id: uuid.UUID,
     body: ApproveRequest | None = None,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    user: User = Depends(require_permission(PERM_INVOICE_APPROVE)),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
     corrections = body.model_dump(exclude_unset=True) if body else None
