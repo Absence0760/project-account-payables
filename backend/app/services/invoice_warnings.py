@@ -119,14 +119,19 @@ async def refresh_warnings(
             {"type": "missing_field", "severity": "error", "message": "Missing or zero amount"}
         )
 
-    # Duplicate detection — check if another invoice has the same vendor + invoice #
-    if invoice.vendor_name and invoice.invoice_number:
+    # Duplicate detection — another invoice with the same vendor + invoice #.
+    # Compare case-insensitively and whitespace-trimmed on BOTH sides: strict
+    # byte-equality let "ACME Corp"/"acme corp" and "INV-001"/"INV-001 " (a
+    # trailing space) slip through as distinct, which is exactly how a duplicate
+    # re-submission evades this always-on first gate.
+    if invoice.vendor_name and invoice.vendor_name.strip() and invoice.invoice_number:
         dup_count = await db.execute(
             select(func.count())
             .select_from(Invoice)
             .where(
-                Invoice.vendor_name == invoice.vendor_name,
-                Invoice.invoice_number == invoice.invoice_number,
+                func.lower(func.trim(Invoice.vendor_name)) == invoice.vendor_name.strip().lower(),
+                func.lower(func.trim(Invoice.invoice_number))
+                == invoice.invoice_number.strip().lower(),
                 Invoice.id != invoice.id,
             )
         )
