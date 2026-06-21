@@ -56,8 +56,12 @@ class ClearbitAdapter:
         if not query.domain:
             return VendorFirmographics(provider=self.provider_name, matched=False)
 
+        # SSRF guard: base_url is admin-overridable — refuse an internal host.
+        from app.utils.url_safety import assert_public_url
+
+        assert_public_url(self.base_url)
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
             resp = await client.get(
                 f"{self.base_url}/v2/companies/find",
                 params={"domain": query.domain},

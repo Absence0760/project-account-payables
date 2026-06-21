@@ -104,8 +104,18 @@ class SlackChatNotificationAdapter(ChatNotificationAdapter):
                 message.event_type,
             )
             return
+        # SSRF guard: the webhook_url is admin-set and posted on every approval
+        # event, so refuse a host that resolves to an internal address.
+        from app.utils.url_safety import is_public_url
+
+        if not is_public_url(self.webhook_url):
+            logger.warning(
+                "slack chat-notification: webhook_url is not a public URL — skipping event=%s",
+                message.event_type,
+            )
+            return
         body = self.build_body(message)
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
             response = await client.post(self.webhook_url, json=body)
         response.raise_for_status()
 

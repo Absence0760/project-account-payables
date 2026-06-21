@@ -134,10 +134,22 @@ def fetch_logo_bytes(logo_url: str | None) -> bytes | None:
     if not url:
         return None
 
+    # SSRF guard: refuse to fetch a logo whose host resolves to an internal
+    # address (e.g. the cloud metadata endpoint). Any user can trigger this via
+    # a PDF export, and the admin-set logo_url is otherwise unvalidated.
+    from app.utils.url_safety import is_public_url
+
+    if not is_public_url(url):
+        logger.info("brand logo fetch refused: non-public URL; using product-name header")
+        return None
+
     try:
         import httpx
 
-        with httpx.Client(timeout=LOGO_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        # follow_redirects is OFF: a redirect to an internal host would bypass
+        # the pre-flight host check above. A redirecting CDN just yields a 3xx
+        # here, which we treat as a miss and fall back to the text header.
+        with httpx.Client(timeout=LOGO_FETCH_TIMEOUT_SECONDS, follow_redirects=False) as client:
             with client.stream("GET", url) as resp:
                 if resp.status_code != 200:
                     return None

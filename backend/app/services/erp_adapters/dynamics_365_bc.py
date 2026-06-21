@@ -44,6 +44,11 @@ class BusinessCentralAdapter(ErpAdapter):
 
     def _api_url(self, path: str) -> str:
         base = self.config["base_url"].rstrip("/")
+        # SSRF guard: base_url is admin-supplied config — refuse an internal host
+        # before it's interpolated into a server-side request.
+        from app.utils.url_safety import assert_public_url
+
+        assert_public_url(base)
         env = self.config.get("environment", "production")
         company = self.config.get("company_id", "")
         return f"{base}/{env}/api/v2.0/companies({company})/{path}"
