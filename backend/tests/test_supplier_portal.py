@@ -141,7 +141,13 @@ def test_portal_invoice_endpoints_use_vendor_auth():
 
     from app.api import portal
 
-    no_vendor_auth_allowed = {"/portal/cards/{token}"}
+    no_vendor_auth_allowed = {
+        "/portal/cards/{token}",
+        # Public-by-design white-label branding for the unauthenticated portal
+        # login + themed pages. PII-free, resolves the tenant via get_tenant, and
+        # is listed in test_rbac.NO_AUTH_REQUIRED (the real auth-coverage gate).
+        "/portal/branding",
+    }
 
     for route in portal.router.routes:
         if route.path in no_vendor_auth_allowed:
@@ -177,3 +183,29 @@ def test_portal_filters_payments_by_vendor_id():
 
     src = inspect.getsource(portal.list_my_payments)
     assert "Invoice.vendor_id == vu.vendor_id" in src
+
+
+def test_portal_payment_item_carries_currency():
+    """A non-USD supplier's payment history must render in the invoice's own
+    currency, not a hardcoded $. The schema field + its wiring guarantee it."""
+    import inspect
+
+    from app.api import portal
+    from app.schemas.portal import PortalPaymentListItem
+
+    # The schema exposes a currency field (defaulting to USD for safety).
+    assert "currency" in PortalPaymentListItem.model_fields
+    item = PortalPaymentListItem(
+        id="p1",
+        invoice_id="i1",
+        invoice_number="INV-1",
+        amount="10.00",
+        currency="EUR",
+        status="completed",
+    )
+    assert item.currency == "EUR"
+
+    # The handler sources it from the joined invoice and passes it through.
+    src = inspect.getsource(portal.list_my_payments)
+    assert "Invoice.currency" in src
+    assert "currency=inv_currency" in src

@@ -411,7 +411,7 @@ async def list_my_payments(
     `invoices` to (a) filter on `vendor_id` and (b) surface the invoice number
     so the vendor can reconcile without an extra round trip."""
     query = (
-        select(Payment, Invoice.invoice_number)
+        select(Payment, Invoice.invoice_number, Invoice.currency)
         .join(Invoice, Payment.invoice_id == Invoice.id)
         .where(Invoice.vendor_id == vu.vendor_id)
     )
@@ -435,13 +435,14 @@ async def list_my_payments(
                 invoice_id=str(p.invoice_id),
                 invoice_number=inv_num or "",
                 amount=p.amount,
+                currency=inv_currency or "USD",
                 method=p.method,
                 status=p.status,
                 reference=p.reference,
                 submitted_at=p.submitted_at,
                 completed_at=p.completed_at,
             )
-            for p, inv_num in rows
+            for p, inv_num, inv_currency in rows
         ],
         total=total,
         page=pagination.page,

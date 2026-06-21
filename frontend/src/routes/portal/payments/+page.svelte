@@ -9,6 +9,7 @@
 		invoice_id: string;
 		invoice_number: string;
 		amount: number | string;
+		currency: string;
 		method: string | null;
 		status: string;
 		reference: string | null;
@@ -102,7 +103,7 @@
 						<td>{fmtDate(p.submitted_at)}</td>
 						<td>{fmtDate(p.completed_at)}</td>
 						<td>{p.method || m('portal.common.dash')}</td>
-						<td class="num"><Money amount={p.amount} /></td>
+						<td class="num"><Money amount={p.amount} currency={p.currency} /></td>
 						<td><span class="status s-{p.status}">{p.status}</span></td>
 						<td>{p.reference || m('portal.common.dash')}</td>
 						<td class="actions">
