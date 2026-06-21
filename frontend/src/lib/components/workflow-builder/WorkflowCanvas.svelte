@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { WorkflowStep, WorkflowStepType, ConditionStepConfig, ParallelStepConfig } from '$lib/types/workflow';
 	import StepNode from './StepNode.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Props = {
 		steps: WorkflowStep[];
@@ -31,9 +32,11 @@
 	let dropIndex = $state<number | null>(null);
 
 	function stepNumberLabel(num: number | null): string {
-		if (num === null) return 'next step';
+		if (num === null) return m('workflows.builder.canvas.nextStep');
 		const target = steps.find((s) => s.number === num);
-		return target ? `${target.name} (#${num})` : `step #${num}`;
+		return target
+			? m('workflows.builder.canvas.namedStep', { name: target.name, number: num })
+			: m('workflows.builder.canvas.unnamedStep', { number: num });
 	}
 
 	function handleNodeDragStart(e: DragEvent, index: number) {
@@ -94,7 +97,7 @@
 			ondrop={(e) => handleSlotDrop(e, 0)}
 			role="list"
 		>
-			Drag a step here to begin, or click one in the library.
+			{m('workflows.builder.canvas.emptyDrop')}
 		</div>
 	{:else}
 		<!-- Drop slot before the first node -->
@@ -127,11 +130,11 @@
 				{@const cfg = step.config as ConditionStepConfig}
 				<div class="branch-annot">
 					<span class="branch-line true">
-						<span class="branch-tag true">true →</span>
+						<span class="branch-tag true">{m('workflows.builder.canvas.branchTrue')}</span>
 						{stepNumberLabel(cfg.on_true_goto)}
 					</span>
 					<span class="branch-line false">
-						<span class="branch-tag false">false →</span>
+						<span class="branch-tag false">{m('workflows.builder.canvas.branchFalse')}</span>
 						{stepNumberLabel(cfg.on_false_goto)}
 					</span>
 				</div>
@@ -139,8 +142,9 @@
 				{@const cfg = step.config as ParallelStepConfig}
 				<div class="branch-annot parallel">
 					<span class="parallel-summary">
-						fan-out: join {cfg.join}{cfg.join === 'any' && cfg.min_approvals
-							? ` · ${cfg.min_approvals} required`
+						{m('workflows.builder.canvas.fanOut', { join: cfg.join })}{cfg.join === 'any' &&
+						cfg.min_approvals
+							? m('workflows.builder.canvas.minRequired', { count: cfg.min_approvals })
 							: ''}
 					</span>
 					<div class="parallel-branches">

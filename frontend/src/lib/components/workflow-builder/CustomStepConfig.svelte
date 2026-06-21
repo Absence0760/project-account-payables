@@ -7,6 +7,7 @@
 		WebhookMethod,
 		EmailRecipientKind,
 	} from '$lib/types/workflow';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Props = {
 		type: Extract<WorkflowStepType, 'webhook' | 'email' | 'delay'>;
@@ -77,7 +78,7 @@
 {#if type === 'webhook'}
 	<div class="custom">
 		<div class="field">
-			<label for="wh-url">Endpoint URL</label>
+			<label for="wh-url">{m('workflows.builder.webhook.url')}</label>
 			<input
 				id="wh-url"
 				type="url"
@@ -88,7 +89,7 @@
 		</div>
 		<div class="row">
 			<div class="field">
-				<label for="wh-method">Method</label>
+				<label for="wh-method">{m('workflows.builder.webhook.method')}</label>
 				<select
 					id="wh-method"
 					value={webhook.method}
@@ -100,7 +101,7 @@
 				</select>
 			</div>
 			<div class="field">
-				<label for="wh-timeout">Timeout (seconds)</label>
+				<label for="wh-timeout">{m('workflows.builder.webhook.timeout')}</label>
 				<input
 					id="wh-timeout"
 					type="number"
@@ -115,37 +116,37 @@
 		</div>
 		<div class="field">
 			<div class="label-row">
-				<span class="field-label">Headers</span>
-				<button type="button" class="link-btn" onclick={addHeader}>+ Add header</button>
+				<span class="field-label">{m('workflows.builder.webhook.headers')}</span>
+				<button type="button" class="link-btn" onclick={addHeader}>{m('workflows.builder.webhook.addHeader')}</button>
 			</div>
 			{#each headerRows as [key, value], idx (idx)}
 				<div class="kv-row">
 					<input
 						type="text"
-						aria-label="Header name"
-						placeholder="Header"
+						aria-label={m('workflows.builder.webhook.headerName')}
+						placeholder={m('workflows.builder.webhook.headerNamePlaceholder')}
 						value={key}
 						oninput={(e) => patchHeaderKey(idx, e.currentTarget.value)}
 					/>
 					<input
 						type="text"
-						aria-label="Header value"
-						placeholder="Value"
+						aria-label={m('workflows.builder.webhook.headerValue')}
+						placeholder={m('workflows.builder.webhook.headerValuePlaceholder')}
 						{value}
 						oninput={(e) => patchHeaderValue(idx, e.currentTarget.value)}
 					/>
 					<button
 						type="button"
 						class="icon-btn danger"
-						title="Remove header"
-						aria-label="Remove header"
+						title={m('workflows.builder.webhook.removeHeader')}
+						aria-label={m('workflows.builder.webhook.removeHeader')}
 						onclick={() => removeHeader(idx)}
 					>×</button>
 				</div>
 			{/each}
 		</div>
 		<div class="field">
-			<label for="wh-body">Body template</label>
+			<label for="wh-body">{m('workflows.builder.webhook.bodyTemplate')}</label>
 			<textarea
 				id="wh-body"
 				rows="4"
@@ -154,28 +155,27 @@
 				oninput={(e) => patchWebhook({ body_template: e.currentTarget.value || null })}
 			></textarea>
 			<p class="hint">
-				Local-first: the webhook is recorded (not sent) in dev and simulation unless enabled in
-				the deployed environment.
+				{m('workflows.builder.webhook.bodyHint')}
 			</p>
 		</div>
 	</div>
 {:else if type === 'email'}
 	<div class="custom">
 		<div class="field">
-			<label for="em-to">Recipients</label>
+			<label for="em-to">{m('workflows.builder.email.recipients')}</label>
 			<select
 				id="em-to"
 				value={email.to}
 				onchange={(e) => patchEmail({ to: e.currentTarget.value as EmailRecipientKind })}
 			>
-				<option value="approver">Current approver(s)</option>
-				<option value="vendor">Invoice vendor</option>
-				<option value="custom">Custom addresses</option>
+				<option value="approver">{m('workflows.builder.email.recipientApprover')}</option>
+				<option value="vendor">{m('workflows.builder.email.recipientVendor')}</option>
+				<option value="custom">{m('workflows.builder.email.recipientCustom')}</option>
 			</select>
 		</div>
 		{#if email.to === 'custom'}
 			<div class="field">
-				<label for="em-addrs">Email addresses</label>
+				<label for="em-addrs">{m('workflows.builder.email.addresses')}</label>
 				<input
 					id="em-addrs"
 					type="text"
@@ -186,31 +186,31 @@
 			</div>
 		{/if}
 		<div class="field">
-			<label for="em-subject">Subject</label>
+			<label for="em-subject">{m('workflows.builder.email.subject')}</label>
 			<input
 				id="em-subject"
 				type="text"
-				placeholder={'Invoice {{invoice.number}} needs attention'}
+				placeholder={m('workflows.builder.email.subjectPlaceholder')}
 				value={email.subject}
 				oninput={(e) => patchEmail({ subject: e.currentTarget.value })}
 			/>
 		</div>
 		<div class="field">
-			<label for="em-body">Body template</label>
+			<label for="em-body">{m('workflows.builder.email.bodyTemplate')}</label>
 			<textarea
 				id="em-body"
 				rows="5"
-				placeholder={'Hello, invoice {{invoice.number}} for {{invoice.amount}} is ready for your review.'}
+				placeholder={m('workflows.builder.email.bodyPlaceholder')}
 				value={email.body_template}
 				oninput={(e) => patchEmail({ body_template: e.currentTarget.value })}
 			></textarea>
-			<p class="hint">Sent through the configured email adapter (console output in dev).</p>
+			<p class="hint">{m('workflows.builder.email.bodyHint')}</p>
 		</div>
 	</div>
 {:else if type === 'delay'}
 	<div class="custom">
 		<div class="field">
-			<label for="dl-duration">Duration (seconds)</label>
+			<label for="dl-duration">{m('workflows.builder.delay.duration')}</label>
 			<input
 				id="dl-duration"
 				type="number"
@@ -219,20 +219,19 @@
 				oninput={(e) =>
 					patchDelay({ duration_seconds: Math.max(0, parseInt(e.currentTarget.value, 10) || 0) })}
 			/>
-			<p class="hint">{(delay.duration_seconds / 3600).toFixed(2)} hours</p>
+			<p class="hint">{m('workflows.builder.delay.hours', { hours: (delay.duration_seconds / 3600).toFixed(2) })}</p>
 		</div>
 		<div class="field">
-			<label for="dl-until">Until field (optional)</label>
+			<label for="dl-until">{m('workflows.builder.delay.untilField')}</label>
 			<input
 				id="dl-until"
 				type="text"
-				placeholder="e.g. due_date"
+				placeholder={m('workflows.builder.delay.untilFieldPlaceholder')}
 				value={delay.until_field ?? ''}
 				oninput={(e) => patchDelay({ until_field: e.currentTarget.value || null })}
 			/>
 			<p class="hint">
-				If set, the workflow waits until this invoice date field instead of a fixed duration.
-				Delays never sleep in dev or simulation — they record intent only.
+				{m('workflows.builder.delay.untilHint')}
 			</p>
 		</div>
 	</div>

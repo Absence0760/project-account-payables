@@ -4,6 +4,7 @@
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import ApprovalMatrixEditor from '$lib/components/modals/ApprovalMatrixEditor.svelte';
 	import WorkflowCanvas from '$lib/components/workflow-builder/WorkflowCanvas.svelte';
 	import StepPalette from '$lib/components/workflow-builder/StepPalette.svelte';
@@ -74,7 +75,7 @@
 			descInput = wf.description ?? '';
 			selectedIndex = 0;
 		} catch {
-			toast('Workflow not found', 'error');
+			toast(m('workflows.builder.toast.notFound'), 'error');
 		}
 	}
 
@@ -165,9 +166,9 @@
 				steps,
 			});
 			dirty = false;
-			toast('Workflow saved', 'success');
+			toast(m('workflows.builder.toast.saved'), 'success');
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : 'Failed to save', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.builder.toast.saveFailed'), 'error');
 		} finally {
 			saving = false;
 		}
@@ -180,9 +181,14 @@
 				is_active: !workflow.is_active,
 			});
 			workflow = updated;
-			toast(updated.is_active ? 'Workflow activated' : 'Workflow deactivated', 'success');
+			toast(
+				updated.is_active
+					? m('workflows.builder.toast.activated')
+					: m('workflows.builder.toast.deactivated'),
+				'success'
+			);
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : 'Failed to update', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.builder.toast.updateFailed'), 'error');
 		}
 	}
 </script>
@@ -191,18 +197,18 @@
 
 <div class="workspace">
 	{#if !workflow}
-		<div class="loading">Loading...</div>
+		<div class="loading">{m('common.loading')}</div>
 	{:else}
 		<header class="toolbar">
 			<div class="toolbar-left">
-				<a href="/workflows" class="back-link" aria-label="Back to workflows">
+				<a href="/workflows" class="back-link" aria-label={m('workflows.builder.aria.back')}>
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
 				</a>
 				{#if editingName}
 					<input
 						class="name-input"
 						type="text"
-						aria-label="Workflow name"
+						aria-label={m('workflows.builder.aria.workflowName')}
 						bind:value={nameInput}
 						onblur={() => { editingName = false; dirty = true; }}
 						onkeydown={(e) => { if (e.key === 'Enter') { editingName = false; dirty = true; } }}
@@ -212,23 +218,25 @@
 						<button
 							type="button"
 							class="page-title-edit"
-							aria-label={`Edit workflow name: ${nameInput}`}
+							aria-label={m('workflows.builder.aria.editName', { name: nameInput })}
 							onclick={() => (editingName = true)}
 						>
 							{nameInput}
 						</button>
 						{#if workflow.is_default}
-							<span class="default-badge">Default</span>
+							<span class="default-badge">{m('workflows.builder.defaultBadge')}</span>
 						{/if}
 					</h1>
 				{/if}
 			</div>
 			<div class="toolbar-right">
 				<button class="btn-toggle" class:active={workflow.is_active} onclick={toggleActive}>
-					{workflow.is_active ? 'Active' : 'Inactive'}
+					{workflow.is_active
+						? m('workflows.builder.status.active')
+						: m('workflows.builder.status.inactive')}
 				</button>
 				<button class="btn-save" disabled={saving || !dirty} onclick={handleSave}>
-					{saving ? 'Saving...' : 'Save'}
+					{saving ? m('common.saving') : m('common.save')}
 				</button>
 			</div>
 		</header>
@@ -237,8 +245,8 @@
 			<input
 				class="desc-input"
 				type="text"
-				aria-label="Workflow description"
-				placeholder="Add a description..."
+				aria-label={m('workflows.builder.aria.workflowDescription')}
+				placeholder={m('workflows.builder.descriptionPlaceholder')}
 				bind:value={descInput}
 				oninput={() => (dirty = true)}
 			/>
@@ -255,7 +263,7 @@
 			<!-- Centre: flow canvas -->
 			<div class="canvas-pane">
 				<div class="pane-header">
-					<span class="pane-label">Flow</span>
+					<span class="pane-label">{m('workflows.builder.flowLabel')}</span>
 				</div>
 				<WorkflowCanvas
 					{steps}
@@ -280,7 +288,7 @@
 					<div class="config-body">
 						<!-- Common fields -->
 						<div class="field">
-							<label for="step-name">Step Name</label>
+							<label for="step-name">{m('workflows.builder.field.stepName')}</label>
 							<input
 								id="step-name"
 								type="text"
@@ -290,7 +298,7 @@
 						</div>
 
 						<div class="field toggle-field">
-							<label id="step-enabled-label" for="step-enabled">Enabled</label>
+							<label id="step-enabled-label" for="step-enabled">{m('workflows.builder.field.enabled')}</label>
 							<button
 								id="step-enabled"
 								class="toggle"
@@ -310,7 +318,7 @@
 						{#if selectedStep.type === 'extraction'}
 							{@const cfg = selectedStep.config as ExtractionStepConfig}
 							<div class="field toggle-field">
-								<label id="auto-approve-label" for="auto-approve">Auto-approve on high confidence</label>
+								<label id="auto-approve-label" for="auto-approve">{m('workflows.builder.extraction.autoApprove')}</label>
 								<button
 									id="auto-approve"
 									class="toggle"
@@ -326,7 +334,7 @@
 
 							{#if cfg.auto_approve_enabled}
 								<div class="field">
-									<label for="threshold">Confidence Threshold</label>
+									<label for="threshold">{m('workflows.builder.extraction.confidenceThreshold')}</label>
 									<div class="range-row">
 										<input
 											id="threshold"
@@ -340,7 +348,7 @@
 										<span class="range-value">{Math.round(cfg.auto_approve_threshold * 100)}%</span>
 									</div>
 									<p class="field-hint">
-										Invoices with extraction confidence above this threshold will skip manual approval.
+										{m('workflows.builder.extraction.thresholdHint')}
 									</p>
 								</div>
 							{/if}
@@ -350,7 +358,7 @@
 						{#if selectedStep.type === 'approval'}
 							{@const cfg = selectedStep.config as ApprovalStepConfig}
 							<div class="field toggle-field">
-								<label id="approval-required-label" for="approval-required">Approval Required</label>
+								<label id="approval-required-label" for="approval-required">{m('workflows.builder.approval.required')}</label>
 								<button
 									id="approval-required"
 									class="toggle"
@@ -365,16 +373,16 @@
 							</div>
 
 							<div class="field">
-								<label for="approver-strategy">Approver Assignment</label>
+								<label for="approver-strategy">{m('workflows.builder.approval.approverAssignment')}</label>
 								<select
 									id="approver-strategy"
 									value={cfg.approver_strategy}
 									onchange={(e) => updateStepConfig(selectedIndex, 'approver_strategy', e.currentTarget.value)}
 								>
-									<option value="manual">Manual — assign per invoice</option>
-									<option value="specific">Specific — always same approver</option>
-									<option value="chain">Chain — multi-level matrix</option>
-									<option value="auto">Auto — skip approval step</option>
+									<option value="manual">{m('workflows.builder.approval.strategyManual')}</option>
+									<option value="specific">{m('workflows.builder.approval.strategySpecific')}</option>
+									<option value="chain">{m('workflows.builder.approval.strategyChain')}</option>
+									<option value="auto">{m('workflows.builder.approval.strategyAuto')}</option>
 								</select>
 							</div>
 
@@ -390,7 +398,7 @@
 									)
 									: availableUsers}
 								<div class="field">
-									<label for="approver-search-input">Approvers</label>
+									<label for="approver-search-input">{m('workflows.builder.approval.approvers')}</label>
 
 									{#if selectedUsers.length > 0}
 										<div class="approver-chips">
@@ -400,7 +408,7 @@
 													<button
 														type="button"
 														class="chip-remove"
-														aria-label={`Remove approver ${user?.full_name ?? ''}`}
+														aria-label={m('workflows.builder.approval.removeApprover', { name: user?.full_name ?? '' })}
 														onclick={(e) => {
 															e.stopPropagation();
 															updateStepConfig(selectedIndex, 'approver_ids', ids.filter((uid: string) => uid !== user?.id));
@@ -419,7 +427,7 @@
 											id="approver-search-input"
 											type="text"
 											class="approver-search"
-											placeholder="Search users to add..."
+											placeholder={m('workflows.builder.approval.searchUsers')}
 											bind:value={approverSearch}
 											onfocus={() => (approverDropdownOpen = true)}
 										/>
@@ -440,32 +448,30 @@
 											</div>
 										{:else if approverDropdownOpen && query && filteredUsers.length === 0}
 											<div class="approver-dropdown">
-												<div class="approver-empty">No matching users</div>
+												<div class="approver-empty">{m('workflows.builder.approval.noMatchingUsers')}</div>
 											</div>
 										{/if}
 									</div>
 
 									{#if ids.length > 0}
-										<p class="field-hint">Invoices will be round-robin assigned to the {ids.length} selected approver{ids.length > 1 ? 's' : ''}.</p>
+										<p class="field-hint">{m('workflows.builder.approval.roundRobinHint', { count: ids.length })}</p>
 									{:else}
-										<p class="field-hint warning">No approvers selected. Select at least one user.</p>
+										<p class="field-hint warning">{m('workflows.builder.approval.noApproversSelected')}</p>
 									{/if}
 								</div>
 							{/if}
 
 							{#if cfg.approver_strategy === 'auto'}
 								<p class="field-hint warning">
-									Invoices will be automatically approved without human review. Use with caution.
+									{m('workflows.builder.approval.autoWarning')}
 								</p>
 							{/if}
 
 							{#if cfg.approver_strategy === 'chain'}
 								<div class="field">
-									<label for="approval-matrix">Approval matrix</label>
+									<label for="approval-matrix">{m('workflows.builder.approval.matrix')}</label>
 									<p class="field-hint">
-										Define one or more approval levels. Each level can filter by amount or
-										invoice attributes (department, GL, vendor) and supports parallel approvers
-										and time-based escalation.
+										{m('workflows.builder.approval.matrixHint')}
 									</p>
 									<ApprovalMatrixEditor
 										chain={cfg.approval_chain ?? []}
@@ -477,48 +483,48 @@
 							{/if}
 
 							<div class="field-divider"></div>
-							<h4 class="field-section-title">Approval Thresholds</h4>
+							<h4 class="field-section-title">{m('workflows.builder.approval.thresholdsTitle')}</h4>
 
 							<div class="field">
-								<label for="auto-approve-below">Auto-approve below ($)</label>
+								<label for="auto-approve-below">{m('workflows.builder.approval.autoApproveBelow')}</label>
 								<input
 									id="auto-approve-below"
 									type="number"
 									step="0.01"
 									min="0"
-									placeholder="No limit"
+									placeholder={m('workflows.builder.approval.noLimit')}
 									value={cfg.auto_approve_below ?? ''}
 									oninput={(e) => updateStepConfig(selectedIndex, 'auto_approve_below', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
 								/>
-								<p class="field-hint">Invoices below this amount skip approval entirely.</p>
+								<p class="field-hint">{m('workflows.builder.approval.autoApproveBelowHint')}</p>
 							</div>
 
 							<div class="field">
-								<label for="require-cfo-above">Require CFO approval above ($)</label>
+								<label for="require-cfo-above">{m('workflows.builder.approval.requireCfoAbove')}</label>
 								<input
 									id="require-cfo-above"
 									type="number"
 									step="0.01"
 									min="0"
-									placeholder="No limit"
+									placeholder={m('workflows.builder.approval.noLimit')}
 									value={cfg.require_cfo_above ?? ''}
 									oninput={(e) => updateStepConfig(selectedIndex, 'require_cfo_above', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
 								/>
-								<p class="field-hint">Invoices above this amount require a user with the CFO role to approve.</p>
+								<p class="field-hint">{m('workflows.builder.approval.requireCfoAboveHint')}</p>
 							</div>
 
 							<div class="field">
-								<label for="max-invoice-amount">Maximum invoice amount ($)</label>
+								<label for="max-invoice-amount">{m('workflows.builder.approval.maxInvoiceAmount')}</label>
 								<input
 									id="max-invoice-amount"
 									type="number"
 									step="0.01"
 									min="0"
-									placeholder="No limit"
+									placeholder={m('workflows.builder.approval.noLimit')}
 									value={cfg.max_invoice_amount ?? ''}
 									oninput={(e) => updateStepConfig(selectedIndex, 'max_invoice_amount', e.currentTarget.value ? parseFloat(e.currentTarget.value) : null)}
 								/>
-								<p class="field-hint">Invoices above this amount are rejected automatically.</p>
+								<p class="field-hint">{m('workflows.builder.approval.maxInvoiceAmountHint')}</p>
 							</div>
 						{/if}
 
@@ -526,10 +532,10 @@
 						{#if selectedStep.type === 'erp_export'}
 							{@const cfg = selectedStep.config as ErpExportStepConfig}
 
-							<p class="field-hint">ERP connection credentials are configured in <a href="/organization">Organization Settings</a>. This step controls what and when to send.</p>
+							<p class="field-hint">{m('workflows.builder.erp.credentialsHintPre')}<a href="/organization">{m('workflows.builder.erp.credentialsHintLink')}</a>{m('workflows.builder.erp.credentialsHintPost')}</p>
 
 							<div class="field toggle-field">
-								<label id="auto-send-label" for="auto-send">Auto-send on approval</label>
+								<label id="auto-send-label" for="auto-send">{m('workflows.builder.erp.autoSend')}</label>
 								<button
 									id="auto-send"
 									class="toggle"
@@ -543,12 +549,12 @@
 								</button>
 							</div>
 							{#if !cfg.auto_send_on_approval}
-								<p class="field-hint warning">Invoices will not be sent to ERP automatically. Users must manually trigger "Send to ERP" from the invoice.</p>
+								<p class="field-hint warning">{m('workflows.builder.erp.noAutoSendWarning')}</p>
 							{/if}
 
 							{#if erpMethod === 'direct'}
 								<div class="field">
-									<label for="export-format">Export Format</label>
+									<label for="export-format">{m('workflows.builder.erp.exportFormat')}</label>
 									<select
 										id="export-format"
 										value={cfg.export_format}
@@ -560,27 +566,27 @@
 									</select>
 									<p class="field-hint">
 										{#if cfg.export_format === 'xml'}
-											Generates an XML document compatible with most ERP systems.
+											{m('workflows.builder.erp.formatHintXml')}
 										{:else if cfg.export_format === 'csv'}
-											Flat CSV file for import into spreadsheet-based workflows.
+											{m('workflows.builder.erp.formatHintCsv')}
 										{:else if cfg.export_format === 'cxml'}
-											Commerce XML for procurement systems (Ariba, Coupa).
+											{m('workflows.builder.erp.formatHintCxml')}
 										{:else if cfg.export_format === 'edi'}
-											EDI 810 format for legacy ERP integrations.
+											{m('workflows.builder.erp.formatHintEdi')}
 										{:else}
-											Standard JSON payload sent via API.
+											{m('workflows.builder.erp.formatHintJson')}
 										{/if}
 									</p>
 								</div>
 							{:else}
-								<p class="field-hint">Export format is handled automatically by Merge.dev based on your ERP system.</p>
+								<p class="field-hint">{m('workflows.builder.erp.formatHintMerge')}</p>
 							{/if}
 
 							<div class="field-divider"></div>
-							<h4 class="field-section-title">Payload Options</h4>
+							<h4 class="field-section-title">{m('workflows.builder.erp.payloadOptions')}</h4>
 
 							<div class="field toggle-field">
-								<label id="include-lines-label" for="include-lines">Include line items</label>
+								<label id="include-lines-label" for="include-lines">{m('workflows.builder.erp.includeLineItems')}</label>
 								<button
 									id="include-lines"
 									class="toggle"
@@ -595,7 +601,7 @@
 							</div>
 
 							<div class="field toggle-field">
-								<label id="include-attach-label" for="include-attach">Include PDF attachment URL</label>
+								<label id="include-attach-label" for="include-attach">{m('workflows.builder.erp.includeAttachments')}</label>
 								<button
 									id="include-attach"
 									class="toggle"
@@ -641,15 +647,15 @@
 
 					<div class="config-footer">
 						<div class="move-btns">
-							<button class="move-btn" disabled={selectedIndex === 0} onclick={() => reorderStep(selectedIndex, selectedIndex - 1)}>Move Up</button>
-							<button class="move-btn" disabled={selectedIndex === steps.length - 1} onclick={() => reorderStep(selectedIndex, selectedIndex + 1)}>Move Down</button>
+							<button class="move-btn" disabled={selectedIndex === 0} onclick={() => reorderStep(selectedIndex, selectedIndex - 1)}>{m('workflows.builder.moveUp')}</button>
+							<button class="move-btn" disabled={selectedIndex === steps.length - 1} onclick={() => reorderStep(selectedIndex, selectedIndex + 1)}>{m('workflows.builder.moveDown')}</button>
 						</div>
 						{#if steps.length > 1}
-							<button class="remove-btn" onclick={() => removeStep(selectedIndex)}>Remove Step</button>
+							<button class="remove-btn" onclick={() => removeStep(selectedIndex)}>{m('workflows.builder.removeStep')}</button>
 						{/if}
 					</div>
 				{:else}
-					<div class="no-selection">Add a step from the library, then select it to configure.</div>
+					<div class="no-selection">{m('workflows.builder.noSelection')}</div>
 				{/if}
 			</div>
 		</div>

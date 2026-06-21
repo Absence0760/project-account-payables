@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { WorkflowStepType } from '$lib/types/workflow';
 	import { STEP_TYPE_LABELS, STEP_TYPE_DESCRIPTIONS } from '$lib/types/workflow';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Props = {
 		ondragtype: (type: WorkflowStepType) => void;
@@ -43,8 +44,8 @@
 
 <div class="palette">
 	<div class="palette-header">
-		<span class="palette-label">Step Library</span>
-		<p class="palette-hint">Drag a step onto the canvas, or click to append.</p>
+		<span class="palette-label">{m('workflows.builder.palette.title')}</span>
+		<p class="palette-hint">{m('workflows.builder.palette.hint')}</p>
 	</div>
 	<div class="palette-list">
 		{#each PALETTE as type (type)}
@@ -57,7 +58,7 @@
 				onclick={() => onadd(type)}
 				data-palette-type={type}
 				title={STEP_TYPE_DESCRIPTIONS[type]}
-				aria-label={`Add ${STEP_TYPE_LABELS[type]} step`}
+				aria-label={m('workflows.builder.palette.addStep', { step: STEP_TYPE_LABELS[type] })}
 			>
 				<svg
 					class="palette-icon"

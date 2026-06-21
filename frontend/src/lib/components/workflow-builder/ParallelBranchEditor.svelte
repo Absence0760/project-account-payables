@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ParallelStepConfig, ParallelBranchConfig } from '$lib/types/workflow';
 	import type { AdminUser } from '$lib/types/admin';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Props = {
 		config: ParallelStepConfig;
@@ -22,7 +23,9 @@
 
 	function addBranch() {
 		const branch: ParallelBranchConfig = {
-			name: `Branch ${config.branches.length + 1}`,
+			name: m('workflows.builder.parallel.defaultBranchName', {
+				number: config.branches.length + 1,
+			}),
 			approver_ids: [],
 		};
 		patch({ branches: [...config.branches, branch] });
@@ -48,20 +51,20 @@
 				<input
 					class="branch-name"
 					type="text"
-					placeholder="Branch name"
+					placeholder={m('workflows.builder.parallel.branchNamePlaceholder')}
 					value={branch.name}
 					oninput={(e) => patchBranch(idx, { name: e.currentTarget.value })}
 				/>
 				<button
 					type="button"
 					class="icon-btn danger"
-					title="Remove branch"
-					aria-label="Remove branch"
+					title={m('workflows.builder.parallel.removeBranch')}
+					aria-label={m('workflows.builder.parallel.removeBranch')}
 					disabled={config.branches.length <= 1}
 					onclick={() => removeBranch(idx)}
 				>×</button>
 			</div>
-			<span class="field-label">Approvers</span>
+			<span class="field-label">{m('workflows.builder.parallel.approvers')}</span>
 			<div class="user-chips">
 				{#each activeUsers as u (u.id)}
 					<button
@@ -74,28 +77,28 @@
 					</button>
 				{/each}
 				{#if activeUsers.length === 0}
-					<p class="hint">No active users to assign.</p>
+					<p class="hint">{m('workflows.builder.parallel.noActiveUsers')}</p>
 				{/if}
 			</div>
 		</div>
 	{/each}
 
-	<button type="button" class="add-branch-btn" onclick={addBranch}>+ Add branch</button>
+	<button type="button" class="add-branch-btn" onclick={addBranch}>{m('workflows.builder.parallel.addBranch')}</button>
 
 	<div class="join-row">
 		<label class="join-field">
-			<span class="field-label">Join</span>
+			<span class="field-label">{m('workflows.builder.parallel.join')}</span>
 			<select
 				value={config.join}
 				onchange={(e) => patch({ join: e.currentTarget.value as 'all' | 'any' })}
 			>
-				<option value="all">All branches must approve</option>
-				<option value="any">Any branch satisfies (count below)</option>
+				<option value="all">{m('workflows.builder.parallel.joinAll')}</option>
+				<option value="any">{m('workflows.builder.parallel.joinAny')}</option>
 			</select>
 		</label>
 		{#if config.join === 'any'}
 			<label class="join-field">
-				<span class="field-label">Min approvals</span>
+				<span class="field-label">{m('workflows.builder.parallel.minApprovals')}</span>
 				<input
 					type="number"
 					min="1"

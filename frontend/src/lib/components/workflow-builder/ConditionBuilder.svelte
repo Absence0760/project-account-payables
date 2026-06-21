@@ -7,6 +7,7 @@
 		WorkflowStep,
 	} from '$lib/types/workflow';
 	import { CONDITION_FIELD_LABELS, CONDITION_OPERATOR_LABELS } from '$lib/types/workflow';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Props = {
 		config: ConditionStepConfig;
@@ -83,13 +84,13 @@
 
 <div class="condition">
 	<div class="match-row">
-		<span class="match-label">Match</span>
+		<span class="match-label">{m('workflows.builder.condition.match')}</span>
 		<select
 			value={config.match}
 			onchange={(e) => patch({ match: e.currentTarget.value as 'all' | 'any' })}
 		>
-			<option value="all">all rules (AND)</option>
-			<option value="any">any rule (OR)</option>
+			<option value="all">{m('workflows.builder.condition.matchAll')}</option>
+			<option value="any">{m('workflows.builder.condition.matchAny')}</option>
 		</select>
 	</div>
 
@@ -97,7 +98,7 @@
 		{#each config.rules as rule, idx (idx)}
 			<div class="rule-row">
 				<select
-					aria-label="Field"
+					aria-label={m('workflows.builder.condition.field')}
 					value={rule.field}
 					onchange={(e) => patchRule(idx, { field: e.currentTarget.value as ConditionField })}
 				>
@@ -106,7 +107,7 @@
 					{/each}
 				</select>
 				<select
-					aria-label="Operator"
+					aria-label={m('workflows.builder.condition.operator')}
 					value={rule.operator}
 					onchange={(e) => operatorChanged(idx, e.currentTarget.value as ConditionOperator)}
 				>
@@ -116,46 +117,48 @@
 				</select>
 				<input
 					type="text"
-					aria-label="Value"
-					placeholder={SET_OPERATORS.includes(rule.operator) ? 'comma, separated' : 'value'}
+					aria-label={m('workflows.builder.condition.value')}
+					placeholder={SET_OPERATORS.includes(rule.operator)
+						? m('workflows.builder.condition.valuePlaceholderSet')
+						: m('workflows.builder.condition.valuePlaceholder')}
 					value={valueForInput(rule)}
 					oninput={(e) => patchRule(idx, { value: parseValue(rule, e.currentTarget.value) })}
 				/>
 				<button
 					type="button"
 					class="icon-btn danger"
-					title="Remove rule"
-					aria-label="Remove rule"
+					title={m('workflows.builder.condition.removeRule')}
+					aria-label={m('workflows.builder.condition.removeRule')}
 					onclick={() => removeRule(idx)}
 				>×</button>
 			</div>
 		{/each}
 		{#if config.rules.length === 0}
-			<p class="hint">No rules — this condition always evaluates false.</p>
+			<p class="hint">{m('workflows.builder.condition.noRules')}</p>
 		{/if}
-		<button type="button" class="link-btn" onclick={addRule}>+ Add rule</button>
+		<button type="button" class="link-btn" onclick={addRule}>{m('workflows.builder.condition.addRule')}</button>
 	</div>
 
 	<div class="branch-row">
 		<label class="branch-field">
-			<span class="branch-label true">When true, go to</span>
+			<span class="branch-label true">{m('workflows.builder.condition.whenTrue')}</span>
 			<select
 				value={gotoValue(config.on_true_goto)}
 				onchange={(e) => patch({ on_true_goto: parseGoto(e.currentTarget.value) })}
 			>
-				<option value="">Next step (fall through)</option>
+				<option value="">{m('workflows.builder.condition.fallThrough')}</option>
 				{#each targets as t (t.number)}
 					<option value={t.number}>{t.number}. {t.name}</option>
 				{/each}
 			</select>
 		</label>
 		<label class="branch-field">
-			<span class="branch-label false">When false, go to</span>
+			<span class="branch-label false">{m('workflows.builder.condition.whenFalse')}</span>
 			<select
 				value={gotoValue(config.on_false_goto)}
 				onchange={(e) => patch({ on_false_goto: parseGoto(e.currentTarget.value) })}
 			>
-				<option value="">Next step (fall through)</option>
+				<option value="">{m('workflows.builder.condition.fallThrough')}</option>
 				{#each targets as t (t.number)}
 					<option value={t.number}>{t.number}. {t.name}</option>
 				{/each}

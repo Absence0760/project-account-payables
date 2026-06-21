@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { WorkflowStep } from '$lib/types/workflow';
 	import { STEP_TYPE_LABELS } from '$lib/types/workflow';
+	import { m } from '$lib/i18n/store.svelte';
 
 	type Props = {
 		step: WorkflowStep;
@@ -73,7 +74,7 @@
 	tabindex="0"
 	data-step-number={step.number}
 >
-	<span class="drag-handle" title="Drag to reorder" aria-hidden="true">
+	<span class="drag-handle" title={m('workflows.builder.node.dragToReorder')} aria-hidden="true">
 		<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
 			<circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" />
 			<circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
@@ -105,8 +106,8 @@
 		<button
 			type="button"
 			class="icon-action"
-			title="Move up"
-			aria-label="Move {step.name} up"
+			title={m('workflows.builder.node.moveUp')}
+			aria-label={m('workflows.builder.node.moveUpStep', { name: step.name })}
 			disabled={isFirst}
 			onclick={(e) => {
 				e.stopPropagation();
@@ -116,8 +117,8 @@
 		<button
 			type="button"
 			class="icon-action"
-			title="Move down"
-			aria-label="Move {step.name} down"
+			title={m('workflows.builder.node.moveDown')}
+			aria-label={m('workflows.builder.node.moveDownStep', { name: step.name })}
 			disabled={isLast}
 			onclick={(e) => {
 				e.stopPropagation();
@@ -128,8 +129,12 @@
 			type="button"
 			class="enabled-toggle"
 			class:on={step.enabled}
-			title={step.enabled ? 'Enabled' : 'Disabled'}
-			aria-label={step.enabled ? 'Disable step' : 'Enable step'}
+			title={step.enabled
+				? m('workflows.builder.node.enabled')
+				: m('workflows.builder.node.disabled')}
+			aria-label={step.enabled
+				? m('workflows.builder.node.disableStep')
+				: m('workflows.builder.node.enableStep')}
 			aria-pressed={step.enabled}
 			onclick={(e) => {
 				e.stopPropagation();
@@ -141,8 +146,8 @@
 		<button
 			type="button"
 			class="icon-action danger"
-			title="Delete step"
-			aria-label="Delete step"
+			title={m('workflows.builder.node.deleteStep')}
+			aria-label={m('workflows.builder.node.deleteStep')}
 			onclick={(e) => {
 				e.stopPropagation();
 				ondelete();
