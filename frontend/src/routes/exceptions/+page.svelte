@@ -10,6 +10,7 @@
 	import Tabs from '$lib/components/ui/Tabs.svelte';
 	import AgentDashboard from '$lib/components/exceptions/AgentDashboard.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { pruneSelection } from '$lib/utils/selection';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 
@@ -115,8 +116,7 @@
 			total = data.total;
 			page = nextPage;
 			// Drop selections for ids that fell off the list.
-			const visible = new Set(exceptions.map((e) => e.id));
-			selectedIds = new Set([...selectedIds].filter((id) => visible.has(id)));
+			selectedIds = pruneSelection(selectedIds, exceptions.map((e) => e.id));
 		} catch {
 			toast('Failed to load exceptions', 'error');
 		} finally {
