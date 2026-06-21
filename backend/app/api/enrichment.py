@@ -32,8 +32,10 @@ from app.api.deps import (
     ROLE_AP_MANAGER,
     ROLE_CFO,
     get_org_id,
+    require_permission,
     require_roles,
 )
+from app.api.permissions import PERM_VENDOR_MANAGE
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.organization import Organization
@@ -47,6 +49,8 @@ from app.schemas.enrichment import (
     VendorEnrichmentApplyRequest,
     VendorEnrichmentApplyResponse,
     VendorEnrichmentResponse,
+    VendorMergeRequest,
+    VendorMergeResponse,
     VendorScoreResponse,
 )
 from app.schemas.vendor import VendorResponse
@@ -69,6 +73,7 @@ from app.services.vendor_enrichment import (
     detect_price_variance,
     suggest_fields,
 )
+from app.services.vendor_merge import VendorMergeError, merge_vendors
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
 router = APIRouter(prefix="/enrichment", tags=["enrichment"])
@@ -549,6 +554,88 @@ async def vendor_consolidation_suggestions(
         cluster_count=len(clusters),
         truncated=truncated,
         generated_at=datetime.now(UTC).isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/enrichment/vendors/consolidation/merge  — execute the merge
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/vendors/consolidation/merge",
+    response_model=VendorMergeResponse,
+)
+async def merge_vendor_consolidation(
+    body: VendorMergeRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),  # noqa: ARG001 — tenant chokepoint
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Execute a vendor consolidation: fold a set of duplicate vendors into one
+    canonical vendor (the explicit, steward-invoked counterpart to the advisory
+    ``consolidation-suggestions`` endpoint).
+
+    Reassigns **every** ``vendor_id`` FK across every tenant child table from
+    each duplicate → the canonical vendor (so nothing is orphaned), then
+    soft-retires each duplicate (``status="inactive"`` — never hard-deleted, so
+    history + the audit trail survive). Row-locks every involved vendor.
+
+    **Idempotent** — a re-run after a completed merge reassigns zero rows and
+    re-deactivates nothing (200 with empty counts). **Audited** — writes a
+    PII-free ``vendor.merged`` audit row (canonical id + duplicate ids + the
+    per-table reassigned counts; no ``tax_id`` / bank / address). Refuses
+    self-merge, an empty duplicate set, an unknown vendor (404), and a
+    cross-entity merge (422).
+
+    RBAC: ``vendor.manage`` (admin / ap_manager by default) — vendor master-data
+    control is a splittable SoD duty. Tenant-scoped via ``get_tenant_db`` +
+    ``get_tenant``; entity isolation enforced inside the service (canonical and
+    all duplicates must share one entity).
+    """
+    try:
+        canonical_id = uuid.UUID(str(body.canonical_vendor_id))
+        duplicate_ids = [uuid.UUID(str(d)) for d in body.duplicate_vendor_ids]
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid vendor id.") from exc
+
+    try:
+        result = await merge_vendors(
+            db,
+            canonical_vendor_id=canonical_id,
+            duplicate_vendor_ids=duplicate_ids,
+        )
+    except VendorMergeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    # Append-only audit row — a vendor merge re-homes spend + retires vendors, a
+    # material master-data change (invariant #3). PII-free: ids + counts only.
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.merged",
+        entity_type="vendor",
+        entity_id=canonical_id,
+        details={
+            "canonical_vendor_id": str(canonical_id),
+            "duplicate_vendor_ids": [str(d) for d in result.duplicate_vendor_ids],
+            "deactivated_vendor_ids": [str(d) for d in result.deactivated_vendor_ids],
+            "reassigned": result.reassigned,
+            "total_reassigned": result.total_reassigned,
+        },
+    )
+    await db.commit()
+
+    return VendorMergeResponse(
+        canonical_vendor_id=str(canonical_id),
+        duplicate_vendor_ids=[str(d) for d in result.duplicate_vendor_ids],
+        reassigned=result.reassigned,
+        total_reassigned=result.total_reassigned,
+        deactivated_vendor_ids=[str(d) for d in result.deactivated_vendor_ids],
+        merged_at=datetime.now(UTC).isoformat(),
     )
 
 
