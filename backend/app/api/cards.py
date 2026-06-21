@@ -171,8 +171,8 @@ def _card_response(
         vendor_id=str(card.vendor_id) if card.vendor_id else None,
         card_provider=card.card_provider,
         last_four=card.last_four,
-        amount_limit=float(card.amount_limit),
-        amount_charged=float(card.amount_charged) if card.amount_charged else None,
+        amount_limit=card.amount_limit,
+        amount_charged=card.amount_charged,
         currency=card.currency,
         status=card.status,
         expires_at=card.expires_at.isoformat() if card.expires_at else None,
@@ -269,18 +269,22 @@ async def card_dashboard(
     # Projected annual: (YTD / months elapsed) × 12. In January where
     # YTD is short, the per-day rate is too noisy, so we fall back to
     # rebates_this_month × 12 if we haven't accrued any YTD yet.
+    # Decimal throughout (money is exact). The aggregates above are already
+    # Decimal (sum over Numeric columns); keep them so and quantize the
+    # projection to cents rather than hopping through float.
     months_elapsed = now.month
     if rebate_ytd:
-        projected_annual = float(rebate_ytd) / months_elapsed * 12
+        projected_annual = Decimal(rebate_ytd) / months_elapsed * 12
     else:
-        projected_annual = float(rebate_month) * 12
+        projected_annual = Decimal(rebate_month) * 12
+    projected_annual = projected_annual.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     return CardDashboardResponse(
         active_cards=active_count or 0,
-        active_cards_value=float(active_value),
-        spend_this_month=float(spend_this_month),
-        rebates_this_month=float(rebate_month),
-        rebates_ytd=float(rebate_ytd),
+        active_cards_value=active_value,
+        spend_this_month=spend_this_month,
+        rebates_this_month=rebate_month,
+        rebates_ytd=rebate_ytd,
         projected_annual_rebates=projected_annual,
     )
 
@@ -681,13 +685,13 @@ async def list_rebates(
             RebateResponse(
                 id=str(r.id),
                 virtual_card_id=str(r.virtual_card_id),
-                amount=float(r.amount),
-                rate=float(r.rate),
+                amount=r.amount,
+                rate=r.rate,
                 status=r.status,
                 period=r.period,
                 created_at=r.created_at.isoformat() if r.created_at else "",
             )
             for r in rebates
         ],
-        total=float(total),
+        total=total,
     )

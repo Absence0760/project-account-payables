@@ -1,8 +1,11 @@
 """Schemas for virtual card endpoints."""
 
+from decimal import Decimal
+
 from pydantic import BaseModel, Field
 
 from app.api.pagination import PageMeta
+from app.schemas.money import MoneyAmount, OptionalMoneyAmount
 
 
 class GenerateCardsRequest(BaseModel):
@@ -15,8 +18,10 @@ class CardResponse(BaseModel):
     vendor_id: str | None
     card_provider: str
     last_four: str | None
-    amount_limit: float
-    amount_charged: float | None
+    # Money is exact: Decimal in Python (never float), serialised to a JSON
+    # number for the SPA. The DB columns are Numeric(15, 2).
+    amount_limit: MoneyAmount
+    amount_charged: OptionalMoneyAmount = None
     currency: str
     status: str
     expires_at: str | None
@@ -47,21 +52,23 @@ class CardDetailsResponse(BaseModel):
 
 class CardDashboardResponse(BaseModel):
     active_cards: int
-    active_cards_value: float
-    spend_this_month: float
-    rebates_this_month: float
-    rebates_ytd: float
+    active_cards_value: MoneyAmount
+    spend_this_month: MoneyAmount
+    rebates_this_month: MoneyAmount
+    rebates_ytd: MoneyAmount
     # Projected annual = (rebates_ytd / months_elapsed) × 12. Falls back
     # to rebates_this_month × 12 in January when YTD is short. Surfaces
     # to the rebate dashboard as the "on track for" headline.
-    projected_annual_rebates: float = 0.0
+    projected_annual_rebates: MoneyAmount = Decimal("0")
 
 
 class RebateResponse(BaseModel):
     id: str
     virtual_card_id: str
-    amount: float
-    rate: float
+    amount: MoneyAmount
+    # The negotiated rebate ratio (e.g. 0.0125 = 1.25%) — a Decimal in the DB;
+    # kept exact in Python, serialised to a JSON number like the money fields.
+    rate: MoneyAmount
     status: str
     period: str | None
     created_at: str
@@ -69,4 +76,4 @@ class RebateResponse(BaseModel):
 
 class RebateListResponse(BaseModel):
     items: list[RebateResponse]
-    total: float  # total rebate amount
+    total: MoneyAmount  # total rebate amount
