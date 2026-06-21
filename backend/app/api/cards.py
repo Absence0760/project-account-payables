@@ -57,6 +57,58 @@ def _resolve_rebate_rate(card_config: dict) -> Decimal:
     return rate
 
 
+def _classify_card_event(event_type: str) -> tuple[bool, bool]:
+    """Classify a card webhook `event_type` into (is_charge_auth, is_settlement).
+
+    Provider event names are matched by substring, but the *non-charging*
+    variants are excluded FIRST. Names like `authorization.decline`,
+    `authorization.reversal`, or `transaction.voided` all contain
+    "auth"/"transaction", so a naive substring match would treat a declined or
+    reversed authorization as a real charge — flipping the card to `charged` on
+    money that never moved (and later minting a rebate on it). A decline /
+    reversal / void / refund / return / cancel / expiry is neither a charge nor
+    a settlement: both flags are False and the handler leaves the card untouched.
+    """
+    et = (event_type or "").lower()
+    is_decline_or_reversal = any(
+        kw in et
+        for kw in (
+            "decline",
+            "declined",
+            "reversal",
+            "reversed",
+            "void",
+            "return",
+            "refund",
+            "cancel",
+            "expire",
+        )
+    )
+    if is_decline_or_reversal:
+        return False, False
+    is_auth = "authorization" in et or "auth" in et
+    is_settled = "transaction" in et or "settlement" in et
+    return is_auth, is_settled
+
+
+def _normalize_charge_amount(provider: str, amount, fallback: Decimal | None) -> Decimal | None:
+    """Normalize a webhook charge `amount` to a major-unit Decimal.
+
+    The unit differs by provider: Lithic webhook amounts are in MINOR units
+    (cents — e.g. 150000 == $1,500.00), Nium in MAJOR units (e.g. 50.00 ==
+    $50.00). Dividing both by 100 recorded 1/100th of every Nium charge (and a
+    rebate on it). A falsy / unparseable amount returns `fallback` (the card's
+    own limit).
+    """
+    if not amount:
+        return fallback
+    try:
+        raw = Decimal(str(amount))
+    except (InvalidOperation, ValueError, TypeError):
+        return fallback
+    return (raw / 100) if provider == "lithic" else raw
+
+
 def _resolve_card_config(org: Organization) -> dict:
     """Build card adapter config based on program type.
 
@@ -528,19 +580,16 @@ async def card_webhook(provider: str, request: Request):
                 if await is_event_already_processed(provider, str(event_id or "")):
                     return
 
-                # Update card based on event
-                is_auth = "authorization" in event_type.lower() or "auth" in event_type.lower()
-                is_settled = (
-                    "transaction" in event_type.lower() or "settlement" in event_type.lower()
-                )
+                # Update card based on event (declines / reversals excluded).
+                is_auth, is_settled = _classify_card_event(event_type)
 
                 from app.services.audit_dispatch import dispatch_audit
 
                 if is_auth and card.status in ("created", "sent", "active"):
                     prior_status = card.status
                     card.status = "charged"
-                    card.amount_charged = (
-                        Decimal(str(amount)) / 100 if amount else card.amount_limit
+                    card.amount_charged = _normalize_charge_amount(
+                        provider, amount, card.amount_limit
                     )
                     card.charged_at = datetime.now(UTC)
                     card.merchant_name = merchant

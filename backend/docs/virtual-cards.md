@@ -411,6 +411,19 @@ raw body against the owning tenant's
 4. dedupes by `event_id` (`is_event_already_processed`, Redis `SET NX`) so a re-delivery is a no-op,
 5. applies the state change + writes the audit row in a single committed transaction.
 
+**Event classification (`_classify_card_event`)** decides whether a callback
+is a charging authorization or a settlement by substring, but excludes the
+non-charging variants FIRST: a `decline` / `reversal` / `void` / `refund` /
+`return` / `cancel` / `expire` event is neither — the card is left untouched,
+no charge and no rebate. (A naive `"auth" in event_type` match would otherwise
+flip the card to `charged` on a *declined* `authorization.decline`.)
+
+**Amount units differ by provider (`_normalize_charge_amount`)**: Lithic sends
+charge amounts in **minor units** (cents — `150000` == `$1,500.00`), Nium in
+**major units** (`50.00` == `$50.00`). The handler divides Lithic amounts by
+100 and takes Nium amounts as-is, so a Nium charge is no longer recorded (and
+rebated) at 1/100th of its value.
+
 **Every rejection path returns `204` silently** (bad/missing signature,
 unknown card token, missing event id, malformed JSON) — a distinct 4xx
 would let an attacker enumerate card tokens or tenant slugs.
