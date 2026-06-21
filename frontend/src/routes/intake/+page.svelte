@@ -275,13 +275,14 @@
 					</td>
 					<td class="actions">
 						{#if canCreate && i.status === 'open'}
-							<RowAction variant="default" onclick={() => onSubmit(i)}>{m('intake.row.submit')}</RowAction>
+							<RowAction variant="default" disabled={busyId === i.id} onclick={() => onSubmit(i)}>{m('intake.row.submit')}</RowAction>
 						{/if}
 						{#if canReview && i.status === 'in_review'}
-							<RowAction variant="success" onclick={() => onApprove(i)}>{m('intake.row.approve')}</RowAction>
+							<RowAction variant="success" disabled={busyId === i.id} onclick={() => onApprove(i)}>{m('intake.row.approve')}</RowAction>
 							<RowAction
 								variant="danger"
 								armed={rejectArmedId === i.id}
+								disabled={busyId === i.id}
 								onclick={(e) => {
 									e.stopPropagation();
 									if (rejectArmedId === i.id) onReject(i);
@@ -292,13 +293,13 @@
 							</RowAction>
 						{/if}
 						{#if canReview && i.status === 'approved'}
-							<RowAction variant="default" onclick={() => onConvert(i)}>{m('intake.row.convertToRequisition')}</RowAction>
+							<RowAction variant="default" disabled={busyId === i.id} onclick={() => onConvert(i)}>{m('intake.row.convertToRequisition')}</RowAction>
 						{/if}
 						{#if i.status === 'converted' && i.converted_requisition_id}
 							<a class="req-link" href={`/requisitions?id=${i.converted_requisition_id}`}>{m('intake.row.viewRequisition')}</a>
 						{/if}
 						{#if canCreate && (i.status === 'open' || i.status === 'in_review' || i.status === 'approved')}
-							<RowAction variant="default" onclick={() => onCancel(i)}>{m('intake.row.cancel')}</RowAction>
+							<RowAction variant="default" disabled={busyId === i.id} onclick={() => onCancel(i)}>{m('intake.row.cancel')}</RowAction>
 						{/if}
 						{#if canCreate}
 							<RowAction
