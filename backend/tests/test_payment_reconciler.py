@@ -126,6 +126,59 @@ async def test_reconciler_accepts_terminal_status_from_adapter():
 
 
 @pytest.mark.asyncio
+async def test_reconciler_does_not_clobber_a_webhook_won_payment():
+    """The reconciler-vs-webhook race: a webhook settles the payment to
+    `completed` between the bulk read and the poll write-back. The
+    `refresh(with_for_update=True)` re-read must reveal the new terminal status,
+    and the reconciler must skip it — no second terminal write, no duplicate
+    transition, no overwritten completed_at."""
+    from app.services.payment_adapters import PaymentStatus
+    from app.services.payment_reconciler import _reconcile_tenant
+
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        db_name="ap_acme",
+        settings={"payments": {"provider": "mock"}},
+    )
+    old = _payment(submitted_at=datetime.now(UTC) - timedelta(hours=2))
+    webhook_completed_at = datetime.now(UTC) - timedelta(minutes=5)
+
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=_result_with([old]))
+
+    # Simulate the webhook winning the race: the locking re-read sees the row
+    # already `completed` (with the webhook's own completed_at).
+    async def _refresh(instance, **_kwargs):
+        instance.status = "completed"
+        instance.completed_at = webhook_completed_at
+
+    fake_db.refresh = AsyncMock(side_effect=_refresh)
+
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=fake_db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("app.services.payment_reconciler.create_async_engine") as mk_engine,
+        patch("app.services.payment_reconciler.async_sessionmaker", return_value=factory),
+        patch("app.services.payment_reconciler.get_payment_adapter") as mk_adapter,
+        patch("app.services.payment_reconciler._audit_reconcile_transition") as mk_audit,
+    ):
+        mk_engine.return_value = MagicMock(dispose=AsyncMock())
+        adapter = MagicMock()
+        adapter.get_payment_status = AsyncMock(return_value=PaymentStatus.completed)
+        adapter.provider_name = "mock"
+        mk_adapter.return_value = adapter
+
+        outcome = await _reconcile_tenant(org, datetime.now(UTC))
+
+    assert outcome["resolved"] == 0, "must not re-resolve a webhook-settled payment"
+    # The webhook's own completed_at must survive untouched (not overwritten with `now`).
+    assert old.completed_at == webhook_completed_at
+    mk_audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reconciler_poll_resolution_writes_audit_row():
     """A reconciler poll that flips `submitted → completed` stamps the
     regulated `completed_at`, so it MUST write a `payment.completed` audit

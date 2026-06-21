@@ -172,6 +172,15 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     continue
                 # Past the absolute max age — give up and mark failed.
                 if age > max_age:
+                    # Lock + re-read the committed state before clobbering it:
+                    # a webhook may have settled this payment between the bulk
+                    # read above and now. Without the lock + re-check the
+                    # reconciler would overwrite the webhook's terminal status
+                    # (and its regulated completed_at) and write a duplicate
+                    # transition audit row.
+                    await db.refresh(payment, with_for_update=True)
+                    if payment.status not in ("submitted", "processing"):
+                        continue
                     previous_status = payment.status
                     payment.status = "failed"
                     payment.failure_reason = (
@@ -216,6 +225,13 @@ async def _reconcile_tenant(org: Organization, now: datetime) -> dict[str, int]:
                     PaymentStatus.failed,
                     PaymentStatus.cancelled,
                 ):
+                    # Lock + re-read before writing the terminal status (see the
+                    # max-age branch). A webhook that raced us between the bulk
+                    # read and this poll already settled the row; skip rather
+                    # than overwrite its completed_at + double-audit.
+                    await db.refresh(payment, with_for_update=True)
+                    if payment.status not in ("submitted", "processing"):
+                        continue
                     previous_status = payment.status
                     payment.status = upstream.value
                     payment.completed_at = now

@@ -1342,8 +1342,15 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     engine = get_tenant_engine(org.db_name)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as db:
+        # Lock the row for the read-check-write below: the terminal-state
+        # allowlist guard is a non-atomic read→check→write, and the reconciler
+        # (a separate code path that doesn't share the Redis event dedup) or a
+        # second concurrent delivery could otherwise interleave between the
+        # check and the UPDATE. FOR UPDATE serialises them.
         pay_result = await db.execute(
-            select(Payment).where(Payment.provider_payment_id == event.provider_payment_id)
+            select(Payment)
+            .where(Payment.provider_payment_id == event.provider_payment_id)
+            .with_for_update()
         )
         payment = pay_result.scalar_one_or_none()
         if not payment:
