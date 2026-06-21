@@ -5,6 +5,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import {
 		startPunchout,
 		getPunchoutSession,
@@ -42,7 +43,7 @@
 			// Open the supplier start page in a new tab — the buyer shops there.
 			if (res.start_url) window.open(res.start_url, '_blank', 'noopener');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Could not start punch-out', 'error');
+			toast(err instanceof Error ? err.message : m('catalogs.punchout.toast.startFailed'), 'error');
 		} finally {
 			starting = false;
 		}
@@ -54,10 +55,10 @@
 		try {
 			session = await getPunchoutSession(session.id);
 			if (session.status !== 'returned' && session.status !== 'converted') {
-				toast('No cart returned yet — finish shopping at the supplier, then refresh.', 'info');
+				toast(m('catalogs.punchout.toast.noCartYet'), 'info');
 			}
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Could not refresh session', 'error');
+			toast(err instanceof Error ? err.message : m('catalogs.punchout.toast.refreshFailed'), 'error');
 		} finally {
 			refreshing = false;
 		}
@@ -71,36 +72,35 @@
 			session = await getPunchoutSession(session.id);
 			toast(
 				res.created
-					? `Created requisition ${res.requisition_number}`
-					: `Requisition ${res.requisition_number} already created`,
+					? m('catalogs.punchout.toast.converted', { number: res.requisition_number })
+					: m('catalogs.punchout.toast.alreadyConverted', { number: res.requisition_number }),
 				'success'
 			);
 			onconverted(res.requisition_id);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Convert failed', 'error');
+			toast(err instanceof Error ? err.message : m('catalogs.punchout.toast.convertFailed'), 'error');
 		} finally {
 			converting = false;
 		}
 	}
 </script>
 
-<Modal open ariaLabel="Punch-out" title={`Punch-out — ${catalog.name}`} width="md" {onclose}>
+<Modal open ariaLabel={m('catalogs.punchout.aria')} title={m('catalogs.punchout.title', { name: catalog.name })} width="md" {onclose}>
 	<div class="punchout-body">
 		{#if !session}
 			<p class="muted">
-				Start a punch-out session to shop the supplier's hosted catalog. The supplier returns your
-				cart here, and you convert it into a requisition.
+				{m('catalogs.punchout.intro')}
 			</p>
 			{#if canAct}
 				<button class="btn-primary" onclick={start} disabled={starting}>
-					{starting ? 'Starting…' : 'Start punch-out'}
+					{starting ? m('catalogs.punchout.starting') : m('catalogs.punchout.start')}
 				</button>
 			{:else}
-				<p class="muted">Your role can't start a punch-out session.</p>
+				<p class="muted">{m('catalogs.punchout.noRole')}</p>
 			{/if}
 		{:else}
 			<div class="status-row">
-				<span class="label">Status</span>
+				<span class="label">{m('catalogs.punchout.status')}</span>
 				<span class="status status-{session.status}">
 					{PUNCHOUT_STATUS_LABELS[session.status] ?? session.status}
 				</span>
@@ -108,14 +108,14 @@
 
 			{#if session.start_url && !converted}
 				<p class="muted">
-					Shopping at the supplier?
-					<a href={session.start_url} target="_blank" rel="noopener">Re-open supplier catalog</a>.
+					{m('catalogs.punchout.shoppingPrompt')}
+					<a href={session.start_url} target="_blank" rel="noopener">{m('catalogs.punchout.reopen')}</a>.
 				</p>
 			{/if}
 
 			{#if !returned && !converted}
 				<button class="btn-secondary" onclick={refresh} disabled={refreshing}>
-					{refreshing ? 'Checking…' : 'Refresh — has the cart returned?'}
+					{refreshing ? m('catalogs.punchout.checking') : m('catalogs.punchout.refresh')}
 				</button>
 			{/if}
 
@@ -123,9 +123,9 @@
 				<table class="cart">
 					<thead>
 						<tr>
-							<th>Item</th>
-							<th class="right">Qty</th>
-							<th class="right">Unit price</th>
+							<th>{m('catalogs.punchout.col.item')}</th>
+							<th class="right">{m('catalogs.punchout.col.qty')}</th>
+							<th class="right">{m('catalogs.punchout.col.unitPrice')}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -143,7 +143,7 @@
 					</tbody>
 					<tfoot>
 						<tr>
-							<td colspan="2" class="right"><strong>Cart total</strong></td>
+							<td colspan="2" class="right"><strong>{m('catalogs.punchout.cartTotal')}</strong></td>
 							<td class="right">
 								<strong><Money amount={session.cart_total ?? 0} currency={session.currency} /></strong>
 							</td>
@@ -153,15 +153,15 @@
 			{/if}
 
 			{#if converted && session.converted_requisition_id}
-				<p class="muted">Converted to a requisition.</p>
+				<p class="muted">{m('catalogs.punchout.convertedNote')}</p>
 			{/if}
 		{/if}
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('catalogs.punchout.close')}</button>
 			{#if returned && canAct}
 				<button type="button" class="btn-primary" onclick={convert} disabled={converting}>
-					{converting ? 'Converting…' : 'Convert to requisition'}
+					{converting ? m('catalogs.punchout.converting') : m('catalogs.punchout.convert')}
 				</button>
 			{/if}
 		</div>

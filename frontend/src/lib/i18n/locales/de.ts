@@ -958,6 +958,35 @@ export const messages = {
 	'catalogs.showingAll':
 		'{total, plural, one {Alle # Katalog werden angezeigt} other {Alle # Kataloge werden angezeigt}}',
 
+	// Punch-out modal (components/modals/PunchoutModal.svelte)
+	'catalogs.punchout.aria': 'Punch-out',
+	'catalogs.punchout.title': 'Punch-out — {name}',
+	'catalogs.punchout.intro':
+		'Starten Sie eine Punch-out-Sitzung, um im gehosteten Katalog des Lieferanten einzukaufen. Der Lieferant sendet Ihren Warenkorb hierher zurück, und Sie wandeln ihn in eine Bestellanforderung um.',
+	'catalogs.punchout.starting': 'Wird gestartet…',
+	'catalogs.punchout.start': 'Punch-out starten',
+	'catalogs.punchout.noRole': 'Ihre Rolle kann keine Punch-out-Sitzung starten.',
+	'catalogs.punchout.status': 'Status',
+	'catalogs.punchout.shoppingPrompt': 'Beim Lieferanten am Einkaufen?',
+	'catalogs.punchout.reopen': 'Lieferantenkatalog erneut öffnen',
+	'catalogs.punchout.checking': 'Wird geprüft…',
+	'catalogs.punchout.refresh': 'Aktualisieren — ist der Warenkorb zurückgekehrt?',
+	'catalogs.punchout.col.item': 'Artikel',
+	'catalogs.punchout.col.qty': 'Menge',
+	'catalogs.punchout.col.unitPrice': 'Stückpreis',
+	'catalogs.punchout.cartTotal': 'Warenkorbsumme',
+	'catalogs.punchout.convertedNote': 'In eine Bestellanforderung umgewandelt.',
+	'catalogs.punchout.close': 'Schließen',
+	'catalogs.punchout.converting': 'Wird umgewandelt…',
+	'catalogs.punchout.convert': 'In Bestellanforderung umwandeln',
+	'catalogs.punchout.toast.startFailed': 'Punch-out konnte nicht gestartet werden',
+	'catalogs.punchout.toast.noCartYet':
+		'Noch kein Warenkorb zurückgekehrt — schließen Sie den Einkauf beim Lieferanten ab und aktualisieren Sie dann.',
+	'catalogs.punchout.toast.refreshFailed': 'Sitzung konnte nicht aktualisiert werden',
+	'catalogs.punchout.toast.converted': 'Bestellanforderung {number} erstellt',
+	'catalogs.punchout.toast.alreadyConverted': 'Bestellanforderung {number} bereits erstellt',
+	'catalogs.punchout.toast.convertFailed': 'Umwandlung fehlgeschlagen',
+
 	// Budgets (routes/budgets/+page.svelte)
 	'budgets.title': 'Budgets',
 	'budgets.action.new': '+ Neues Budget',

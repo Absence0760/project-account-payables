@@ -958,6 +958,35 @@ export const messages = {
 	'catalogs.showingAll':
 		'{total, plural, one {Exibindo # catálogo} other {Exibindo todos os # catálogos}}',
 
+	// Punch-out modal (components/modals/PunchoutModal.svelte)
+	'catalogs.punchout.aria': 'Punch-out',
+	'catalogs.punchout.title': 'Punch-out — {name}',
+	'catalogs.punchout.intro':
+		'Inicie uma sessão de punch-out para comprar no catálogo hospedado do fornecedor. O fornecedor retorna seu carrinho aqui, e você o converte em uma requisição.',
+	'catalogs.punchout.starting': 'Iniciando…',
+	'catalogs.punchout.start': 'Iniciar punch-out',
+	'catalogs.punchout.noRole': 'Sua função não pode iniciar uma sessão de punch-out.',
+	'catalogs.punchout.status': 'Status',
+	'catalogs.punchout.shoppingPrompt': 'Comprando no fornecedor?',
+	'catalogs.punchout.reopen': 'Reabrir o catálogo do fornecedor',
+	'catalogs.punchout.checking': 'Verificando…',
+	'catalogs.punchout.refresh': 'Atualizar — o carrinho retornou?',
+	'catalogs.punchout.col.item': 'Item',
+	'catalogs.punchout.col.qty': 'Qtd',
+	'catalogs.punchout.col.unitPrice': 'Preço unitário',
+	'catalogs.punchout.cartTotal': 'Total do carrinho',
+	'catalogs.punchout.convertedNote': 'Convertido em uma requisição.',
+	'catalogs.punchout.close': 'Fechar',
+	'catalogs.punchout.converting': 'Convertendo…',
+	'catalogs.punchout.convert': 'Converter em requisição',
+	'catalogs.punchout.toast.startFailed': 'Não foi possível iniciar o punch-out',
+	'catalogs.punchout.toast.noCartYet':
+		'Nenhum carrinho retornado ainda — conclua a compra no fornecedor e depois atualize.',
+	'catalogs.punchout.toast.refreshFailed': 'Não foi possível atualizar a sessão',
+	'catalogs.punchout.toast.converted': 'Requisição {number} criada',
+	'catalogs.punchout.toast.alreadyConverted': 'Requisição {number} já criada',
+	'catalogs.punchout.toast.convertFailed': 'Falha na conversão',
+
 	// Budgets (routes/budgets/+page.svelte)
 	'budgets.title': 'Orçamentos',
 	'budgets.action.new': '+ Novo orçamento',

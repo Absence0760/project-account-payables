@@ -957,6 +957,35 @@ export const messages = {
 	'catalogs.showingAll':
 		'{total, plural, one {Affichage du # catalogue} other {Affichage des # catalogues}}',
 
+	// Punch-out modal (components/modals/PunchoutModal.svelte)
+	'catalogs.punchout.aria': 'Punch-out',
+	'catalogs.punchout.title': 'Punch-out — {name}',
+	'catalogs.punchout.intro':
+		'Démarrez une session punch-out pour acheter dans le catalogue hébergé du fournisseur. Le fournisseur renvoie votre panier ici, et vous le convertissez en demande d’achat.',
+	'catalogs.punchout.starting': 'Démarrage…',
+	'catalogs.punchout.start': 'Démarrer le punch-out',
+	'catalogs.punchout.noRole': 'Votre rôle ne peut pas démarrer de session punch-out.',
+	'catalogs.punchout.status': 'Statut',
+	'catalogs.punchout.shoppingPrompt': 'En train d’acheter chez le fournisseur ?',
+	'catalogs.punchout.reopen': 'Rouvrir le catalogue du fournisseur',
+	'catalogs.punchout.checking': 'Vérification…',
+	'catalogs.punchout.refresh': 'Actualiser — le panier est-il revenu ?',
+	'catalogs.punchout.col.item': 'Article',
+	'catalogs.punchout.col.qty': 'Qté',
+	'catalogs.punchout.col.unitPrice': 'Prix unitaire',
+	'catalogs.punchout.cartTotal': 'Total du panier',
+	'catalogs.punchout.convertedNote': 'Converti en demande d’achat.',
+	'catalogs.punchout.close': 'Fermer',
+	'catalogs.punchout.converting': 'Conversion…',
+	'catalogs.punchout.convert': 'Convertir en demande d’achat',
+	'catalogs.punchout.toast.startFailed': 'Impossible de démarrer le punch-out',
+	'catalogs.punchout.toast.noCartYet':
+		'Aucun panier renvoyé pour l’instant — terminez vos achats chez le fournisseur, puis actualisez.',
+	'catalogs.punchout.toast.refreshFailed': 'Impossible d’actualiser la session',
+	'catalogs.punchout.toast.converted': 'Demande d’achat {number} créée',
+	'catalogs.punchout.toast.alreadyConverted': 'Demande d’achat {number} déjà créée',
+	'catalogs.punchout.toast.convertFailed': 'Échec de la conversion',
+
 	// Budgets (routes/budgets/+page.svelte)
 	'budgets.title': 'Budgets',
 	'budgets.action.new': '+ Nouveau budget',

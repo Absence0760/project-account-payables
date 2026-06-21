@@ -985,6 +985,35 @@ export const en = {
 	'catalogs.showingAll':
 		'{total, plural, one {Showing all # catalog} other {Showing all # catalogs}}',
 
+	// Punch-out modal (components/modals/PunchoutModal.svelte)
+	'catalogs.punchout.aria': 'Punch-out',
+	'catalogs.punchout.title': 'Punch-out — {name}',
+	'catalogs.punchout.intro':
+		"Start a punch-out session to shop the supplier's hosted catalog. The supplier returns your cart here, and you convert it into a requisition.",
+	'catalogs.punchout.starting': 'Starting…',
+	'catalogs.punchout.start': 'Start punch-out',
+	'catalogs.punchout.noRole': "Your role can't start a punch-out session.",
+	'catalogs.punchout.status': 'Status',
+	'catalogs.punchout.shoppingPrompt': 'Shopping at the supplier?',
+	'catalogs.punchout.reopen': 'Re-open supplier catalog',
+	'catalogs.punchout.checking': 'Checking…',
+	'catalogs.punchout.refresh': 'Refresh — has the cart returned?',
+	'catalogs.punchout.col.item': 'Item',
+	'catalogs.punchout.col.qty': 'Qty',
+	'catalogs.punchout.col.unitPrice': 'Unit price',
+	'catalogs.punchout.cartTotal': 'Cart total',
+	'catalogs.punchout.convertedNote': 'Converted to a requisition.',
+	'catalogs.punchout.close': 'Close',
+	'catalogs.punchout.converting': 'Converting…',
+	'catalogs.punchout.convert': 'Convert to requisition',
+	'catalogs.punchout.toast.startFailed': 'Could not start punch-out',
+	'catalogs.punchout.toast.noCartYet':
+		'No cart returned yet — finish shopping at the supplier, then refresh.',
+	'catalogs.punchout.toast.refreshFailed': 'Could not refresh session',
+	'catalogs.punchout.toast.converted': 'Created requisition {number}',
+	'catalogs.punchout.toast.alreadyConverted': 'Requisition {number} already created',
+	'catalogs.punchout.toast.convertFailed': 'Convert failed',
+
 	// Budgets (routes/budgets/+page.svelte)
 	'budgets.title': 'Budgets',
 	'budgets.action.new': '+ New Budget',

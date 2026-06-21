@@ -954,6 +954,35 @@ export const messages = {
 	'catalogs.guided.preferredTag': '優先',
 	'catalogs.showingAll': '{total, plural, other {#件すべてのカタログを表示中}}',
 
+	// Punch-out modal (components/modals/PunchoutModal.svelte)
+	'catalogs.punchout.aria': 'パンチアウト',
+	'catalogs.punchout.title': 'パンチアウト — {name}',
+	'catalogs.punchout.intro':
+		'パンチアウトセッションを開始して、サプライヤーのホスト型カタログで買い物をします。サプライヤーがカートをここに返し、それを購買依頼に変換します。',
+	'catalogs.punchout.starting': '開始中…',
+	'catalogs.punchout.start': 'パンチアウトを開始',
+	'catalogs.punchout.noRole': 'あなたのロールではパンチアウトセッションを開始できません。',
+	'catalogs.punchout.status': 'ステータス',
+	'catalogs.punchout.shoppingPrompt': 'サプライヤーで買い物中ですか?',
+	'catalogs.punchout.reopen': 'サプライヤーカタログを再度開く',
+	'catalogs.punchout.checking': '確認中…',
+	'catalogs.punchout.refresh': '更新 — カートは返されましたか?',
+	'catalogs.punchout.col.item': '品目',
+	'catalogs.punchout.col.qty': '数量',
+	'catalogs.punchout.col.unitPrice': '単価',
+	'catalogs.punchout.cartTotal': 'カート合計',
+	'catalogs.punchout.convertedNote': '購買依頼に変換しました。',
+	'catalogs.punchout.close': '閉じる',
+	'catalogs.punchout.converting': '変換中…',
+	'catalogs.punchout.convert': '購買依頼に変換',
+	'catalogs.punchout.toast.startFailed': 'パンチアウトを開始できませんでした',
+	'catalogs.punchout.toast.noCartYet':
+		'カートはまだ返されていません — サプライヤーでの買い物を完了してから更新してください。',
+	'catalogs.punchout.toast.refreshFailed': 'セッションを更新できませんでした',
+	'catalogs.punchout.toast.converted': '購買依頼 {number} を作成しました',
+	'catalogs.punchout.toast.alreadyConverted': '購買依頼 {number} はすでに作成されています',
+	'catalogs.punchout.toast.convertFailed': '変換に失敗しました',
+
 	// Budgets (routes/budgets/+page.svelte)
 	'budgets.title': '予算',
 	'budgets.action.new': '+ 新規予算',

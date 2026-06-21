@@ -958,6 +958,35 @@ export const messages = {
 	'catalogs.showingAll':
 		'{total, plural, one {Mostrando el # catálogo} other {Mostrando los # catálogos}}',
 
+	// Punch-out modal (components/modals/PunchoutModal.svelte)
+	'catalogs.punchout.aria': 'Punch-out',
+	'catalogs.punchout.title': 'Punch-out — {name}',
+	'catalogs.punchout.intro':
+		'Inicie una sesión de punch-out para comprar en el catálogo alojado del proveedor. El proveedor devuelve su carrito aquí y usted lo convierte en una solicitud de compra.',
+	'catalogs.punchout.starting': 'Iniciando…',
+	'catalogs.punchout.start': 'Iniciar punch-out',
+	'catalogs.punchout.noRole': 'Su rol no puede iniciar una sesión de punch-out.',
+	'catalogs.punchout.status': 'Estado',
+	'catalogs.punchout.shoppingPrompt': '¿Comprando con el proveedor?',
+	'catalogs.punchout.reopen': 'Volver a abrir el catálogo del proveedor',
+	'catalogs.punchout.checking': 'Comprobando…',
+	'catalogs.punchout.refresh': 'Actualizar: ¿ha vuelto el carrito?',
+	'catalogs.punchout.col.item': 'Artículo',
+	'catalogs.punchout.col.qty': 'Cant.',
+	'catalogs.punchout.col.unitPrice': 'Precio unitario',
+	'catalogs.punchout.cartTotal': 'Total del carrito',
+	'catalogs.punchout.convertedNote': 'Convertido en una solicitud de compra.',
+	'catalogs.punchout.close': 'Cerrar',
+	'catalogs.punchout.converting': 'Convirtiendo…',
+	'catalogs.punchout.convert': 'Convertir en solicitud de compra',
+	'catalogs.punchout.toast.startFailed': 'No se pudo iniciar el punch-out',
+	'catalogs.punchout.toast.noCartYet':
+		'Aún no se ha devuelto ningún carrito: termine de comprar con el proveedor y luego actualice.',
+	'catalogs.punchout.toast.refreshFailed': 'No se pudo actualizar la sesión',
+	'catalogs.punchout.toast.converted': 'Solicitud de compra {number} creada',
+	'catalogs.punchout.toast.alreadyConverted': 'La solicitud de compra {number} ya fue creada',
+	'catalogs.punchout.toast.convertFailed': 'Error al convertir',
+
 	// Budgets (routes/budgets/+page.svelte)
 	'budgets.title': 'Presupuestos',
 	'budgets.action.new': '+ Nuevo presupuesto',
