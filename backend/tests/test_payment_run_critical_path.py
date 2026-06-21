@@ -262,6 +262,47 @@ async def test_create_run_sums_total_as_decimal_and_creates_pending_payments():
 
 
 @pytest.mark.asyncio
+async def test_create_run_writes_creation_audit_row():
+    """Assembling a payment run must write a `payment_run.created` audit row —
+    the SOX trail for a run begins at assembly, not execution. Without it, an
+    insider who builds a fraudulent run and cancels it before /execute leaves no
+    record of who assembled it. PII-free: only ids, total (Decimal string), and
+    counts in the details payload."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("250.00"))
+    body = CreatePaymentRunRequest(
+        items=[CreatePaymentRunItem(invoice_id=str(inv.id), method="ach")]
+    )
+    db = _create_run_db([inv])
+    org = _org()
+
+    with patch("app.services.audit_dispatch.dispatch_audit", new_callable=AsyncMock) as mk_audit:
+        await create_payment_run(
+            body=body,
+            db=db,
+            org=org,
+            user=_user(),
+            org_id=uuid.uuid4(),
+            entity_id=uuid.uuid4(),
+        )
+
+    mk_audit.assert_awaited_once()
+    kwargs = mk_audit.call_args.kwargs
+    assert kwargs["action"] == "payment_run.created"
+    assert kwargs["entity_type"] == "payment_run"
+    assert kwargs["organization_id"] == org.id
+    assert kwargs["details"]["total_amount"] == "250.00"
+    assert kwargs["details"]["payment_count"] == 1
+    # The audit row is committed in the same transaction as the run.
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_create_run_twice_for_same_invoice_yields_distinct_idempotency_keys():
     """The void → re-queue → re-pay regression: building a second payment run
     for the same invoice (after the first payment was voided) must produce a
@@ -471,10 +512,13 @@ async def test_approve_run_stamps_cfo_and_writes_audit():
 # ---------------------------------------------------------------------------
 
 
-def _execute_db(run, payments, invoice_by_id):
+def _execute_db(run, payments, invoice_by_id, vendor_by_invoice=None):
     """DB mock for `execute_payment_run`: run SELECT, payments SELECT,
-    then per-payment invoice SELECT. Mirrors `_mock_db` in
-    test_payment_run_flow.py but inline so this file stays standalone."""
+    then per-payment invoice SELECT — and, for any invoice carrying a
+    `vendor_id`, the compliance gate's follow-on Vendor SELECT. Mirrors
+    `_mock_db` in test_payment_run_flow.py but inline so this file stays
+    standalone."""
+    vendor_by_invoice = vendor_by_invoice or {}
     run_result = MagicMock()
     run_result.scalar_one_or_none = MagicMock(return_value=run)
 
@@ -489,12 +533,31 @@ def _execute_db(run, payments, invoice_by_id):
         inv_res = MagicMock()
         inv_res.scalar_one_or_none = MagicMock(return_value=inv)
         per_pay_results.append(inv_res)
+        # For any invoice with a vendor_id the executor issues two follow-on
+        # SELECTs, in order: (1) the vendor's bank_details (for the payload /
+        # intl-leg detection) and (2) the full Vendor row for the compliance
+        # gate. Interleave both so the side_effect list stays in lockstep.
+        if inv is not None and getattr(inv, "vendor_id", None):
+            bank_res = MagicMock()
+            bank_res.scalar_one_or_none = MagicMock(return_value=None)  # domestic, no intl
+            per_pay_results.append(bank_res)
+            ven_res = MagicMock()
+            ven_res.scalar_one_or_none = MagicMock(
+                return_value=vendor_by_invoice.get(str(p.invoice_id))
+            )
+            per_pay_results.append(ven_res)
 
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=[run_result, payments_result, *per_pay_results])
     db.commit = AsyncMock()
     db.add = MagicMock()
     return db
+
+
+def _clear_compliance():
+    """A compliance decision that neither refuses nor holds — the payment may
+    proceed to the adapter."""
+    return SimpleNamespace(verdict="allow", reasons=[])
 
 
 def _payment(amount: Decimal = Decimal("10000.00")):
@@ -598,14 +661,24 @@ async def test_over_threshold_run_blocks_execute_then_proceeds_after_cfo_approva
         executed_at=None,
     )
     p = _payment()
-    invoices = {str(p.invoice_id): _invoice(amount=Decimal("10000.00"))}
-    exec_db = _execute_db(approved_run, [p], invoices)
+    inv = _invoice(amount=Decimal("10000.00"))
+    inv.vendor_id = uuid.uuid4()
+    vendor = SimpleNamespace(id=inv.vendor_id, name="Acme Corp")
+    invoices = {str(p.invoice_id): inv}
+    exec_db = _execute_db(
+        approved_run, [p], invoices, vendor_by_invoice={str(p.invoice_id): vendor}
+    )
     adapter = _adapter()
 
     with (
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
         patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=_clear_compliance(),
+        ),
     ):
         ti.return_value = invoices[str(p.invoice_id)]
         result = await execute_payment_run(
@@ -648,14 +721,21 @@ async def test_execute_transitions_invoice_via_transition_invoice_not_bare_assig
     )
     p = _payment(amount=Decimal("100.00"))
     invoice = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.approved)
+    invoice.vendor_id = uuid.uuid4()
+    vendor = SimpleNamespace(id=invoice.vendor_id, name="Acme Corp")
     invoices = {str(p.invoice_id): invoice}
-    db = _execute_db(run, [p], invoices)
+    db = _execute_db(run, [p], invoices, vendor_by_invoice={str(p.invoice_id): vendor})
     adapter = _adapter()
 
     with (
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
         patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
         patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=_clear_compliance(),
+        ),
     ):
         ti.return_value = invoice
         await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
@@ -664,3 +744,48 @@ async def test_execute_transitions_invoice_via_transition_invoice_not_bare_assig
     # Positional contract: transition_invoice(db, invoice, target_status, ...)
     assert ti.call_args.args[2] == InvoiceStatus.payment_scheduled
     assert ti.call_args.kwargs.get("action_name") == "invoice.payment_scheduled"
+
+
+# ---------------------------------------------------------------------------
+# Compliance gate: an invoice with no screenable vendor must NEVER be paid
+# unscreened — it holds for AP. (NULL vendor_id was a silent screening bypass.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_holds_payment_when_invoice_has_no_screenable_vendor():
+    """An invoice that reached a run with `vendor_id=None` (e.g. AI-extracted /
+    email-intake that never matched a vendor) cannot be sanctions-screened. The
+    executor MUST hold it (`pending_compliance`) rather than pay an unscreened
+    payee — the adapter is never called and the invoice never transitions."""
+    from app.api.payments import execute_payment_run
+
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="draft",
+        total_amount=Decimal("100.00"),
+        organization_id=uuid.uuid4(),
+        initiated_by=uuid.uuid4(),
+        requires_cfo_approval=False,
+        cfo_approved_at=None,
+        cfo_approved_by=None,
+        executed_at=None,
+    )
+    p = _payment(amount=Decimal("100.00"))
+    invoice = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.approved)
+    invoice.vendor_id = None  # the bypass surface
+    db = _execute_db(run, [p], {str(p.invoice_id): invoice})
+    adapter = _adapter()
+
+    with (
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+        patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
+    ):
+        result = await execute_payment_run(run_id=run.id, db=db, org=_org(), user=_user())
+
+    adapter.create_payment.assert_not_called()  # money did NOT move
+    ti.assert_not_awaited()  # invoice did NOT transition
+    assert p.status == "pending_compliance"
+    assert "no screenable vendor" in (p.failure_reason or "")
+    assert result["payments_completed"] == 0

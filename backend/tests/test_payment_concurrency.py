@@ -66,17 +66,24 @@ def _org(org_id: uuid.UUID, *, provider: str = "mock"):
 
 
 async def _seed_invoice(session_mk, org_id: uuid.UUID, *, amount: Decimal) -> SimpleNamespace:
-    """Insert an approved invoice and return a detached snapshot (id +
-    correlation_id) so callers never lazy-load against a closed
-    NullPool connection."""
+    """Insert an approved invoice (with a real vendor) and return a detached
+    snapshot (id + correlation_id) so callers never lazy-load against a closed
+    NullPool connection. The vendor is required because the executor now holds
+    any invoice with no screenable vendor (NULL vendor_id was a sanctions
+    bypass) — without one the payment would never reach the adapter."""
+    from app.models.vendor import Vendor
+
     inv_id = uuid.uuid4()
+    vendor_id = uuid.uuid4()
     corr = uuid.uuid4()
     async with session_mk() as s:
+        s.add(Vendor(id=vendor_id, name="Acme Corp", organization_id=org_id))
         s.add(
             Invoice(
                 id=inv_id,
                 invoice_number=f"INV-{uuid.uuid4().hex[:8]}",
                 vendor_name="Acme Corp",
+                vendor_id=vendor_id,
                 amount=amount,
                 currency="USD",
                 status=InvoiceStatus.approved,
@@ -85,7 +92,7 @@ async def _seed_invoice(session_mk, org_id: uuid.UUID, *, amount: Decimal) -> Si
             )
         )
         await s.commit()
-    return SimpleNamespace(id=inv_id, correlation_id=corr)
+    return SimpleNamespace(id=inv_id, correlation_id=corr, vendor_id=vendor_id)
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +190,13 @@ async def test_concurrent_execute_run_charges_adapter_exactly_once(realdb):
         patch("app.api.payments.get_payment_adapter", return_value=adapter),
         patch("app.api.payments.transition_invoice", new_callable=AsyncMock) as ti,
         patch("app.services.payment_erp_sync.dispatch_payment_sync", new_callable=AsyncMock),
+        # This test is about the FOR UPDATE double-execute race, not the
+        # sanctions gate — clear it so the (vendored) payment reaches the adapter.
+        patch(
+            "app.services.compliance.check_payment_compliance",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(verdict="allow", reasons=[]),
+        ),
     ):
         ti.return_value = inv
         results = await asyncio.gather(_run_once(), _run_once())

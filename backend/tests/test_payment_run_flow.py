@@ -30,6 +30,19 @@ from app.models.invoice import InvoiceStatus
 from app.services.payment_adapters import PaymentStatus
 
 
+@pytest.fixture(autouse=True)
+def _clear_compliance_gate():
+    """These flow tests exercise rollups/hydration, not the sanctions gate.
+    Patch `check_payment_compliance` to a clear verdict so every payment with a
+    (now-required) vendor proceeds to the adapter rather than holding."""
+    with patch(
+        "app.services.compliance.check_payment_compliance",
+        new_callable=AsyncMock,
+        return_value=SimpleNamespace(verdict="allow", reasons=[]),
+    ):
+        yield
+
+
 def _run(*, status: str = "draft", requires_cfo: bool = False, cfo_at=None):
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -79,7 +92,10 @@ def _invoice(*, status=InvoiceStatus.approved, vendor_id=None, organization_id=N
         status=status,
         invoice_number="INV-1",
         vendor_name="Acme Corp",
-        vendor_id=vendor_id,
+        # A payable invoice always has a vendor — the executor now holds any
+        # invoice with no screenable vendor (NULL vendor_id was a sanctions
+        # bypass), so a default-None invoice would never reach the adapter.
+        vendor_id=vendor_id if vendor_id is not None else uuid.uuid4(),
         currency="USD",
         description=None,
         amount=Decimal("100.00"),
@@ -112,9 +128,17 @@ def _mock_db(*, run, payments, invoice_by_id):
         inv_res.scalar_one_or_none = MagicMock(return_value=inv)
         per_pay_results.append(inv_res)
         if inv is not None and getattr(inv, "vendor_id", None):
+            # bank_details SELECT (payload / intl detection) → None (domestic).
             bank_res = MagicMock()
             bank_res.scalar_one_or_none = MagicMock(return_value=None)
             per_pay_results.append(bank_res)
+            # compliance-gate Vendor SELECT → a vendor row (screened clear by
+            # the autouse check_payment_compliance patch below).
+            ven_res = MagicMock()
+            ven_res.scalar_one_or_none = MagicMock(
+                return_value=SimpleNamespace(id=inv.vendor_id, name="Acme Corp")
+            )
+            per_pay_results.append(ven_res)
 
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=[run_result, payments_result, *per_pay_results])

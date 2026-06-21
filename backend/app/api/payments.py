@@ -547,7 +547,11 @@ async def void_payment(
 async def create_payment(
     body: PaymentCreate,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    # Recording a standalone payment moves money exactly like executing a run,
+    # so it gates on the same splittable SoD permission — not bare roles. An org
+    # that strips payment.execute from a custom role must not retain a back door
+    # to book money here. (System roles resolve identically via the default map.)
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
 ):
     # Verify invoice exists and has cleared approval. Recording a payment
     # against a pre-approval invoice (new/pending/ready_for_review/rejected/
@@ -734,6 +738,27 @@ async def create_payment_run(
         )
         db.add(payment)
 
+    # SOX trail starts at run assembly, not at execution — an insider who builds
+    # a fraudulent run and cancels it before execution must still leave a record
+    # of who assembled it, when, and for how much. Without this row the only
+    # evidence of a cancelled-before-execute run is the `payment_run.cancelled`
+    # event, which doesn't name the assembler.
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment_run.created",
+        entity_type="payment_run",
+        entity_id=run.id,
+        details={
+            "total_amount": str(total),
+            "payment_count": len(body.items),
+            "requires_cfo_approval": run.requires_cfo_approval,
+        },
+    )
     await db.commit()
 
     return {
@@ -1180,33 +1205,45 @@ async def execute_payment_run(
         # (a blocked vendor paid via domestic ACH would otherwise slip
         # through unscreened). A refusal fails the payment outright; a hold
         # leaves it in pending_compliance for AP review.
-        if invoice is not None and invoice.vendor_id:
+        if invoice is not None:
             from app.services.compliance import check_payment_compliance
 
-            v_result = await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
-            v_full = v_result.scalar_one_or_none()
-            if v_full is not None:
-                decision = await check_payment_compliance(
-                    db,
-                    vendor=v_full,
-                    payment_amount=payment.amount,
-                    payment_method=payment.method,
-                    org_settings=org.settings or {},
-                    organization_id=org.id,
-                    correlation_id=payment.correlation_id,
-                )
-                if decision.verdict == "refuse":
-                    payment.status = "failed"
-                    payment.failure_reason = "compliance_refusal: " + "; ".join(decision.reasons)
-                    payment.completed_at = now
-                    failed += 1
-                    continue
-                if decision.verdict == "hold":
-                    payment.status = "pending_compliance"
-                    payment.failure_reason = "compliance_hold: " + "; ".join(decision.reasons)
-                    in_flight += 1
-                    # Hold doesn't flip the invoice — money hasn't moved.
-                    continue
+            v_full = None
+            if invoice.vendor_id:
+                v_result = await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
+                v_full = v_result.scalar_one_or_none()
+            if v_full is None:
+                # No screenable vendor (invoice never matched a Vendor, or the
+                # row was deleted). We CANNOT run sanctions/KYC against a payee
+                # we don't have — and an AI-extracted / email-intake invoice can
+                # reach here with vendor_id NULL. Paying anyway would route money
+                # to an unscreened name, defeating the gate. Fail-safe: hold for
+                # AP to attach + verify a vendor, never pay unscreened.
+                payment.status = "pending_compliance"
+                payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
+                in_flight += 1
+                continue
+            decision = await check_payment_compliance(
+                db,
+                vendor=v_full,
+                payment_amount=payment.amount,
+                payment_method=payment.method,
+                org_settings=org.settings or {},
+                organization_id=org.id,
+                correlation_id=payment.correlation_id,
+            )
+            if decision.verdict == "refuse":
+                payment.status = "failed"
+                payment.failure_reason = "compliance_refusal: " + "; ".join(decision.reasons)
+                payment.completed_at = now
+                failed += 1
+                continue
+            if decision.verdict == "hold":
+                payment.status = "pending_compliance"
+                payment.failure_reason = "compliance_hold: " + "; ".join(decision.reasons)
+                in_flight += 1
+                # Hold doesn't flip the invoice — money hasn't moved.
+                continue
 
         payload = PaymentPayload(
             correlation_id=str(payment.correlation_id or payment.id),
