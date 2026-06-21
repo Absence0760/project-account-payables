@@ -66,6 +66,7 @@
 	import ExpenseModal from '$lib/components/modals/ExpenseModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { pruneSelection } from '$lib/utils/selection';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { m } from '$lib/i18n/store.svelte';
@@ -188,6 +189,18 @@
 	}
 
 	// --- Selection ---
+	// Keep the selection ⊆ the rows actually visible (status refetch OR the
+	// client-side merchant/category search). Otherwise stale ids inflate the
+	// bulk-bar count, break the select-all `size === length` comparison, and
+	// feed invisible ids into the bulk GL re-code.
+	$effect(() => {
+		const pruned = pruneSelection(
+			selected,
+			visibleExpenses.map((e) => e.id)
+		);
+		if (pruned !== selected) selected = pruned;
+	});
+
 	function toggleSelect(id: string) {
 		const next = new Set(selected);
 		if (next.has(id)) next.delete(id);

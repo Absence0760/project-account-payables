@@ -8,6 +8,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { pruneSelection } from '$lib/utils/selection';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -55,6 +56,17 @@
 	async function loadMore() {
 		await adminStore.loadMoreUsers({ search });
 	}
+
+	// Drop selected ids that fell off the list when a search refetch narrows it,
+	// so the bulk-bar count and the bulk-delete id set never include rows the
+	// user can no longer see. `pruneSelection` is a no-op (same Set) when clean.
+	$effect(() => {
+		const pruned = pruneSelection(
+			selectedIds,
+			adminStore.users.map((u) => u.id)
+		);
+		if (pruned !== selectedIds) selectedIds = pruned;
+	});
 
 	let selectableIds = $derived(
 		adminStore.users.filter((u) => u.id !== auth.user?.id).map((u) => u.id)
