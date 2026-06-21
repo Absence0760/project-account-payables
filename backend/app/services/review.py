@@ -82,8 +82,7 @@ async def _enforce_approval_thresholds(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"Invoice amount ${amount:,.2f} exceeds maximum allowed "
-                    f"${max_amount_dec:,.2f}."
+                    f"Invoice amount ${amount:,.2f} exceeds maximum allowed ${max_amount_dec:,.2f}."
                 ),
             )
 
@@ -309,9 +308,18 @@ async def reject_invoice(
     instance = await get_workflow_instance(db, invoice.id)
     if instance:
         await complete_current_step(db, instance, "rejected")
-        # Track rejection count
-        state_data = instance.state_data or {}
+        # Track rejection count + reset any multi-level approval chain state.
+        #
+        # `approve_invoice` only initialises chain state when
+        # `approval_levels` is absent. If a rejected-and-reworked invoice kept
+        # its old chain state, the next approval would RESUME at whatever level
+        # it was rejected at — silently skipping every already-satisfied level
+        # (a manager→CFO chain rejected at L0 would then need only the CFO). A
+        # reworked invoice must re-run the whole chain, so clear it here (the
+        # single reject chokepoint) and let the next approval re-initialise.
+        state_data = dict(instance.state_data or {})
         state_data["rejection_count"] = state_data.get("rejection_count", 0) + 1
+        state_data.pop("approval_levels", None)
         instance.state_data = state_data
 
     return invoice
