@@ -499,6 +499,30 @@ via `_resolve_child` (a non-child / unknown id is the same opaque **404**).
 Idempotent (a second detach is a clean 404 — the link is already gone). Audited
 on both trails (`partner.child_detached` / `partner.parent_unlinked`).
 
+`POST /api/partner/children/provision` — provision a brand-**NEW** child tenant
+already parented to the caller (the new-tenant counterpart of `attach_child`,
+which adopts an *existing* consenting org). Admin-only. Body mirrors
+`scripts/create_tenant.py`: `{name, slug, admin_email}` (`admin_name`/`plan`
+optional) — there is **no `parent_org_id` input**; the new tenant is ALWAYS
+parented to `org.id` from the `get_tenant` chokepoint, so a partner can only ever
+create a child UNDER ITSELF. Flow: validate the admin-email shape + the slug
+(format + reserved-word + availability, same `utils/slug` checks signup uses) →
+provision the full tenant via the shared
+`services/tenant_provisioning.provision_tenant` primitive (control-plane org +
+admin user + the `ap_<slug>` tenant DB + tables) → stamp `parent_org_id = org.id`
+→ audit `partner.child_provisioned` on the partner's trail + `partner.parent_linked`
+(`via:provision`) on the new child's, PII-free (org ids + slug only, never the
+admin email or password). **Failure path is clean** — `provision_tenant` owns the
+orphan-DB rollback (it drops the `ap_<slug>` DB it created on any partial
+failure), so we never half-create; a slug that races past the pre-check trips the
+unique constraint inside provisioning → a clean **409** (not a 500). An invalid
+slug is **422**, a taken slug **409** (the only enumeration surface is the
+partner's *own* choice of slug, which public signup already exposes — not a
+cross-tenant leak). Returns the `ChildTenantSummary` plus the new admin's
+`admin_email` + a one-time `temp_password` (returned EXACTLY once, like an API-key
+mint — the new admin rotates it on first login via `must_change_password`). No
+migration (the `parent_org_id` column already exists).
+
 **Why this authorization model is safe (the privilege boundary).** The hard
 question attach poses: who may declare org X a child of partner P? Letting any
 partner admin unilaterally adopt an arbitrary org would be a cross-tenant
@@ -549,9 +573,13 @@ hex/URL validation as the org's own Branding panel, saving via `PUT
 
 The page also carries the **provisioning** affordances: a **Generate link code**
 panel ("Join a partner" — this workspace consenting to *be* a child; copies the
-minted code), an **+ Attach child** toolbar button opening a `Modal` to paste a
-child-issued code (`POST /api/partner/children`), and an armed two-click
-**Detach** `RowAction` per child row (`DELETE /api/partner/children/{id}`).
+minted code), a **+ Create child tenant** toolbar button opening a `Modal` to
+provision a brand-new tenant under this partner (name / slug / admin email →
+`POST /api/partner/children/provision`; the result view reveals the one-time temp
+password with a copy button, shown only once), an **+ Attach child** toolbar
+button opening a `Modal` to paste a child-issued code (`POST /api/partner/children`),
+and an armed two-click **Detach** `RowAction` per child row
+(`DELETE /api/partner/children/{id}`).
 
 ### Tests
 
@@ -570,6 +598,13 @@ child-issued code (`POST /api/partner/children`), and an armed two-click
   garbage / cross-key-forged code is rejected and NO link is created; single-use
   replay → 409; re-parent guard → 409 with same-partner idempotent no-op; detach
   unlinks + audits, non-child opaque 404, admin-only).
+- Backend (new-tenant provisioning): `backend/tests/test_partner_provision.py`
+  (realdb — provisioning creates the org + tenant DB and stamps
+  `parent_org_id = caller`; the child appears in the partner overview; both
+  trails audited PII-free (`child_provisioned`/`parent_linked`, never the admin
+  email or temp password); admin-only (403) + 401 unauth; slug collision → clean
+  409 with the existing tenant undisturbed; invalid slug / email → 422. Each test
+  drops the provisioned DB + control rows in a `finally`).
 - Frontend: `frontend/tests-e2e/admin/partner.spec.ts` (branding admin surface) +
   `frontend/tests-e2e/admin/partner-provisioning.spec.ts` — admin sees the
   attach + link-code affordances and mints a code; the authorization boundary
@@ -582,13 +617,14 @@ child-issued code (`POST /api/partner/children`), and an armed two-click
   registered custom domain (the app-side `custom_domains` admin UI + endpoint
   pair shipped — see *Managing the list* above; the infra automation that issues
   the ACM cert and wires the CNAME is a separate, infra-owned slice).
-- **Self-service "create a *new* child tenant under my partner account"** — the
-  attach/detach provisioning of *existing* tenants shipped (two-sided consent
-  link codes, above). What remains is letting a partner spin up a brand-new
-  tenant already parented to it in one step (a thin wrapper over
+- **Self-service "create a *new* child tenant under my partner account"** —
+  **shipped.** `POST /api/partner/children/provision` (see *Provisioning the
+  link* above) is the thin wrapper over
   `services/tenant_provisioning.provision_tenant` that stamps `parent_org_id` +
-  audits, reusing the same admin gate). Trigger: when reseller onboarding needs
-  partners to provision net-new branded tenants, not only adopt existing ones.
-  Until then a new tenant is created via the normal signup / `create_tenant.py`
-  path and then attached with a link code. Tracked as a follow-up — confirm
-  before opening the ticket.
+  audits both trails, reusing the same admin gate; the `/admin/partner` panel's
+  **+ Create child tenant** modal drives it. A partner can now spin up a
+  net-new branded tenant already parented to it in one step (the new-tenant
+  counterpart of the attach/detach provisioning of *existing* tenants). No
+  migration (the `parent_org_id` column already exists). The DNS/TLS automation
+  for the new tenant's custom vanity domain is still the separate infra-owned
+  slice noted above (the app-side custom-domain registration works today).
