@@ -113,6 +113,59 @@ def _create_run_db(invoices: list):
 
 
 @pytest.mark.asyncio
+async def test_create_run_rejects_an_unapproved_invoice():
+    """A run may only be built from approved (payable) invoices. Including a
+    `new`/`rejected`/etc. invoice — which the executor would then move real
+    money for — is refused with 409, and nothing is committed. (The handler
+    used to only check existence despite a 'are payable' comment.)"""
+    from fastapi import HTTPException
+
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.new)
+    body = CreatePaymentRunRequest(
+        items=[CreatePaymentRunItem(invoice_id=str(inv.id), method="ach")]
+    )
+    db = _create_run_db([inv])
+
+    with pytest.raises(HTTPException) as exc:
+        await create_payment_run(
+            body=body, db=db, org=_org(), user=_user(), org_id=uuid.uuid4(), entity_id=uuid.uuid4()
+        )
+    assert exc.value.status_code == 409
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_standalone_payment_rejects_an_unapproved_invoice():
+    """POST /api/payments records a payment against an invoice; it must refuse
+    a pre-approval invoice (booking money against something nobody signed off)."""
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
+
+    from app.api.payments import create_payment
+    from app.schemas.payment import PaymentCreate
+
+    inv = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.rejected)
+    res = MagicMock()
+    res.scalar_one_or_none = MagicMock(return_value=inv)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=res)
+    db.flush = AsyncMock()
+
+    body = PaymentCreate(invoice_id=str(inv.id), amount=Decimal("100.00"), method="ach")
+    with pytest.raises(HTTPException) as exc:
+        await create_payment(body=body, db=db, user=_user())
+    assert exc.value.status_code == 409
+    db.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_run_404_when_an_invoice_is_missing():
     """If any selected invoice id doesn't resolve, the whole run is
     refused with 404 — we never create a partial run that silently drops

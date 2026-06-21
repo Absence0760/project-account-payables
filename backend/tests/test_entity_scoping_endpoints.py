@@ -11,7 +11,12 @@ asserts here rather than a per-area file.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
+from sqlalchemy import select
+
+from app.models.invoice import Invoice, InvoiceStatus
 
 
 async def _create_entity(c, *, name: str, slug: str) -> str:
@@ -133,9 +138,19 @@ async def test_payment_list_and_summary_scope_by_entity(realdb):
                 headers=headers,
             )
             assert inv.status_code == 201, inv.text
+            inv_id = inv.json()["id"]
+            # The payment endpoint only accepts an approved (payable) invoice.
+            # This test exercises entity scoping, not the approval flow, so
+            # promote the row directly rather than driving the whole chain.
+            async with realdb.sessionmaker("a")() as s:
+                row = (
+                    await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(inv_id)))
+                ).scalar_one()
+                row.status = InvoiceStatus.approved
+                await s.commit()
             pay = await c.post(
                 "/api/payments",
-                json={"invoice_id": inv.json()["id"], "amount": amt, "method": "ach"},
+                json={"invoice_id": inv_id, "amount": amt, "method": "ach"},
             )
             assert pay.status_code == 201, pay.text
             return pay.json()

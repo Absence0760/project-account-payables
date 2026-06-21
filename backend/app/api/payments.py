@@ -55,6 +55,19 @@ from app.tenant import (
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
+# The invoice statuses a payment may be created against — i.e. an invoice that
+# has cleared AP approval and can directly transition to `payment_scheduled`.
+# `sent_to_erp` is excluded (mid-flight ERP push must reach `posted_in_erp`
+# first); `new`/`pending`/`ready_for_review`/`rejected`/`failed` are pre-approval
+# and must never have money scheduled against them. This is the single source of
+# truth shared by the queue, the run builder, and the standalone payment record,
+# so a payment can't be booked against an unapproved invoice on any path.
+PAYABLE_INVOICE_STATUSES = (
+    InvoiceStatus.approved.value,
+    InvoiceStatus.posted_in_erp.value,
+    InvoiceStatus.payment_scheduled.value,
+)
+
 
 # ── Individual Payments ──────────────────────────────────────────────
 
@@ -159,11 +172,7 @@ async def payment_queue(
     # let the UI offer "Pay" on a row whose execute call fails the
     # transition with 409, surfacing as a stuck queue row to the
     # operator.
-    payable_statuses = [
-        InvoiceStatus.approved.value,
-        InvoiceStatus.posted_in_erp.value,
-        InvoiceStatus.payment_scheduled.value,
-    ]
+    payable_statuses = PAYABLE_INVOICE_STATUSES
 
     queue_q = apply_entity_scope(
         select(Invoice, PaymentSchedule)
@@ -281,11 +290,7 @@ async def payment_summary(
     # let the UI offer "Pay" on a row whose execute call fails the
     # transition with 409, surfacing as a stuck queue row to the
     # operator.
-    payable_statuses = [
-        InvoiceStatus.approved.value,
-        InvoiceStatus.posted_in_erp.value,
-        InvoiceStatus.payment_scheduled.value,
-    ]
+    payable_statuses = PAYABLE_INVOICE_STATUSES
     queue_inner = apply_entity_scope(
         select(Invoice.id).where(
             Invoice.status.in_(payable_statuses),
@@ -521,11 +526,15 @@ async def create_payment(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
 ):
-    # Verify invoice exists
+    # Verify invoice exists and has cleared approval. Recording a payment
+    # against a pre-approval invoice (new/pending/ready_for_review/rejected/
+    # failed) would book money against something nobody signed off on.
     inv_result = await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)))
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status not in PAYABLE_INVOICE_STATUSES:
+        raise HTTPException(status_code=409, detail="Invoice is not approved for payment")
 
     payment = Payment(
         invoice_id=uuid.UUID(body.invoice_id),
@@ -614,6 +623,21 @@ async def create_payment_run(
 
     if len(invoices) != len(invoice_ids):
         raise HTTPException(status_code=404, detail="One or more invoices not found")
+
+    # Every invoice in the run must have cleared approval. The comment above
+    # claimed "are payable" but nothing enforced it — a run could be built (and
+    # then executed, moving real money) from a `new`/`rejected`/`pending`
+    # invoice that never passed segregation, the thresholds, or the CFO gate.
+    not_payable = [
+        inv.invoice_number
+        for inv in invoices.values()
+        if inv.status not in PAYABLE_INVOICE_STATUSES
+    ]
+    if not_payable:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
+        )
 
     total = Decimal("0")
     for item in body.items:
