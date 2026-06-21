@@ -282,14 +282,22 @@ After a payment run executes, the system syncs payment data to the connected ERP
 Execute Payment Run (response sent immediately)
     |
     └── Background thread:
-        ├── For each payment:
+        ├── For each COMPLETED payment in the run:
         │   - Push payment details to ERP (amount, method, reference, date)
         │   - Update invoice status: payment_scheduled → paid
         │   - Log: "[payment-sync] Syncing payment abc: invoice=INV-001, $1,500, method=ach"
+        ├── In-flight payments (submitted/processing) are skipped here — they
+        │   sync when their terminal-status webhook lands (which re-triggers
+        │   the sync for that run).
         |
-        └── Log: "[payment-sync] Run xyz: 3 synced, 0 failed"
+        └── Log: "[payment-sync] Run xyz: 2 synced, 1 skipped (in-flight), 0 failed"
 ```
 
+- **Only `completed` payments mark their invoice `paid`.** A run can mix a
+  settled `completed` payment with one still `submitted` at the processor;
+  marking the in-flight one's invoice `paid` would claim money moved before
+  the rail confirmed it (and pre-empt the webhook's own `paid` transition).
+  The webhook handler re-dispatches the sync once the in-flight payment settles.
 - Sync runs async — **doesn't block** the payment run response
 - Uses the same background thread pattern as extraction dispatch (fresh DB engines per thread)
 - If no ERP is configured, sync is skipped silently

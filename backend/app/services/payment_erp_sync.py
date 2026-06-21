@@ -84,9 +84,24 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                 rows = result.all()
 
                 synced = 0
+                skipped = 0
                 failed = 0
                 for payment, invoice in rows:
                     try:
+                        # A run can hold a mix of settled and in-flight payments
+                        # (e.g. one ACH `completed` by the mock adapter alongside
+                        # one `submitted` awaiting the processor webhook). Only a
+                        # payment we believe actually settled may mark its invoice
+                        # `paid` — flipping an in-flight payment's invoice to
+                        # `paid` here would claim money moved before the rail
+                        # confirmed it (and would pre-empt the webhook's own
+                        # `paid` transition, which never re-fires for an invoice
+                        # already in `paid`). The webhook handler triggers a fresh
+                        # ERP sync once the in-flight payment settles.
+                        if payment.status != "completed":
+                            skipped += 1
+                            continue
+
                         # Build payment data for ERP
                         # In production, this would call adapter.post_payment()
                         # For now, log and mark as synced
@@ -117,7 +132,10 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                         failed += 1
 
                 await db.commit()
-                print(f"[payment-sync] Run {run_id}: {synced} synced, {failed} failed")
+                print(
+                    f"[payment-sync] Run {run_id}: {synced} synced, "
+                    f"{skipped} skipped (in-flight), {failed} failed"
+                )
 
             except Exception as exc:
                 print(f"[payment-sync] ERROR for run {run_id}: {exc}")

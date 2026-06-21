@@ -177,6 +177,75 @@ async def test_sync_only_transitions_scheduled_invoices(realdb):
 # the real schema and isn't exercised here.
 
 
+async def test_sync_does_not_pay_in_flight_payment_invoice(realdb):
+    """A run can mix a settled `completed` payment with an in-flight
+    `submitted` one (real money still moving, terminal status arrives via
+    webhook). ERP sync fires once at least one payment settled, but it must
+    mark `paid` ONLY the invoices whose own payment is `completed`. Flipping
+    an in-flight payment's invoice to `paid` would claim money moved before
+    the rail confirmed it — and would pre-empt the webhook's own `paid`
+    transition. Regression for the mixed-run false-paid bug."""
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    run_id = uuid.uuid4()
+    inv_completed = uuid.uuid4()
+    inv_in_flight = uuid.uuid4()
+    async with mk() as s:
+        s.add(PaymentRun(id=run_id, status="submitted", organization_id=org_id))
+        for iid, num in ((inv_completed, "INV-DONE"), (inv_in_flight, "INV-FLIGHT")):
+            s.add(
+                Invoice(
+                    id=iid,
+                    invoice_number=num,
+                    vendor_name="V",
+                    amount=Decimal("50.00"),
+                    status=InvoiceStatus.payment_scheduled,
+                    organization_id=org_id,
+                )
+            )
+        await s.flush()
+        s.add(
+            Payment(
+                invoice_id=inv_completed,
+                payment_run_id=run_id,
+                amount=Decimal("50.00"),
+                method="ach",
+                status="completed",
+            )
+        )
+        s.add(
+            Payment(
+                invoice_id=inv_in_flight,
+                payment_run_id=run_id,
+                amount=Decimal("50.00"),
+                method="ach",
+                status="submitted",
+            )
+        )
+        await s.commit()
+
+    await _sync_payments(run_id, org_id)
+
+    async with mk() as s:
+        done = (await s.execute(select(Invoice).where(Invoice.id == inv_completed))).scalar_one()
+        flight = (await s.execute(select(Invoice).where(Invoice.id == inv_in_flight))).scalar_one()
+        # Exactly one paid-via-erp-sync audit row — for the completed payment only.
+        audit_invoice_ids = (
+            (
+                await s.execute(
+                    select(AuditLog.entity_id).where(AuditLog.action == "invoice.paid_via_erp_sync")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert done.status == InvoiceStatus.paid
+    assert flight.status == InvoiceStatus.payment_scheduled
+    assert list(audit_invoice_ids) == [inv_completed]
+
+
 async def test_sync_tenant_isolation(realdb):
     # A run that belongs to tenant "a" must not touch tenant "b"'s data.
     await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
