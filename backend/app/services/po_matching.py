@@ -82,6 +82,13 @@ async def match_invoice_to_po(
     if invoice.vendor_id:
         po_query = po_query.where(PurchaseOrder.vendor_id == invoice.vendor_id)
 
+    # A po_number is not unique (it may be re-used across entities, or shared by
+    # two vendors when the invoice carries no vendor_id to disambiguate), so cap
+    # the lookup at a single deterministic row — newest first — rather than
+    # `scalar_one_or_none()`, which raises MultipleResultsFound on >1 PO and
+    # takes down the whole matcher / refresh_warnings pipeline.
+    po_query = po_query.order_by(PurchaseOrder.created_at.desc()).limit(1)
+
     po_result = await db.execute(po_query)
     po = po_result.scalar_one_or_none()
 
@@ -116,11 +123,17 @@ async def match_invoice_to_po(
     else:
         result.status = "matched"
 
-    # 3-way match: check for goods receipt
+    # 3-way match: check for goods receipt. A PO can have SEVERAL goods receipts
+    # (the normal partial-delivery case — a PO filled by several shipments, each
+    # a separate GR), so pick the most recent one deterministically rather than
+    # `scalar_one_or_none()`, which raises MultipleResultsFound on >1 GR and
+    # crashes the matcher. Newest-first mirrors the inspection-leg query below.
     gr_result = await db.execute(
         select(GoodsReceipt)
         .where(GoodsReceipt.po_id == po.id)
         .options(selectinload(GoodsReceipt.line_items))
+        .order_by(GoodsReceipt.created_at.desc())
+        .limit(1)
     )
     gr = gr_result.scalar_one_or_none()
 
