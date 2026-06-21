@@ -231,16 +231,6 @@
 		else selectedIds = new Set(selectableIds);
 	}
 
-	function formatDate(iso: string | null): string {
-		if (!iso) return '—';
-		return new Date(iso).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			hour: 'numeric',
-			minute: '2-digit',
-		});
-	}
-
 	function formatCurrency(n: number | null): string {
 		return formatMoney(n, { currency: orgCurrency.currency });
 	}
