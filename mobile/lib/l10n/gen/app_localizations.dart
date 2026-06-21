@@ -2266,6 +2266,729 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'On {field}'**
   String workflowDetailConditionSummary(String field);
+
+  /// No description provided for @cashFlowTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Cash Flow Forecast'**
+  String get cashFlowTitle;
+
+  /// No description provided for @cashFlowErrorPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Error: {error}'**
+  String cashFlowErrorPrefix(String error);
+
+  /// No description provided for @cashFlowHorizonDays.
+  ///
+  /// In en, this message translates to:
+  /// **'{days} days'**
+  String cashFlowHorizonDays(int days);
+
+  /// No description provided for @cashFlowLowBalanceAlert.
+  ///
+  /// In en, this message translates to:
+  /// **'Low balance alert'**
+  String get cashFlowLowBalanceAlert;
+
+  /// No description provided for @cashFlowBreachSingle.
+  ///
+  /// In en, this message translates to:
+  /// **'Projected to fall below the {threshold} balance in {period} (shortfall {shortfall}).'**
+  String cashFlowBreachSingle(
+    String threshold,
+    String period,
+    String shortfall,
+  );
+
+  /// No description provided for @cashFlowBreachMultiple.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} periods are projected to fall below the minimum balance. Worst: {period}, shortfall {shortfall}.'**
+  String cashFlowBreachMultiple(int count, String period, String shortfall);
+
+  /// No description provided for @cashFlowMinimum.
+  ///
+  /// In en, this message translates to:
+  /// **'minimum'**
+  String get cashFlowMinimum;
+
+  /// No description provided for @cashFlowOpeningBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening Balance'**
+  String get cashFlowOpeningBalance;
+
+  /// No description provided for @cashFlowProjectedEnd.
+  ///
+  /// In en, this message translates to:
+  /// **'Projected End'**
+  String get cashFlowProjectedEnd;
+
+  /// No description provided for @cashFlowProjectedEndSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'in {days} days'**
+  String cashFlowProjectedEndSubtitle(int days);
+
+  /// No description provided for @cashFlowCommittedOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Committed Out'**
+  String get cashFlowCommittedOut;
+
+  /// No description provided for @cashFlowCommittedSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'firm commitments'**
+  String get cashFlowCommittedSubtitle;
+
+  /// No description provided for @cashFlowPendingOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending Out'**
+  String get cashFlowPendingOut;
+
+  /// No description provided for @cashFlowPendingSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'in-flight pipeline'**
+  String get cashFlowPendingSubtitle;
+
+  /// No description provided for @cashFlowOpeningSourceProvider.
+  ///
+  /// In en, this message translates to:
+  /// **'synced from bank'**
+  String get cashFlowOpeningSourceProvider;
+
+  /// No description provided for @cashFlowOpeningSourceSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'saved balance'**
+  String get cashFlowOpeningSourceSettings;
+
+  /// No description provided for @cashFlowOpeningSourceQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'manual'**
+  String get cashFlowOpeningSourceQuery;
+
+  /// No description provided for @cashFlowOpeningSourceUnset.
+  ///
+  /// In en, this message translates to:
+  /// **'set a balance'**
+  String get cashFlowOpeningSourceUnset;
+
+  /// No description provided for @cashFlowProjectedOutflows.
+  ///
+  /// In en, this message translates to:
+  /// **'Projected Outflows'**
+  String get cashFlowProjectedOutflows;
+
+  /// No description provided for @cashFlowNoOutflows.
+  ///
+  /// In en, this message translates to:
+  /// **'No projected outflows in this horizon.'**
+  String get cashFlowNoOutflows;
+
+  /// No description provided for @cashFlowInvoiceCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} invoice} other {{count} invoices}}'**
+  String cashFlowInvoiceCount(int count);
+
+  /// No description provided for @cashFlowCommittedAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'committed {amount}'**
+  String cashFlowCommittedAmount(String amount);
+
+  /// No description provided for @cashFlowPendingAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'pending {amount}'**
+  String cashFlowPendingAmount(String amount);
+
+  /// No description provided for @cashFlowPosition.
+  ///
+  /// In en, this message translates to:
+  /// **'Cash Position'**
+  String get cashFlowPosition;
+
+  /// No description provided for @cashFlowNoPosition.
+  ///
+  /// In en, this message translates to:
+  /// **'No cash-position projection for this horizon.'**
+  String get cashFlowNoPosition;
+
+  /// No description provided for @cashFlowOutAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'out {amount}'**
+  String cashFlowOutAmount(String amount);
+
+  /// No description provided for @cashFlowForecastRowLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{period}: scheduled {scheduled}, committed {committed}, pending {pending}, {count} invoices'**
+  String cashFlowForecastRowLabel(
+    String period,
+    String scheduled,
+    String committed,
+    String pending,
+    int count,
+  );
+
+  /// No description provided for @cashFlowPositionRowLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{period}: opening {opening}, outflow {outflow}, closing {closing}'**
+  String cashFlowPositionRowLabel(
+    String period,
+    String opening,
+    String outflow,
+    String closing,
+  );
+
+  /// No description provided for @cashFlowBelowThresholdSuffix.
+  ///
+  /// In en, this message translates to:
+  /// **', below threshold'**
+  String get cashFlowBelowThresholdSuffix;
+
+  /// No description provided for @cashFlowLowBalanceAlertLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Low balance alert. {message}'**
+  String cashFlowLowBalanceAlertLabel(String message);
+
+  /// No description provided for @contractsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Contracts'**
+  String get contractsTitle;
+
+  /// No description provided for @contractsSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search contracts...'**
+  String get contractsSearchHint;
+
+  /// No description provided for @contractsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No contracts found'**
+  String get contractsEmpty;
+
+  /// No description provided for @contractsFilterDraft.
+  ///
+  /// In en, this message translates to:
+  /// **'Draft'**
+  String get contractsFilterDraft;
+
+  /// No description provided for @contractsFilterActive.
+  ///
+  /// In en, this message translates to:
+  /// **'Active'**
+  String get contractsFilterActive;
+
+  /// No description provided for @contractsFilterExpired.
+  ///
+  /// In en, this message translates to:
+  /// **'Expired'**
+  String get contractsFilterExpired;
+
+  /// No description provided for @contractsFilterTerminated.
+  ///
+  /// In en, this message translates to:
+  /// **'Terminated'**
+  String get contractsFilterTerminated;
+
+  /// No description provided for @contractsFilterCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get contractsFilterCancelled;
+
+  /// No description provided for @contractDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Contract Detail'**
+  String get contractDetailTitle;
+
+  /// No description provided for @contractDetailErrorPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Error: {error}'**
+  String contractDetailErrorPrefix(String error);
+
+  /// No description provided for @contractDetailUntitled.
+  ///
+  /// In en, this message translates to:
+  /// **'Untitled Contract'**
+  String get contractDetailUntitled;
+
+  /// No description provided for @contractDetailFieldContractNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'Contract #'**
+  String get contractDetailFieldContractNumber;
+
+  /// No description provided for @contractDetailFieldVendor.
+  ///
+  /// In en, this message translates to:
+  /// **'Vendor'**
+  String get contractDetailFieldVendor;
+
+  /// No description provided for @contractDetailFieldType.
+  ///
+  /// In en, this message translates to:
+  /// **'Type'**
+  String get contractDetailFieldType;
+
+  /// No description provided for @contractDetailFieldCurrency.
+  ///
+  /// In en, this message translates to:
+  /// **'Currency'**
+  String get contractDetailFieldCurrency;
+
+  /// No description provided for @contractDetailFieldSpendLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Spend Limit'**
+  String get contractDetailFieldSpendLimit;
+
+  /// No description provided for @contractDetailNotToExceed.
+  ///
+  /// In en, this message translates to:
+  /// **' (not to exceed)'**
+  String get contractDetailNotToExceed;
+
+  /// No description provided for @contractDetailFieldStartDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Start Date'**
+  String get contractDetailFieldStartDate;
+
+  /// No description provided for @contractDetailFieldEndDate.
+  ///
+  /// In en, this message translates to:
+  /// **'End Date'**
+  String get contractDetailFieldEndDate;
+
+  /// No description provided for @contractDetailFieldSigned.
+  ///
+  /// In en, this message translates to:
+  /// **'Signed'**
+  String get contractDetailFieldSigned;
+
+  /// No description provided for @contractDetailFieldAutoRenew.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto-Renew'**
+  String get contractDetailFieldAutoRenew;
+
+  /// No description provided for @contractDetailYes.
+  ///
+  /// In en, this message translates to:
+  /// **'Yes'**
+  String get contractDetailYes;
+
+  /// No description provided for @contractDetailNo.
+  ///
+  /// In en, this message translates to:
+  /// **'No'**
+  String get contractDetailNo;
+
+  /// No description provided for @contractDetailFieldRenewalTerm.
+  ///
+  /// In en, this message translates to:
+  /// **'Renewal Term'**
+  String get contractDetailFieldRenewalTerm;
+
+  /// No description provided for @contractDetailRenewalTermMonths.
+  ///
+  /// In en, this message translates to:
+  /// **'{months} months'**
+  String contractDetailRenewalTermMonths(int months);
+
+  /// No description provided for @contractDetailFieldRenewalNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Renewal Notice'**
+  String get contractDetailFieldRenewalNotice;
+
+  /// No description provided for @contractDetailRenewalNoticeDays.
+  ///
+  /// In en, this message translates to:
+  /// **'{days} days'**
+  String contractDetailRenewalNoticeDays(int days);
+
+  /// No description provided for @contractDetailFieldPaymentTerms.
+  ///
+  /// In en, this message translates to:
+  /// **'Payment Terms'**
+  String get contractDetailFieldPaymentTerms;
+
+  /// No description provided for @contractDetailFieldDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description'**
+  String get contractDetailFieldDescription;
+
+  /// No description provided for @contractDetailFieldCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Created'**
+  String get contractDetailFieldCreated;
+
+  /// No description provided for @contractDetailSectionSpend.
+  ///
+  /// In en, this message translates to:
+  /// **'Spend'**
+  String get contractDetailSectionSpend;
+
+  /// No description provided for @contractDetailSectionLineItems.
+  ///
+  /// In en, this message translates to:
+  /// **'Line Items'**
+  String get contractDetailSectionLineItems;
+
+  /// No description provided for @contractDetailSpendInvoiced.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoiced'**
+  String get contractDetailSpendInvoiced;
+
+  /// No description provided for @contractDetailSpendInvoiceCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one {{count} invoice} other {{count} invoices}}'**
+  String contractDetailSpendInvoiceCount(int count);
+
+  /// No description provided for @contractDetailSpendOverLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Over Limit'**
+  String get contractDetailSpendOverLimit;
+
+  /// No description provided for @contractDetailSpendRemaining.
+  ///
+  /// In en, this message translates to:
+  /// **'Remaining'**
+  String get contractDetailSpendRemaining;
+
+  /// No description provided for @contractDetailSpendOfLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'of {limit}'**
+  String contractDetailSpendOfLimit(String limit);
+
+  /// No description provided for @contractDetailSpendNoLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'no limit set'**
+  String get contractDetailSpendNoLimit;
+
+  /// No description provided for @contractDetailLineItemFallback.
+  ///
+  /// In en, this message translates to:
+  /// **'Line item'**
+  String get contractDetailLineItemFallback;
+
+  /// No description provided for @contractDetailLineQty.
+  ///
+  /// In en, this message translates to:
+  /// **'Qty {quantity}'**
+  String contractDetailLineQty(String quantity);
+
+  /// No description provided for @contractDetailLineUnitPrice.
+  ///
+  /// In en, this message translates to:
+  /// **'@ {price}'**
+  String contractDetailLineUnitPrice(String price);
+
+  /// No description provided for @contractDetailLineGl.
+  ///
+  /// In en, this message translates to:
+  /// **'GL {account}'**
+  String contractDetailLineGl(String account);
+
+  /// No description provided for @contractActivate.
+  ///
+  /// In en, this message translates to:
+  /// **'Activate'**
+  String get contractActivate;
+
+  /// No description provided for @contractActivated.
+  ///
+  /// In en, this message translates to:
+  /// **'Contract activated'**
+  String get contractActivated;
+
+  /// No description provided for @contractActivateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not activate contract — please try again'**
+  String get contractActivateFailed;
+
+  /// No description provided for @contractTerminate.
+  ///
+  /// In en, this message translates to:
+  /// **'Terminate'**
+  String get contractTerminate;
+
+  /// No description provided for @contractTerminateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Terminate Contract'**
+  String get contractTerminateTitle;
+
+  /// No description provided for @contractTerminateBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This ends the contract early. This cannot be undone. Continue?'**
+  String get contractTerminateBody;
+
+  /// No description provided for @contractTerminated.
+  ///
+  /// In en, this message translates to:
+  /// **'Contract terminated'**
+  String get contractTerminated;
+
+  /// No description provided for @contractTerminateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not terminate contract — please try again'**
+  String get contractTerminateFailed;
+
+  /// No description provided for @exceptionDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception'**
+  String get exceptionDetailTitle;
+
+  /// No description provided for @exceptionDetailNotFound.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception not found'**
+  String get exceptionDetailNotFound;
+
+  /// No description provided for @exceptionDetailOverdue.
+  ///
+  /// In en, this message translates to:
+  /// **'Overdue'**
+  String get exceptionDetailOverdue;
+
+  /// No description provided for @exceptionDetailSectionDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description'**
+  String get exceptionDetailSectionDescription;
+
+  /// No description provided for @exceptionDetailSectionInvoice.
+  ///
+  /// In en, this message translates to:
+  /// **'Invoice'**
+  String get exceptionDetailSectionInvoice;
+
+  /// No description provided for @exceptionDetailNoLinkedInvoice.
+  ///
+  /// In en, this message translates to:
+  /// **'No linked invoice'**
+  String get exceptionDetailNoLinkedInvoice;
+
+  /// No description provided for @exceptionDetailFieldNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'Number'**
+  String get exceptionDetailFieldNumber;
+
+  /// No description provided for @exceptionDetailFieldVendor.
+  ///
+  /// In en, this message translates to:
+  /// **'Vendor'**
+  String get exceptionDetailFieldVendor;
+
+  /// No description provided for @exceptionDetailFieldAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Amount'**
+  String get exceptionDetailFieldAmount;
+
+  /// No description provided for @exceptionDetailFieldSeverity.
+  ///
+  /// In en, this message translates to:
+  /// **'Severity'**
+  String get exceptionDetailFieldSeverity;
+
+  /// No description provided for @exceptionDetailSectionSla.
+  ///
+  /// In en, this message translates to:
+  /// **'SLA'**
+  String get exceptionDetailSectionSla;
+
+  /// No description provided for @exceptionDetailFieldCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Created'**
+  String get exceptionDetailFieldCreated;
+
+  /// No description provided for @exceptionDetailFieldDue.
+  ///
+  /// In en, this message translates to:
+  /// **'Due'**
+  String get exceptionDetailFieldDue;
+
+  /// No description provided for @exceptionDetailNoSla.
+  ///
+  /// In en, this message translates to:
+  /// **'No SLA set'**
+  String get exceptionDetailNoSla;
+
+  /// No description provided for @exceptionDetailFieldStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get exceptionDetailFieldStatus;
+
+  /// No description provided for @exceptionDetailOnTrack.
+  ///
+  /// In en, this message translates to:
+  /// **'On track'**
+  String get exceptionDetailOnTrack;
+
+  /// No description provided for @exceptionDetailResolvedIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Resolved in'**
+  String get exceptionDetailResolvedIn;
+
+  /// No description provided for @exceptionDetailResolvedInHours.
+  ///
+  /// In en, this message translates to:
+  /// **'{hours} h'**
+  String exceptionDetailResolvedInHours(String hours);
+
+  /// No description provided for @exceptionDetailSectionAssignee.
+  ///
+  /// In en, this message translates to:
+  /// **'Assignee'**
+  String get exceptionDetailSectionAssignee;
+
+  /// No description provided for @exceptionDetailUnassigned.
+  ///
+  /// In en, this message translates to:
+  /// **'Unassigned'**
+  String get exceptionDetailUnassigned;
+
+  /// No description provided for @exceptionDetailAssign.
+  ///
+  /// In en, this message translates to:
+  /// **'Assign'**
+  String get exceptionDetailAssign;
+
+  /// No description provided for @exceptionDetailReassign.
+  ///
+  /// In en, this message translates to:
+  /// **'Reassign'**
+  String get exceptionDetailReassign;
+
+  /// No description provided for @exceptionDetailSectionResolution.
+  ///
+  /// In en, this message translates to:
+  /// **'Resolution'**
+  String get exceptionDetailSectionResolution;
+
+  /// No description provided for @exceptionDetailResolutionNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Note'**
+  String get exceptionDetailResolutionNote;
+
+  /// No description provided for @exceptionDetailResolutionBy.
+  ///
+  /// In en, this message translates to:
+  /// **'By'**
+  String get exceptionDetailResolutionBy;
+
+  /// No description provided for @exceptionDetailResolutionAt.
+  ///
+  /// In en, this message translates to:
+  /// **'At'**
+  String get exceptionDetailResolutionAt;
+
+  /// No description provided for @exceptionDetailActionResolved.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception resolved'**
+  String get exceptionDetailActionResolved;
+
+  /// No description provided for @exceptionDetailActionEscalated.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception escalated'**
+  String get exceptionDetailActionEscalated;
+
+  /// No description provided for @exceptionDetailActionDismissed.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception dismissed'**
+  String get exceptionDetailActionDismissed;
+
+  /// No description provided for @exceptionDetailActionResolveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not resolve the exception'**
+  String get exceptionDetailActionResolveFailed;
+
+  /// No description provided for @exceptionDetailActionEscalateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not escalate the exception'**
+  String get exceptionDetailActionEscalateFailed;
+
+  /// No description provided for @exceptionDetailActionDismissFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not dismiss the exception'**
+  String get exceptionDetailActionDismissFailed;
+
+  /// No description provided for @exceptionDetailAssignTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Assign to'**
+  String get exceptionDetailAssignTo;
+
+  /// No description provided for @exceptionDetailUnassign.
+  ///
+  /// In en, this message translates to:
+  /// **'Unassign'**
+  String get exceptionDetailUnassign;
+
+  /// No description provided for @exceptionDetailLoadUsersFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load users: {error}'**
+  String exceptionDetailLoadUsersFailed(String error);
+
+  /// No description provided for @exceptionDetailAssigneeUpdateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not update the assignee'**
+  String get exceptionDetailAssigneeUpdateFailed;
+
+  /// No description provided for @exceptionDetailUnassigned2.
+  ///
+  /// In en, this message translates to:
+  /// **'Exception unassigned'**
+  String get exceptionDetailUnassigned2;
+
+  /// No description provided for @exceptionDetailAssignedTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Assigned to {name}'**
+  String exceptionDetailAssignedTo(String name);
 }
 
 class _AppLocalizationsDelegate

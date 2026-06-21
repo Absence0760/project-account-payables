@@ -1248,4 +1248,439 @@ class AppLocalizationsFr extends AppLocalizations {
   String workflowDetailConditionSummary(String field) {
     return 'Sur $field';
   }
+
+  @override
+  String get cashFlowTitle => 'Prévision de trésorerie';
+
+  @override
+  String cashFlowErrorPrefix(String error) {
+    return 'Erreur : $error';
+  }
+
+  @override
+  String cashFlowHorizonDays(int days) {
+    return '$days jours';
+  }
+
+  @override
+  String get cashFlowLowBalanceAlert => 'Alerte de solde faible';
+
+  @override
+  String cashFlowBreachSingle(
+    String threshold,
+    String period,
+    String shortfall,
+  ) {
+    return 'Risque de passer sous le solde $threshold en $period (déficit $shortfall).';
+  }
+
+  @override
+  String cashFlowBreachMultiple(int count, String period, String shortfall) {
+    return '$count périodes risquent de passer sous le solde minimum. Pire : $period, déficit $shortfall.';
+  }
+
+  @override
+  String get cashFlowMinimum => 'minimum';
+
+  @override
+  String get cashFlowOpeningBalance => 'Solde d’ouverture';
+
+  @override
+  String get cashFlowProjectedEnd => 'Fin prévue';
+
+  @override
+  String cashFlowProjectedEndSubtitle(int days) {
+    return 'dans $days jours';
+  }
+
+  @override
+  String get cashFlowCommittedOut => 'Sorties engagées';
+
+  @override
+  String get cashFlowCommittedSubtitle => 'engagements fermes';
+
+  @override
+  String get cashFlowPendingOut => 'Sorties en attente';
+
+  @override
+  String get cashFlowPendingSubtitle => 'pipeline en cours';
+
+  @override
+  String get cashFlowOpeningSourceProvider => 'synchronisé depuis la banque';
+
+  @override
+  String get cashFlowOpeningSourceSettings => 'solde enregistré';
+
+  @override
+  String get cashFlowOpeningSourceQuery => 'manuel';
+
+  @override
+  String get cashFlowOpeningSourceUnset => 'définir un solde';
+
+  @override
+  String get cashFlowProjectedOutflows => 'Sorties prévues';
+
+  @override
+  String get cashFlowNoOutflows => 'Aucune sortie prévue sur cet horizon.';
+
+  @override
+  String cashFlowInvoiceCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count factures',
+      one: '$count facture',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String cashFlowCommittedAmount(String amount) {
+    return 'engagé $amount';
+  }
+
+  @override
+  String cashFlowPendingAmount(String amount) {
+    return 'en attente $amount';
+  }
+
+  @override
+  String get cashFlowPosition => 'Position de trésorerie';
+
+  @override
+  String get cashFlowNoPosition =>
+      'Aucune prévision de trésorerie pour cet horizon.';
+
+  @override
+  String cashFlowOutAmount(String amount) {
+    return 'sortie $amount';
+  }
+
+  @override
+  String cashFlowForecastRowLabel(
+    String period,
+    String scheduled,
+    String committed,
+    String pending,
+    int count,
+  ) {
+    return '$period : prévu $scheduled, engagé $committed, en attente $pending, $count factures';
+  }
+
+  @override
+  String cashFlowPositionRowLabel(
+    String period,
+    String opening,
+    String outflow,
+    String closing,
+  ) {
+    return '$period : ouverture $opening, sortie $outflow, clôture $closing';
+  }
+
+  @override
+  String get cashFlowBelowThresholdSuffix => ', sous le seuil';
+
+  @override
+  String cashFlowLowBalanceAlertLabel(String message) {
+    return 'Alerte de solde faible. $message';
+  }
+
+  @override
+  String get contractsTitle => 'Contrats';
+
+  @override
+  String get contractsSearchHint => 'Rechercher des contrats…';
+
+  @override
+  String get contractsEmpty => 'Aucun contrat trouvé';
+
+  @override
+  String get contractsFilterDraft => 'Brouillon';
+
+  @override
+  String get contractsFilterActive => 'Actif';
+
+  @override
+  String get contractsFilterExpired => 'Expiré';
+
+  @override
+  String get contractsFilterTerminated => 'Résilié';
+
+  @override
+  String get contractsFilterCancelled => 'Annulé';
+
+  @override
+  String get contractDetailTitle => 'Détail du contrat';
+
+  @override
+  String contractDetailErrorPrefix(String error) {
+    return 'Erreur : $error';
+  }
+
+  @override
+  String get contractDetailUntitled => 'Contrat sans titre';
+
+  @override
+  String get contractDetailFieldContractNumber => 'N° de contrat';
+
+  @override
+  String get contractDetailFieldVendor => 'Fournisseur';
+
+  @override
+  String get contractDetailFieldType => 'Type';
+
+  @override
+  String get contractDetailFieldCurrency => 'Devise';
+
+  @override
+  String get contractDetailFieldSpendLimit => 'Plafond de dépenses';
+
+  @override
+  String get contractDetailNotToExceed => ' (à ne pas dépasser)';
+
+  @override
+  String get contractDetailFieldStartDate => 'Date de début';
+
+  @override
+  String get contractDetailFieldEndDate => 'Date de fin';
+
+  @override
+  String get contractDetailFieldSigned => 'Signé';
+
+  @override
+  String get contractDetailFieldAutoRenew => 'Renouvellement auto.';
+
+  @override
+  String get contractDetailYes => 'Oui';
+
+  @override
+  String get contractDetailNo => 'Non';
+
+  @override
+  String get contractDetailFieldRenewalTerm => 'Durée de renouvellement';
+
+  @override
+  String contractDetailRenewalTermMonths(int months) {
+    return '$months mois';
+  }
+
+  @override
+  String get contractDetailFieldRenewalNotice => 'Préavis de renouvellement';
+
+  @override
+  String contractDetailRenewalNoticeDays(int days) {
+    return '$days jours';
+  }
+
+  @override
+  String get contractDetailFieldPaymentTerms => 'Conditions de paiement';
+
+  @override
+  String get contractDetailFieldDescription => 'Description';
+
+  @override
+  String get contractDetailFieldCreated => 'Créé';
+
+  @override
+  String get contractDetailSectionSpend => 'Dépenses';
+
+  @override
+  String get contractDetailSectionLineItems => 'Lignes';
+
+  @override
+  String get contractDetailSpendInvoiced => 'Facturé';
+
+  @override
+  String contractDetailSpendInvoiceCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count factures',
+      one: '$count facture',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get contractDetailSpendOverLimit => 'Dépassé';
+
+  @override
+  String get contractDetailSpendRemaining => 'Restant';
+
+  @override
+  String contractDetailSpendOfLimit(String limit) {
+    return 'sur $limit';
+  }
+
+  @override
+  String get contractDetailSpendNoLimit => 'aucun plafond défini';
+
+  @override
+  String get contractDetailLineItemFallback => 'Ligne';
+
+  @override
+  String contractDetailLineQty(String quantity) {
+    return 'Qté $quantity';
+  }
+
+  @override
+  String contractDetailLineUnitPrice(String price) {
+    return '@ $price';
+  }
+
+  @override
+  String contractDetailLineGl(String account) {
+    return 'Compte $account';
+  }
+
+  @override
+  String get contractActivate => 'Activer';
+
+  @override
+  String get contractActivated => 'Contrat activé';
+
+  @override
+  String get contractActivateFailed =>
+      'Impossible d’activer le contrat — veuillez réessayer';
+
+  @override
+  String get contractTerminate => 'Résilier';
+
+  @override
+  String get contractTerminateTitle => 'Résilier le contrat';
+
+  @override
+  String get contractTerminateBody =>
+      'Cela met fin au contrat de façon anticipée. Cette action est irréversible. Continuer ?';
+
+  @override
+  String get contractTerminated => 'Contrat résilié';
+
+  @override
+  String get contractTerminateFailed =>
+      'Impossible de résilier le contrat — veuillez réessayer';
+
+  @override
+  String get exceptionDetailTitle => 'Exception';
+
+  @override
+  String get exceptionDetailNotFound => 'Exception introuvable';
+
+  @override
+  String get exceptionDetailOverdue => 'En retard';
+
+  @override
+  String get exceptionDetailSectionDescription => 'Description';
+
+  @override
+  String get exceptionDetailSectionInvoice => 'Facture';
+
+  @override
+  String get exceptionDetailNoLinkedInvoice => 'Aucune facture liée';
+
+  @override
+  String get exceptionDetailFieldNumber => 'Numéro';
+
+  @override
+  String get exceptionDetailFieldVendor => 'Fournisseur';
+
+  @override
+  String get exceptionDetailFieldAmount => 'Montant';
+
+  @override
+  String get exceptionDetailFieldSeverity => 'Gravité';
+
+  @override
+  String get exceptionDetailSectionSla => 'SLA';
+
+  @override
+  String get exceptionDetailFieldCreated => 'Créée';
+
+  @override
+  String get exceptionDetailFieldDue => 'Échéance';
+
+  @override
+  String get exceptionDetailNoSla => 'Aucun SLA défini';
+
+  @override
+  String get exceptionDetailFieldStatus => 'Statut';
+
+  @override
+  String get exceptionDetailOnTrack => 'Dans les délais';
+
+  @override
+  String get exceptionDetailResolvedIn => 'Résolue en';
+
+  @override
+  String exceptionDetailResolvedInHours(String hours) {
+    return '$hours h';
+  }
+
+  @override
+  String get exceptionDetailSectionAssignee => 'Affectée à';
+
+  @override
+  String get exceptionDetailUnassigned => 'Non affectée';
+
+  @override
+  String get exceptionDetailAssign => 'Affecter';
+
+  @override
+  String get exceptionDetailReassign => 'Réaffecter';
+
+  @override
+  String get exceptionDetailSectionResolution => 'Résolution';
+
+  @override
+  String get exceptionDetailResolutionNote => 'Note';
+
+  @override
+  String get exceptionDetailResolutionBy => 'Par';
+
+  @override
+  String get exceptionDetailResolutionAt => 'Le';
+
+  @override
+  String get exceptionDetailActionResolved => 'Exception résolue';
+
+  @override
+  String get exceptionDetailActionEscalated => 'Exception escaladée';
+
+  @override
+  String get exceptionDetailActionDismissed => 'Exception rejetée';
+
+  @override
+  String get exceptionDetailActionResolveFailed =>
+      'Impossible de résoudre l’exception';
+
+  @override
+  String get exceptionDetailActionEscalateFailed =>
+      'Impossible d’escalader l’exception';
+
+  @override
+  String get exceptionDetailActionDismissFailed =>
+      'Impossible de rejeter l’exception';
+
+  @override
+  String get exceptionDetailAssignTo => 'Affecter à';
+
+  @override
+  String get exceptionDetailUnassign => 'Retirer l’affectation';
+
+  @override
+  String exceptionDetailLoadUsersFailed(String error) {
+    return 'Impossible de charger les utilisateurs : $error';
+  }
+
+  @override
+  String get exceptionDetailAssigneeUpdateFailed =>
+      'Impossible de mettre à jour l’affectation';
+
+  @override
+  String get exceptionDetailUnassigned2 => 'Affectation de l’exception retirée';
+
+  @override
+  String exceptionDetailAssignedTo(String name) {
+    return 'Affectée à $name';
+  }
 }

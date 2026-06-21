@@ -611,5 +611,253 @@
     "placeholders": {
       "field": { "type": "String" }
     }
+  },
+
+  "cashFlowTitle": "Cash Flow Forecast",
+  "cashFlowErrorPrefix": "Error: {error}",
+  "@cashFlowErrorPrefix": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "cashFlowHorizonDays": "{days} days",
+  "@cashFlowHorizonDays": {
+    "placeholders": {
+      "days": { "type": "int" }
+    }
+  },
+  "cashFlowLowBalanceAlert": "Low balance alert",
+  "cashFlowBreachSingle": "Projected to fall below the {threshold} balance in {period} (shortfall {shortfall}).",
+  "@cashFlowBreachSingle": {
+    "placeholders": {
+      "threshold": { "type": "String" },
+      "period": { "type": "String" },
+      "shortfall": { "type": "String" }
+    }
+  },
+  "cashFlowBreachMultiple": "{count} periods are projected to fall below the minimum balance. Worst: {period}, shortfall {shortfall}.",
+  "@cashFlowBreachMultiple": {
+    "placeholders": {
+      "count": { "type": "int" },
+      "period": { "type": "String" },
+      "shortfall": { "type": "String" }
+    }
+  },
+  "cashFlowMinimum": "minimum",
+  "cashFlowOpeningBalance": "Opening Balance",
+  "cashFlowProjectedEnd": "Projected End",
+  "cashFlowProjectedEndSubtitle": "in {days} days",
+  "@cashFlowProjectedEndSubtitle": {
+    "placeholders": {
+      "days": { "type": "int" }
+    }
+  },
+  "cashFlowCommittedOut": "Committed Out",
+  "cashFlowCommittedSubtitle": "firm commitments",
+  "cashFlowPendingOut": "Pending Out",
+  "cashFlowPendingSubtitle": "in-flight pipeline",
+  "cashFlowOpeningSourceProvider": "synced from bank",
+  "cashFlowOpeningSourceSettings": "saved balance",
+  "cashFlowOpeningSourceQuery": "manual",
+  "cashFlowOpeningSourceUnset": "set a balance",
+  "cashFlowProjectedOutflows": "Projected Outflows",
+  "cashFlowNoOutflows": "No projected outflows in this horizon.",
+  "cashFlowInvoiceCount": "{count, plural, one {{count} invoice} other {{count} invoices}}",
+  "@cashFlowInvoiceCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "cashFlowCommittedAmount": "committed {amount}",
+  "@cashFlowCommittedAmount": {
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
+  "cashFlowPendingAmount": "pending {amount}",
+  "@cashFlowPendingAmount": {
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
+  "cashFlowPosition": "Cash Position",
+  "cashFlowNoPosition": "No cash-position projection for this horizon.",
+  "cashFlowOutAmount": "out {amount}",
+  "@cashFlowOutAmount": {
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
+  "cashFlowForecastRowLabel": "{period}: scheduled {scheduled}, committed {committed}, pending {pending}, {count} invoices",
+  "@cashFlowForecastRowLabel": {
+    "placeholders": {
+      "period": { "type": "String" },
+      "scheduled": { "type": "String" },
+      "committed": { "type": "String" },
+      "pending": { "type": "String" },
+      "count": { "type": "int" }
+    }
+  },
+  "cashFlowPositionRowLabel": "{period}: opening {opening}, outflow {outflow}, closing {closing}",
+  "@cashFlowPositionRowLabel": {
+    "placeholders": {
+      "period": { "type": "String" },
+      "opening": { "type": "String" },
+      "outflow": { "type": "String" },
+      "closing": { "type": "String" }
+    }
+  },
+  "cashFlowBelowThresholdSuffix": ", below threshold",
+  "cashFlowLowBalanceAlertLabel": "Low balance alert. {message}",
+  "@cashFlowLowBalanceAlertLabel": {
+    "placeholders": {
+      "message": { "type": "String" }
+    }
+  },
+
+  "contractsTitle": "Contracts",
+  "contractsSearchHint": "Search contracts...",
+  "contractsEmpty": "No contracts found",
+  "contractsFilterDraft": "Draft",
+  "contractsFilterActive": "Active",
+  "contractsFilterExpired": "Expired",
+  "contractsFilterTerminated": "Terminated",
+  "contractsFilterCancelled": "Cancelled",
+
+  "contractDetailTitle": "Contract Detail",
+  "contractDetailErrorPrefix": "Error: {error}",
+  "@contractDetailErrorPrefix": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "contractDetailUntitled": "Untitled Contract",
+  "contractDetailFieldContractNumber": "Contract #",
+  "contractDetailFieldVendor": "Vendor",
+  "contractDetailFieldType": "Type",
+  "contractDetailFieldCurrency": "Currency",
+  "contractDetailFieldSpendLimit": "Spend Limit",
+  "contractDetailNotToExceed": " (not to exceed)",
+  "contractDetailFieldStartDate": "Start Date",
+  "contractDetailFieldEndDate": "End Date",
+  "contractDetailFieldSigned": "Signed",
+  "contractDetailFieldAutoRenew": "Auto-Renew",
+  "contractDetailYes": "Yes",
+  "contractDetailNo": "No",
+  "contractDetailFieldRenewalTerm": "Renewal Term",
+  "contractDetailRenewalTermMonths": "{months} months",
+  "@contractDetailRenewalTermMonths": {
+    "placeholders": {
+      "months": { "type": "int" }
+    }
+  },
+  "contractDetailFieldRenewalNotice": "Renewal Notice",
+  "contractDetailRenewalNoticeDays": "{days} days",
+  "@contractDetailRenewalNoticeDays": {
+    "placeholders": {
+      "days": { "type": "int" }
+    }
+  },
+  "contractDetailFieldPaymentTerms": "Payment Terms",
+  "contractDetailFieldDescription": "Description",
+  "contractDetailFieldCreated": "Created",
+  "contractDetailSectionSpend": "Spend",
+  "contractDetailSectionLineItems": "Line Items",
+  "contractDetailSpendInvoiced": "Invoiced",
+  "contractDetailSpendInvoiceCount": "{count, plural, one {{count} invoice} other {{count} invoices}}",
+  "@contractDetailSpendInvoiceCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "contractDetailSpendOverLimit": "Over Limit",
+  "contractDetailSpendRemaining": "Remaining",
+  "contractDetailSpendOfLimit": "of {limit}",
+  "@contractDetailSpendOfLimit": {
+    "placeholders": {
+      "limit": { "type": "String" }
+    }
+  },
+  "contractDetailSpendNoLimit": "no limit set",
+  "contractDetailLineItemFallback": "Line item",
+  "contractDetailLineQty": "Qty {quantity}",
+  "@contractDetailLineQty": {
+    "placeholders": {
+      "quantity": { "type": "String" }
+    }
+  },
+  "contractDetailLineUnitPrice": "@ {price}",
+  "@contractDetailLineUnitPrice": {
+    "placeholders": {
+      "price": { "type": "String" }
+    }
+  },
+  "contractDetailLineGl": "GL {account}",
+  "@contractDetailLineGl": {
+    "placeholders": {
+      "account": { "type": "String" }
+    }
+  },
+  "contractActivate": "Activate",
+  "contractActivated": "Contract activated",
+  "contractActivateFailed": "Could not activate contract — please try again",
+  "contractTerminate": "Terminate",
+  "contractTerminateTitle": "Terminate Contract",
+  "contractTerminateBody": "This ends the contract early. This cannot be undone. Continue?",
+  "contractTerminated": "Contract terminated",
+  "contractTerminateFailed": "Could not terminate contract — please try again",
+
+  "exceptionDetailTitle": "Exception",
+  "exceptionDetailNotFound": "Exception not found",
+  "exceptionDetailOverdue": "Overdue",
+  "exceptionDetailSectionDescription": "Description",
+  "exceptionDetailSectionInvoice": "Invoice",
+  "exceptionDetailNoLinkedInvoice": "No linked invoice",
+  "exceptionDetailFieldNumber": "Number",
+  "exceptionDetailFieldVendor": "Vendor",
+  "exceptionDetailFieldAmount": "Amount",
+  "exceptionDetailFieldSeverity": "Severity",
+  "exceptionDetailSectionSla": "SLA",
+  "exceptionDetailFieldCreated": "Created",
+  "exceptionDetailFieldDue": "Due",
+  "exceptionDetailNoSla": "No SLA set",
+  "exceptionDetailFieldStatus": "Status",
+  "exceptionDetailOnTrack": "On track",
+  "exceptionDetailResolvedIn": "Resolved in",
+  "exceptionDetailResolvedInHours": "{hours} h",
+  "@exceptionDetailResolvedInHours": {
+    "placeholders": {
+      "hours": { "type": "String" }
+    }
+  },
+  "exceptionDetailSectionAssignee": "Assignee",
+  "exceptionDetailUnassigned": "Unassigned",
+  "exceptionDetailAssign": "Assign",
+  "exceptionDetailReassign": "Reassign",
+  "exceptionDetailSectionResolution": "Resolution",
+  "exceptionDetailResolutionNote": "Note",
+  "exceptionDetailResolutionBy": "By",
+  "exceptionDetailResolutionAt": "At",
+  "exceptionDetailActionResolved": "Exception resolved",
+  "exceptionDetailActionEscalated": "Exception escalated",
+  "exceptionDetailActionDismissed": "Exception dismissed",
+  "exceptionDetailActionResolveFailed": "Could not resolve the exception",
+  "exceptionDetailActionEscalateFailed": "Could not escalate the exception",
+  "exceptionDetailActionDismissFailed": "Could not dismiss the exception",
+  "exceptionDetailAssignTo": "Assign to",
+  "exceptionDetailUnassign": "Unassign",
+  "exceptionDetailLoadUsersFailed": "Could not load users: {error}",
+  "@exceptionDetailLoadUsersFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "exceptionDetailAssigneeUpdateFailed": "Could not update the assignee",
+  "exceptionDetailUnassigned2": "Exception unassigned",
+  "exceptionDetailAssignedTo": "Assigned to {name}",
+  "@exceptionDetailAssignedTo": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
   }
 }
