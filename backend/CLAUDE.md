@@ -480,6 +480,8 @@ class MyAdapter(BillingAdapter):
     async def get_subscription(self, external_subscription_id: str) -> ProviderSubscription: ...
     async def list_invoices(self, *, customer_id, limit=24) -> list[ProviderInvoice]: ...
     async def report_usage(self, report: UsageReport) -> None: ...
+    async def create_setup_intent(self, customer_id) -> ProviderSetupIntent | None: ...
+    async def list_payment_methods(self, customer_id) -> list[ProviderPaymentMethod]: ...
     def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None: ...
     async def test_connection(self) -> bool: ...
 ```
@@ -497,7 +499,13 @@ decimal-string quantities), and `parse_webhook` (Stripe-Signature HMAC verify).
 Selection via `Organization.settings.billing.provider` → `AP_BILLING_PROVIDER`
 (default `mock`). This is the AP platform's OWN customer billing (plans /
 subscriptions / metering — control-plane, keyed by org), distinct from the AP
-money path the app runs for customers. Usage rollup off the existing
+money path the app runs for customers. The **payment-method** capability
+(`create_setup_intent` → `ProviderSetupIntent` with a single-use `client_secret`,
+`list_payment_methods` → `ProviderPaymentMethod` PII-safe metadata only —
+brand/last4/exp, **never a PAN**) is also implemented: base supplies safe
+defaults (`None` / `[]`), mock returns a deterministic SetupIntent + a
+deterministic `visa ****4242`, Stripe POSTs `/v1/setup_intents` + GETs
+`/v1/payment_methods?type=card` (fails closed without a key). Usage rollup off the existing
 `extraction_usage` / `card_rebates` meters lives in
 `services/billing/usage_rollup.py`; entitlement gating (`require_entitlement` /
 `require_api_entitlement` in `deps.py`, 402 on a plan miss) reads
@@ -508,7 +516,10 @@ money path the app runs for customers. Usage rollup off the existing
 plan-change endpoint (`POST /api/billing/change-plan`, admin/cfo, idempotent +
 audited), and the invoices/receipts list endpoint (`GET /api/billing/invoices`,
 admin/cfo, money as exact strings, graceful empty-list on no-customer /
-unconfigured) are shipped; the payment-method endpoint + the invoices/receipts
+unconfigured), and the payment-method endpoint (`POST
+/api/billing/payment-method/setup-intent` + `GET /api/billing/payment-methods`,
+admin/cfo, PII-safe card metadata only, graceful not-configured / empty on
+no-customer / unconfigured) are shipped; the invoices/receipts + payment-method
 UI (frontend track) are later. See `docs/billing.md`.
 
 | Variable | Default | Purpose |

@@ -33,6 +33,8 @@ from app.services.billing_adapters.base import (
     BillingWebhookEvent,
     CreateSubscriptionRequest,
     ProviderInvoice,
+    ProviderPaymentMethod,
+    ProviderSetupIntent,
     ProviderSubscription,
     UsageReport,
 )
@@ -319,6 +321,68 @@ class StripeBillingAdapter(BillingAdapter):
                 }
                 resp = await client.post("/v1/billing/meter_events", data=form)
                 self._json_or_raise(resp, "report_usage")
+
+    async def create_setup_intent(self, customer_id: str | None) -> ProviderSetupIntent | None:
+        """Create a Stripe SetupIntent so the org can save/replace a card.
+
+        Fails closed without a key (``BillingNotConfigured``), like the sibling
+        calls. ``customer_id is None`` (never provisioned) → ``None`` (the route
+        surfaces a clear not-configured shape, not an error). Returns the
+        SetupIntent's ``client_secret`` the frontend confirms the card with — no
+        money moves and no PAN is involved.
+        """
+        self._require_key()
+        if not customer_id:
+            return None
+        form = {
+            "customer": str(customer_id),
+            "payment_method_types[]": "card",
+            "usage": "off_session",
+        }
+        async with self._client() as client:
+            resp = await client.post("/v1/setup_intents", data=form)
+        payload = self._json_or_raise(resp, "create_setup_intent")
+        return ProviderSetupIntent(
+            external_setup_intent_id=str(payload.get("id") or ""),
+            client_secret=str(payload.get("client_secret") or ""),
+            status=str(payload.get("status") or "requires_payment_method"),
+        )
+
+    async def list_payment_methods(
+        self, customer_id: str | None
+    ) -> list[ProviderPaymentMethod]:
+        """List the org's saved Stripe cards — PII-SAFE metadata only.
+
+        Fails closed without a key. ``customer_id is None`` (never provisioned) →
+        ``[]``. Maps each Stripe ``payment_method`` to brand/last4/exp ONLY —
+        never the full card number (Stripe never returns a PAN here anyway).
+        """
+        self._require_key()
+        if not customer_id:
+            return []
+        params = {"customer": str(customer_id), "type": "card", "limit": "100"}
+        async with self._client() as client:
+            resp = await client.get("/v1/payment_methods", params=params)
+        payload = self._json_or_raise(resp, "list_payment_methods")
+        out: list[ProviderPaymentMethod] = []
+        for obj in payload.get("data") or []:
+            if not isinstance(obj, dict):
+                continue
+            card = obj.get("card") or {}
+            exp_month = card.get("exp_month")
+            exp_year = card.get("exp_year")
+            out.append(
+                ProviderPaymentMethod(
+                    external_payment_method_id=str(obj.get("id") or ""),
+                    brand=card.get("brand"),
+                    # Stripe's `card.last4` is non-PII card metadata, never the PAN.
+                    last4=card.get("last4"),
+                    exp_month=int(exp_month) if isinstance(exp_month, int) else None,
+                    exp_year=int(exp_year) if isinstance(exp_year, int) else None,
+                    is_default=False,
+                )
+            )
+        return out
 
     @staticmethod
     def _json_or_raise(resp: httpx.Response, op: str) -> dict:

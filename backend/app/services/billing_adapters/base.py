@@ -68,6 +68,39 @@ class ProviderInvoice:
 
 
 @dataclass(frozen=True)
+class ProviderSetupIntent:
+    """Normalized view of a provider-side SetupIntent.
+
+    A SetupIntent collects + saves a payment method against the customer WITHOUT
+    a charge. The frontend confirms it with the ``client_secret`` (via the
+    provider's JS SDK) to attach a card; nothing here is a secret in the
+    long-lived sense (the client_secret is single-use and scoped to one
+    intent), and it NEVER carries a PAN.
+    """
+
+    external_setup_intent_id: str
+    client_secret: str  # single-use secret the frontend confirms the card with
+    status: str  # requires_payment_method | requires_confirmation | succeeded (provider-mapped)
+
+
+@dataclass(frozen=True)
+class ProviderPaymentMethod:
+    """Normalized view of a saved provider-side card — PII-SAFE metadata only.
+
+    NEVER a full PAN. Only the brand + last 4 + expiry, which is the exact
+    metadata a billing UI shows ("Visa ending 4242, exp 12/2030"). The full card
+    number lives only at the provider and is never returned here or logged.
+    """
+
+    external_payment_method_id: str
+    brand: str | None  # visa | mastercard | amex | … (provider-mapped)
+    last4: str | None  # last 4 digits of the card — non-PII card metadata
+    exp_month: int | None
+    exp_year: int | None
+    is_default: bool = False
+
+
+@dataclass(frozen=True)
 class BillingWebhookEvent:
     """A verified, deduped provider webhook event."""
 
@@ -126,6 +159,35 @@ class BillingAdapter:
 
     async def report_usage(self, report: UsageReport) -> None:
         raise NotImplementedError
+
+    async def create_setup_intent(self, customer_id: str | None) -> ProviderSetupIntent | None:
+        """Start a SetupIntent so the org can add/replace a saved card.
+
+        Returns the ``client_secret`` the frontend confirms the card with (via
+        the provider's JS SDK), without charging anything. ``customer_id is None``
+        means the org was never provisioned at the provider, so there is no
+        customer to attach a method to — return ``None`` rather than raise, and
+        the route surfaces a clear "not configured" shape (never a 500).
+
+        Safe default: ``None``. An adapter without a real billing back-end (or
+        that hasn't implemented this) yields ``None`` so the surface degrades
+        gracefully.
+        """
+        return None
+
+    async def list_payment_methods(
+        self, customer_id: str | None
+    ) -> list[ProviderPaymentMethod]:
+        """List the org's saved cards — PII-SAFE metadata only (brand/last4/exp).
+
+        NEVER returns a full PAN. ``customer_id is None`` (never provisioned) →
+        ``[]``, never raise.
+
+        Safe default: ``[]``. An adapter without a real billing back-end yields
+        an empty list rather than a 500, so the read surface degrades
+        gracefully.
+        """
+        return []
 
     def parse_webhook(self, headers: dict, body: bytes) -> BillingWebhookEvent | None:
         """Verify the provider HMAC over ``body`` and return a normalized event.

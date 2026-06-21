@@ -14,6 +14,8 @@ from app.services.billing_adapters.base import (
     BillingWebhookEvent,
     CreateSubscriptionRequest,
     ProviderInvoice,
+    ProviderPaymentMethod,
+    ProviderSetupIntent,
     ProviderSubscription,
     UsageReport,
 )
@@ -28,6 +30,8 @@ __all__ = [
     "BillingWebhookEvent",
     "CreateSubscriptionRequest",
     "ProviderInvoice",
+    "ProviderPaymentMethod",
+    "ProviderSetupIntent",
     "ProviderSubscription",
     "UsageReport",
     "get_billing_adapter",
