@@ -15,7 +15,7 @@ key. See [§ External enrichment (D&B / Clearbit)](#external-enrichment-db--clea
 | **Auto-fill** | Suggests the dominant historical `gl_account` / `cost_center` / `payment_terms` for a draft invoice's vendor | No — advisory |
 | **Price variance** | Flags draft line items whose unit price deviates from the vendor's per-item historical median | Yes — also persisted as a warning + `price_variance` exception on every invoice mutation (returned inline too) |
 | **Vendor scoring** | Accuracy + dispute + on-time sub-scores → renormalized composite | No — compute-on-read |
-| **Vendor consolidation** | Clusters likely-duplicate / similar vendors so the master list can be deduped | No — advisory, never merges |
+| **Vendor consolidation** | Clusters likely-duplicate / similar vendors so the master list can be deduped (suggest), then folds a steward-confirmed cluster into one canonical vendor (execute) | Suggest — advisory. Execute (`/consolidation/merge`) — yes: reassigns every `vendor_id` FK to the canonical, retires the duplicates, audited |
 
 Pure statistics live in `app/services/vendor_enrichment.py` (sync, DB-free,
 unit-testable); the SQL + response shaping live in `app/api/enrichment.py`. All
@@ -199,9 +199,11 @@ the pure scorer unchanged.
 invoice counts and hands them in as `VendorRecord`s.
 
 Identifies CLUSTERS of likely-duplicate vendors so a steward can dedupe the
-master list. **Advisory only** — it suggests a canonical/primary candidate per
-cluster but NEVER merges or mutates anything (that auto-merge is a deferred
-follow-up below).
+master list. The **suggestions** endpoint is **advisory only** — it suggests a
+canonical/primary candidate per cluster but NEVER merges or mutates anything.
+The separate, explicit **execute** path (`POST
+/api/enrichment/vendors/consolidation/merge`, below) is what actually folds a
+steward-confirmed cluster into one canonical vendor.
 
 ### Evidence + clustering
 
@@ -316,6 +318,55 @@ excluded). No path params — scans the whole (entity-scoped) vendor book.
   "generated_at": "2026-06-19T…Z"
 }
 ```
+
+### `POST /api/enrichment/vendors/consolidation/merge`
+Permission: `vendor.manage` (admin / ap_manager by default — vendor master-data
+control is a splittable SoD duty, gated by `require_permission`, not
+`require_roles`). The **execute** counterpart of the advisory suggestions
+endpoint: the steward confirms a cluster and merges it.
+
+```json
+// request
+{"canonical_vendor_id": "…", "duplicate_vendor_ids": ["…", "…"]}
+// response
+{
+  "canonical_vendor_id": "…",
+  "duplicate_vendor_ids": ["…", "…"],
+  "reassigned": {"invoices": 2, "purchase_orders": 1, "credit_memos": 1},
+  "total_reassigned": 4,
+  "deactivated_vendor_ids": ["…", "…"],
+  "merged_at": "2026-06-20T…Z"
+}
+```
+
+What the merge does, in one tenant transaction (`app/services/vendor_merge.py`):
+
+- **Reassigns every `vendor_id` FK** across every tenant child table from each
+  duplicate → the canonical vendor (one bounded `UPDATE` per table). The full
+  set is `VENDOR_FK_CHILDREN` — invoices, purchase orders, credit memos,
+  contracts, discount offers, recurring templates, statement reconciliations,
+  virtual cards, sanctions checks, vendor change requests, vendor users, invoice
+  embeddings, workflow suggestions, catalogs / catalog items, purchase
+  requisitions, intake requests — **the single source of truth for "what points
+  at a vendor"**; a new table with a `vendor_id` FK MUST be added there or its
+  rows orphan on a merge. `VendorExtractionPrior` is handled specially (unique
+  `(vendor_id, field_name)`): the canonical's own priors win, so a colliding
+  duplicate prior is dropped rather than violating the constraint.
+- **Soft-retires each duplicate** (`status="inactive"`) — never hard-deleted, so
+  the historical vendor row + its audit trail survive. (A retired duplicate is
+  also already excluded from future consolidation scans, which only see
+  `active` / `unverified`.)
+- **Row-locks** the canonical + every duplicate (`SELECT … FOR UPDATE`, id order)
+  so two concurrent merges can't interleave.
+- **Idempotent** — a re-run with the FKs already moved and the duplicates already
+  inactive reassigns zero rows and re-deactivates nothing (200, empty counts).
+- **Audited** — a PII-free `vendor.merged` audit row on the canonical vendor
+  (canonical id + duplicate ids + per-table reassigned counts; no `tax_id` /
+  bank / address).
+- **Refusals** — self-merge (canonical in the duplicate set) and an empty
+  duplicate set → 422; an unknown vendor → 404; a **cross-entity** merge
+  (canonical and a duplicate in different entities) → 422 (folding across
+  entities would silently re-home another subsidiary's spend).
 
 ## External enrichment (D&B / Clearbit)
 
@@ -483,10 +534,10 @@ unknown keys dropped, numeric coercion guarded — like `_adaptive_settings`):
   - **Live D&B / Clearbit calls** — the real adapters are working skeletons
     (request/response shapes match the published APIs) but need a live key wired
     via sops per-org before they call out; until then they fail closed.
-- **Auto-merge of a consolidation cluster** — the consolidation endpoint is
-  advisory (suggests a canonical candidate, never mutates). An actual merge
-  (re-point invoices/POs/payments to the canonical vendor, retire the
-  duplicates, write an audit row, idempotent) is a heavier *write* path —
-  deferred. Trigger: a "Merge into canonical" action in the UI.
+- **Consolidation merge (execute)** — SHIPPED: `POST
+  /api/enrichment/vendors/consolidation/merge` re-points every `vendor_id` FK to
+  the canonical vendor, soft-retires the duplicates, is idempotent + audited (see
+  the endpoint below). Remaining (frontend): a "Merge into canonical" action in
+  the consolidation UI.
 - **Amount-deviation flagging** already shipped in
   `adaptive_workflows.detect_invoice_anomaly` — intentionally **not** duplicated.
