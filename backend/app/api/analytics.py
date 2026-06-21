@@ -570,6 +570,9 @@ async def get_cfo_analytics(
                 select(func.coalesce(func.sum(Invoice.amount), 0)).where(
                     Invoice.invoice_date >= month_start,
                     Invoice.invoice_date <= month_end,
+                    # Exclude rejected — match the headline total_spend, else the
+                    # DPO trend's COGS proxy is inflated vs the current-period DPO.
+                    Invoice.status != InvoiceStatus.rejected.value,
                 )
             )
         )
@@ -668,6 +671,9 @@ async def get_cfo_analytics(
                 Invoice.invoice_date >= period_start,
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
+                # Exclude rejected so the concentration denominator matches the
+                # headline total_spend — else vendor shares are understated.
+                Invoice.status != InvoiceStatus.rejected.value,
             )
             .group_by(Invoice.vendor_name)
             .order_by(func.sum(Invoice.amount).desc())

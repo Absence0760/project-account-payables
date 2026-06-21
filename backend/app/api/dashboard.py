@@ -119,11 +119,16 @@ async def get_dashboard(
         for row in status_rows.all()
     }
 
-    # Spend by vendor (top 10)
+    # Spend by vendor (top 10) — exclude rejected invoices (they were never
+    # real spend), matching the CFO analytics concentration figure.
     vendor_spend_rows = await db.execute(
         _inv(
             select(Invoice.vendor_name, func.sum(Invoice.amount).label("total"))
-            .where(Invoice.vendor_name.isnot(None), Invoice.vendor_name != "")
+            .where(
+                Invoice.vendor_name.isnot(None),
+                Invoice.vendor_name != "",
+                Invoice.status != "rejected",
+            )
             .group_by(Invoice.vendor_name)
             .order_by(func.sum(Invoice.amount).desc())
             .limit(10)
@@ -133,7 +138,15 @@ async def get_dashboard(
 
     # Aging buckets — boundaries are days past the due date:
     # current (not yet due) / 1-30 / 31-60 / 61-90 / 90+.
-    aging = {"current": 0.0, "days_30": 0.0, "days_60": 0.0, "days_90": 0.0, "days_90_plus": 0.0}
+    # Accumulate in Decimal (money is never summed in float — many small floats
+    # drift), then convert to float at the response boundary.
+    aging_dec = {
+        "current": Decimal("0"),
+        "days_30": Decimal("0"),
+        "days_60": Decimal("0"),
+        "days_90": Decimal("0"),
+        "days_90_plus": Decimal("0"),
+    }
     open_statuses = ("new", "pending", "ready_for_review", "approved")
     aging_rows = await db.execute(
         _inv(
@@ -144,17 +157,18 @@ async def get_dashboard(
     )
     for row in aging_rows.all():
         days_past = (today - row[0]).days
-        amt = float(row[1])
+        amt = Decimal(str(row[1]))
         if days_past <= 0:
-            aging["current"] += amt
+            aging_dec["current"] += amt
         elif days_past <= 30:
-            aging["days_30"] += amt
+            aging_dec["days_30"] += amt
         elif days_past <= 60:
-            aging["days_60"] += amt
+            aging_dec["days_60"] += amt
         elif days_past <= 90:
-            aging["days_90"] += amt
+            aging_dec["days_90"] += amt
         else:
-            aging["days_90_plus"] += amt
+            aging_dec["days_90_plus"] += amt
+    aging = {k: float(v) for k, v in aging_dec.items()}
 
     # Monthly trend (last 6 months) — compute in Python to avoid GROUP BY issues
     six_months_ago = today - timedelta(days=180)
