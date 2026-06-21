@@ -1,6 +1,7 @@
 <script lang="ts" module>
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	/**
 	 * Export a workflow definition as a downloaded `.json` file. Exposed at the
@@ -21,9 +22,9 @@
 			a.click();
 			a.remove();
 			URL.revokeObjectURL(url);
-			toast(`Exported “${name}”`, 'success');
+			toast(m('workflows.mgmt.exported', { name }), 'success');
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Export failed', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.mgmt.exportFailed'), 'error');
 		}
 	}
 
@@ -79,7 +80,7 @@
 				/* leave rawJson; submit-time validation reports the parse error */
 			}
 		} catch {
-			validationErrors = ['Could not read the selected file.'];
+			validationErrors = [m('workflows.mgmt.import.errFileRead')];
 		}
 		// Reset the input so re-selecting the same file fires change again.
 		input.value = '';
@@ -89,7 +90,7 @@
 		validationErrors = [];
 		const errs: string[] = [];
 		if (!rawJson.trim()) {
-			errs.push('Paste a definition or choose a file to import.');
+			errs.push(m('workflows.mgmt.import.errEmpty'));
 			validationErrors = errs;
 			return null;
 		}
@@ -97,17 +98,17 @@
 		try {
 			parsed = JSON.parse(rawJson);
 		} catch {
-			validationErrors = ['Invalid JSON — could not parse the definition.'];
+			validationErrors = [m('workflows.mgmt.import.errInvalidJson')];
 			return null;
 		}
 		const def = parsed as Partial<WorkflowExport>;
 		if (typeof def !== 'object' || def === null) {
-			errs.push('Definition must be a JSON object.');
+			errs.push(m('workflows.mgmt.import.errNotObject'));
 		}
 		if (!def?.steps_config || typeof def.steps_config !== 'object') {
-			errs.push('Definition is missing "steps_config".');
+			errs.push(m('workflows.mgmt.import.errMissingSteps'));
 		} else if (!Array.isArray((def.steps_config as { steps?: unknown }).steps)) {
-			errs.push('"steps_config.steps" must be an array.');
+			errs.push(m('workflows.mgmt.import.errStepsArray'));
 		}
 		if (errs.length > 0) {
 			validationErrors = errs;
@@ -125,12 +126,12 @@
 				name: name.trim() || null,
 				definition,
 			});
-			toast(`Imported “${created.name}”`, 'success');
+			toast(m('workflows.mgmt.imported', { name: created.name }), 'success');
 			close();
 			await goto(`/workflows/${created.id}`);
 		} catch (e) {
 			// Surface server-side validation (e.g. unknown step type) inline.
-			const msg = e instanceof Error ? e.message : 'Import failed';
+			const msg = e instanceof Error ? e.message : m('workflows.mgmt.importFailed');
 			validationErrors = [msg];
 		} finally {
 			importing = false;
@@ -138,20 +139,20 @@
 	}
 </script>
 
-<Modal {open} ariaLabel="Import workflow" title="Import workflow" width="md" onclose={close}>
+<Modal {open} ariaLabel={m('workflows.mgmt.import.aria')} title={m('workflows.mgmt.import.title')} width="md" onclose={close}>
 	<div class="ie-body">
 		<div class="form-group">
-			<label for="ie-name">Name <span class="ie-optional">(optional — overrides the file's name)</span></label>
-			<input id="ie-name" type="text" bind:value={name} placeholder="Imported workflow name" />
+			<label for="ie-name">{m('workflows.mgmt.import.name')} <span class="ie-optional">{m('workflows.mgmt.import.nameHint')}</span></label>
+			<input id="ie-name" type="text" bind:value={name} placeholder={m('workflows.mgmt.import.namePlaceholder')} />
 		</div>
 
 		<div class="form-group">
-			<label for="ie-file">Choose a file</label>
+			<label for="ie-file">{m('workflows.mgmt.import.chooseFile')}</label>
 			<input id="ie-file" type="file" accept="application/json,.json" onchange={onFileChange} />
 		</div>
 
 		<div class="form-group">
-			<label for="ie-json">…or paste the exported JSON</label>
+			<label for="ie-json">{m('workflows.mgmt.import.pasteJson')}</label>
 			<textarea
 				id="ie-json"
 				bind:value={rawJson}
@@ -161,7 +162,7 @@
 		</div>
 
 		{#if validationErrors.length > 0}
-			<ul class="ie-errors" aria-label="Import validation errors">
+			<ul class="ie-errors" aria-label={m('workflows.mgmt.import.errorsAria')}>
 				{#each validationErrors as err, i (i)}
 					<li>{err}</li>
 				{/each}
@@ -170,9 +171,9 @@
 	</div>
 
 	<div class="modal-footer">
-		<button type="button" class="btn-cancel" onclick={close}>Cancel</button>
+		<button type="button" class="btn-cancel" onclick={close}>{m('common.cancel')}</button>
 		<button type="button" class="btn-import" disabled={importing} onclick={handleImport}>
-			{importing ? 'Importing…' : 'Import'}
+			{importing ? m('workflows.mgmt.import.importing') : m('workflows.mgmt.import.import')}
 		</button>
 	</div>
 </Modal>

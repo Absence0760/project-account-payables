@@ -16,6 +16,7 @@
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { goto } from '$app/navigation';
 	import TemplateLibraryModal from '$lib/components/workflow-mgmt/TemplateLibraryModal.svelte';
@@ -68,17 +69,23 @@
 			const result = await workflowStore.bulkRemove([...selectedIds]);
 			selectedIds = new Set();
 			if (result.failed.length === 0) {
-				toast(`Deleted ${result.deleted.length} workflow${result.deleted.length === 1 ? '' : 's'}`, 'success');
+				toast(m('workflows.list.bulkDeleted', { n: result.deleted.length }), 'success');
 			} else if (result.deleted.length === 0) {
-				toast(`No workflows deleted — ${describeBulkFailure(result.failed[0])}`, 'error');
+				toast(
+					m('workflows.list.bulkNoneDeleted', { reason: describeBulkFailure(result.failed[0]) }),
+					'error',
+				);
 			} else {
 				toast(
-					`Deleted ${result.deleted.length}; ${result.failed.length} blocked`,
+					m('workflows.list.bulkPartial', {
+						deleted: result.deleted.length,
+						blocked: result.failed.length,
+					}),
 					'success',
 				);
 			}
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Bulk delete failed', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.list.bulkDeleteFailed'), 'error');
 		} finally {
 			bulkDeleting = false;
 		}
@@ -87,15 +94,15 @@
 	function describeBulkFailure(f: { reason: string; instance_count: number | null }): string {
 		switch (f.reason) {
 			case 'default':
-				return 'cannot delete the default workflow';
+				return m('workflows.list.fail.default');
 			case 'active':
-				return 'workflow is active — deactivate it first';
+				return m('workflows.list.fail.active');
 			case 'instances':
-				return `workflow has ${f.instance_count} in-flight invoice${f.instance_count === 1 ? '' : 's'}`;
+				return m('workflows.list.fail.instances', { n: f.instance_count ?? 0 });
 			case 'not_found':
-				return 'workflow not found';
+				return m('workflows.list.fail.notFound');
 			default:
-				return 'blocked';
+				return m('workflows.list.fail.blocked');
 		}
 	}
 
@@ -127,21 +134,21 @@
 					{
 						number: 1,
 						type: 'extraction',
-						name: 'Data Extraction',
+						name: m('workflows.list.step.extraction'),
 						enabled: true,
 						config: { ...DEFAULT_EXTRACTION_CONFIG },
 					},
 					{
 						number: 2,
 						type: 'approval',
-						name: 'Approval',
+						name: m('workflows.list.step.approval'),
 						enabled: true,
 						config: { ...DEFAULT_APPROVAL_CONFIG },
 					},
 					{
 						number: 3,
 						type: 'erp_export',
-						name: 'ERP Export',
+						name: m('workflows.list.step.erpExport'),
 						enabled: true,
 						config: { ...DEFAULT_ERP_CONFIG },
 					},
@@ -152,7 +159,7 @@
 			newDescription = '';
 			window.location.href = `/workflows/${created.id}`;
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : 'Failed to create workflow', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.list.createFailed'), 'error');
 		} finally {
 			creating = false;
 		}
@@ -162,18 +169,18 @@
 		if (wf.is_default) return;
 		try {
 			await workflowStore.remove(wf.id);
-			toast('Workflow deleted', 'success');
+			toast(m('workflows.list.deleted'), 'success');
 		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : 'Failed to delete workflow', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.list.deleteFailed'), 'error');
 		}
 	}
 </script>
 
-<PageHeader title="Workflows">
+<PageHeader title={m('workflows.list.title')}>
 	{#snippet actions()}
-		<button class="btn-toolbar" onclick={() => (showTemplates = true)}>New from template</button>
-		<button class="btn-toolbar" onclick={() => (showImport = true)}>Import</button>
-		<button class="btn-create" onclick={() => (showCreate = true)}>+ New Workflow</button>
+		<button class="btn-toolbar" onclick={() => (showTemplates = true)}>{m('workflows.list.newFromTemplate')}</button>
+		<button class="btn-toolbar" onclick={() => (showImport = true)}>{m('workflows.list.import')}</button>
+		<button class="btn-create" onclick={() => (showCreate = true)}>{m('workflows.list.newWorkflow')}</button>
 	{/snippet}
 
 	<BulkBar count={selectedIds.size} onclear={() => (selectedIds = new Set())}>
@@ -181,14 +188,14 @@
 			<BulkDeleteButton
 				onconfirm={handleBulkDelete}
 				disabled={bulkDeleting}
-				label={`Delete ${selectedIds.size}`}
+				label={m('workflows.list.deleteN', { n: selectedIds.size })}
 			/>
 		{/snippet}
 	</BulkBar>
 
 	<DataTable
 		isEmpty={workflowStore.all.length === 0}
-		empty={workflowStore.loading ? 'Loading...' : 'No workflows configured.'}
+		empty={workflowStore.loading ? m('common.loading') : m('workflows.list.empty')}
 		colspan={6}
 	>
 		{#snippet header()}
@@ -198,13 +205,13 @@
 						type="checkbox"
 						checked={allSelected}
 						onchange={toggleSelectAll}
-						aria-label="Select all workflows"
+						aria-label={m('workflows.list.selectAll')}
 					/>
 				</th>
-				<th>Name</th>
-				<th>Steps</th>
-				<th>Status</th>
-				<th>Created</th>
+				<th>{m('workflows.list.col.name')}</th>
+				<th>{m('workflows.list.col.steps')}</th>
+				<th>{m('workflows.list.col.status')}</th>
+				<th>{m('workflows.list.col.created')}</th>
 				<th></th>
 			</tr>
 		{/snippet}
@@ -223,15 +230,15 @@
 								type="checkbox"
 								checked={selectedIds.has(wf.id)}
 								onchange={() => toggleSelect(wf.id)}
-								aria-label="Select {wf.name}"
+								aria-label={m('workflows.list.selectRow', { name: wf.name })}
 							/>
 						{/if}
 					</td>
 					<td>
-						<RowLink href="/workflows/{wf.id}" ariaLabel={`Edit workflow ${wf.name}`}>
+						<RowLink href="/workflows/{wf.id}" ariaLabel={m('workflows.list.editAria', { name: wf.name })}>
 							{wf.name}
 							{#if wf.is_default}
-								<span class="default-badge">Default</span>
+								<span class="default-badge">{m('workflows.list.defaultBadge')}</span>
 							{/if}
 						</RowLink>
 						{#if wf.description}
@@ -241,16 +248,16 @@
 					<td class="steps-cell">{stepSummary(wf)}</td>
 					<td>
 						<span class="status-dot" class:active={wf.is_active} class:inactive={!wf.is_active}>
-							{wf.is_active ? 'Active' : 'Inactive'}
+							{wf.is_active ? m('workflows.list.active') : m('workflows.list.inactive')}
 						</span>
 					</td>
 					<td class="date-cell">{formatDate(wf.created_at)}</td>
 					<td class="actions">
-						<RowAction onclick={() => (versionsFor = wf)}>Versions</RowAction>
-						<RowAction onclick={() => (simulateFor = wf)}>Simulate</RowAction>
-						<RowAction onclick={() => exportWorkflowToFile(wf.id, wf.name)}>Export</RowAction>
+						<RowAction onclick={() => (versionsFor = wf)}>{m('workflows.list.action.versions')}</RowAction>
+						<RowAction onclick={() => (simulateFor = wf)}>{m('workflows.list.action.simulate')}</RowAction>
+						<RowAction onclick={() => exportWorkflowToFile(wf.id, wf.name)}>{m('workflows.list.action.export')}</RowAction>
 						{#if !wf.is_default}
-							<RowAction variant="danger" onclick={() => handleDelete(wf)}>Delete</RowAction>
+							<RowAction variant="danger" onclick={() => handleDelete(wf)}>{m('workflows.list.action.delete')}</RowAction>
 						{/if}
 					</td>
 				</tr>
@@ -262,40 +269,41 @@
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={() => workflowStore.loadMore()} disabled={workflowStore.loading}>
 				{workflowStore.loading
-					? 'Loading…'
-					: `Load more (${workflowStore.all.length} of ${workflowStore.total})`}
+					? m('common.loading')
+					: m('workflows.list.loadMore', {
+							shown: workflowStore.all.length,
+							total: workflowStore.total,
+						})}
 			</button>
 		</div>
 	{:else if workflowStore.total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end"
-				>Showing all {workflowStore.total} workflow{workflowStore.total === 1 ? '' : 's'}</span
-			>
+			<span class="load-more-end">{m('workflows.list.showingAll', { n: workflowStore.total })}</span>
 		</div>
 	{/if}
 </PageHeader>
 
 <Modal
 	open={showCreate}
-	ariaLabel="Create workflow"
+	ariaLabel={m('workflows.list.modal.aria')}
 	width="sm"
 	onclose={() => (showCreate = false)}
 >
 	{#snippet header()}
-		<h3>Create Workflow</h3>
+		<h3>{m('workflows.list.modal.title')}</h3>
 	{/snippet}
 	<div class="form-group">
-		<label for="wf-name">Name</label>
-		<input id="wf-name" type="text" bind:value={newName} placeholder="e.g. High-Value Invoice Review" />
+		<label for="wf-name">{m('workflows.list.modal.name')}</label>
+		<input id="wf-name" type="text" bind:value={newName} placeholder={m('workflows.list.modal.namePlaceholder')} />
 	</div>
 	<div class="form-group">
-		<label for="wf-desc">Description</label>
-		<textarea id="wf-desc" bind:value={newDescription} rows="3" placeholder="Optional description..."></textarea>
+		<label for="wf-desc">{m('workflows.list.modal.description')}</label>
+		<textarea id="wf-desc" bind:value={newDescription} rows="3" placeholder={m('workflows.list.modal.descriptionPlaceholder')}></textarea>
 	</div>
 	<div class="modal-footer">
-		<button class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
+		<button class="btn-cancel" onclick={() => (showCreate = false)}>{m('common.cancel')}</button>
 		<button class="btn-save" disabled={creating || !newName.trim()} onclick={handleCreate}>
-			{creating ? 'Creating...' : 'Create'}
+			{creating ? m('workflows.list.modal.creating') : m('workflows.list.modal.create')}
 		</button>
 	</div>
 </Modal>

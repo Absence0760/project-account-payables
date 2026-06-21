@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import type { SimInvoice, SimulationResult } from '$lib/types/workflow';
 
@@ -49,14 +50,14 @@
 			};
 			result = await workflowStore.simulate(workflowId, { invoice });
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Simulation failed', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.mgmt.sim.failed'), 'error');
 		} finally {
 			running = false;
 		}
 	}
 </script>
 
-<Modal {open} ariaLabel="Simulate workflow" title={`Simulate — ${workflowName}`} width="lg" {onclose}>
+<Modal {open} ariaLabel={m('workflows.mgmt.sim.aria')} title={m('workflows.mgmt.sim.title', { name: workflowName })} width="lg" {onclose}>
 	<div class="sim-body">
 		<form
 			class="sim-form"
@@ -67,41 +68,41 @@
 		>
 			<div class="sim-grid">
 				<label>
-					Amount
-					<input type="text" inputmode="decimal" bind:value={amount} aria-label="Invoice amount" />
+					{m('workflows.mgmt.sim.amount')}
+					<input type="text" inputmode="decimal" bind:value={amount} aria-label={m('workflows.mgmt.sim.amount')} />
 				</label>
 				<label>
-					Currency
-					<input type="text" bind:value={currency} aria-label="Invoice currency" maxlength="3" />
+					{m('workflows.mgmt.sim.currency')}
+					<input type="text" bind:value={currency} aria-label={m('workflows.mgmt.sim.currency')} maxlength="3" />
 				</label>
 				<label>
-					Vendor ID
-					<input type="text" bind:value={vendorId} aria-label="Vendor ID" placeholder="optional" />
+					{m('workflows.mgmt.sim.vendorId')}
+					<input type="text" bind:value={vendorId} aria-label={m('workflows.mgmt.sim.vendorId')} placeholder={m('workflows.mgmt.sim.optional')} />
 				</label>
 				<label>
-					GL account
-					<input type="text" bind:value={glAccount} aria-label="GL account" placeholder="optional" />
+					{m('workflows.mgmt.sim.glAccount')}
+					<input type="text" bind:value={glAccount} aria-label={m('workflows.mgmt.sim.glAccount')} placeholder={m('workflows.mgmt.sim.optional')} />
 				</label>
 				<label>
-					Cost center
-					<input type="text" bind:value={costCenter} aria-label="Cost center" placeholder="optional" />
+					{m('workflows.mgmt.sim.costCenter')}
+					<input type="text" bind:value={costCenter} aria-label={m('workflows.mgmt.sim.costCenter')} placeholder={m('workflows.mgmt.sim.optional')} />
 				</label>
 				<label>
-					Department
-					<input type="text" bind:value={department} aria-label="Department" placeholder="optional" />
+					{m('workflows.mgmt.sim.department')}
+					<input type="text" bind:value={department} aria-label={m('workflows.mgmt.sim.department')} placeholder={m('workflows.mgmt.sim.optional')} />
 				</label>
 			</div>
 			<div class="sim-actions">
 				<button type="submit" class="sim-run" disabled={running}>
-					{running ? 'Simulating…' : 'Run simulation'}
+					{running ? m('workflows.mgmt.sim.running') : m('workflows.mgmt.sim.run')}
 				</button>
 			</div>
 		</form>
 
 		{#if result}
-			<div class="sim-result" aria-label="Simulation result">
+			<div class="sim-result" aria-label={m('workflows.mgmt.sim.resultAria')}>
 				<div class="sim-terminal">
-					Terminal state: <span class="sim-terminal-val">{result.terminal_state}</span>
+					{m('workflows.mgmt.sim.terminalState')} <span class="sim-terminal-val">{result.terminal_state}</span>
 				</div>
 
 				{#if result.warnings.length > 0}
@@ -133,7 +134,7 @@
 		{/if}
 	</div>
 	<div class="modal-footer">
-		<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+		<button type="button" class="btn-cancel" onclick={onclose}>{m('workflows.mgmt.close')}</button>
 	</div>
 </Modal>
 

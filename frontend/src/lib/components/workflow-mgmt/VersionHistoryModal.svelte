@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import type { WorkflowVersion, WorkflowDiff } from '$lib/types/workflow';
 
@@ -56,7 +57,7 @@
 				toId = versions[0].id;
 			}
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load version history';
+			error = e instanceof Error ? e.message : m('workflows.mgmt.ver.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -68,7 +69,7 @@
 		try {
 			diff = await workflowStore.diffVersions(workflowId, fromId, toId);
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to compute diff', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.mgmt.ver.diffFailed'), 'error');
 		} finally {
 			diffing = false;
 		}
@@ -78,12 +79,12 @@
 		restoringId = v.id;
 		try {
 			await workflowStore.restoreVersion(workflowId, v.id);
-			toast(`Restored version ${v.version_number}`, 'success');
+			toast(m('workflows.mgmt.ver.restored', { n: v.version_number }), 'success');
 			confirmRestoreId = null;
 			onrestored?.();
 			await loadVersions();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to restore version', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.mgmt.ver.restoreFailed'), 'error');
 		} finally {
 			restoringId = null;
 		}
@@ -105,44 +106,44 @@
 	}
 </script>
 
-<Modal {open} ariaLabel="Version history" title={`Version history — ${workflowName}`} width="lg" {onclose}>
+<Modal {open} ariaLabel={m('workflows.mgmt.ver.aria')} title={m('workflows.mgmt.ver.title', { name: workflowName })} width="lg" {onclose}>
 	<div class="vh-body">
 		{#if loading}
-			<p class="vh-status">Loading versions…</p>
+			<p class="vh-status">{m('workflows.mgmt.ver.loading')}</p>
 		{:else if error}
 			<p class="vh-status vh-error">{error}</p>
 		{:else if versions.length === 0}
-			<p class="vh-status">No versions yet. Edit this workflow's steps to capture history.</p>
+			<p class="vh-status">{m('workflows.mgmt.ver.empty')}</p>
 		{:else}
 			<div class="vh-diff-controls">
 				<label>
-					From
-					<select bind:value={fromId} aria-label="Diff from version">
+					{m('workflows.mgmt.ver.from')}
+					<select bind:value={fromId} aria-label={m('workflows.mgmt.ver.fromAria')}>
 						{#each versions as v (v.id)}
 							<option value={v.id}>v{v.version_number} — {fmtDate(v.created_at)}</option>
 						{/each}
 					</select>
 				</label>
 				<label>
-					To
-					<select bind:value={toId} aria-label="Diff to version">
+					{m('workflows.mgmt.ver.to')}
+					<select bind:value={toId} aria-label={m('workflows.mgmt.ver.toAria')}>
 						{#each versions as v (v.id)}
 							<option value={v.id}>v{v.version_number} — {fmtDate(v.created_at)}</option>
 						{/each}
 					</select>
 				</label>
 				<button class="vh-diff-btn" disabled={diffing || !fromId || !toId} onclick={runDiff}>
-					{diffing ? 'Comparing…' : 'Compare'}
+					{diffing ? m('workflows.mgmt.ver.comparing') : m('workflows.mgmt.ver.compare')}
 				</button>
 			</div>
 
 			{#if diff}
-				<div class="vh-diff" aria-label="Version diff">
+				<div class="vh-diff" aria-label={m('workflows.mgmt.ver.diffAria')}>
 					<h4>
-						Changes from v{diff.from_version} → v{diff.to_version}
+						{m('workflows.mgmt.ver.changesFromTo', { from: diff.from_version, to: diff.to_version })}
 					</h4>
 					{#if diff.changes.length === 0}
-						<p class="vh-status">No differences between these versions.</p>
+						<p class="vh-status">{m('workflows.mgmt.ver.noDiff')}</p>
 					{:else}
 						<ul class="vh-changes">
 							{#each diff.changes as c, i (i)}
@@ -156,7 +157,7 @@
 				</div>
 			{/if}
 
-			<h4 class="vh-list-title">All versions</h4>
+			<h4 class="vh-list-title">{m('workflows.mgmt.ver.allVersions')}</h4>
 			<ul class="vh-list">
 				{#each versions as v (v.id)}
 					<li class="vh-row">
@@ -172,12 +173,12 @@
 									disabled={restoringId === v.id}
 									onclick={() => restore(v)}
 								>
-									{restoringId === v.id ? 'Restoring…' : 'Confirm restore'}
+									{restoringId === v.id ? m('workflows.mgmt.ver.restoring') : m('workflows.mgmt.ver.confirmRestore')}
 								</button>
-								<button class="vh-cancel" onclick={() => (confirmRestoreId = null)}>Cancel</button>
+								<button class="vh-cancel" onclick={() => (confirmRestoreId = null)}>{m('common.cancel')}</button>
 							</div>
 						{:else}
-							<button class="vh-restore" onclick={() => (confirmRestoreId = v.id)}>Restore</button>
+							<button class="vh-restore" onclick={() => (confirmRestoreId = v.id)}>{m('workflows.mgmt.ver.restore')}</button>
 						{/if}
 					</li>
 				{/each}
@@ -185,7 +186,7 @@
 		{/if}
 	</div>
 	<div class="modal-footer">
-		<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+		<button type="button" class="btn-cancel" onclick={onclose}>{m('workflows.mgmt.close')}</button>
 	</div>
 </Modal>
 

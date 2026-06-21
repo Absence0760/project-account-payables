@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { workflowStore } from '$lib/stores/workflows.svelte';
 	import type { WorkflowTemplate } from '$lib/types/workflow';
 	import { goto } from '$app/navigation';
@@ -46,7 +47,7 @@
 		try {
 			templates = await workflowStore.listTemplates();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load templates';
+			error = e instanceof Error ? e.message : m('workflows.mgmt.tpl.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -67,11 +68,11 @@
 		creatingKey = t.key;
 		try {
 			const created = await workflowStore.createFromTemplate(t.key, name);
-			toast(`Created “${created.name}” from template`, 'success');
+			toast(m('workflows.mgmt.tpl.created', { name: created.name }), 'success');
 			onclose();
 			await goto(`/workflows/${created.id}`);
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to create from template', 'error');
+			toast(e instanceof Error ? e.message : m('workflows.mgmt.tpl.createFailed'), 'error');
 		} finally {
 			creatingKey = null;
 		}
@@ -82,14 +83,14 @@
 	}
 </script>
 
-<Modal {open} ariaLabel="Template library" title="Start from a template" width="lg" {onclose}>
+<Modal {open} ariaLabel={m('workflows.mgmt.tpl.aria')} title={m('workflows.mgmt.tpl.title')} width="lg" {onclose}>
 	<div class="tl-body">
 		{#if loading}
-			<p class="tl-status">Loading templates…</p>
+			<p class="tl-status">{m('workflows.mgmt.tpl.loading')}</p>
 		{:else if error}
 			<p class="tl-status tl-error" role="alert">{error}</p>
 		{:else if templates.length === 0}
-			<p class="tl-status">No templates available.</p>
+			<p class="tl-status">{m('workflows.mgmt.tpl.empty')}</p>
 		{:else}
 			{#each grouped as group (group.category)}
 				<section class="tl-group">
@@ -99,7 +100,7 @@
 							<div class="tl-card" data-template-key={t.key}>
 								<div class="tl-card-head">
 									<span class="tl-name">{t.name}</span>
-									<span class="tl-steps">{stepCount(t)} steps</span>
+									<span class="tl-steps">{m('workflows.mgmt.tpl.steps', { n: stepCount(t) })}</span>
 								</div>
 								<p class="tl-desc">{t.description}</p>
 								{#if namingKey === t.key}
@@ -107,20 +108,20 @@
 										<input
 											type="text"
 											bind:value={nameInput}
-											aria-label="Workflow name for {t.name}"
-											placeholder="Workflow name"
+											aria-label={m('workflows.mgmt.tpl.nameFor', { name: t.name })}
+											placeholder={m('workflows.mgmt.tpl.namePlaceholder')}
 										/>
 										<button
 											class="tl-use"
 											disabled={creatingKey === t.key}
 											onclick={() => useTemplate(t)}
 										>
-											{creatingKey === t.key ? 'Creating…' : 'Create'}
+											{creatingKey === t.key ? m('workflows.mgmt.tpl.creating') : m('workflows.mgmt.tpl.create')}
 										</button>
-										<button class="tl-cancel" onclick={cancelNaming}>Cancel</button>
+										<button class="tl-cancel" onclick={cancelNaming}>{m('common.cancel')}</button>
 									</div>
 								{:else}
-									<button class="tl-use" onclick={() => startNaming(t)}>Use template</button>
+									<button class="tl-use" onclick={() => startNaming(t)}>{m('workflows.mgmt.tpl.use')}</button>
 								{/if}
 							</div>
 						{/each}
@@ -130,7 +131,7 @@
 		{/if}
 	</div>
 	<div class="modal-footer">
-		<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+		<button type="button" class="btn-cancel" onclick={onclose}>{m('workflows.mgmt.close')}</button>
 	</div>
 </Modal>
 
