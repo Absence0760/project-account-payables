@@ -10,6 +10,7 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { createIntake, updateIntake } from '$lib/api/intake';
 
 	let {
@@ -93,11 +94,18 @@
 			const saved = isCreate
 				? await createIntake(payload)
 				: await updateIntake(intake!.id, payload);
-			toast(isCreate ? 'Intake request created' : 'Intake request saved', 'success');
+			toast(isCreate ? m('intake.modal.toast.created') : m('intake.modal.toast.saved'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : isCreate ? 'Create failed' : 'Save failed', 'error');
+			toast(
+				err instanceof Error
+					? err.message
+					: isCreate
+						? m('intake.modal.toast.createFailed')
+						: m('intake.modal.toast.saveFailed'),
+				'error'
+			);
 		} finally {
 			saving = false;
 		}
@@ -105,12 +113,12 @@
 
 	const modalTitle = $derived(
 		isCreate
-			? 'New Intake Request'
+			? m('intake.modal.title.new')
 			: canEdit
-				? `Edit Intake — ${intake!.title}`
-				: `Intake — ${intake!.title}`
+				? m('intake.modal.title.edit', { title: intake!.title })
+				: m('intake.modal.title.view', { title: intake!.title })
 	);
-	const ariaLabel = $derived(isCreate ? 'New intake request' : 'Intake detail');
+	const ariaLabel = $derived(isCreate ? m('intake.modal.aria.new') : m('intake.modal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
@@ -120,18 +128,18 @@
 				<span class="number">{intake!.request_number}</span>
 				<span class="badge {status}">{INTAKE_STATUS_LABELS[status as keyof typeof INTAKE_STATUS_LABELS] ?? status}</span>
 				{#if intake!.converted_requisition_id}
-					<span class="converted-note">→ requisition created</span>
+					<span class="converted-note">{m('intake.modal.requisitionCreatedNote')}</span>
 				{/if}
 			</div>
 		{/if}
 
 		<div class="form-grid">
 			<label class="full-width">
-				<span>Title <em class="required">*</em></span>
+				<span>{m('intake.modal.field.title')} <em class="required">*</em></span>
 				<input type="text" bind:value={title} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Type</span>
+				<span>{m('intake.modal.field.type')}</span>
 				<select bind:value={request_type} disabled={!canEdit}>
 					{#each INTAKE_TYPES as t}
 						<option value={t}>{INTAKE_TYPE_LABELS[t]}</option>
@@ -139,7 +147,7 @@
 				</select>
 			</label>
 			<label>
-				<span>Estimated Amount</span>
+				<span>{m('intake.modal.field.estimatedAmount')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -150,30 +158,30 @@
 				/>
 			</label>
 			<label>
-				<span>Currency</span>
+				<span>{m('intake.modal.field.currency')}</span>
 				<input type="text" bind:value={currency} maxlength="3" disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Vendor (if known)</span>
-				<input type="text" bind:value={vendor_name} placeholder="e.g. Figma Inc" disabled={!canEdit} />
+				<span>{m('intake.modal.field.vendor')}</span>
+				<input type="text" bind:value={vendor_name} placeholder={m('intake.modal.field.vendorPlaceholder')} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Needed By</span>
+				<span>{m('intake.modal.field.neededBy')}</span>
 				<input type="date" bind:value={needed_by} disabled={!canEdit} />
 			</label>
 			<label class="full-width">
-				<span>Description</span>
+				<span>{m('intake.modal.field.description')}</span>
 				<textarea bind:value={description} rows="2" disabled={!canEdit}></textarea>
 			</label>
 			<label class="full-width">
-				<span>Justification</span>
+				<span>{m('intake.modal.field.justification')}</span>
 				<textarea bind:value={justification} rows="2" disabled={!canEdit}></textarea>
 			</label>
 		</div>
 
 		<!-- Flexible questionnaire — fields vary by request type. -->
 		<div class="questionnaire">
-			<span class="section-title">{INTAKE_TYPE_LABELS[request_type]} questionnaire</span>
+			<span class="section-title">{m('intake.modal.questionnaire', { type: INTAKE_TYPE_LABELS[request_type] })}</span>
 			<div class="form-grid">
 				{#each fields as f (f.key)}
 					<label>
@@ -185,10 +193,10 @@
 		</div>
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('intake.modal.close')}</button>
 			{#if canEdit}
 				<button type="submit" class="btn-primary" disabled={saving || !title.trim()}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving ? m('intake.modal.saving') : isCreate ? m('intake.modal.create') : m('intake.modal.save')}
 				</button>
 			{/if}
 		</div>

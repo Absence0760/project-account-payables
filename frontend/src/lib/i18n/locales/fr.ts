@@ -913,6 +913,32 @@ export const messages = {
 	'intake.showingAll':
 		'{total, plural, one {Affichage de la # requête} other {Affichage des # requêtes}}',
 
+	// Intake create/edit modal (components/modals/IntakeModal.svelte)
+	'intake.modal.aria.new': 'Nouvelle demande d’achat',
+	'intake.modal.aria.detail': 'Détail de la demande',
+	'intake.modal.title.new': 'Nouvelle demande d’achat',
+	'intake.modal.title.edit': 'Modifier la demande — {title}',
+	'intake.modal.title.view': 'Demande — {title}',
+	'intake.modal.requisitionCreatedNote': '→ demande d’achat créée',
+	'intake.modal.field.title': 'Titre',
+	'intake.modal.field.type': 'Type',
+	'intake.modal.field.estimatedAmount': 'Montant estimé',
+	'intake.modal.field.currency': 'Devise',
+	'intake.modal.field.vendor': 'Fournisseur (si connu)',
+	'intake.modal.field.vendorPlaceholder': 'p. ex. Figma Inc',
+	'intake.modal.field.neededBy': 'Requis pour le',
+	'intake.modal.field.description': 'Description',
+	'intake.modal.field.justification': 'Justification',
+	'intake.modal.questionnaire': 'Questionnaire {type}',
+	'intake.modal.close': 'Fermer',
+	'intake.modal.saving': 'Enregistrement…',
+	'intake.modal.create': 'Créer',
+	'intake.modal.save': 'Enregistrer',
+	'intake.modal.toast.created': 'Demande d’achat créée',
+	'intake.modal.toast.saved': 'Demande d’achat enregistrée',
+	'intake.modal.toast.createFailed': 'Échec de la création',
+	'intake.modal.toast.saveFailed': 'Échec de l’enregistrement',
+
 	// Catalogs (routes/catalogs/+page.svelte)
 	'catalogs.title': 'Catalogues',
 	'catalogs.action.new': '+ Nouveau catalogue',

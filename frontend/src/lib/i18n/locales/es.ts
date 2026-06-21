@@ -914,6 +914,32 @@ export const messages = {
 	'intake.showingAll':
 		'{total, plural, one {Mostrando la # petición} other {Mostrando las # peticiones}}',
 
+	// Intake create/edit modal (components/modals/IntakeModal.svelte)
+	'intake.modal.aria.new': 'Nueva solicitud de compra',
+	'intake.modal.aria.detail': 'Detalle de la solicitud',
+	'intake.modal.title.new': 'Nueva solicitud de compra',
+	'intake.modal.title.edit': 'Editar solicitud — {title}',
+	'intake.modal.title.view': 'Solicitud — {title}',
+	'intake.modal.requisitionCreatedNote': '→ solicitud de compra creada',
+	'intake.modal.field.title': 'Título',
+	'intake.modal.field.type': 'Tipo',
+	'intake.modal.field.estimatedAmount': 'Importe estimado',
+	'intake.modal.field.currency': 'Moneda',
+	'intake.modal.field.vendor': 'Proveedor (si se conoce)',
+	'intake.modal.field.vendorPlaceholder': 'p. ej. Figma Inc',
+	'intake.modal.field.neededBy': 'Necesario para',
+	'intake.modal.field.description': 'Descripción',
+	'intake.modal.field.justification': 'Justificación',
+	'intake.modal.questionnaire': 'Cuestionario de {type}',
+	'intake.modal.close': 'Cerrar',
+	'intake.modal.saving': 'Guardando…',
+	'intake.modal.create': 'Crear',
+	'intake.modal.save': 'Guardar',
+	'intake.modal.toast.created': 'Solicitud de compra creada',
+	'intake.modal.toast.saved': 'Solicitud de compra guardada',
+	'intake.modal.toast.createFailed': 'Error al crear',
+	'intake.modal.toast.saveFailed': 'Error al guardar',
+
 	// Catalogs (routes/catalogs/+page.svelte)
 	'catalogs.title': 'Catálogos',
 	'catalogs.action.new': '+ Nuevo catálogo',

@@ -941,6 +941,32 @@ export const en = {
 	'intake.showingAll':
 		'{total, plural, one {Showing all # request} other {Showing all # requests}}',
 
+	// Intake create/edit modal (components/modals/IntakeModal.svelte)
+	'intake.modal.aria.new': 'New intake request',
+	'intake.modal.aria.detail': 'Intake detail',
+	'intake.modal.title.new': 'New Intake Request',
+	'intake.modal.title.edit': 'Edit Intake — {title}',
+	'intake.modal.title.view': 'Intake — {title}',
+	'intake.modal.requisitionCreatedNote': '→ requisition created',
+	'intake.modal.field.title': 'Title',
+	'intake.modal.field.type': 'Type',
+	'intake.modal.field.estimatedAmount': 'Estimated Amount',
+	'intake.modal.field.currency': 'Currency',
+	'intake.modal.field.vendor': 'Vendor (if known)',
+	'intake.modal.field.vendorPlaceholder': 'e.g. Figma Inc',
+	'intake.modal.field.neededBy': 'Needed By',
+	'intake.modal.field.description': 'Description',
+	'intake.modal.field.justification': 'Justification',
+	'intake.modal.questionnaire': '{type} questionnaire',
+	'intake.modal.close': 'Close',
+	'intake.modal.saving': 'Saving…',
+	'intake.modal.create': 'Create',
+	'intake.modal.save': 'Save',
+	'intake.modal.toast.created': 'Intake request created',
+	'intake.modal.toast.saved': 'Intake request saved',
+	'intake.modal.toast.createFailed': 'Create failed',
+	'intake.modal.toast.saveFailed': 'Save failed',
+
 	// Catalogs (routes/catalogs/+page.svelte)
 	'catalogs.title': 'Catalogs',
 	'catalogs.action.new': '+ New Catalog',

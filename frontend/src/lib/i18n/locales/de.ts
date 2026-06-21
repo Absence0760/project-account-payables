@@ -914,6 +914,32 @@ export const messages = {
 	'intake.showingAll':
 		'{total, plural, one {Alle # Anfrage werden angezeigt} other {Alle # Anfragen werden angezeigt}}',
 
+	// Intake create/edit modal (components/modals/IntakeModal.svelte)
+	'intake.modal.aria.new': 'Neue Bedarfsanfrage',
+	'intake.modal.aria.detail': 'Anfragedetails',
+	'intake.modal.title.new': 'Neue Bedarfsanfrage',
+	'intake.modal.title.edit': 'Anfrage bearbeiten — {title}',
+	'intake.modal.title.view': 'Anfrage — {title}',
+	'intake.modal.requisitionCreatedNote': '→ Bestellanforderung erstellt',
+	'intake.modal.field.title': 'Titel',
+	'intake.modal.field.type': 'Typ',
+	'intake.modal.field.estimatedAmount': 'Geschätzter Betrag',
+	'intake.modal.field.currency': 'Währung',
+	'intake.modal.field.vendor': 'Lieferant (falls bekannt)',
+	'intake.modal.field.vendorPlaceholder': 'z. B. Figma Inc',
+	'intake.modal.field.neededBy': 'Benötigt bis',
+	'intake.modal.field.description': 'Beschreibung',
+	'intake.modal.field.justification': 'Begründung',
+	'intake.modal.questionnaire': 'Fragebogen für {type}',
+	'intake.modal.close': 'Schließen',
+	'intake.modal.saving': 'Wird gespeichert…',
+	'intake.modal.create': 'Erstellen',
+	'intake.modal.save': 'Speichern',
+	'intake.modal.toast.created': 'Bedarfsanfrage erstellt',
+	'intake.modal.toast.saved': 'Bedarfsanfrage gespeichert',
+	'intake.modal.toast.createFailed': 'Erstellen fehlgeschlagen',
+	'intake.modal.toast.saveFailed': 'Speichern fehlgeschlagen',
+
 	// Catalogs (routes/catalogs/+page.svelte)
 	'catalogs.title': 'Kataloge',
 	'catalogs.action.new': '+ Neuer Katalog',
