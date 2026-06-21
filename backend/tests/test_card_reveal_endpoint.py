@@ -138,7 +138,18 @@ async def test_reveal_maps_consume_reason_to_status(reason, status):
 
 async def test_reveal_success_returns_pan_and_writes_audit():
     card = _card()
-    details = SimpleNamespace(pan="4111111111114321", cvv="123")
+    # Use the REAL CardDetails dataclass, not a hand-shaped stub — the handler
+    # reads `details.card_number`, and a SimpleNamespace(pan=...) stub silently
+    # masked an AttributeError that broke the entire success path in production.
+    from app.services.card_adapters.base import CardDetails
+
+    details = CardDetails(
+        card_number="4111111111114321",
+        exp_month=12,
+        exp_year=2030,
+        cvv="123",
+        last_four="4321",
+    )
     with _patched(
         consume_return=(card, None),
         config={"provider": "mock"},

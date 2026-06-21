@@ -1599,7 +1599,12 @@ async def reveal_card(
         "amount_limit": float(card.amount_limit),
         "currency": card.currency,
         "expires_at": card.expires_at.isoformat() if card.expires_at else None,
-        "pan": details.pan,
+        # CardDetails exposes the PAN as `card_number` (matches the admin
+        # /cards/{id}/details path). This used to read `details.pan`, which
+        # doesn't exist on the dataclass — so the success path raised
+        # AttributeError AFTER the token was committed used: the single-use link
+        # burned and the vendor never got the PAN.
+        "pan": details.card_number,
         "cvv": details.cvv,
     }
 
