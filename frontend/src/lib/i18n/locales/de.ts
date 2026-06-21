@@ -1306,4 +1306,37 @@ export const messages = {
 	'portal.cards.copy': 'Kopieren',
 	'portal.cards.copied': 'Kopiert!',
 	'portal.cards.singleUseHint': 'Diese Seite lässt sich nicht erneut öffnen — der Link ist einmalig verwendbar. Falls Sie sie versehentlich schließen, bevor Sie die Karte gespeichert haben, antworten Sie auf die E-Mail und wir stellen sie neu aus.',
+
+	// Auth — login (routes/login/+page.svelte)
+	'auth.login.heading': 'Account Payables',
+	'auth.login.subtitle': 'Zum Fortfahren anmelden',
+	'auth.login.email': 'E-Mail',
+	'auth.login.password': 'Passwort',
+	'auth.login.signIn': 'Anmelden',
+	'auth.login.signingIn': 'Anmeldung läuft...',
+	'auth.login.failed': 'Anmeldung fehlgeschlagen',
+	'auth.login.ssoOnly': 'Dieser Arbeitsbereich verwendet Single Sign-on.',
+	'auth.login.or': 'oder',
+	'auth.login.signInWith': 'Anmelden mit {provider}',
+
+	// Auth — MFA verification (routes/login/mfa/+page.svelte)
+	'auth.mfa.heading': 'Zwei-Faktor-Verifizierung',
+	'auth.mfa.subtitle.passkey': 'Verwenden Sie Ihren Passkey (Touch ID, Windows Hello oder einen Sicherheitsschlüssel).',
+	'auth.mfa.subtitle.totp': 'Geben Sie den 6-stelligen Code aus Ihrer Authenticator-App ein.',
+	'auth.mfa.subtitle.email': 'Wir senden einen Einmalcode an Ihre Konto-E-Mail-Adresse.',
+	'auth.mfa.enrollNotice':
+		'Ihre Organisation verlangt MFA. Nach der Verifizierung per E-Mail werden Sie aufgefordert, eine Authenticator-App einzurichten.',
+	'auth.mfa.verifyWithPasskey': 'Mit Passkey verifizieren',
+	'auth.mfa.waitingForPasskey': 'Warte auf Passkey…',
+	'auth.mfa.emailMeCode': 'Code per E-Mail senden',
+	'auth.mfa.codeLabel': 'Verifizierungscode',
+	'auth.mfa.verify': 'Verifizieren',
+	'auth.mfa.verifying': 'Verifizierung läuft...',
+	'auth.mfa.or': 'oder',
+	'auth.mfa.usePasskey': 'Passkey verwenden',
+	'auth.mfa.useTotp': 'Authenticator-App verwenden',
+	'auth.mfa.useEmail': 'Stattdessen E-Mail verwenden',
+	'auth.mfa.error.passkey': 'Passkey-Verifizierung fehlgeschlagen',
+	'auth.mfa.error.emailSend': 'E-Mail-Code konnte nicht gesendet werden',
+	'auth.mfa.error.verify': 'Verifizierung fehlgeschlagen',
 } satisfies Messages;

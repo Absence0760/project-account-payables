@@ -1363,4 +1363,37 @@ export const en = {
 	'portal.cards.copied': 'Copied!',
 	'portal.cards.singleUseHint':
 		"This page won't open again — the link is single-use. If you accidentally close it before saving the card, reply to the email and we'll re-issue.",
+
+	// Auth — login (routes/login/+page.svelte)
+	'auth.login.heading': 'Account Payables',
+	'auth.login.subtitle': 'Sign in to continue',
+	'auth.login.email': 'Email',
+	'auth.login.password': 'Password',
+	'auth.login.signIn': 'Sign in',
+	'auth.login.signingIn': 'Signing in...',
+	'auth.login.failed': 'Login failed',
+	'auth.login.ssoOnly': 'This workspace uses single sign-on.',
+	'auth.login.or': 'or',
+	'auth.login.signInWith': 'Sign in with {provider}',
+
+	// Auth — MFA verification (routes/login/mfa/+page.svelte)
+	'auth.mfa.heading': 'Two-factor verification',
+	'auth.mfa.subtitle.passkey': 'Use your passkey (Touch ID, Windows Hello, or a security key).',
+	'auth.mfa.subtitle.totp': 'Enter the 6-digit code from your authenticator app.',
+	'auth.mfa.subtitle.email': "We'll email a one-time code to your account address.",
+	'auth.mfa.enrollNotice':
+		"Your organization requires MFA. After verifying with email, you'll be asked to set up an authenticator app.",
+	'auth.mfa.verifyWithPasskey': 'Verify with passkey',
+	'auth.mfa.waitingForPasskey': 'Waiting for passkey…',
+	'auth.mfa.emailMeCode': 'Email me a code',
+	'auth.mfa.codeLabel': 'Verification code',
+	'auth.mfa.verify': 'Verify',
+	'auth.mfa.verifying': 'Verifying...',
+	'auth.mfa.or': 'or',
+	'auth.mfa.usePasskey': 'Use a passkey',
+	'auth.mfa.useTotp': 'Use authenticator app',
+	'auth.mfa.useEmail': 'Use email instead',
+	'auth.mfa.error.passkey': 'Passkey verification failed',
+	'auth.mfa.error.emailSend': 'Failed to send email code',
+	'auth.mfa.error.verify': 'Verification failed',
 } satisfies Record<string, string>;

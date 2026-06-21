@@ -1336,4 +1336,37 @@ export const messages = {
 	'portal.cards.copied': 'Copiado!',
 	'portal.cards.singleUseHint':
 		'Esta página não abrirá novamente — o link é de uso único. Se você fechá-la por acidente antes de salvar o cartão, responda ao e-mail e o reemitiremos.',
+
+	// Auth — login (routes/login/+page.svelte)
+	'auth.login.heading': 'Account Payables',
+	'auth.login.subtitle': 'Entre para continuar',
+	'auth.login.email': 'E-mail',
+	'auth.login.password': 'Senha',
+	'auth.login.signIn': 'Entrar',
+	'auth.login.signingIn': 'Entrando...',
+	'auth.login.failed': 'Falha no login',
+	'auth.login.ssoOnly': 'Este espaço de trabalho usa login único (SSO).',
+	'auth.login.or': 'ou',
+	'auth.login.signInWith': 'Entrar com {provider}',
+
+	// Auth — MFA verification (routes/login/mfa/+page.svelte)
+	'auth.mfa.heading': 'Verificação em duas etapas',
+	'auth.mfa.subtitle.passkey': 'Use sua chave de acesso (Touch ID, Windows Hello ou uma chave de segurança).',
+	'auth.mfa.subtitle.totp': 'Digite o código de 6 dígitos do seu app autenticador.',
+	'auth.mfa.subtitle.email': 'Enviaremos um código de uso único para o e-mail da sua conta.',
+	'auth.mfa.enrollNotice':
+		'Sua organização exige MFA. Após verificar por e-mail, você será solicitado a configurar um app autenticador.',
+	'auth.mfa.verifyWithPasskey': 'Verificar com chave de acesso',
+	'auth.mfa.waitingForPasskey': 'Aguardando a chave de acesso…',
+	'auth.mfa.emailMeCode': 'Enviar um código por e-mail',
+	'auth.mfa.codeLabel': 'Código de verificação',
+	'auth.mfa.verify': 'Verificar',
+	'auth.mfa.verifying': 'Verificando...',
+	'auth.mfa.or': 'ou',
+	'auth.mfa.usePasskey': 'Usar uma chave de acesso',
+	'auth.mfa.useTotp': 'Usar app autenticador',
+	'auth.mfa.useEmail': 'Usar e-mail em vez disso',
+	'auth.mfa.error.passkey': 'Falha na verificação da chave de acesso',
+	'auth.mfa.error.emailSend': 'Falha ao enviar o código por e-mail',
+	'auth.mfa.error.verify': 'Falha na verificação',
 } satisfies Messages;

@@ -1305,4 +1305,37 @@ export const messages = {
 	'portal.cards.copy': 'Copier',
 	'portal.cards.copied': 'Copié !',
 	'portal.cards.singleUseHint': 'Cette page ne s\'ouvrira plus — le lien est à usage unique. Si vous la fermez par inadvertance avant d\'avoir enregistré la carte, répondez à l\'e-mail et nous la rééditerons.',
+
+	// Auth — login (routes/login/+page.svelte)
+	'auth.login.heading': 'Account Payables',
+	'auth.login.subtitle': 'Connectez-vous pour continuer',
+	'auth.login.email': 'E-mail',
+	'auth.login.password': 'Mot de passe',
+	'auth.login.signIn': 'Se connecter',
+	'auth.login.signingIn': 'Connexion...',
+	'auth.login.failed': 'Échec de la connexion',
+	'auth.login.ssoOnly': 'Cet espace de travail utilise l\'authentification unique (SSO).',
+	'auth.login.or': 'ou',
+	'auth.login.signInWith': 'Se connecter avec {provider}',
+
+	// Auth — MFA verification (routes/login/mfa/+page.svelte)
+	'auth.mfa.heading': 'Vérification à deux facteurs',
+	'auth.mfa.subtitle.passkey': 'Utilisez votre clé d\'accès (Touch ID, Windows Hello ou une clé de sécurité).',
+	'auth.mfa.subtitle.totp': 'Saisissez le code à 6 chiffres de votre application d\'authentification.',
+	'auth.mfa.subtitle.email': 'Nous enverrons un code à usage unique à l\'adresse e-mail de votre compte.',
+	'auth.mfa.enrollNotice':
+		'Votre organisation exige le MFA. Après vérification par e-mail, il vous sera demandé de configurer une application d\'authentification.',
+	'auth.mfa.verifyWithPasskey': 'Vérifier avec une clé d\'accès',
+	'auth.mfa.waitingForPasskey': 'En attente de la clé d\'accès…',
+	'auth.mfa.emailMeCode': 'M\'envoyer un code par e-mail',
+	'auth.mfa.codeLabel': 'Code de vérification',
+	'auth.mfa.verify': 'Vérifier',
+	'auth.mfa.verifying': 'Vérification...',
+	'auth.mfa.or': 'ou',
+	'auth.mfa.usePasskey': 'Utiliser une clé d\'accès',
+	'auth.mfa.useTotp': 'Utiliser l\'application d\'authentification',
+	'auth.mfa.useEmail': 'Utiliser l\'e-mail à la place',
+	'auth.mfa.error.passkey': 'Échec de la vérification de la clé d\'accès',
+	'auth.mfa.error.emailSend': 'Échec de l\'envoi du code par e-mail',
+	'auth.mfa.error.verify': 'Échec de la vérification',
 } satisfies Messages;

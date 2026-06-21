@@ -1328,4 +1328,37 @@ export const messages = {
 	'portal.cards.copied': 'コピーしました！',
 	'portal.cards.singleUseHint':
 		'このページは再度開けません。リンクは単回使用です。カードを保存する前に誤って閉じてしまった場合は、メールに返信していただければ再発行します。',
+
+	// Auth — login (routes/login/+page.svelte)
+	'auth.login.heading': 'Account Payables',
+	'auth.login.subtitle': '続行するにはサインインしてください',
+	'auth.login.email': 'メールアドレス',
+	'auth.login.password': 'パスワード',
+	'auth.login.signIn': 'サインイン',
+	'auth.login.signingIn': 'サインインしています...',
+	'auth.login.failed': 'ログインに失敗しました',
+	'auth.login.ssoOnly': 'このワークスペースはシングルサインオン（SSO）を使用します。',
+	'auth.login.or': 'または',
+	'auth.login.signInWith': '{provider}でサインイン',
+
+	// Auth — MFA verification (routes/login/mfa/+page.svelte)
+	'auth.mfa.heading': '二要素認証',
+	'auth.mfa.subtitle.passkey': 'パスキー（Touch ID、Windows Hello、またはセキュリティキー）を使用してください。',
+	'auth.mfa.subtitle.totp': '認証アプリの6桁のコードを入力してください。',
+	'auth.mfa.subtitle.email': 'アカウントのメールアドレスにワンタイムコードを送信します。',
+	'auth.mfa.enrollNotice':
+		'ご利用の組織はMFAを必須としています。メールで認証した後、認証アプリの設定を求められます。',
+	'auth.mfa.verifyWithPasskey': 'パスキーで認証',
+	'auth.mfa.waitingForPasskey': 'パスキーを待っています…',
+	'auth.mfa.emailMeCode': 'コードをメールで送信',
+	'auth.mfa.codeLabel': '認証コード',
+	'auth.mfa.verify': '認証',
+	'auth.mfa.verifying': '認証しています...',
+	'auth.mfa.or': 'または',
+	'auth.mfa.usePasskey': 'パスキーを使用',
+	'auth.mfa.useTotp': '認証アプリを使用',
+	'auth.mfa.useEmail': '代わりにメールを使用',
+	'auth.mfa.error.passkey': 'パスキーの認証に失敗しました',
+	'auth.mfa.error.emailSend': 'メールコードの送信に失敗しました',
+	'auth.mfa.error.verify': '認証に失敗しました',
 } satisfies Messages;

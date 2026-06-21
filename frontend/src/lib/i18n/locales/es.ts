@@ -1336,4 +1336,37 @@ export const messages = {
 	'portal.cards.copied': '¡Copiado!',
 	'portal.cards.singleUseHint':
 		'Esta página no se volverá a abrir: el enlace es de un solo uso. Si la cierras por accidente antes de guardar la tarjeta, responde al correo y la reemitiremos.',
+
+	// Auth — login (routes/login/+page.svelte)
+	'auth.login.heading': 'Account Payables',
+	'auth.login.subtitle': 'Inicia sesión para continuar',
+	'auth.login.email': 'Correo electrónico',
+	'auth.login.password': 'Contraseña',
+	'auth.login.signIn': 'Iniciar sesión',
+	'auth.login.signingIn': 'Iniciando sesión...',
+	'auth.login.failed': 'Error al iniciar sesión',
+	'auth.login.ssoOnly': 'Este espacio de trabajo usa inicio de sesión único (SSO).',
+	'auth.login.or': 'o',
+	'auth.login.signInWith': 'Iniciar sesión con {provider}',
+
+	// Auth — MFA verification (routes/login/mfa/+page.svelte)
+	'auth.mfa.heading': 'Verificación en dos pasos',
+	'auth.mfa.subtitle.passkey': 'Usa tu clave de acceso (Touch ID, Windows Hello o una llave de seguridad).',
+	'auth.mfa.subtitle.totp': 'Introduce el código de 6 dígitos de tu app de autenticación.',
+	'auth.mfa.subtitle.email': 'Enviaremos un código de un solo uso a la dirección de correo de tu cuenta.',
+	'auth.mfa.enrollNotice':
+		'Tu organización requiere MFA. Tras verificar por correo, se te pedirá configurar una app de autenticación.',
+	'auth.mfa.verifyWithPasskey': 'Verificar con clave de acceso',
+	'auth.mfa.waitingForPasskey': 'Esperando la clave de acceso…',
+	'auth.mfa.emailMeCode': 'Enviarme un código por correo',
+	'auth.mfa.codeLabel': 'Código de verificación',
+	'auth.mfa.verify': 'Verificar',
+	'auth.mfa.verifying': 'Verificando...',
+	'auth.mfa.or': 'o',
+	'auth.mfa.usePasskey': 'Usar una clave de acceso',
+	'auth.mfa.useTotp': 'Usar app de autenticación',
+	'auth.mfa.useEmail': 'Usar correo en su lugar',
+	'auth.mfa.error.passkey': 'Error al verificar la clave de acceso',
+	'auth.mfa.error.emailSend': 'No se pudo enviar el código por correo',
+	'auth.mfa.error.verify': 'Error de verificación',
 } satisfies Messages;
