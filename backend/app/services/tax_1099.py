@@ -122,7 +122,10 @@ async def build_1099_report(
             Vendor.w9_received_date.label("w9_received_date"),
             Vendor.w9_file_key.label("w9_file_key"),
             Vendor.tin_verified_at.label("tin_verified_at"),
-            func.coalesce(func.sum(Payment.amount), 0).label("ytd_paid"),
+            # Decimal("0") fallback (not int 0): with an int the zero-payments
+            # case can promote the aggregate away from Numeric, and a vendor at
+            # exactly the $600 filing threshold could be mis-classified.
+            func.coalesce(func.sum(Payment.amount), Decimal("0")).label("ytd_paid"),
             func.count(Payment.id).label("payment_count"),
         )
         .select_from(Vendor)
@@ -149,7 +152,7 @@ async def build_1099_report(
     result = await db.execute(q)
     rows = []
     for row in result.all():
-        ytd = Decimal(row.ytd_paid or 0)
+        ytd = Decimal(row.ytd_paid or Decimal("0"))
         rows.append(
             VendorReportRow(
                 vendor_id=row.vendor_id,

@@ -96,6 +96,25 @@ async def test_dashboard_flags_threshold_and_readiness(realdb):
     assert rows["Gap Co"]["needs_attention"] is True
 
 
+async def test_zero_payment_vendor_has_clean_zero_ytd(realdb):
+    """A vendor with no completed payments must report a clean Decimal $0 YTD —
+    the coalesce fallback is Decimal('0'), not int 0 (which can promote the
+    aggregate off Numeric and mis-classify a vendor right at the $600 line) —
+    and must never trip the threshold."""
+    from decimal import Decimal
+
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _vendor(mk, org_id, name="No Pay Co", eligible=True, w9=True)
+
+    async with realdb.client(key="a", role="cfo") as c:
+        resp = await c.get(f"/api/tax/1099-dashboard?year={YEAR}")
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json()["rows"] if r["vendor_name"] == "No Pay Co")
+    assert Decimal(row["ytd_paid"]) == Decimal("0")
+    assert row["over_threshold"] is False
+
+
 # ---------------------------------------------------------------------------
 # TIN verify
 # ---------------------------------------------------------------------------
