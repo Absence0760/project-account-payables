@@ -13,6 +13,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import {
 		createContract,
 		updateContract,
@@ -163,11 +164,11 @@
 			const saved = isCreate
 				? await createContract(buildPayload())
 				: await updateContract(contract!.id, buildPayload());
-			toast(isCreate ? 'Contract created' : 'Contract saved', 'success');
+			toast(isCreate ? m('contracts.modal.toast.created') : m('contracts.modal.toast.saved'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, isCreate ? 'Create failed' : 'Save failed');
+			handleError(err, isCreate ? m('contracts.modal.toast.createFailed') : m('contracts.modal.toast.saveFailed'));
 		} finally {
 			saving = false;
 		}
@@ -197,10 +198,10 @@
 		uploading = true;
 		try {
 			const updated = await uploadContractFile(contract.id, file);
-			toast('Document uploaded', 'success');
+			toast(m('contracts.modal.toast.uploaded'), 'success');
 			onsaved(updated);
 		} catch (err) {
-			handleError(err, 'Upload failed');
+			handleError(err, m('contracts.modal.toast.uploadFailed'));
 		} finally {
 			uploading = false;
 			input.value = '';
@@ -215,7 +216,7 @@
 			// Revoke shortly after the new tab has had a chance to load it.
 			setTimeout(() => URL.revokeObjectURL(url), 60_000);
 		} catch (err) {
-			handleError(err, 'Could not load document');
+			handleError(err, m('contracts.modal.toast.docLoadFailed'));
 		}
 	}
 
@@ -234,11 +235,11 @@
 				total_value: renewTotalValue,
 				spend_limit: renewSpendLimit
 			});
-			toast('Contract renewed', 'success');
+			toast(m('contracts.modal.toast.renewed'), 'success');
 			showRenew = false;
 			onsaved(updated);
 		} catch (err) {
-			handleError(err, 'Renew failed');
+			handleError(err, m('contracts.modal.toast.renewFailed'));
 		} finally {
 			busy = false;
 		}
@@ -257,12 +258,12 @@
 				po_number: poNumber.trim() || undefined,
 				total: poTotal
 			});
-			toast(`Purchase order ${po.po_number} created`, 'success');
+			toast(m('contracts.modal.toast.poCreated', { number: po.po_number }), 'success');
 			showCreatePo = false;
 			poNumber = '';
 			poTotal = null;
 		} catch (err) {
-			handleError(err, 'Could not create PO');
+			handleError(err, m('contracts.modal.toast.poCreateFailed'));
 		} finally {
 			busy = false;
 		}
@@ -270,12 +271,12 @@
 
 	const modalTitle = $derived(
 		isCreate
-			? 'New Contract'
+			? m('contracts.modal.title.new')
 			: canEdit
-				? `Edit Contract — ${contract!.contract_number}`
-				: `Contract — ${contract!.contract_number}`
+				? m('contracts.modal.title.edit', { number: contract!.contract_number })
+				: m('contracts.modal.title.view', { number: contract!.contract_number })
 	);
-	const ariaLabel = $derived(isCreate ? 'New contract' : 'Contract detail');
+	const ariaLabel = $derived(isCreate ? m('contracts.modal.aria.new') : m('contracts.modal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
@@ -283,30 +284,30 @@
 		{#if !isCreate}
 			<div class="status-row">
 				<span class="badge {status}">{STATUS_LABELS[status]}</span>
-				{#if contract!.auto_renew}<span class="meta-pill">Auto-renew</span>{/if}
+				{#if contract!.auto_renew}<span class="meta-pill">{m('contracts.modal.autoRenewPill')}</span>{/if}
 			</div>
 		{/if}
 
 		<div class="form-grid">
 			<label>
-				<span>Contract Number <em class="required">*</em></span>
+				<span>{m('contracts.modal.field.contractNumber')} <em class="required">*</em></span>
 				<input type="text" bind:value={contract_number} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Vendor <em class="required">*</em></span>
+				<span>{m('contracts.modal.field.vendor')} <em class="required">*</em></span>
 				<select bind:value={vendor_id} required disabled={!canEdit || !isCreate}>
-					<option value="">Select vendor…</option>
+					<option value="">{m('contracts.modal.field.vendorSelect')}</option>
 					{#each vendors as v (v.id)}
 						<option value={v.id}>{v.name}</option>
 					{/each}
 				</select>
 			</label>
 			<label class="full-width">
-				<span>Title</span>
+				<span>{m('contracts.modal.field.title')}</span>
 				<input type="text" bind:value={title} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Type</span>
+				<span>{m('contracts.modal.field.type')}</span>
 				<select bind:value={contract_type} disabled={!canEdit}>
 					{#each CONTRACT_TYPES as t}
 						<option value={t}>{CONTRACT_TYPE_LABELS[t]}</option>
@@ -314,11 +315,11 @@
 				</select>
 			</label>
 			<label>
-				<span>Currency</span>
+				<span>{m('contracts.modal.field.currency')}</span>
 				<input type="text" bind:value={currency} maxlength="3" disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Total Value</span>
+				<span>{m('contracts.modal.field.totalValue')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -329,7 +330,7 @@
 				/>
 			</label>
 			<label>
-				<span>Spend Limit</span>
+				<span>{m('contracts.modal.field.spendLimit')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -341,30 +342,30 @@
 			</label>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={not_to_exceed} disabled={!canEdit} />
-				<span>Not-to-exceed</span>
+				<span>{m('contracts.modal.field.notToExceed')}</span>
 			</label>
 			<label>
-				<span>Payment Terms</span>
-				<input type="text" bind:value={payment_terms} placeholder="e.g. Net 30" disabled={!canEdit} />
+				<span>{m('contracts.modal.field.paymentTerms')}</span>
+				<input type="text" bind:value={payment_terms} placeholder={m('contracts.modal.field.paymentTermsPlaceholder')} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Start Date</span>
+				<span>{m('contracts.modal.field.startDate')}</span>
 				<input type="date" bind:value={start_date} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>End Date</span>
+				<span>{m('contracts.modal.field.endDate')}</span>
 				<input type="date" bind:value={end_date} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Signed Date</span>
+				<span>{m('contracts.modal.field.signedDate')}</span>
 				<input type="date" bind:value={signed_date} disabled={!canEdit} />
 			</label>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={auto_renew} disabled={!canEdit} />
-				<span>Auto-renew</span>
+				<span>{m('contracts.modal.field.autoRenew')}</span>
 			</label>
 			<label>
-				<span>Renewal Term (months)</span>
+				<span>{m('contracts.modal.field.renewalTerm')}</span>
 				<input
 					type="number"
 					min="1"
@@ -374,11 +375,11 @@
 				/>
 			</label>
 			<label>
-				<span>Renewal Notice (days)</span>
+				<span>{m('contracts.modal.field.renewalNotice')}</span>
 				<input type="number" min="0" bind:value={renewal_notice_days} disabled={!canEdit} />
 			</label>
 			<label class="full-width">
-				<span>Description</span>
+				<span>{m('contracts.modal.field.description')}</span>
 				<textarea bind:value={description} rows="2" disabled={!canEdit}></textarea>
 			</label>
 		</div>
@@ -386,23 +387,23 @@
 		<!-- Spend summary (detail mode only) -->
 		{#if spend}
 			<div class="spend-panel" class:over={spend.over_limit}>
-				<div class="spend-title">Spend Summary</div>
+				<div class="spend-title">{m('contracts.modal.spend.title')}</div>
 				<div class="spend-grid">
 					<div>
-						<span class="spend-label">Invoiced</span>
+						<span class="spend-label">{m('contracts.modal.spend.invoiced')}</span>
 						<span class="spend-value"><Money amount={spend.invoiced_total} currency={currency} mono /></span>
 					</div>
 					<div>
-						<span class="spend-label">Invoices</span>
+						<span class="spend-label">{m('contracts.modal.spend.invoices')}</span>
 						<span class="spend-value">{spend.invoice_count}</span>
 					</div>
 					{#if spend.spend_limit !== null}
 						<div>
-							<span class="spend-label">Limit</span>
+							<span class="spend-label">{m('contracts.modal.spend.limit')}</span>
 							<span class="spend-value"><Money amount={spend.spend_limit} currency={currency} mono /></span>
 						</div>
 						<div>
-							<span class="spend-label">Remaining</span>
+							<span class="spend-label">{m('contracts.modal.spend.remaining')}</span>
 							<span class="spend-value" class:neg={spend.over_limit}>
 								<Money amount={spend.remaining} currency={currency} mono accounting />
 							</span>
@@ -410,7 +411,7 @@
 					{/if}
 				</div>
 				{#if spend.over_limit}
-					<div class="spend-warning">Over spend limit.</div>
+					<div class="spend-warning">{m('contracts.modal.spend.overLimit')}</div>
 				{/if}
 			</div>
 		{/if}
@@ -418,21 +419,21 @@
 		<!-- Line items -->
 		<div class="line-items-section">
 			<div class="line-items-header">
-				<span class="line-items-title">Line Items</span>
+				<span class="line-items-title">{m('contracts.modal.lineItems')}</span>
 				{#if canEdit}
-					<button type="button" class="btn-add-line" onclick={addLine}>+ Add Line</button>
+					<button type="button" class="btn-add-line" onclick={addLine}>{m('contracts.modal.addLine')}</button>
 				{/if}
 			</div>
 			{#if lineItems.length > 0}
 				<table class="line-items-table">
 					<thead>
 						<tr>
-							<th>#</th>
-							<th>Description</th>
-							<th class="right">Qty</th>
-							<th class="right">Unit Price</th>
-							<th class="right">Total</th>
-							<th>GL</th>
+							<th>{m('contracts.modal.col.num')}</th>
+							<th>{m('contracts.modal.col.description')}</th>
+							<th class="right">{m('contracts.modal.col.qty')}</th>
+							<th class="right">{m('contracts.modal.col.unitPrice')}</th>
+							<th class="right">{m('contracts.modal.col.total')}</th>
+							<th>{m('contracts.modal.col.gl')}</th>
 							{#if canEdit}<th></th>{/if}
 						</tr>
 					</thead>
@@ -440,36 +441,36 @@
 						{#each lineItems as li, idx (idx)}
 							<tr>
 								<td class="li-num">{idx + 1}</td>
-								<td><input type="text" class="li-input" aria-label={`Line ${idx + 1} description`} value={li.description ?? ''} oninput={(e) => updateLine(idx, 'description', e.currentTarget.value)} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} quantity`} value={li.quantity ?? ''} oninput={(e) => updateLine(idx, 'quantity', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} unit price`} value={li.unit_price ?? ''} oninput={(e) => updateLine(idx, 'unit_price', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="number" class="li-input right" step="0.01" aria-label={`Line ${idx + 1} total`} value={li.total ?? ''} oninput={(e) => updateLine(idx, 'total', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
-								<td><input type="text" class="li-input li-gl" aria-label={`Line ${idx + 1} GL account`} value={li.gl_account ?? ''} oninput={(e) => updateLine(idx, 'gl_account', e.currentTarget.value)} disabled={!canEdit} /></td>
+								<td><input type="text" class="li-input" aria-label={m('contracts.modal.line.descriptionAria', { n: idx + 1 })} value={li.description ?? ''} oninput={(e) => updateLine(idx, 'description', e.currentTarget.value)} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.quantityAria', { n: idx + 1 })} value={li.quantity ?? ''} oninput={(e) => updateLine(idx, 'quantity', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.unitPriceAria', { n: idx + 1 })} value={li.unit_price ?? ''} oninput={(e) => updateLine(idx, 'unit_price', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
+								<td><input type="number" class="li-input right" step="0.01" aria-label={m('contracts.modal.line.totalAria', { n: idx + 1 })} value={li.total ?? ''} oninput={(e) => updateLine(idx, 'total', numOrNull(e.currentTarget.value))} disabled={!canEdit} /></td>
+								<td><input type="text" class="li-input li-gl" aria-label={m('contracts.modal.line.glAria', { n: idx + 1 })} value={li.gl_account ?? ''} oninput={(e) => updateLine(idx, 'gl_account', e.currentTarget.value)} disabled={!canEdit} /></td>
 								{#if canEdit}
-									<td><button type="button" class="li-delete" aria-label={`Remove line ${idx + 1}`} onclick={() => removeLine(idx)}>&times;</button></td>
+									<td><button type="button" class="li-delete" aria-label={m('contracts.modal.line.removeAria', { n: idx + 1 })} onclick={() => removeLine(idx)}>&times;</button></td>
 								{/if}
 							</tr>
 						{/each}
 					</tbody>
 				</table>
 			{:else}
-				<p class="line-items-empty">No line items.</p>
+				<p class="line-items-empty">{m('contracts.modal.noLineItems')}</p>
 			{/if}
 		</div>
 
 		<!-- Document -->
 		{#if !isCreate}
 			<div class="document-section">
-				<span class="document-title">Document</span>
+				<span class="document-title">{m('contracts.modal.document.title')}</span>
 				{#if contract!.file_key}
-					<button type="button" class="btn-doc" onclick={downloadDocument}>View attached document</button>
+					<button type="button" class="btn-doc" onclick={downloadDocument}>{m('contracts.modal.document.view')}</button>
 				{:else}
-					<span class="document-empty">No document attached.</span>
+					<span class="document-empty">{m('contracts.modal.document.empty')}</span>
 				{/if}
 				{#if canEdit}
 					<input type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff,.doc,.docx" bind:this={fileInput} onchange={handleUpload} hidden />
 					<button type="button" class="btn-doc-upload" disabled={uploading} onclick={() => fileInput?.click()}>
-						{uploading ? 'Uploading…' : contract!.file_key ? 'Replace' : 'Upload'}
+						{uploading ? m('contracts.modal.document.uploading') : contract!.file_key ? m('contracts.modal.document.replace') : m('contracts.modal.document.upload')}
 					</button>
 				{/if}
 			</div>
@@ -478,25 +479,25 @@
 		<!-- Renew sub-form -->
 		{#if showRenew}
 			<div class="sub-form">
-				<div class="sub-form-title">Renew Contract</div>
+				<div class="sub-form-title">{m('contracts.modal.renew.title')}</div>
 				<div class="sub-form-grid">
 					<label>
-						<span>New End Date <em class="required">*</em></span>
+						<span>{m('contracts.modal.renew.newEndDate')} <em class="required">*</em></span>
 						<input type="date" bind:value={renewEndDate} required />
 					</label>
 					<label>
-						<span>Total Value</span>
+						<span>{m('contracts.modal.renew.totalValue')}</span>
 						<input type="number" step="0.01" min="0" value={renewTotalValue ?? ''} oninput={(e) => (renewTotalValue = numOrNull(e.currentTarget.value))} />
 					</label>
 					<label>
-						<span>Spend Limit</span>
+						<span>{m('contracts.modal.renew.spendLimit')}</span>
 						<input type="number" step="0.01" min="0" value={renewSpendLimit ?? ''} oninput={(e) => (renewSpendLimit = numOrNull(e.currentTarget.value))} />
 					</label>
 				</div>
 				<div class="sub-form-actions">
-					<button type="button" class="btn-cancel-sm" onclick={() => (showRenew = false)}>Cancel</button>
+					<button type="button" class="btn-cancel-sm" onclick={() => (showRenew = false)}>{m('contracts.modal.renew.cancel')}</button>
 					<button type="button" class="btn-primary-sm" disabled={busy || !renewEndDate} onclick={handleRenew}>
-						{busy ? 'Renewing…' : 'Confirm Renew'}
+						{busy ? m('contracts.modal.renew.renewing') : m('contracts.modal.renew.confirm')}
 					</button>
 				</div>
 			</div>
@@ -505,21 +506,21 @@
 		<!-- Create PO sub-form -->
 		{#if showCreatePo}
 			<div class="sub-form">
-				<div class="sub-form-title">Create Purchase Order</div>
+				<div class="sub-form-title">{m('contracts.modal.createPo.title')}</div>
 				<div class="sub-form-grid">
 					<label>
-						<span>PO Number</span>
-						<input type="text" bind:value={poNumber} placeholder="Auto if blank" />
+						<span>{m('contracts.modal.createPo.poNumber')}</span>
+						<input type="text" bind:value={poNumber} placeholder={m('contracts.modal.createPo.poNumberPlaceholder')} />
 					</label>
 					<label>
-						<span>Total</span>
+						<span>{m('contracts.modal.createPo.total')}</span>
 						<input type="number" step="0.01" min="0" value={poTotal ?? ''} oninput={(e) => (poTotal = numOrNull(e.currentTarget.value))} />
 					</label>
 				</div>
 				<div class="sub-form-actions">
-					<button type="button" class="btn-cancel-sm" onclick={() => (showCreatePo = false)}>Cancel</button>
+					<button type="button" class="btn-cancel-sm" onclick={() => (showCreatePo = false)}>{m('contracts.modal.createPo.cancel')}</button>
 					<button type="button" class="btn-primary-sm" disabled={busy} onclick={handleCreatePo}>
-						{busy ? 'Creating…' : 'Create PO'}
+						{busy ? m('contracts.modal.createPo.creating') : m('contracts.modal.createPo.confirm')}
 					</button>
 				</div>
 			</div>
@@ -529,28 +530,28 @@
 		{#if !isCreate && canEdit}
 			<div class="lifecycle-actions">
 				{#if canActivate}
-					<button type="button" class="btn-lifecycle activate" disabled={busy} onclick={() => runLifecycle(() => activateContract(contract!.id), 'Contract activated', 'Activate failed')}>Activate</button>
+					<button type="button" class="btn-lifecycle activate" disabled={busy} onclick={() => runLifecycle(() => activateContract(contract!.id), m('contracts.modal.toast.activated'), m('contracts.modal.toast.activateFailed'))}>{m('contracts.modal.lifecycle.activate')}</button>
 				{/if}
 				{#if canTerminate}
-					<button type="button" class="btn-lifecycle terminate" disabled={busy} onclick={() => runLifecycle(() => terminateContract(contract!.id), 'Contract terminated', 'Terminate failed')}>Terminate</button>
+					<button type="button" class="btn-lifecycle terminate" disabled={busy} onclick={() => runLifecycle(() => terminateContract(contract!.id), m('contracts.modal.toast.terminated'), m('contracts.modal.toast.terminateFailed'))}>{m('contracts.modal.lifecycle.terminate')}</button>
 				{/if}
 				{#if canCancel}
-					<button type="button" class="btn-lifecycle cancel" disabled={busy} onclick={() => runLifecycle(() => cancelContract(contract!.id), 'Contract cancelled', 'Cancel failed')}>Cancel Contract</button>
+					<button type="button" class="btn-lifecycle cancel" disabled={busy} onclick={() => runLifecycle(() => cancelContract(contract!.id), m('contracts.modal.toast.cancelled'), m('contracts.modal.toast.cancelFailed'))}>{m('contracts.modal.lifecycle.cancel')}</button>
 				{/if}
 				{#if canRenew}
-					<button type="button" class="btn-lifecycle" disabled={busy} onclick={() => { showRenew = !showRenew; showCreatePo = false; renewEndDate = end_date || ''; }}>Renew</button>
+					<button type="button" class="btn-lifecycle" disabled={busy} onclick={() => { showRenew = !showRenew; showCreatePo = false; renewEndDate = end_date || ''; }}>{m('contracts.modal.lifecycle.renew')}</button>
 				{/if}
 				{#if canCreatePo}
-					<button type="button" class="btn-lifecycle" disabled={busy} onclick={() => { showCreatePo = !showCreatePo; showRenew = false; }}>Create PO</button>
+					<button type="button" class="btn-lifecycle" disabled={busy} onclick={() => { showCreatePo = !showCreatePo; showRenew = false; }}>{m('contracts.modal.lifecycle.createPo')}</button>
 				{/if}
 			</div>
 		{/if}
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('contracts.modal.close')}</button>
 			{#if canEdit}
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving ? m('contracts.modal.saving') : isCreate ? m('contracts.modal.create') : m('contracts.modal.save')}
 				</button>
 			{/if}
 		</div>
