@@ -2,6 +2,7 @@
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
 	import { portalBrand } from '$lib/stores/portalBrand.svelte';
 	import { goto } from '$app/navigation';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let email = $state('');
 	let password = $state('');
@@ -41,7 +42,7 @@
 				afterAuth();
 			}
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Sign-in failed';
+			error = err instanceof Error ? err.message : m('portal.login.failed');
 		} finally {
 			loading = false;
 		}
@@ -56,7 +57,7 @@
 			await portalAuth.completeMfa(mfaChallenge, mfaCode, mfaMethod);
 			afterAuth();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Verification failed';
+			error = err instanceof Error ? err.message : m('portal.login.mfa.failed');
 		} finally {
 			loading = false;
 		}
@@ -72,7 +73,7 @@
 			mfaCode = '';
 			emailSent = true;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to send email code';
+			error = err instanceof Error ? err.message : m('portal.login.mfa.sendFailed');
 		} finally {
 			emailSending = false;
 		}
@@ -96,12 +97,12 @@
 <div class="login-page">
 	{#if mfaChallenge}
 		<form class="login-card" onsubmit={handleMfaSubmit}>
-			<h1>Two-factor authentication</h1>
+			<h1>{m('portal.login.mfa.title')}</h1>
 			<p class="subtitle">
 				{#if mfaMethod === 'email'}
-					Enter the 6-digit code we emailed to your account address
+					{m('portal.login.mfa.subtitleEmail')}
 				{:else}
-					Enter the 6-digit code from your authenticator app
+					{m('portal.login.mfa.subtitleTotp')}
 				{/if}
 			</p>
 
@@ -112,7 +113,7 @@
 			</div>
 
 			<label>
-				<span>{mfaMethod === 'email' ? 'Email code' : 'Authentication code'}</span>
+				<span>{mfaMethod === 'email' ? m('portal.login.mfa.emailCodeLabel') : m('portal.login.mfa.codeLabel')}</span>
 				<input
 					type="text"
 					inputmode="numeric"
@@ -124,25 +125,25 @@
 			</label>
 
 			<button type="submit" disabled={loading || mfaCode.length < 6}>
-				{loading ? 'Verifying...' : 'Verify'}
+				{loading ? m('portal.login.mfa.verifying') : m('portal.login.mfa.verify')}
 			</button>
 
-			<div class="divider"><span>or</span></div>
+			<div class="divider"><span>{m('portal.login.mfa.or')}</span></div>
 
 			{#if mfaMethod === 'totp'}
 				<button type="button" class="secondary" onclick={sendEmailCode} disabled={emailSending}>
-					{emailSending ? 'Sending…' : 'Use email code instead'}
+					{emailSending ? m('portal.login.mfa.sending') : m('portal.login.mfa.useEmail')}
 				</button>
 			{:else}
 				{#if emailSent}
-					<p class="hint">If an account is enrolled, a code is on its way to your inbox.</p>
+					<p class="hint">{m('portal.login.mfa.emailSent')}</p>
 				{/if}
 				<button type="button" class="secondary" onclick={useAuthenticator}>
-					Use authenticator app
+					{m('portal.login.mfa.useAuthenticator')}
 				</button>
 			{/if}
 
-			<button type="button" class="link-btn" onclick={backToPassword}>Back to sign in</button>
+			<button type="button" class="link-btn" onclick={backToPassword}>{m('portal.login.mfa.back')}</button>
 		</form>
 	{:else}
 		<form class="login-card" onsubmit={handleSubmit}>
@@ -150,7 +151,7 @@
 				<img class="brand-logo" src={portalBrand.logoUrl} alt={portalBrand.productName} />
 			{/if}
 			<h1>{portalBrand.productName}</h1>
-			<p class="subtitle">Sign in to submit invoices and view payments</p>
+			<p class="subtitle">{m('portal.login.subtitle')}</p>
 
 			<div role="alert" aria-live="assertive">
 				{#if error}
@@ -159,16 +160,16 @@
 			</div>
 
 			<label>
-				<span>Email</span>
+				<span>{m('portal.login.email')}</span>
 				<input type="email" bind:value={email} required autocomplete="email" />
 			</label>
 			<label>
-				<span>Password</span>
+				<span>{m('portal.login.password')}</span>
 				<input type="password" bind:value={password} required autocomplete="current-password" />
 			</label>
 
 			<button type="submit" disabled={loading}>
-				{loading ? 'Signing in...' : 'Sign in'}
+				{loading ? m('portal.login.signingIn') : m('portal.login.signIn')}
 			</button>
 		</form>
 	{/if}

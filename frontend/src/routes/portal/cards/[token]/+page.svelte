@@ -2,6 +2,7 @@
 	import { page } from '$app/stores';
 	import { api } from '$lib/api';
 	import { formatMoney } from '$lib/utils/money';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface RevealResponse {
 		last_four: string | null;
@@ -34,7 +35,7 @@
 			const e = err as { status?: number; message?: string; detail?: string } | null;
 			error = {
 				status: e?.status ?? 0,
-				message: e?.detail ?? e?.message ?? 'Could not load card details'
+				message: e?.detail ?? e?.message ?? m('portal.cards.loadFailed')
 			};
 		} finally {
 			loading = false;
@@ -65,33 +66,26 @@
 
 <div class="reveal-page">
 	<div class="reveal-card">
-		<div class="brand">Virtual Card</div>
+		<div class="brand">{m('portal.cards.brand')}</div>
 
 		{#if loading}
-			<p class="state">Loading…</p>
+			<p class="state">{m('portal.cards.loading')}</p>
 		{:else if error}
 			<div class="state error">
 				<h1>
 					{#if error.status === 410}
-						This link is no longer valid
+						{m('portal.cards.error.expired')}
 					{:else if error.status === 404}
-						Link not recognised
+						{m('portal.cards.error.notFound')}
 					{:else}
-						Something went wrong
+						{m('portal.cards.error.generic')}
 					{/if}
 				</h1>
 				<p>{error.message}</p>
-				<p class="hint">
-					Single-use links expire 7 days after issuance and can only be opened once. If
-					you've already saved the card, you don't need to revisit this page. Otherwise,
-					reply to the email and we'll re-issue.
-				</p>
+				<p class="hint">{m('portal.cards.errorHint')}</p>
 			</div>
 		{:else if card}
-			<p class="lede">
-				{formatAmount(card.amount_limit, card.currency)} authorised. Use this card on the
-				vendor portal you'd normally bill us through.
-			</p>
+			<p class="lede">{m('portal.cards.lede', { amount: formatAmount(card.amount_limit, card.currency) })}</p>
 
 			{#if card.warning}
 				<p class="warning">{card.warning}</p>
@@ -99,41 +93,38 @@
 
 			<dl class="fields">
 				<div class="field">
-					<dt>Card number</dt>
+					<dt>{m('portal.cards.cardNumber')}</dt>
 					<dd>
 						<span class="value mono">
 							{card.pan ?? `•••• •••• •••• ${card.last_four ?? '••••'}`}
 						</span>
 						{#if card.pan}
 							<button class="copy-btn" onclick={() => copy('pan', card?.pan ?? null)}>
-								{copied === 'pan' ? 'Copied!' : 'Copy'}
+								{copied === 'pan' ? m('portal.cards.copied') : m('portal.cards.copy')}
 							</button>
 						{/if}
 					</dd>
 				</div>
 
 				<div class="field">
-					<dt>CVV</dt>
+					<dt>{m('portal.cards.cvv')}</dt>
 					<dd>
 						<span class="value mono">{card.cvv ?? '•••'}</span>
 						{#if card.cvv}
 							<button class="copy-btn" onclick={() => copy('cvv', card?.cvv ?? null)}>
-								{copied === 'cvv' ? 'Copied!' : 'Copy'}
+								{copied === 'cvv' ? m('portal.cards.copied') : m('portal.cards.copy')}
 							</button>
 						{/if}
 					</dd>
 				</div>
 
 				<div class="field">
-					<dt>Expires</dt>
+					<dt>{m('portal.cards.expires')}</dt>
 					<dd><span class="value mono">{formatExpires(card.expires_at)}</span></dd>
 				</div>
 			</dl>
 
-			<p class="hint">
-				This page won't open again — the link is single-use. If you accidentally close it
-				before saving the card, reply to the email and we'll re-issue.
-			</p>
+			<p class="hint">{m('portal.cards.singleUseHint')}</p>
 		{/if}
 	</div>
 </div>

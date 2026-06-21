@@ -5,6 +5,7 @@
 	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { getTenantSlug } from '$lib/tenant';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let tenant = $state<string | null | undefined>(undefined);
 
@@ -52,21 +53,21 @@
 </script>
 
 <svelte:head>
-	<title>{portalBrand.productName} — Supplier Portal</title>
+	<title>{m('portal.shell.title', { product: portalBrand.productName })}</title>
 </svelte:head>
 
 {#if tenant === undefined}
 	<!-- hydrating -->
 {:else if tenant === null}
 	<div class="no-tenant">
-		<p>The supplier portal is accessed through your customer's tenant URL.</p>
+		<p>{m('portal.shell.noTenant')}</p>
 	</div>
 {:else if $page.url.pathname === '/portal/login' || $page.url.pathname === '/portal/change-password' || $page.url.pathname.startsWith('/portal/cards/')}
 	<slot />
 {:else if portalAuth.loggedIn && portalAuth.user && !portalAuth.user.must_change_password}
 	<div class="portal-shell">
 		<!-- WCAG 2.4.1 Bypass Blocks. -->
-		<a href="#main-content" class="skip-link">Skip to main content</a>
+		<a href="#main-content" class="skip-link">{m('portal.shell.skipToMain')}</a>
 		<header class="portal-header">
 			<div class="brand">
 				{#if portalBrand.logoUrl}
@@ -77,32 +78,35 @@
 					<span class="vendor">{portalAuth.user.vendor_name}</span>
 				</div>
 			</div>
-			<nav aria-label="Supplier portal">
+			<nav aria-label={m('portal.shell.nav')}>
 				<a href="/portal/invoices" class:active={$page.url.pathname.startsWith('/portal/invoices')}
-					>Invoices</a
+					>{m('portal.nav.invoices')}</a
 				>
 				<a
 					href="/portal/purchase-orders"
-					class:active={$page.url.pathname.startsWith('/portal/purchase-orders')}>Purchase Orders</a
+					class:active={$page.url.pathname.startsWith('/portal/purchase-orders')}
+					>{m('portal.nav.purchaseOrders')}</a
 				>
 				<a href="/portal/payments" class:active={$page.url.pathname.startsWith('/portal/payments')}
-					>Payments</a
+					>{m('portal.nav.payments')}</a
 				>
 				<a
 					href="/portal/discount-offers"
-					class:active={$page.url.pathname.startsWith('/portal/discount-offers')}>Discounts</a
+					class:active={$page.url.pathname.startsWith('/portal/discount-offers')}
+					>{m('portal.nav.discounts')}</a
 				>
 				<a href="/portal/company" class:active={$page.url.pathname.startsWith('/portal/company')}
-					>Company</a
+					>{m('portal.nav.company')}</a
 				>
 				<a
 					href="/portal/notifications"
-					class:active={$page.url.pathname.startsWith('/portal/notifications')}>Notifications</a
+					class:active={$page.url.pathname.startsWith('/portal/notifications')}
+					>{m('portal.nav.notifications')}</a
 				>
 			</nav>
 			<div class="user">
 				<span>{portalAuth.user.full_name}</span>
-				<button type="button" onclick={handleLogout}>Log out</button>
+				<button type="button" onclick={handleLogout}>{m('portal.shell.logOut')}</button>
 			</div>
 		</header>
 		<main id="main-content" tabindex="-1" class="portal-main">

@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface PortalPO {
 		id: string;
@@ -32,7 +33,7 @@
 			const res = await portalApi.get<POListResponse>('/api/portal/purchase-orders');
 			items = res.items;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Load failed';
+			error = err instanceof Error ? err.message : m('portal.po.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -47,18 +48,18 @@
 				`/api/portal/purchase-orders/${po.id}/flip`,
 				{}
 			);
-			message = `Invoice created from ${po.po_number}.`;
+			message = m('portal.po.created', { po: po.po_number });
 			// Land the supplier on their invoices so they can see it in the queue.
 			await goto('/portal/invoices');
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Could not create invoice';
+			error = err instanceof Error ? err.message : m('portal.po.createFailed');
 		} finally {
 			flipping = null;
 		}
 	}
 
 	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return '—';
+		if (!iso) return m('portal.common.dash');
 		return new Date(iso).toLocaleDateString();
 	}
 
@@ -67,28 +68,28 @@
 
 <div class="page">
 	<header>
-		<h1>Purchase Orders</h1>
+		<h1>{m('portal.po.title')}</h1>
 	</header>
 
 	{#if error}<div class="error" role="alert">{error}</div>{/if}
 	{#if message}<div class="message">{message}</div>{/if}
 
 	{#if loading && !items.length}
-		<div class="loading">Loading...</div>
+		<div class="loading">{m('portal.common.loading')}</div>
 	{:else if !items.length}
 		<div class="empty">
-			<p>No purchase orders yet.</p>
-			<p class="hint">When your customer raises a PO against your account, it appears here.</p>
+			<p>{m('portal.po.empty')}</p>
+			<p class="hint">{m('portal.po.emptyHint')}</p>
 		</div>
 	{:else}
 		<table>
 			<thead>
 				<tr>
-					<th>PO #</th>
-					<th>Created</th>
-					<th>Lines</th>
-					<th class="num">Total</th>
-					<th>Status</th>
+					<th>{m('portal.po.col.poNumber')}</th>
+					<th>{m('portal.po.col.created')}</th>
+					<th>{m('portal.po.col.lines')}</th>
+					<th class="num">{m('portal.po.col.total')}</th>
+					<th>{m('portal.po.col.status')}</th>
 					<th class="actions-col"></th>
 				</tr>
 			</thead>
@@ -107,7 +108,7 @@
 								disabled={flipping === po.id}
 								onclick={() => flip(po)}
 							>
-								{flipping === po.id ? 'Creating…' : 'Create invoice'}
+								{flipping === po.id ? m('portal.po.creating') : m('portal.po.createInvoice')}
 							</button>
 						</td>
 					</tr>

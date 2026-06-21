@@ -2,6 +2,7 @@
 	import { portalApi } from '$lib/portalApi';
 	import { onMount } from 'svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface PortalPayment {
 		id: string;
@@ -32,7 +33,7 @@
 			const res = await portalApi.get<PaymentListResponse>('/api/portal/payments');
 			items = res.items;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Load failed';
+			error = err instanceof Error ? err.message : m('portal.payments.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -52,14 +53,14 @@
 			a.remove();
 			URL.revokeObjectURL(url);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Download failed';
+			error = err instanceof Error ? err.message : m('portal.payments.downloadFailed');
 		} finally {
 			downloading = null;
 		}
 	}
 
 	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return '—';
+		if (!iso) return m('portal.common.dash');
 		return new Date(iso).toLocaleDateString();
 	}
 
@@ -68,29 +69,29 @@
 
 <div class="page">
 	<header>
-		<h1>Payments</h1>
+		<h1>{m('portal.payments.title')}</h1>
 	</header>
 
 	{#if error}<div class="error" role="alert">{error}</div>{/if}
 
 	{#if loading && !items.length}
-		<div class="loading">Loading...</div>
+		<div class="loading">{m('portal.common.loading')}</div>
 	{:else if !items.length}
 		<div class="empty">
-			<p>No payments yet.</p>
-			<p class="hint">Payments appear here once your customer has issued them.</p>
+			<p>{m('portal.payments.empty')}</p>
+			<p class="hint">{m('portal.payments.emptyHint')}</p>
 		</div>
 	{:else}
 		<table>
 			<thead>
 				<tr>
-					<th>Invoice #</th>
-					<th>Submitted</th>
-					<th>Completed</th>
-					<th>Method</th>
-					<th class="num">Amount</th>
-					<th>Status</th>
-					<th>Reference</th>
+					<th>{m('portal.payments.col.invoiceNumber')}</th>
+					<th>{m('portal.payments.col.submitted')}</th>
+					<th>{m('portal.payments.col.completed')}</th>
+					<th>{m('portal.payments.col.method')}</th>
+					<th class="num">{m('portal.payments.col.amount')}</th>
+					<th>{m('portal.payments.col.status')}</th>
+					<th>{m('portal.payments.col.reference')}</th>
 					<th class="actions-col"></th>
 				</tr>
 			</thead>
@@ -100,10 +101,10 @@
 						<td>{p.invoice_number}</td>
 						<td>{fmtDate(p.submitted_at)}</td>
 						<td>{fmtDate(p.completed_at)}</td>
-						<td>{p.method || '—'}</td>
+						<td>{p.method || m('portal.common.dash')}</td>
 						<td class="num"><Money amount={p.amount} /></td>
 						<td><span class="status s-{p.status}">{p.status}</span></td>
-						<td>{p.reference || '—'}</td>
+						<td>{p.reference || m('portal.common.dash')}</td>
 						<td class="actions">
 							{#if p.status === 'completed'}
 								<button
@@ -112,7 +113,7 @@
 									disabled={downloading === p.id}
 									onclick={() => downloadRemittance(p)}
 								>
-									{downloading === p.id ? 'Preparing…' : 'Download remittance'}
+									{downloading === p.id ? m('portal.payments.preparing') : m('portal.payments.downloadRemittance')}
 								</button>
 							{/if}
 						</td>
