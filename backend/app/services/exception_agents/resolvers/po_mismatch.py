@@ -6,7 +6,10 @@ each with its own auto-resolution strategy:
   * a clean **amount variance** against a fully-matched PO → ``amount_mismatch_v1``
     (snap the amount to the PO total + approve);
   * a **missing / unresolved PO** (the referenced number resolves to nothing) →
-    ``missing_po_v1`` (find the real PO by vendor + amount + date, link it, approve).
+    ``missing_po_v1`` (find the real PO by vendor + amount + date, link it, approve);
+  * a **consolidated invoice spanning several POs** (no single PO matches, but a
+    unique PO *set* sums to the total within tolerance) → ``multi_po_split_v1``
+    (link the whole set, approve; never adjusts the amount).
 
 The exception-agent registry is keyed by ``exception_type`` (one resolver per
 type), so this dispatcher is the single registered ``po_mismatch`` resolver. It
@@ -16,10 +19,17 @@ turn until one recommends ``auto_resolved``; that delegate's recommendation —
 records the right resolver in the ``AgentDecision``. If none recommends a fix,
 the dispatcher escalates (carrying the most specific delegate's rationale).
 
-The delegates are disjoint by live match status (``matched`` → amount-mismatch,
-``no_po`` → missing-PO), so at most one ever fires; ordering only decides the
-rationale on a full escalation. ``apply`` is delegated to whichever resolver
-``evaluate`` selected — the dispatcher never mutates state itself.
+The delegates are disjoint:
+
+  * ``matched`` live status → amount-mismatch;
+  * ``no_po`` + exactly ONE PO matching the full amount → missing-PO;
+  * ``no_po`` + NO single PO matching but a unique PO set summing to the total →
+    multi-PO split. ``multi_po_split_v1`` explicitly defers when a single PO
+    matches (so the single-PO resolver, tried first, always wins that case),
+
+so at most one ever fires; ordering only decides the rationale on a full
+escalation. ``apply`` is delegated to whichever resolver ``evaluate`` selected —
+the dispatcher never mutates state itself.
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ from app.services.exception_agents.base import (
 from app.services.exception_agents.registry import register_exception_agent
 from app.services.exception_agents.resolvers.amount_mismatch import AmountMismatchResolver
 from app.services.exception_agents.resolvers.missing_po import MissingPOResolver
+from app.services.exception_agents.resolvers.multi_po_split import MultiPOSplitResolver
 
 
 @register_exception_agent("po_mismatch")
@@ -48,6 +59,7 @@ class PoMismatchDispatcher(ExceptionResolver):
         self._delegates: list[ExceptionResolver] = [
             AmountMismatchResolver(),
             MissingPOResolver(),
+            MultiPOSplitResolver(),
         ]
         self._selected: ExceptionResolver | None = None
 
