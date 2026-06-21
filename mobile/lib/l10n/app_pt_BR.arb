@@ -9,9 +9,7 @@
   "navPay": "Pagar",
   "navPayments": "Pagamentos",
   "navSettings": "Configurações",
-
   "shellAppName": "Account Payables",
-
   "commonSave": "Salvar",
   "commonSaving": "Salvando…",
   "commonCancel": "Cancelar",
@@ -22,7 +20,6 @@
   "commonClear": "Limpar",
   "commonApply": "Aplicar",
   "commonClose": "Fechar",
-
   "settingsTitle": "Configurações",
   "settingsTenant": "Organização",
   "settingsTenantNotSet": "Não definido",
@@ -33,7 +30,6 @@
   "settingsLanguage": "Idioma",
   "settingsLanguageHint": "Escolha o idioma usado em todo o aplicativo. Sua escolha é salva neste dispositivo.",
   "settingsLanguageSystem": "Padrão do sistema",
-
   "dashboardTitle": "Painel",
   "dashboardTotalInvoices": "Total de faturas",
   "dashboardUpcoming": "A vencer",
@@ -48,7 +44,6 @@
   "dashboardCachedBanner": "Dados em cache — não foi possível conectar ao servidor",
   "dashboardErrorPrefix": "Erro: {error}",
   "dashboardInvoiceCount": "{count, plural, one {{count} fatura} other {{count} faturas}}",
-
   "invoicesTitle": "Faturas",
   "invoicesSearchHint": "Pesquisar faturas…",
   "invoicesSearchAria": "Pesquisar faturas",
@@ -69,7 +64,6 @@
   "invoicesColAmount": "Valor",
   "invoicesColDueDate": "Vencimento",
   "invoicesColStatus": "Status",
-
   "notificationsTitle": "Notificações",
   "notificationsMarkAllRead": "Marcar tudo como lido",
   "notificationsMarkAllReadLabel": "Marcar todas as notificações como lidas",
@@ -81,7 +75,6 @@
   "notificationsCaughtUp": "Você está em dia",
   "notificationsNothingYet": "Nada por aqui ainda",
   "notificationsLoadError": "Não foi possível carregar as notificações",
-
   "vendorsTitle": "Fornecedores",
   "vendorsSyncErp": "Sincronizar do ERP",
   "vendorsSyncErpLabel": "Sincronizar fornecedores do ERP",
@@ -101,7 +94,6 @@
   "vendorRejected": "Fornecedor rejeitado",
   "vendorActionFailed": "Falha na ação",
   "vendorSyncFailed": "Falha na sincronização com o ERP: {error}",
-
   "exceptionsTitle": "Exceções",
   "exceptionsFilterOpen": "Abertas",
   "exceptionsFilterEscalated": "Escaladas",
@@ -116,7 +108,6 @@
   "exceptionEscalated": "Exceção escalada",
   "exceptionDismissed": "Exceção descartada",
   "exceptionActionFailed": "Falha na ação",
-
   "paymentsTitle": "Pagamentos",
   "paymentsEmpty": "Nenhum pagamento",
   "paymentsErrorPrefix": "Erro: {error}",
@@ -125,7 +116,6 @@
   "paymentStatusCompleted": "Concluído",
   "paymentStatusFailed": "Falhou",
   "paymentStatusCancelled": "Cancelado",
-
   "approvalsTitle": "Aprovações pendentes",
   "approvalsAllCaughtUp": "Tudo em dia!",
   "approvalsNoneWaiting": "Nenhuma fatura aguardando aprovação",
@@ -133,7 +123,6 @@
   "approvalActionApprove": "Aprovar",
   "approvalActionReject": "Rejeitar",
   "approvalApproved": "Fatura aprovada",
-
   "captureTitle": "Capturar fatura",
   "captureChange": "Alterar",
   "captureUpload": "Enviar",
@@ -148,7 +137,6 @@
   "captureUploadFailed": "Falha no envio: {error}",
   "captureSelectedDocument": "Documento selecionado: {name}",
   "capturePdfReady": "Documento PDF pronto para envio",
-
   "advSearchTitle": "Busca avançada",
   "advSearchClose": "Fechar busca avançada",
   "advSearchVendor": "Fornecedor",
@@ -162,7 +150,6 @@
   "advSearchMinMaxError": "O mínimo não deve exceder o máximo",
   "advSearchClearField": "Limpar {label}",
   "advSearchDateFieldHint": "{label}, atualmente {value}. Toque duas vezes para alterar.",
-
   "invoiceDetailTitle": "Detalhe da fatura",
   "invoiceDetailEdit": "Editar",
   "invoiceDetailEditLabel": "Editar fatura",
@@ -194,7 +181,6 @@
   "invoiceDetailFileLabel": "Arquivo da fatura. Toque duas vezes para ver em tela cheia.",
   "invoiceDetailTapToViewPdf": "Toque para ver o PDF",
   "invoiceDetailTapToViewFile": "Toque para ver o arquivo",
-
   "invoiceEditTitle": "Editar fatura",
   "invoiceEditClose": "Fechar o formulário de edição",
   "invoiceEditVendor": "Fornecedor",
@@ -208,7 +194,6 @@
   "invoiceEditInvalidAmount": "Insira um valor válido (ex.: 1234,56)",
   "invoiceEditClearDueDate": "Limpar data de vencimento",
   "invoiceEditDueDateHint": "Data de vencimento, atualmente {value}. Toque duas vezes para alterar.",
-
   "warningsSectionTitle": "Avisos e alertas de fraude",
   "warningsPoMatchTitle": "Conciliação de pedido",
   "warningsSeverityError": "Erro",
@@ -217,22 +202,18 @@
   "warningsPoLabel": "Pedido",
   "warningsMatchLabel": "Conciliação {type}",
   "warningsVarianceLabel": "{value}% de variação",
-
   "erpStatusTitle": "Status do ERP",
   "erpStatusReference": "Referência do ERP",
   "erpStatusDocumentId": "ID do documento",
   "erpStatusError": "Erro",
   "erpStatusLastUpdate": "Última atualização",
   "erpStatusStatus": "Status",
-
   "fileViewerPdfTitle": "PDF da fatura",
   "fileViewerImageTitle": "Imagem da fatura",
   "fileViewerPdfError": "Não foi possível carregar o PDF",
   "fileViewerImageError": "Não foi possível carregar a imagem",
   "fileViewerRetry": "Tentar novamente",
-
   "timelineNoActivity": "Nenhuma atividade ainda",
-
   "payTitle": "Pagar",
   "payTabQueue": "Fila",
   "payTabRuns": "Lotes",
@@ -278,7 +259,6 @@
   "payRunStatusCancelled": "Cancelado",
   "payConfirmCancel": "Cancelar",
   "payConfirmExecute": "Executar",
-
   "loginAppName": "Better AP",
   "loginTagline": "Contas a pagar, simplificadas",
   "loginTenant": "Inquilino",
@@ -288,7 +268,6 @@
   "loginHidePassword": "Ocultar senha",
   "loginRequired": "Obrigatório",
   "loginSignIn": "Entrar",
-
   "mfaTitle": "Autenticação de dois fatores",
   "mfaHeading": "Verifique sua identidade",
   "mfaPromptEmail": "Digite o código de 6 dígitos que enviamos por e-mail.",
@@ -304,7 +283,6 @@
   "mfaUseEmailInstead": "Usar um código por e-mail em vez disso",
   "mfaUseAuthenticatorInstead": "Usar o aplicativo autenticador em vez disso",
   "mfaEmailedAnnounce": "Um código de login foi enviado para o seu e-mail.",
-
   "adminUsersTitle": "Gerenciamento de usuários",
   "adminUsersSearchHint": "Pesquisar por nome ou e-mail",
   "adminUsersEmpty": "Nenhum usuário encontrado",
@@ -345,7 +323,6 @@
   "adminUsersDeleteConfirmBody": "Isso remove permanentemente {name} ({email}). Não pode ser desfeito.",
   "adminUsersDeleted": "{name} excluído",
   "adminUsersDeleteFailed": "Falha ao excluir {name}: {error}",
-
   "orgSettingsTitle": "Configurações da organização",
   "orgSettingsNoSettings": "Sem configurações",
   "orgSettingsLoadError": "Não foi possível carregar as configurações",
@@ -366,7 +343,6 @@
   "orgSettingsFieldRequired": "{label} é obrigatório",
   "orgSettingsSaved": "Configurações da organização salvas",
   "orgSettingsSaveFailed": "Falha ao salvar: {error}",
-
   "workflowsTitle": "Fluxos de trabalho",
   "workflowsEmpty": "Nenhum fluxo de trabalho encontrado",
   "workflowsLoadError": "Não foi possível carregar os fluxos de trabalho",
@@ -383,5 +359,317 @@
   "workflowDetailStepDisabled": "Desativado",
   "workflowDetailApproverCount": "{count, plural, one {{count} aprovador} other {{count} aprovadores}}",
   "workflowDetailDelaySummary": "Atraso {hours} h",
-  "workflowDetailConditionSummary": "Em {field}"
+  "workflowDetailConditionSummary": "Em {field}",
+  "cashFlowTitle": "Previsão de Fluxo de Caixa",
+  "cashFlowErrorPrefix": "Erro: {error}",
+  "@cashFlowErrorPrefix": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowHorizonDays": "{days} dias",
+  "@cashFlowHorizonDays": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowLowBalanceAlert": "Alerta de saldo baixo",
+  "cashFlowBreachSingle": "Previsão de cair abaixo do saldo de {threshold} em {period} (déficit de {shortfall}).",
+  "@cashFlowBreachSingle": {
+    "placeholders": {
+      "threshold": {
+        "type": "String"
+      },
+      "period": {
+        "type": "String"
+      },
+      "shortfall": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowBreachMultiple": "Previsão de {count} períodos abaixo do saldo mínimo. Pior caso: {period}, déficit de {shortfall}.",
+  "@cashFlowBreachMultiple": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "period": {
+        "type": "String"
+      },
+      "shortfall": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowMinimum": "mínimo",
+  "cashFlowOpeningBalance": "Saldo Inicial",
+  "cashFlowProjectedEnd": "Saldo Final Previsto",
+  "cashFlowProjectedEndSubtitle": "em {days} dias",
+  "@cashFlowProjectedEndSubtitle": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowCommittedOut": "Saídas Confirmadas",
+  "cashFlowCommittedSubtitle": "compromissos firmes",
+  "cashFlowPendingOut": "Saídas Pendentes",
+  "cashFlowPendingSubtitle": "pipeline em andamento",
+  "cashFlowOpeningSourceProvider": "sincronizado do banco",
+  "cashFlowOpeningSourceSettings": "saldo salvo",
+  "cashFlowOpeningSourceQuery": "manual",
+  "cashFlowOpeningSourceUnset": "defina um saldo",
+  "cashFlowProjectedOutflows": "Saídas Previstas",
+  "cashFlowNoOutflows": "Não há saídas previstas neste horizonte.",
+  "cashFlowInvoiceCount": "{count, plural, one {{count} fatura} other {{count} faturas}}",
+  "@cashFlowInvoiceCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowCommittedAmount": "confirmado {amount}",
+  "@cashFlowCommittedAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowPendingAmount": "pendente {amount}",
+  "@cashFlowPendingAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowPosition": "Posição de Caixa",
+  "cashFlowNoPosition": "Não há projeção de posição de caixa para este horizonte.",
+  "cashFlowOutAmount": "saída {amount}",
+  "@cashFlowOutAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowForecastRowLabel": "{period}: agendado {scheduled}, confirmado {committed}, pendente {pending}, {count} faturas",
+  "@cashFlowForecastRowLabel": {
+    "placeholders": {
+      "period": {
+        "type": "String"
+      },
+      "scheduled": {
+        "type": "String"
+      },
+      "committed": {
+        "type": "String"
+      },
+      "pending": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowPositionRowLabel": "{period}: inicial {opening}, saída {outflow}, final {closing}",
+  "@cashFlowPositionRowLabel": {
+    "placeholders": {
+      "period": {
+        "type": "String"
+      },
+      "opening": {
+        "type": "String"
+      },
+      "outflow": {
+        "type": "String"
+      },
+      "closing": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowBelowThresholdSuffix": ", abaixo do limite",
+  "cashFlowLowBalanceAlertLabel": "Alerta de saldo baixo. {message}",
+  "@cashFlowLowBalanceAlertLabel": {
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+  "contractsTitle": "Contratos",
+  "contractsSearchHint": "Pesquisar contratos...",
+  "contractsEmpty": "Nenhum contrato encontrado",
+  "contractsFilterDraft": "Rascunho",
+  "contractsFilterActive": "Ativo",
+  "contractsFilterExpired": "Expirado",
+  "contractsFilterTerminated": "Rescindido",
+  "contractsFilterCancelled": "Cancelado",
+  "contractDetailTitle": "Detalhe do Contrato",
+  "contractDetailErrorPrefix": "Erro: {error}",
+  "@contractDetailErrorPrefix": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailUntitled": "Contrato sem título",
+  "contractDetailFieldContractNumber": "Nº do Contrato",
+  "contractDetailFieldVendor": "Fornecedor",
+  "contractDetailFieldType": "Tipo",
+  "contractDetailFieldCurrency": "Moeda",
+  "contractDetailFieldSpendLimit": "Limite de Gastos",
+  "contractDetailNotToExceed": " (não exceder)",
+  "contractDetailFieldStartDate": "Data de Início",
+  "contractDetailFieldEndDate": "Data de Término",
+  "contractDetailFieldSigned": "Assinado",
+  "contractDetailFieldAutoRenew": "Renovação Automática",
+  "contractDetailYes": "Sim",
+  "contractDetailNo": "Não",
+  "contractDetailFieldRenewalTerm": "Período de Renovação",
+  "contractDetailRenewalTermMonths": "{months} meses",
+  "@contractDetailRenewalTermMonths": {
+    "placeholders": {
+      "months": {
+        "type": "int"
+      }
+    }
+  },
+  "contractDetailFieldRenewalNotice": "Aviso de Renovação",
+  "contractDetailRenewalNoticeDays": "{days} dias",
+  "@contractDetailRenewalNoticeDays": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "contractDetailFieldPaymentTerms": "Condições de Pagamento",
+  "contractDetailFieldDescription": "Descrição",
+  "contractDetailFieldCreated": "Criado",
+  "contractDetailSectionSpend": "Gastos",
+  "contractDetailSectionLineItems": "Itens",
+  "contractDetailSpendInvoiced": "Faturado",
+  "contractDetailSpendInvoiceCount": "{count, plural, one {{count} fatura} other {{count} faturas}}",
+  "@contractDetailSpendInvoiceCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "contractDetailSpendOverLimit": "Acima do Limite",
+  "contractDetailSpendRemaining": "Restante",
+  "contractDetailSpendOfLimit": "de {limit}",
+  "@contractDetailSpendOfLimit": {
+    "placeholders": {
+      "limit": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailSpendNoLimit": "sem limite definido",
+  "contractDetailLineItemFallback": "Item",
+  "contractDetailLineQty": "Qtd. {quantity}",
+  "@contractDetailLineQty": {
+    "placeholders": {
+      "quantity": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailLineUnitPrice": "@ {price}",
+  "@contractDetailLineUnitPrice": {
+    "placeholders": {
+      "price": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailLineGl": "Conta {account}",
+  "@contractDetailLineGl": {
+    "placeholders": {
+      "account": {
+        "type": "String"
+      }
+    }
+  },
+  "contractActivate": "Ativar",
+  "contractActivated": "Contrato ativado",
+  "contractActivateFailed": "Não foi possível ativar o contrato — tente novamente",
+  "contractTerminate": "Rescindir",
+  "contractTerminateTitle": "Rescindir Contrato",
+  "contractTerminateBody": "Isto encerra o contrato antecipadamente. Esta ação não pode ser desfeita. Continuar?",
+  "contractTerminated": "Contrato rescindido",
+  "contractTerminateFailed": "Não foi possível rescindir o contrato — tente novamente",
+  "exceptionDetailTitle": "Exceção",
+  "exceptionDetailNotFound": "Exceção não encontrada",
+  "exceptionDetailOverdue": "Em atraso",
+  "exceptionDetailSectionDescription": "Descrição",
+  "exceptionDetailSectionInvoice": "Fatura",
+  "exceptionDetailNoLinkedInvoice": "Nenhuma fatura vinculada",
+  "exceptionDetailFieldNumber": "Número",
+  "exceptionDetailFieldVendor": "Fornecedor",
+  "exceptionDetailFieldAmount": "Valor",
+  "exceptionDetailFieldSeverity": "Gravidade",
+  "exceptionDetailSectionSla": "SLA",
+  "exceptionDetailFieldCreated": "Criado",
+  "exceptionDetailFieldDue": "Prazo",
+  "exceptionDetailNoSla": "Sem SLA definido",
+  "exceptionDetailFieldStatus": "Status",
+  "exceptionDetailOnTrack": "Dentro do prazo",
+  "exceptionDetailResolvedIn": "Resolvido em",
+  "exceptionDetailResolvedInHours": "{hours} h",
+  "@exceptionDetailResolvedInHours": {
+    "placeholders": {
+      "hours": {
+        "type": "String"
+      }
+    }
+  },
+  "exceptionDetailSectionAssignee": "Responsável",
+  "exceptionDetailUnassigned": "Não atribuído",
+  "exceptionDetailAssign": "Atribuir",
+  "exceptionDetailReassign": "Reatribuir",
+  "exceptionDetailSectionResolution": "Resolução",
+  "exceptionDetailResolutionNote": "Nota",
+  "exceptionDetailResolutionBy": "Por",
+  "exceptionDetailResolutionAt": "Em",
+  "exceptionDetailActionResolved": "Exceção resolvida",
+  "exceptionDetailActionEscalated": "Exceção escalada",
+  "exceptionDetailActionDismissed": "Exceção descartada",
+  "exceptionDetailActionResolveFailed": "Não foi possível resolver a exceção",
+  "exceptionDetailActionEscalateFailed": "Não foi possível escalar a exceção",
+  "exceptionDetailActionDismissFailed": "Não foi possível descartar a exceção",
+  "exceptionDetailAssignTo": "Atribuir a",
+  "exceptionDetailUnassign": "Remover atribuição",
+  "exceptionDetailLoadUsersFailed": "Não foi possível carregar os usuários: {error}",
+  "@exceptionDetailLoadUsersFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "exceptionDetailAssigneeUpdateFailed": "Não foi possível atualizar o responsável",
+  "exceptionDetailUnassigned2": "Atribuição da exceção removida",
+  "exceptionDetailAssignedTo": "Atribuído a {name}",
+  "@exceptionDetailAssignedTo": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  }
 }
