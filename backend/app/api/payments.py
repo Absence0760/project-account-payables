@@ -663,7 +663,16 @@ async def create_payment_run(
             amount=inv.amount,
             method=item.method,
             status="pending",
-            correlation_id=inv.correlation_id,
+            # Per-payment idempotency anchor. correlation_id is sent to the rail
+            # as the Idempotency-Key (see PaymentPayload at execute time); it must
+            # be unique per payment ATTEMPT, not per invoice. Copying the invoice's
+            # stable correlation_id meant a re-queued payment after a void reused
+            # the original key — the processor returned the cached first order, so
+            # no money actually moved while AP recorded a settled payment (a silent
+            # missed payment). A fresh uuid here matches every other Payment-creation
+            # site (manual create, discount capture, retry); the webhook/reconciler
+            # join on provider_payment_id, never on correlation_id.
+            correlation_id=uuid.uuid4(),
         )
         db.add(payment)
 

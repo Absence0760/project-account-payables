@@ -150,8 +150,13 @@ async def test_create_run_404_when_an_invoice_is_missing():
 async def test_create_run_sums_total_as_decimal_and_creates_pending_payments():
     """The run's `total_amount` must be the exact Decimal sum of the
     invoice amounts (no float drift), and each child Payment lands in
-    `pending` carrying the invoice's own correlation_id (the key the
-    webhook + reconciler later join on)."""
+    `pending` with its OWN freshly-minted correlation_id.
+
+    correlation_id is the per-payment idempotency anchor sent to the rail
+    as the Idempotency-Key — it must be unique per payment attempt, never
+    copied from the invoice (a shared key makes a re-queued-after-void
+    payment reuse the original order and silently skip moving money). The
+    webhook + reconciler join on provider_payment_id, not correlation_id."""
     from app.api.payments import (
         CreatePaymentRunItem,
         CreatePaymentRunRequest,
@@ -191,12 +196,52 @@ async def test_create_run_sums_total_as_decimal_and_creates_pending_payments():
     assert len(payments) == 2
     assert {p.method for p in payments} == {"ach", "wire"}
     assert all(p.status == "pending" for p in payments)
-    # correlation_id flows from the invoice, not freshly minted.
-    assert {p.correlation_id for p in payments} == {i1.correlation_id, i2.correlation_id}
+    # Each payment gets its OWN freshly-minted correlation_id — never the
+    # invoice's (a shared rail Idempotency-Key would mask a re-pay as settled).
+    corr_ids = [p.correlation_id for p in payments]
+    assert len(set(corr_ids)) == 2, "each payment must get a distinct correlation_id"
+    assert i1.correlation_id not in corr_ids
+    assert i2.correlation_id not in corr_ids
 
     assert result["requires_cfo_approval"] is False
     assert result["payment_count"] == 2
     db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_run_twice_for_same_invoice_yields_distinct_idempotency_keys():
+    """The void → re-queue → re-pay regression: building a second payment run
+    for the same invoice (after the first payment was voided) must produce a
+    Payment with a correlation_id distinct from the first run's. correlation_id
+    is the rail Idempotency-Key; if both runs shared the invoice's stable id the
+    processor would return the cached first order and the vendor would never be
+    re-paid, yet AP would record a settled payment."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("100.00"))
+    body = CreatePaymentRunRequest(
+        items=[CreatePaymentRunItem(invoice_id=str(inv.id), method="ach")]
+    )
+
+    db1 = _create_run_db([inv])
+    await create_payment_run(
+        body=body, db=db1, org=_org(), user=_user(), org_id=uuid.uuid4(), entity_id=uuid.uuid4()
+    )
+    first = [o for o in db1.added if o.__class__.__name__ == "Payment"][0]
+
+    db2 = _create_run_db([inv])
+    await create_payment_run(
+        body=body, db=db2, org=_org(), user=_user(), org_id=uuid.uuid4(), entity_id=uuid.uuid4()
+    )
+    second = [o for o in db2.added if o.__class__.__name__ == "Payment"][0]
+
+    assert first.correlation_id != second.correlation_id, (
+        "a re-run for the same invoice must get a fresh idempotency key"
+    )
 
 
 @pytest.mark.asyncio
