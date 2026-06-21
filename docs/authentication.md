@@ -476,6 +476,8 @@ POST /api/auth/mfa/passkey/authenticate/verify {challenge_token, credential}
 
 The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`, default 5 minutes) with `typ: mfa_challenge`. That keeps the flow stateless — no DB row to garbage-collect, no Redis lookup on every check. A regular access token won't satisfy the challenge endpoint and vice versa.
 
+**Token-type isolation is enforced at the dependency, not just the route.** `get_current_user` (in `app/api/deps.py`) rejects every JWT whose `typ` is a non-access type — `vendor`, `mfa_challenge`, or `vendor_mfa_challenge` (`_NON_ACCESS_TOKEN_TYPES`) — so a password-verified-but-MFA-pending caller cannot wield their `mfa_challenge` token as a fully-authenticated Bearer token and skip the second factor. A real access token is `typ="user"` (a missing `typ` is still accepted for legacy tokens predating the claim). Pinned by `backend/tests/test_auth_token_security.py::test_mfa_challenge_token_cannot_act_as_access_token` (and the `vendor_mfa_challenge` sibling), which wire the user lookup to a valid active user so only the type-rejection can produce the 401.
+
 ### Per-user enrollment
 
 ```

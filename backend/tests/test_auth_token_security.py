@@ -377,30 +377,53 @@ async def test_mfa_challenge_token_cannot_act_as_access_token():
     trade for a real access token after the second factor. It carries
     `typ=mfa_challenge`. The employee auth dep must NOT accept it —
     otherwise password-only login would silently grant API access in
-    an MFA-enforced org."""
+    an MFA-enforced org.
+
+    This pins the fix at the data layer, not the route: the user lookup
+    is wired to RETURN a valid, active user whose id matches the token's
+    `sub`, so the ONLY thing that can produce the 401 is `get_current_user`
+    rejecting the `mfa_challenge` token *type*. If the type check regresses
+    (back to the old not-vendor denylist), this test fails because the dep
+    would resolve the user and return a fully-authenticated session.
+    """
     from app.api.deps import get_current_user
+    from app.services.mfa import create_challenge_token
 
-    # Build a challenge-like payload with `typ=mfa_challenge`. The
-    # production helper uses this exact shape.
-    challenge_payload = {
-        "sub": str(uuid.uuid4()),
-        "typ": "mfa_challenge",
-        "jti": str(uuid.uuid4()),
-        "exp": datetime.now(UTC) + timedelta(minutes=5),
-    }
-    token = _mint(challenge_payload)
-    db = AsyncMock()
+    user_id = uuid.uuid4()
+    # Use the REAL production helper so the test tracks the live token shape.
+    token = create_challenge_token(user_id)
 
-    # Two acceptable behaviours: outright reject, or look the user up
-    # and find them. Either way, a request that gets all the way to
-    # `await get_current_user` should NOT succeed silently when the
-    # token's typ is `mfa_challenge`. Currently the dep treats
-    # anything-not-vendor as employee, so the security relies on the
-    # *route* refusing mfa_challenge tokens. That assumption is fragile
-    # — this test pins it by forcing the user lookup to fail (the
-    # `sub` is random) and confirming 401, NOT a 500 or success.
+    # Resolve to a real active user — a regression would now SUCCEED here.
+    fake_user = SimpleNamespace(id=user_id, is_active=True, organization_id=uuid.uuid4(), roles=[])
     result = MagicMock()
-    result.scalar_one_or_none = MagicMock(return_value=None)
+    result.scalar_one_or_none = MagicMock(return_value=fake_user)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    with patch("app.api.deps.is_token_blocked", AsyncMock(return_value=False)):
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user(authorization=f"Bearer {token}", db=db)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_vendor_mfa_challenge_token_cannot_act_as_access_token():
+    """The portal MFA challenge token (`typ=vendor_mfa_challenge`) is also a
+    same-secret JWT carrying `sub`. It must not resolve through the EMPLOYEE
+    dep either — wired to a valid active user so only the type-rejection can
+    produce the 401."""
+    from app.api.deps import get_current_user
+    from app.services.mfa import create_vendor_challenge_token
+
+    subject_id = uuid.uuid4()
+    token = create_vendor_challenge_token(subject_id)
+
+    fake_user = SimpleNamespace(
+        id=subject_id, is_active=True, organization_id=uuid.uuid4(), roles=[]
+    )
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=fake_user)
+    db = AsyncMock()
     db.execute = AsyncMock(return_value=result)
 
     with patch("app.api.deps.is_token_blocked", AsyncMock(return_value=False)):

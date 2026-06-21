@@ -107,12 +107,25 @@ separators, leading dots, control chars). Upload validates size (`MAX_FILE_SIZE`
 and content type against `ALLOWED_CONTENT_TYPES` (PDF, PNG, JPEG, TIFF, XML) —
 anything else raises and the route returns `400`.
 
-The leading `<org_id>` segment is the **cross-tenant download gate**: every
-`chat/file/{file_key:path}` route re-checks `file_key.split("/")[0]` against the
-caller's org (`org.id` on the AP side, `inv.organization_id` on the portal side)
-before `storage.get_file(...)`. A wrong-org key and a missing file both return
-the **same 404** so the response can't enumerate prefixes — mirroring the
-invoice and contract file endpoints.
+The leading `<org_id>` segment is the **cross-tenant download gate**, but the
+two surfaces enforce it at different granularities:
+
+- **AP side** (`/invoices/chat/file/{key}`, any authed employee): the key's
+  first segment must equal `user.organization_id`. Org-level is correct here —
+  AP staff legitimately see every invoice's chat in their org.
+- **Portal side** (`/portal/invoices/{invoice_id}/chat/file/{key}`, vendor):
+  the key must start with `"<inv.organization_id>/chat/<inv.id>/"` — i.e. it must
+  belong to the **ownership-checked invoice**, not merely share the tenant's
+  `<org_id>` segment. An org-prefix-only check is **not** enough on the portal:
+  every vendor in a tenant shares the same `<org_id>`, so a vendor could pass
+  their OWN `invoice_id` in the path (ownership passes) and a `file_key` pointing
+  at another vendor's invoice in the same tenant — a cross-vendor IDOR. The
+  invoice-id binding closes it. Pinned by
+  `tests/test_vendor_portal_isolation.py::test_chat_file_download_rejects_other_invoice_key_in_same_org`.
+
+A wrong-org / wrong-invoice key and a missing file all return the **same 404**
+so the response can't enumerate prefixes — mirroring the invoice and contract
+file endpoints.
 
 ## Routes
 
