@@ -53,7 +53,11 @@ class SesAdapter(EmailAdapter):
         try:
             await asyncio.to_thread(_send)
         except (BotoCoreError, ClientError) as exc:
-            logger.error("SES send failed for %s: %s", message.to, exc)
+            # PII out of logs: the recipient address and the raw exception (AWS
+            # SDK errors can embed sender/recipient addresses) must not land in
+            # the log sink. Record only the exception class; the full detail
+            # belongs in the audited dispatch path, not a logger line.
+            logger.error("SES send failed: %s", exc.__class__.__name__)
             raise
 
     async def test_connection(self) -> bool:
