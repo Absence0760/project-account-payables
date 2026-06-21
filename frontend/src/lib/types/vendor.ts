@@ -150,6 +150,58 @@ export const ENRICHABLE_FIELD_LABELS: Record<EnrichableField, string> = {
 	website: 'Website'
 };
 
+// ---------------------------------------------------------------------------
+// Vendor consolidation (duplicate / similar vendor clusters + merge).
+// Mirrors the backend `VendorConsolidationResponse` / `VendorMerge*`. The
+// suggestions endpoint is advisory (clusters by tax_id / code / fuzzy name,
+// deterministic canonical pick, tax_id masked); the merge endpoint executes
+// the fold of duplicates into the canonical vendor (gated `vendor.manage`).
+// ---------------------------------------------------------------------------
+
+// One member of a consolidation cluster (the canonical pick has is_canonical).
+export interface VendorClusterMember {
+	vendor_id: string;
+	name: string;
+	code: string | null;
+	tax_id_masked: string | null; // ***6789 — never the full tax id
+	status: string | null;
+	invoice_count: number;
+	is_canonical: boolean;
+}
+
+export interface VendorCluster {
+	cluster_id: number;
+	members: VendorClusterMember[];
+	canonical_vendor_id: string;
+	score: string; // 0..1 strongest pairwise evidence, string-Decimal
+	reasons: string[];
+}
+
+export interface VendorConsolidationResponse {
+	clusters: VendorCluster[];
+	vendor_count: number;
+	cluster_count: number;
+	truncated: boolean; // tenant exceeded the bound, or clusters were capped
+	generated_at: string;
+}
+
+// The steward's explicit merge: fold `duplicate_vendor_ids` into the canonical.
+export interface VendorMergeRequest {
+	canonical_vendor_id: string;
+	duplicate_vendor_ids: string[];
+}
+
+export interface VendorMergeResponse {
+	canonical_vendor_id: string;
+	duplicate_vendor_ids: string[];
+	// Per-table reassigned row counts (PII-free — table name → rows moved).
+	reassigned: Record<string, number>;
+	total_reassigned: number;
+	// Duplicate ids THIS call flipped active → inactive (empty on idempotent re-run).
+	deactivated_vendor_ids: string[];
+	merged_at: string;
+}
+
 export const SCREENING_STATUS_LABELS: Record<ScreeningStatus, string> = {
 	unscreened: 'Unscreened',
 	clear: 'Clear',

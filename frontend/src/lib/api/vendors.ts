@@ -10,7 +10,9 @@ import type {
 	RiskSummaryBucket,
 	EnrichmentApplyField,
 	VendorEnrichmentResponse,
-	VendorEnrichmentApplyResponse
+	VendorEnrichmentApplyResponse,
+	VendorConsolidationResponse,
+	VendorMergeResponse
 } from '$lib/types/vendor';
 
 // Manual re-screen of a vendor against the sanctions provider. admin / ap_manager.
@@ -67,5 +69,27 @@ export function applyVendorEnrichment(
 ): Promise<VendorEnrichmentApplyResponse> {
 	return api.post<VendorEnrichmentApplyResponse>(`/api/enrichment/vendors/${id}/apply`, {
 		fields
+	});
+}
+
+// Advisory clusters of likely-duplicate / similar vendors (by tax_id / code /
+// fuzzy name), each with a deterministic canonical pick (tax_id masked).
+// Read-only, compute-on-read, no mutation. admin / ap_manager / cfo.
+export function getVendorConsolidationSuggestions(): Promise<VendorConsolidationResponse> {
+	return api.get<VendorConsolidationResponse>('/api/enrichment/vendors/consolidation-suggestions');
+}
+
+// Execute a consolidation: fold `duplicateVendorIds` into `canonicalVendorId`.
+// Reassigns every vendor FK to the canonical vendor + soft-retires the
+// duplicates (status=inactive); idempotent + audited (`vendor.merged`). Gated
+// on the granular `vendor.manage` permission. Refuses self-merge / cross-entity
+// / unknown vendor (surfaced as the backend's 4xx detail).
+export function mergeVendorConsolidation(
+	canonicalVendorId: string,
+	duplicateVendorIds: string[]
+): Promise<VendorMergeResponse> {
+	return api.post<VendorMergeResponse>('/api/enrichment/vendors/consolidation/merge', {
+		canonical_vendor_id: canonicalVendorId,
+		duplicate_vendor_ids: duplicateVendorIds
 	});
 }

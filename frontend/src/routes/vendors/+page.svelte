@@ -9,8 +9,11 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import ScreeningBadge from '$lib/components/ui/ScreeningBadge.svelte';
 	import VendorModal from '$lib/components/modals/VendorModal.svelte';
+	import VendorConsolidationModal from '$lib/components/modals/VendorConsolidationModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { auth } from '$lib/stores/auth.svelte';
+	import { PERM_VENDOR_MANAGE } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { Vendor, VendorBankDetails } from '$lib/types/vendor';
 
@@ -30,6 +33,11 @@
 
 	let vendors = $state<Vendor[]>([]);
 	let detailVendor = $state<Vendor | null>(null);
+	// Vendor consolidation ("Merge into canonical") — admin / ap_manager hold
+	// vendor.manage by default; the action surfaces only for them. Gated on the
+	// granular permission, not a role check (mirrors the backend gate).
+	let showConsolidation = $state(false);
+	const canManageVendors = $derived(auth.can(PERM_VENDOR_MANAGE));
 	let bankEditing = $state<Vendor | null>(null);
 	let bankForm = $state<BankDetails>({
 		counterparty_id: '',
@@ -185,6 +193,11 @@
 
 <PageHeader title={m('vendors.title')}>
 	{#snippet actions()}
+		{#if canManageVendors}
+			<button class="btn-outline" onclick={() => (showConsolidation = true)}>
+				Merge duplicates
+			</button>
+		{/if}
 		<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
 			{syncing ? m('vendors.action.syncing') : m('vendors.action.syncErp')}
 		</button>
@@ -273,6 +286,13 @@
 		vendor={detailVendor}
 		onclose={() => (detailVendor = null)}
 		onupdated={applyVendorUpdate}
+	/>
+{/if}
+
+{#if showConsolidation}
+	<VendorConsolidationModal
+		onclose={() => (showConsolidation = false)}
+		onmerged={() => fetchVendors()}
 	/>
 {/if}
 

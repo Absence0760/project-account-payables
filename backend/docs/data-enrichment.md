@@ -368,6 +368,25 @@ What the merge does, in one tenant transaction (`app/services/vendor_merge.py`):
   (canonical and a duplicate in different entities) → 422 (folding across
   entities would silently re-home another subsidiary's spend).
 
+### Frontend UI
+
+The **"Merge into canonical" UI now ships** on `/vendors`. A **Merge duplicates**
+header action (visible only when `auth.can('vendor.manage')` — the same granular
+permission the endpoint enforces, NOT a role check) opens
+`$lib/components/modals/VendorConsolidationModal.svelte`, which fetches
+`consolidation-suggestions` and renders each cluster as a canonical-vs-duplicate
+diff table (name / code / masked tax ID / status / invoice count / role, with the
+clustering `reasons` as pills). A per-cluster **Merge into canonical** button uses
+a two-step arm → **Confirm merge** (the fold is soft-retire-irreversible), calls
+`/consolidation/merge` for that cluster's duplicate ids, drops the merged cluster
+from the list, surfaces the backend's 4xx detail (self-merge / cross-entity /
+unknown) in the failure toast, and refreshes the vendor list. API client +
+types: `$lib/api/vendors.ts` (`getVendorConsolidationSuggestions` /
+`mergeVendorConsolidation`) + `$lib/types/vendor.ts`. e2e:
+`frontend/tests-e2e/vendors/consolidation-merge.spec.ts` (seeds a duplicate pair
+sharing a tax id, merges, asserts the duplicate goes `inactive`; plus a clerk who
+never sees the action).
+
 ## External enrichment (D&B / Clearbit)
 
 The four surfaces above are derived from the tenant's own history. **External
@@ -534,10 +553,11 @@ unknown keys dropped, numeric coercion guarded — like `_adaptive_settings`):
   - **Live D&B / Clearbit calls** — the real adapters are working skeletons
     (request/response shapes match the published APIs) but need a live key wired
     via sops per-org before they call out; until then they fail closed.
-- **Consolidation merge (execute)** — SHIPPED: `POST
+- **Consolidation merge (execute)** — SHIPPED end-to-end: `POST
   /api/enrichment/vendors/consolidation/merge` re-points every `vendor_id` FK to
   the canonical vendor, soft-retires the duplicates, is idempotent + audited (see
-  the endpoint below). Remaining (frontend): a "Merge into canonical" action in
-  the consolidation UI.
+  the endpoint below), and the **"Merge into canonical" UI now ships** on
+  `/vendors` (the `vendor.manage`-gated **Merge duplicates** modal — see
+  [§ Frontend UI](#frontend-ui)).
 - **Amount-deviation flagging** already shipped in
   `adaptive_workflows.detect_invoice_anomaly` — intentionally **not** duplicated.
