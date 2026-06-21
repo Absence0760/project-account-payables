@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -113,9 +114,24 @@ def _level_routing_matches(level: dict, attrs: dict) -> bool:
     return all(_evaluate_routing_rule(rule, attrs) for rule in rules)
 
 
+def _to_decimal(value) -> Decimal | None:
+    """Coerce a money-ish value (Decimal / int / numeric str / float) to Decimal
+    for exact comparison. Returns None for None / unparseable. Floats go through
+    str() so a config literal like 5000.0 lands as Decimal('5000.0'), not the
+    binary-float artefact Decimal(float) would produce."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
 def resolve_applicable_levels(
     chain: list[dict],
-    amount: float,
+    amount: Decimal | int | float | str,
     *,
     invoice_attrs: dict | None = None,
 ) -> list[dict]:
@@ -126,19 +142,25 @@ def resolve_applicable_levels(
     - max_amount is None OR amount <= max_amount
     - every routing_rule evaluates True against `invoice_attrs`
 
+    Amount comparison is exact-Decimal (invariant: money is never float). The
+    invoice amount and the configured min/max thresholds are both coerced to
+    Decimal, so a boundary invoice never mis-routes to the wrong approver tier
+    on binary-float drift.
+
     `invoice_attrs` keys map onto RoutingField (gl_account, cost_center,
     department, vendor_id). Callers should populate it from the Invoice
     row; missing keys behave like None and only match `ne` / `not_in`
     rules.
     """
     attrs = invoice_attrs or {}
+    amt = _to_decimal(amount) or Decimal(0)
     applicable = []
     for level in chain:
-        min_amt = level.get("min_amount")
-        max_amt = level.get("max_amount")
-        if min_amt is not None and amount < min_amt:
+        min_amt = _to_decimal(level.get("min_amount"))
+        max_amt = _to_decimal(level.get("max_amount"))
+        if min_amt is not None and amt < min_amt:
             continue
-        if max_amt is not None and amount > max_amt:
+        if max_amt is not None and amt > max_amt:
             continue
         if not _level_routing_matches(level, attrs):
             continue

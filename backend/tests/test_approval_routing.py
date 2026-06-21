@@ -111,6 +111,39 @@ def test_routing_unknown_field_silently_passes():
     assert resolve_applicable_levels(chain, amount=1, invoice_attrs={}) == []
 
 
+# ---------- Decimal-exact amount routing (money is never float) ----------
+
+
+def test_amount_routing_is_decimal_exact_at_fractional_boundary():
+    """A boundary invoice must route on exact-Decimal comparison, not on the
+    float the amount used to be cast to. Thresholds may arrive as numeric
+    strings (JSON config); the engine coerces both sides to Decimal."""
+    from decimal import Decimal
+
+    from app.services.approval_chain import resolve_applicable_levels
+
+    chain = [{"name": "tier", "min_amount": "100.10", "max_amount": "200.20"}]
+
+    # Exact lower/upper boundary amounts are inclusive.
+    assert len(resolve_applicable_levels(chain, Decimal("100.10"))) == 1
+    assert len(resolve_applicable_levels(chain, Decimal("200.20"))) == 1
+    # One cent outside either edge is excluded.
+    assert resolve_applicable_levels(chain, Decimal("100.09")) == []
+    assert resolve_applicable_levels(chain, Decimal("200.21")) == []
+
+
+def test_amount_routing_accepts_decimal_thresholds_and_float_literals():
+    """Mixed threshold types (Decimal level config + float literal) still
+    compare exactly — a float min_amount goes through str() so it doesn't drift."""
+    from decimal import Decimal
+
+    from app.services.approval_chain import resolve_applicable_levels
+
+    chain = [{"name": "big", "min_amount": 5000.0}]
+    assert len(resolve_applicable_levels(chain, Decimal("5000.00"))) == 1
+    assert resolve_applicable_levels(chain, Decimal("4999.99")) == []
+
+
 def test_invoice_routing_attrs_picks_off_invoice():
     from app.services.approval_chain import invoice_routing_attrs
 

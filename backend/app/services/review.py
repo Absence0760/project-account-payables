@@ -184,7 +184,9 @@ async def approve_invoice(
 
             applicable = resolve_applicable_levels(
                 approval_config.get("approval_chain", []),
-                float(invoice.amount or 0),
+                # Pass the exact Decimal — resolve_applicable_levels compares in
+                # Decimal so a boundary amount routes to the right approver tier.
+                invoice.amount or 0,
                 invoice_attrs=invoice_routing_attrs(invoice),
             )
             if applicable:
