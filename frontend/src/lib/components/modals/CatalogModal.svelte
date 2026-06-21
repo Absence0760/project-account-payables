@@ -6,6 +6,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import {
 		createCatalog,
 		updateCatalog,
@@ -87,11 +88,11 @@
 				? await createCatalog(payload)
 				: await updateCatalog(catalog!.id, payload);
 			items = saved.items;
-			toast(isCreate ? 'Catalog created' : 'Catalog saved', 'success');
+			toast(isCreate ? m('catalogs.modal.toast.created') : m('catalogs.modal.toast.saved'), 'success');
 			onsaved(saved);
 			if (isCreate) onclose();
 		} catch (err) {
-			handleError(err, isCreate ? 'Create failed' : 'Save failed');
+			handleError(err, isCreate ? m('catalogs.modal.toast.createFailed') : m('catalogs.modal.toast.saveFailed'));
 		} finally {
 			saving = false;
 		}
@@ -121,9 +122,9 @@
 			newCategory = '';
 			newVendorId = '';
 			newGlId = '';
-			toast('Item added', 'success');
+			toast(m('catalogs.modal.toast.itemAdded'), 'success');
 		} catch (err) {
-			handleError(err, 'Could not add item');
+			handleError(err, m('catalogs.modal.toast.itemAddFailed'));
 		} finally {
 			addingItem = false;
 		}
@@ -137,29 +138,33 @@
 		try {
 			await deleteCatalogItem(id);
 			items = items.filter((i) => i.id !== id);
-			toast('Item removed', 'success');
+			toast(m('catalogs.modal.toast.itemRemoved'), 'success');
 		} catch (err) {
-			handleError(err, 'Could not remove item');
+			handleError(err, m('catalogs.modal.toast.itemRemoveFailed'));
 		} finally {
 			confirmDeleteItemId = null;
 		}
 	}
 
 	const modalTitle = $derived(
-		isCreate ? 'New Catalog' : canEdit ? `Edit Catalog — ${catalog!.name}` : `Catalog — ${catalog!.name}`
+		isCreate
+			? m('catalogs.modal.title.new')
+			: canEdit
+				? m('catalogs.modal.title.edit', { name: catalog!.name })
+				: m('catalogs.modal.title.view', { name: catalog!.name })
 	);
-	const ariaLabel = $derived(isCreate ? 'New catalog' : 'Catalog detail');
+	const ariaLabel = $derived(isCreate ? m('catalogs.modal.aria.new') : m('catalogs.modal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
 	<form onsubmit={(e) => { e.preventDefault(); handleSave(); }}>
 		<div class="form-grid">
 			<label>
-				<span>Name <em class="required">*</em></span>
+				<span>{m('catalogs.modal.field.name')} <em class="required">*</em></span>
 				<input type="text" bind:value={name} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Type</span>
+				<span>{m('catalogs.modal.field.type')}</span>
 				<select bind:value={catalog_type} disabled={!canEdit}>
 					{#each CATALOG_TYPES as t}
 						<option value={t}>{CATALOG_TYPE_LABELS[t]}</option>
@@ -167,9 +172,9 @@
 				</select>
 			</label>
 			<label>
-				<span>Vendor</span>
+				<span>{m('catalogs.modal.field.vendor')}</span>
 				<select bind:value={vendor_id} disabled={!canEdit}>
-					<option value="">Select…</option>
+					<option value="">{m('catalogs.modal.field.vendorSelect')}</option>
 					{#each vendors as v (v.id)}
 						<option value={v.id}>{v.name}</option>
 					{/each}
@@ -177,41 +182,40 @@
 			</label>
 			{#if catalog_type === 'punchout'}
 				<label>
-					<span>Punch-out URL</span>
+					<span>{m('catalogs.modal.field.punchoutUrl')}</span>
 					<input
 						type="url"
 						bind:value={punchout_url}
-						placeholder="https://supplier.example/punchout"
+						placeholder={m('catalogs.modal.field.punchoutUrlPlaceholder')}
 						disabled={!canEdit}
 					/>
 				</label>
 			{/if}
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={is_active} disabled={!canEdit} />
-				<span>Active</span>
+				<span>{m('catalogs.modal.field.active')}</span>
 			</label>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={is_preferred} disabled={!canEdit} />
-				<span>Preferred (guided buying)</span>
+				<span>{m('catalogs.modal.field.preferred')}</span>
 			</label>
 			<label class="full-width">
-				<span>Description</span>
+				<span>{m('catalogs.modal.field.description')}</span>
 				<textarea bind:value={description} rows="2" disabled={!canEdit}></textarea>
 			</label>
 		</div>
 
 		{#if catalog_type === 'punchout'}
 			<p class="hint">
-				Punch-out is config-only — the URL is stored; live cXML/OCI round-trips are a future
-				extension. Punch-out catalogs hold no internal items.
+				{m('catalogs.modal.punchoutHint')}
 			</p>
 		{/if}
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('catalogs.modal.close')}</button>
 			{#if canEdit}
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving ? m('catalogs.modal.saving') : isCreate ? m('catalogs.modal.create') : m('catalogs.modal.save')}
 				</button>
 			{/if}
 		</div>
@@ -220,18 +224,18 @@
 	<!-- Items section (edit mode + internal catalogs only) -->
 	{#if !isCreate && catalog_type === 'internal'}
 		<section class="items-section">
-			<h3>Items <span class="muted">({items.length})</span></h3>
+			<h3>{m('catalogs.modal.items')} <span class="muted">{m('catalogs.modal.itemCount', { count: items.length })}</span></h3>
 			{#if items.length === 0}
-				<p class="muted">No items yet.</p>
+				<p class="muted">{m('catalogs.modal.noItems')}</p>
 			{:else}
 				<table class="item-table">
 					<thead>
 						<tr>
-							<th>SKU</th>
-							<th>Name</th>
-							<th>Category</th>
-							<th class="right">Price</th>
-							<th>UoM</th>
+							<th>{m('catalogs.modal.col.sku')}</th>
+							<th>{m('catalogs.modal.col.name')}</th>
+							<th>{m('catalogs.modal.col.category')}</th>
+							<th class="right">{m('catalogs.modal.col.price')}</th>
+							<th>{m('catalogs.modal.col.uom')}</th>
 							{#if canEdit}<th></th>{/if}
 						</tr>
 					</thead>
@@ -256,7 +260,7 @@
 											armed={confirmDeleteItemId === item.id}
 											onclick={() => handleDeleteItem(item.id)}
 										>
-											{confirmDeleteItemId === item.id ? 'Confirm' : 'Remove'}
+											{confirmDeleteItemId === item.id ? m('catalogs.modal.item.confirm') : m('catalogs.modal.item.remove')}
 										</RowAction>
 									</td>
 								{/if}
@@ -271,17 +275,17 @@
 					<input
 						class="grow"
 						type="text"
-						placeholder="Item name *"
-						aria-label="New item name"
+						placeholder={m('catalogs.modal.add.namePlaceholder')}
+						aria-label={m('catalogs.modal.add.nameAria')}
 						bind:value={newName}
 					/>
-					<input type="text" placeholder="SKU" aria-label="New item SKU" bind:value={newSku} />
+					<input type="text" placeholder={m('catalogs.modal.add.skuPlaceholder')} aria-label={m('catalogs.modal.add.skuAria')} bind:value={newSku} />
 					<input
 						type="number"
 						step="0.01"
 						min="0"
-						placeholder="Price"
-						aria-label="New item price"
+						placeholder={m('catalogs.modal.add.pricePlaceholder')}
+						aria-label={m('catalogs.modal.add.priceAria')}
 						value={newPrice ?? ''}
 						oninput={(e) => (newPrice = numOrNull(e.currentTarget.value))}
 					/>
@@ -289,31 +293,31 @@
 						class="cur"
 						type="text"
 						maxlength="3"
-						placeholder="USD"
-						aria-label="New item currency"
+						placeholder={m('catalogs.modal.add.currencyPlaceholder')}
+						aria-label={m('catalogs.modal.add.currencyAria')}
 						bind:value={newCurrency}
 					/>
 					<input
 						class="uom"
 						type="text"
-						placeholder="UoM"
-						aria-label="New item unit of measure"
+						placeholder={m('catalogs.modal.add.uomPlaceholder')}
+						aria-label={m('catalogs.modal.add.uomAria')}
 						bind:value={newUom}
 					/>
 					<input
 						type="text"
-						placeholder="Category"
-						aria-label="New item category"
+						placeholder={m('catalogs.modal.add.categoryPlaceholder')}
+						aria-label={m('catalogs.modal.add.categoryAria')}
 						bind:value={newCategory}
 					/>
-					<select bind:value={newVendorId} aria-label="New item vendor">
-						<option value="">Vendor…</option>
+					<select bind:value={newVendorId} aria-label={m('catalogs.modal.add.vendorAria')}>
+						<option value="">{m('catalogs.modal.add.vendorPlaceholder')}</option>
 						{#each vendors as v (v.id)}
 							<option value={v.id}>{v.name}</option>
 						{/each}
 					</select>
-					<select bind:value={newGlId} aria-label="New item GL account">
-						<option value="">GL…</option>
+					<select bind:value={newGlId} aria-label={m('catalogs.modal.add.glAria')}>
+						<option value="">{m('catalogs.modal.add.glPlaceholder')}</option>
 						{#each glAccounts as g (g.id)}
 							<option value={g.id}>{g.code}</option>
 						{/each}
@@ -324,7 +328,7 @@
 						disabled={addingItem || !newName.trim()}
 						onclick={handleAddItem}
 					>
-						{addingItem ? 'Adding…' : 'Add'}
+						{addingItem ? m('catalogs.modal.add.adding') : m('catalogs.modal.add.add')}
 					</button>
 				</div>
 			{/if}
