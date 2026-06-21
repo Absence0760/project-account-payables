@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -9,8 +10,41 @@ import 'package:ap_mobile/api/api_client.dart';
 import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/exception_store.dart';
+import 'package:ap_mobile/widgets/bulk_action_bar.dart';
 import 'package:ap_mobile/widgets/exception_list_tile.dart';
+
+Map<String, dynamic> _me(List<String> roles) => {
+      'id': 'u1',
+      'email': 'demo@acme.com',
+      'full_name': 'Demo User',
+      'organization_id': 'org1',
+      'roles': roles,
+    };
+
+/// Log the AuthStore in as a user with [roles] (so the bulk-select affordance
+/// shows), then swap the client to [screenClient] for the screen under test.
+Future<void> _loginThen(List<String> roles, MockClient screenClient) async {
+  ApiClient().debugConfigure(
+    client: MockClient((req) async {
+      if (req.url.path == '/api/auth/login') {
+        return http.Response(
+          jsonEncode({'access_token': 'tok'}),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      return http.Response(
+        jsonEncode(_me(roles)),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    }),
+  );
+  await AuthStore.instance.login('demo@acme.com', 'demo', 'acme');
+  ApiClient().debugConfigure(client: screenClient);
+}
 
 Widget _localized(Widget home) => MaterialApp(
       localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -72,6 +106,7 @@ void main() {
   setUp(() async {
     ExceptionStore.instance.debugReset();
     await OfflineStore.instance.clear();
+    FlutterSecureStorage.setMockInitialValues({});
     ApiClient().debugConfigure();
     store.setStatusFilter(null);
   });
@@ -140,10 +175,10 @@ void main() {
     expect(lastStatus, 'escalated');
   });
 
-  testWidgets('the action sheet resolve calls the store and POSTs resolve',
+  testWidgets('tapping a row opens the detail screen and resolve POSTs',
       (tester) async {
     String? sentAction;
-    var listCalls = 0;
+    var detailCalls = 0;
     ApiClient().debugConfigure(
       client: MockClient((req) async {
         if (req.method == 'POST' && req.url.path.endsWith('/resolve')) {
@@ -152,7 +187,16 @@ void main() {
                   as String?;
           return http.Response('{}', 200);
         }
-        listCalls++;
+        // The detail screen's GET /exceptions/{id}.
+        if (req.method == 'GET' &&
+            RegExp(r'/exceptions/[^/]+$').hasMatch(req.url.path)) {
+          detailCalls++;
+          return http.Response(
+            jsonEncode(_exceptionJson('1')),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
         return _list([_exceptionJson('1')]);
       }),
     );
@@ -160,20 +204,17 @@ void main() {
     await tester.pumpWidget(_localized(const ExceptionsScreen()));
     await _pumpUntil(tester, find.byType(ExceptionListTile));
 
-    // Tapping a row opens the action sheet; let it animate fully in so the
-    // sheet items are at their final, hit-testable positions.
+    // Tapping a row navigates to the detail screen; wait for its GET to land
+    // and the detail action buttons to render.
     await tester.tap(find.byType(ExceptionListTile).first);
-    await tester.pumpAndSettle();
-    expect(find.text('Escalate'), findsOneWidget);
+    await _pumpUntil(tester, find.widgetWithText(FilledButton, 'Resolve'));
+    expect(detailCalls, greaterThanOrEqualTo(1));
+    expect(find.widgetWithText(OutlinedButton, 'Escalate'), findsOneWidget);
 
-    // initial load = 1 list call; resolve POSTs then refetches → wait for the
-    // refetch (the real signal) rather than a fixed delay.
-    await tester.tap(find.text('Resolve'));
-    await _pumpUntilTrue(tester, () => sentAction != null && listCalls >= 2);
+    await tester.tap(find.widgetWithText(FilledButton, 'Resolve'));
+    await _pumpUntilTrue(tester, () => sentAction != null);
 
     expect(sentAction, 'resolve');
-    expect(listCalls, greaterThanOrEqualTo(2),
-        reason: 'resolve should trigger a refetch after the initial load');
   });
 
   testWidgets('swiping a row right resolves the exception', (tester) async {
@@ -202,5 +243,59 @@ void main() {
     await _pumpUntilTrue(tester, () => sentAction != null);
 
     expect(sentAction, 'resolve');
+  });
+
+  testWidgets(
+      'multi-select then bulk-resolve POSTs the selection and shows counts',
+      (tester) async {
+    List<dynamic>? sentIds;
+    await _loginThen(
+      ['ap_manager'],
+      MockClient((req) async {
+        if (req.method == 'POST' &&
+            req.url.path.endsWith('/exceptions/bulk/resolve')) {
+          sentIds =
+              (jsonDecode(req.body) as Map<String, dynamic>)['ids'] as List?;
+          return http.Response(
+            jsonEncode({
+              'updated': 2,
+              'skipped': [
+                {'id': '3', 'reason': 'already_resolved'},
+              ],
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return _list([_exceptionJson('1'), _exceptionJson('2')]);
+      }),
+    );
+    addTearDown(AuthStore.instance.logout);
+
+    await tester.pumpWidget(_localized(const ExceptionsScreen()));
+    await _pumpUntil(tester, find.byType(ExceptionListTile));
+
+    // The checklist app-bar action enters selection mode (admin/ap_manager).
+    await tester.tap(find.byTooltip('Select exceptions'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(store.selectionMode, isTrue);
+    expect(find.byType(BulkActionBar), findsOneWidget);
+
+    // Select both rows.
+    await tester.tap(find.byType(ExceptionListTile).at(0));
+    await tester.tap(find.byType(ExceptionListTile).at(1));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(store.selectedCount, 2);
+
+    // Bulk-resolve via the shared bar's "Status" action.
+    await tester.tap(find.widgetWithText(TextButton, 'Status'));
+    await _pumpUntilTrue(tester, () => sentIds != null);
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(sentIds, containsAll(<String>['1', '2']));
+    expect(find.textContaining('Resolved 2 exception'), findsOneWidget);
+    expect(find.textContaining('1 skipped'), findsOneWidget);
+    // Selection mode exits on a successful bulk call.
+    expect(store.selectionMode, isFalse);
   });
 }

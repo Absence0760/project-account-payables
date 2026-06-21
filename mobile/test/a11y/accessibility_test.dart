@@ -17,6 +17,7 @@ import 'package:ap_mobile/screens/admin_users_screen.dart';
 import 'package:ap_mobile/screens/approvals_screen.dart';
 import 'package:ap_mobile/screens/cash_flow_screen.dart';
 import 'package:ap_mobile/screens/org_settings_screen.dart';
+import 'package:ap_mobile/screens/exception_detail_screen.dart';
 import 'package:ap_mobile/screens/exceptions_screen.dart';
 import 'package:ap_mobile/screens/invoices_screen.dart';
 import 'package:ap_mobile/screens/login_screen.dart';
@@ -656,6 +657,68 @@ void main() {
 
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      handle.dispose();
+    });
+  });
+
+  group('ExceptionListTile (selection mode)', () {
+    testWidgets('a selected row exposes a checked state + keeps its tap target',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      await tester.pumpWidget(_host(
+        ExceptionListTile(
+          exception: _exception(),
+          selected: true,
+          onTap: () {},
+          onLongPress: () {},
+        ),
+      ));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(textContrastGuideline));
+      // The merged row label still announces the exception.
+      expect(
+        find.bySemanticsLabel(RegExp(r'Duplicate Invoice.*Open')),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+  });
+
+  group('ExceptionDetailScreen', () {
+    setUp(() async {
+      ExceptionStore.instance.debugReset();
+      FlutterSecureStorage.setMockInitialValues({});
+      ApiClient().debugConfigure();
+    });
+
+    testWidgets('the loaded detail meets tap-target + label + contrast',
+        (tester) async {
+      // Tall surface so the whole detail list (incl. action buttons) builds.
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final handle = tester.ensureSemantics();
+      ApiClient().debugConfigure(
+        client: MockClient(
+          (req) async => http.Response(
+            jsonEncode(_exceptionJson('1')),
+            200,
+            headers: {'content-type': 'application/json'},
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(
+        _host(const ExceptionDetailScreen(exceptionId: '1')),
+      );
+      await _pumpUntil(tester, find.text('Duplicate Invoice'));
+
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
       await expectLater(tester, meetsGuideline(textContrastGuideline));
       handle.dispose();

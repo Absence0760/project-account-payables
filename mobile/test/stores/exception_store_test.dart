@@ -199,4 +199,200 @@ void main() {
       expect(store.error, isNotNull);
     });
   });
+
+  group('getById', () {
+    test('loads a single exception detail with the detail-only fields',
+        () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          expect(req.url.path.endsWith('/exceptions/1'), isTrue);
+          return http.Response(
+            jsonEncode({
+              ..._exceptionJson('1'),
+              'assigned_to': 'Demo Manager',
+              'assigned_to_user_id': 'user-9',
+              'due_at': '2026-01-02T12:00:00',
+              'resolved_by': null,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      final exc = await store.getById('1');
+
+      expect(exc, isNotNull);
+      expect(exc!.id, '1');
+      expect(exc.assignedTo, 'Demo Manager');
+      expect(exc.assignedToUserId, 'user-9');
+      expect(exc.dueAt, isNotNull);
+    });
+
+    test('returns null + records the error on a 404', () async {
+      ApiClient().debugConfigure(
+        client: MockClient(
+          (req) async => http.Response('{"detail":"not found"}', 404),
+        ),
+      );
+
+      final exc = await store.getById('missing');
+
+      expect(exc, isNull);
+      expect(store.error, isNotNull);
+    });
+  });
+
+  group('assign', () {
+    test('posts {user_id} and patches the in-memory row with the new assignee',
+        () async {
+      // Seed a list so there's a row to patch in place.
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => _list([_exceptionJson('1')])),
+      );
+      await store.fetch();
+      expect(store.exceptions.first.assignedTo, isNull);
+
+      String? sentUserId;
+      var sawKey = false;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' && req.url.path.endsWith('/assign')) {
+            final body = jsonDecode(req.body) as Map<String, dynamic>;
+            sawKey = body.containsKey('user_id');
+            sentUserId = body['user_id'] as String?;
+            return http.Response(
+              jsonEncode({
+                ..._exceptionJson('1'),
+                'assigned_to': 'Casey Clerk',
+                'assigned_to_user_id': 'user-42',
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return _list([]);
+        }),
+      );
+
+      final updated = await store.assign('1', userId: 'user-42');
+
+      expect(sawKey, isTrue);
+      expect(sentUserId, 'user-42');
+      expect(updated, isNotNull);
+      expect(updated!.assignedTo, 'Casey Clerk');
+      // The in-memory list row reflects the change without a refetch.
+      expect(store.exceptions.first.assignedTo, 'Casey Clerk');
+      expect(store.exceptions.first.assignedToUserId, 'user-42');
+    });
+
+    test('unassign sends user_id: null', () async {
+      String? sentUserId = 'sentinel';
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' && req.url.path.endsWith('/assign')) {
+            sentUserId =
+                (jsonDecode(req.body) as Map<String, dynamic>)['user_id']
+                    as String?;
+            return http.Response(
+              jsonEncode({..._exceptionJson('1'), 'assigned_to': null}),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return _list([]);
+        }),
+      );
+
+      final updated = await store.assign('1');
+
+      expect(sentUserId, isNull);
+      expect(updated!.assignedTo, isNull);
+    });
+  });
+
+  group('selection + bulkResolve', () {
+    test('selection mutators toggle membership and mode', () async {
+      store.enterSelectionMode('1');
+      expect(store.selectionMode, isTrue);
+      expect(store.isSelected('1'), isTrue);
+      expect(store.selectedCount, 1);
+
+      store.toggleSelected('2');
+      expect(store.selectedCount, 2);
+      store.toggleSelected('1');
+      expect(store.isSelected('1'), isFalse);
+
+      store.exitSelectionMode();
+      expect(store.selectionMode, isFalse);
+      expect(store.selectedCount, 0);
+    });
+
+    test('bulkResolveSelected parses the partial-success {updated, skipped}',
+        () async {
+      store.enterSelectionMode('1');
+      store.toggleSelected('2');
+
+      List<dynamic>? sentIds;
+      String? sentAction;
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          if (req.method == 'POST' &&
+              req.url.path.endsWith('/exceptions/bulk/resolve')) {
+            final body = jsonDecode(req.body) as Map<String, dynamic>;
+            sentIds = body['ids'] as List?;
+            sentAction = body['action'] as String?;
+            return http.Response(
+              jsonEncode({
+                'updated': 1,
+                'skipped': [
+                  {'id': '2', 'reason': 'already_resolved'},
+                ],
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          // The refetch after a successful bulk call.
+          return _list([]);
+        }),
+      );
+
+      final result = await store.bulkResolveSelected(action: 'resolve');
+
+      expect(result, isNotNull);
+      expect(result!.updated, 1);
+      expect(result.skippedCount, 1);
+      expect(result.skipped.first.id, '2');
+      expect(result.skipped.first.reason, 'already_resolved');
+      expect(sentAction, 'resolve');
+      expect(sentIds, containsAll(<String>['1', '2']));
+      // A successful bulk call exits selection mode.
+      expect(store.selectionMode, isFalse);
+    });
+
+    test('bulkResolveSelected is a no-op (null) with an empty selection',
+        () async {
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => _list([])),
+      );
+      final result = await store.bulkResolveSelected();
+      expect(result, isNull);
+    });
+
+    test('bulkResolveSelected returns null + records error on failure',
+        () async {
+      store.enterSelectionMode('1');
+      ApiClient().debugConfigure(
+        client: MockClient((req) async => http.Response('boom', 500)),
+      );
+
+      final result = await store.bulkResolveSelected();
+
+      expect(result, isNull);
+      expect(store.error, isNotNull);
+      // Selection survives a failure so the user can retry.
+      expect(store.selectionMode, isTrue);
+    });
+  });
 }
