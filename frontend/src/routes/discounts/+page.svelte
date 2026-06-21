@@ -4,6 +4,7 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -42,24 +43,24 @@
 
 	const PAGE_SIZE = 20;
 
-	const OFFER_COLUMNS = [
-		{ label: 'Vendor / Invoice' },
-		{ label: 'Scope' },
-		{ label: 'Tiers' },
-		{ label: 'Base', class: 'right' },
-		{ label: 'Best discount', class: 'right' },
-		{ label: 'Status' },
-		{ label: 'Valid until' },
+	const OFFER_COLUMNS = $derived([
+		{ label: m('discounts.col.vendorInvoice') },
+		{ label: m('discounts.col.scope') },
+		{ label: m('discounts.col.tiers') },
+		{ label: m('discounts.col.base'), class: 'right' },
+		{ label: m('discounts.col.bestDiscount'), class: 'right' },
+		{ label: m('discounts.col.status') },
+		{ label: m('discounts.col.validUntil') },
 		{ class: 'actions-col' }
-	];
+	]);
 
-	const STATUS_LABELS: Record<DiscountStatus, string> = {
-		offered: 'Offered',
-		accepted: 'Accepted',
-		captured: 'Captured',
-		declined: 'Declined',
-		expired: 'Expired'
-	};
+	const STATUS_LABELS = $derived<Record<DiscountStatus, string>>({
+		offered: m('discounts.status.offered'),
+		accepted: m('discounts.status.accepted'),
+		captured: m('discounts.status.captured'),
+		declined: m('discounts.status.declined'),
+		expired: m('discounts.status.expired')
+	});
 
 	let dashboard = $state<DiscountDashboard | null>(null);
 	let offers = $state<DiscountOffer[]>([]);
@@ -92,9 +93,9 @@
 		const d = new Date(dateStr);
 		if (Number.isNaN(d.getTime())) return '';
 		const days = Math.round((d.getTime() - Date.now()) / 86_400_000);
-		if (days === 0) return 'today';
-		if (days > 0) return `in ${days} day${days === 1 ? '' : 's'}`;
-		return `${-days} day${days === -1 ? '' : 's'} ago`;
+		if (days === 0) return m('discounts.deadline.today');
+		if (days > 0) return m('discounts.deadline.inDays', { n: days });
+		return m('discounts.deadline.daysAgo', { n: -days });
 	}
 
 	function bestTier(o: DiscountOffer): DiscountTier | null {
@@ -108,13 +109,13 @@
 		return (o.base_amount * t.percent) / 100;
 	}
 
-	const STATUS_CHIPS: { key: DiscountStatusFilter; label: string }[] = [
-		{ key: 'all', label: 'All' },
-		{ key: 'offered', label: 'Offered' },
-		{ key: 'accepted', label: 'Accepted' },
-		{ key: 'captured', label: 'Captured' },
-		{ key: 'missed', label: 'Missed' }
-	];
+	const STATUS_CHIPS = $derived<{ key: DiscountStatusFilter; label: string }[]>([
+		{ key: 'all', label: m('common.all') },
+		{ key: 'offered', label: m('discounts.status.offered') },
+		{ key: 'accepted', label: m('discounts.status.accepted') },
+		{ key: 'captured', label: m('discounts.status.captured') },
+		{ key: 'missed', label: m('discounts.chip.missed') }
+	]);
 
 	async function loadDashboard() {
 		try {
@@ -122,7 +123,7 @@
 		} catch (e) {
 			// The KPI row is best-effort — a failure here shouldn't blank the table.
 			dashboard = null;
-			if (!error) error = e instanceof Error ? e.message : 'Failed to load dashboard';
+			if (!error) error = e instanceof Error ? e.message : m('discounts.error.dashboard');
 		}
 	}
 
@@ -141,7 +142,7 @@
 			page = nextPage;
 			error = null;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load discount offers';
+			error = e instanceof Error ? e.message : m('discounts.error.offers');
 			if (!opts.append) offers = [];
 		} finally {
 			loading = false;
@@ -182,11 +183,11 @@
 				selectedTierDays ?? undefined
 			);
 			offers = offers.map((o) => (o.id === updated.id ? updated : o));
-			toast('Discount offer accepted', 'success');
+			toast(m('discounts.toast.accepted'), 'success');
 			acceptTarget = null;
 			await loadDashboard();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not accept offer', 'error');
+			toast(e instanceof Error ? e.message : m('discounts.toast.acceptFailed'), 'error');
 		} finally {
 			accepting = false;
 		}
@@ -205,11 +206,11 @@
 		try {
 			const updated = await declineDiscountOffer(o.id);
 			offers = offers.map((x) => (x.id === updated.id ? updated : x));
-			toast('Discount offer declined', 'success');
+			toast(m('discounts.toast.declined'), 'success');
 			confirmDeclineId = null;
 			await loadDashboard();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not decline offer', 'error');
+			toast(e instanceof Error ? e.message : m('discounts.toast.declineFailed'), 'error');
 		} finally {
 			declining = false;
 		}
@@ -228,7 +229,7 @@
 				budget !== undefined && Number.isFinite(budget) ? budget : undefined
 			);
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Optimization failed', 'error');
+			toast(e instanceof Error ? e.message : m('discounts.toast.optimizeFailed'), 'error');
 		} finally {
 			optimizing = false;
 		}
@@ -244,70 +245,67 @@
 	}}
 />
 
-<PageHeader title="Discounts">
+<PageHeader title={m('discounts.title')}>
 	{#if !userLoaded}
-		<p class="loading">Loading…</p>
+		<p class="loading">{m('common.loading')}</p>
 	{:else if !allowed}
-		<p class="loading">Redirecting…</p>
+		<p class="loading">{m('discounts.redirecting')}</p>
 	{:else}
 		<!-- KPI row -->
 		<div class="kpi-row">
 			<KpiCard
 				value={aggMoney(dashboard?.captured_amount)}
-				label="Captured ({dashboard?.captured_count ?? 0})"
+				label={m('discounts.kpi.captured', { n: dashboard?.captured_count ?? 0 })}
 				highlight="green"
 			/>
 			<KpiCard
 				value={aggMoney(dashboard?.missed_amount)}
-				label="Missed ({dashboard?.missed_count ?? 0})"
+				label={m('discounts.kpi.missed', { n: dashboard?.missed_count ?? 0 })}
 				highlight="red"
 			/>
 			<KpiCard
 				value={`${(dashboard?.capture_rate_pct ?? 0).toFixed(0)}%`}
-				label="Capture rate"
+				label={m('discounts.kpi.captureRate')}
 			/>
 			<KpiCard
 				value={aggMoney(dashboard?.projected_savings)}
-				label="Projected savings"
+				label={m('discounts.kpi.projectedSavings')}
 				highlight="green"
 			/>
-			<KpiCard value={dashboard?.open_offer_count ?? 0} label="Open offers" />
+			<KpiCard value={dashboard?.open_offer_count ?? 0} label={m('discounts.kpi.openOffers')} />
 		</div>
 
 		<!-- Optimize panel -->
 		<div class="opt-panel">
 			<div class="opt-head">
 				<div>
-					<h2>Early-payment optimizer</h2>
-					<p class="opt-sub">
-						Ranks open offers by ROI vs your cost of capital, then greedily selects
-						within an optional cash budget.
-					</p>
+					<h2>{m('discounts.opt.heading')}</h2>
+					<p class="opt-sub">{m('discounts.opt.sub')}</p>
 				</div>
 				<form class="opt-form" onsubmit={(e) => { e.preventDefault(); runOptimize(); }}>
 					<label class="opt-field">
-						<span class="opt-label">Cash budget (optional)</span>
+						<span class="opt-label">{m('discounts.opt.budgetLabel')}</span>
 						<input
 							class="opt-input"
 							type="text"
 							inputmode="decimal"
-							placeholder="e.g. 250000"
+							placeholder={m('discounts.opt.budgetPlaceholder')}
 							bind:value={cashBudget}
-							aria-label="Cash budget"
+							aria-label={m('discounts.opt.budgetAria')}
 						/>
 					</label>
 					<button class="btn-primary" type="submit" disabled={optimizing}>
-						{optimizing ? 'Optimizing…' : 'Optimize'}
+						{optimizing ? m('discounts.opt.optimizing') : m('discounts.opt.optimize')}
 					</button>
 				</form>
 			</div>
 
 			{#if optimization}
 				<div class="opt-summary">
-					<span>Available savings: <strong>{aggMoney(optimization.total_savings_available)}</strong></span>
-					<span>Selected savings: <strong class="pos">{aggMoney(optimization.total_savings_selected)}</strong></span>
-					<span>Selected outlay: <strong>{aggMoney(optimization.total_outlay_selected)}</strong></span>
-					<span>Cost of capital: <strong>{optimization.cost_of_capital_pct.toFixed(1)}%</strong></span>
+					<span>{m('discounts.opt.availableSavings')} <strong>{aggMoney(optimization.total_savings_available)}</strong></span>
+					<span>{m('discounts.opt.selectedSavings')} <strong class="pos">{aggMoney(optimization.total_savings_selected)}</strong></span>
+					<span>{m('discounts.opt.selectedOutlay')} <strong>{aggMoney(optimization.total_outlay_selected)}</strong></span>
+					<span>{m('discounts.opt.costOfCapital')} <strong>{optimization.cost_of_capital_pct.toFixed(1)}%</strong></span>
 				</div>
 				{#if optimization.recommendations.length > 0}
 					<div class="scenario-grid">
@@ -320,18 +318,18 @@
 									{rec.roi.annualized_return_pct.toFixed(1)}% APR
 								</span>
 								<span class="scenario-sub">
-									save <Money amount={rec.roi.savings} currency={orgCurrency.currency} />
+									{m('discounts.opt.save')} <Money amount={rec.roi.savings} currency={orgCurrency.currency} />
 									· {rec.discount_percent}% / {rec.tier_days}d
 								</span>
-								<span class="scenario-sub">pay by {formatDate(rec.pay_by)}</span>
+								<span class="scenario-sub">{m('discounts.opt.payBy', { date: formatDate(rec.pay_by) })}</span>
 								<span class="scenario-flag" class:selected={rec.selected}>
-									{rec.selected ? '✓ Selected' : 'Not selected'}
+									{rec.selected ? m('discounts.opt.selected') : m('discounts.opt.notSelected')}
 								</span>
 							</div>
 						{/each}
 					</div>
 				{:else}
-					<p class="empty">No open offers to optimize right now.</p>
+					<p class="empty">{m('discounts.opt.noOffers')}</p>
 				{/if}
 			{/if}
 		</div>
@@ -346,7 +344,7 @@
 		<DataTable
 			columns={OFFER_COLUMNS}
 			isEmpty={!loading && offers.length === 0}
-			empty={loading ? 'Loading offers…' : 'No discount offers match this filter.'}
+			empty={loading ? m('discounts.table.loading') : m('discounts.table.empty')}
 			colspan={8}
 		>
 			{#snippet body()}
@@ -387,17 +385,17 @@
 						</td>
 						<td class="actions">
 							{#if offer.status === 'offered'}
-								<RowAction variant="success" onclick={() => openAccept(offer)} ariaLabel={`Accept discount for ${offer.vendor_name ?? offer.id.slice(0, 8)}`}>
-									Accept
+								<RowAction variant="success" onclick={() => openAccept(offer)} ariaLabel={m('discounts.row.acceptAria', { vendor: offer.vendor_name ?? offer.id.slice(0, 8) })}>
+									{m('discounts.row.accept')}
 								</RowAction>
 								<RowAction
 									variant="danger"
 									armed={confirmDeclineId === offer.id}
 									disabled={declining}
 									onclick={() => decline(offer)}
-									ariaLabel={`Decline discount for ${offer.vendor_name ?? offer.id.slice(0, 8)}`}
+									ariaLabel={m('discounts.row.declineAria', { vendor: offer.vendor_name ?? offer.id.slice(0, 8) })}
 								>
-									{confirmDeclineId === offer.id ? 'Confirm' : 'Decline'}
+									{confirmDeclineId === offer.id ? m('discounts.row.confirm') : m('discounts.row.decline')}
 								</RowAction>
 							{/if}
 						</td>
@@ -409,12 +407,12 @@
 		{#if hasMore}
 			<div class="load-more-row">
 				<button class="btn-load-more" onclick={() => loadOffers({ append: true })} disabled={loadingMore}>
-					{loadingMore ? 'Loading…' : `Load more (${offers.length} of ${total})`}
+					{loadingMore ? m('common.loading') : m('discounts.loadMore', { shown: offers.length, total })}
 				</button>
 			</div>
 		{:else if total > 0}
 			<div class="load-more-row">
-				<span class="load-more-end">Showing all {total} offer{total === 1 ? '' : 's'}</span>
+				<span class="load-more-end">{m('discounts.showingAll', { total })}</span>
 			</div>
 		{/if}
 	{/if}
@@ -423,8 +421,8 @@
 <!-- Accept-tier modal -->
 <Modal
 	open={acceptTarget !== null}
-	ariaLabel="Accept discount offer"
-	title="Accept discount"
+	ariaLabel={m('discounts.modal.aria')}
+	title={m('discounts.modal.title')}
 	width="sm"
 	onclose={() => (acceptTarget = null)}
 >
@@ -433,12 +431,12 @@
 			<p class="modal-hint">
 				<strong>{acceptTarget.vendor_name ?? acceptTarget.id.slice(0, 8)}</strong>
 				{#if acceptTarget.invoice_number}· {acceptTarget.invoice_number}{/if}
-				· base <Money amount={acceptTarget.base_amount} currency={acceptTarget.currency} />
+				· {m('discounts.modal.base')} <Money amount={acceptTarget.base_amount} currency={acceptTarget.currency} />
 			</p>
 
 			{#if acceptTarget.tiers.length > 0}
 				<fieldset class="tier-picker">
-					<legend>Choose a tier</legend>
+					<legend>{m('discounts.modal.chooseTier')}</legend>
 					{#each [...acceptTarget.tiers].sort((a, b) => a.days - b.days) as tier (tier.days)}
 						<label class="tier-option">
 							<input
@@ -449,9 +447,9 @@
 								onchange={() => (selectedTierDays = tier.days)}
 							/>
 							<span class="tier-option-label">
-								{tier.percent}% off if paid within {tier.days} days
+								{m('discounts.modal.tierOption', { percent: tier.percent, days: tier.days })}
 								<span class="tier-option-amt">
-									save <Money
+									{m('discounts.modal.save')} <Money
 										amount={(acceptTarget.base_amount * tier.percent) / 100}
 										currency={acceptTarget.currency}
 									/>
@@ -461,13 +459,13 @@
 					{/each}
 				</fieldset>
 			{:else}
-				<p class="modal-hint">This offer has no sliding-scale tiers; accepting confirms it as-is.</p>
+				<p class="modal-hint">{m('discounts.modal.noTiers')}</p>
 			{/if}
 
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (acceptTarget = null)}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={() => (acceptTarget = null)}>{m('common.cancel')}</button>
 				<button type="submit" class="btn-primary" disabled={accepting}>
-					{accepting ? 'Accepting…' : 'Accept offer'}
+					{accepting ? m('discounts.modal.accepting') : m('discounts.modal.acceptOffer')}
 				</button>
 			</div>
 		</form>

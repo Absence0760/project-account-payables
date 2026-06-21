@@ -13,6 +13,7 @@
 		startBillingSetupIntent
 	} from '$lib/api/billing';
 	import { formatMoney } from '$lib/utils/money';
+	import { m } from '$lib/i18n/store.svelte';
 	import type {
 		BillingInvoice,
 		BillingInvoiceStatus,
@@ -48,7 +49,7 @@
 		try {
 			data = await getBillingSubscription();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load billing details.';
+			error = e instanceof Error ? e.message : m('billing.error.load');
 		} finally {
 			loading = false;
 		}
@@ -60,7 +61,7 @@
 		try {
 			invoices = (await getBillingInvoices()).invoices;
 		} catch (e) {
-			invoicesError = e instanceof Error ? e.message : 'Failed to load invoices.';
+			invoicesError = e instanceof Error ? e.message : m('billing.error.loadInvoices');
 		} finally {
 			invoicesLoading = false;
 		}
@@ -91,7 +92,7 @@
 		try {
 			paymentMethods = (await getBillingPaymentMethods()).payment_methods;
 		} catch (e) {
-			pmError = e instanceof Error ? e.message : 'Failed to load payment methods.';
+			pmError = e instanceof Error ? e.message : m('billing.error.loadPaymentMethods');
 		} finally {
 			pmLoading = false;
 		}
@@ -108,8 +109,7 @@
 				// error — a clear "billing not configured" affordance.
 				cardSetup = {
 					state: 'not_configured',
-					message:
-						'Billing is not configured for this workspace yet. Contact our team to set up a payment method.'
+					message: m('billing.card.notConfigured')
 				};
 				return;
 			}
@@ -118,13 +118,13 @@
 			// Re-list cards so a card attached out-of-band shows up.
 			cardSetup = {
 				state: 'ready',
-				message: 'Ready to securely collect your card details.'
+				message: m('billing.card.ready')
 			};
 			await loadPaymentMethods();
 		} catch (e) {
 			cardSetup = {
 				state: 'error',
-				message: e instanceof Error ? e.message : 'Could not start adding a card.'
+				message: e instanceof Error ? e.message : m('billing.card.startError')
 			};
 		} finally {
 			addingCard = false;
@@ -147,21 +147,23 @@
 
 	/** Pretty "Visa ····4242" label for a saved card (brand title-cased). */
 	function cardLabel(pm: BillingPaymentMethod): string {
-		const brand = pm.brand ? pm.brand.charAt(0).toUpperCase() + pm.brand.slice(1) : 'Card';
+		const brand = pm.brand ? pm.brand.charAt(0).toUpperCase() + pm.brand.slice(1) : m('billing.pm.card');
 		return pm.last4 ? `${brand} ····${pm.last4}` : brand;
 	}
 
 	/** "Expires 12/2030" or "—" when the provider omits expiry. */
 	function cardExpiry(pm: BillingPaymentMethod): string {
 		if (pm.exp_month == null || pm.exp_year == null) return '—';
-		return `Expires ${String(pm.exp_month).padStart(2, '0')}/${pm.exp_year}`;
+		return m('billing.pm.expires', {
+			date: `${String(pm.exp_month).padStart(2, '0')}/${pm.exp_year}`
+		});
 	}
 
-	const PAYMENT_METHOD_COLUMNS = [
-		{ label: 'Card' },
-		{ label: 'Expiry' },
+	const PAYMENT_METHOD_COLUMNS = $derived([
+		{ label: m('billing.pm.colCard') },
+		{ label: m('billing.pm.colExpiry') },
 		{ label: '', class: 'actions-col' }
-	];
+	]);
 
 	const plan = $derived(data?.plan ?? null);
 	const subscription = $derived(data?.subscription ?? null);
@@ -188,21 +190,21 @@
 			: '—'
 	);
 
-	/** Human label for an invoice settlement state (data-driven English). */
-	const INVOICE_STATUS_LABELS: Record<BillingInvoiceStatus, string> = {
-		paid: 'Paid',
-		open: 'Open',
-		void: 'Void'
-	};
+	/** Human label for an invoice settlement state. */
+	const INVOICE_STATUS_LABELS = $derived<Record<BillingInvoiceStatus, string>>({
+		paid: m('billing.invoiceStatus.paid'),
+		open: m('billing.invoiceStatus.open'),
+		void: m('billing.invoiceStatus.void')
+	});
 
-	const INVOICE_COLUMNS = [
-		{ label: 'Invoice' },
-		{ label: 'Period' },
-		{ label: 'Amount', class: 'num' },
-		{ label: 'Status' },
-		{ label: 'Date' },
+	const INVOICE_COLUMNS = $derived([
+		{ label: m('billing.invoiceCol.invoice') },
+		{ label: m('billing.invoiceCol.period') },
+		{ label: m('billing.invoiceCol.amount'), class: 'num' },
+		{ label: m('billing.invoiceCol.status') },
+		{ label: m('billing.invoiceCol.date') },
 		{ label: '', class: 'actions-col' }
-	];
+	]);
 
 	/** Pretty list of granted entitlement flags (truthy boolean keys). */
 	const entitlementFlags = $derived(
@@ -214,35 +216,32 @@
 	);
 </script>
 
-<PageHeader title="Billing">
+<PageHeader title={m('billing.title')}>
 	{#if loading}
-		<p class="state" data-testid="billing-loading">Loading billing details…</p>
+		<p class="state" data-testid="billing-loading">{m('billing.loading')}</p>
 	{:else if error}
 		<div class="state error" data-testid="billing-error" role="alert">
 			<p>{error}</p>
-			<button type="button" class="btn" onclick={load}>Retry</button>
+			<button type="button" class="btn" onclick={load}>{m('billing.retry')}</button>
 		</div>
 	{:else if !hasSubscription}
 		<!-- Friendly empty state — the org has no live subscription yet. -->
 		<div class="empty" data-testid="billing-empty">
-			<h2>No active subscription</h2>
-			<p>
-				This workspace isn't on a billing plan yet. Usage is still metered below.
-				To start a subscription or discuss plans, contact our team.
-			</p>
-			<a class="btn primary" href="mailto:billing@example.com">Contact sales</a>
+			<h2>{m('billing.empty.heading')}</h2>
+			<p>{m('billing.empty.body')}</p>
+			<a class="btn primary" href="mailto:billing@example.com">{m('billing.empty.contactSales')}</a>
 
-			<section class="usage-section" aria-label="Usage to date">
-				<h3>Usage this period <span class="period">({data?.period ?? '—'})</span></h3>
+			<section class="usage-section" aria-label={m('billing.usage.aria')}>
+				<h3>{m('billing.usage.heading')} <span class="period">({data?.period ?? '—'})</span></h3>
 				<div class="kpi-row">
-					<KpiCard value={asCount(data?.usage.extractions)} label="Extractions" />
+					<KpiCard value={asCount(data?.usage.extractions)} label={m('billing.usage.extractions')} />
 					<KpiCard
 						value={asCount(data?.usage.extractions_platform)}
-						label="Billable extractions"
+						label={m('billing.usage.billableExtractions')}
 					/>
 					<KpiCard
 						value={formatMoney(data?.usage.card_rebate_total)}
-						label="Card rebates"
+						label={m('billing.usage.cardRebates')}
 						highlight="green"
 					/>
 				</div>
@@ -250,10 +249,10 @@
 		</div>
 	{:else if plan && subscription}
 		<!-- Active subscription detail. -->
-		<section class="plan-card" aria-label="Current plan" data-testid="billing-plan">
+		<section class="plan-card" aria-label={m('billing.plan.aria')} data-testid="billing-plan">
 			<div class="plan-head">
 				<div>
-					<span class="eyebrow">Current plan</span>
+					<span class="eyebrow">{m('billing.plan.current')}</span>
 					<h2 class="plan-name">{plan.name}</h2>
 				</div>
 				<SubscriptionBadge status={subscription.status} />
@@ -261,33 +260,33 @@
 
 			<div class="plan-meta">
 				<div class="meta-item">
-					<span class="meta-label">Price</span>
+					<span class="meta-label">{m('billing.plan.price')}</span>
 					<span class="meta-value">
 						<Money amount={plan.monthly_price} currency={plan.currency} />
-						<span class="per">/ month</span>
+						<span class="per">{m('billing.plan.perMonth')}</span>
 					</span>
 				</div>
 				<div class="meta-item">
-					<span class="meta-label">Billing period</span>
+					<span class="meta-label">{m('billing.plan.period')}</span>
 					<span class="meta-value">{periodWindow}</span>
 				</div>
 				{#if subscription.status === 'trialing'}
 					<div class="meta-item">
-						<span class="meta-label">Trial ends</span>
+						<span class="meta-label">{m('billing.plan.trialEnds')}</span>
 						<span class="meta-value">{formatDate(subscription.trial_end)}</span>
 					</div>
 				{/if}
 				<div class="meta-item">
-					<span class="meta-label">Managed by</span>
+					<span class="meta-label">{m('billing.plan.managedBy')}</span>
 					<span class="meta-value">
-						{subscription.externally_managed ? data?.provider ?? 'provider' : 'Self-serve'}
+						{subscription.externally_managed ? data?.provider ?? m('billing.plan.provider') : m('billing.plan.selfServe')}
 					</span>
 				</div>
 			</div>
 
 			{#if entitlementFlags.length > 0}
 				<div class="entitlements">
-					<span class="meta-label">Included</span>
+					<span class="meta-label">{m('billing.plan.included')}</span>
 					<ul>
 						{#each entitlementFlags as flag (flag)}
 							<li>{flag.replace(/_/g, ' ')}</li>
@@ -300,24 +299,24 @@
 			     slice); surfaced disabled so it reads complete without implying an
 			     unwired action. The payment-method action is wired below. -->
 			<div class="actions">
-				<button type="button" class="btn" disabled title="Coming soon">Change plan</button>
-				<a class="link" href="mailto:billing@example.com">Need a plan change? Contact us</a>
+				<button type="button" class="btn" disabled title={m('billing.plan.comingSoon')}>{m('billing.plan.changePlan')}</button>
+				<a class="link" href="mailto:billing@example.com">{m('billing.plan.changeContact')}</a>
 			</div>
 		</section>
 
-		<section class="usage-section" aria-label="Usage to date">
-			<h3>Usage this period <span class="period">({data?.period ?? '—'})</span></h3>
+		<section class="usage-section" aria-label={m('billing.usage.aria')}>
+			<h3>{m('billing.usage.heading')} <span class="period">({data?.period ?? '—'})</span></h3>
 			<div class="kpi-row">
-				<KpiCard value={asCount(data?.usage.extractions)} label="Extractions" />
+				<KpiCard value={asCount(data?.usage.extractions)} label={m('billing.usage.extractions')} />
 				<KpiCard
 					value={asCount(data?.usage.extractions_platform)}
-					label="Billable extractions"
+					label={m('billing.usage.billableExtractions')}
 				/>
 			</div>
 			<p class="note">
-				Card rebates:
+				{m('billing.usage.cardRebatesNote')}
 				<Money amount={data?.usage.card_rebate_total} />
-				(informational)
+				{m('billing.usage.informational')}
 			</p>
 		</section>
 	{/if}
@@ -328,11 +327,11 @@
 	{#if !loading && !error}
 		<section
 			class="payment-methods-section"
-			aria-label="Payment methods"
+			aria-label={m('billing.pm.aria')}
 			data-testid="billing-payment-methods"
 		>
 			<div class="pm-head">
-				<h3>Payment methods</h3>
+				<h3>{m('billing.pm.heading')}</h3>
 				<button
 					type="button"
 					class="btn"
@@ -340,7 +339,7 @@
 					disabled={addingCard}
 					data-testid="billing-add-card"
 				>
-					{addingCard ? 'Starting…' : 'Add / replace card'}
+					{addingCard ? m('billing.pm.starting') : m('billing.pm.addReplace')}
 				</button>
 			</div>
 
@@ -356,13 +355,13 @@
 					role={cardSetup.state === 'error' ? 'alert' : 'status'}
 				>
 					{#if cardSetup.state === 'starting'}
-						<p>Starting secure card setup…</p>
+						<p>{m('billing.card.starting')}</p>
 					{:else if cardSetup.state === 'not_configured'}
 						<p>{cardSetup.message}</p>
-						<a class="link" href="mailto:billing@example.com">Contact us</a>
+						<a class="link" href="mailto:billing@example.com">{m('billing.card.contactUs')}</a>
 					{:else if cardSetup.state === 'error'}
 						<p>{cardSetup.message}</p>
-						<button type="button" class="btn" onclick={startAddCard}>Retry</button>
+						<button type="button" class="btn" onclick={startAddCard}>{m('billing.retry')}</button>
 					{:else if cardSetup.state === 'ready'}
 						<p>{cardSetup.message}</p>
 						<!-- DEPLOYED-ONLY SEAM: mount the provider's card form (Stripe
@@ -370,27 +369,27 @@
 						     it, then re-list cards. No Stripe keys are hardcoded in the
 						     static frontend; the secret never leaves this boundary. -->
 						<p class="card-setup-placeholder" data-testid="billing-card-elements-placeholder">
-							Secure card entry opens here in production.
+							{m('billing.card.elementsPlaceholder')}
 						</p>
 					{/if}
 					<button type="button" class="link card-setup-dismiss" onclick={closeAddCard}>
-						Dismiss
+						{m('billing.card.dismiss')}
 					</button>
 				</div>
 			{/if}
 
 			{#if pmLoading}
-				<p class="state" data-testid="billing-payment-methods-loading">Loading payment methods…</p>
+				<p class="state" data-testid="billing-payment-methods-loading">{m('billing.pm.loading')}</p>
 			{:else if pmError}
 				<div class="state error" data-testid="billing-payment-methods-error" role="alert">
 					<p>{pmError}</p>
-					<button type="button" class="btn" onclick={loadPaymentMethods}>Retry</button>
+					<button type="button" class="btn" onclick={loadPaymentMethods}>{m('billing.retry')}</button>
 				</div>
 			{:else}
 				<DataTable
 					columns={PAYMENT_METHOD_COLUMNS}
 					isEmpty={paymentMethods.length === 0}
-					empty="No payment method on file."
+					empty={m('billing.pm.empty')}
 				>
 					{#snippet body()}
 						{#each paymentMethods as pm (pm.id)}
@@ -398,7 +397,7 @@
 								<td>
 									{cardLabel(pm)}
 									{#if pm.is_default}
-										<span class="default-pill">Default</span>
+										<span class="default-pill">{m('billing.pm.default')}</span>
 									{/if}
 								</td>
 								<td>{cardExpiry(pm)}</td>
@@ -415,20 +414,20 @@
 	     independently of the plan/usage block above, so it renders for an org
 	     with receipts but no live subscription too. -->
 	{#if !loading && !error}
-		<section class="invoices-section" aria-label="Invoices and receipts" data-testid="billing-invoices">
-			<h3>Invoices &amp; receipts</h3>
+		<section class="invoices-section" aria-label={m('billing.invoices.aria')} data-testid="billing-invoices">
+			<h3>{m('billing.invoices.heading')}</h3>
 			{#if invoicesLoading}
-				<p class="state" data-testid="billing-invoices-loading">Loading invoices…</p>
+				<p class="state" data-testid="billing-invoices-loading">{m('billing.invoices.loading')}</p>
 			{:else if invoicesError}
 				<div class="state error" data-testid="billing-invoices-error" role="alert">
 					<p>{invoicesError}</p>
-					<button type="button" class="btn" onclick={loadInvoices}>Retry</button>
+					<button type="button" class="btn" onclick={loadInvoices}>{m('billing.retry')}</button>
 				</div>
 			{:else}
 				<DataTable
 					columns={INVOICE_COLUMNS}
 					isEmpty={invoices.length === 0}
-					empty="No invoices yet."
+					empty={m('billing.invoices.empty')}
 				>
 					{#snippet body()}
 						{#each invoices as inv (inv.id)}
@@ -449,9 +448,9 @@
 											href={inv.hosted_url}
 											target="_blank"
 											rel="noopener noreferrer"
-											aria-label={`View invoice ${inv.number ?? inv.id} (opens in a new tab)`}
+											aria-label={m('billing.invoices.viewAria', { number: inv.number ?? inv.id })}
 										>
-											View
+											{m('billing.invoices.view')}
 										</a>
 									{:else}
 										<span class="muted">—</span>

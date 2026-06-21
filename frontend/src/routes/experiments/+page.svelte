@@ -27,6 +27,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 
 	const canMutate = $derived(auth.isAdmin);
@@ -38,15 +39,15 @@
 		'rejection_rate_pct'
 	];
 
-	const COLUMNS = [
-		{ label: 'Name' },
-		{ label: 'Workflow' },
-		{ label: 'Primary metric' },
-		{ label: 'Split (A/B)' },
-		{ label: 'Assigned', class: 'right' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('experiments.col.name') },
+		{ label: m('experiments.col.workflow') },
+		{ label: m('experiments.col.primaryMetric') },
+		{ label: m('experiments.col.split') },
+		{ label: m('experiments.col.assigned'), class: 'right' },
+		{ label: m('experiments.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	let experiments = $state<Experiment[]>([]);
 	let loading = $state(true);
@@ -83,12 +84,12 @@
 	);
 
 	const STATUS_CHIPS = $derived([
-		{ key: 'all', label: 'All', count: experiments.length },
-		{ key: 'draft', label: 'Draft', count: experiments.filter((e) => e.status === 'draft').length },
-		{ key: 'running', label: 'Running', count: experiments.filter((e) => e.status === 'running').length },
+		{ key: 'all', label: m('common.all'), count: experiments.length },
+		{ key: 'draft', label: m('experiments.chip.draft'), count: experiments.filter((e) => e.status === 'draft').length },
+		{ key: 'running', label: m('experiments.chip.running'), count: experiments.filter((e) => e.status === 'running').length },
 		{
 			key: 'concluded',
-			label: 'Concluded',
+			label: m('experiments.chip.concluded'),
 			count: experiments.filter((e) => e.status === 'concluded').length
 		}
 	]);
@@ -100,7 +101,7 @@
 			const res = await listExperiments();
 			experiments = res.experiments;
 		} catch {
-			loadError = 'Failed to load experiments.';
+			loadError = m('experiments.error.load');
 		} finally {
 			loading = false;
 		}
@@ -158,11 +159,11 @@
 	async function submitCreate() {
 		createError = null;
 		if (!form.name.trim()) {
-			createError = 'Name is required.';
+			createError = m('experiments.validate.nameRequired');
 			return;
 		}
 		if (!form.workflow_definition_id) {
-			createError = 'Pick a workflow definition.';
+			createError = m('experiments.validate.defnRequired');
 			return;
 		}
 		let configA: Record<string, unknown>;
@@ -170,13 +171,13 @@
 		try {
 			configA = JSON.parse(form.config_a);
 		} catch {
-			createError = 'Variant A config is not valid JSON.';
+			createError = m('experiments.validate.configAInvalid');
 			return;
 		}
 		try {
 			configB = JSON.parse(form.config_b);
 		} catch {
-			createError = 'Variant B config is not valid JSON.';
+			createError = m('experiments.validate.configBInvalid');
 			return;
 		}
 		saving = true;
@@ -192,10 +193,10 @@
 				min_sample_per_variant: form.min_sample_per_variant
 			});
 			showCreate = false;
-			toast('Experiment created.', 'success');
+			toast(m('experiments.toast.created'), 'success');
 			await load();
 		} catch (e) {
-			createError = e instanceof Error ? e.message : 'Failed to create experiment.';
+			createError = e instanceof Error ? e.message : m('experiments.toast.createFailed');
 		} finally {
 			saving = false;
 		}
@@ -204,30 +205,30 @@
 	async function doStart(exp: Experiment) {
 		try {
 			await startExperiment(exp.id);
-			toast('Experiment started.', 'success');
+			toast(m('experiments.toast.started'), 'success');
 			await load();
 		} catch {
-			toast('Failed to start experiment.', 'error');
+			toast(m('experiments.toast.startFailed'), 'error');
 		}
 	}
 
 	async function doStop(exp: Experiment) {
 		try {
 			await stopExperiment(exp.id);
-			toast('Experiment stopped.', 'success');
+			toast(m('experiments.toast.stopped'), 'success');
 			await load();
 		} catch {
-			toast('Failed to stop experiment.', 'error');
+			toast(m('experiments.toast.stopFailed'), 'error');
 		}
 	}
 
 	async function doConclude(exp: Experiment) {
 		try {
 			await concludeExperiment(exp.id);
-			toast('Experiment concluded.', 'success');
+			toast(m('experiments.toast.concluded'), 'success');
 			await load();
 		} catch {
-			toast('Failed to conclude experiment.', 'error');
+			toast(m('experiments.toast.concludeFailed'), 'error');
 		}
 	}
 
@@ -240,10 +241,10 @@
 		confirmDeleteId = null;
 		try {
 			await deleteExperiment(exp.id);
-			toast('Experiment deleted.', 'success');
+			toast(m('experiments.toast.deleted'), 'success');
 			await load();
 		} catch {
-			toast('Failed to delete experiment.', 'error');
+			toast(m('experiments.toast.deleteFailed'), 'error');
 		}
 	}
 
@@ -255,7 +256,7 @@
 		try {
 			results = await getExperimentResults(exp.id);
 		} catch {
-			resultsError = 'Failed to load results.';
+			resultsError = m('experiments.error.results');
 		} finally {
 			resultsLoading = false;
 		}
@@ -272,18 +273,14 @@
 	if (confirmDeleteId && !(e.target as HTMLElement)?.closest('.row-action')) confirmDeleteId = null;
 }} />
 
-<PageHeader title="Workflow Experiments">
+<PageHeader title={m('experiments.title')}>
 	{#snippet actions()}
 		{#if canMutate}
-			<button class="btn-primary" onclick={openCreate}>+ New experiment</button>
+			<button class="btn-primary" onclick={openCreate}>{m('experiments.new')}</button>
 		{/if}
 	{/snippet}
 
-	<p class="lede">
-		Run a controlled A/B test of two workflow-rule configurations and measure
-		which performs better on time-to-approval, touchless rate, exception rate,
-		and rejection rate. Routing only — never moves money.
-	</p>
+	<p class="lede">{m('experiments.lede')}</p>
 
 	<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 
@@ -294,13 +291,13 @@
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={!loading && filtered.length === 0}
-		empty={loading ? 'Loading…' : 'No experiments yet.'}
+		empty={loading ? m('common.loading') : m('experiments.table.empty')}
 	>
 		{#snippet body()}
 			{#each filtered as exp (exp.id)}
 				<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) openResults(exp); }}>
 					<td>
-						<RowLink onclick={() => openResults(exp)} ariaLabel={`View results for ${exp.name}`}>
+						<RowLink onclick={() => openResults(exp)} ariaLabel={m('experiments.row.viewAria', { name: exp.name })}>
 							{exp.name}
 						</RowLink>
 					</td>
@@ -311,17 +308,17 @@
 					<td><span class="exp-badge {statusTone(exp.status)}">{STATUS_LABELS[exp.status]}</span></td>
 					<td class="actions">
 						{#if canMutate && exp.status === 'draft'}
-							<RowAction variant="success" onclick={() => doStart(exp)}>Start</RowAction>
+							<RowAction variant="success" onclick={() => doStart(exp)}>{m('experiments.row.start')}</RowAction>
 							<RowAction
 								variant="danger"
 								armed={confirmDeleteId === exp.id}
 								onclick={() => doDelete(exp)}
 							>
-								{confirmDeleteId === exp.id ? 'Confirm' : 'Delete'}
+								{confirmDeleteId === exp.id ? m('experiments.row.confirm') : m('experiments.row.delete')}
 							</RowAction>
 						{:else if canMutate && exp.status === 'running'}
-							<RowAction onclick={() => doStop(exp)}>Stop</RowAction>
-							<RowAction variant="danger" onclick={() => doConclude(exp)}>Conclude</RowAction>
+							<RowAction onclick={() => doStop(exp)}>{m('experiments.row.stop')}</RowAction>
+							<RowAction variant="danger" onclick={() => doConclude(exp)}>{m('experiments.row.conclude')}</RowAction>
 						{/if}
 					</td>
 				</tr>
@@ -333,22 +330,22 @@
 <!-- Create experiment -->
 <Modal
 	open={showCreate}
-	ariaLabel="Create experiment"
-	title="New experiment"
+	ariaLabel={m('experiments.modal.aria')}
+	title={m('experiments.modal.title')}
 	width="lg"
 	onclose={() => (showCreate = false)}
 >
 	<form onsubmit={(e) => { e.preventDefault(); submitCreate(); }}>
 		<div class="field">
-			<label for="exp-name">Name <em class="required">*</em></label>
-			<input id="exp-name" type="text" bind:value={form.name} placeholder="Higher auto-approve threshold" />
+			<label for="exp-name">{m('experiments.modal.name')} <em class="required">*</em></label>
+			<input id="exp-name" type="text" bind:value={form.name} placeholder={m('experiments.modal.namePlaceholder')} />
 		</div>
 		<div class="field">
-			<label for="exp-desc">Description</label>
-			<input id="exp-desc" type="text" bind:value={form.description} placeholder="Optional" />
+			<label for="exp-desc">{m('experiments.modal.description')}</label>
+			<input id="exp-desc" type="text" bind:value={form.description} placeholder={m('experiments.modal.descriptionPlaceholder')} />
 		</div>
 		<div class="field">
-			<label for="exp-defn">Workflow definition <em class="required">*</em></label>
+			<label for="exp-defn">{m('experiments.modal.workflowDefinition')} <em class="required">*</em></label>
 			<select id="exp-defn" bind:value={form.workflow_definition_id} onchange={onDefinitionChange}>
 				{#each definitions as d (d.id)}
 					<option value={d.id}>{d.name}</option>
@@ -357,11 +354,11 @@
 		</div>
 		<div class="field-row">
 			<div class="field">
-				<label for="exp-split">Split — % to variant A</label>
+				<label for="exp-split">{m('experiments.modal.splitLabel')}</label>
 				<input id="exp-split" type="number" min="0" max="100" bind:value={form.split_a_pct} />
 			</div>
 			<div class="field">
-				<label for="exp-metric">Primary metric</label>
+				<label for="exp-metric">{m('experiments.modal.primaryMetric')}</label>
 				<select id="exp-metric" bind:value={form.primary_metric}>
 					{#each METRICS as mtr (mtr)}
 						<option value={mtr}>{PRIMARY_METRIC_LABELS[mtr]}</option>
@@ -369,17 +366,17 @@
 				</select>
 			</div>
 			<div class="field">
-				<label for="exp-min">Min sample / variant</label>
+				<label for="exp-min">{m('experiments.modal.minSample')}</label>
 				<input id="exp-min" type="number" min="1" bind:value={form.min_sample_per_variant} />
 			</div>
 		</div>
 		<div class="field-row">
 			<div class="field">
-				<label for="exp-cfg-a">Variant A config (control)</label>
+				<label for="exp-cfg-a">{m('experiments.modal.configA')}</label>
 				<textarea id="exp-cfg-a" rows="8" class="mono" bind:value={form.config_a}></textarea>
 			</div>
 			<div class="field">
-				<label for="exp-cfg-b">Variant B config (variant)</label>
+				<label for="exp-cfg-b">{m('experiments.modal.configB')}</label>
 				<textarea id="exp-cfg-b" rows="8" class="mono" bind:value={form.config_b}></textarea>
 			</div>
 		</div>
@@ -387,9 +384,9 @@
 			<p class="error-banner">{createError}</p>
 		{/if}
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
+			<button type="button" class="btn-cancel" onclick={() => (showCreate = false)}>{m('common.cancel')}</button>
 			<button type="submit" class="btn-primary" disabled={saving}>
-				{saving ? 'Saving…' : 'Create'}
+				{saving ? m('common.saving') : m('experiments.modal.create')}
 			</button>
 		</div>
 	</form>
@@ -398,13 +395,13 @@
 <!-- Results readout -->
 <Modal
 	open={resultsFor !== null}
-	ariaLabel="Experiment results"
-	title={resultsFor ? `Results — ${resultsFor.name}` : 'Results'}
+	ariaLabel={m('experiments.results.aria')}
+	title={resultsFor ? m('experiments.results.titleNamed', { name: resultsFor.name }) : m('experiments.results.title')}
 	width="lg"
 	onclose={() => (resultsFor = null)}
 >
 	{#if resultsLoading}
-		<p>Loading results…</p>
+		<p>{m('experiments.results.loading')}</p>
 	{:else if resultsError}
 		<p class="error-banner">{resultsError}</p>
 	{:else if results}
@@ -412,13 +409,13 @@
 			{#if results.enough_data}
 				<div class="winner" class:tie={results.winner === 'tie'}>
 					{#if results.winner === 'tie'}
-						<strong>No clear winner</strong>
+						<strong>{m('experiments.results.noWinner')}</strong>
 					{:else}
-						<strong>Winner: Variant {results.winner}</strong>
+						<strong>{m('experiments.results.winner', { variant: results.winner ?? '' })}</strong>
 					{/if}
 				</div>
 			{:else}
-				<div class="winner pending"><strong>Not enough data yet</strong></div>
+				<div class="winner pending"><strong>{m('experiments.results.notEnough')}</strong></div>
 			{/if}
 			<p class="rationale">{results.rationale}</p>
 			{#if results.notes.length}
@@ -430,41 +427,37 @@
 			<table class="variant-table">
 				<thead>
 					<tr>
-						<th scope="col">Metric</th>
-						<th scope="col" class="right">Variant A</th>
-						<th scope="col" class="right">Variant B</th>
+						<th scope="col">{m('experiments.results.metric')}</th>
+						<th scope="col" class="right">{m('experiments.results.variantA')}</th>
+						<th scope="col" class="right">{m('experiments.results.variantB')}</th>
 					</tr>
 				</thead>
 				<tbody>
-					<tr><td>Assigned</td><td class="right mono">{results.variant_a.assigned_count}</td><td class="right mono">{results.variant_b.assigned_count}</td></tr>
-					<tr><td>Completed</td><td class="right mono">{results.variant_a.completed_count}</td><td class="right mono">{results.variant_b.completed_count}</td></tr>
+					<tr><td>{m('experiments.results.assigned')}</td><td class="right mono">{results.variant_a.assigned_count}</td><td class="right mono">{results.variant_b.assigned_count}</td></tr>
+					<tr><td>{m('experiments.results.completed')}</td><td class="right mono">{results.variant_a.completed_count}</td><td class="right mono">{results.variant_b.completed_count}</td></tr>
 					<tr class:primary={results.primary_metric === 'time_to_approval_days'}>
-						<td>Median time to approval (days)</td>
+						<td>{m('experiments.results.medianTime')}</td>
 						<td class="right mono">{results.variant_a.median_time_to_approval_days}</td>
 						<td class="right mono">{results.variant_b.median_time_to_approval_days}</td>
 					</tr>
 					<tr class:primary={results.primary_metric === 'touchless_rate_pct'}>
-						<td>Touchless rate</td>
+						<td>{m('experiments.results.touchlessRate')}</td>
 						<td class="right mono">{results.variant_a.touchless_rate_pct}%</td>
 						<td class="right mono">{results.variant_b.touchless_rate_pct}%</td>
 					</tr>
 					<tr class:primary={results.primary_metric === 'exception_rate_pct'}>
-						<td>Exception rate</td>
+						<td>{m('experiments.results.exceptionRate')}</td>
 						<td class="right mono">{results.variant_a.exception_rate_pct}%</td>
 						<td class="right mono">{results.variant_b.exception_rate_pct}%</td>
 					</tr>
 					<tr class:primary={results.primary_metric === 'rejection_rate_pct'}>
-						<td>Rejection rate</td>
+						<td>{m('experiments.results.rejectionRate')}</td>
 						<td class="right mono">{results.variant_a.rejection_rate_pct}%</td>
 						<td class="right mono">{results.variant_b.rejection_rate_pct}%</td>
 					</tr>
 				</tbody>
 			</table>
-			<p class="hint">
-				The highlighted row is the configured primary metric the winner is
-				called on. Needs ≥ {results.min_sample_per_variant} completed invoices
-				per variant.
-			</p>
+			<p class="hint">{m('experiments.results.hint', { n: results.min_sample_per_variant })}</p>
 		</div>
 	{/if}
 </Modal>

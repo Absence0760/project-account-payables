@@ -7,23 +7,24 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
-	const STATUS_CHIPS = [
-		{ key: 'all', label: 'All' },
-		{ key: 'open', label: 'Open' },
-		{ key: 'applied', label: 'Applied' },
-		{ key: 'void', label: 'Void' }
-	];
+	const STATUS_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
+		{ key: 'open', label: m('creditMemos.status.open') },
+		{ key: 'applied', label: m('creditMemos.status.applied') },
+		{ key: 'void', label: m('creditMemos.status.void') }
+	]);
 
-	const COLUMNS = [
-		{ label: 'Memo #' },
-		{ label: 'Vendor' },
-		{ label: 'Amount', class: 'right' },
-		{ label: 'Issued' },
-		{ label: 'Applied To' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('creditMemos.col.memoNumber') },
+		{ label: m('creditMemos.col.vendor') },
+		{ label: m('creditMemos.col.amount'), class: 'right' },
+		{ label: m('creditMemos.col.issued') },
+		{ label: m('creditMemos.col.appliedTo') },
+		{ label: m('creditMemos.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	interface CreditMemo {
 		id: string;
@@ -105,7 +106,7 @@
 			total = data.total;
 			page = nextPage;
 		} catch {
-			toast('Failed to load credit memos', 'error');
+			toast(m('creditMemos.toast.loadFailed'), 'error');
 		}
 	}
 
@@ -148,7 +149,7 @@
 				amount: parseFloat(newAmount),
 				reason: newReason.trim() || null
 			});
-			toast('Credit memo created', 'success');
+			toast(m('creditMemos.toast.created'), 'success');
 			showCreate = false;
 			newMemoNumber = '';
 			newVendorId = '';
@@ -156,7 +157,7 @@
 			newReason = '';
 			await loadMemos();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Create failed', 'error');
+			toast(err instanceof Error ? err.message : m('creditMemos.toast.createFailed'), 'error');
 		} finally {
 			saving = false;
 		}
@@ -169,12 +170,12 @@
 			await api.post(`/api/credit-memos/${applyTargetId}/apply`, {
 				invoice_id: applyInvoiceId
 			});
-			toast('Credit memo applied', 'success');
+			toast(m('creditMemos.toast.applied'), 'success');
 			applyTargetId = null;
 			applyInvoiceId = '';
 			await loadMemos();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Apply failed', 'error');
+			toast(err instanceof Error ? err.message : m('creditMemos.toast.applyFailed'), 'error');
 		} finally {
 			applying = false;
 		}
@@ -183,10 +184,10 @@
 	async function handleVoid(id: string) {
 		try {
 			await api.post(`/api/credit-memos/${id}/void`, {});
-			toast('Credit memo voided', 'success');
+			toast(m('creditMemos.toast.voided'), 'success');
 			await loadMemos();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Void failed', 'error');
+			toast(err instanceof Error ? err.message : m('creditMemos.toast.voidFailed'), 'error');
 		}
 	}
 
@@ -202,9 +203,9 @@
 	});
 </script>
 
-<PageHeader title="Credit Memos">
+<PageHeader title={m('creditMemos.title')}>
 	{#snippet actions()}
-		<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Credit Memo</button>
+		<button class="btn-primary" onclick={() => (showCreate = true)}>{m('creditMemos.new')}</button>
 	{/snippet}
 
 	<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
@@ -212,7 +213,7 @@
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={memos.length === 0}
-		empty={loading ? 'Loading…' : 'No credit memos.'}
+		empty={loading ? m('common.loading') : m('creditMemos.empty')}
 	>
 		{#snippet body()}
 			{#each memos as memo (memo.id)}
@@ -225,8 +226,8 @@
 					<td><span class="badge {memo.status}">{memo.status}</span></td>
 					<td class="actions">
 						{#if memo.status === 'open'}
-							<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>Apply</RowAction>
-							<RowAction variant="danger" onclick={() => handleVoid(memo.id)}>Void</RowAction>
+							<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>{m('creditMemos.row.apply')}</RowAction>
+							<RowAction variant="danger" onclick={() => handleVoid(memo.id)}>{m('creditMemos.row.void')}</RowAction>
 						{/if}
 					</td>
 				</tr>
@@ -237,73 +238,73 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={loadMoreMemos} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${memos.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('creditMemos.loadMore', { shown: memos.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} credit memo{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('creditMemos.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>
 
 <Modal
 	open={showCreate}
-	ariaLabel="New credit memo"
-	title="New Credit Memo"
+	ariaLabel={m('creditMemos.createModal.aria')}
+	title={m('creditMemos.createModal.title')}
 	width="sm"
 	onclose={() => (showCreate = false)}
 >
 	<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 		<label>
-			<span>Memo Number <em class="required">*</em></span>
+			<span>{m('creditMemos.createModal.memoNumber')} <em class="required">*</em></span>
 			<input type="text" bind:value={newMemoNumber} required />
 		</label>
 		<label>
-			<span>Vendor <em class="required">*</em></span>
+			<span>{m('creditMemos.createModal.vendor')} <em class="required">*</em></span>
 			<select bind:value={newVendorId} required>
-				<option value="">Select vendor…</option>
+				<option value="">{m('creditMemos.createModal.selectVendor')}</option>
 				{#each vendors as v}
 					<option value={v.id}>{v.name}</option>
 				{/each}
 			</select>
 		</label>
 		<label>
-			<span>Amount <em class="required">*</em></span>
+			<span>{m('creditMemos.createModal.amount')} <em class="required">*</em></span>
 			<input type="number" min="0.01" step="0.01" bind:value={newAmount} required />
 		</label>
 		<label>
-			<span>Reason</span>
-			<textarea bind:value={newReason} rows="2" placeholder="e.g. Returned defective goods"></textarea>
+			<span>{m('creditMemos.createModal.reason')}</span>
+			<textarea bind:value={newReason} rows="2" placeholder={m('creditMemos.createModal.reasonPlaceholder')}></textarea>
 		</label>
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (showCreate = false)}>Cancel</button>
-			<button type="submit" class="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
+			<button type="button" class="btn-cancel" onclick={() => (showCreate = false)}>{m('common.cancel')}</button>
+			<button type="submit" class="btn-primary" disabled={saving}>{saving ? m('common.saving') : m('creditMemos.createModal.create')}</button>
 		</div>
 	</form>
 </Modal>
 
 <Modal
 	open={applyTargetId !== null}
-	ariaLabel="Apply credit memo"
-	title="Apply Credit Memo"
+	ariaLabel={m('creditMemos.applyModal.aria')}
+	title={m('creditMemos.applyModal.title')}
 	width="sm"
 	onclose={() => (applyTargetId = null)}
 >
-	<p class="modal-hint">Pick an invoice to apply this credit to.</p>
+	<p class="modal-hint">{m('creditMemos.applyModal.hint')}</p>
 	<form onsubmit={(e) => { e.preventDefault(); handleApply(); }}>
 		<label>
-			<span>Invoice <em class="required">*</em></span>
+			<span>{m('creditMemos.applyModal.invoice')} <em class="required">*</em></span>
 			<select bind:value={applyInvoiceId} required>
-				<option value="">Select invoice…</option>
+				<option value="">{m('creditMemos.applyModal.selectInvoice')}</option>
 				{#each invoicesForVendor as inv}
 					<option value={inv.id}>{inv.invoice_number} — {inv.vendor}</option>
 				{/each}
 			</select>
 		</label>
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (applyTargetId = null)}>Cancel</button>
-			<button type="submit" class="btn-primary" disabled={applying}>{applying ? 'Applying…' : 'Apply'}</button>
+			<button type="button" class="btn-cancel" onclick={() => (applyTargetId = null)}>{m('common.cancel')}</button>
+			<button type="submit" class="btn-primary" disabled={applying}>{applying ? m('creditMemos.applyModal.applying') : m('creditMemos.applyModal.apply')}</button>
 		</div>
 	</form>
 </Modal>

@@ -20,27 +20,28 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import VendorStatementReconModal from '$lib/components/modals/VendorStatementReconModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 
 	const canCreate = $derived(auth.isManager);
 
-	const STATUS_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const STATUS_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...RECON_STATUSES.map((s) => ({ key: s, label: RECON_STATUS_LABELS[s] }))
-	];
+	]);
 
-	const COLUMNS = [
-		{ label: 'Vendor' },
-		{ label: 'Statement date' },
-		{ label: 'Reference' },
-		{ label: 'Discrepancies', class: 'right' },
-		{ label: 'Statement total', class: 'right' },
-		{ label: 'Ledger total', class: 'right' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('vendorStatements.col.vendor') },
+		{ label: m('vendorStatements.col.statementDate') },
+		{ label: m('vendorStatements.col.reference') },
+		{ label: m('vendorStatements.col.discrepancies'), class: 'right' },
+		{ label: m('vendorStatements.col.statementTotal'), class: 'right' },
+		{ label: m('vendorStatements.col.ledgerTotal'), class: 'right' },
+		{ label: m('vendorStatements.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	const PAGE_SIZE = 20;
 
@@ -111,7 +112,7 @@
 			pageNum = nextPage;
 		} catch (e) {
 			if (!opts.append) recons = [];
-			toast(e instanceof Error ? e.message : 'Failed to load reconciliations', 'error');
+			toast(e instanceof Error ? e.message : m('vendorStatements.toast.loadFailed'), 'error');
 		} finally {
 			loading = false;
 			loadingMore = false;
@@ -165,7 +166,7 @@
 		deepLinkLoaded = id;
 		getReconciliation(id)
 			.then((r) => (detail = r))
-			.catch(() => toast('Reconciliation not found', 'error'));
+			.catch(() => toast(m('vendorStatements.toast.notFound'), 'error'));
 	});
 
 	async function openDetail(r: Reconciliation) {
@@ -218,10 +219,10 @@
 			await deleteReconciliation(r.id);
 			recons = recons.filter((x) => x.id !== r.id);
 			total = Math.max(0, total - 1);
-			toast('Reconciliation deleted', 'success');
+			toast(m('vendorStatements.toast.deleted'), 'success');
 			loadCloseReadiness();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+			toast(e instanceof Error ? e.message : m('vendorStatements.toast.deleteFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -255,33 +256,33 @@
 	}}
 />
 
-<PageHeader title="Statements">
+<PageHeader title={m('vendorStatements.title')}>
 	{#snippet actions()}
 		{#if canCreate}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ New reconciliation</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('vendorStatements.new')}</button>
 		{/if}
 	{/snippet}
 
 	<!-- KPI row -->
 	<div class="kpi-row">
-		<KpiCard value={openCount} label="Open reconciliations" />
-		<KpiCard value={totalDiscrepancies} label="Open discrepancies" highlight={totalDiscrepancies > 0 ? 'red' : null} />
+		<KpiCard value={openCount} label={m('vendorStatements.kpi.openRecons')} />
+		<KpiCard value={totalDiscrepancies} label={m('vendorStatements.kpi.openDiscrepancies')} highlight={totalDiscrepancies > 0 ? 'red' : null} />
 		<KpiCard
-			value={closeReady === null ? '—' : closeReady ? 'Ready' : `${blockingCount} blocking`}
-			label="Close readiness"
+			value={closeReady === null ? '—' : closeReady ? m('vendorStatements.kpi.ready') : m('vendorStatements.kpi.blocking', { n: blockingCount })}
+			label={m('vendorStatements.kpi.closeReadiness')}
 			highlight={closeReady === false ? 'red' : closeReady === true ? 'green' : null}
 		/>
 	</div>
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search vendor or reference..." ariaLabel="Search reconciliations" />
+		<SearchBox bind:value={search} placeholder={m('vendorStatements.searchPlaceholder')} ariaLabel={m('vendorStatements.searchAria')} />
 		<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 	</div>
 
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={!loading && visibleRecons.length === 0}
-		empty={loading ? 'Loading…' : 'No reconciliations match your filters.'}
+		empty={loading ? m('common.loading') : m('vendorStatements.empty')}
 		colspan={8}
 	>
 		{#snippet body()}
@@ -295,7 +296,7 @@
 					<td>
 						<RowLink
 							onclick={() => openDetail(recon)}
-							ariaLabel={`Open reconciliation for ${recon.vendor_name ?? 'vendor'} ${recon.statement_date}`}
+							ariaLabel={m('vendorStatements.row.openAria', { vendor: recon.vendor_name ?? m('vendorStatements.vendorFallback'), date: recon.statement_date })}
 						>
 							{recon.vendor_name ?? '—'}
 						</RowLink>
@@ -319,9 +320,9 @@
 								armed={confirmDeleteId === recon.id}
 								disabled={busyId === recon.id}
 								onclick={() => deleteRecon(recon)}
-								ariaLabel={`Delete reconciliation for ${recon.vendor_name ?? 'vendor'} ${recon.statement_date}`}
+								ariaLabel={m('vendorStatements.row.deleteAria', { vendor: recon.vendor_name ?? m('vendorStatements.vendorFallback'), date: recon.statement_date })}
 							>
-								{confirmDeleteId === recon.id ? 'Confirm' : 'Delete'}
+								{confirmDeleteId === recon.id ? m('vendorStatements.row.confirm') : m('vendorStatements.row.delete')}
 							</RowAction>
 						{/if}
 					</td>
@@ -333,12 +334,12 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={() => load({ append: true })} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${recons.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('vendorStatements.loadMore', { shown: recons.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} reconciliation{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('vendorStatements.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>
