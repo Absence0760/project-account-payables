@@ -119,7 +119,7 @@ Dedicated page for handling flagged invoices — mismatches, rejections, anomali
 ---
 
 ### Advanced Approval Routing
-**Status:** Partial — **Competitive gap: all competitors have this**
+**Status:** Done — all routing strategies, escalation, email/Slack/Teams approval, and the approval-matrix UI shipped
 
 Current state: manual, specific, auto, and chain approval strategies. Amount-based auto-approve, CFO gate, max-amount rejection, multi-level chains, segregation of duties, and delegation are implemented. No escalation, email/Slack approval, or visual matrix builder yet.
 
@@ -561,7 +561,7 @@ SOC 2 Type I (design) → Type II (operating over time) is the table-stakes secu
 **Competitive gap: most competitors have mobile apps**
 
 ### Flutter Mobile App
-**Status:** Partial — boilerplate built (iOS + Android), core screens working
+**Status:** Done — full iOS + Android app; web-parity + admin screens all shipped
 
 Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, payments, settings. Same backend API as web.
 
