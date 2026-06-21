@@ -31,7 +31,14 @@ class InvoiceBase(BaseModel):
     received_date: date | None = None
     due_date: date | None = None
     payment_terms: str | None = Field(default=None, max_length=50)
-    status: InvoiceStatus = InvoiceStatus.new
+    # NOTE: `status` is deliberately NOT accepted on create. Every invoice must
+    # enter the workflow at `new` and reach any later state only through the
+    # state machine (validate_transition + segregation + thresholds + the CFO
+    # gate + the approval signature + the immutable audit row). Accepting a
+    # caller-supplied status here let a POST mint an already-`approved` (or even
+    # `paid`) invoice, bypassing every one of those controls. `create_invoice`
+    # hardcodes `new`; this field stays off the schema. See InvoiceUpdate for the
+    # same reasoning on edits.
     po_number: str | None = Field(default=None, max_length=100)
     subtotal: Decimal | None = Field(default=None, ge=0)
     tax_amount: Decimal | None = Field(default=None, ge=0)

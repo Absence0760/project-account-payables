@@ -470,3 +470,137 @@ async def test_cannot_approve_an_invoice_from_another_tenant(realdb):
             )
         ).scalar_one()
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Create cannot inject a status (BUG: status injection) — every invoice must
+# enter the workflow at `new`. A POST body claiming `status: approved` (or
+# `paid`) used to mint an invoice already past the gate, bypassing extraction,
+# segregation, the thresholds, the CFO gate, and the approval signature.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_cannot_inject_approved_status(realdb):
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Injection Vendor",
+                "invoice_number": "CP-INJECT-1",
+                "amount": "9999.00",
+                "currency": "USD",
+                "status": "approved",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["status"] == "new", "create must always start at `new`, never honour a status claim"
+
+    # And the row that committed is `new`, with no approval finalize.
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (
+            await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(body["id"])))
+        ).scalar_one()
+        assert inv.status == InvoiceStatus.new
+        assert inv.approved_by is None
+        assert inv.approval_date is None
+
+
+@pytest.mark.asyncio
+async def test_create_cannot_inject_paid_status(realdb):
+    """The most dangerous variant: minting a `paid` invoice would skip the whole
+    money path. Status is ignored; the invoice enters at `new`."""
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Injection Vendor",
+                "invoice_number": "CP-INJECT-2",
+                "amount": "100.00",
+                "currency": "USD",
+                "status": "paid",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["status"] == "new"
+
+
+# ---------------------------------------------------------------------------
+# Financial fields are frozen once approved — the signed-off amount is what the
+# payment run pays. Editing the amount / line items after sign-off (but before
+# ERP-send, where IMMUTABLE_STATUSES already blocks everything) used to slip
+# through: `approved` was missing from the lock set.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_cannot_mutate_amount_after_approved(realdb):
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"),
+        info.org_id,
+        status=InvoiceStatus.approved,
+        amount="100.00",
+        number="CP-FROZEN-1",
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/invoices/{inv_id}", json={"amount": "9999.00"})
+    assert resp.status_code == 409, resp.text
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.amount == Decimal("100.00"), "approved amount must not change"
+
+
+@pytest.mark.asyncio
+async def test_patch_allows_nonfinancial_edit_after_approved(realdb):
+    """Guard must be surgical: notes / metadata stay editable on an approved
+    invoice; only money fields are frozen."""
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"),
+        info.org_id,
+        status=InvoiceStatus.approved,
+        amount="100.00",
+        number="CP-FROZEN-2",
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.patch(f"/api/invoices/{inv_id}", json={"notes": "approved-era note"})
+    assert resp.status_code == 200, resp.text
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (await s.execute(select(Invoice).where(Invoice.id == inv_id))).scalar_one()
+        assert inv.notes == "approved-era note"
+        assert inv.amount == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_line_items_frozen_after_approved(realdb):
+    info = realdb.info("a")
+    inv_id = await _seed_invoice(
+        realdb.sessionmaker("a"),
+        info.org_id,
+        status=InvoiceStatus.approved,
+        amount="100.00",
+        number="CP-FROZEN-3",
+    )
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.put(
+            f"/api/invoices/{inv_id}/line-items",
+            json=[
+                {
+                    "description": "padded line",
+                    "quantity": "1",
+                    "unit_price": "9999.00",
+                    "total": "9999.00",
+                }
+            ],
+        )
+    assert resp.status_code == 409, resp.text

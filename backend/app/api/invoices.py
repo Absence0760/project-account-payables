@@ -98,6 +98,26 @@ IMMUTABLE_STATUSES = {
 # `rejected` / `failed`.
 _PEPPOL_SENDABLE_STATUSES = {DBInvoiceStatus.approved} | IMMUTABLE_STATUSES
 
+# Once an invoice is approved, its financial content is frozen. The approval
+# signature (services/approval_signature.py) is computed over the exact amount,
+# and the payment run reads `Invoice.amount` straight off the row — so editing
+# the amount / line items after sign-off would pay out a figure nobody approved
+# and silently invalidate the signature. `approved` was the gap: IMMUTABLE_STATUSES
+# only starts at `sending_to_erp`, so an edit in the `approved` window slipped
+# through. Financial edits past approval must go back through reject → re-approve.
+_FINANCIALLY_LOCKED_STATUSES = {DBInvoiceStatus.approved} | IMMUTABLE_STATUSES
+_FINANCIAL_FIELDS = frozenset(
+    {
+        "amount",
+        "currency",
+        "subtotal",
+        "tax_amount",
+        "discount_amount",
+        "shipping_amount",
+        "tax_rate",
+    }
+)
+
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
@@ -612,6 +632,14 @@ async def save_invoice_line_items(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    # Line items are financial content — frozen once the invoice is approved
+    # (the approved amount was signed off; payment reads it). Re-coding lines
+    # after sign-off requires reject → re-approve. See _FINANCIALLY_LOCKED_STATUSES.
+    if invoice.status in _FINANCIALLY_LOCKED_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot edit line items once the invoice is approved",
+        )
 
     # Delete existing line items
     await db.execute(sa_delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id))
@@ -655,7 +683,10 @@ async def create_invoice(
         received_date=body.received_date,
         due_date=body.due_date,
         payment_terms=body.payment_terms,
-        status=body.status.value,
+        # Always enter the workflow at `new`; status is not caller-settable on
+        # create (see InvoiceCreate). Reaching any later state goes through the
+        # transition endpoints + state machine, never a create payload.
+        status=DBInvoiceStatus.new,
         po_number=body.po_number,
         subtotal=body.subtotal,
         tax_amount=body.tax_amount,
@@ -712,6 +743,18 @@ async def update_invoice(
         raise HTTPException(status_code=409, detail="Cannot update invoice in this status")
 
     update_data = body.model_dump(exclude_unset=True)
+    # An approved invoice is financially frozen — the signed-off amount is what
+    # the payment run pays. Non-financial edits (notes, addresses, GL coding)
+    # stay allowed in the `approved` window so AP can keep cleaning up metadata;
+    # touching a money field requires reject → re-approve. (Past ERP-send the
+    # IMMUTABLE_STATUSES check above has already blocked the whole edit.)
+    if invoice.status in _FINANCIALLY_LOCKED_STATUSES:
+        touched_financial = _FINANCIAL_FIELDS & set(update_data)
+        if touched_financial:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot edit financial fields once the invoice is approved",
+            )
     # Map frontend field name to DB column
     if "vendor" in update_data:
         update_data["vendor_name"] = update_data.pop("vendor")
