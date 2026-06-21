@@ -312,6 +312,27 @@ async def payment_summary(
     }
 
 
+@router.get("/counts")
+async def payment_status_counts(
+    db: AsyncSession = Depends(get_tenant_db),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
+):
+    """Per-status payment tallies for the History-tab filter chips.
+
+    Computed over the WHOLE entity-scoped payment set, not the loaded page, so
+    the chip counts (and the "All" count) don't undercount once the history
+    list paginates. Mirrors GET /api/vendors/counts. Declared before the
+    `/{payment_id}` route so the literal path isn't parsed as a UUID.
+    """
+    query = apply_entity_scope(
+        select(Payment.status, func.count()).select_from(Payment), Payment, entity_id
+    ).group_by(Payment.status)
+    rows = (await db.execute(query)).all()
+    by_status = {str(s): int(n) for s, n in rows}
+    return {"total": sum(by_status.values()), "by_status": by_status}
+
+
 @router.get("/{payment_id}/remittance")
 async def get_payment_remittance(
     payment_id: uuid.UUID,

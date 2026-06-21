@@ -179,7 +179,10 @@
 		await loadSummary();
 		await loadQueue();
 		await loadRuns();
-		if (activeTab === 'history') await paymentStore.fetch(buildParams());
+		if (activeTab === 'history') {
+			await paymentStore.fetch(buildParams());
+			await fetchPaymentCounts();
+		}
 	}
 
 	// Void modal — cfo/admin can void a completed or in-flight payment.
@@ -209,6 +212,7 @@
 				loadSummary(),
 				loadQueue(),
 				paymentStore.fetch(buildParams()),
+				fetchPaymentCounts(),
 			]);
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
@@ -282,6 +286,7 @@
 		if (activeTab === 'history') {
 			activeStatus;
 			paymentStore.fetch(buildParams());
+			fetchPaymentCounts();
 		} else if (activeTab === 'queue') {
 			loadQueue();
 		} else if (activeTab === 'runs') {
@@ -410,8 +415,27 @@
 		}
 	}
 
+	// Per-status tallies over the WHOLE payment set, from GET /api/payments/counts
+	// — so the History chip counts (and "All") reflect every page, not just the
+	// loaded one. Falls back to the loaded-page tally if the fetch fails.
+	let paymentCounts = $state<Record<string, number>>({});
+	let paymentCountsTotal = $state(0);
+
+	async function fetchPaymentCounts() {
+		try {
+			const data = await api.get<{ total: number; by_status: Record<string, number> }>(
+				'/api/payments/counts'
+			);
+			paymentCounts = data.by_status ?? {};
+			paymentCountsTotal = data.total ?? 0;
+		} catch {
+			paymentCounts = {};
+			paymentCountsTotal = 0;
+		}
+	}
+
 	function statusCount(s: PaymentStatus): number {
-		return paymentStore.all.filter((p) => p.status === s).length;
+		return paymentCounts[s] ?? paymentStore.all.filter((p) => p.status === s).length;
 	}
 
 	function formatCurrency(amount: number, currency?: string | null): string {
@@ -427,7 +451,7 @@
 	}
 
 	let historyChips = $derived([
-		{ key: 'all', label: m('common.all'), count: paymentStore.all.length },
+		{ key: 'all', label: m('common.all'), count: paymentCountsTotal || paymentStore.all.length },
 		...PAYMENT_STATUSES.map((s) => ({
 			key: s,
 			label: PAYMENT_STATUS_LABELS[s],
