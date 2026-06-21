@@ -26,6 +26,7 @@
 	import RequisitionModal from '$lib/components/modals/RequisitionModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { onMount } from 'svelte';
@@ -47,20 +48,20 @@
 	let busyId = $state<string | null>(null);
 	let glAccounts = $state<GlAccountOption[]>([]);
 
-	const STATUS_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const STATUS_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...REQUISITION_STATUSES.map((s) => ({ key: s, label: REQUISITION_STATUS_LABELS[s] }))
-	];
+	]);
 
-	const COLUMNS = [
-		{ label: 'Requisition #' },
-		{ label: 'Title' },
-		{ label: 'Department' },
-		{ label: 'Needed By' },
-		{ label: 'Total', class: 'right' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('requisitions.col.requisitionNumber') },
+		{ label: m('requisitions.col.title') },
+		{ label: m('requisitions.col.department') },
+		{ label: m('requisitions.col.neededBy') },
+		{ label: m('requisitions.col.total'), class: 'right' },
+		{ label: m('requisitions.col.status') },
 		{ label: '', class: 'actions-col' }
-	];
+	]);
 
 	// Client-side text search over the loaded page (number / title / department).
 	const visible = $derived.by(() => {
@@ -101,7 +102,7 @@
 			requisitions = res.items;
 			total = res.total;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load requisitions', 'error');
+			toast(err instanceof Error ? err.message : m('requisitions.toast.loadFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -134,7 +135,7 @@
 		if (!deepLinkId) return;
 		getRequisition(deepLinkId)
 			.then((r) => (editing = r))
-			.catch(() => toast('Requisition not found', 'error'));
+			.catch(() => toast(m('requisitions.notFound'), 'error'));
 	});
 
 	async function loadGlAccounts() {
@@ -187,16 +188,16 @@
 	}
 
 	function doSubmit(r: Requisition) {
-		runAction(r.id, () => submitRequisition(r.id), 'Requisition submitted', 'Submit failed');
+		runAction(r.id, () => submitRequisition(r.id), m('requisitions.toast.submitted'), m('requisitions.toast.submitFailed'));
 	}
 	function doApprove(r: Requisition) {
-		runAction(r.id, () => approveRequisition(r.id), 'Requisition approved', 'Approve failed');
+		runAction(r.id, () => approveRequisition(r.id), m('requisitions.toast.approved'), m('requisitions.toast.approveFailed'));
 	}
 	function doReject(r: Requisition) {
-		runAction(r.id, () => rejectRequisition(r.id), 'Requisition rejected', 'Reject failed');
+		runAction(r.id, () => rejectRequisition(r.id), m('requisitions.toast.rejected'), m('requisitions.toast.rejectFailed'));
 	}
 	function doCancel(r: Requisition) {
-		runAction(r.id, () => cancelRequisition(r.id), 'Requisition cancelled', 'Cancel failed');
+		runAction(r.id, () => cancelRequisition(r.id), m('requisitions.toast.cancelled'), m('requisitions.toast.cancelFailed'));
 	}
 
 	async function doConvert(r: Requisition) {
@@ -205,13 +206,13 @@
 			const res = await convertRequisitionToPo(r.id);
 			toast(
 				res.created
-					? `Converted to ${res.po_number}`
-					: `Already converted (${res.po_number})`,
+					? m('requisitions.toast.converted', { poNumber: res.po_number })
+					: m('requisitions.toast.alreadyConverted', { poNumber: res.po_number }),
 				'success'
 			);
 			await load();
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Convert failed', 'error');
+			toast(err instanceof Error ? err.message : m('requisitions.toast.convertFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -222,9 +223,9 @@
 			await apiDelete(id);
 			requisitions = requisitions.filter((r) => r.id !== id);
 			total = Math.max(0, total - 1);
-			toast('Requisition deleted', 'success');
+			toast(m('requisitions.toast.deleted'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('requisitions.toast.deleteFailed'), 'error');
 		} finally {
 			confirmDeleteId = null;
 		}
@@ -248,34 +249,34 @@
 
 <svelte:window onclick={onWindowClick} />
 
-<PageHeader title="Requisitions">
+<PageHeader title={m('requisitions.title')}>
 	{#snippet actions()}
 		{#if canCreate}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Requisition</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('requisitions.action.new')}</button>
 		{/if}
 	{/snippet}
 
 	<div class="kpi-row">
-		<KpiCard value={formatMoney(periodTotal, { currency: orgCurrency.currency })} label="Open total" />
-		<KpiCard value={total} label="Requisitions" />
-		<KpiCard value={pendingCount} label="Pending approval" highlight={pendingCount ? 'red' : null} />
+		<KpiCard value={formatMoney(periodTotal, { currency: orgCurrency.currency })} label={m('requisitions.kpi.openTotal')} />
+		<KpiCard value={total} label={m('requisitions.kpi.requisitions')} />
+		<KpiCard value={pendingCount} label={m('requisitions.kpi.pendingApproval')} highlight={pendingCount ? 'red' : null} />
 	</div>
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search requisitions..." ariaLabel="Search requisitions" />
+		<SearchBox bind:value={search} placeholder={m('requisitions.search.placeholder')} ariaLabel={m('requisitions.search.aria')} />
 		<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 	</div>
 
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={visible.length === 0}
-		empty={loading ? 'Loading…' : 'No requisitions match your filters.'}
+		empty={loading ? m('common.loading') : m('requisitions.empty')}
 	>
 		{#snippet body()}
 			{#each visible as r (r.id)}
 				<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editing = r; }}>
 					<td class="mono">
-						<RowLink onclick={() => (editing = r)} ariaLabel={`Open requisition ${r.requisition_number}`}>
+						<RowLink onclick={() => (editing = r)} ariaLabel={m('requisitions.row.open', { number: r.requisition_number })}>
 							{r.requisition_number}
 						</RowLink>
 					</td>
@@ -288,17 +289,17 @@
 					</td>
 					<td class="actions">
 						{#if canCreate && r.status === 'draft'}
-							<RowAction variant="default" onclick={() => doSubmit(r)} disabled={busyId === r.id}>Submit</RowAction>
+							<RowAction variant="default" onclick={() => doSubmit(r)} disabled={busyId === r.id}>{m('requisitions.row.submit')}</RowAction>
 						{/if}
 						{#if canDecide(r)}
-							<RowAction variant="success" onclick={() => doApprove(r)} disabled={busyId === r.id}>Approve</RowAction>
-							<RowAction variant="danger" onclick={() => doReject(r)} disabled={busyId === r.id}>Reject</RowAction>
+							<RowAction variant="success" onclick={() => doApprove(r)} disabled={busyId === r.id}>{m('requisitions.row.approve')}</RowAction>
+							<RowAction variant="danger" onclick={() => doReject(r)} disabled={busyId === r.id}>{m('requisitions.row.reject')}</RowAction>
 						{/if}
 						{#if canApprove && r.status === 'approved'}
-							<RowAction variant="default" onclick={() => doConvert(r)} disabled={busyId === r.id}>Convert to PO</RowAction>
+							<RowAction variant="default" onclick={() => doConvert(r)} disabled={busyId === r.id}>{m('requisitions.row.convertToPo')}</RowAction>
 						{/if}
 						{#if canCreate && (r.status === 'draft' || r.status === 'submitted' || r.status === 'pending_approval' || r.status === 'approved')}
-							<RowAction variant="default" onclick={() => doCancel(r)} disabled={busyId === r.id}>Cancel</RowAction>
+							<RowAction variant="default" onclick={() => doCancel(r)} disabled={busyId === r.id}>{m('requisitions.row.cancel')}</RowAction>
 						{/if}
 						{#if canCreate && r.status === 'draft'}
 							<RowAction
@@ -310,7 +311,7 @@
 									else confirmDeleteId = r.id;
 								}}
 							>
-								{confirmDeleteId === r.id ? 'Confirm' : 'Delete'}
+								{confirmDeleteId === r.id ? m('requisitions.row.confirm') : m('requisitions.row.delete')}
 							</RowAction>
 						{/if}
 					</td>
@@ -321,7 +322,7 @@
 
 	{#if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} requisition{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('requisitions.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>

@@ -10,15 +10,16 @@
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
-	const COLUMNS = [
-		{ label: 'PO #' },
-		{ label: 'Vendor' },
-		{ label: 'Total', class: 'right' },
-		{ label: 'Status' },
-		{ label: 'Lines' },
-		{ label: 'Created' }
-	];
+	const COLUMNS = $derived([
+		{ label: m('purchaseOrders.col.poNumber') },
+		{ label: m('purchaseOrders.col.vendor') },
+		{ label: m('purchaseOrders.col.total'), class: 'right' },
+		{ label: m('purchaseOrders.col.status') },
+		{ label: m('purchaseOrders.col.lines') },
+		{ label: m('purchaseOrders.col.created') }
+	]);
 
 	interface POLineItem {
 		id: string;
@@ -109,7 +110,7 @@
 			total = data.total;
 			page = nextPage;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load purchase orders', 'error');
+			toast(err instanceof Error ? err.message : m('purchaseOrders.toast.loadListFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -129,7 +130,7 @@
 		try {
 			detail = await api.get<PODetail>(`/api/purchase-orders/${id}`);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load PO', 'error');
+			toast(err instanceof Error ? err.message : m('purchaseOrders.toast.loadFailed'), 'error');
 			detailId = null;
 		} finally {
 			detailLoading = false;
@@ -143,7 +144,7 @@
 			toast(result.message, 'success');
 			await loadPos({ search, status: statusFilter });
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'ERP sync failed', 'error');
+			toast(err instanceof Error ? err.message : m('purchaseOrders.toast.syncFailed'), 'error');
 		} finally {
 			syncing = false;
 		}
@@ -165,21 +166,21 @@
 	let hasMore = $derived(pos.length < total);
 </script>
 
-<PageHeader title="Purchase Orders">
+<PageHeader title={m('purchaseOrders.title')}>
 	{#snippet actions()}
 		<button class="btn-outline" disabled={syncing} onclick={syncFromErp}>
-			{syncing ? 'Syncing…' : 'Sync from ERP'}
+			{syncing ? m('purchaseOrders.action.syncing') : m('purchaseOrders.action.syncErp')}
 		</button>
 	{/snippet}
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search PO number..." ariaLabel="Search purchase orders" />
+		<SearchBox bind:value={search} placeholder={m('purchaseOrders.search.placeholder')} ariaLabel={m('purchaseOrders.search.aria')} />
 		<FilterChips
 			chips={[
-				{ key: 'all', label: 'All', count: total },
-				{ key: 'open', label: 'Open' },
-				{ key: 'closed', label: 'Closed' },
-				{ key: 'cancelled', label: 'Cancelled' }
+				{ key: 'all', label: m('common.all'), count: total },
+				{ key: 'open', label: m('purchaseOrders.filter.open') },
+				{ key: 'closed', label: m('purchaseOrders.filter.closed') },
+				{ key: 'cancelled', label: m('purchaseOrders.filter.cancelled') }
 			]}
 			bind:active={statusFilter}
 		/>
@@ -188,7 +189,7 @@
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={pos.length === 0}
-		empty={loading ? 'Loading…' : 'No purchase orders.'}
+		empty={loading ? m('common.loading') : m('purchaseOrders.empty')}
 	>
 		{#snippet body()}
 			{#each pos as po (po.id)}
@@ -201,7 +202,7 @@
 					<td class="mono">
 						<RowLink
 							onclick={() => (detailId = po.id)}
-							ariaLabel={`View purchase order ${po.po_number}`}
+							ariaLabel={m('purchaseOrders.row.view', { number: po.po_number })}
 						>
 							{po.po_number}
 						</RowLink>
@@ -219,53 +220,53 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={loadMore} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${pos.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('purchaseOrders.loadMore', { shown: pos.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} PO{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('purchaseOrders.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>
 
 <Modal
 	open={detailId !== null}
-	ariaLabel="Purchase order"
+	ariaLabel={m('purchaseOrders.modal.aria')}
 	width="lg"
 	onclose={() => (detailId = null)}
 >
 	{#snippet header()}
 		<header class="modal-header">
 			<div class="title-block">
-				<h2>Purchase Order</h2>
+				<h2>{m('purchaseOrders.modal.title')}</h2>
 				{#if detail}
 					<span class="po-number-badge">{detail.po_number}</span>
 					<span class="badge {detail.status}">{detail.status}</span>
 				{/if}
 			</div>
-			<button class="close-btn" onclick={() => (detailId = null)} aria-label="Close">&times;</button>
+			<button class="close-btn" onclick={() => (detailId = null)} aria-label={m('purchaseOrders.modal.close')}>&times;</button>
 		</header>
 	{/snippet}
 
 	<div class="modal-body">
 		{#if detailLoading}
-			<div class="loading">Loading…</div>
+			<div class="loading">{m('common.loading')}</div>
 		{:else if detail}
 			<dl class="meta">
-				<dt>Vendor</dt><dd>{detail.vendor_name ?? '—'}</dd>
-				<dt>Total</dt><dd class="mono">{formatCurrency(detail.total)}</dd>
-				<dt>Created</dt><dd>{formatDate(detail.created_at)}</dd>
+				<dt>{m('purchaseOrders.modal.vendor')}</dt><dd>{detail.vendor_name ?? '—'}</dd>
+				<dt>{m('purchaseOrders.modal.total')}</dt><dd class="mono">{formatCurrency(detail.total)}</dd>
+				<dt>{m('purchaseOrders.modal.created')}</dt><dd>{formatDate(detail.created_at)}</dd>
 			</dl>
 
-			<h3>Line Items</h3>
+			<h3>{m('purchaseOrders.modal.lineItems')}</h3>
 			<table class="line-table">
 				<thead>
 					<tr>
-						<th>Description</th>
-						<th class="right">Qty</th>
-						<th class="right">Unit Price</th>
-						<th class="right">Total</th>
+						<th>{m('purchaseOrders.modal.description')}</th>
+						<th class="right">{m('purchaseOrders.modal.qty')}</th>
+						<th class="right">{m('purchaseOrders.modal.unitPrice')}</th>
+						<th class="right">{m('purchaseOrders.modal.lineTotal')}</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -277,19 +278,19 @@
 							<td class="right mono">{formatCurrency(li.total)}</td>
 						</tr>
 					{:else}
-						<tr><td colspan="4" class="empty">No line items.</td></tr>
+						<tr><td colspan="4" class="empty">{m('purchaseOrders.modal.noLineItems')}</td></tr>
 					{/each}
 				</tbody>
 			</table>
 
-			<h3>Linked Invoices ({detail.linked_invoices.length})</h3>
+			<h3>{m('purchaseOrders.modal.linkedInvoices', { count: detail.linked_invoices.length })}</h3>
 			<table class="line-table">
 				<thead>
 					<tr>
-						<th>Invoice #</th>
-						<th>Vendor</th>
-						<th class="right">Amount</th>
-						<th>Status</th>
+						<th>{m('purchaseOrders.modal.invoiceNumber')}</th>
+						<th>{m('purchaseOrders.modal.invoiceVendor')}</th>
+						<th class="right">{m('purchaseOrders.modal.amount')}</th>
+						<th>{m('purchaseOrders.modal.invoiceStatus')}</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -301,7 +302,7 @@
 							<td>{inv.status}</td>
 						</tr>
 					{:else}
-						<tr><td colspan="4" class="empty">No invoices reference this PO.</td></tr>
+						<tr><td colspan="4" class="empty">{m('purchaseOrders.modal.noLinkedInvoices')}</td></tr>
 					{/each}
 				</tbody>
 			</table>

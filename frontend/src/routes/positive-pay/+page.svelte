@@ -22,29 +22,30 @@
 	import PositivePayModal from '$lib/components/modals/PositivePayModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 
 	const canCreate = $derived(auth.isManager);
 
 	// file_type chips (single-select). "All" first.
-	const TYPE_CHIPS = [
-		{ key: 'all', label: 'All' },
-		{ key: 'check_issue', label: 'Check issue' },
-		{ key: 'ach_authorization', label: 'ACH auth' }
-	];
+	const TYPE_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
+		{ key: 'check_issue', label: m('positivePay.filter.checkIssue') },
+		{ key: 'ach_authorization', label: m('positivePay.filter.achAuth') }
+	]);
 
-	const COLUMNS = [
-		{ label: 'File' },
-		{ label: 'Type' },
-		{ label: 'Format' },
-		{ label: 'Items', class: 'right' },
-		{ label: 'Total', class: 'right' },
-		{ label: 'Account' },
-		{ label: 'Created' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('positivePay.col.file') },
+		{ label: m('positivePay.col.type') },
+		{ label: m('positivePay.col.format') },
+		{ label: m('positivePay.col.items'), class: 'right' },
+		{ label: m('positivePay.col.total'), class: 'right' },
+		{ label: m('positivePay.col.account') },
+		{ label: m('positivePay.col.created') },
+		{ label: m('positivePay.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	const PAGE_SIZE = 20;
 
@@ -65,8 +66,8 @@
 
 	function fileLabel(f: PositivePayFile): string {
 		return f.file_type === 'check_issue' && f.payment_run_id
-			? `Run ${f.payment_run_id.slice(0, 8)}`
-			: `${POSITIVE_PAY_FILE_TYPE_LABELS[f.file_type]} ${f.id.slice(0, 8)}`;
+			? m('positivePay.runLabel', { id: f.payment_run_id.slice(0, 8) })
+			: m('positivePay.fileLabel', { type: POSITIVE_PAY_FILE_TYPE_LABELS[f.file_type], id: f.id.slice(0, 8) });
 	}
 
 	// Client-side search filter (list endpoint filters by file_type/status).
@@ -111,7 +112,7 @@
 			pageNum = nextPage;
 		} catch (e) {
 			if (!opts.append) files = [];
-			toast(e instanceof Error ? e.message : 'Failed to load Positive Pay files', 'error');
+			toast(e instanceof Error ? e.message : m('positivePay.toast.loadFailed'), 'error');
 		} finally {
 			loading = false;
 			loadingMore = false;
@@ -143,7 +144,7 @@
 		deepLinkLoaded = id;
 		getPositivePayFile(id)
 			.then((f) => (detail = f))
-			.catch(() => toast('Positive Pay file not found', 'error'));
+			.catch(() => toast(m('positivePay.notFound'), 'error'));
 	});
 
 	async function openDetail(f: PositivePayFile) {
@@ -195,9 +196,9 @@
 			await deletePositivePayFile(f.id);
 			files = files.filter((x) => x.id !== f.id);
 			total = Math.max(0, total - 1);
-			toast('Positive Pay file deleted', 'success');
+			toast(m('positivePay.toast.deleted'), 'success');
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+			toast(e instanceof Error ? e.message : m('positivePay.toast.deleteFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -232,33 +233,33 @@
 	}}
 />
 
-<PageHeader title="Positive Pay">
+<PageHeader title={m('positivePay.title')}>
 	{#snippet actions()}
 		{#if canCreate}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ Generate file</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('positivePay.action.generate')}</button>
 		{/if}
 	{/snippet}
 
 	<!-- KPI row -->
 	<div class="kpi-row">
-		<KpiCard value={totalFiles} label="Positive Pay files" />
-		<KpiCard value={itemsExported} label="Items exported" />
+		<KpiCard value={totalFiles} label={m('positivePay.kpi.files')} />
+		<KpiCard value={itemsExported} label={m('positivePay.kpi.itemsExported')} />
 		<KpiCard
 			value={returnsFlagged}
-			label="Returns flagged"
+			label={m('positivePay.kpi.returnsFlagged')}
 			highlight={returnsFlagged > 0 ? 'red' : null}
 		/>
 	</div>
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search run or file id..." ariaLabel="Search Positive Pay files" />
+		<SearchBox bind:value={search} placeholder={m('positivePay.search.placeholder')} ariaLabel={m('positivePay.search.aria')} />
 		<FilterChips chips={TYPE_CHIPS} bind:active={typeFilter} />
 	</div>
 
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={!loading && visibleFiles.length === 0}
-		empty={loading ? 'Loading…' : 'No Positive Pay files match your filters.'}
+		empty={loading ? m('common.loading') : m('positivePay.empty')}
 		colspan={9}
 	>
 		{#snippet body()}
@@ -272,7 +273,7 @@
 					<td>
 						<RowLink
 							onclick={() => openDetail(file)}
-							ariaLabel={`Open Positive Pay file ${fileLabel(file)}`}
+							ariaLabel={m('positivePay.row.open', { label: fileLabel(file) })}
 						>
 							{fileLabel(file)}
 						</RowLink>
@@ -291,9 +292,9 @@
 								armed={confirmDeleteId === file.id}
 								disabled={busyId === file.id}
 								onclick={() => deleteFile(file)}
-								ariaLabel={`Delete Positive Pay file ${fileLabel(file)}`}
+								ariaLabel={m('positivePay.row.deleteAria', { label: fileLabel(file) })}
 							>
-								{confirmDeleteId === file.id ? 'Confirm' : 'Delete'}
+								{confirmDeleteId === file.id ? m('positivePay.row.confirm') : m('positivePay.row.delete')}
 							</RowAction>
 						{/if}
 					</td>
@@ -305,12 +306,12 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={() => load({ append: true })} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${files.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('positivePay.loadMore', { shown: files.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} file{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('positivePay.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>

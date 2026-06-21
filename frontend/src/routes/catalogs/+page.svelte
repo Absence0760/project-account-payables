@@ -23,6 +23,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { goto } from '$app/navigation';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.isManager); // admin | ap_manager
 	// Buyers (admin / ap_manager / ap_clerk) may start a punch-out session.
@@ -52,20 +53,20 @@
 	let guided = $state<GuidedBuyingSuggestion | null>(null);
 	let guidedLoading = $state(false);
 
-	const TYPE_CHIPS = [
-		{ key: 'all', label: 'All' },
-		{ key: 'internal', label: 'Internal' },
-		{ key: 'punchout', label: 'Punch-out' },
-		{ key: 'preferred', label: 'Preferred' }
-	];
+	const TYPE_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
+		{ key: 'internal', label: m('catalogs.filter.internal') },
+		{ key: 'punchout', label: m('catalogs.filter.punchout') },
+		{ key: 'preferred', label: m('catalogs.filter.preferred') }
+	]);
 
-	const COLUMNS = [
-		{ label: 'Name' },
-		{ label: 'Type' },
-		{ label: 'Items', class: 'right' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('catalogs.col.name') },
+		{ label: m('catalogs.col.type') },
+		{ label: m('catalogs.col.items'), class: 'right' },
+		{ label: m('catalogs.col.status') },
 		{ label: '', class: 'actions-col' }
-	];
+	]);
 
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -85,7 +86,7 @@
 			catalogs = res.items;
 			total = res.total;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Could not load catalogs', 'error');
+			toast(err instanceof Error ? err.message : m('catalogs.toast.loadFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -125,9 +126,9 @@
 			await apiDeleteCatalog(id);
 			catalogs = catalogs.filter((c) => c.id !== id);
 			total = Math.max(0, total - 1);
-			toast('Catalog deleted', 'success');
+			toast(m('catalogs.toast.deleted'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('catalogs.toast.deleteFailed'), 'error');
 		} finally {
 			confirmDeleteId = null;
 		}
@@ -141,7 +142,7 @@
 				q: guidedQuery.trim() || undefined
 			});
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Guided buying failed', 'error');
+			toast(err instanceof Error ? err.message : m('catalogs.toast.guidedFailed'), 'error');
 		} finally {
 			guidedLoading = false;
 		}
@@ -153,13 +154,13 @@
 	}
 </script>
 
-<PageHeader title="Catalogs">
+<PageHeader title={m('catalogs.title')}>
 	{#snippet actions()}
 		<button class="btn-secondary" onclick={toggleGuided}>
-			{showGuided ? 'Hide guided buying' : 'Guided buying'}
+			{showGuided ? m('catalogs.action.hideGuided') : m('catalogs.action.showGuided')}
 		</button>
 		{#if canCreate}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Catalog</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('catalogs.action.new')}</button>
 		{/if}
 	{/snippet}
 
@@ -168,27 +169,27 @@
 			<div class="guided-controls">
 				<input
 					type="text"
-					placeholder="Category (e.g. office)"
-					aria-label="Filter by category"
+					placeholder={m('catalogs.guided.categoryPlaceholder')}
+					aria-label={m('catalogs.guided.categoryAria')}
 					bind:value={guidedCategory}
 				/>
 				<input
 					type="text"
-					placeholder="Search items…"
-					aria-label="Search items"
+					placeholder={m('catalogs.guided.searchPlaceholder')}
+					aria-label={m('catalogs.guided.searchAria')}
 					bind:value={guidedQuery}
 				/>
 				<button class="btn-primary" onclick={runGuided} disabled={guidedLoading}>
-					{guidedLoading ? 'Finding…' : 'Find preferred sources'}
+					{guidedLoading ? m('catalogs.guided.finding') : m('catalogs.guided.find')}
 				</button>
 			</div>
 
 			{#if guided}
 				<div class="guided-grid">
 					<div class="guided-col">
-						<h4>Preferred vendors</h4>
+						<h4>{m('catalogs.guided.preferredVendors')}</h4>
 						{#if guided.preferred_vendors.length === 0}
-							<p class="muted">No preferred vendors match.</p>
+							<p class="muted">{m('catalogs.guided.noPreferredVendors')}</p>
 						{:else}
 							{#each guided.preferred_vendors as v (v.vendor_id + (v.catalog_id ?? ''))}
 								<div class="guided-card">
@@ -198,37 +199,37 @@
 											<span class="reason">{GUIDED_BUYING_REASON_LABELS[r] ?? r}</span>
 										{/each}
 									</div>
-									{#if v.catalog_name}<span class="sub">Catalog: {v.catalog_name}</span>{/if}
-									{#if v.contract_number}<span class="sub">Contract: {v.contract_number}</span>{/if}
+									{#if v.catalog_name}<span class="sub">{m('catalogs.guided.catalogLabel', { name: v.catalog_name })}</span>{/if}
+									{#if v.contract_number}<span class="sub">{m('catalogs.guided.contractLabel', { number: v.contract_number })}</span>{/if}
 								</div>
 							{/each}
 						{/if}
 					</div>
 
 					<div class="guided-col">
-						<h4>In-contract vendors</h4>
+						<h4>{m('catalogs.guided.inContractVendors')}</h4>
 						{#if guided.in_contract_vendors.length === 0}
-							<p class="muted">No vendors with active contracts.</p>
+							<p class="muted">{m('catalogs.guided.noContractVendors')}</p>
 						{:else}
 							{#each guided.in_contract_vendors as v (v.vendor_id)}
 								<div class="guided-card">
 									<strong>{v.vendor_name}</strong>
-									{#if v.contract_number}<span class="sub">Contract: {v.contract_number}</span>{/if}
+									{#if v.contract_number}<span class="sub">{m('catalogs.guided.contractLabel', { number: v.contract_number })}</span>{/if}
 								</div>
 							{/each}
 						{/if}
 					</div>
 
 					<div class="guided-col">
-						<h4>Matching items</h4>
+						<h4>{m('catalogs.guided.matchingItems')}</h4>
 						{#if guided.items.length === 0}
-							<p class="muted">No matching catalog items.</p>
+							<p class="muted">{m('catalogs.guided.noMatchingItems')}</p>
 						{:else}
 							{#each guided.items as it (it.catalog_item_id)}
 								<div class="guided-card">
 									<div class="item-head">
 										<strong>{it.name}</strong>
-										{#if it.is_preferred}<span class="reason">Preferred</span>{/if}
+										{#if it.is_preferred}<span class="reason">{m('catalogs.guided.preferredTag')}</span>{/if}
 									</div>
 									<span class="sub">
 										{it.catalog_name}{#if it.unit_price != null} ·
@@ -244,27 +245,27 @@
 	{/if}
 
 	<div class="toolbar-row">
-		<SearchBox bind:value={search} placeholder="Search catalogs..." ariaLabel="Search catalogs" />
+		<SearchBox bind:value={search} placeholder={m('catalogs.search.placeholder')} ariaLabel={m('catalogs.search.aria')} />
 	</div>
 
 	<FilterChips chips={TYPE_CHIPS} bind:active={typeFilter} onchange={() => load()} />
 
-	<DataTable columns={COLUMNS} isEmpty={!loading && catalogs.length === 0} empty="No catalogs.">
+	<DataTable columns={COLUMNS} isEmpty={!loading && catalogs.length === 0} empty={m('catalogs.empty')}>
 		{#snippet body()}
 			{#each catalogs as c (c.id)}
 				<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editing = c; }}>
 					<td>
-						<RowLink onclick={() => (editing = c)} ariaLabel={`Open catalog ${c.name}`}>
+						<RowLink onclick={() => (editing = c)} ariaLabel={m('catalogs.row.open', { name: c.name })}>
 							{c.name}
-							{#if c.is_preferred}<span class="pref-dot" title="Preferred">★</span>{/if}
+							{#if c.is_preferred}<span class="pref-dot" title={m('catalogs.preferredTitle')}>★</span>{/if}
 						</RowLink>
 					</td>
 					<td>{CATALOG_TYPE_LABELS[c.catalog_type as keyof typeof CATALOG_TYPE_LABELS] ?? c.catalog_type}</td>
 					<td class="right">{c.item_count}</td>
-					<td>{c.is_active ? 'Active' : 'Inactive'}</td>
+					<td>{c.is_active ? m('catalogs.status.active') : m('catalogs.status.inactive')}</td>
 					<td class="actions">
 						{#if canPunchout && c.catalog_type === 'punchout'}
-							<RowAction onclick={() => (punchoutCatalog = c)}>Punch out</RowAction>
+							<RowAction onclick={() => (punchoutCatalog = c)}>{m('catalogs.row.punchout')}</RowAction>
 						{/if}
 						{#if canCreate}
 							<RowAction
@@ -272,7 +273,7 @@
 								armed={confirmDeleteId === c.id}
 								onclick={() => handleDelete(c.id)}
 							>
-								{confirmDeleteId === c.id ? 'Confirm' : 'Delete'}
+								{confirmDeleteId === c.id ? m('catalogs.row.confirm') : m('catalogs.row.delete')}
 							</RowAction>
 						{/if}
 					</td>
@@ -283,7 +284,7 @@
 
 	{#if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} catalogs</span>
+			<span class="load-more-end">{m('catalogs.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>
