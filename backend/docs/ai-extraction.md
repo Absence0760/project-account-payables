@@ -185,6 +185,8 @@ When `auto_approve_enabled=true` on the extraction step config and `overall_conf
 
 Also checks `auto_approve_below` from the approval step config — invoices below that amount threshold skip review entirely.
 
+**Money-control gate.** A triggered auto-approve is REVOKED — the invoice falls back to `ready_for_review` for a human — when it would trip the same approval-step thresholds a human approval enforces (`services/review._enforce_approval_thresholds`): `max_invoice_amount` (a hard reject — an over-max invoice must never auto-approve) or `require_cfo_above` (the `system (auto-approve)` actor is not a CFO). So a high-confidence extraction of a high-value invoice can't slip a CFO-gated or over-cap amount past review. The decision lives in the pure `extraction.decide_auto_approve(ext_cfg, approval_cfg, overall_confidence=…, amount=…)` (Decimal-compared so a boundary amount isn't misjudged).
+
 Sets `approved_by="system (auto-approve)"`.
 
 ## Per-Field Confidence

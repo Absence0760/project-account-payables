@@ -243,3 +243,93 @@ def test_missing_auto_approve_below_does_not_trigger():
         auto_approved = True
 
     assert auto_approved is False
+
+
+# ---------------------------------------------------------------------------
+# decide_auto_approve — the real decision function, incl. money-control gates
+# ---------------------------------------------------------------------------
+
+
+def test_decide_auto_approve_confident_small_invoice():
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        {},
+        overall_confidence=0.97,
+        amount=Decimal("100"),
+    )
+
+
+def test_decide_auto_approve_below_floor():
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert decide_auto_approve(
+        {"auto_approve_enabled": False},
+        {"auto_approve_below": 500},
+        overall_confidence=0.1,
+        amount=Decimal("100"),
+    )
+
+
+def test_decide_auto_approve_revoked_over_max_invoice_amount():
+    """A confident extraction over `max_invoice_amount` must NOT auto-approve —
+    the human path hard-rejects (422) at that cap; auto-approve mustn't slip past."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert not decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        {"max_invoice_amount": 10000},
+        overall_confidence=0.99,
+        amount=Decimal("50000"),
+    )
+
+
+def test_decide_auto_approve_revoked_over_cfo_gate():
+    """A confident extraction over `require_cfo_above` must NOT auto-approve —
+    the 'system (auto-approve)' actor is not a CFO, so a human must decide."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert not decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        {"require_cfo_above": 5000},
+        overall_confidence=0.99,
+        amount=Decimal("1000000"),
+    )
+
+
+def test_decide_auto_approve_at_cfo_gate_boundary_still_approves():
+    """The CFO gate is strict greater-than (mirrors _enforce_approval_thresholds);
+    an amount exactly at the threshold is not 'above' it."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        {"require_cfo_above": 5000},
+        overall_confidence=0.99,
+        amount=Decimal("5000"),
+    )
+
+
+def test_decide_auto_approve_not_triggered_stays_false():
+    """No trigger (low confidence, no floor) → no auto-approve regardless of gates."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert not decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        {"max_invoice_amount": 10000},
+        overall_confidence=0.50,
+        amount=Decimal("100"),
+    )

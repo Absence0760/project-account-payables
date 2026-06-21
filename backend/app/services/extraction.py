@@ -55,6 +55,56 @@ def _resolve_extraction_config(org_settings: dict | None) -> dict:
         }
 
 
+def decide_auto_approve(
+    ext_cfg: dict,
+    approval_cfg: dict,
+    *,
+    overall_confidence: float,
+    amount: Decimal | float | None,
+) -> bool:
+    """Decide whether an extracted invoice may auto-approve, skipping human review.
+
+    Two independent triggers (either fires it):
+      1. Confidence — ``auto_approve_enabled`` and ``overall_confidence`` clears
+         ``auto_approve_threshold`` (default 0.95).
+      2. Amount floor — ``auto_approve_below`` set and the invoice amount is
+         strictly below it (the "skip review for small invoices" rule).
+
+    But a triggered auto-approve is REVOKED when the invoice would trip the same
+    money-control gates a human approval enforces
+    (``services/review._enforce_approval_thresholds``):
+      * ``max_invoice_amount`` — a hard reject; an over-max invoice must never
+        auto-approve.
+      * ``require_cfo_above`` — demands a CFO; the ``system (auto-approve)`` actor
+        is not a CFO.
+    When either gate would trip, the invoice falls back to human review rather
+    than auto-approving past the control. Amount is compared with ``Decimal`` so
+    a boundary value isn't misjudged by a float cast. Pure — no IO.
+    """
+    amount_dec = Decimal(str(amount or 0))
+
+    auto_approved = False
+    if ext_cfg.get("auto_approve_enabled") and overall_confidence >= ext_cfg.get(
+        "auto_approve_threshold", 0.95
+    ):
+        auto_approved = True
+
+    auto_below = approval_cfg.get("auto_approve_below")
+    if auto_below is not None and amount_dec < Decimal(str(auto_below)):
+        auto_approved = True
+
+    if not auto_approved:
+        return False
+
+    max_amount = approval_cfg.get("max_invoice_amount")
+    cfo_above = approval_cfg.get("require_cfo_above")
+    exceeds_max = max_amount is not None and amount_dec > Decimal(str(max_amount))
+    needs_cfo = cfo_above is not None and amount_dec > Decimal(str(cfo_above))
+    if exceeds_max or needs_cfo:
+        return False
+    return True
+
+
 async def run_extraction(
     db: AsyncSession,
     invoice: Invoice,
@@ -408,19 +458,14 @@ async def run_extraction(
         if instance and instance.steps_config_snapshot:
             ext_cfg = get_step_config(instance.steps_config_snapshot, "extraction")
             approval_cfg = get_step_config(instance.steps_config_snapshot, "approval")
-
-            # Confidence-based auto-approve
-            if ext_cfg.get("auto_approve_enabled") and result.overall_confidence >= ext_cfg.get(
-                "auto_approve_threshold", 0.95
-            ):
+            auto_approved = decide_auto_approve(
+                ext_cfg,
+                approval_cfg,
+                overall_confidence=result.overall_confidence,
+                amount=invoice.amount,
+            )
+            if auto_approved:
                 target_status = InvoiceStatus.approved
-                auto_approved = True
-
-            # Amount-based auto-approve
-            auto_below = approval_cfg.get("auto_approve_below")
-            if auto_below is not None and float(invoice.amount or 0) < auto_below:
-                target_status = InvoiceStatus.approved
-                auto_approved = True
 
         if auto_approved:
             invoice.approval_date = date.today()
