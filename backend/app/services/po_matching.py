@@ -5,6 +5,7 @@ Supports 2-way (invoice vs PO), 3-way (invoice vs PO vs GR), and 4-way
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,24 +102,31 @@ async def match_invoice_to_po(
     result.po_number = po.po_number
     result.po_total = float(po.total)
 
-    # 2-way match: invoice amount vs PO total
-    invoice_amount = float(invoice.amount)
-    po_total = float(po.total)
+    # 2-way match: invoice amount vs PO total. The tolerance comparison is done
+    # in exact Decimal — money is never compared in float. The old code cast
+    # both sides to float, so on a boundary amount (e.g. exactly 5.01% over a PO)
+    # the IEEE-754 residual could flip `<= tolerance_pct` and auto-match an
+    # out-of-tolerance invoice (or falsely flag a clean one). The stored result
+    # fields stay float because MatchResult is asdict()'d into the po_match JSONB.
+    invoice_amount = Decimal(str(invoice.amount or 0))
+    po_total = Decimal(str(po.total or 0))
 
-    result.amount_variance = invoice_amount - po_total
+    variance = invoice_amount - po_total
     if po_total > 0:
-        result.amount_variance_pct = (result.amount_variance / po_total) * 100
+        variance_pct = (variance / po_total) * Decimal(100)
     else:
-        result.amount_variance_pct = 100.0 if invoice_amount > 0 else 0.0
+        variance_pct = Decimal(100) if invoice_amount > 0 else Decimal(0)
 
-    result.within_tolerance = abs(result.amount_variance_pct) <= tolerance_pct
+    result.amount_variance = float(variance)
+    result.amount_variance_pct = float(variance_pct)
+    result.within_tolerance = abs(variance_pct) <= Decimal(str(tolerance_pct))
     result.match_type = "2-way"
 
     if not result.within_tolerance:
         result.status = "mismatch"
         result.issues.append(
             f"Amount mismatch: invoice ${invoice_amount:.2f} vs PO ${po_total:.2f} "
-            f"({result.amount_variance_pct:+.1f}%)"
+            f"({variance_pct:+.1f}%)"
         )
     else:
         result.status = "matched"
@@ -208,7 +216,9 @@ async def match_invoice_to_po(
     result.details = {
         "match_type": result.match_type,
         "po_total": result.po_total,
-        "invoice_amount": invoice_amount,
+        # float for JSON (po_match is asdict()'d to JSONB) — the tolerance
+        # comparison above is the part that must be exact Decimal.
+        "invoice_amount": float(invoice_amount),
         "variance": result.amount_variance,
         "variance_pct": result.amount_variance_pct,
         "tolerance_pct": tolerance_pct,

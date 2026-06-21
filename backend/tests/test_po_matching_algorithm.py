@@ -190,6 +190,18 @@ async def test_exact_tolerance_boundary_is_inclusive():
 
 
 @pytest.mark.asyncio
+async def test_tolerance_boundary_is_decimal_exact_not_float():
+    """A boundary amount must be judged in exact Decimal. Invoice $1.07 vs PO
+    $1.00 at a 7% tolerance is exactly +7.00% → matched. The old float path
+    computed (1.07-1.00)/1.00*100 = 7.000000000000006 > 7 and FALSELY flagged
+    it a mismatch — money compared in float flips at the boundary."""
+    db = _mk_db(po=_po(total=Decimal("1.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1.07")), tolerance_pct=7.0)
+    assert result.within_tolerance is True
+    assert result.status == "matched"
+
+
+@pytest.mark.asyncio
 async def test_custom_tolerance_overrides_default():
     """`tolerance_pct=10` widens the gate so +9% passes."""
     db = _mk_db(po=_po(total=Decimal("1000.00")))
