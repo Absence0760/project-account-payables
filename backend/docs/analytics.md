@@ -241,10 +241,13 @@ Migration 0020 adds `scheduled_reports`. Rows:
 - `last_run_at` / `last_run_status` / `last_run_error`
 - `enabled`
 
-The runner (`services/scheduled_reports.run_loop` — wired into
-`main.lifespan`) ticks on a timer, calls `list_due_schedules` for
-every tenant, then `execute_schedule` per row. Success bumps
-`next_run_at` forward by the cadence and clears the error;
+The runner (`services/scheduled_reports.run_scheduled_reports_loop`
+— wired into `main.lifespan`, gated by `AP_SCHEDULED_REPORTS_ENABLED`,
+disabled by default so local dev / tests never email) ticks every
+`AP_SCHEDULED_REPORTS_TICK_SECONDS`. Each tick `run_scheduled_reports_once`
+fans out across every tenant DB (`_sweep_tenant`), calls `list_due_schedules`,
+then `execute_schedule` per due row — one tenant's failure never halts the
+sweep. Success bumps `next_run_at` forward by the cadence and clears the error;
 failure persists a `[retry N]` marker and bumps the count. After
 five consecutive failures the row is auto-disabled so the queue
 doesn't loop forever — an operator re-enables from the admin UI

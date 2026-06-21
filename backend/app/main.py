@@ -108,6 +108,7 @@ async def lifespan(app: FastAPI):
     from app.services.qms_sync import run_qms_sync_loop
     from app.services.recurring_invoices import run_recurring_invoices_loop
     from app.services.retention_sweep import run_retention_loop
+    from app.services.scheduled_reports import run_scheduled_reports_loop
     from app.services.vendor_rescreen import run_vendor_rescreen_loop
     from app.services.webhooks.delivery import run_webhook_delivery_loop
 
@@ -123,6 +124,7 @@ async def lifespan(app: FastAPI):
     recurring_task: asyncio.Task | None = None
     webhooks_task: asyncio.Task | None = None
     dunning_task: asyncio.Task | None = None
+    scheduled_reports_task: asyncio.Task | None = None
     if settings.extraction_reaper_enabled:
         reaper_task = asyncio.create_task(run_reaper_loop(), name="extraction-reaper")
     # Centralized audit-log shipper (SOC 2). Disabled by default so local
@@ -178,6 +180,12 @@ async def lifespan(app: FastAPI):
     # overdue past the grace window — never moves money (see dunning_sweep).
     if settings.billing_dunning_enabled:
         dunning_task = asyncio.create_task(run_dunning_loop(), name="billing-dunning")
+    # Scheduled-report runner. Disabled by default so local dev / tests never
+    # email reports; flip AP_SCHEDULED_REPORTS_ENABLED on in deployed envs.
+    if settings.scheduled_reports_enabled:
+        scheduled_reports_task = asyncio.create_task(
+            run_scheduled_reports_loop(), name="scheduled-reports"
+        )
 
     try:
         yield
@@ -195,6 +203,7 @@ async def lifespan(app: FastAPI):
             recurring_task,
             webhooks_task,
             dunning_task,
+            scheduled_reports_task,
         ):
             if task is not None:
                 task.cancel()

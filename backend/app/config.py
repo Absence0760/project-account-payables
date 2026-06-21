@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     recurring_invoices_enabled: bool = False
     recurring_invoices_interval_seconds: int = 3600
     recurring_invoices_max_per_sweep: int = 200
+    # Scheduled-report runner. `scheduled_reports_enabled` is the master switch
+    # for the background loop — OFF by default so a local dev box / tests never
+    # email reports. The sweep finds `enabled` schedules whose `next_run_at` has
+    # arrived, generates the CSV, emails the recipients, and bumps `next_run_at`
+    # by the cadence. See backend/docs/analytics.md § Scheduled reports.
+    scheduled_reports_enabled: bool = False
+    scheduled_reports_tick_seconds: int = 3600
     # Vendor statement reconciliation: the platform-default materiality
     # threshold (in the run's currency) above which a vendor's leftover
     # unreconciled balance (missing-on-our-side + amount-mismatch, unresolved)

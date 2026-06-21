@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -150,7 +151,17 @@ async def _materialise_rows(
             Invoice.due_date.isnot(None),
         )
     )
-    buckets = {"current": _D("0"), "days_30": _D("0"), "days_60": _D("0"), "days_90_plus": _D("0")}
+    # Five buckets matching the exporter + the dashboard/analytics scheme
+    # (current / 1-30 / 31-60 / 61-90 / 90+). The 61-90 (`days_90`) bucket was
+    # missing here, so 61-90-day invoices collapsed into 90+ and the CSV's
+    # days_90 column was always 0 — disagreeing with the API export.
+    buckets = {
+        "current": _D("0"),
+        "days_30": _D("0"),
+        "days_60": _D("0"),
+        "days_90": _D("0"),
+        "days_90_plus": _D("0"),
+    }
     for due, amt in aging_rows.all():
         days_past = (today - due).days
         amount = _D(str(amt))
@@ -160,6 +171,8 @@ async def _materialise_rows(
             buckets["days_30"] += amount
         elif days_past <= 60:
             buckets["days_60"] += amount
+        elif days_past <= 90:
+            buckets["days_90"] += amount
         else:
             buckets["days_90_plus"] += amount
     return exporter(buckets)
@@ -264,3 +277,96 @@ async def _mark_failure(
     await db.execute(
         update(ScheduledReport).where(ScheduledReport.id == schedule.id).values(**values),
     )
+
+
+# ---------------------------------------------------------------------------
+# Tenant-fan-out sweep + long-lived loop (mirrors contract_renewal /
+# recurring_invoices). Without this the per-schedule machinery above was never
+# invoked — scheduled reports sat due forever and no email ever went out.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SweepResult:
+    """Per-sweep outcome for logging + tests."""
+
+    tenants_scanned: int = 0
+    schedules_run: int = 0
+    failures: int = 0
+
+
+async def _sweep_tenant(db_name: str, *, now: datetime) -> tuple[int, int]:
+    """Run every due schedule for one tenant. Returns (run, failed)."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.database import _make_tenant_url
+
+    engine = create_async_engine(_make_tenant_url(db_name))
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    run = 0
+    failed = 0
+    try:
+        async with factory() as db:
+            due = await list_due_schedules(db, now=now)
+            for schedule in due:
+                outcome = await execute_schedule(db, schedule, now=now)
+                run += 1
+                if outcome["status"] == "failure":
+                    failed += 1
+            if due:
+                await db.commit()
+    finally:
+        await engine.dispose()
+    return run, failed
+
+
+async def run_scheduled_reports_once(*, now: datetime | None = None) -> SweepResult:
+    """One sweep across every tenant. Safe to call directly (CLI / tests)."""
+    from app.database import control_session_factory
+    from app.models.organization import Organization
+
+    ref_now = now or datetime.now(UTC)
+    result = SweepResult()
+
+    async with control_session_factory() as ctrl:
+        rows = await ctrl.execute(select(Organization.db_name))
+        db_names = [r[0] for r in rows.all()]
+
+    for db_name in db_names:
+        result.tenants_scanned += 1
+        try:
+            run, failed = await _sweep_tenant(db_name, now=ref_now)
+            result.schedules_run += run
+            result.failures += failed
+        except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
+            logger.warning("[scheduled_reports] failed sweeping %s: %s", db_name, exc)
+            result.failures += 1
+
+    if result.schedules_run or result.failures:
+        logger.info(
+            "[scheduled_reports] swept %d tenant(s); ran=%d failed=%d",
+            result.tenants_scanned,
+            result.schedules_run,
+            result.failures,
+        )
+    return result
+
+
+async def run_scheduled_reports_loop() -> None:
+    """Long-lived loop started in ``main.lifespan``; cancelled on shutdown."""
+    import asyncio
+
+    from app.config import settings
+
+    interval = settings.scheduled_reports_tick_seconds
+    logger.info("[scheduled_reports] started; interval=%ds", interval)
+    try:
+        while True:
+            try:
+                await run_scheduled_reports_once()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[scheduled_reports] sweep raised: %s", exc, exc_info=True)
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        logger.info("[scheduled_reports] shutting down")
+        raise

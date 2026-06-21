@@ -293,3 +293,82 @@ async def test_execute_schedule_first_failure_does_not_disable():
     # failure (only set when we hit the cap).
     assert "enabled" not in params
     assert "[retry 1]" in (params.get("last_run_error") or "")
+
+
+# ---------------------------------------------------------------------------
+# aging_snapshot bucketing — 61-90 (days_90) is its own bucket, not lumped 90+
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aging_snapshot_separates_61_90_from_90_plus():
+    """Regression: the materializer built only 4 buckets, so 61-90-day invoices
+    collapsed into 90+ and the CSV's days_90 column was always 0. It must
+    produce the same 5 buckets the exporter (and the API export) expect."""
+    from datetime import date
+    from datetime import timedelta as td
+    from decimal import Decimal
+
+    from app.services.scheduled_reports import _materialise_rows
+
+    today = date.today()
+    rows = [
+        (today + td(days=10), Decimal("10.00")),  # current (not yet due)
+        (today - td(days=15), Decimal("20.00")),  # days_30
+        (today - td(days=45), Decimal("30.00")),  # days_60
+        (today - td(days=75), Decimal("40.00")),  # days_90 (61-90)
+        (today - td(days=120), Decimal("50.00")),  # days_90_plus
+    ]
+    result = MagicMock()
+    result.all = MagicMock(return_value=rows)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    captured: dict = {}
+
+    def _exporter(buckets):
+        captured.update(buckets)
+        return "csv"
+
+    sched = _schedule(report_type="aging_snapshot")
+    out = await _materialise_rows(db, sched, _exporter)
+
+    assert out == "csv"
+    assert captured["days_60"] == Decimal("30.00")
+    assert captured["days_90"] == Decimal("40.00")  # the previously-missing bucket
+    assert captured["days_90_plus"] == Decimal("50.00")  # NOT 90.00 (40+50 lumped)
+
+
+# ---------------------------------------------------------------------------
+# run_scheduled_reports_once — tenant fan-out + failure isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_once_aggregates_and_isolates_tenant_failures():
+    """The sweep iterates every tenant, sums the per-tenant run/fail counts, and
+    one tenant blowing up must not halt the others."""
+    from app.services import scheduled_reports as sr
+
+    ctrl = AsyncMock()
+    ctrl_result = MagicMock()
+    ctrl_result.all = MagicMock(return_value=[("ap_a",), ("ap_b",)])
+    ctrl.execute = AsyncMock(return_value=ctrl_result)
+    ctrl_cm = MagicMock()
+    ctrl_cm.__aenter__ = AsyncMock(return_value=ctrl)
+    ctrl_cm.__aexit__ = AsyncMock(return_value=False)
+
+    async def _fake_sweep(db_name, *, now):
+        if db_name == "ap_a":
+            return (2, 0)  # 2 schedules ran, none failed
+        raise RuntimeError("tenant b is broken")
+
+    with (
+        patch("app.database.control_session_factory", MagicMock(return_value=ctrl_cm)),
+        patch("app.services.scheduled_reports._sweep_tenant", _fake_sweep),
+    ):
+        result = await sr.run_scheduled_reports_once()
+
+    assert result.tenants_scanned == 2
+    assert result.schedules_run == 2
+    assert result.failures == 1  # ap_b's exception counted, ap_a still ran
