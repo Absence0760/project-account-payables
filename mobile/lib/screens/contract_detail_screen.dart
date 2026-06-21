@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/contract_store.dart';
@@ -56,6 +57,7 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
 
   Future<void> _activate() async {
     if (_submitting) return;
+    final l = AppLocalizations.of(context);
     setState(() => _submitting = true);
     try {
       final success =
@@ -63,9 +65,9 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
       if (!mounted) return;
       if (success) {
         await _load();
-        _showSnack('Contract activated');
+        _showSnack(l.contractActivated);
       } else {
-        _showSnack('Could not activate contract — please try again');
+        _showSnack(l.contractActivateFailed);
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -73,21 +75,20 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
   }
 
   Future<void> _terminate() async {
+    final l = AppLocalizations.of(context);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Terminate Contract'),
-        content: const Text(
-          'This ends the contract early. This cannot be undone. Continue?',
-        ),
+        title: Text(l.contractTerminateTitle),
+        content: Text(l.contractTerminateBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
+            child: Text(l.commonCancel),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Terminate'),
+            child: Text(l.contractTerminate),
           ),
         ],
       ),
@@ -102,9 +103,9 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
       if (!mounted) return;
       if (success) {
         await _load();
-        _showSnack('Contract terminated');
+        _showSnack(l.contractTerminated);
       } else {
-        _showSnack('Could not terminate contract — please try again');
+        _showSnack(l.contractTerminateFailed);
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -122,37 +123,39 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Contract Detail')),
+      appBar: AppBar(title: Text(l.contractDetailTitle)),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? _buildError()
-              : _buildDetail(),
-      bottomNavigationBar: _buildActions(),
+              ? _buildError(l)
+              : _buildDetail(l),
+      bottomNavigationBar: _buildActions(l),
     );
   }
 
-  Widget _buildError() {
+  Widget _buildError(AppLocalizations l) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.error_outline, size: 48, color: Colors.red.shade400),
           const SizedBox(height: 12),
-          Text('Error: $_error', textAlign: TextAlign.center),
+          Text(l.contractDetailErrorPrefix(_error ?? ''),
+              textAlign: TextAlign.center),
           const SizedBox(height: 16),
           FilledButton.icon(
             onPressed: _load,
             icon: const Icon(Icons.refresh),
-            label: const Text('Retry'),
+            label: Text(l.commonRetry),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildDetail() {
+  Widget _buildDetail(AppLocalizations l) {
     final c = _contract!;
     return RefreshIndicator(
       onRefresh: _load,
@@ -164,7 +167,7 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
             children: [
               Expanded(
                 child: Text(
-                  c.title ?? c.vendorName ?? 'Untitled Contract',
+                  c.title ?? c.vendorName ?? l.contractDetailUntitled,
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
@@ -188,77 +191,80 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
           const SizedBox(height: 24),
 
           // Details
-          _detailRow('Contract #', c.contractNumber),
-          _detailRow('Vendor', c.vendorName),
-          _detailRow('Type', c.contractType.label),
-          _detailRow('Currency', c.currency),
+          _detailRow(l.contractDetailFieldContractNumber, c.contractNumber),
+          _detailRow(l.contractDetailFieldVendor, c.vendorName),
+          _detailRow(l.contractDetailFieldType, c.contractType.label),
+          _detailRow(l.contractDetailFieldCurrency, c.currency),
           _detailRow(
-            'Spend Limit',
+            l.contractDetailFieldSpendLimit,
             c.spendLimit != null
                 ? '${_currencyFormat.format(c.spendLimit)}'
-                    '${c.notToExceed ? ' (not to exceed)' : ''}'
+                    '${c.notToExceed ? l.contractDetailNotToExceed : ''}'
                 : null,
           ),
           _detailRow(
-            'Start Date',
+            l.contractDetailFieldStartDate,
             c.startDate != null ? _dateFormat.format(c.startDate!) : null,
           ),
           _detailRow(
-            'End Date',
+            l.contractDetailFieldEndDate,
             c.endDate != null ? _dateFormat.format(c.endDate!) : null,
           ),
           _detailRow(
-            'Signed',
+            l.contractDetailFieldSigned,
             c.signedDate != null ? _dateFormat.format(c.signedDate!) : null,
           ),
-          _detailRow('Auto-Renew', c.autoRenew ? 'Yes' : 'No'),
           _detailRow(
-            'Renewal Term',
+            l.contractDetailFieldAutoRenew,
+            c.autoRenew ? l.contractDetailYes : l.contractDetailNo,
+          ),
+          _detailRow(
+            l.contractDetailFieldRenewalTerm,
             c.renewalTermMonths != null
-                ? '${c.renewalTermMonths} months'
+                ? l.contractDetailRenewalTermMonths(c.renewalTermMonths!)
                 : null,
           ),
           _detailRow(
-            'Renewal Notice',
+            l.contractDetailFieldRenewalNotice,
             c.renewalNoticeDays != null
-                ? '${c.renewalNoticeDays} days'
+                ? l.contractDetailRenewalNoticeDays(c.renewalNoticeDays!)
                 : null,
           ),
-          _detailRow('Payment Terms', c.paymentTerms),
-          _detailRow('Description', c.description),
-          _detailRow('Created', _dateFormat.format(c.createdAt)),
+          _detailRow(l.contractDetailFieldPaymentTerms, c.paymentTerms),
+          _detailRow(l.contractDetailFieldDescription, c.description),
+          _detailRow(
+              l.contractDetailFieldCreated, _dateFormat.format(c.createdAt)),
 
           // Spend summary
           if (c.spend != null) ...[
             const SizedBox(height: 24),
-            _sectionTitle('Spend'),
+            _sectionTitle(l.contractDetailSectionSpend),
             const SizedBox(height: 12),
-            _buildSpend(c.spend!),
+            _buildSpend(l, c.spend!),
           ],
 
           // Line items
           if (c.lineItems.isNotEmpty) ...[
             const SizedBox(height: 24),
-            _sectionTitle('Line Items'),
+            _sectionTitle(l.contractDetailSectionLineItems),
             const SizedBox(height: 8),
-            ...c.lineItems.map(_buildLineItem),
+            ...c.lineItems.map((item) => _buildLineItem(l, item)),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildSpend(ContractSpend spend) {
+  Widget _buildSpend(AppLocalizations l, ContractSpend spend) {
     return Column(
       children: [
         Row(
           children: [
             Expanded(
               child: KpiCard(
-                title: 'Invoiced',
+                title: l.contractDetailSpendInvoiced,
                 value: _currencyFormat.format(spend.invoicedTotal),
-                subtitle: '${spend.invoiceCount} invoice'
-                    '${spend.invoiceCount == 1 ? '' : 's'}',
+                subtitle: l.contractDetailSpendInvoiceCount(spend.invoiceCount),
                 icon: Icons.receipt_long,
                 color: Colors.blue,
               ),
@@ -266,13 +272,16 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: KpiCard(
-                title: spend.overLimit ? 'Over Limit' : 'Remaining',
+                title: spend.overLimit
+                    ? l.contractDetailSpendOverLimit
+                    : l.contractDetailSpendRemaining,
                 value: spend.remaining != null
                     ? _currencyFormat.format(spend.remaining)
                     : '—',
                 subtitle: spend.spendLimit != null
-                    ? 'of ${_currencyFormat.format(spend.spendLimit)}'
-                    : 'no limit set',
+                    ? l.contractDetailSpendOfLimit(
+                        _currencyFormat.format(spend.spendLimit))
+                    : l.contractDetailSpendNoLimit,
                 icon: spend.overLimit
                     ? Icons.warning_amber
                     : Icons.account_balance_wallet,
@@ -285,12 +294,13 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
     );
   }
 
-  Widget _buildLineItem(ContractLineItem item) {
+  Widget _buildLineItem(AppLocalizations l, ContractLineItem item) {
     final subtitleParts = <String>[
-      if (item.quantity != null) 'Qty ${item.quantity}',
+      if (item.quantity != null)
+        l.contractDetailLineQty(item.quantity.toString()),
       if (item.unitPrice != null)
-        '@ ${_currencyFormat.format(item.unitPrice)}',
-      if (item.glAccount != null) 'GL ${item.glAccount}',
+        l.contractDetailLineUnitPrice(_currencyFormat.format(item.unitPrice)),
+      if (item.glAccount != null) l.contractDetailLineGl(item.glAccount!),
     ];
     return ListTile(
       contentPadding: EdgeInsets.zero,
@@ -305,7 +315,7 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
             )
           : null,
       title: Text(
-        item.description ?? item.itemCode ?? 'Line item',
+        item.description ?? item.itemCode ?? l.contractDetailLineItemFallback,
         style: const TextStyle(fontSize: 14),
       ),
       subtitle:
@@ -349,7 +359,7 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
     );
   }
 
-  Widget? _buildActions() {
+  Widget? _buildActions(AppLocalizations l) {
     final c = _contract;
     if (c == null) return null;
     if (!c.status.isActionable) return null;
@@ -367,7 +377,7 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
                 onPressed: _submitting ? null : _terminate,
                 icon: Icon(Icons.block, color: Colors.red.shade700),
                 label: Text(
-                  'Terminate',
+                  l.contractTerminate,
                   // shade700 keeps the destructive label at AA contrast.
                   style: TextStyle(color: Colors.red.shade700),
                 ),
@@ -383,7 +393,7 @@ class _ContractDetailScreenState extends State<ContractDetailScreen> {
                 child: FilledButton.icon(
                   onPressed: _submitting ? null : _activate,
                   icon: const Icon(Icons.check),
-                  label: const Text('Activate'),
+                  label: Text(l.contractActivate),
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     backgroundColor: Colors.green,

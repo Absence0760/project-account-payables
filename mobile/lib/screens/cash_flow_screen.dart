@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/cash_flow.dart';
 import 'package:ap_mobile/stores/cash_flow_store.dart';
 import 'package:ap_mobile/widgets/kpi_card.dart';
@@ -41,8 +42,9 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Cash Flow Forecast')),
+      appBar: AppBar(title: Text(l.cashFlowTitle)),
       body: ListenableBuilder(
         listenable: CashFlowStore.instance,
         builder: (context, _) {
@@ -57,11 +59,11 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Error: ${store.error}'),
+                  Text(l.cashFlowErrorPrefix(store.error.toString())),
                   const SizedBox(height: 16),
                   FilledButton(
                     onPressed: store.fetch,
-                    child: const Text('Retry'),
+                    child: Text(l.commonRetry),
                   ),
                 ],
               ),
@@ -76,17 +78,17 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _horizonChips(store),
+                _horizonChips(l, store),
                 const SizedBox(height: 16),
                 if (data.hasBreach) ...[
-                  _lowBalanceAlert(data),
+                  _lowBalanceAlert(l, data),
                   const SizedBox(height: 16),
                 ],
-                _kpiSummary(data),
+                _kpiSummary(l, data),
                 const SizedBox(height: 24),
-                _forecastSection(context, data),
+                _forecastSection(context, l, data),
                 const SizedBox(height: 24),
-                _positionSection(context, data),
+                _positionSection(context, l, data),
               ],
             ),
           );
@@ -95,12 +97,12 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
     );
   }
 
-  Widget _horizonChips(CashFlowStore store) {
+  Widget _horizonChips(AppLocalizations l, CashFlowStore store) {
     return Row(
       children: [
         for (final days in CashFlowStore.horizonOptions) ...[
           ChoiceChip(
-            label: Text('$days days'),
+            label: Text(l.cashFlowHorizonDays(days)),
             selected: store.horizonDays == days,
             onSelected: (_) => store.setHorizon(days),
           ),
@@ -110,7 +112,7 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
     );
   }
 
-  Widget _lowBalanceAlert(CashFlowData data) {
+  Widget _lowBalanceAlert(AppLocalizations l, CashFlowData data) {
     final count = data.breaches.length;
     final worst = data.breaches.reduce((a, b) {
       final av = num.tryParse(a.shortfallDisplay) ?? 0;
@@ -118,12 +120,20 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
       return av >= bv ? a : b;
     });
     final message = count == 1
-        ? 'Projected to fall below the ${data.thresholdDisplay != null ? _money(data.thresholdDisplay!) : 'minimum'} '
-            'balance in ${worst.period} (shortfall ${_money(worst.shortfallDisplay)}).'
-        : '$count periods are projected to fall below the minimum balance. '
-            'Worst: ${worst.period}, shortfall ${_money(worst.shortfallDisplay)}.';
+        ? l.cashFlowBreachSingle(
+            data.thresholdDisplay != null
+                ? _money(data.thresholdDisplay!)
+                : l.cashFlowMinimum,
+            worst.period,
+            _money(worst.shortfallDisplay),
+          )
+        : l.cashFlowBreachMultiple(
+            count,
+            worst.period,
+            _money(worst.shortfallDisplay),
+          );
     return Semantics(
-      label: 'Low balance alert. $message',
+      label: l.cashFlowLowBalanceAlertLabel(message),
       excludeSemantics: true,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -143,7 +153,7 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Low balance alert',
+                    l.cashFlowLowBalanceAlert,
                     style: TextStyle(
                       fontWeight: FontWeight.w700,
                       // shade900 clears AA contrast on the 0.x-alpha tint.
@@ -164,7 +174,7 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
     );
   }
 
-  Widget _kpiSummary(CashFlowData data) {
+  Widget _kpiSummary(AppLocalizations l, CashFlowData data) {
     final endColor = data.hasBreach ? Colors.red : Colors.green;
     return Column(
       children: [
@@ -172,9 +182,9 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
           children: [
             Expanded(
               child: KpiCard(
-                title: 'Opening Balance',
+                title: l.cashFlowOpeningBalance,
                 value: _money(data.openingBalanceDisplay),
-                subtitle: _openingSourceLabel(data.openingBalanceSource),
+                subtitle: _openingSourceLabel(l, data.openingBalanceSource),
                 icon: Icons.account_balance,
                 color: Colors.blue,
               ),
@@ -182,9 +192,9 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: KpiCard(
-                title: 'Projected End',
+                title: l.cashFlowProjectedEnd,
                 value: _money(data.projectedEndBalanceDisplay),
-                subtitle: 'in ${data.horizonDays} days',
+                subtitle: l.cashFlowProjectedEndSubtitle(data.horizonDays),
                 icon: Icons.trending_up,
                 color: endColor,
               ),
@@ -196,9 +206,9 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
           children: [
             Expanded(
               child: KpiCard(
-                title: 'Committed Out',
+                title: l.cashFlowCommittedOut,
                 value: _money(data.totals.committedAmountDisplay),
-                subtitle: 'firm commitments',
+                subtitle: l.cashFlowCommittedSubtitle,
                 icon: Icons.lock_clock,
                 color: Colors.deepOrange,
               ),
@@ -206,9 +216,9 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: KpiCard(
-                title: 'Pending Out',
+                title: l.cashFlowPendingOut,
                 value: _money(data.totals.pendingAmountDisplay),
-                subtitle: 'in-flight pipeline',
+                subtitle: l.cashFlowPendingSubtitle,
                 icon: Icons.pending_actions,
                 color: Colors.amber.shade700,
               ),
@@ -219,36 +229,42 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
     );
   }
 
-  String _openingSourceLabel(String source) => switch (source) {
-        'provider' => 'synced from bank',
-        'settings' => 'saved balance',
-        'query' => 'manual',
-        _ => 'set a balance',
+  String _openingSourceLabel(AppLocalizations l, String source) =>
+      switch (source) {
+        'provider' => l.cashFlowOpeningSourceProvider,
+        'settings' => l.cashFlowOpeningSourceSettings,
+        'query' => l.cashFlowOpeningSourceQuery,
+        _ => l.cashFlowOpeningSourceUnset,
       };
 
-  Widget _forecastSection(BuildContext context, CashFlowData data) {
+  Widget _forecastSection(
+      BuildContext context, AppLocalizations l, CashFlowData data) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Projected Outflows',
+          l.cashFlowProjectedOutflows,
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 8),
         if (data.forecastPeriods.isEmpty)
-          _emptyCard('No projected outflows in this horizon.')
+          _emptyCard(l.cashFlowNoOutflows)
         else
-          ...data.forecastPeriods.map((p) => _forecastRow(p)),
+          ...data.forecastPeriods.map((p) => _forecastRow(l, p)),
       ],
     );
   }
 
-  Widget _forecastRow(CashFlowForecastPeriod p) {
+  Widget _forecastRow(AppLocalizations l, CashFlowForecastPeriod p) {
     // One announcement per row instead of period + four money fragments.
     return Semantics(
-      label: '${p.period}: scheduled ${_money(p.scheduledAmountDisplay)}, '
-          'committed ${_money(p.committedAmountDisplay)}, '
-          'pending ${_money(p.pendingAmountDisplay)}, ${p.count} invoices',
+      label: l.cashFlowForecastRowLabel(
+        p.period,
+        _money(p.scheduledAmountDisplay),
+        _money(p.committedAmountDisplay),
+        _money(p.pendingAmountDisplay),
+        p.count,
+      ),
       excludeSemantics: true,
       child: Card(
         elevation: 0,
@@ -271,7 +287,7 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${p.count} invoice${p.count == 1 ? '' : 's'}',
+                      l.cashFlowInvoiceCount(p.count),
                       style:
                           TextStyle(color: Colors.grey.shade700, fontSize: 12),
                     ),
@@ -287,12 +303,12 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    'committed ${_money(p.committedAmountDisplay)}',
+                    l.cashFlowCommittedAmount(_money(p.committedAmountDisplay)),
                     style:
                         TextStyle(color: Colors.grey.shade700, fontSize: 11),
                   ),
                   Text(
-                    'pending ${_money(p.pendingAmountDisplay)}',
+                    l.cashFlowPendingAmount(_money(p.pendingAmountDisplay)),
                     style:
                         TextStyle(color: Colors.grey.shade700, fontSize: 11),
                   ),
@@ -305,32 +321,36 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
     );
   }
 
-  Widget _positionSection(BuildContext context, CashFlowData data) {
+  Widget _positionSection(
+      BuildContext context, AppLocalizations l, CashFlowData data) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Cash Position',
+          l.cashFlowPosition,
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 8),
         if (data.positionPeriods.isEmpty)
-          _emptyCard('No cash-position projection for this horizon.')
+          _emptyCard(l.cashFlowNoPosition)
         else
-          ...data.positionPeriods.map((p) => _positionRow(p)),
+          ...data.positionPeriods.map((p) => _positionRow(l, p)),
       ],
     );
   }
 
-  Widget _positionRow(CashPositionPeriod p) {
+  Widget _positionRow(AppLocalizations l, CashPositionPeriod p) {
     final breach = p.belowThreshold;
     // shade900 keeps the red closing balance legible at AA on white.
     final closingColor = breach ? Colors.red.shade900 : Colors.black87;
     return Semantics(
-      label: '${p.period}: opening ${_money(p.openingDisplay)}, '
-          'outflow ${_money(p.outflowDisplay)}, '
-          'closing ${_money(p.closingDisplay)}'
-          '${breach ? ', below threshold' : ''}',
+      label: l.cashFlowPositionRowLabel(
+            p.period,
+            _money(p.openingDisplay),
+            _money(p.outflowDisplay),
+            _money(p.closingDisplay),
+          ) +
+          (breach ? l.cashFlowBelowThresholdSuffix : ''),
       excludeSemantics: true,
       child: Card(
         elevation: 0,
@@ -360,7 +380,7 @@ class _CashFlowScreenState extends State<CashFlowScreen> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      'out ${_money(p.outflowDisplay)}',
+                      l.cashFlowOutAmount(_money(p.outflowDisplay)),
                       style:
                           TextStyle(color: Colors.grey.shade700, fontSize: 12),
                     ),

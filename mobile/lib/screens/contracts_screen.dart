@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/screens/contract_detail_screen.dart';
 import 'package:ap_mobile/stores/contract_store.dart';
@@ -32,16 +33,17 @@ class _ContractsScreenState extends State<ContractsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Contracts'),
+        title: Text(l.contractsTitle),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: SearchBar(
               controller: _searchController,
-              hintText: 'Search contracts...',
+              hintText: l.contractsSearchHint,
               leading: const Icon(Icons.search, size: 20),
               onChanged: (q) => ContractStore.instance.setSearch(
                 q.isEmpty ? null : q,
@@ -64,12 +66,14 @@ class _ContractsScreenState extends State<ContractsScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   children: [
-                    _filterChip('All', null, current),
-                    _filterChip('Draft', 'draft', current),
-                    _filterChip('Active', 'active', current),
-                    _filterChip('Expired', 'expired', current),
-                    _filterChip('Terminated', 'terminated', current),
-                    _filterChip('Cancelled', 'cancelled', current),
+                    _filterChip(l.commonAll, null, current),
+                    _filterChip(l.contractsFilterDraft, 'draft', current),
+                    _filterChip(l.contractsFilterActive, 'active', current),
+                    _filterChip(l.contractsFilterExpired, 'expired', current),
+                    _filterChip(
+                        l.contractsFilterTerminated, 'terminated', current),
+                    _filterChip(
+                        l.contractsFilterCancelled, 'cancelled', current),
                   ],
                 );
               },
@@ -88,7 +92,7 @@ class _ContractsScreenState extends State<ContractsScreen> {
                 }
 
                 if (store.contracts.isEmpty) {
-                  return const Center(child: Text('No contracts found'));
+                  return Center(child: Text(l.contractsEmpty));
                 }
 
                 return RefreshIndicator(

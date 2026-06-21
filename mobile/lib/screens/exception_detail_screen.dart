@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'package:ap_mobile/api/endpoints.dart';
+import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/admin_user.dart';
 import 'package:ap_mobile/models/exception.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
@@ -30,6 +31,10 @@ class ExceptionDetailScreen extends StatefulWidget {
 class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
   ApException? _exception;
   bool _loading = true;
+  // The raw store error (if any) when a load fails. Kept un-localized here —
+  // `AppLocalizations.of(context)` isn't safe to call from initState/_load, so
+  // the "not found" fallback copy is resolved at render time in build()
+  // (`exceptionDetailNotFound`) whenever this is null but there's no exception.
   String? _error;
   // True while an action / assign network call is in flight — disables the
   // controls and guards against a double-tap firing twice.
@@ -50,22 +55,22 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
     if (!mounted) return;
     setState(() {
       _exception = exc;
-      _error = exc == null
-          ? (ExceptionStore.instance.error ?? 'Exception not found')
-          : null;
+      // Keep the raw store error (may be null → "not found" fallback in build).
+      _error = exc == null ? ExceptionStore.instance.error : null;
       _loading = false;
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Exception')),
-      body: _buildBody(),
+      appBar: AppBar(title: Text(l.exceptionDetailTitle)),
+      body: _buildBody(l),
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildBody(AppLocalizations l) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -76,9 +81,9 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
           children: [
             const Icon(Icons.error_outline, size: 56, color: Colors.red),
             const SizedBox(height: 12),
-            Text(_error ?? 'Exception not found'),
+            Text(_error ?? l.exceptionDetailNotFound),
             const SizedBox(height: 12),
-            FilledButton(onPressed: _load, child: const Text('Retry')),
+            FilledButton(onPressed: _load, child: Text(l.commonRetry)),
           ],
         ),
       );
@@ -91,30 +96,30 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _header(exc),
+          _header(l, exc),
           const SizedBox(height: 16),
           if (exc.description != null && exc.description!.isNotEmpty) ...[
-            _section('Description', exc.description!),
+            _section(l.exceptionDetailSectionDescription, exc.description!),
             const SizedBox(height: 16),
           ],
-          _invoicePanel(exc),
+          _invoicePanel(l, exc),
           const SizedBox(height: 16),
-          _slaPanel(exc),
+          _slaPanel(l, exc),
           const SizedBox(height: 16),
-          _assigneePanel(exc),
+          _assigneePanel(l, exc),
           if (exc.status == ApExceptionStatus.resolved ||
               exc.status == ApExceptionStatus.dismissed) ...[
             const SizedBox(height: 16),
-            _resolutionPanel(exc),
+            _resolutionPanel(l, exc),
           ],
           const SizedBox(height: 24),
-          if (canAct) _actionButtons(exc),
+          if (canAct) _actionButtons(l, exc),
         ],
       ),
     );
   }
 
-  Widget _header(ApException exc) {
+  Widget _header(AppLocalizations l, ApException exc) {
     return Row(
       children: [
         Expanded(
@@ -128,7 +133,7 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
         if (exc.isOverdue) ...[
           const SizedBox(width: 8),
           Text(
-            'Overdue',
+            l.exceptionDetailOverdue,
             style: TextStyle(
               color: Colors.red.shade700,
               fontWeight: FontWeight.w700,
@@ -195,50 +200,57 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
     );
   }
 
-  Widget _invoicePanel(ApException exc) {
+  Widget _invoicePanel(AppLocalizations l, ApException exc) {
     return _card(
-      title: 'Invoice',
+      title: l.exceptionDetailSectionInvoice,
       children: [
         if (exc.invoiceNumber == null && exc.vendorName == null)
           Text(
-            'No linked invoice',
+            l.exceptionDetailNoLinkedInvoice,
             style: TextStyle(color: Colors.grey.shade700),
           )
         else ...[
-          if (exc.invoiceNumber != null) _row('Number', exc.invoiceNumber!),
-          if (exc.vendorName != null) _row('Vendor', exc.vendorName!),
+          if (exc.invoiceNumber != null)
+            _row(l.exceptionDetailFieldNumber, exc.invoiceNumber!),
+          if (exc.vendorName != null)
+            _row(l.exceptionDetailFieldVendor, exc.vendorName!),
           if (exc.amount != null)
-            _row('Amount', _currencyFormat.format(exc.amount)),
+            _row(l.exceptionDetailFieldAmount,
+                _currencyFormat.format(exc.amount)),
         ],
-        _row('Severity', exc.severity.label),
+        _row(l.exceptionDetailFieldSeverity, exc.severity.label),
       ],
     );
   }
 
-  Widget _slaPanel(ApException exc) {
+  Widget _slaPanel(AppLocalizations l, ApException exc) {
     final due = exc.dueAt;
     return _card(
-      title: 'SLA',
+      title: l.exceptionDetailSectionSla,
       children: [
-        _row('Created', _dateFormat.format(exc.createdAt.toLocal())),
+        _row(l.exceptionDetailFieldCreated,
+            _dateFormat.format(exc.createdAt.toLocal())),
         _row(
-          'Due',
-          due == null ? 'No SLA set' : _dateFormat.format(due.toLocal()),
+          l.exceptionDetailFieldDue,
+          due == null
+              ? l.exceptionDetailNoSla
+              : _dateFormat.format(due.toLocal()),
         ),
         if (exc.isOverdue)
-          _row('Status', 'Overdue')
+          _row(l.exceptionDetailFieldStatus, l.exceptionDetailOverdue)
         else if (due != null && exc.status.isActionable)
-          _row('Status', 'On track'),
+          _row(l.exceptionDetailFieldStatus, l.exceptionDetailOnTrack),
         if (exc.timeToResolutionHours != null)
           _row(
-            'Resolved in',
-            '${exc.timeToResolutionHours!.toStringAsFixed(1)} h',
+            l.exceptionDetailResolvedIn,
+            l.exceptionDetailResolvedInHours(
+                exc.timeToResolutionHours!.toStringAsFixed(1)),
           ),
       ],
     );
   }
 
-  Widget _assigneePanel(ApException exc) {
+  Widget _assigneePanel(AppLocalizations l, ApException exc) {
     // The assignee picker needs the org user list, which only admins can fetch
     // (`/admin/users` is admin-only). ap_managers can still resolve/escalate/
     // dismiss; they just don't get the picker. Reassignment without that list
@@ -247,13 +259,13 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
     final canAssign =
         AuthStore.instance.isOrgAdmin && exc.status.isActionable && !_submitting;
     return _card(
-      title: 'Assignee',
+      title: l.exceptionDetailSectionAssignee,
       children: [
         Row(
           children: [
             Expanded(
               child: Text(
-                exc.assignedTo ?? 'Unassigned',
+                exc.assignedTo ?? l.exceptionDetailUnassigned,
                 style: exc.assignedTo == null
                     ? TextStyle(color: Colors.grey.shade700)
                     : null,
@@ -263,7 +275,9 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
               TextButton.icon(
                 onPressed: () => _showAssignPicker(exc),
                 icon: const Icon(Icons.person_add_alt, size: 18),
-                label: Text(exc.assignedTo == null ? 'Assign' : 'Reassign'),
+                label: Text(exc.assignedTo == null
+                    ? l.exceptionDetailAssign
+                    : l.exceptionDetailReassign),
               ),
           ],
         ),
@@ -271,19 +285,22 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
     );
   }
 
-  Widget _resolutionPanel(ApException exc) {
+  Widget _resolutionPanel(AppLocalizations l, ApException exc) {
     return _card(
-      title: 'Resolution',
+      title: l.exceptionDetailSectionResolution,
       children: [
-        if (exc.resolution != null) _row('Note', exc.resolution!),
-        if (exc.resolvedBy != null) _row('By', exc.resolvedBy!),
+        if (exc.resolution != null)
+          _row(l.exceptionDetailResolutionNote, exc.resolution!),
+        if (exc.resolvedBy != null)
+          _row(l.exceptionDetailResolutionBy, exc.resolvedBy!),
         if (exc.resolvedAt != null)
-          _row('At', _dateFormat.format(exc.resolvedAt!.toLocal())),
+          _row(l.exceptionDetailResolutionAt,
+              _dateFormat.format(exc.resolvedAt!.toLocal())),
       ],
     );
   }
 
-  Widget _actionButtons(ApException exc) {
+  Widget _actionButtons(AppLocalizations l, ApException exc) {
     return Column(
       children: [
         Row(
@@ -292,7 +309,7 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
               child: FilledButton.icon(
                 onPressed: () => _runAction('resolve'),
                 icon: const Icon(Icons.check),
-                label: const Text('Resolve'),
+                label: Text(l.exceptionActionResolve),
               ),
             ),
             const SizedBox(width: 8),
@@ -300,7 +317,7 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
               child: OutlinedButton.icon(
                 onPressed: () => _runAction('escalate'),
                 icon: const Icon(Icons.arrow_upward),
-                label: const Text('Escalate'),
+                label: Text(l.exceptionActionEscalate),
               ),
             ),
           ],
@@ -311,7 +328,7 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
           child: OutlinedButton.icon(
             onPressed: () => _runAction('dismiss'),
             icon: const Icon(Icons.block),
-            label: const Text('Dismiss'),
+            label: Text(l.exceptionActionDismiss),
           ),
         ),
       ],
@@ -321,6 +338,7 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
   Future<void> _runAction(String action) async {
     final exc = _exception;
     if (exc == null || _submitting) return;
+    final l = AppLocalizations.of(context);
     setState(() => _submitting = true);
     final store = ExceptionStore.instance;
     final ok = switch (action) {
@@ -330,25 +348,36 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
     };
     if (!mounted) return;
     setState(() => _submitting = false);
+    final successMsg = switch (action) {
+      'resolve' => l.exceptionDetailActionResolved,
+      'escalate' => l.exceptionDetailActionEscalated,
+      _ => l.exceptionDetailActionDismissed,
+    };
+    final failMsg = switch (action) {
+      'resolve' => l.exceptionDetailActionResolveFailed,
+      'escalate' => l.exceptionDetailActionEscalateFailed,
+      _ => l.exceptionDetailActionDismissFailed,
+    };
     if (ok) {
-      A11y.announce(context, 'Exception ${action}d');
+      A11y.announce(context, successMsg);
       Navigator.of(context).pop(true);
     } else {
-      A11y.announce(context, 'Could not $action the exception');
+      A11y.announce(context, failMsg);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not $action the exception')),
+        SnackBar(content: Text(failMsg)),
       );
     }
   }
 
   Future<void> _showAssignPicker(ApException exc) async {
+    final l = AppLocalizations.of(context);
     List<AdminUser> users;
     try {
       users = await AdminApi.listUsers(pageSize: 100);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not load users: $e')),
+        SnackBar(content: Text(l.exceptionDetailLoadUsersFailed(e.toString()))),
       );
       return;
     }
@@ -367,14 +396,14 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                      'Assign to',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                      l.exceptionDetailAssignTo,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w700, fontSize: 16),
                     ),
                   ),
                 ),
@@ -385,7 +414,7 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
                       if (exc.assignedToUserId != null)
                         ListTile(
                           leading: const Icon(Icons.person_off_outlined),
-                          title: const Text('Unassign'),
+                          title: Text(l.exceptionDetailUnassign),
                           onTap: () => Navigator.of(sheetContext)
                               .pop((id: null, clear: true)),
                         ),
@@ -424,10 +453,10 @@ class _ExceptionDetailScreenState extends State<ExceptionDetailScreen> {
       _submitting = false;
     });
     final msg = updated == null
-        ? 'Could not update the assignee'
+        ? l.exceptionDetailAssigneeUpdateFailed
         : (updated.assignedTo == null
-            ? 'Exception unassigned'
-            : 'Assigned to ${updated.assignedTo}');
+            ? l.exceptionDetailUnassigned2
+            : l.exceptionDetailAssignedTo(updated.assignedTo!));
     A11y.announce(context, msg);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
