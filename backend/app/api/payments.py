@@ -558,11 +558,22 @@ async def create_payment(
     if invoice.status not in PAYABLE_INVOICE_STATUSES:
         raise HTTPException(status_code=409, detail="Invoice is not approved for payment")
 
+    # The payment amount is the approved invoice amount — never a caller-supplied
+    # value. Trusting `body.amount` let an actor book a $99,999 payment against a
+    # $500 approved invoice (the run-based path at create_payment_run already
+    # binds to `inv.amount`; this standalone path must match it). If a value is
+    # supplied it must equal the invoice amount, else 422.
+    if body.amount is not None and Decimal(str(body.amount)) != (invoice.amount or Decimal("0")):
+        raise HTTPException(
+            status_code=422,
+            detail="Payment amount must equal the approved invoice amount",
+        )
+
     payment = Payment(
         invoice_id=uuid.UUID(body.invoice_id),
         # Payment follows the invoice's entity (multi-entity Phase 2).
         entity_id=invoice.entity_id,
-        amount=body.amount,
+        amount=invoice.amount,
         method=body.method.value if body.method else None,
         reference=body.reference,
         payment_run_id=uuid.UUID(body.payment_run_id) if body.payment_run_id else None,
@@ -793,7 +804,12 @@ async def approve_payment_run(
     """CFO sign-off on a draft run. Only valid from `draft` AND
     `requires_cfo_approval=True`. After this lands, /execute will accept
     the run from any actor with the standard payments role set."""
-    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id))
+    # Row-lock the run: two concurrent CFO approvals both read
+    # cfo_approved_at=None, both pass the guards, and both commit — last writer
+    # wins cfo_approved_by and a duplicate `payment_run.cfo_approved` audit row
+    # lands, breaking non-repudiation of the money-control gate. The lock
+    # serialises them so the second sees the first's commit and 409s.
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Payment run not found")
