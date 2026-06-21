@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
 	import { goto } from '$app/navigation';
+	import { m } from '$lib/i18n/store.svelte';
 
 	let currentPassword = $state('');
 	let newPassword = $state('');
@@ -12,7 +13,7 @@
 		e.preventDefault();
 		error = '';
 		if (newPassword !== confirm) {
-			error = 'Passwords do not match.';
+			error = m('portal.changePassword.mismatch');
 			return;
 		}
 		loading = true;
@@ -20,7 +21,7 @@
 			await portalAuth.changePassword(currentPassword, newPassword);
 			goto('/portal/invoices');
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Change failed';
+			error = err instanceof Error ? err.message : m('portal.changePassword.failed');
 		} finally {
 			loading = false;
 		}
@@ -29,27 +30,27 @@
 
 <div class="page">
 	<form class="card" onsubmit={handleSubmit}>
-		<h1>Set a new password</h1>
-		<p class="hint">Your invited password is temporary — choose one only you know.</p>
+		<h1>{m('portal.changePassword.title')}</h1>
+		<p class="hint">{m('portal.changePassword.hint')}</p>
 
 		<div role="alert" aria-live="assertive">
 			{#if error}<div class="error">{error}</div>{/if}
 		</div>
 
 		<label>
-			<span>Current (temporary) password</span>
+			<span>{m('portal.changePassword.current')}</span>
 			<input type="password" bind:value={currentPassword} required />
 		</label>
 		<label>
-			<span>New password</span>
+			<span>{m('portal.changePassword.new')}</span>
 			<input type="password" bind:value={newPassword} required minlength="12" />
 		</label>
 		<label>
-			<span>Confirm new password</span>
+			<span>{m('portal.changePassword.confirm')}</span>
 			<input type="password" bind:value={confirm} required />
 		</label>
 		<button type="submit" disabled={loading}>
-			{loading ? 'Saving...' : 'Save password'}
+			{loading ? m('portal.changePassword.saving') : m('portal.changePassword.save')}
 		</button>
 	</form>
 </div>

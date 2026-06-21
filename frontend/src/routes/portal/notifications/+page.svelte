@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import {
 		getPortalNotificationPreferences,
 		updatePortalNotificationPreferences,
@@ -24,7 +25,7 @@
 		try {
 			apply(await getPortalNotificationPreferences());
 		} catch (e) {
-			err = e instanceof Error ? e.message : 'Failed to load preferences';
+			err = e instanceof Error ? e.message : m('portal.notifications.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -42,9 +43,9 @@
 					email_on_rejection: emailOnRejection,
 				})
 			);
-			msg = 'Preferences saved.';
+			msg = m('portal.notifications.saved');
 		} catch (e) {
-			err = e instanceof Error ? e.message : 'Save failed';
+			err = e instanceof Error ? e.message : m('portal.notifications.saveFailed');
 		} finally {
 			saving = false;
 		}
@@ -55,30 +56,30 @@
 
 <div class="page">
 	<header>
-		<h1>Notification preferences</h1>
-		<p class="sub">Choose when we email you about your invoices.</p>
+		<h1>{m('portal.notifications.title')}</h1>
+		<p class="sub">{m('portal.notifications.subtitle')}</p>
 	</header>
 
 	{#if err}<div class="error" role="alert">{err}</div>{/if}
 	{#if msg}<div class="message">{msg}</div>{/if}
 
 	<section class="card">
-		<h2>Email me when…</h2>
-		<p class="note">We'll email this account's address. You're opted in by default.</p>
+		<h2>{m('portal.notifications.cardTitle')}</h2>
+		<p class="note">{m('portal.notifications.cardNote')}</p>
 		{#if loading}
-			<p class="note">Loading…</p>
+			<p class="note">{m('portal.notifications.loading')}</p>
 		{:else}
 			<form onsubmit={save}>
 				<label class="toggle">
 					<input type="checkbox" bind:checked={emailOnPayment} />
-					<span>An invoice of mine is <strong>paid</strong></span>
+					<span>{m('portal.notifications.onPaid')}</span>
 				</label>
 				<label class="toggle">
 					<input type="checkbox" bind:checked={emailOnRejection} />
-					<span>An invoice of mine is <strong>rejected</strong></span>
+					<span>{m('portal.notifications.onRejected')}</span>
 				</label>
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving…' : 'Save preferences'}
+					{saving ? m('portal.notifications.saving') : m('portal.notifications.save')}
 				</button>
 			</form>
 		{/if}

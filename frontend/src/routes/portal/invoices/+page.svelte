@@ -3,6 +3,7 @@
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
 	import { onMount } from 'svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { m } from '$lib/i18n/store.svelte';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
 	import {
@@ -41,7 +42,7 @@
 			const res = await portalApi.get<InvoiceListResponse>('/api/portal/invoices');
 			items = res.items;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Load failed';
+			error = err instanceof Error ? err.message : m('portal.invoices.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -56,11 +57,11 @@
 		message = '';
 		try {
 			await portalApi.upload<{ message: string }>('/api/portal/invoices', file);
-			message = 'Invoice submitted. Your customer has been notified.';
+			message = m('portal.invoices.submitted');
 			input.value = '';
 			await refresh();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Upload failed';
+			error = err instanceof Error ? err.message : m('portal.invoices.uploadFailed');
 		} finally {
 			uploading = false;
 		}
@@ -122,7 +123,7 @@
 	}
 
 	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return '—';
+		if (!iso) return m('portal.common.dash');
 		return new Date(iso).toLocaleDateString();
 	}
 
@@ -135,10 +136,10 @@
 
 <div class="page">
 	<header>
-		<h1>My Invoices</h1>
+		<h1>{m('portal.invoices.title')}</h1>
 		<label class="upload-btn" class:uploading>
 			<input type="file" accept="application/pdf,image/*" onchange={handleUpload} disabled={uploading} />
-			{uploading ? 'Submitting...' : 'Submit invoice'}
+			{uploading ? m('portal.invoices.submitting') : m('portal.invoices.submit')}
 		</label>
 	</header>
 
@@ -146,22 +147,22 @@
 	{#if message}<div class="msg" role="status" aria-live="polite">{message}</div>{/if}
 
 	{#if loading && !items.length}
-		<div class="loading">Loading...</div>
+		<div class="loading">{m('portal.common.loading')}</div>
 	{:else if !items.length}
 		<div class="empty">
-			<p>You haven't submitted any invoices yet.</p>
-			<p class="hint">Upload a PDF or photo using the button above.</p>
+			<p>{m('portal.invoices.empty')}</p>
+			<p class="hint">{m('portal.invoices.emptyHint')}</p>
 		</div>
 	{:else}
 		<table>
 			<thead>
 				<tr>
-					<th>Invoice #</th>
-					<th>Submitted</th>
-					<th>Invoice date</th>
-					<th>Due</th>
-					<th class="num">Amount</th>
-					<th>Status</th>
+					<th>{m('portal.invoices.col.invoiceNumber')}</th>
+					<th>{m('portal.invoices.col.submitted')}</th>
+					<th>{m('portal.invoices.col.invoiceDate')}</th>
+					<th>{m('portal.invoices.col.due')}</th>
+					<th class="num">{m('portal.invoices.col.amount')}</th>
+					<th>{m('portal.invoices.col.status')}</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -187,7 +188,7 @@
 								<span class="row-caret" aria-hidden="true"
 									>{expandedId === inv.id ? '▾' : '▸'}</span
 								>
-								{inv.invoice_number || '(pending extraction)'}
+								{inv.invoice_number || m('portal.invoices.pendingExtraction')}
 							</button>
 						</td>
 						<td>{fmtDate(inv.submitted_at)}</td>

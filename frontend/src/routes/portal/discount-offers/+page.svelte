@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import Money from '$lib/components/ui/Money.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import {
 		listPortalDiscountOffers,
 		acceptPortalDiscountOffer,
@@ -10,12 +11,12 @@
 	} from '$lib/portalApi';
 
 	const FILTERS = [
-		{ key: '', label: 'All' },
-		{ key: 'offered', label: 'Open' },
-		{ key: 'accepted', label: 'Accepted' },
-		{ key: 'captured', label: 'Captured' },
-		{ key: 'declined,expired', label: 'Closed' },
-	];
+		{ key: '', labelKey: 'portal.discounts.filter.all' },
+		{ key: 'offered', labelKey: 'portal.discounts.filter.open' },
+		{ key: 'accepted', labelKey: 'portal.discounts.filter.accepted' },
+		{ key: 'captured', labelKey: 'portal.discounts.filter.captured' },
+		{ key: 'declined,expired', labelKey: 'portal.discounts.filter.closed' },
+	] as const;
 
 	let items = $state<PortalDiscountOffer[]>([]);
 	let loading = $state(false);
@@ -33,7 +34,7 @@
 			const res = await listPortalDiscountOffers(activeFilter || undefined);
 			items = res.items;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Load failed';
+			error = err instanceof Error ? err.message : m('portal.discounts.loadFailed');
 		} finally {
 			loading = false;
 		}
@@ -65,7 +66,7 @@
 			closeAccept();
 			await refresh();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Accept failed';
+			error = err instanceof Error ? err.message : m('portal.discounts.acceptFailed');
 		} finally {
 			busy = null;
 		}
@@ -78,14 +79,14 @@
 			await declinePortalDiscountOffer(offer.id);
 			await refresh();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Decline failed';
+			error = err instanceof Error ? err.message : m('portal.discounts.declineFailed');
 		} finally {
 			busy = null;
 		}
 	}
 
 	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return '—';
+		if (!iso) return m('portal.common.dash');
 		return new Date(iso).toLocaleDateString();
 	}
 
@@ -105,17 +106,17 @@
 
 <div class="page">
 	<header>
-		<h1>Early-Payment Discounts</h1>
-		<p class="sub">Accept an early-payment discount to get paid sooner for a small discount.</p>
+		<h1>{m('portal.discounts.title')}</h1>
+		<p class="sub">{m('portal.discounts.subtitle')}</p>
 	</header>
 
-	<nav class="filters" aria-label="Filter offers by status">
+	<nav class="filters" aria-label={m('portal.discounts.filterAria')}>
 		{#each FILTERS as f (f.key)}
 			<button
 				type="button"
 				class="filter-chip"
 				class:active={activeFilter === f.key}
-				onclick={() => setFilter(f.key)}>{f.label}</button
+				onclick={() => setFilter(f.key)}>{m(f.labelKey)}</button
 			>
 		{/each}
 	</nav>
@@ -123,25 +124,23 @@
 	{#if error}<div class="error" role="alert">{error}</div>{/if}
 
 	{#if loading && !items.length}
-		<div class="loading">Loading...</div>
+		<div class="loading">{m('portal.common.loading')}</div>
 	{:else if !items.length}
 		<div class="empty">
-			<p>No discount offers right now.</p>
-			<p class="hint">
-				When your customer offers an early-payment discount, it shows up here for you to accept.
-			</p>
+			<p>{m('portal.discounts.empty')}</p>
+			<p class="hint">{m('portal.discounts.emptyHint')}</p>
 		</div>
 	{:else}
 		<table>
 			<thead>
 				<tr>
-					<th>Applies to</th>
-					<th class="num">Amount</th>
-					<th>Tiers</th>
-					<th class="num">Best discount</th>
-					<th class="num">You save</th>
-					<th>Window</th>
-					<th>Status</th>
+					<th>{m('portal.discounts.col.appliesTo')}</th>
+					<th class="num">{m('portal.discounts.col.amount')}</th>
+					<th>{m('portal.discounts.col.tiers')}</th>
+					<th class="num">{m('portal.discounts.col.bestDiscount')}</th>
+					<th class="num">{m('portal.discounts.col.youSave')}</th>
+					<th>{m('portal.discounts.col.window')}</th>
+					<th>{m('portal.discounts.col.status')}</th>
 					<th class="actions-col"></th>
 				</tr>
 			</thead>
@@ -150,19 +149,19 @@
 					<tr>
 						<td>
 							{#if o.scope === 'invoice'}
-								Invoice {o.invoice_number || '—'}
+								{m('portal.discounts.scopeInvoice', { number: o.invoice_number || m('portal.common.dash') })}
 							{:else}
-								All open invoices
+								{m('portal.discounts.scopeAll')}
 							{/if}
 						</td>
 						<td class="num"><Money amount={o.base_amount} currency={o.currency} /></td>
 						<td class="tiers">
 							{#each o.tiers as t (t.days)}
-								<span class="tier">{t.days}d → {fmtPct(t.percent)}</span>
+								<span class="tier">{m('portal.discounts.tier', { days: t.days, percent: fmtPct(t.percent) })}</span>
 							{/each}
 						</td>
 						<td class="num">
-							{o.best_tier ? fmtPct(o.best_tier.percent) : '—'}
+							{o.best_tier ? fmtPct(o.best_tier.percent) : m('portal.common.dash')}
 						</td>
 						<td class="num">
 							{#if o.status === 'captured' && o.captured_amount !== null}
@@ -185,7 +184,7 @@
 									disabled={busy === o.id || !o.best_tier}
 									onclick={() => openAccept(o)}
 								>
-									Accept
+									{m('portal.discounts.accept')}
 								</button>
 								<button
 									type="button"
@@ -193,7 +192,7 @@
 									disabled={busy === o.id}
 									onclick={() => decline(o)}
 								>
-									Decline
+									{m('portal.discounts.decline')}
 								</button>
 							{/if}
 						</td>
@@ -220,20 +219,17 @@
 			role="dialog"
 			tabindex="-1"
 			aria-modal="true"
-			aria-label="Accept early-payment discount"
+			aria-label={m('portal.discounts.dialog.title')}
 		>
-			<h2>Accept early-payment discount</h2>
-			<p class="dlg-sub">
-				Accepting confirms you'll take the discount in exchange for earlier payment. It does not
-				move any money — your customer still processes the payment.
-			</p>
+			<h2>{m('portal.discounts.dialog.title')}</h2>
+			<p class="dlg-sub">{m('portal.discounts.dialog.subtitle')}</p>
 
 			{#if accepting.tiers.length > 1}
 				<label class="field">
-					<span>Choose a tier</span>
+					<span>{m('portal.discounts.dialog.chooseTier')}</span>
 					<select bind:value={chosenTierDays}>
 						{#each accepting.tiers as t (t.days)}
-							<option value={t.days}>Pay within {t.days} days → {fmtPct(t.percent)} off</option>
+							<option value={t.days}>{m('portal.discounts.dialog.tierOption', { days: t.days, percent: fmtPct(t.percent) })}</option>
 						{/each}
 					</select>
 				</label>
@@ -241,21 +237,21 @@
 
 			{#if chosenTier}
 				<div class="preview">
-					<span>You save</span>
+					<span>{m('portal.discounts.dialog.youSave')}</span>
 					<strong><Money amount={chosenTier.savings} currency={accepting.currency} /></strong>
-					<span class="muted">({fmtPct(chosenTier.percent)} for paying within {chosenTier.days} days)</span>
+					<span class="muted">{m('portal.discounts.dialog.savingsDetail', { percent: fmtPct(chosenTier.percent), days: chosenTier.days })}</span>
 				</div>
 			{/if}
 
 			<div class="dlg-footer">
-				<button type="button" class="btn-cancel" onclick={closeAccept}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={closeAccept}>{m('portal.discounts.dialog.cancel')}</button>
 				<button
 					type="button"
 					class="btn-primary"
 					disabled={busy === accepting.id || chosenTierDays === null}
 					onclick={confirmAccept}
 				>
-					{busy === accepting.id ? 'Accepting…' : 'Accept discount'}
+					{busy === accepting.id ? m('portal.discounts.dialog.accepting') : m('portal.discounts.dialog.accept')}
 				</button>
 			</div>
 		</div>
