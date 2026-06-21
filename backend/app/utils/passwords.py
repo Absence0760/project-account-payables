@@ -33,6 +33,22 @@ _UPPER = re.compile(r"[A-Z]")
 _LOWER = re.compile(r"[a-z]")
 _DIGIT = re.compile(r"[0-9]")
 
+# A bcrypt_sha256 hash of a fixed throwaway secret, computed once at import.
+# Used to equalize login timing — see `dummy_verify`.
+_DUMMY_HASH = pwd_context.hash("timing-equalizer-not-a-real-secret")
+
+
+def dummy_verify() -> None:
+    """Run a throwaway password verification to match the wall-clock cost of a
+    real `pwd_context.verify`.
+
+    Login handlers must call this on the user-not-found branch: otherwise the
+    not-found path returns ~100ms faster than a wrong-password path (which runs
+    bcrypt), letting an attacker time the difference to enumerate which emails
+    have accounts. The result is intentionally ignored.
+    """
+    pwd_context.verify("x", _DUMMY_HASH)
+
 
 class PasswordError(ValueError):
     """Raised when a user-supplied password doesn't meet complexity rules."""

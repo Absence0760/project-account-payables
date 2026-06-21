@@ -37,6 +37,7 @@ from app.services.rate_limit import check_rate_limit
 from app.tenant import get_tenant_db
 from app.utils.passwords import (
     PasswordError,
+    dummy_verify,
     pwd_context,
     validate_password_complexity,
 )
@@ -81,6 +82,9 @@ async def portal_login(
     vu = result.scalar_one_or_none()
 
     if not vu or not vu.hashed_password or not vu.is_active:
+        # Equalize timing with the wrong-password path so the response time
+        # doesn't reveal whether a vendor account exists (enumeration).
+        dummy_verify()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not pwd_context.verify(body.password, vu.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")

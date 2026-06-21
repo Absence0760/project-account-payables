@@ -109,6 +109,28 @@ async def test_login_unknown_email_and_wrong_password_raise_same_status():
 
 
 @pytest.mark.asyncio
+async def test_login_unknown_email_runs_dummy_verify_to_equalize_timing():
+    """The timing-oracle guard: a not-found login must still run a password
+    verification (dummy_verify) so its wall-clock cost matches the
+    wrong-password path — otherwise the faster not-found response enumerates
+    which emails have accounts."""
+    from app.api import auth
+    from app.schemas.auth import LoginRequest
+
+    with (
+        patch("app.api.auth.dispatch_auth_audit", AsyncMock()),
+        patch("app.api.auth.dummy_verify") as dv,
+    ):
+        with pytest.raises(HTTPException):
+            await auth.login(
+                body=LoginRequest(email="noone@nowhere.test", password="x"),
+                request=_fake_request(),
+                db=_db_returning_user(None),
+            )
+    dv.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_login_unknown_email_and_wrong_password_raise_same_detail():
     """Same detail string for both branches. A wording diff ("user
     not found" vs "incorrect password") is a CWE-204 oracle even
@@ -250,6 +272,22 @@ async def test_portal_login_unknown_email_and_wrong_password_raise_same_status()
 
     assert exc_unknown.value.status_code == exc_wrong.value.status_code == 401
     assert exc_unknown.value.detail == exc_wrong.value.detail
+
+
+@pytest.mark.asyncio
+async def test_portal_login_unknown_email_runs_dummy_verify():
+    """Same timing-equalization guard on the vendor-portal login."""
+    from app.api import portal_auth
+    from app.schemas.portal import PortalLoginRequest
+
+    with patch("app.api.portal_auth.dummy_verify") as dv:
+        with pytest.raises(HTTPException):
+            await portal_auth.portal_login(
+                body=PortalLoginRequest(email="noone@nowhere.test", password="x"),
+                request=_fake_request(),
+                db=_db_returning_user(None),
+            )
+    dv.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,7 @@ from app.services.session_management import end_session, register_session
 from app.services.sso import is_sso_only
 from app.utils.passwords import (
     PasswordError,
+    dummy_verify,
     pwd_context,
     validate_password_complexity,
 )
@@ -142,6 +143,9 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user or not user.hashed_password:
+        # Equalize timing with the wrong-password path below so the response
+        # time doesn't reveal whether the email has an account (enumeration).
+        dummy_verify()
         # Failed login for an unknown user — still audit-log so abuse is
         # visible. Without an organization_id we can't pick a tenant DB,
         # so the write is simply dropped (logged at WARN inside the helper).
