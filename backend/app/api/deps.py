@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 
 ALGORITHM = "HS256"
 
+# JWT `typ` values that are NOT full employee access tokens and therefore must
+# never resolve through `get_current_user`. These are same-secret JWTs minted by
+# other flows (the supplier-portal access token, and the post-password MFA
+# challenge tokens for both employees and the portal) — accepting any of them as
+# an access token would bypass the second factor or cross the AP/vendor boundary.
+# Mirror of the `typ` strings in `app.services.mfa` + `create_vendor_access_token`;
+# duplicated as bare strings here to avoid a circular import (mfa imports nothing
+# from deps, but keeping deps import-light matters for the Lambda paths). A real
+# access token is `typ="user"`; `typ` absent is legacy-access and still allowed.
+_NON_ACCESS_TOKEN_TYPES = frozenset({"vendor", "mfa_challenge", "vendor_mfa_challenge"})
+
 # Role constants — mirror the four roles seeded into `roles` table by
 # `scripts/seed.py`. Centralised here so a typo doesn't silently lock
 # everyone out (`require_roles("admni")` would be a 403 for everyone).
@@ -91,9 +102,17 @@ async def get_current_user(
     token = authorization.removeprefix("Bearer ")
     payload = decode_token(token)
 
-    # Reject vendor-portal JWTs — they resolve through `get_current_vendor_user`
-    # and must not acquire an AP-app User session by mistake.
-    if payload.get("typ") == "vendor":
+    # Only a full access token may resolve to an employee session. Rejecting
+    # just `typ="vendor"` is NOT enough: the MFA *challenge* tokens
+    # (`typ="mfa_challenge"` for employees, `typ="vendor_mfa_challenge"` for the
+    # portal) are same-secret JWTs that also carry `sub`, so a bare not-vendor
+    # check let a password-verified-but-MFA-pending user wield their challenge
+    # token as a fully-authenticated access token — a complete second-factor
+    # bypass. Reject every NON-access token type here. `typ` absent is still
+    # accepted (legacy access tokens predate the claim); a real access token is
+    # `typ="user"`. The portal side uses the symmetric allowlist
+    # (`get_current_vendor_user` requires `typ == "vendor"`).
+    if payload.get("typ") in _NON_ACCESS_TOKEN_TYPES:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     try:
