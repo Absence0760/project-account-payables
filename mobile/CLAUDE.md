@@ -450,7 +450,26 @@ Same six locales (en, de, fr, es, pt-BR, ja) and the same ICU plural shapes.
   the `workflowsStepCount` plural; `workflow_detail_screen` — fallback title,
   load-error/no-steps states, default-workflow note, per-step
   number/enabled/disabled labels + the approver-count plural and delay/condition
-  config-summary placeholders). Mirrors what the web extracted. Data-driven
+  config-summary placeholders), the **cash-flow** screen (`cash_flow_screen` —
+  title, error prefix + horizon-days placeholders, the low-balance alert
+  (single/multiple breach messages), KPI labels (opening/projected-end balance +
+  subtitle, committed/pending out + subtitles), opening-balance source labels,
+  the projected-outflows + cash-position section headers + their empty states,
+  the invoice-count plural and committed/pending/out amount placeholders, and the
+  forecast/position row a11y labels + below-threshold suffix), the **contracts**
+  screens (`contracts_screen` — title, search hint, empty state, status-filter
+  chips; `contract_detail_screen` — title, error prefix, untitled fallback, every
+  field label + the not-to-exceed/yes/no/renewal-term/notice placeholders, the
+  Spend + Line-Items section headers + spend summary (invoiced/over-limit/
+  remaining/of-limit/no-limit) + line-item qty/unit-price/GL placeholders, and the
+  activate/terminate lifecycle controls + their confirm dialog and
+  success/failure toasts), and the **exception detail** screen
+  (`exception_detail_screen` — title, not-found/overdue, the description/invoice/
+  SLA/assignee/resolution section headers + every field label, on-track/resolved-in
+  (hours placeholder)/no-SLA states, the assign/reassign/unassign controls + the
+  assignee-picker (assign-to/load-users-failed placeholder), and the resolve/
+  escalate/dismiss action toasts + their failure variants). Mirrors what the web
+  extracted. Data-driven
   enum/status maps that live in shared badge widgets (`status_badge`,
   `vendor_status_badge`, `exception_status_badge`) plus the `WorkflowStepConfig`
   `typeLabel` are left English until their own turn. To extract a
