@@ -1361,4 +1361,14 @@ export const messages = {
 	'auth.mfa.error.passkey': 'パスキーの認証に失敗しました',
 	'auth.mfa.error.emailSend': 'メールコードの送信に失敗しました',
 	'auth.mfa.error.verify': '認証に失敗しました',
+
+	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
+	'auth.callback.pageTitle': 'サインインしています… — Better AP',
+	'auth.callback.signingIn': 'サインインしています…',
+	'auth.callback.idpError': 'IDプロバイダーのエラー: {error}',
+	'auth.callback.missingCodeState': 'コールバックURLにコードまたはステートがありません。',
+	'auth.callback.missingCode': 'コールバックURLにコードがありません。',
+	'auth.callback.failed': 'サインインに失敗しました。',
+	'auth.callback.failedHeading': 'サインインに失敗しました',
+	'auth.callback.backToSignIn': 'サインインに戻る',
 } satisfies Messages;

@@ -1338,4 +1338,14 @@ export const messages = {
 	'auth.mfa.error.passkey': 'Échec de la vérification de la clé d\'accès',
 	'auth.mfa.error.emailSend': 'Échec de l\'envoi du code par e-mail',
 	'auth.mfa.error.verify': 'Échec de la vérification',
+
+	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
+	'auth.callback.pageTitle': 'Connexion en cours… — Better AP',
+	'auth.callback.signingIn': 'Connexion en cours…',
+	'auth.callback.idpError': 'Erreur du fournisseur d\'identité : {error}',
+	'auth.callback.missingCodeState': 'Code ou état manquant dans l\'URL de rappel.',
+	'auth.callback.missingCode': 'Code manquant dans l\'URL de rappel.',
+	'auth.callback.failed': 'Échec de la connexion.',
+	'auth.callback.failedHeading': 'Échec de la connexion',
+	'auth.callback.backToSignIn': 'Retour à la connexion',
 } satisfies Messages;

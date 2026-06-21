@@ -1369,4 +1369,14 @@ export const messages = {
 	'auth.mfa.error.passkey': 'Error al verificar la clave de acceso',
 	'auth.mfa.error.emailSend': 'No se pudo enviar el código por correo',
 	'auth.mfa.error.verify': 'Error de verificación',
+
+	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
+	'auth.callback.pageTitle': 'Iniciando sesión… — Better AP',
+	'auth.callback.signingIn': 'Iniciando tu sesión…',
+	'auth.callback.idpError': 'Error del proveedor de identidad: {error}',
+	'auth.callback.missingCodeState': 'Falta el código o el estado en la URL de retorno.',
+	'auth.callback.missingCode': 'Falta el código en la URL de retorno.',
+	'auth.callback.failed': 'Error al iniciar sesión.',
+	'auth.callback.failedHeading': 'Error al iniciar sesión',
+	'auth.callback.backToSignIn': 'Volver al inicio de sesión',
 } satisfies Messages;

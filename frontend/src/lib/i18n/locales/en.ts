@@ -1396,4 +1396,14 @@ export const en = {
 	'auth.mfa.error.passkey': 'Passkey verification failed',
 	'auth.mfa.error.emailSend': 'Failed to send email code',
 	'auth.mfa.error.verify': 'Verification failed',
+
+	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
+	'auth.callback.pageTitle': 'Signing in… — Better AP',
+	'auth.callback.signingIn': 'Signing you in…',
+	'auth.callback.idpError': 'Identity provider error: {error}',
+	'auth.callback.missingCodeState': 'Missing code or state in the callback URL.',
+	'auth.callback.missingCode': 'Missing code in the callback URL.',
+	'auth.callback.failed': 'Sign-in failed.',
+	'auth.callback.failedHeading': 'Sign-in failed',
+	'auth.callback.backToSignIn': 'Back to sign in',
 } satisfies Record<string, string>;

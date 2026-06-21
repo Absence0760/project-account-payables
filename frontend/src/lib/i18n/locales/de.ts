@@ -1339,4 +1339,14 @@ export const messages = {
 	'auth.mfa.error.passkey': 'Passkey-Verifizierung fehlgeschlagen',
 	'auth.mfa.error.emailSend': 'E-Mail-Code konnte nicht gesendet werden',
 	'auth.mfa.error.verify': 'Verifizierung fehlgeschlagen',
+
+	// Auth — SSO / SAML callback (routes/login/{sso,saml}-callback/+page.svelte)
+	'auth.callback.pageTitle': 'Anmeldung läuft… — Better AP',
+	'auth.callback.signingIn': 'Sie werden angemeldet…',
+	'auth.callback.idpError': 'Fehler des Identitätsanbieters: {error}',
+	'auth.callback.missingCodeState': 'Code oder Status in der Callback-URL fehlt.',
+	'auth.callback.missingCode': 'Code in der Callback-URL fehlt.',
+	'auth.callback.failed': 'Anmeldung fehlgeschlagen.',
+	'auth.callback.failedHeading': 'Anmeldung fehlgeschlagen',
+	'auth.callback.backToSignIn': 'Zurück zur Anmeldung',
 } satisfies Messages;

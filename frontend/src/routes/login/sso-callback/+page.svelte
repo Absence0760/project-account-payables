@@ -4,6 +4,7 @@
 	import { api, setToken } from '$lib/api';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface SSOCallbackResponse {
 		access_token: string;
@@ -13,7 +14,7 @@
 	}
 
 	let phase = $state<'working' | 'error'>('working');
-	let message = $state('Signing you in…');
+	let message = $state(m('auth.callback.signingIn'));
 
 	onMount(async () => {
 		const code = $page.url.searchParams.get('code');
@@ -22,12 +23,12 @@
 
 		if (err) {
 			phase = 'error';
-			message = `Identity provider error: ${err}`;
+			message = m('auth.callback.idpError', { error: err });
 			return;
 		}
 		if (!code || !state) {
 			phase = 'error';
-			message = 'Missing code or state in the callback URL.';
+			message = m('auth.callback.missingCodeState');
 			return;
 		}
 
@@ -41,13 +42,13 @@
 			goto(resp.must_change_password ? '/change-password' : '/');
 		} catch (e) {
 			phase = 'error';
-			message = e instanceof Error ? e.message : 'Sign-in failed.';
+			message = e instanceof Error ? e.message : m('auth.callback.failed');
 		}
 	});
 </script>
 
 <svelte:head>
-	<title>Signing in… — Better AP</title>
+	<title>{m('auth.callback.pageTitle')}</title>
 </svelte:head>
 
 <div class="page">
@@ -56,9 +57,9 @@
 			<div class="spinner" aria-hidden="true"></div>
 			<p class="status">{message}</p>
 		{:else}
-			<h1>Sign-in failed</h1>
+			<h1>{m('auth.callback.failedHeading')}</h1>
 			<p class="error" role="alert">{message}</p>
-			<a href="/login">Back to sign in</a>
+			<a href="/login">{m('auth.callback.backToSignIn')}</a>
 		{/if}
 	</div>
 </div>
