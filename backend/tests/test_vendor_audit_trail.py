@@ -158,13 +158,12 @@ async def test_update_vendor_writes_audit_row_with_field_diff(realdb, mk):
 
 
 @pytest.mark.asyncio
-async def test_update_bank_details_audit_row_has_no_raw_account_number(realdb, mk):
-    """The BEC / insider bank-redirect case: a direct bank-detail change writes
-    a `vendor.updated` row that RECORDS the change but never carries the raw
-    account number. Seed a legacy JSONB with a raw `account_number` (the column
-    historically held arbitrary processor metadata), then flip it via the
-    handler's merge path and assert the new full number is absent everywhere in
-    the serialized audit details."""
+async def test_ap_bank_change_stages_with_no_raw_account_number_in_audit(realdb, mk):
+    """The BEC / insider bank-redirect case under dual control: a PATCH that
+    moves bank details is STAGED (not applied) and writes a
+    `vendor.bank_details_change_requested` row that records the change with
+    masked last-4s only — never the raw account number, and never the live
+    vendor's bank details (which stay put until a second approver signs off)."""
     org_id = realdb.info(TENANT).org_id
     raw_old = "1111222233334444"
     raw_new = "9999888877776666"
@@ -184,12 +183,6 @@ async def test_update_bank_details_audit_row_has_no_raw_account_number(realdb, m
         vendor_id = v.id
 
     async with realdb.client(key=TENANT, role="admin") as client:
-        # The API schema strips a raw `account_number`, so an attacker via the
-        # API can only move the masked/display keys — but the merge preserves
-        # the legacy raw key, and any change to the masked display fields still
-        # produces the audit row. To exercise the secret-key masking through
-        # the merge, change the surviving display field; the raw key is
-        # untouched here, so we also assert it never leaks even when present.
         patched = await client.patch(
             f"/api/vendors/{vendor_id}",
             json={"bank_details": {"counterparty_id": "cp_attacker", "bank_name": "New Bank"}},
@@ -197,18 +190,17 @@ async def test_update_bank_details_audit_row_has_no_raw_account_number(realdb, m
     assert patched.status_code == 200, patched.text
 
     async with mk() as s:
-        rows = await _vendor_audit_rows(s, vendor_id, "vendor.updated")
-        # The raw legacy account number must survive in the row's JSONB but
-        # NEVER in the audit trail.
+        # The live vendor is UNCHANGED — the bank redirect is only staged.
         v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
-    assert len(rows) == 1
-    # Legacy raw key preserved by the merge (not clobbered).
-    assert v.bank_details["account_number"] == raw_old
-    blob = json.dumps(rows[0].details)
+        assert v.bank_details["account_number"] == raw_old
+        assert v.bank_details["bank_name"] == "Original Bank"
+        # The staging row records THAT bank details would change, masked.
+        staged = await _vendor_audit_rows(s, vendor_id, "vendor.bank_details_change_requested")
+    assert len(staged) == 1
+    blob = json.dumps(staged[0].details)
     assert raw_old not in blob, "raw account number leaked into audit details"
     assert raw_new not in blob
-    # The audit row records THAT bank details changed.
-    assert "bank_details" in rows[0].details["changes"]
+    assert staged[0].details["change_type"] == "bank_details"
 
 
 @pytest.mark.asyncio
@@ -246,16 +238,20 @@ async def test_update_bank_details_secret_key_change_is_masked_through_handler(r
     assert raw_new not in json.dumps(summary)
     assert summary["fields"]["account_number"] == {"old_last4": "1234", "new_last4": "8888"}
 
-    # And the handler still writes a row for a (display-key) bank edit.
+    # And a (display-key) bank edit via the handler now STAGES a request whose
+    # audit breadcrumb carries the same masked field-level summary.
     async with realdb.client(key=TENANT, role="admin") as client:
         patched = await client.patch(
             f"/api/vendors/{vendor_id}", json={"bank_details": {"bank_name": "Bank B"}}
         )
     assert patched.status_code == 200, patched.text
     async with mk() as s:
-        rows = await _vendor_audit_rows(s, vendor_id, "vendor.updated")
+        rows = await _vendor_audit_rows(s, vendor_id, "vendor.bank_details_change_requested")
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+    # Not applied yet (dual control) — the live row keeps Bank A.
+    assert v.bank_details["bank_name"] == "Bank A"
     assert len(rows) == 1
-    assert rows[0].details["changes"]["bank_details"]["fields"]["bank_name"] == {
+    assert rows[0].details["proposed_change"]["fields"]["bank_name"] == {
         "old": "Bank A",
         "new": "Bank B",
     }

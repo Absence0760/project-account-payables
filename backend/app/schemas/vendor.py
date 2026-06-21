@@ -175,7 +175,9 @@ class VendorChangeRequestResponse(BaseModel):
     change_type: str
     status: str
     proposed_value: dict
-    requested_by_vendor_user_id: str
+    # Exactly one requester is set: the portal VendorUser, or the AP User.
+    requested_by_vendor_user_id: str | None = None
+    requested_by_user_id: str | None = None
     reviewed_by_user_id: str | None = None
     reviewed_at: str | None = None
     review_note: str | None = None
@@ -195,7 +197,12 @@ class VendorChangeRequestResponse(BaseModel):
             change_type=r.change_type,
             status=r.status,
             proposed_value=proposed,
-            requested_by_vendor_user_id=str(r.requested_by_vendor_user_id),
+            requested_by_vendor_user_id=(
+                str(r.requested_by_vendor_user_id) if r.requested_by_vendor_user_id else None
+            ),
+            requested_by_user_id=(
+                str(r.requested_by_user_id) if getattr(r, "requested_by_user_id", None) else None
+            ),
             reviewed_by_user_id=str(r.reviewed_by_user_id) if r.reviewed_by_user_id else None,
             reviewed_at=r.reviewed_at.isoformat() if r.reviewed_at else None,
             review_note=r.review_note,
@@ -205,3 +212,12 @@ class VendorChangeRequestResponse(BaseModel):
 
 class VendorChangeReviewRequest(BaseModel):
     review_note: str | None = Field(default=None, max_length=1000)
+
+
+class VendorBankChangeRequest(BaseModel):
+    """AP-initiated bank-details change. Staged for dual-control approval rather
+    than applied (the BEC / bank-redirect gate). `bank_details` mirrors the
+    partial accepted by the vendor PATCH (counterparty_id, *_last4, bank_name,
+    and optionally a full account/routing/iban)."""
+
+    bank_details: dict

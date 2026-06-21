@@ -194,3 +194,112 @@ async def test_change_requests_literal_route_not_shadowed(realdb):
         resp = await client.get("/api/vendors/change-requests")
     assert resp.status_code == 200
     assert "items" in resp.json()
+
+
+# ===========================================================================
+# AP-initiated bank-detail changes are dual-control (BEC / bank-redirect gate).
+# An AP user can PROPOSE a bank change but it stages a pending request instead
+# of applying; a SECOND user (not the proposer) must approve it.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_ap_patch_bank_details_stages_instead_of_applying(realdb):
+    """PATCH /vendors/{id} with bank_details must NOT apply it inline — it
+    stages a pending change request stamped with the AP requester. The vendor's
+    bank_details stay put until a second approver signs off."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={"counterparty_id": "cp_old"})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.patch(
+            f"/api/vendors/{vendor_id}",
+            json={"bank_details": {"counterparty_id": "cp_attacker"}},
+        )
+    assert resp.status_code == 200, resp.text
+    # Response shows the UNCHANGED bank details (the change is only staged).
+    assert (resp.json().get("bank_details") or {}).get("counterparty_id") == "cp_old"
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert (v.bank_details or {}).get("counterparty_id") == "cp_old", "bank must NOT change"
+        req = (
+            await s.execute(
+                select(VendorChangeRequest).where(VendorChangeRequest.vendor_id == vendor_id)
+            )
+        ).scalar_one()
+        assert req.status == "pending"
+        assert req.change_type == "bank_details"
+        assert req.requested_by_user_id == info.users["admin"]
+        assert req.requested_by_vendor_user_id is None  # AP-initiated, not portal
+
+
+@pytest.mark.asyncio
+async def test_ap_bank_change_endpoint_stages_and_returns_202(realdb):
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={"counterparty_id": "cp_old"})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"counterparty_id": "cp_new"}},
+        )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "pending"
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert (v.bank_details or {}).get("counterparty_id") == "cp_old", "still unapplied"
+
+
+@pytest.mark.asyncio
+async def test_requester_cannot_approve_their_own_bank_change(realdb):
+    """Segregation of duties: the admin who proposed the change can't approve
+    it — that would collapse dual control back to a one-person bank redirect."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={"counterparty_id": "cp_old"})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        staged = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"counterparty_id": "cp_new"}},
+        )
+        req_id = staged.json()["id"]
+        # Same admin tries to approve their own request.
+        resp = await client.post(f"/api/vendors/change-requests/{req_id}/approve")
+    assert resp.status_code == 403, resp.text
+
+    async with mk() as s:
+        req = (
+            await s.execute(select(VendorChangeRequest).where(VendorChangeRequest.id == req_id))
+        ).scalar_one()
+        assert req.status == "pending", "a self-approval must not resolve the request"
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert (v.bank_details or {}).get("counterparty_id") == "cp_old", "still unapplied"
+
+
+@pytest.mark.asyncio
+async def test_a_different_approver_applies_the_ap_bank_change(realdb):
+    """The happy path: admin proposes, a DIFFERENT approver (ap_manager) signs
+    off, and only then does the change apply."""
+    info = realdb.info(TENANT)
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, info.org_id, bank_details={"counterparty_id": "cp_old"})
+
+    async with realdb.client(key=TENANT, role="admin") as client:
+        staged = await client.post(
+            f"/api/vendors/{vendor_id}/bank-change",
+            json={"bank_details": {"counterparty_id": "cp_new"}},
+        )
+        req_id = staged.json()["id"]
+
+    async with realdb.client(key=TENANT, role="ap_manager") as approver:
+        resp = await approver.post(f"/api/vendors/change-requests/{req_id}/approve")
+    assert resp.status_code == 200, resp.text
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert (v.bank_details or {}).get("counterparty_id") == "cp_new", "now applied"

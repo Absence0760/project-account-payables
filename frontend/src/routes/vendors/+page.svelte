@@ -61,15 +61,18 @@
 		if (!bankEditing) return;
 		savingBank = true;
 		try {
-			const updated = await api.patch<Vendor>(`/api/vendors/${bankEditing.id}`, {
+			// Bank-detail changes are dual-control (BEC / bank-redirect gate): this
+			// does NOT apply the change — it stages a request a second approver must
+			// sign off on via the change-request queue. So we don't optimistically
+			// update the row, and the toast says "submitted", not "saved".
+			await api.post(`/api/vendors/${bankEditing.id}/bank-change`, {
 				bank_details: bankForm
 			});
-			applyVendorUpdate(updated);
-			toast('Counterparty saved', 'success');
+			toast('Bank-detail change submitted for approval', 'success');
 			bankEditing = null;
 		} catch (err) {
 			const e = err as { detail?: string; message?: string } | null;
-			toast(e?.detail ?? e?.message ?? 'Save failed', 'error');
+			toast(e?.detail ?? e?.message ?? 'Submit failed', 'error');
 		} finally {
 			savingBank = false;
 		}

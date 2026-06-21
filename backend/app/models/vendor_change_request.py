@@ -34,9 +34,16 @@ class VendorChangeRequest(Base, TimestampMixin):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )
-    # The portal user (VendorUser.id) who requested the change.
-    requested_by_vendor_user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
+    # The portal user (VendorUser.id) who requested the change. NULL for an
+    # AP-initiated request (then `requested_by_user_id` is set instead).
+    requested_by_vendor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    # The control-plane User who staged the change from the AP app (NULL for a
+    # portal-submitted request). Exactly one of the two requester columns is set;
+    # the approve path uses this to enforce requester != approver (SoD).
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
     )
     # 'bank_details' | 'tax_id'
     change_type: Mapped[str] = mapped_column(String(30), nullable=False)

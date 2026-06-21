@@ -50,6 +50,7 @@ from app.schemas.sanctions import (
     VendorBlockRequest,
 )
 from app.schemas.vendor import (
+    VendorBankChangeRequest,
     VendorChangeRequestResponse,
     VendorChangeReviewRequest,
     VendorCreate,
@@ -122,6 +123,79 @@ _BANK_SECRET_KEYS = frozenset({"account_number", "routing_number", "iban"})
 def _last4(value: object) -> str | None:
     s = str(value or "")
     return s[-4:] if len(s) >= 4 else None
+
+
+async def _stage_ap_bank_change(
+    db: AsyncSession,
+    *,
+    vendor: Vendor,
+    incoming: dict,
+    user: User,
+    org_id: uuid.UUID,
+) -> VendorChangeRequest:
+    """Stage an AP-initiated bank-details change as a pending VendorChangeRequest
+    instead of applying it — the BEC / bank-redirect dual-control gate.
+
+    An AP user with `vendor.manage` can PROPOSE new bank details, but the change
+    only takes effect when a SECOND user holding `vendor.bank_change.approve`
+    approves it (and the approve path refuses the proposer — see
+    `approve_change_request`). This closes the one-API-call bank redirect that an
+    immediate PATCH allowed. Deduped on `(vendor, bank_details, pending)`, mirrors
+    the supplier-portal `_stage_change`. The proposed value carries banking data
+    and is never logged — the audit breadcrumb is `{change_type, request_id, last4}`.
+    """
+    dup = (
+        await db.execute(
+            select(VendorChangeRequest).where(
+                VendorChangeRequest.vendor_id == vendor.id,
+                VendorChangeRequest.change_type == "bank_details",
+                VendorChangeRequest.status == "pending",
+            )
+        )
+    ).scalar_one_or_none()
+    if dup:
+        raise HTTPException(
+            status_code=409,
+            detail="A bank-details change is already pending approval for this vendor.",
+        )
+
+    incoming = incoming or {}
+    last4 = _last4(incoming.get("account_number") or incoming.get("account_last4"))
+    # PII-safe preview of what WOULD change if approved (last-4s only; raw
+    # secrets masked by _bank_details_audit_summary). The change isn't applied
+    # to the row here — this is for the audit breadcrumb only.
+    proposed_preview = _merge_bank_details(vendor.bank_details, incoming)
+    change_summary = _bank_details_audit_summary(vendor.bank_details, proposed_preview)
+    req = VendorChangeRequest(
+        vendor_id=vendor.id,
+        organization_id=org_id,
+        requested_by_user_id=user.id,
+        change_type="bank_details",
+        status="pending",
+        proposed_value={"bank_details": incoming},
+    )
+    db.add(req)
+    await db.flush()
+    details = {
+        "actor_type": "ap_user",
+        "change_type": "bank_details",
+        "request_id": str(req.id),
+        "last4": last4,
+    }
+    if change_summary:
+        details["proposed_change"] = change_summary
+    await dispatch_audit(
+        db,
+        correlation_id=uuid.uuid4(),
+        organization_id=org_id,
+        actor_id=user.id,
+        action="vendor.bank_details_change_requested",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        # PII guard: never log the proposed raw value — only masked last-4s + id.
+        details=details,
+    )
+    return req
 
 
 def _bank_details_audit_summary(before: dict | None, after: dict | None) -> dict | None:
@@ -460,17 +534,23 @@ async def update_vendor(
     # mutate the row). `bank_details` / `tax_id` are masked into the diff, so we
     # only need the raw before-values transiently in-process here.
     before_scalars = {f: getattr(vendor, f) for f in _AUDITABLE_SCALAR_FIELDS}
-    before_bank = dict(vendor.bank_details or {})
     before_tax_last4 = _last4(vendor.tax_id)
 
-    # Re-screen only when an identity-relevant field actually changed — a
-    # name / tax_id / bank-country / beneficial-owner edit can flip a vendor
-    # onto (or off of) a sanctions list. Cosmetic edits (phone, terms) don't.
-    identity_changed = bool(_IDENTITY_FIELDS & payload.keys())
-    bank_in_payload = "bank_details" in payload
+    # Bank-details edits are DUAL-CONTROL: stage a pending change request rather
+    # than applying inline (the BEC / bank-redirect gate — see _stage_ap_bank_change).
+    # A second approver must sign off via /change-requests/{id}/approve. The
+    # canonical path is POST /{vendor_id}/bank-change; staging here too means a
+    # stray PATCH carrying bank_details can neither silently apply nor silently
+    # drop it. Other (non-bank) fields in the same PATCH still apply normally.
+    if "bank_details" in payload:
+        incoming = payload.pop("bank_details")
+        await _stage_ap_bank_change(db, vendor=vendor, incoming=incoming, user=user, org_id=org_id)
 
-    if bank_in_payload:
-        vendor.bank_details = _merge_bank_details(vendor.bank_details, payload.pop("bank_details"))
+    # Re-screen only when an identity-relevant field actually changed — a
+    # name / tax_id / beneficial-owner edit can flip a vendor onto (or off of) a
+    # sanctions list. Cosmetic edits (phone, terms) don't, and a bank change is
+    # only STAGED here (not applied), so it doesn't re-screen the live vendor.
+    identity_changed = bool((_IDENTITY_FIELDS - {"bank_details"}) & payload.keys())
 
     for field, value in payload.items():
         setattr(vendor, field, value)
@@ -488,10 +568,6 @@ async def update_vendor(
         after_tax_last4 = _last4(vendor.tax_id)
         if after_tax_last4 != before_tax_last4:
             changes["tax_id"] = {"old_last4": before_tax_last4, "new_last4": after_tax_last4}
-    if bank_in_payload:
-        bank_summary = _bank_details_audit_summary(before_bank, vendor.bank_details)
-        if bank_summary:
-            changes["bank_details"] = bank_summary
 
     await dispatch_audit(
         db,
@@ -510,6 +586,38 @@ async def update_vendor(
         )
 
     return VendorResponse.from_db(vendor)
+
+
+@router.post(
+    "/{vendor_id}/bank-change",
+    response_model=VendorChangeRequestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_bank_change(
+    vendor_id: uuid.UUID,
+    body: VendorBankChangeRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_permission(PERM_VENDOR_MANAGE)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Propose a vendor bank-details change (AP-initiated, dual-control).
+
+    The canonical AP path for changing where a vendor is paid. It does NOT apply
+    the change — it stages a pending VendorChangeRequest that a second user with
+    `vendor.bank_change.approve` must approve (and who can't be the proposer).
+    Returns the staged request (202). See docs/authentication.md § SoD.
+    """
+    vendor = (await db.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    req = await _stage_ap_bank_change(
+        db, vendor=vendor, incoming=body.bank_details, user=user, org_id=org_id
+    )
+    await db.commit()
+    await db.refresh(req)
+    return VendorChangeRequestResponse.from_db(req, vendor_name=vendor.name, reveal=True)
 
 
 @router.delete("/{vendor_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1086,6 +1194,14 @@ async def approve_change_request(
         raise HTTPException(status_code=404, detail="Change request not found")
     if req.status != "pending":
         raise HTTPException(status_code=409, detail="Change request already resolved")
+    # Segregation of duties: the AP user who PROPOSED a change can't be the one
+    # who approves it (dual control). Portal-submitted requests have no AP
+    # requester, so this only bites AP-initiated ones.
+    if req.requested_by_user_id is not None and req.requested_by_user_id == user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot approve a bank-detail change you requested.",
+        )
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == req.vendor_id))
