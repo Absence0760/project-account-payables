@@ -78,8 +78,12 @@ def _mk_db(*, po=None, gr=None, inspection=None):
     po_res = MagicMock()
     po_res.scalar_one_or_none = MagicMock(return_value=po)
 
+    # The GR leg now fetches ALL receipts via `.scalars().all()` (a PO can have
+    # several GRs); the single `gr` arg becomes a one-element list, or empty.
     gr_res = MagicMock()
-    gr_res.scalar_one_or_none = MagicMock(return_value=gr)
+    gr_scalars = MagicMock()
+    gr_scalars.all = MagicMock(return_value=[gr] if gr is not None else [])
+    gr_res.scalars = MagicMock(return_value=gr_scalars)
 
     insp_res = MagicMock()
     insp_res.scalar_one_or_none = MagicMock(return_value=inspection)
@@ -333,12 +337,16 @@ async def test_vendor_id_on_invoice_constrains_po_lookup_to_same_vendor():
         async def execute(self, q):  # noqa: ANN001
             captured.append(str(q))
 
-            # First call returns a PO; second call returns no GR.
+            # First call returns a PO; second call (GR leg, .scalars().all())
+            # returns no GRs; third (inspection) returns None.
             class R:
                 def scalar_one_or_none(self_):
                     if len(captured) == 1:
                         return _po(total=Decimal("1000.00"), vendor_id=inv_vendor_id)
                     return None
+
+                def scalars(self_):
+                    return SimpleNamespace(all=lambda: [])
 
             return R()
 
@@ -364,6 +372,9 @@ async def test_invoice_without_vendor_id_runs_unscoped_po_query():
             class R:
                 def scalar_one_or_none(self_):
                     return _po(total=Decimal("1000.00")) if len(captured) == 1 else None
+
+                def scalars(self_):
+                    return SimpleNamespace(all=lambda: [])
 
             return R()
 

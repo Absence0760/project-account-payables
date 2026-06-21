@@ -123,28 +123,39 @@ async def match_invoice_to_po(
     else:
         result.status = "matched"
 
-    # 3-way match: check for goods receipt. A PO can have SEVERAL goods receipts
+    # 3-way match: check for goods receipts. A PO can have SEVERAL goods receipts
     # (the normal partial-delivery case — a PO filled by several shipments, each
-    # a separate GR), so pick the most recent one deterministically rather than
-    # `scalar_one_or_none()`, which raises MultipleResultsFound on >1 GR and
-    # crashes the matcher. Newest-first mirrors the inspection-leg query below.
-    gr_result = await db.execute(
-        select(GoodsReceipt)
-        .where(GoodsReceipt.po_id == po.id)
-        .options(selectinload(GoodsReceipt.line_items))
-        .order_by(GoodsReceipt.created_at.desc())
-        .limit(1)
+    # a separate GR). Fetch them ALL (newest first) rather than a single row via
+    # `scalar_one_or_none()`, which raised MultipleResultsFound on >1 GR and
+    # crashed the matcher. The received-quantity comparison sums across every GR
+    # (so a PO fully filled by two shipments is `matched`, not falsely `partial`);
+    # the newest GR is the representative row for `gr_id` + the inspection leg.
+    grs = (
+        (
+            await db.execute(
+                select(GoodsReceipt)
+                .where(GoodsReceipt.po_id == po.id)
+                .options(selectinload(GoodsReceipt.line_items))
+                .order_by(GoodsReceipt.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
     )
-    gr = gr_result.scalar_one_or_none()
+    gr = grs[0] if grs else None
 
     if gr:
         result.match_type = "3-way"
         result.gr_id = str(gr.id)
 
-        # Compare line quantities if both have line items
-        if po.line_items and gr.line_items:
+        # Compare received vs ordered quantity, aggregating receipts across ALL
+        # GRs for the PO. Only when the PO has line items and at least one GR
+        # carries received lines (an empty GR header has nothing to verify).
+        if po.line_items and any(g.line_items for g in grs):
             po_qty_total = sum(float(li.quantity or 0) for li in po.line_items)
-            gr_qty_total = sum(float(li.quantity_received or 0) for li in gr.line_items)
+            gr_qty_total = sum(
+                float(li.quantity_received or 0) for g in grs for li in g.line_items
+            )
 
             if po_qty_total > 0 and gr_qty_total < po_qty_total:
                 pct_received = (gr_qty_total / po_qty_total) * 100
