@@ -24,7 +24,6 @@ from app.api.permissions import (
     PERM_PAYMENT_RUN_APPROVE,
     PERM_PAYMENT_VOID,
 )
-from app.database import get_control_db
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentRun, PaymentSchedule
@@ -248,7 +247,6 @@ async def payment_queue(
 @router.get("/summary")
 async def payment_summary(
     db: AsyncSession = Depends(get_tenant_db),
-    control_db: AsyncSession = Depends(get_control_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -272,13 +270,16 @@ async def payment_summary(
     count_q = apply_entity_scope(select(func.count()).select_from(Payment), Payment, entity_id)
     payment_count = (await db.execute(count_q)).scalar() or 0
 
-    # CardRebate lives in the control plane (cross-DB from the tenant entities),
-    # so it stays org-wide rather than entity-scoped — a known consolidated KPI.
+    # CardRebate is a TENANT-scoped table (it lives in the per-tenant DB, not the
+    # control plane — the "control plane" comment here was wrong and made this
+    # query run against control_db, where the table doesn't exist, so it silently
+    # caught the error and always reported $0 rebates). Query the tenant db,
+    # org-wide within the tenant — matching the dashboard KPI.
     try:
         rebate_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
-        total_rebates = float((await control_db.execute(rebate_q)).scalar() or 0)
+        total_rebates = float((await db.execute(rebate_q)).scalar() or 0)
     except Exception:
-        await control_db.rollback()
+        await db.rollback()
         total_rebates = 0.0
 
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
