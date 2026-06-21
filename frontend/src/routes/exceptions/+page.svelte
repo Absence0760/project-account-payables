@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { page as pageStore } from '$app/stores';
+	import { replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -59,8 +61,19 @@
 	let hasMore = $derived(exceptions.length < total);
 
 	// Top-level view: the operational queue vs the AI-agent dashboard. Persisted
-	// in the URL hash so a refresh / shared link keeps the tab.
-	let view = $state<'queue' | 'agents'>('queue');
+	// in the URL (?view=agents) so a refresh / shared link keeps the tab — this
+	// used to be only a comment with no actual sync, so the tab reset to Queue
+	// on every reload.
+	let view = $state<'queue' | 'agents'>(
+		$pageStore.url.searchParams.get('view') === 'agents' ? 'agents' : 'queue'
+	);
+
+	function syncViewToUrl(key: string) {
+		const url = new URL($pageStore.url);
+		if (key === 'agents') url.searchParams.set('view', 'agents');
+		else url.searchParams.delete('view');
+		replaceState(`${url.pathname}${url.search}`, {});
+	}
 
 	let resolveTarget = $state<ExceptionItem | null>(null); // single-row resolve modal
 	let bulkResolveOpen = $state(false);                    // bulk-resolve modal
@@ -298,6 +311,7 @@
 			{ key: 'agents', label: m('exceptions.tab.agents') }
 		]}
 		bind:active={view}
+		onchange={syncViewToUrl}
 		ariaLabel="Exceptions views"
 		idPrefix="exc"
 	/>
