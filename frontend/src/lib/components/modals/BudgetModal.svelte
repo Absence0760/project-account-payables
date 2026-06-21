@@ -7,6 +7,7 @@
 	import KpiCard from '$lib/components/ui/KpiCard.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { m } from '$lib/i18n/store.svelte';
 	import { createBudget, updateBudget, getBudgetSpend } from '$lib/api/budgets';
 
 	let {
@@ -93,20 +94,24 @@
 				notes: notes.trim() || null
 			};
 			const saved = isCreate ? await createBudget(payload) : await updateBudget(budget!.id, payload);
-			toast(isCreate ? 'Budget created' : 'Budget saved', 'success');
+			toast(isCreate ? m('budgets.modal.toast.created') : m('budgets.modal.toast.saved'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, isCreate ? 'Create failed' : 'Save failed');
+			handleError(err, isCreate ? m('budgets.modal.toast.createFailed') : m('budgets.modal.toast.saveFailed'));
 		} finally {
 			saving = false;
 		}
 	}
 
 	const modalTitle = $derived(
-		isCreate ? 'New Budget' : canEdit ? `Edit Budget — ${budget!.name}` : `Budget — ${budget!.name}`
+		isCreate
+			? m('budgets.modal.title.new')
+			: canEdit
+				? m('budgets.modal.title.edit', { name: budget!.name })
+				: m('budgets.modal.title.view', { name: budget!.name })
 	);
-	const ariaLabel = $derived(isCreate ? 'New budget' : 'Budget detail');
+	const ariaLabel = $derived(isCreate ? m('budgets.modal.aria.new') : m('budgets.modal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
@@ -117,39 +122,39 @@
 				<div class="kpi-row">
 					<KpiCard
 						value={`${spend.utilization_pct.toFixed(1)}%`}
-						label="Utilization"
+						label={m('budgets.modal.kpi.utilization')}
 						highlight={spend.utilization_pct >= 100 ? 'red' : null}
 					/>
-					<KpiCard value={formatMoney(spend.committed, { currency: spend.currency })} label="Committed" />
+					<KpiCard value={formatMoney(spend.committed, { currency: spend.currency })} label={m('budgets.modal.kpi.committed')} />
 					<KpiCard
 						value={formatMoney(spend.remaining, { currency: spend.currency })}
-						label="Remaining"
+						label={m('budgets.modal.kpi.remaining')}
 						highlight={spend.remaining < 0 ? 'red' : 'green'}
 					/>
 				</div>
-				<div class="util-bar" aria-label={`Budget utilization ${spend.utilization_pct.toFixed(1)} percent`}>
+				<div class="util-bar" aria-label={m('budgets.modal.utilizationAria', { percent: spend.utilization_pct.toFixed(1) })}>
 					<div class="util-fill {utilClass}" style={`width: ${Math.min(spend.utilization_pct, 100)}%`}></div>
 				</div>
 				<div class="spend-detail">
-					<span>Allocated <Money amount={spend.allocated} currency={spend.currency} /></span>
-					<span>Committed <Money amount={spend.committed} currency={spend.currency} /></span>
-					<span>Actual <Money amount={spend.actual} currency={spend.currency} /></span>
+					<span>{m('budgets.modal.detail.allocated')} <Money amount={spend.allocated} currency={spend.currency} /></span>
+					<span>{m('budgets.modal.detail.committed')} <Money amount={spend.committed} currency={spend.currency} /></span>
+					<span>{m('budgets.modal.detail.actual')} <Money amount={spend.actual} currency={spend.currency} /></span>
 					<span class:over={spend.remaining < 0}>
-						Remaining <Money amount={spend.remaining} currency={spend.currency} accounting />
+						{m('budgets.modal.detail.remaining')} <Money amount={spend.remaining} currency={spend.currency} accounting />
 					</span>
 				</div>
 			{:else if spendLoading}
-				<p class="muted">Loading spend…</p>
+				<p class="muted">{m('budgets.modal.loadingSpend')}</p>
 			{/if}
 		{/if}
 
 		<div class="form-grid">
 			<label class="full-width">
-				<span>Name <em class="required">*</em></span>
+				<span>{m('budgets.modal.field.name')} <em class="required">*</em></span>
 				<input type="text" bind:value={name} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Dimension</span>
+				<span>{m('budgets.modal.field.dimension')}</span>
 				<select bind:value={dimension} disabled={!canEdit}>
 					{#each BUDGET_DIMENSIONS as d}
 						<option value={d}>{BUDGET_DIMENSION_LABELS[d]}</option>
@@ -157,17 +162,17 @@
 				</select>
 			</label>
 			<label>
-				<span>Dimension Value <em class="required">*</em></span>
+				<span>{m('budgets.modal.field.dimensionValue')} <em class="required">*</em></span>
 				<input
 					type="text"
 					bind:value={dimension_value}
-					placeholder="e.g. Engineering"
+					placeholder={m('budgets.modal.field.dimensionValuePlaceholder')}
 					required
 					disabled={!canEdit}
 				/>
 			</label>
 			<label>
-				<span>Amount <em class="required">*</em></span>
+				<span>{m('budgets.modal.field.amount')} <em class="required">*</em></span>
 				<input
 					type="number"
 					step="0.01"
@@ -178,32 +183,32 @@
 				/>
 			</label>
 			<label>
-				<span>Currency</span>
+				<span>{m('budgets.modal.field.currency')}</span>
 				<input type="text" bind:value={currency} maxlength="3" disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Period</span>
-				<input type="text" bind:value={period} placeholder="e.g. 2026 or 2026-Q2" disabled={!canEdit} />
+				<span>{m('budgets.modal.field.period')}</span>
+				<input type="text" bind:value={period} placeholder={m('budgets.modal.field.periodPlaceholder')} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Period Start</span>
+				<span>{m('budgets.modal.field.periodStart')}</span>
 				<input type="date" bind:value={period_start} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Period End</span>
+				<span>{m('budgets.modal.field.periodEnd')}</span>
 				<input type="date" bind:value={period_end} disabled={!canEdit} />
 			</label>
 			<label class="full-width">
-				<span>Notes</span>
+				<span>{m('budgets.modal.field.notes')}</span>
 				<textarea bind:value={notes} rows="2" disabled={!canEdit}></textarea>
 			</label>
 		</div>
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('budgets.modal.close')}</button>
 			{#if canEdit}
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving ? m('budgets.modal.saving') : isCreate ? m('budgets.modal.create') : m('budgets.modal.save')}
 				</button>
 			{/if}
 		</div>
