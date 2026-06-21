@@ -9,6 +9,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import {
 		listWebhookSubscriptions,
@@ -36,15 +37,16 @@
 	});
 
 	// ── Subscriptions ────────────────────────────────────────────────────────
-	const SUB_COLUMNS = [
-		{ label: 'Name' },
-		{ label: 'Target URL' },
-		{ label: 'Events' },
-		{ label: 'Secret' },
-		{ label: 'Created' },
-		{ label: 'Status' },
+	// $derived so the column headers re-render when the locale changes.
+	let SUB_COLUMNS = $derived([
+		{ label: m('admin.webhooks.sub.col.name') },
+		{ label: m('admin.webhooks.sub.col.targetUrl') },
+		{ label: m('admin.webhooks.sub.col.events') },
+		{ label: m('admin.webhooks.sub.col.secret') },
+		{ label: m('admin.webhooks.sub.col.created') },
+		{ label: m('admin.webhooks.sub.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	let subs = $state<WebhookSubscription[]>([]);
 	let subsLoading = $state(true);
@@ -78,7 +80,7 @@
 		try {
 			subs = await listWebhookSubscriptions();
 		} catch (e) {
-			subsError = e instanceof Error ? e.message : 'Failed to load webhooks.';
+			subsError = e instanceof Error ? e.message : m('admin.webhooks.subsLoadFailed');
 		} finally {
 			subsLoading = false;
 		}
@@ -115,7 +117,7 @@
 			minted = created;
 			await loadSubs();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to create webhook', 'error');
+			toast(e instanceof Error ? e.message : m('admin.webhooks.toast.createFailed'), 'error');
 		} finally {
 			saving = false;
 		}
@@ -126,9 +128,9 @@
 		try {
 			await navigator.clipboard.writeText(minted.signing_secret);
 			copied = true;
-			toast('Signing secret copied to clipboard', 'success');
+			toast(m('admin.webhooks.toast.secretCopied'), 'success');
 		} catch {
-			toast('Copy failed — select and copy the secret manually', 'error');
+			toast(m('admin.webhooks.toast.copyFailed'), 'error');
 		}
 	}
 
@@ -167,10 +169,10 @@
 				active: editActive
 			});
 			editing = null;
-			toast('Webhook updated', 'success');
+			toast(m('admin.webhooks.toast.updated'), 'success');
 			await loadSubs();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to update webhook', 'error');
+			toast(e instanceof Error ? e.message : m('admin.webhooks.toast.updateFailed'), 'error');
 		} finally {
 			editSaving = false;
 		}
@@ -179,27 +181,40 @@
 	async function handleDelete(id: string) {
 		try {
 			await deleteWebhookSubscription(id);
-			toast('Webhook deleted', 'success');
+			toast(m('admin.webhooks.toast.deleted'), 'success');
 			await loadSubs();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to delete webhook', 'error');
+			toast(e instanceof Error ? e.message : m('admin.webhooks.toast.deleteFailed'), 'error');
 		} finally {
 			confirmDeleteId = null;
 		}
 	}
 
 	// ── Deliveries ───────────────────────────────────────────────────────────
-	const DELIVERY_COLUMNS = [
-		{ label: 'Event' },
-		{ label: 'Event ID' },
-		{ label: 'Attempts' },
-		{ label: 'Response' },
-		{ label: 'Last attempt' },
-		{ label: 'Status' },
+	// $derived so the column headers re-render when the locale changes.
+	let DELIVERY_COLUMNS = $derived([
+		{ label: m('admin.webhooks.delivery.col.event') },
+		{ label: m('admin.webhooks.delivery.col.eventId') },
+		{ label: m('admin.webhooks.delivery.col.attempts') },
+		{ label: m('admin.webhooks.delivery.col.response') },
+		{ label: m('admin.webhooks.delivery.col.lastAttempt') },
+		{ label: m('admin.webhooks.delivery.col.status') },
 		{ class: 'actions-col' }
-	];
+	]);
 
 	const DELIVERY_STATUSES = ['pending', 'delivered', 'failed', 'dead'] as const;
+	function deliveryStatusLabel(s: (typeof DELIVERY_STATUSES)[number]): string {
+		switch (s) {
+			case 'pending':
+				return m('admin.webhooks.filter.pending');
+			case 'delivered':
+				return m('admin.webhooks.filter.delivered');
+			case 'failed':
+				return m('admin.webhooks.filter.failed');
+			case 'dead':
+				return m('admin.webhooks.filter.dead');
+		}
+	}
 
 	let deliveries = $state<WebhookDelivery[]>([]);
 	let deliveriesLoading = $state(true);
@@ -210,8 +225,8 @@
 	const statusFilter = $derived($page.url.searchParams.get('status') ?? 'all');
 
 	const deliveryChips = $derived([
-		{ key: 'all', label: 'All' },
-		...DELIVERY_STATUSES.map((s) => ({ key: s, label: s.charAt(0).toUpperCase() + s.slice(1) }))
+		{ key: 'all', label: m('admin.webhooks.filter.all') },
+		...DELIVERY_STATUSES.map((s) => ({ key: s, label: deliveryStatusLabel(s) }))
 	]);
 
 	function setStatusFilter(next: string) {
@@ -230,7 +245,7 @@
 				pageSize: 50
 			});
 		} catch (e) {
-			deliveriesError = e instanceof Error ? e.message : 'Failed to load deliveries.';
+			deliveriesError = e instanceof Error ? e.message : m('admin.webhooks.deliveriesLoadFailed');
 		} finally {
 			deliveriesLoading = false;
 		}
@@ -240,12 +255,12 @@
 		redeliveringId = d.id;
 		try {
 			await redeliverWebhookDelivery(d.id);
-			toast('Delivery re-queued', 'success');
+			toast(m('admin.webhooks.toast.requeued'), 'success');
 			await loadDeliveries();
 		} catch (e) {
 			// 409 when the delivery is already delivered — surface the backend
 			// message rather than crashing.
-			toast(e instanceof Error ? e.message : 'Failed to redeliver', 'error');
+			toast(e instanceof Error ? e.message : m('admin.webhooks.toast.redeliverFailed'), 'error');
 		} finally {
 			redeliveringId = null;
 		}
@@ -286,32 +301,30 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<PageHeader title="Webhooks">
+<PageHeader title={m('admin.webhooks.title')}>
 	{#snippet actions()}
-		<button class="btn-primary" onclick={openCreate}>+ Create webhook</button>
+		<button class="btn-primary" onclick={openCreate}>{m('admin.webhooks.createWebhook')}</button>
 	{/snippet}
 
 	<p class="page-hint">
-		Outbound webhooks push platform events (invoice approved, payment settled, exception raised) to
-		your endpoint as signed JSON. Each subscription's HMAC signing secret is shown only once at
-		creation — store it somewhere safe and use it to verify the
-		<code>X-Webhook-Signature</code> header.
+		{m('admin.webhooks.hintPre')}
+		<code>X-Webhook-Signature</code> {m('admin.webhooks.hintPost')}
 	</p>
 
 	<section aria-labelledby="subs-heading">
-		<h2 id="subs-heading" class="section-heading">Subscriptions</h2>
+		<h2 id="subs-heading" class="section-heading">{m('admin.webhooks.subscriptions')}</h2>
 		{#if subsLoading}
-			<p class="state" data-testid="webhooks-loading">Loading webhooks…</p>
+			<p class="state" data-testid="webhooks-loading">{m('admin.webhooks.loadingSubs')}</p>
 		{:else if subsError}
 			<div class="state error" data-testid="webhooks-error" role="alert">
 				<p>{subsError}</p>
-				<button type="button" class="btn-cancel" onclick={loadSubs}>Retry</button>
+				<button type="button" class="btn-cancel" onclick={loadSubs}>{m('admin.webhooks.retry')}</button>
 			</div>
 		{:else}
 			<DataTable
 				columns={SUB_COLUMNS}
 				isEmpty={subs.length === 0}
-				empty="No webhooks yet. Create one to receive event pushes."
+				empty={m('admin.webhooks.subsEmpty')}
 			>
 				{#snippet body()}
 					{#each subs as sub (sub.id)}
@@ -323,7 +336,7 @@
 							}}
 						>
 							<td>
-								<RowLink onclick={() => openEdit(sub)} ariaLabel={`Edit ${sub.name}`}>
+								<RowLink onclick={() => openEdit(sub)} ariaLabel={m('admin.webhooks.editAria', { name: sub.name })}>
 									{sub.name}
 								</RowLink>
 							</td>
@@ -333,9 +346,9 @@
 							<td>{fmtDate(sub.created_at)}</td>
 							<td>
 								{#if sub.active}
-									<span class="status-pill active">Active</span>
+									<span class="status-pill active">{m('admin.webhooks.statusActive')}</span>
 								{:else}
-									<span class="status-pill paused">Inactive</span>
+									<span class="status-pill paused">{m('admin.webhooks.statusInactive')}</span>
 								{/if}
 							</td>
 							<td class="actions">
@@ -351,7 +364,7 @@
 										}
 									}}
 								>
-									{confirmDeleteId === sub.id ? 'Confirm' : 'Delete'}
+									{confirmDeleteId === sub.id ? m('admin.webhooks.row.confirm') : m('admin.webhooks.row.delete')}
 								</RowAction>
 							</td>
 						</tr>
@@ -362,7 +375,7 @@
 	</section>
 
 	<section aria-labelledby="deliveries-heading">
-		<h2 id="deliveries-heading" class="section-heading">Deliveries</h2>
+		<h2 id="deliveries-heading" class="section-heading">{m('admin.webhooks.deliveries')}</h2>
 
 		<FilterChips
 			chips={deliveryChips}
@@ -371,17 +384,17 @@
 		/>
 
 		{#if deliveriesLoading}
-			<p class="state" data-testid="deliveries-loading">Loading deliveries…</p>
+			<p class="state" data-testid="deliveries-loading">{m('admin.webhooks.loadingDeliveries')}</p>
 		{:else if deliveriesError}
 			<div class="state error" data-testid="deliveries-error" role="alert">
 				<p>{deliveriesError}</p>
-				<button type="button" class="btn-cancel" onclick={loadDeliveries}>Retry</button>
+				<button type="button" class="btn-cancel" onclick={loadDeliveries}>{m('admin.webhooks.retry')}</button>
 			</div>
 		{:else}
 			<DataTable
 				columns={DELIVERY_COLUMNS}
 				isEmpty={deliveries.length === 0}
-				empty="No deliveries yet."
+				empty={m('admin.webhooks.deliveriesEmpty')}
 			>
 				{#snippet body()}
 					{#each deliveries as d (d.id)}
@@ -400,7 +413,7 @@
 										disabled={redeliveringId === d.id}
 										onclick={() => handleRedeliver(d)}
 									>
-										{redeliveringId === d.id ? 'Redelivering…' : 'Redeliver'}
+										{redeliveringId === d.id ? m('admin.webhooks.row.redelivering') : m('admin.webhooks.row.redeliver')}
 									</RowAction>
 								{/if}
 							</td>
@@ -413,11 +426,10 @@
 </PageHeader>
 
 <!-- Create webhook modal -->
-<Modal open={creating} ariaLabel="Create webhook" width="md" onclose={() => (creating = false)}>
-	<h2>Create webhook</h2>
+<Modal open={creating} ariaLabel={m('admin.webhooks.create.aria')} width="md" onclose={() => (creating = false)}>
+	<h2>{m('admin.webhooks.create.heading')}</h2>
 	<p class="modal-hint">
-		We POST signed JSON to the target URL each time a subscribed event fires. The signing secret is
-		minted now and shown <strong>only once</strong>.
+		{m('admin.webhooks.create.hintPre')} <strong>{m('admin.webhooks.create.hintOnce')}</strong>{m('admin.webhooks.create.hintPost')}
 	</p>
 	<form
 		onsubmit={(e) => {
@@ -426,27 +438,27 @@
 		}}
 	>
 		<label>
-			<span>Name <em class="required">*</em></span>
+			<span>{m('admin.webhooks.field.name')} <em class="required">*</em></span>
 			<input
 				type="text"
 				bind:value={newName}
 				required
 				maxlength="120"
-				placeholder="e.g. Ops alerts"
+				placeholder={m('admin.webhooks.field.namePlaceholder')}
 			/>
 		</label>
 		<label>
-			<span>Target URL <em class="required">*</em></span>
+			<span>{m('admin.webhooks.field.targetUrl')} <em class="required">*</em></span>
 			<input
 				type="url"
 				bind:value={newUrl}
 				required
 				maxlength="2048"
-				placeholder="https://example.com/webhooks/ap"
+				placeholder={m('admin.webhooks.field.targetUrlPlaceholder')}
 			/>
 		</label>
 		<fieldset class="events-field">
-			<legend>Events <em class="required">*</em></legend>
+			<legend>{m('admin.webhooks.field.events')} <em class="required">*</em></legend>
 			{#each WEBHOOK_EVENT_TYPES as evt (evt)}
 				<label class="checkbox-line">
 					<input
@@ -459,52 +471,51 @@
 			{/each}
 		</fieldset>
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={() => (creating = false)}>Cancel</button>
+			<button type="button" class="btn-cancel" onclick={() => (creating = false)}>{m('common.cancel')}</button>
 			<button
 				type="submit"
 				class="btn-primary"
 				disabled={!newName.trim() || !newUrl.trim() || newEvents.size === 0 || saving}
 			>
-				{saving ? 'Creating…' : 'Create'}
+				{saving ? m('admin.webhooks.create.creating') : m('admin.webhooks.create.create')}
 			</button>
 		</div>
 	</form>
 </Modal>
 
 <!-- One-time signing-secret reveal -->
-<Modal open={minted !== null} ariaLabel="Webhook created" width="md" onclose={dismissMinted}>
+<Modal open={minted !== null} ariaLabel={m('admin.webhooks.reveal.aria')} width="md" onclose={dismissMinted}>
 	{#if minted}
-		<h2>Webhook created</h2>
+		<h2>{m('admin.webhooks.reveal.heading')}</h2>
 		<div class="reveal-warning" role="alert">
-			<strong>Copy this signing secret now.</strong> For security it is shown only once and can
-			never be retrieved again. If you lose it, delete the webhook and create a new one.
+			<strong>{m('admin.webhooks.reveal.warningStrong')}</strong> {m('admin.webhooks.reveal.warning')}
 		</div>
 		<div class="key-reveal">
 			<code class="key-value" data-testid="minted-secret">{minted.signing_secret}</code>
 			<button type="button" class="btn-primary copy-btn" onclick={copySecret}>
-				{copied ? 'Copied' : 'Copy'}
+				{copied ? m('admin.webhooks.reveal.copied') : m('admin.webhooks.reveal.copy')}
 			</button>
 		</div>
 		<dl class="reveal-meta">
 			<div>
-				<dt>Name</dt>
+				<dt>{m('admin.webhooks.reveal.name')}</dt>
 				<dd>{minted.subscription.name}</dd>
 			</div>
 			<div>
-				<dt>Prefix</dt>
+				<dt>{m('admin.webhooks.reveal.prefix')}</dt>
 				<dd class="mono">{minted.subscription.secret_prefix}…</dd>
 			</div>
 		</dl>
 		<div class="modal-footer">
-			<button type="button" class="btn-primary" onclick={dismissMinted}>Done</button>
+			<button type="button" class="btn-primary" onclick={dismissMinted}>{m('admin.webhooks.reveal.done')}</button>
 		</div>
 	{/if}
 </Modal>
 
 <!-- Edit webhook modal -->
-<Modal open={editing !== null} ariaLabel="Edit webhook" width="md" onclose={() => (editing = null)}>
+<Modal open={editing !== null} ariaLabel={m('admin.webhooks.edit.aria')} width="md" onclose={() => (editing = null)}>
 	{#if editing}
-		<h2>Edit webhook</h2>
+		<h2>{m('admin.webhooks.edit.heading')}</h2>
 		<form
 			onsubmit={(e) => {
 				e.preventDefault();
@@ -512,15 +523,15 @@
 			}}
 		>
 			<label>
-				<span>Name <em class="required">*</em></span>
+				<span>{m('admin.webhooks.field.name')} <em class="required">*</em></span>
 				<input type="text" bind:value={editName} required maxlength="120" />
 			</label>
 			<label>
-				<span>Target URL <em class="required">*</em></span>
+				<span>{m('admin.webhooks.field.targetUrl')} <em class="required">*</em></span>
 				<input type="url" bind:value={editUrl} required maxlength="2048" />
 			</label>
 			<fieldset class="events-field">
-				<legend>Events <em class="required">*</em></legend>
+				<legend>{m('admin.webhooks.field.events')} <em class="required">*</em></legend>
 				{#each WEBHOOK_EVENT_TYPES as evt (evt)}
 					<label class="checkbox-line">
 						<input
@@ -534,16 +545,16 @@
 			</fieldset>
 			<label class="checkbox-line standalone">
 				<input type="checkbox" bind:checked={editActive} />
-				<span>Active</span>
+				<span>{m('admin.webhooks.field.active')}</span>
 			</label>
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={() => (editing = null)}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={() => (editing = null)}>{m('common.cancel')}</button>
 				<button
 					type="submit"
 					class="btn-primary"
 					disabled={!editName.trim() || !editUrl.trim() || editEvents.size === 0 || editSaving}
 				>
-					{editSaving ? 'Saving…' : 'Save'}
+					{editSaving ? m('admin.webhooks.edit.saving') : m('admin.webhooks.edit.save')}
 				</button>
 			</div>
 		</form>
