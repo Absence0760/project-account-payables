@@ -2538,6 +2538,7 @@ export const messages = {
 	'creditMemos.new': '+ Neue Gutschrift',
 	'creditMemos.row.apply': 'Anwenden',
 	'creditMemos.row.void': 'Stornieren',
+	'creditMemos.row.confirm': 'Bestätigen',
 	'creditMemos.showingAll': 'Alle {total, plural, one {# Gutschrift} other {# Gutschriften}} werden angezeigt',
 	'creditMemos.status.applied': 'Angewendet',
 	'creditMemos.status.open': 'Offen',

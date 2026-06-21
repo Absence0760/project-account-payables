@@ -2560,6 +2560,7 @@ export const messages = {
 	'creditMemos.new': '+ 新しいクレジットメモ',
 	'creditMemos.row.apply': '適用',
 	'creditMemos.row.void': '無効化',
+	'creditMemos.row.confirm': '確認',
 	'creditMemos.showingAll': '{total, plural, other {全 # 件のクレジットメモを表示中}}',
 	'creditMemos.status.applied': '適用済み',
 	'creditMemos.status.open': '未処理',

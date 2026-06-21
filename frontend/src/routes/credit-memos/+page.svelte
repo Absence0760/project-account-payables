@@ -181,13 +181,26 @@
 		}
 	}
 
+	// Void is irreversible — arm on first click, commit on the second (the
+	// app-wide destructive-action pattern), and guard against a double-submit.
+	let confirmVoidId = $state<string | null>(null);
+	let voidingId = $state<string | null>(null);
+
 	async function handleVoid(id: string) {
+		if (confirmVoidId !== id) {
+			confirmVoidId = id;
+			return;
+		}
+		confirmVoidId = null;
+		voidingId = id;
 		try {
 			await api.post(`/api/credit-memos/${id}/void`, {});
 			toast(m('creditMemos.toast.voided'), 'success');
 			await loadMemos();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('creditMemos.toast.voidFailed'), 'error');
+		} finally {
+			voidingId = null;
 		}
 	}
 
@@ -202,6 +215,15 @@
 		return invoices.filter((i) => !i.vendor_id || i.vendor_id === memo.vendor_id);
 	});
 </script>
+
+<svelte:window
+	onclick={(e) => {
+		// Outside-click un-arms a pending Void confirmation.
+		if (confirmVoidId && !(e.target as HTMLElement)?.closest?.('.row-action')) {
+			confirmVoidId = null;
+		}
+	}}
+/>
 
 <PageHeader title={m('creditMemos.title')}>
 	{#snippet actions()}
@@ -227,7 +249,14 @@
 					<td class="actions">
 						{#if memo.status === 'open'}
 							<RowAction onclick={() => { applyTargetId = memo.id; applyInvoiceId = ''; }}>{m('creditMemos.row.apply')}</RowAction>
-							<RowAction variant="danger" onclick={() => handleVoid(memo.id)}>{m('creditMemos.row.void')}</RowAction>
+							<RowAction
+								variant="danger"
+								armed={confirmVoidId === memo.id}
+								disabled={voidingId === memo.id}
+								onclick={() => handleVoid(memo.id)}
+							>
+								{confirmVoidId === memo.id ? m('creditMemos.row.confirm') : m('creditMemos.row.void')}
+							</RowAction>
 						{/if}
 					</td>
 				</tr>

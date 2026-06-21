@@ -2537,6 +2537,7 @@ export const messages = {
 	'creditMemos.new': '+ Nouvel avoir',
 	'creditMemos.row.apply': 'Appliquer',
 	'creditMemos.row.void': 'Annuler',
+	'creditMemos.row.confirm': 'Confirmer',
 	'creditMemos.showingAll': 'Affichage de tous les {total, plural, one {# avoir} other {# avoirs}}',
 	'creditMemos.status.applied': 'Appliqué',
 	'creditMemos.status.open': 'Ouvert',

@@ -2568,6 +2568,7 @@ export const messages = {
 	'creditMemos.new': '+ Nueva nota de crédito',
 	'creditMemos.row.apply': 'Aplicar',
 	'creditMemos.row.void': 'Anular',
+	'creditMemos.row.confirm': 'Confirmar',
 	'creditMemos.showingAll': 'Mostrando todas las {total, plural, one {# nota de crédito} other {# notas de crédito}}',
 	'creditMemos.status.applied': 'Aplicada',
 	'creditMemos.status.open': 'Abierta',

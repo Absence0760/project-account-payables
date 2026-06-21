@@ -2595,6 +2595,7 @@ export const en = {
 	'creditMemos.new': '+ New Credit Memo',
 	'creditMemos.row.apply': 'Apply',
 	'creditMemos.row.void': 'Void',
+	'creditMemos.row.confirm': 'Confirm',
 	'creditMemos.showingAll': 'Showing all {total, plural, one {# credit memo} other {# credit memos}}',
 	'creditMemos.status.applied': 'Applied',
 	'creditMemos.status.open': 'Open',
