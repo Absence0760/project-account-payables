@@ -81,8 +81,9 @@ async def test_reap_once_uses_explicit_threshold_over_default():
 
     captured: dict = {}
 
-    async def capture(db_name, cutoff):
+    async def capture(db_name, cutoff, *, threshold_seconds):
         captured["cutoff"] = cutoff
+        captured["threshold_seconds"] = threshold_seconds
         return 0
 
     with (
@@ -95,6 +96,60 @@ async def test_reap_once_uses_explicit_threshold_over_default():
 
     # Cutoff = now - 10s. Allow generous slack for test scheduling.
     assert before - timedelta(seconds=15) <= captured["cutoff"] <= after - timedelta(seconds=5)
+    # The explicit threshold flows through to the per-tenant sweep (so the
+    # audit detail records the real window, not the cutoff epoch).
+    assert captured["threshold_seconds"] == 10
+
+
+@pytest.mark.asyncio
+async def test_reap_tenant_audit_detail_records_real_threshold_not_epoch():
+    """The `threshold_seconds` audit detail must be the configured threshold
+    (e.g. 600), NOT the cutoff datetime's Unix epoch (e.g. 1.7e9). A mislabel
+    there makes the SOC 2 reaper audit row claim a nonsense timeout window."""
+    from app.services import extraction_reaper
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=600)
+    stuck_invoice = SimpleNamespace(
+        id="inv-1",
+        created_at=now - timedelta(seconds=900),  # older than the cutoff
+        warnings=None,
+    )
+
+    # Fake the per-tenant session machinery so no real DB is touched.
+    scalars = MagicMock(all=lambda: [stuck_invoice])
+    fake_session = MagicMock()
+    fake_session.execute = AsyncMock(return_value=MagicMock(scalars=lambda: scalars))
+    fake_session.commit = AsyncMock()
+
+    session_cm = AsyncMock()
+    session_cm.__aenter__.return_value = fake_session
+    session_cm.__aexit__.return_value = None
+
+    captured: dict = {}
+
+    async def fake_transition(db, inv, target, *, actor_id, action_name, details):
+        captured["details"] = details
+
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+
+    with (
+        patch.object(extraction_reaper, "create_async_engine", lambda *a, **k: fake_engine),
+        patch.object(
+            extraction_reaper,
+            "async_sessionmaker",
+            lambda *a, **k: MagicMock(return_value=session_cm),
+        ),
+        patch(
+            "app.services.workflow_engine.transition_invoice",
+            AsyncMock(side_effect=fake_transition),
+        ),
+    ):
+        reaped = await extraction_reaper._reap_tenant("ap_x", cutoff, threshold_seconds=600)
+
+    assert reaped == 1
+    assert captured["details"]["threshold_seconds"] == 600  # not int(cutoff.timestamp())
 
 
 @pytest.mark.asyncio

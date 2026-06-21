@@ -58,7 +58,7 @@ async def reap_once(*, threshold_seconds: int | None = None) -> ReapResult:
     for _org_id, db_name in tenants:
         result.tenants_scanned += 1
         try:
-            reaped = await _reap_tenant(db_name, cutoff)
+            reaped = await _reap_tenant(db_name, cutoff, threshold_seconds=threshold)
             result.invoices_reaped += reaped
         except Exception as exc:
             # Don't let one tenant's DB outage halt the sweep — log and move on.
@@ -75,7 +75,7 @@ async def reap_once(*, threshold_seconds: int | None = None) -> ReapResult:
     return result
 
 
-async def _reap_tenant(db_name: str, cutoff: datetime) -> int:
+async def _reap_tenant(db_name: str, cutoff: datetime, *, threshold_seconds: int) -> int:
     """Transition stuck `pending` invoices in one tenant DB to `failed`.
 
     Uses a fresh engine per call — same pattern as `extraction_dispatch._run_local`.
@@ -116,7 +116,7 @@ async def _reap_tenant(db_name: str, cutoff: datetime) -> int:
                     InvoiceStatus.failed,
                     actor_id=None,
                     action_name="invoice.extraction_reaped",
-                    details={"age_seconds": age, "threshold_seconds": int(cutoff.timestamp())},
+                    details={"age_seconds": age, "threshold_seconds": threshold_seconds},
                 )
                 # The warnings array stays — it's the reviewer-facing surface
                 # (visible in the row drawer); the audit row is the
