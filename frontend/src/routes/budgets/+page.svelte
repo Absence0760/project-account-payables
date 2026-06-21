@@ -20,6 +20,7 @@
 	import { formatMoney } from '$lib/utils/money';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 
@@ -40,19 +41,19 @@
 	let editing = $state<Budget | null>(null);
 	let confirmDeleteId = $state<string | null>(null);
 
-	const DIMENSION_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const DIMENSION_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...BUDGET_DIMENSIONS.map((d) => ({ key: d, label: BUDGET_DIMENSION_LABELS[d] }))
-	];
+	]);
 
-	const COLUMNS = [
-		{ label: 'Name' },
-		{ label: 'Dimension' },
-		{ label: 'Value' },
-		{ label: 'Period' },
-		{ label: 'Allocation', class: 'right' },
+	const COLUMNS = $derived([
+		{ label: m('budgets.col.name') },
+		{ label: m('budgets.col.dimension') },
+		{ label: m('budgets.col.value') },
+		{ label: m('budgets.col.period') },
+		{ label: m('budgets.col.allocation'), class: 'right' },
 		{ label: '', class: 'actions-col' }
-	];
+	]);
 
 	// Client-side text search over the loaded page (the list endpoint already
 	// filters by name/value server-side via ?search=; this keeps it responsive).
@@ -92,7 +93,7 @@
 			budgets = res.items;
 			total = res.total;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load budgets', 'error');
+			toast(err instanceof Error ? err.message : m('budgets.toast.loadFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -135,9 +136,9 @@
 			await apiDeleteBudget(id);
 			budgets = budgets.filter((b) => b.id !== id);
 			total = Math.max(0, total - 1);
-			toast('Budget deleted', 'success');
+			toast(m('budgets.toast.deleted'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('budgets.toast.deleteFailed'), 'error');
 		} finally {
 			confirmDeleteId = null;
 		}
@@ -155,37 +156,37 @@
 
 <svelte:window onclick={onWindowClick} />
 
-<PageHeader title="Budgets">
+<PageHeader title={m('budgets.title')}>
 	{#snippet actions()}
 		{#if canManage}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Budget</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('budgets.action.new')}</button>
 		{/if}
 	{/snippet}
 
 	<div class="kpi-row">
 		<KpiCard
 			value={formatMoney(totalAllocated, { currency: orgCurrency.currency })}
-			label="Total allocated"
+			label={m('budgets.kpi.totalAllocated')}
 		/>
-		<KpiCard value={total} label="Budgets" />
-		<KpiCard value={DIMENSION_CHIPS.length - 1} label="Dimensions" />
+		<KpiCard value={total} label={m('budgets.kpi.budgets')} />
+		<KpiCard value={DIMENSION_CHIPS.length - 1} label={m('budgets.kpi.dimensions')} />
 	</div>
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search budgets..." ariaLabel="Search budgets" />
+		<SearchBox bind:value={search} placeholder={m('budgets.search.placeholder')} ariaLabel={m('budgets.search.aria')} />
 		<FilterChips chips={DIMENSION_CHIPS} bind:active={dimensionFilter} />
 	</div>
 
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={visibleBudgets.length === 0}
-		empty={loading ? 'Loading…' : 'No budgets match your filters.'}
+		empty={loading ? m('common.loading') : m('budgets.empty')}
 	>
 		{#snippet body()}
 			{#each visibleBudgets as b (b.id)}
 				<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editing = b; }}>
 					<td>
-						<RowLink onclick={() => (editing = b)} ariaLabel={`Open budget ${b.name}`}>
+						<RowLink onclick={() => (editing = b)} ariaLabel={m('budgets.row.open', { name: b.name })}>
 							{b.name}
 						</RowLink>
 					</td>
@@ -204,7 +205,7 @@
 									else confirmDeleteId = b.id;
 								}}
 							>
-								{confirmDeleteId === b.id ? 'Confirm' : 'Delete'}
+								{confirmDeleteId === b.id ? m('budgets.row.confirm') : m('budgets.row.delete')}
 							</RowAction>
 						{/if}
 					</td>
@@ -215,7 +216,7 @@
 
 	{#if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} budget{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('budgets.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>

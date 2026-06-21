@@ -28,6 +28,7 @@
 	import IntakeModal from '$lib/components/modals/IntakeModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 
@@ -50,24 +51,24 @@
 	let rejectArmedId = $state<string | null>(null);
 	let busyId = $state<string | null>(null);
 
-	const STATUS_CHIPS = [
-		{ key: 'all', label: 'All' },
+	const STATUS_CHIPS = $derived([
+		{ key: 'all', label: m('common.all') },
 		...INTAKE_STATUSES.map((s) => ({ key: s, label: INTAKE_STATUS_LABELS[s] }))
-	];
-	const TYPE_CHIPS = [
-		{ key: 'all', label: 'All types' },
+	]);
+	const TYPE_CHIPS = $derived([
+		{ key: 'all', label: m('intake.filter.allTypes') },
 		...INTAKE_TYPES.map((t) => ({ key: t, label: INTAKE_TYPE_LABELS[t] }))
-	];
+	]);
 
-	const COLUMNS = [
-		{ label: 'Request #' },
-		{ label: 'Title' },
-		{ label: 'Type' },
-		{ label: 'Vendor' },
-		{ label: 'Estimated', class: 'right' },
-		{ label: 'Status' },
+	const COLUMNS = $derived([
+		{ label: m('intake.col.requestNumber') },
+		{ label: m('intake.col.title') },
+		{ label: m('intake.col.type') },
+		{ label: m('intake.col.vendor') },
+		{ label: m('intake.col.estimated'), class: 'right' },
+		{ label: m('intake.col.status') },
 		{ label: '', class: 'actions-col' }
-	];
+	]);
 
 	// KPIs over the loaded page.
 	const openCount = $derived(items.filter((i) => i.status === 'open').length);
@@ -99,7 +100,7 @@
 			items = res.items;
 			total = res.total;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load intake requests', 'error');
+			toast(err instanceof Error ? err.message : m('intake.toast.loadFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -140,9 +141,9 @@
 			await apiDelete(id);
 			items = items.filter((x) => x.id !== id);
 			total = Math.max(0, total - 1);
-			toast('Intake request deleted', 'success');
+			toast(m('intake.toast.deleted'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Delete failed', 'error');
+			toast(err instanceof Error ? err.message : m('intake.toast.deleteFailed'), 'error');
 		} finally {
 			confirmDeleteId = null;
 		}
@@ -152,9 +153,9 @@
 		busyId = i.id;
 		try {
 			upsert(await submitIntake(i.id));
-			toast('Submitted for review', 'success');
+			toast(m('intake.toast.submitted'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Submit failed', 'error');
+			toast(err instanceof Error ? err.message : m('intake.toast.submitFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -164,9 +165,9 @@
 		busyId = i.id;
 		try {
 			upsert(await approveIntake(i.id));
-			toast('Intake approved', 'success');
+			toast(m('intake.toast.approved'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Approve failed', 'error');
+			toast(err instanceof Error ? err.message : m('intake.toast.approveFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -176,9 +177,9 @@
 		busyId = i.id;
 		try {
 			upsert(await rejectIntake(i.id));
-			toast('Intake rejected', 'success');
+			toast(m('intake.toast.rejected'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Reject failed', 'error');
+			toast(err instanceof Error ? err.message : m('intake.toast.rejectFailed'), 'error');
 		} finally {
 			busyId = null;
 			rejectArmedId = null;
@@ -189,9 +190,9 @@
 		busyId = i.id;
 		try {
 			upsert(await cancelIntake(i.id));
-			toast('Intake cancelled', 'success');
+			toast(m('intake.toast.cancelled'), 'success');
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Cancel failed', 'error');
+			toast(err instanceof Error ? err.message : m('intake.toast.cancelFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -204,12 +205,12 @@
 			upsert(res.intake);
 			toast(
 				res.created
-					? `Requisition ${res.requisition_number} created`
-					: `Already converted (${res.requisition_number})`,
+					? m('intake.toast.created', { number: res.requisition_number })
+					: m('intake.toast.alreadyConverted', { number: res.requisition_number }),
 				'success'
 			);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Convert failed', 'error');
+			toast(err instanceof Error ? err.message : m('intake.toast.convertFailed'), 'error');
 		} finally {
 			busyId = null;
 		}
@@ -227,21 +228,21 @@
 
 <svelte:window onclick={onWindowClick} />
 
-<PageHeader title="Intake">
+<PageHeader title={m('intake.title')}>
 	{#snippet actions()}
 		{#if canCreate}
-			<button class="btn-primary" onclick={() => (showCreate = true)}>+ New Request</button>
+			<button class="btn-primary" onclick={() => (showCreate = true)}>{m('intake.action.new')}</button>
 		{/if}
 	{/snippet}
 
 	<div class="kpi-row">
-		<KpiCard value={total} label="Requests" />
-		<KpiCard value={openCount} label="Open" />
-		<KpiCard value={reviewCount} label="In review" highlight={reviewCount ? 'red' : null} />
+		<KpiCard value={total} label={m('intake.kpi.requests')} />
+		<KpiCard value={openCount} label={m('intake.kpi.open')} />
+		<KpiCard value={reviewCount} label={m('intake.kpi.inReview')} highlight={reviewCount ? 'red' : null} />
 	</div>
 
 	<div class="filter-row">
-		<SearchBox bind:value={search} placeholder="Search intake..." ariaLabel="Search intake requests" />
+		<SearchBox bind:value={search} placeholder={m('intake.search.placeholder')} ariaLabel={m('intake.search.aria')} />
 		<FilterChips chips={STATUS_CHIPS} bind:active={statusFilter} />
 	</div>
 	<div class="filter-row">
@@ -251,13 +252,13 @@
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={items.length === 0}
-		empty={loading ? 'Loading…' : 'No intake requests match your filters.'}
+		empty={loading ? m('common.loading') : m('intake.empty')}
 	>
 		{#snippet body()}
 			{#each items as i (i.id)}
 				<tr class="clickable" onclick={(e) => { if (isRowOpenClick(e)) editing = i; }}>
 					<td class="mono">
-						<RowLink onclick={() => (editing = i)} ariaLabel={`Open intake ${i.request_number}`}>
+						<RowLink onclick={() => (editing = i)} ariaLabel={m('intake.row.open', { number: i.request_number })}>
 							{i.request_number}
 						</RowLink>
 					</td>
@@ -274,10 +275,10 @@
 					</td>
 					<td class="actions">
 						{#if canCreate && i.status === 'open'}
-							<RowAction variant="default" onclick={() => onSubmit(i)}>Submit</RowAction>
+							<RowAction variant="default" onclick={() => onSubmit(i)}>{m('intake.row.submit')}</RowAction>
 						{/if}
 						{#if canReview && i.status === 'in_review'}
-							<RowAction variant="success" onclick={() => onApprove(i)}>Approve</RowAction>
+							<RowAction variant="success" onclick={() => onApprove(i)}>{m('intake.row.approve')}</RowAction>
 							<RowAction
 								variant="danger"
 								armed={rejectArmedId === i.id}
@@ -287,17 +288,17 @@
 									else rejectArmedId = i.id;
 								}}
 							>
-								{rejectArmedId === i.id ? 'Confirm' : 'Reject'}
+								{rejectArmedId === i.id ? m('intake.row.confirm') : m('intake.row.reject')}
 							</RowAction>
 						{/if}
 						{#if canReview && i.status === 'approved'}
-							<RowAction variant="default" onclick={() => onConvert(i)}>Convert to requisition</RowAction>
+							<RowAction variant="default" onclick={() => onConvert(i)}>{m('intake.row.convertToRequisition')}</RowAction>
 						{/if}
 						{#if i.status === 'converted' && i.converted_requisition_id}
-							<a class="req-link" href={`/requisitions?id=${i.converted_requisition_id}`}>View requisition</a>
+							<a class="req-link" href={`/requisitions?id=${i.converted_requisition_id}`}>{m('intake.row.viewRequisition')}</a>
 						{/if}
 						{#if canCreate && (i.status === 'open' || i.status === 'in_review' || i.status === 'approved')}
-							<RowAction variant="default" onclick={() => onCancel(i)}>Cancel</RowAction>
+							<RowAction variant="default" onclick={() => onCancel(i)}>{m('intake.row.cancel')}</RowAction>
 						{/if}
 						{#if canCreate}
 							<RowAction
@@ -309,7 +310,7 @@
 									else confirmDeleteId = i.id;
 								}}
 							>
-								{confirmDeleteId === i.id ? 'Confirm' : 'Delete'}
+								{confirmDeleteId === i.id ? m('intake.row.confirm') : m('intake.row.delete')}
 							</RowAction>
 						{/if}
 					</td>
@@ -320,7 +321,7 @@
 
 	{#if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} request{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('intake.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>

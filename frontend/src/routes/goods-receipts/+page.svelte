@@ -6,15 +6,16 @@
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 
-	const COLUMNS = [
-		{ label: 'GR #' },
-		{ label: 'PO' },
-		{ label: 'Received' },
-		{ label: 'Status' },
-		{ label: 'Lines' },
-		{ label: 'Created' }
-	];
+	const COLUMNS = $derived([
+		{ label: m('goodsReceipts.col.grNumber') },
+		{ label: m('goodsReceipts.col.po') },
+		{ label: m('goodsReceipts.col.received') },
+		{ label: m('goodsReceipts.col.status') },
+		{ label: m('goodsReceipts.col.lines') },
+		{ label: m('goodsReceipts.col.created') }
+	]);
 
 	interface GRLine {
 		id: string;
@@ -76,7 +77,7 @@
 			total = data.total;
 			page = nextPage;
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load goods receipts', 'error');
+			toast(err instanceof Error ? err.message : m('goodsReceipts.toast.loadListFailed'), 'error');
 		} finally {
 			loading = false;
 		}
@@ -96,7 +97,7 @@
 		try {
 			detail = await api.get<GRDetail>(`/api/goods-receipts/${id}`);
 		} catch (err) {
-			toast(err instanceof Error ? err.message : 'Failed to load receipt', 'error');
+			toast(err instanceof Error ? err.message : m('goodsReceipts.toast.loadFailed'), 'error');
 			detailId = null;
 		} finally {
 			detailLoading = false;
@@ -115,11 +116,11 @@
 	let hasMore = $derived(grs.length < total);
 </script>
 
-<PageHeader title="Goods Receipts">
+<PageHeader title={m('goodsReceipts.title')}>
 	<DataTable
 		columns={COLUMNS}
 		isEmpty={grs.length === 0}
-		empty={loading ? 'Loading…' : 'No goods receipts.'}
+		empty={loading ? m('common.loading') : m('goodsReceipts.empty')}
 		colspan={6}
 	>
 		{#snippet body()}
@@ -133,7 +134,7 @@
 					<td class="mono">
 						<RowLink
 							onclick={() => (detailId = gr.id)}
-							ariaLabel={`View goods receipt ${gr.gr_number}`}
+							ariaLabel={m('goodsReceipts.row.view', { number: gr.gr_number })}
 						>
 							{gr.gr_number}
 						</RowLink>
@@ -151,45 +152,45 @@
 	{#if hasMore}
 		<div class="load-more-row">
 			<button class="btn-load-more" onclick={loadMore} disabled={loadingMore}>
-				{loadingMore ? 'Loading…' : `Load more (${grs.length} of ${total})`}
+				{loadingMore ? m('common.loading') : m('goodsReceipts.loadMore', { shown: grs.length, total })}
 			</button>
 		</div>
 	{:else if total > 0}
 		<div class="load-more-row">
-			<span class="load-more-end">Showing all {total} goods receipt{total === 1 ? '' : 's'}</span>
+			<span class="load-more-end">{m('goodsReceipts.showingAll', { total })}</span>
 		</div>
 	{/if}
 </PageHeader>
 
-<Modal open={detailId !== null} ariaLabel="Goods receipt" onclose={() => (detailId = null)}>
+<Modal open={detailId !== null} ariaLabel={m('goodsReceipts.modal.aria')} onclose={() => (detailId = null)}>
 	{#snippet header()}
 		<header class="modal-header">
 			<div class="title-block">
-				<h2>Goods Receipt</h2>
+				<h2>{m('goodsReceipts.modal.title')}</h2>
 				{#if detail}
 					<span class="num-badge">{detail.gr_number}</span>
 					<span class="badge {detail.status}">{detail.status}</span>
 				{/if}
 			</div>
-			<button class="close-btn" onclick={() => (detailId = null)} aria-label="Close">&times;</button>
+			<button class="close-btn" onclick={() => (detailId = null)} aria-label={m('goodsReceipts.modal.close')}>&times;</button>
 		</header>
 	{/snippet}
 
 	<div class="modal-body">
 		{#if detailLoading}
-			<div class="loading">Loading…</div>
+			<div class="loading">{m('common.loading')}</div>
 		{:else if detail}
 			<dl class="meta">
-				<dt>PO</dt><dd class="mono">{detail.po_number ?? '—'}</dd>
-				<dt>Received</dt><dd>{formatDate(detail.received_date)}</dd>
+				<dt>{m('goodsReceipts.modal.po')}</dt><dd class="mono">{detail.po_number ?? '—'}</dd>
+				<dt>{m('goodsReceipts.modal.received')}</dt><dd>{formatDate(detail.received_date)}</dd>
 			</dl>
 
-			<h3>Line Items Received</h3>
+			<h3>{m('goodsReceipts.modal.lineItemsReceived')}</h3>
 			<table class="line-table">
 				<thead>
 					<tr>
-						<th>Description</th>
-						<th class="right">Quantity Received</th>
+						<th>{m('goodsReceipts.modal.description')}</th>
+						<th class="right">{m('goodsReceipts.modal.quantityReceived')}</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -199,7 +200,7 @@
 							<td class="right mono">{li.quantity_received ?? '—'}</td>
 						</tr>
 					{:else}
-						<tr><td colspan="2" class="empty">No line items.</td></tr>
+						<tr><td colspan="2" class="empty">{m('goodsReceipts.modal.noLineItems')}</td></tr>
 					{/each}
 				</tbody>
 			</table>
