@@ -12,6 +12,7 @@
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import type { InvoiceStatus } from '$lib/types/invoice';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
 	import {
 		createRecurring,
 		updateRecurring,
@@ -118,11 +119,11 @@
 			const saved = isCreate
 				? await createRecurring(buildPayload())
 				: await updateRecurring(template!.id, buildPayload());
-			toast(isCreate ? 'Template created' : 'Template saved', 'success');
+			toast(isCreate ? m('recurring.modal.toast.created') : m('recurring.modal.toast.saved'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, isCreate ? 'Create failed' : 'Save failed');
+			handleError(err, isCreate ? m('recurring.modal.toast.createFailed') : m('recurring.modal.toast.saveFailed'));
 		} finally {
 			saving = false;
 		}
@@ -151,10 +152,10 @@
 		busy = true;
 		try {
 			await generateRecurringNow(template.id);
-			toast('Invoice generated', 'success');
+			toast(m('recurring.modal.toast.generated'), 'success');
 			await loadPreviews();
 		} catch (err) {
-			handleError(err, 'Could not generate invoice');
+			handleError(err, m('recurring.modal.toast.generateFailed'));
 		} finally {
 			busy = false;
 		}
@@ -191,12 +192,12 @@
 
 	const modalTitle = $derived(
 		isCreate
-			? 'New Recurring Template'
+			? m('recurring.modal.title.new')
 			: canEdit
-				? `Edit Template — ${template!.name}`
-				: `Template — ${template!.name}`
+				? m('recurring.modal.title.edit', { name: template!.name })
+				: m('recurring.modal.title.view', { name: template!.name })
 	);
-	const ariaLabel = $derived(isCreate ? 'New recurring template' : 'Recurring template detail');
+	const ariaLabel = $derived(isCreate ? m('recurring.modal.aria.new') : m('recurring.modal.aria.detail'));
 </script>
 
 <Modal open {ariaLabel} title={modalTitle} width="lg" {onclose}>
@@ -204,29 +205,29 @@
 		{#if !isCreate}
 			<div class="status-row">
 				<span class="badge {status}">{STATUS_LABELS[status]}</span>
-				<span class="meta-pill">{template!.generated_count} generated</span>
+				<span class="meta-pill">{m('recurring.modal.generatedCount', { count: template!.generated_count })}</span>
 				{#if template!.next_run_on && status === 'active'}
-					<span class="meta-pill">Next {formatDate(template!.next_run_on)}</span>
+					<span class="meta-pill">{m('recurring.modal.nextRun', { date: formatDate(template!.next_run_on) })}</span>
 				{/if}
 			</div>
 		{/if}
 
 		<div class="form-grid">
 			<label class="full-width">
-				<span>Name <em class="required">*</em></span>
+				<span>{m('recurring.modal.field.name')} <em class="required">*</em></span>
 				<input type="text" bind:value={name} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Vendor</span>
+				<span>{m('recurring.modal.field.vendor')}</span>
 				<select bind:value={vendor_id} disabled={!canEdit}>
-					<option value="">No vendor</option>
+					<option value="">{m('recurring.modal.field.noVendor')}</option>
 					{#each vendors as v (v.id)}
 						<option value={v.id}>{v.name}</option>
 					{/each}
 				</select>
 			</label>
 			<label>
-				<span>Amount</span>
+				<span>{m('recurring.modal.field.amount')}</span>
 				<input
 					type="number"
 					step="0.01"
@@ -237,11 +238,11 @@
 				/>
 			</label>
 			<label>
-				<span>Currency</span>
+				<span>{m('recurring.modal.field.currency')}</span>
 				<input type="text" bind:value={currency} maxlength="3" disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Cadence</span>
+				<span>{m('recurring.modal.field.cadence')}</span>
 				<select bind:value={cadence} disabled={!canEdit}>
 					{#each RECURRING_CADENCES as c}
 						<option value={c}>{CADENCE_LABELS[c]}</option>
@@ -249,11 +250,11 @@
 				</select>
 			</label>
 			<label>
-				<span>Day of period (1–28)</span>
+				<span>{m('recurring.modal.field.dayOfPeriod')}</span>
 				<input type="number" min="1" max="28" bind:value={day_of_period} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Variance tolerance (%)</span>
+				<span>{m('recurring.modal.field.varianceTolerance')}</span>
 				<input
 					type="number"
 					step="0.1"
@@ -264,43 +265,43 @@
 				/>
 			</label>
 			<label>
-				<span>Start Date <em class="required">*</em></span>
+				<span>{m('recurring.modal.field.startDate')} <em class="required">*</em></span>
 				<input type="date" bind:value={start_date} required disabled={!canEdit} />
 			</label>
 			<label>
-				<span>End Date</span>
+				<span>{m('recurring.modal.field.endDate')}</span>
 				<input type="date" bind:value={end_date} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>GL Account</span>
+				<span>{m('recurring.modal.field.glAccount')}</span>
 				<input type="text" bind:value={gl_account} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Cost Center</span>
+				<span>{m('recurring.modal.field.costCenter')}</span>
 				<input type="text" bind:value={cost_center} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Department</span>
+				<span>{m('recurring.modal.field.department')}</span>
 				<input type="text" bind:value={department} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Project</span>
+				<span>{m('recurring.modal.field.project')}</span>
 				<input type="text" bind:value={project} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>PO Number</span>
+				<span>{m('recurring.modal.field.poNumber')}</span>
 				<input type="text" bind:value={po_number} disabled={!canEdit} />
 			</label>
 			<label>
-				<span>Payment Terms</span>
-				<input type="text" bind:value={payment_terms} placeholder="e.g. Net 30" disabled={!canEdit} />
+				<span>{m('recurring.modal.field.paymentTerms')}</span>
+				<input type="text" bind:value={payment_terms} placeholder={m('recurring.modal.field.paymentTermsPlaceholder')} disabled={!canEdit} />
 			</label>
 			<label class="full-width">
-				<span>Description</span>
+				<span>{m('recurring.modal.field.description')}</span>
 				<input type="text" bind:value={description} disabled={!canEdit} />
 			</label>
 			<label class="full-width">
-				<span>Notes</span>
+				<span>{m('recurring.modal.field.notes')}</span>
 				<textarea bind:value={notes} rows="2" disabled={!canEdit}></textarea>
 			</label>
 		</div>
@@ -308,14 +309,14 @@
 		<!-- Upcoming schedule (detail mode only) -->
 		{#if !isCreate}
 			<div class="preview-section">
-				<div class="preview-title">Upcoming schedule</div>
+				<div class="preview-title">{m('recurring.modal.upcoming.title')}</div>
 				{#if schedule && schedule.occurrences.length > 0}
 					<table class="preview-table">
 						<thead>
 							<tr>
-								<th>Period</th>
-								<th>Runs on</th>
-								<th class="right">Amount</th>
+								<th>{m('recurring.modal.upcoming.col.period')}</th>
+								<th>{m('recurring.modal.upcoming.col.runsOn')}</th>
+								<th class="right">{m('recurring.modal.upcoming.col.amount')}</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -329,24 +330,24 @@
 						</tbody>
 					</table>
 				{:else}
-					<p class="preview-empty">No upcoming runs (template is not active or has ended).</p>
+					<p class="preview-empty">{m('recurring.modal.upcoming.empty')}</p>
 				{/if}
 			</div>
 
 			<!-- Generated history -->
 			<div class="preview-section">
 				<div class="preview-title">
-					Generated history{#if history}<span class="preview-count"> · {history.total}</span>{/if}
+					{m('recurring.modal.history.title')}{#if history}<span class="preview-count"> · {history.total}</span>{/if}
 				</div>
 				{#if history && history.items.length > 0}
 					<table class="preview-table">
 						<thead>
 							<tr>
-								<th>Invoice</th>
-								<th>Period</th>
-								<th class="right">Amount</th>
-								<th>Status</th>
-								<th>Created</th>
+								<th>{m('recurring.modal.history.col.invoice')}</th>
+								<th>{m('recurring.modal.history.col.period')}</th>
+								<th class="right">{m('recurring.modal.history.col.amount')}</th>
+								<th>{m('recurring.modal.history.col.status')}</th>
+								<th>{m('recurring.modal.history.col.created')}</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -362,7 +363,7 @@
 						</tbody>
 					</table>
 				{:else}
-					<p class="preview-empty">No invoices generated yet.</p>
+					<p class="preview-empty">{m('recurring.modal.history.empty')}</p>
 				{/if}
 			</div>
 		{/if}
@@ -376,9 +377,9 @@
 						class="btn-lifecycle"
 						disabled={busy}
 						onclick={handleGenerateNow}
-						aria-label={`Generate invoice now for ${template!.name}`}
+						aria-label={m('recurring.modal.lifecycle.generateNowAria', { name: template!.name })}
 					>
-						Generate now
+						{m('recurring.modal.lifecycle.generateNow')}
 					</button>
 				{/if}
 				{#if canPause}
@@ -386,10 +387,10 @@
 						type="button"
 						class="btn-lifecycle"
 						disabled={busy}
-						onclick={() => runLifecycle(() => pauseRecurring(template!.id), 'Template paused', 'Pause failed')}
-						aria-label={`Pause template ${template!.name}`}
+						onclick={() => runLifecycle(() => pauseRecurring(template!.id), m('recurring.modal.toast.paused'), m('recurring.modal.toast.pauseFailed'))}
+						aria-label={m('recurring.modal.lifecycle.pauseAria', { name: template!.name })}
 					>
-						Pause
+						{m('recurring.modal.lifecycle.pause')}
 					</button>
 				{/if}
 				{#if canResume}
@@ -397,10 +398,10 @@
 						type="button"
 						class="btn-lifecycle activate"
 						disabled={busy}
-						onclick={() => runLifecycle(() => resumeRecurring(template!.id), 'Template resumed', 'Resume failed')}
-						aria-label={`Resume template ${template!.name}`}
+						onclick={() => runLifecycle(() => resumeRecurring(template!.id), m('recurring.modal.toast.resumed'), m('recurring.modal.toast.resumeFailed'))}
+						aria-label={m('recurring.modal.lifecycle.resumeAria', { name: template!.name })}
 					>
-						Resume
+						{m('recurring.modal.lifecycle.resume')}
 					</button>
 				{/if}
 				{#if canEnd}
@@ -408,20 +409,20 @@
 						type="button"
 						class="btn-lifecycle end"
 						disabled={busy}
-						onclick={() => runLifecycle(() => endRecurring(template!.id), 'Template ended', 'End failed')}
-						aria-label={`End template ${template!.name}`}
+						onclick={() => runLifecycle(() => endRecurring(template!.id), m('recurring.modal.toast.ended'), m('recurring.modal.toast.endFailed'))}
+						aria-label={m('recurring.modal.lifecycle.endAria', { name: template!.name })}
 					>
-						End
+						{m('recurring.modal.lifecycle.end')}
 					</button>
 				{/if}
 			</div>
 		{/if}
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}>{m('recurring.modal.close')}</button>
 			{#if canEdit}
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? 'Saving…' : isCreate ? 'Create' : 'Save'}
+					{saving ? m('recurring.modal.saving') : isCreate ? m('recurring.modal.create') : m('recurring.modal.save')}
 				</button>
 			{/if}
 		</div>
