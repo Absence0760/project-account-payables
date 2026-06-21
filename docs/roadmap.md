@@ -630,12 +630,12 @@ Flutter app at `mobile/` with login, dashboard, invoice list, approve/reject, pa
 **Files:** `mobile/` — see `mobile/CLAUDE.md` for full structure
 
 ### Email & Notification System
-**Status:** In progress
+**Status:** Done
 
 - [x] Email notifications on key events (invoice assigned, approved, rejected, paid) — centralized `transition_invoice` hook + explicit `assign_reviewer` hook → `notification_dispatch.notify_event`, sent via the existing pluggable email adapter (`console`/`smtp`/`ses`). See `backend/docs/notifications.md`.
 - [x] Configurable notification preferences per user — `users.notification_prefs` JSONB, per-event in-app/email toggles in `/profile`, gating both channels.
 - [x] In-app notification center — tenant `notifications` table, `/api/notifications*`, `/notifications` route + sidebar unread badge.
-- [ ] Email-to-invoice — forward invoices to a dedicated email address for auto-import (Bill.com, Tipalti, Stampli, Medius have this)
+- [x] Email-to-invoice — forward invoices to a dedicated email address for auto-import (Bill.com, Tipalti, Stampli, Medius have this) — `/api/email-intake` inbound webhook turns attachments at the per-tenant `invoices+<token>@<domain>` address into invoices; provider-signed (SES/Mailgun/generic adapters, HMAC-verified) → extraction pipeline. See `backend/docs/email-intake.md`.
 - [x] Slack/Teams integration for approval notifications (Stampli, Airbase differentiate here) — pluggable `chat_notification_adapters/` (mock default + slack + teams, per-org config) wired best-effort into `notify_event` on the approval events; fails closed without a webhook URL, PII-free, no migration. Redelivery UI / dead-letter deferred to the outbound-webhook track. See backend/docs/notifications.md
 - [x] Mobile parity — `NotificationsScreen` + `NotificationStore` (`mobile/`) over the existing `GET /api/notifications` (+ `unread-count` / `{id}/read` / `read-all`); reached from a `NotificationBell` app-bar action (live unread `Badge`) in the Dashboard app bar (all roles). All/Unread filter, optimistic tap-to-mark-read with deep-link to invoice detail, mark-all-read, offline-cached list + empty/loading/error states. No backend change (endpoints already existed). See `mobile/CLAUDE.md`.
 
