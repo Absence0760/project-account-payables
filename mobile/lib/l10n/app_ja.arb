@@ -9,9 +9,7 @@
   "navPay": "支払",
   "navPayments": "支払い",
   "navSettings": "設定",
-
   "shellAppName": "Account Payables",
-
   "commonSave": "保存",
   "commonSaving": "保存中…",
   "commonCancel": "キャンセル",
@@ -22,7 +20,6 @@
   "commonClear": "クリア",
   "commonApply": "適用",
   "commonClose": "閉じる",
-
   "settingsTitle": "設定",
   "settingsTenant": "テナント",
   "settingsTenantNotSet": "未設定",
@@ -33,7 +30,6 @@
   "settingsLanguage": "言語",
   "settingsLanguageHint": "アプリ全体で使用する言語を選択してください。選択内容はこの端末に保存されます。",
   "settingsLanguageSystem": "システムの既定値",
-
   "dashboardTitle": "ダッシュボード",
   "dashboardTotalInvoices": "請求書合計",
   "dashboardUpcoming": "予定",
@@ -48,7 +44,6 @@
   "dashboardCachedBanner": "キャッシュデータを表示中 — サーバーに接続できませんでした",
   "dashboardErrorPrefix": "エラー: {error}",
   "dashboardInvoiceCount": "{count, plural, other {{count}件の請求書}}",
-
   "invoicesTitle": "請求書",
   "invoicesSearchHint": "請求書を検索…",
   "invoicesSearchAria": "請求書を検索",
@@ -69,7 +64,6 @@
   "invoicesColAmount": "金額",
   "invoicesColDueDate": "支払期限",
   "invoicesColStatus": "ステータス",
-
   "notificationsTitle": "通知",
   "notificationsMarkAllRead": "すべて既読にする",
   "notificationsMarkAllReadLabel": "すべての通知を既読にする",
@@ -81,7 +75,6 @@
   "notificationsCaughtUp": "すべて確認済みです",
   "notificationsNothingYet": "まだ何もありません",
   "notificationsLoadError": "通知を読み込めませんでした",
-
   "vendorsTitle": "取引先",
   "vendorsSyncErp": "ERPから同期",
   "vendorsSyncErpLabel": "ERPから取引先を同期",
@@ -101,7 +94,6 @@
   "vendorRejected": "取引先を却下しました",
   "vendorActionFailed": "操作に失敗しました",
   "vendorSyncFailed": "ERP同期に失敗しました: {error}",
-
   "exceptionsTitle": "例外",
   "exceptionsFilterOpen": "未処理",
   "exceptionsFilterEscalated": "エスカレーション済み",
@@ -116,7 +108,6 @@
   "exceptionEscalated": "例外をエスカレーションしました",
   "exceptionDismissed": "例外を却下しました",
   "exceptionActionFailed": "操作に失敗しました",
-
   "paymentsTitle": "支払い",
   "paymentsEmpty": "支払いはありません",
   "paymentsErrorPrefix": "エラー: {error}",
@@ -125,7 +116,6 @@
   "paymentStatusCompleted": "完了",
   "paymentStatusFailed": "失敗",
   "paymentStatusCancelled": "キャンセル済み",
-
   "approvalsTitle": "承認待ち",
   "approvalsAllCaughtUp": "すべて完了しました！",
   "approvalsNoneWaiting": "承認待ちの請求書はありません",
@@ -133,7 +123,6 @@
   "approvalActionApprove": "承認",
   "approvalActionReject": "却下",
   "approvalApproved": "請求書を承認しました",
-
   "captureTitle": "請求書を撮影",
   "captureChange": "変更",
   "captureUpload": "アップロード",
@@ -148,7 +137,6 @@
   "captureUploadFailed": "アップロードに失敗しました: {error}",
   "captureSelectedDocument": "選択した書類: {name}",
   "capturePdfReady": "PDF書類をアップロードする準備ができました",
-
   "advSearchTitle": "詳細検索",
   "advSearchClose": "詳細検索を閉じる",
   "advSearchVendor": "取引先",
@@ -162,7 +150,6 @@
   "advSearchMinMaxError": "最小値は最大値を超えてはいけません",
   "advSearchClearField": "{label}をクリア",
   "advSearchDateFieldHint": "{label}、現在 {value}。ダブルタップで変更します。",
-
   "invoiceDetailTitle": "請求書の詳細",
   "invoiceDetailEdit": "編集",
   "invoiceDetailEditLabel": "請求書を編集",
@@ -194,7 +181,6 @@
   "invoiceDetailFileLabel": "請求書ファイル。ダブルタップで全画面表示します。",
   "invoiceDetailTapToViewPdf": "タップしてPDFを表示",
   "invoiceDetailTapToViewFile": "タップしてファイルを表示",
-
   "invoiceEditTitle": "請求書を編集",
   "invoiceEditClose": "編集フォームを閉じる",
   "invoiceEditVendor": "取引先",
@@ -208,7 +194,6 @@
   "invoiceEditInvalidAmount": "有効な金額を入力してください（例: 1234.56）",
   "invoiceEditClearDueDate": "支払期日をクリア",
   "invoiceEditDueDateHint": "支払期日、現在 {value}。ダブルタップで変更します。",
-
   "warningsSectionTitle": "警告と不正フラグ",
   "warningsPoMatchTitle": "発注照合",
   "warningsSeverityError": "エラー",
@@ -217,22 +202,18 @@
   "warningsPoLabel": "発注",
   "warningsMatchLabel": "{type}照合",
   "warningsVarianceLabel": "{value}% の差異",
-
   "erpStatusTitle": "ERPステータス",
   "erpStatusReference": "ERP参照番号",
   "erpStatusDocumentId": "ドキュメントID",
   "erpStatusError": "エラー",
   "erpStatusLastUpdate": "最終更新",
   "erpStatusStatus": "ステータス",
-
   "fileViewerPdfTitle": "請求書PDF",
   "fileViewerImageTitle": "請求書画像",
   "fileViewerPdfError": "PDFを読み込めませんでした",
   "fileViewerImageError": "画像を読み込めませんでした",
   "fileViewerRetry": "再試行",
-
   "timelineNoActivity": "まだアクティビティはありません",
-
   "payTitle": "支払",
   "payTabQueue": "キュー",
   "payTabRuns": "実行",
@@ -278,7 +259,6 @@
   "payRunStatusCancelled": "キャンセル済み",
   "payConfirmCancel": "キャンセル",
   "payConfirmExecute": "実行",
-
   "loginAppName": "Better AP",
   "loginTagline": "買掛金管理をシンプルに",
   "loginTenant": "テナント",
@@ -288,7 +268,6 @@
   "loginHidePassword": "パスワードを非表示",
   "loginRequired": "必須",
   "loginSignIn": "サインイン",
-
   "mfaTitle": "二要素認証",
   "mfaHeading": "本人確認",
   "mfaPromptEmail": "メールで送信した6桁のコードを入力してください。",
@@ -304,7 +283,6 @@
   "mfaUseEmailInstead": "代わりにメールコードを使用",
   "mfaUseAuthenticatorInstead": "代わりに認証アプリを使用",
   "mfaEmailedAnnounce": "サインインコードをメールで送信しました。",
-
   "adminUsersTitle": "ユーザー管理",
   "adminUsersSearchHint": "名前またはメールで検索",
   "adminUsersEmpty": "ユーザーが見つかりません",
@@ -345,7 +323,6 @@
   "adminUsersDeleteConfirmBody": "{name}（{email}）を完全に削除します。元に戻せません。",
   "adminUsersDeleted": "{name} を削除しました",
   "adminUsersDeleteFailed": "{name} の削除に失敗しました: {error}",
-
   "orgSettingsTitle": "組織設定",
   "orgSettingsNoSettings": "設定がありません",
   "orgSettingsLoadError": "設定を読み込めませんでした",
@@ -366,7 +343,6 @@
   "orgSettingsFieldRequired": "{label} は必須です",
   "orgSettingsSaved": "組織設定を保存しました",
   "orgSettingsSaveFailed": "保存に失敗しました: {error}",
-
   "workflowsTitle": "ワークフロー",
   "workflowsEmpty": "ワークフローが見つかりません",
   "workflowsLoadError": "ワークフローを読み込めませんでした",
@@ -383,5 +359,317 @@
   "workflowDetailStepDisabled": "無効",
   "workflowDetailApproverCount": "{count, plural, other {承認者{count}人}}",
   "workflowDetailDelaySummary": "遅延 {hours} 時間",
-  "workflowDetailConditionSummary": "{field} で"
+  "workflowDetailConditionSummary": "{field} で",
+  "cashFlowTitle": "キャッシュフロー予測",
+  "cashFlowErrorPrefix": "エラー: {error}",
+  "@cashFlowErrorPrefix": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowHorizonDays": "{days}日間",
+  "@cashFlowHorizonDays": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowLowBalanceAlert": "残高不足の警告",
+  "cashFlowBreachSingle": "{period}に残高が{threshold}を下回る見込みです（不足額 {shortfall}）。",
+  "@cashFlowBreachSingle": {
+    "placeholders": {
+      "threshold": {
+        "type": "String"
+      },
+      "period": {
+        "type": "String"
+      },
+      "shortfall": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowBreachMultiple": "{count}期間で最低残高を下回る見込みです。最悪は{period}、不足額 {shortfall}。",
+  "@cashFlowBreachMultiple": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "period": {
+        "type": "String"
+      },
+      "shortfall": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowMinimum": "最低",
+  "cashFlowOpeningBalance": "期首残高",
+  "cashFlowProjectedEnd": "予測期末残高",
+  "cashFlowProjectedEndSubtitle": "{days}日後",
+  "@cashFlowProjectedEndSubtitle": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowCommittedOut": "確定支出",
+  "cashFlowCommittedSubtitle": "確定済みの支払い",
+  "cashFlowPendingOut": "保留中支出",
+  "cashFlowPendingSubtitle": "処理中のパイプライン",
+  "cashFlowOpeningSourceProvider": "銀行から同期",
+  "cashFlowOpeningSourceSettings": "保存済み残高",
+  "cashFlowOpeningSourceQuery": "手動",
+  "cashFlowOpeningSourceUnset": "残高を設定",
+  "cashFlowProjectedOutflows": "予測支出",
+  "cashFlowNoOutflows": "この期間に予測される支出はありません。",
+  "cashFlowInvoiceCount": "{count, plural, other {請求書{count}件}}",
+  "@cashFlowInvoiceCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowCommittedAmount": "確定 {amount}",
+  "@cashFlowCommittedAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowPendingAmount": "保留中 {amount}",
+  "@cashFlowPendingAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowPosition": "資金ポジション",
+  "cashFlowNoPosition": "この期間の資金ポジション予測はありません。",
+  "cashFlowOutAmount": "支出 {amount}",
+  "@cashFlowOutAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowForecastRowLabel": "{period}：予定 {scheduled}、確定 {committed}、保留中 {pending}、請求書{count}件",
+  "@cashFlowForecastRowLabel": {
+    "placeholders": {
+      "period": {
+        "type": "String"
+      },
+      "scheduled": {
+        "type": "String"
+      },
+      "committed": {
+        "type": "String"
+      },
+      "pending": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "cashFlowPositionRowLabel": "{period}：期首 {opening}、支出 {outflow}、期末 {closing}",
+  "@cashFlowPositionRowLabel": {
+    "placeholders": {
+      "period": {
+        "type": "String"
+      },
+      "opening": {
+        "type": "String"
+      },
+      "outflow": {
+        "type": "String"
+      },
+      "closing": {
+        "type": "String"
+      }
+    }
+  },
+  "cashFlowBelowThresholdSuffix": "、しきい値未満",
+  "cashFlowLowBalanceAlertLabel": "残高不足の警告。{message}",
+  "@cashFlowLowBalanceAlertLabel": {
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+  "contractsTitle": "契約",
+  "contractsSearchHint": "契約を検索...",
+  "contractsEmpty": "契約が見つかりません",
+  "contractsFilterDraft": "下書き",
+  "contractsFilterActive": "有効",
+  "contractsFilterExpired": "期限切れ",
+  "contractsFilterTerminated": "解約済み",
+  "contractsFilterCancelled": "キャンセル済み",
+  "contractDetailTitle": "契約の詳細",
+  "contractDetailErrorPrefix": "エラー: {error}",
+  "@contractDetailErrorPrefix": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailUntitled": "無題の契約",
+  "contractDetailFieldContractNumber": "契約番号",
+  "contractDetailFieldVendor": "ベンダー",
+  "contractDetailFieldType": "種類",
+  "contractDetailFieldCurrency": "通貨",
+  "contractDetailFieldSpendLimit": "支出上限",
+  "contractDetailNotToExceed": "（上限額）",
+  "contractDetailFieldStartDate": "開始日",
+  "contractDetailFieldEndDate": "終了日",
+  "contractDetailFieldSigned": "署名日",
+  "contractDetailFieldAutoRenew": "自動更新",
+  "contractDetailYes": "はい",
+  "contractDetailNo": "いいえ",
+  "contractDetailFieldRenewalTerm": "更新期間",
+  "contractDetailRenewalTermMonths": "{months}か月",
+  "@contractDetailRenewalTermMonths": {
+    "placeholders": {
+      "months": {
+        "type": "int"
+      }
+    }
+  },
+  "contractDetailFieldRenewalNotice": "更新通知",
+  "contractDetailRenewalNoticeDays": "{days}日",
+  "@contractDetailRenewalNoticeDays": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "contractDetailFieldPaymentTerms": "支払条件",
+  "contractDetailFieldDescription": "説明",
+  "contractDetailFieldCreated": "作成日",
+  "contractDetailSectionSpend": "支出",
+  "contractDetailSectionLineItems": "明細",
+  "contractDetailSpendInvoiced": "請求済み",
+  "contractDetailSpendInvoiceCount": "{count, plural, other {請求書{count}件}}",
+  "@contractDetailSpendInvoiceCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "contractDetailSpendOverLimit": "上限超過",
+  "contractDetailSpendRemaining": "残り",
+  "contractDetailSpendOfLimit": "上限 {limit} のうち",
+  "@contractDetailSpendOfLimit": {
+    "placeholders": {
+      "limit": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailSpendNoLimit": "上限なし",
+  "contractDetailLineItemFallback": "明細項目",
+  "contractDetailLineQty": "数量 {quantity}",
+  "@contractDetailLineQty": {
+    "placeholders": {
+      "quantity": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailLineUnitPrice": "@ {price}",
+  "@contractDetailLineUnitPrice": {
+    "placeholders": {
+      "price": {
+        "type": "String"
+      }
+    }
+  },
+  "contractDetailLineGl": "勘定科目 {account}",
+  "@contractDetailLineGl": {
+    "placeholders": {
+      "account": {
+        "type": "String"
+      }
+    }
+  },
+  "contractActivate": "有効化",
+  "contractActivated": "契約を有効化しました",
+  "contractActivateFailed": "契約を有効化できませんでした。もう一度お試しください",
+  "contractTerminate": "解約",
+  "contractTerminateTitle": "契約の解約",
+  "contractTerminateBody": "契約を早期に終了します。この操作は取り消せません。続行しますか？",
+  "contractTerminated": "契約を解約しました",
+  "contractTerminateFailed": "契約を解約できませんでした。もう一度お試しください",
+  "exceptionDetailTitle": "例外",
+  "exceptionDetailNotFound": "例外が見つかりません",
+  "exceptionDetailOverdue": "期限超過",
+  "exceptionDetailSectionDescription": "説明",
+  "exceptionDetailSectionInvoice": "請求書",
+  "exceptionDetailNoLinkedInvoice": "関連する請求書はありません",
+  "exceptionDetailFieldNumber": "番号",
+  "exceptionDetailFieldVendor": "ベンダー",
+  "exceptionDetailFieldAmount": "金額",
+  "exceptionDetailFieldSeverity": "深刻度",
+  "exceptionDetailSectionSla": "SLA",
+  "exceptionDetailFieldCreated": "作成日",
+  "exceptionDetailFieldDue": "期限",
+  "exceptionDetailNoSla": "SLAが設定されていません",
+  "exceptionDetailFieldStatus": "ステータス",
+  "exceptionDetailOnTrack": "順調",
+  "exceptionDetailResolvedIn": "解決までの時間",
+  "exceptionDetailResolvedInHours": "{hours} 時間",
+  "@exceptionDetailResolvedInHours": {
+    "placeholders": {
+      "hours": {
+        "type": "String"
+      }
+    }
+  },
+  "exceptionDetailSectionAssignee": "担当者",
+  "exceptionDetailUnassigned": "未割り当て",
+  "exceptionDetailAssign": "割り当て",
+  "exceptionDetailReassign": "再割り当て",
+  "exceptionDetailSectionResolution": "解決",
+  "exceptionDetailResolutionNote": "メモ",
+  "exceptionDetailResolutionBy": "対応者",
+  "exceptionDetailResolutionAt": "対応日時",
+  "exceptionDetailActionResolved": "例外を解決しました",
+  "exceptionDetailActionEscalated": "例外をエスカレーションしました",
+  "exceptionDetailActionDismissed": "例外を却下しました",
+  "exceptionDetailActionResolveFailed": "例外を解決できませんでした",
+  "exceptionDetailActionEscalateFailed": "例外をエスカレーションできませんでした",
+  "exceptionDetailActionDismissFailed": "例外を却下できませんでした",
+  "exceptionDetailAssignTo": "割り当て先",
+  "exceptionDetailUnassign": "割り当て解除",
+  "exceptionDetailLoadUsersFailed": "ユーザーを読み込めませんでした: {error}",
+  "@exceptionDetailLoadUsersFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "exceptionDetailAssigneeUpdateFailed": "担当者を更新できませんでした",
+  "exceptionDetailUnassigned2": "例外の割り当てを解除しました",
+  "exceptionDetailAssignedTo": "{name}に割り当てました",
+  "@exceptionDetailAssignedTo": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  }
 }

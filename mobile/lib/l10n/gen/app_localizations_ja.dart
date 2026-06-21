@@ -1211,4 +1211,429 @@ class AppLocalizationsJa extends AppLocalizations {
   String workflowDetailConditionSummary(String field) {
     return '$field で';
   }
+
+  @override
+  String get cashFlowTitle => 'キャッシュフロー予測';
+
+  @override
+  String cashFlowErrorPrefix(String error) {
+    return 'エラー: $error';
+  }
+
+  @override
+  String cashFlowHorizonDays(int days) {
+    return '$days日間';
+  }
+
+  @override
+  String get cashFlowLowBalanceAlert => '残高不足の警告';
+
+  @override
+  String cashFlowBreachSingle(
+    String threshold,
+    String period,
+    String shortfall,
+  ) {
+    return '$periodに残高が$thresholdを下回る見込みです（不足額 $shortfall）。';
+  }
+
+  @override
+  String cashFlowBreachMultiple(int count, String period, String shortfall) {
+    return '$count期間で最低残高を下回る見込みです。最悪は$period、不足額 $shortfall。';
+  }
+
+  @override
+  String get cashFlowMinimum => '最低';
+
+  @override
+  String get cashFlowOpeningBalance => '期首残高';
+
+  @override
+  String get cashFlowProjectedEnd => '予測期末残高';
+
+  @override
+  String cashFlowProjectedEndSubtitle(int days) {
+    return '$days日後';
+  }
+
+  @override
+  String get cashFlowCommittedOut => '確定支出';
+
+  @override
+  String get cashFlowCommittedSubtitle => '確定済みの支払い';
+
+  @override
+  String get cashFlowPendingOut => '保留中支出';
+
+  @override
+  String get cashFlowPendingSubtitle => '処理中のパイプライン';
+
+  @override
+  String get cashFlowOpeningSourceProvider => '銀行から同期';
+
+  @override
+  String get cashFlowOpeningSourceSettings => '保存済み残高';
+
+  @override
+  String get cashFlowOpeningSourceQuery => '手動';
+
+  @override
+  String get cashFlowOpeningSourceUnset => '残高を設定';
+
+  @override
+  String get cashFlowProjectedOutflows => '予測支出';
+
+  @override
+  String get cashFlowNoOutflows => 'この期間に予測される支出はありません。';
+
+  @override
+  String cashFlowInvoiceCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '請求書$count件',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String cashFlowCommittedAmount(String amount) {
+    return '確定 $amount';
+  }
+
+  @override
+  String cashFlowPendingAmount(String amount) {
+    return '保留中 $amount';
+  }
+
+  @override
+  String get cashFlowPosition => '資金ポジション';
+
+  @override
+  String get cashFlowNoPosition => 'この期間の資金ポジション予測はありません。';
+
+  @override
+  String cashFlowOutAmount(String amount) {
+    return '支出 $amount';
+  }
+
+  @override
+  String cashFlowForecastRowLabel(
+    String period,
+    String scheduled,
+    String committed,
+    String pending,
+    int count,
+  ) {
+    return '$period：予定 $scheduled、確定 $committed、保留中 $pending、請求書$count件';
+  }
+
+  @override
+  String cashFlowPositionRowLabel(
+    String period,
+    String opening,
+    String outflow,
+    String closing,
+  ) {
+    return '$period：期首 $opening、支出 $outflow、期末 $closing';
+  }
+
+  @override
+  String get cashFlowBelowThresholdSuffix => '、しきい値未満';
+
+  @override
+  String cashFlowLowBalanceAlertLabel(String message) {
+    return '残高不足の警告。$message';
+  }
+
+  @override
+  String get contractsTitle => '契約';
+
+  @override
+  String get contractsSearchHint => '契約を検索...';
+
+  @override
+  String get contractsEmpty => '契約が見つかりません';
+
+  @override
+  String get contractsFilterDraft => '下書き';
+
+  @override
+  String get contractsFilterActive => '有効';
+
+  @override
+  String get contractsFilterExpired => '期限切れ';
+
+  @override
+  String get contractsFilterTerminated => '解約済み';
+
+  @override
+  String get contractsFilterCancelled => 'キャンセル済み';
+
+  @override
+  String get contractDetailTitle => '契約の詳細';
+
+  @override
+  String contractDetailErrorPrefix(String error) {
+    return 'エラー: $error';
+  }
+
+  @override
+  String get contractDetailUntitled => '無題の契約';
+
+  @override
+  String get contractDetailFieldContractNumber => '契約番号';
+
+  @override
+  String get contractDetailFieldVendor => 'ベンダー';
+
+  @override
+  String get contractDetailFieldType => '種類';
+
+  @override
+  String get contractDetailFieldCurrency => '通貨';
+
+  @override
+  String get contractDetailFieldSpendLimit => '支出上限';
+
+  @override
+  String get contractDetailNotToExceed => '（上限額）';
+
+  @override
+  String get contractDetailFieldStartDate => '開始日';
+
+  @override
+  String get contractDetailFieldEndDate => '終了日';
+
+  @override
+  String get contractDetailFieldSigned => '署名日';
+
+  @override
+  String get contractDetailFieldAutoRenew => '自動更新';
+
+  @override
+  String get contractDetailYes => 'はい';
+
+  @override
+  String get contractDetailNo => 'いいえ';
+
+  @override
+  String get contractDetailFieldRenewalTerm => '更新期間';
+
+  @override
+  String contractDetailRenewalTermMonths(int months) {
+    return '$monthsか月';
+  }
+
+  @override
+  String get contractDetailFieldRenewalNotice => '更新通知';
+
+  @override
+  String contractDetailRenewalNoticeDays(int days) {
+    return '$days日';
+  }
+
+  @override
+  String get contractDetailFieldPaymentTerms => '支払条件';
+
+  @override
+  String get contractDetailFieldDescription => '説明';
+
+  @override
+  String get contractDetailFieldCreated => '作成日';
+
+  @override
+  String get contractDetailSectionSpend => '支出';
+
+  @override
+  String get contractDetailSectionLineItems => '明細';
+
+  @override
+  String get contractDetailSpendInvoiced => '請求済み';
+
+  @override
+  String contractDetailSpendInvoiceCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '請求書$count件',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get contractDetailSpendOverLimit => '上限超過';
+
+  @override
+  String get contractDetailSpendRemaining => '残り';
+
+  @override
+  String contractDetailSpendOfLimit(String limit) {
+    return '上限 $limit のうち';
+  }
+
+  @override
+  String get contractDetailSpendNoLimit => '上限なし';
+
+  @override
+  String get contractDetailLineItemFallback => '明細項目';
+
+  @override
+  String contractDetailLineQty(String quantity) {
+    return '数量 $quantity';
+  }
+
+  @override
+  String contractDetailLineUnitPrice(String price) {
+    return '@ $price';
+  }
+
+  @override
+  String contractDetailLineGl(String account) {
+    return '勘定科目 $account';
+  }
+
+  @override
+  String get contractActivate => '有効化';
+
+  @override
+  String get contractActivated => '契約を有効化しました';
+
+  @override
+  String get contractActivateFailed => '契約を有効化できませんでした。もう一度お試しください';
+
+  @override
+  String get contractTerminate => '解約';
+
+  @override
+  String get contractTerminateTitle => '契約の解約';
+
+  @override
+  String get contractTerminateBody => '契約を早期に終了します。この操作は取り消せません。続行しますか？';
+
+  @override
+  String get contractTerminated => '契約を解約しました';
+
+  @override
+  String get contractTerminateFailed => '契約を解約できませんでした。もう一度お試しください';
+
+  @override
+  String get exceptionDetailTitle => '例外';
+
+  @override
+  String get exceptionDetailNotFound => '例外が見つかりません';
+
+  @override
+  String get exceptionDetailOverdue => '期限超過';
+
+  @override
+  String get exceptionDetailSectionDescription => '説明';
+
+  @override
+  String get exceptionDetailSectionInvoice => '請求書';
+
+  @override
+  String get exceptionDetailNoLinkedInvoice => '関連する請求書はありません';
+
+  @override
+  String get exceptionDetailFieldNumber => '番号';
+
+  @override
+  String get exceptionDetailFieldVendor => 'ベンダー';
+
+  @override
+  String get exceptionDetailFieldAmount => '金額';
+
+  @override
+  String get exceptionDetailFieldSeverity => '深刻度';
+
+  @override
+  String get exceptionDetailSectionSla => 'SLA';
+
+  @override
+  String get exceptionDetailFieldCreated => '作成日';
+
+  @override
+  String get exceptionDetailFieldDue => '期限';
+
+  @override
+  String get exceptionDetailNoSla => 'SLAが設定されていません';
+
+  @override
+  String get exceptionDetailFieldStatus => 'ステータス';
+
+  @override
+  String get exceptionDetailOnTrack => '順調';
+
+  @override
+  String get exceptionDetailResolvedIn => '解決までの時間';
+
+  @override
+  String exceptionDetailResolvedInHours(String hours) {
+    return '$hours 時間';
+  }
+
+  @override
+  String get exceptionDetailSectionAssignee => '担当者';
+
+  @override
+  String get exceptionDetailUnassigned => '未割り当て';
+
+  @override
+  String get exceptionDetailAssign => '割り当て';
+
+  @override
+  String get exceptionDetailReassign => '再割り当て';
+
+  @override
+  String get exceptionDetailSectionResolution => '解決';
+
+  @override
+  String get exceptionDetailResolutionNote => 'メモ';
+
+  @override
+  String get exceptionDetailResolutionBy => '対応者';
+
+  @override
+  String get exceptionDetailResolutionAt => '対応日時';
+
+  @override
+  String get exceptionDetailActionResolved => '例外を解決しました';
+
+  @override
+  String get exceptionDetailActionEscalated => '例外をエスカレーションしました';
+
+  @override
+  String get exceptionDetailActionDismissed => '例外を却下しました';
+
+  @override
+  String get exceptionDetailActionResolveFailed => '例外を解決できませんでした';
+
+  @override
+  String get exceptionDetailActionEscalateFailed => '例外をエスカレーションできませんでした';
+
+  @override
+  String get exceptionDetailActionDismissFailed => '例外を却下できませんでした';
+
+  @override
+  String get exceptionDetailAssignTo => '割り当て先';
+
+  @override
+  String get exceptionDetailUnassign => '割り当て解除';
+
+  @override
+  String exceptionDetailLoadUsersFailed(String error) {
+    return 'ユーザーを読み込めませんでした: $error';
+  }
+
+  @override
+  String get exceptionDetailAssigneeUpdateFailed => '担当者を更新できませんでした';
+
+  @override
+  String get exceptionDetailUnassigned2 => '例外の割り当てを解除しました';
+
+  @override
+  String exceptionDetailAssignedTo(String name) {
+    return '$nameに割り当てました';
+  }
 }
