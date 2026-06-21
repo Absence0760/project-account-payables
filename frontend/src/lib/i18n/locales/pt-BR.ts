@@ -1403,4 +1403,41 @@ export const messages = {
 	'auth.signup.submitting': 'Enviando verificação…',
 	'auth.signup.footerPre': 'Já tem um espaço de trabalho? Acesse ',
 	'auth.signup.footerPost': ' para entrar.',
+
+	// Auth — change password (routes/change-password/+page.svelte)
+	'auth.changePassword.pageTitle': 'Alterar senha — Better AP',
+	'auth.changePassword.heading': 'Defina uma nova senha',
+	'auth.changePassword.subForced': 'Você entrou com uma senha temporária. Escolha uma nova para continuar.',
+	'auth.changePassword.subVoluntary': 'Atualize sua senha.',
+	'auth.changePassword.mismatch': 'As senhas não coincidem.',
+	'auth.changePassword.tooWeak': 'A senha não atende aos requisitos de complexidade.',
+	'auth.changePassword.failed': 'Falha ao alterar a senha.',
+	'auth.changePassword.currentPassword': 'Senha atual',
+	'auth.changePassword.newPassword': 'Nova senha',
+	'auth.changePassword.confirmPassword': 'Confirmar nova senha',
+	'auth.changePassword.strength.length': 'pelo menos 12 caracteres',
+	'auth.changePassword.strength.upper': 'uma letra maiúscula',
+	'auth.changePassword.strength.lower': 'uma letra minúscula',
+	'auth.changePassword.strength.digit': 'um dígito',
+	'auth.changePassword.submit': 'Alterar senha',
+	'auth.changePassword.submitting': 'Salvando…',
+	'auth.changePassword.signOut': 'Sair',
+
+	// Auth — verify / provisioning (routes/verify/+page.svelte)
+	'auth.verify.pageTitle': 'Verificando — Better AP',
+	'auth.verify.noToken': 'Nenhum token de verificação na URL.',
+	'auth.verify.failed': 'Falha na verificação.',
+	'auth.verify.pendingHeading': 'Criando seu espaço de trabalho…',
+	'auth.verify.pendingSub':
+		'Isso geralmente leva alguns segundos — estamos provisionando seu banco de dados e enviando suas credenciais.',
+	'auth.verify.successHeading': 'Seu espaço de trabalho está pronto',
+	'auth.verify.successSubPre': 'Enviamos seu link de acesso e uma senha temporária para ',
+	'auth.verify.successSubPost':
+		'. Use essa senha para entrar pela primeira vez — você definirá a sua logo em seguida.',
+	'auth.verify.step1': 'Abra o e-mail de boas-vindas e copie a senha temporária.',
+	'auth.verify.step2': 'Entre no seu espaço de trabalho abaixo.',
+	'auth.verify.step3': 'Escolha uma nova senha — e pronto, você está dentro.',
+	'auth.verify.continueTo': 'Continuar para {slug} →',
+	'auth.verify.errorHeading': 'Algo deu errado',
+	'auth.verify.startOver': 'Começar de novo',
 } satisfies Messages;

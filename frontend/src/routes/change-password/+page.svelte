@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
+	import { m } from '$lib/i18n/store.svelte';
 
 	interface UserResponse {
 		id: string;
@@ -19,10 +20,10 @@
 
 	let strengthHints = $derived.by(() => {
 		const hints: Array<{ label: string; ok: boolean }> = [];
-		hints.push({ label: 'at least 12 characters', ok: newPassword.length >= 12 });
-		hints.push({ label: 'an uppercase letter', ok: /[A-Z]/.test(newPassword) });
-		hints.push({ label: 'a lowercase letter', ok: /[a-z]/.test(newPassword) });
-		hints.push({ label: 'a digit', ok: /[0-9]/.test(newPassword) });
+		hints.push({ label: m('auth.changePassword.strength.length'), ok: newPassword.length >= 12 });
+		hints.push({ label: m('auth.changePassword.strength.upper'), ok: /[A-Z]/.test(newPassword) });
+		hints.push({ label: m('auth.changePassword.strength.lower'), ok: /[a-z]/.test(newPassword) });
+		hints.push({ label: m('auth.changePassword.strength.digit'), ok: /[0-9]/.test(newPassword) });
 		return hints;
 	});
 
@@ -32,11 +33,11 @@
 		e.preventDefault();
 		error = '';
 		if (newPassword !== confirmPassword) {
-			error = 'Passwords do not match.';
+			error = m('auth.changePassword.mismatch');
 			return;
 		}
 		if (!allStrong) {
-			error = 'Password does not meet the complexity requirements.';
+			error = m('auth.changePassword.tooWeak');
 			return;
 		}
 		submitting = true;
@@ -48,7 +49,7 @@
 			await auth.fetchUser();
 			goto('/');
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Password change failed.';
+			error = err instanceof Error ? err.message : m('auth.changePassword.failed');
 		} finally {
 			submitting = false;
 		}
@@ -60,17 +61,17 @@
 </script>
 
 <svelte:head>
-	<title>Change password — Better AP</title>
+	<title>{m('auth.changePassword.pageTitle')}</title>
 </svelte:head>
 
 <div class="page">
 	<form class="card" onsubmit={onSubmit}>
-		<h1>Set a new password</h1>
+		<h1>{m('auth.changePassword.heading')}</h1>
 		<p class="sub">
 			{#if auth.user?.must_change_password}
-				You signed in with a temporary password. Choose a new one to continue.
+				{m('auth.changePassword.subForced')}
 			{:else}
-				Update your password.
+				{m('auth.changePassword.subVoluntary')}
 			{/if}
 		</p>
 
@@ -81,7 +82,7 @@
 		</div>
 
 		<label>
-			<span>Current password</span>
+			<span>{m('auth.changePassword.currentPassword')}</span>
 			<input
 				type="password"
 				bind:value={currentPassword}
@@ -91,7 +92,7 @@
 		</label>
 
 		<label>
-			<span>New password</span>
+			<span>{m('auth.changePassword.newPassword')}</span>
 			<input
 				type="password"
 				bind:value={newPassword}
@@ -108,7 +109,7 @@
 		</ul>
 
 		<label>
-			<span>Confirm new password</span>
+			<span>{m('auth.changePassword.confirmPassword')}</span>
 			<input
 				type="password"
 				bind:value={confirmPassword}
@@ -119,10 +120,10 @@
 		</label>
 
 		<button type="submit" disabled={submitting || !allStrong || newPassword !== confirmPassword}>
-			{submitting ? 'Saving…' : 'Change password'}
+			{submitting ? m('auth.changePassword.submitting') : m('auth.changePassword.submit')}
 		</button>
 
-		<button type="button" class="secondary" onclick={onLogout}>Sign out</button>
+		<button type="button" class="secondary" onclick={onLogout}>{m('auth.changePassword.signOut')}</button>
 	</form>
 </div>
 

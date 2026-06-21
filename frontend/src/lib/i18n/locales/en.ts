@@ -1430,4 +1430,41 @@ export const en = {
 	'auth.signup.submitting': 'Sending verification…',
 	'auth.signup.footerPre': 'Already have a workspace? Visit ',
 	'auth.signup.footerPost': ' to sign in.',
+
+	// Auth — change password (routes/change-password/+page.svelte)
+	'auth.changePassword.pageTitle': 'Change password — Better AP',
+	'auth.changePassword.heading': 'Set a new password',
+	'auth.changePassword.subForced': 'You signed in with a temporary password. Choose a new one to continue.',
+	'auth.changePassword.subVoluntary': 'Update your password.',
+	'auth.changePassword.mismatch': 'Passwords do not match.',
+	'auth.changePassword.tooWeak': 'Password does not meet the complexity requirements.',
+	'auth.changePassword.failed': 'Password change failed.',
+	'auth.changePassword.currentPassword': 'Current password',
+	'auth.changePassword.newPassword': 'New password',
+	'auth.changePassword.confirmPassword': 'Confirm new password',
+	'auth.changePassword.strength.length': 'at least 12 characters',
+	'auth.changePassword.strength.upper': 'an uppercase letter',
+	'auth.changePassword.strength.lower': 'a lowercase letter',
+	'auth.changePassword.strength.digit': 'a digit',
+	'auth.changePassword.submit': 'Change password',
+	'auth.changePassword.submitting': 'Saving…',
+	'auth.changePassword.signOut': 'Sign out',
+
+	// Auth — verify / provisioning (routes/verify/+page.svelte)
+	'auth.verify.pageTitle': 'Verifying — Better AP',
+	'auth.verify.noToken': 'No verification token in the URL.',
+	'auth.verify.failed': 'Verification failed.',
+	'auth.verify.pendingHeading': 'Creating your workspace…',
+	'auth.verify.pendingSub':
+		"This usually takes a few seconds — we're provisioning your database and sending your credentials.",
+	'auth.verify.successHeading': 'Your workspace is ready',
+	'auth.verify.successSubPre': 'We emailed your sign-in link and a temporary password to ',
+	'auth.verify.successSubPost':
+		". Use that password to sign in for the first time — you'll set your own right after.",
+	'auth.verify.step1': 'Open the welcome email and copy the temporary password.',
+	'auth.verify.step2': 'Sign in at your workspace below.',
+	'auth.verify.step3': "Choose a new password — then you're in.",
+	'auth.verify.continueTo': 'Continue to {slug} →',
+	'auth.verify.errorHeading': 'Something went wrong',
+	'auth.verify.startOver': 'Start over',
 } satisfies Record<string, string>;

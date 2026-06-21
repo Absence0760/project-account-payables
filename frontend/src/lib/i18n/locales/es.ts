@@ -1403,4 +1403,41 @@ export const messages = {
 	'auth.signup.submitting': 'Enviando verificación…',
 	'auth.signup.footerPre': '¿Ya tienes un espacio de trabajo? Visita ',
 	'auth.signup.footerPost': ' para iniciar sesión.',
+
+	// Auth — change password (routes/change-password/+page.svelte)
+	'auth.changePassword.pageTitle': 'Cambiar contraseña — Better AP',
+	'auth.changePassword.heading': 'Establece una nueva contraseña',
+	'auth.changePassword.subForced': 'Iniciaste sesión con una contraseña temporal. Elige una nueva para continuar.',
+	'auth.changePassword.subVoluntary': 'Actualiza tu contraseña.',
+	'auth.changePassword.mismatch': 'Las contraseñas no coinciden.',
+	'auth.changePassword.tooWeak': 'La contraseña no cumple los requisitos de complejidad.',
+	'auth.changePassword.failed': 'No se pudo cambiar la contraseña.',
+	'auth.changePassword.currentPassword': 'Contraseña actual',
+	'auth.changePassword.newPassword': 'Nueva contraseña',
+	'auth.changePassword.confirmPassword': 'Confirmar nueva contraseña',
+	'auth.changePassword.strength.length': 'al menos 12 caracteres',
+	'auth.changePassword.strength.upper': 'una letra mayúscula',
+	'auth.changePassword.strength.lower': 'una letra minúscula',
+	'auth.changePassword.strength.digit': 'un dígito',
+	'auth.changePassword.submit': 'Cambiar contraseña',
+	'auth.changePassword.submitting': 'Guardando…',
+	'auth.changePassword.signOut': 'Cerrar sesión',
+
+	// Auth — verify / provisioning (routes/verify/+page.svelte)
+	'auth.verify.pageTitle': 'Verificando — Better AP',
+	'auth.verify.noToken': 'No hay token de verificación en la URL.',
+	'auth.verify.failed': 'Error en la verificación.',
+	'auth.verify.pendingHeading': 'Creando tu espacio de trabajo…',
+	'auth.verify.pendingSub':
+		'Esto suele tardar unos segundos: estamos aprovisionando tu base de datos y enviando tus credenciales.',
+	'auth.verify.successHeading': 'Tu espacio de trabajo está listo',
+	'auth.verify.successSubPre': 'Enviamos tu enlace de acceso y una contraseña temporal a ',
+	'auth.verify.successSubPost':
+		'. Usa esa contraseña para iniciar sesión la primera vez: establecerás la tuya justo después.',
+	'auth.verify.step1': 'Abre el correo de bienvenida y copia la contraseña temporal.',
+	'auth.verify.step2': 'Inicia sesión en tu espacio de trabajo abajo.',
+	'auth.verify.step3': 'Elige una nueva contraseña y ya estás dentro.',
+	'auth.verify.continueTo': 'Continuar a {slug} →',
+	'auth.verify.errorHeading': 'Algo salió mal',
+	'auth.verify.startOver': 'Empezar de nuevo',
 } satisfies Messages;

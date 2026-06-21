@@ -1373,4 +1373,41 @@ export const messages = {
 	'auth.signup.submitting': 'Bestätigung wird gesendet…',
 	'auth.signup.footerPre': 'Haben Sie bereits einen Arbeitsbereich? Besuchen Sie ',
 	'auth.signup.footerPost': ', um sich anzumelden.',
+
+	// Auth — change password (routes/change-password/+page.svelte)
+	'auth.changePassword.pageTitle': 'Passwort ändern — Better AP',
+	'auth.changePassword.heading': 'Neues Passwort festlegen',
+	'auth.changePassword.subForced': 'Sie haben sich mit einem temporären Passwort angemeldet. Wählen Sie ein neues, um fortzufahren.',
+	'auth.changePassword.subVoluntary': 'Aktualisieren Sie Ihr Passwort.',
+	'auth.changePassword.mismatch': 'Die Passwörter stimmen nicht überein.',
+	'auth.changePassword.tooWeak': 'Das Passwort erfüllt die Komplexitätsanforderungen nicht.',
+	'auth.changePassword.failed': 'Passwortänderung fehlgeschlagen.',
+	'auth.changePassword.currentPassword': 'Aktuelles Passwort',
+	'auth.changePassword.newPassword': 'Neues Passwort',
+	'auth.changePassword.confirmPassword': 'Neues Passwort bestätigen',
+	'auth.changePassword.strength.length': 'mindestens 12 Zeichen',
+	'auth.changePassword.strength.upper': 'ein Großbuchstabe',
+	'auth.changePassword.strength.lower': 'ein Kleinbuchstabe',
+	'auth.changePassword.strength.digit': 'eine Ziffer',
+	'auth.changePassword.submit': 'Passwort ändern',
+	'auth.changePassword.submitting': 'Wird gespeichert…',
+	'auth.changePassword.signOut': 'Abmelden',
+
+	// Auth — verify / provisioning (routes/verify/+page.svelte)
+	'auth.verify.pageTitle': 'Wird überprüft — Better AP',
+	'auth.verify.noToken': 'Kein Bestätigungstoken in der URL.',
+	'auth.verify.failed': 'Bestätigung fehlgeschlagen.',
+	'auth.verify.pendingHeading': 'Ihr Arbeitsbereich wird erstellt…',
+	'auth.verify.pendingSub':
+		'Das dauert in der Regel ein paar Sekunden — wir richten Ihre Datenbank ein und senden Ihre Zugangsdaten.',
+	'auth.verify.successHeading': 'Ihr Arbeitsbereich ist bereit',
+	'auth.verify.successSubPre': 'Wir haben Ihren Anmeldelink und ein temporäres Passwort an ',
+	'auth.verify.successSubPost':
+		' gesendet. Melden Sie sich mit diesem Passwort zum ersten Mal an — direkt danach legen Sie Ihr eigenes fest.',
+	'auth.verify.step1': 'Öffnen Sie die Willkommens-E-Mail und kopieren Sie das temporäre Passwort.',
+	'auth.verify.step2': 'Melden Sie sich unten in Ihrem Arbeitsbereich an.',
+	'auth.verify.step3': 'Wählen Sie ein neues Passwort — und schon sind Sie drin.',
+	'auth.verify.continueTo': 'Weiter zu {slug} →',
+	'auth.verify.errorHeading': 'Etwas ist schiefgelaufen',
+	'auth.verify.startOver': 'Von vorne beginnen',
 } satisfies Messages;

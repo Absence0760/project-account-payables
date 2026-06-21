@@ -1395,4 +1395,41 @@ export const messages = {
 	'auth.signup.submitting': '確認メールを送信しています…',
 	'auth.signup.footerPre': 'すでにワークスペースをお持ちですか？',
 	'auth.signup.footerPost': 'にアクセスしてサインインしてください。',
+
+	// Auth — change password (routes/change-password/+page.svelte)
+	'auth.changePassword.pageTitle': 'パスワード変更 — Better AP',
+	'auth.changePassword.heading': '新しいパスワードを設定',
+	'auth.changePassword.subForced': '一時パスワードでサインインしました。続行するには新しいパスワードを選択してください。',
+	'auth.changePassword.subVoluntary': 'パスワードを更新します。',
+	'auth.changePassword.mismatch': 'パスワードが一致しません。',
+	'auth.changePassword.tooWeak': 'パスワードが複雑さの要件を満たしていません。',
+	'auth.changePassword.failed': 'パスワードの変更に失敗しました。',
+	'auth.changePassword.currentPassword': '現在のパスワード',
+	'auth.changePassword.newPassword': '新しいパスワード',
+	'auth.changePassword.confirmPassword': '新しいパスワードの確認',
+	'auth.changePassword.strength.length': '12文字以上',
+	'auth.changePassword.strength.upper': '大文字を1つ',
+	'auth.changePassword.strength.lower': '小文字を1つ',
+	'auth.changePassword.strength.digit': '数字を1つ',
+	'auth.changePassword.submit': 'パスワードを変更',
+	'auth.changePassword.submitting': '保存しています…',
+	'auth.changePassword.signOut': 'サインアウト',
+
+	// Auth — verify / provisioning (routes/verify/+page.svelte)
+	'auth.verify.pageTitle': '確認中 — Better AP',
+	'auth.verify.noToken': 'URLに確認トークンがありません。',
+	'auth.verify.failed': '確認に失敗しました。',
+	'auth.verify.pendingHeading': 'ワークスペースを作成しています…',
+	'auth.verify.pendingSub':
+		'通常は数秒かかります。データベースをプロビジョニングし、認証情報を送信しています。',
+	'auth.verify.successHeading': 'ワークスペースの準備ができました',
+	'auth.verify.successSubPre': 'サインインリンクと一時パスワードを ',
+	'auth.verify.successSubPost':
+		' に送信しました。そのパスワードで初回サインインし、その直後にご自身のパスワードを設定してください。',
+	'auth.verify.step1': 'ようこそメールを開いて一時パスワードをコピーしてください。',
+	'auth.verify.step2': '下のワークスペースでサインインしてください。',
+	'auth.verify.step3': '新しいパスワードを選択すれば完了です。',
+	'auth.verify.continueTo': '{slug} へ進む →',
+	'auth.verify.errorHeading': '問題が発生しました',
+	'auth.verify.startOver': '最初からやり直す',
 } satisfies Messages;

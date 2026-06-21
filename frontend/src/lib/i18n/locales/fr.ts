@@ -1372,4 +1372,41 @@ export const messages = {
 	'auth.signup.submitting': 'Envoi de la vérification…',
 	'auth.signup.footerPre': 'Vous avez déjà un espace de travail ? Rendez-vous sur ',
 	'auth.signup.footerPost': ' pour vous connecter.',
+
+	// Auth — change password (routes/change-password/+page.svelte)
+	'auth.changePassword.pageTitle': 'Changer le mot de passe — Better AP',
+	'auth.changePassword.heading': 'Définir un nouveau mot de passe',
+	'auth.changePassword.subForced': 'Vous vous êtes connecté avec un mot de passe temporaire. Choisissez-en un nouveau pour continuer.',
+	'auth.changePassword.subVoluntary': 'Mettez à jour votre mot de passe.',
+	'auth.changePassword.mismatch': 'Les mots de passe ne correspondent pas.',
+	'auth.changePassword.tooWeak': 'Le mot de passe ne respecte pas les exigences de complexité.',
+	'auth.changePassword.failed': 'Échec du changement de mot de passe.',
+	'auth.changePassword.currentPassword': 'Mot de passe actuel',
+	'auth.changePassword.newPassword': 'Nouveau mot de passe',
+	'auth.changePassword.confirmPassword': 'Confirmer le nouveau mot de passe',
+	'auth.changePassword.strength.length': 'au moins 12 caractères',
+	'auth.changePassword.strength.upper': 'une lettre majuscule',
+	'auth.changePassword.strength.lower': 'une lettre minuscule',
+	'auth.changePassword.strength.digit': 'un chiffre',
+	'auth.changePassword.submit': 'Changer le mot de passe',
+	'auth.changePassword.submitting': 'Enregistrement…',
+	'auth.changePassword.signOut': 'Se déconnecter',
+
+	// Auth — verify / provisioning (routes/verify/+page.svelte)
+	'auth.verify.pageTitle': 'Vérification — Better AP',
+	'auth.verify.noToken': 'Aucun jeton de vérification dans l\'URL.',
+	'auth.verify.failed': 'Échec de la vérification.',
+	'auth.verify.pendingHeading': 'Création de votre espace de travail…',
+	'auth.verify.pendingSub':
+		'Cela prend généralement quelques secondes — nous provisionnons votre base de données et envoyons vos identifiants.',
+	'auth.verify.successHeading': 'Votre espace de travail est prêt',
+	'auth.verify.successSubPre': 'Nous avons envoyé votre lien de connexion et un mot de passe temporaire à ',
+	'auth.verify.successSubPost':
+		'. Utilisez ce mot de passe pour vous connecter la première fois — vous définirez le vôtre juste après.',
+	'auth.verify.step1': 'Ouvrez l\'e-mail de bienvenue et copiez le mot de passe temporaire.',
+	'auth.verify.step2': 'Connectez-vous à votre espace de travail ci-dessous.',
+	'auth.verify.step3': 'Choisissez un nouveau mot de passe — et vous y êtes.',
+	'auth.verify.continueTo': 'Continuer vers {slug} →',
+	'auth.verify.errorHeading': 'Une erreur s\'est produite',
+	'auth.verify.startOver': 'Recommencer',
 } satisfies Messages;
