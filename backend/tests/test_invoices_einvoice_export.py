@@ -15,7 +15,7 @@ from decimal import Decimal
 from app.models.entity import Entity
 from app.models.invoice import Invoice, InvoiceLineItem, InvoiceStatus
 from app.models.organization import Organization
-from app.services.e_invoice import parse_ubl
+from app.services.e_invoice import parse_cii, parse_ubl
 
 
 async def _add_invoice(mk, org_id, *, number="INV-XP-1") -> str:
@@ -107,8 +107,51 @@ async def test_export_bad_format_400(realdb):
     inv_id = await _add_invoice(mk, org_id, number="INV-FMT")
 
     async with realdb.client(key="a", role="ap_manager") as c:
-        resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=cii")
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=bogus")
     assert resp.status_code == 400
+
+
+async def test_export_cii_happy_path(realdb):
+    """`?format=cii` returns the built-in UN/CEFACT CII dialect (not UBL, not a
+    national format). The body is real, parseable CII whose seller is the
+    vendor, and the filename is format-tagged so it doesn't collide with UBL."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_invoice(mk, org_id, number="INV-CII-1")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=cii")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/xml")
+    assert "cii" in resp.headers["content-disposition"]
+    doc = parse_cii(resp.content)
+    assert doc.invoice_number == "INV-CII-1"
+    assert doc.seller.name == "Vendor SARL"
+    assert doc.seller.tax_id == "FR40123456789"
+
+
+async def test_export_cii_tax_invalid_422_pii_free(realdb):
+    """The CII path shares the same outbound tax guard as UBL: a buyer tax id
+    malformed for its country 422s with a PII-free 'field: code' body."""
+    await _set_company(
+        realdb,
+        "a",
+        {"name": "Our Co", "tax_id": "DE12", "country_code": "DE"},  # malformed DE VAT
+    )
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    inv_id = await _add_invoice(mk, org_id, number="INV-CII-422")
+
+    try:
+        async with realdb.client(key="a", role="ap_manager") as c:
+            resp = await c.get(f"/api/invoices/{inv_id}/einvoice?format=cii")
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert "buyer.tax_id" in detail
+        assert "malformed" in detail
+        assert "DE12" not in detail  # PII-free
+    finally:
+        await _set_company(realdb, "a", {})
 
 
 async def test_export_forbidden_role_403(realdb):

@@ -23,6 +23,7 @@ from app.services.e_invoice.country_formats import (
 from app.services.e_invoice.detect import DetectedFormat, detect_format
 from app.services.e_invoice.facturx import extract_embedded_cii_xml
 from app.services.e_invoice.generate import generate_ubl
+from app.services.e_invoice.generate_cii import generate_cii
 from app.services.e_invoice.mapper import BuyerIdentity, invoice_to_einvoice_document
 from app.services.e_invoice.model import (
     EInvoiceDocument,
@@ -62,6 +63,7 @@ __all__ = [
     "FieldError",
     "parse_e_invoice",
     "generate_ubl",
+    "generate_cii",
     "invoice_to_einvoice_document",
     "BuyerIdentity",
     "validate_tax_document",
