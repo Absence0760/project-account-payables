@@ -28,6 +28,21 @@ export interface LinkCode {
 	expires_in_minutes: number;
 }
 
+/** Inputs to provision a brand-NEW child tenant under the partner (mirrors the
+ *  `create_tenant.py` CLI inputs). The admin password is platform-generated. */
+export interface ProvisionChildRequest {
+	name: string;
+	slug: string;
+	admin_email: string;
+}
+
+/** The newly provisioned child + its one-time first-login credentials.
+ *  `temp_password` is returned EXACTLY once — show it, then drop it. */
+export interface ProvisionedChild extends ChildTenant {
+	admin_email: string;
+	temp_password: string;
+}
+
 /** A child tenant's white-label branding (same shape as the org's own brand). */
 export interface ChildBranding {
 	product_name: string;

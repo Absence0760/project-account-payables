@@ -21,11 +21,13 @@ audit (booleans only, never raw values). Admin-only on every mutation.
 """
 
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -38,9 +40,18 @@ from app.models.user import User
 from app.schemas.organization import BrandConfig
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.partner_link_token import build_link_code, verify_link_code
+from app.services.tenant_provisioning import provision_tenant
 from app.tenant import get_tenant
+from app.utils.passwords import generate_temp_password
+from app.utils.slug import SlugError, ensure_slug_available, validate_slug_format
 
 logger = logging.getLogger(__name__)
+
+# Same conservative email-shape check the signup endpoint uses — we don't pull
+# in the `email-validator` dependency just for this (the address is the new
+# admin's login, validated for shape only; the real check is the admin clicking
+# their first-login link).
+_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$")
 
 router = APIRouter(prefix="/partner", tags=["partner"])
 
@@ -308,6 +319,152 @@ async def mint_link_code(
     return LinkCodeResponse(
         link_code=code,
         expires_in_minutes=settings.partner_link_ttl_minutes,
+    )
+
+
+class ProvisionChildRequest(BaseModel):
+    """Provision a brand-NEW child tenant under the calling partner org.
+
+    Mirrors ``scripts/create_tenant.py`` inputs: a company name, a URL slug, and
+    the first admin's email. The admin password is platform-generated (a 16-char
+    temp credential the admin rotates on first login) — a partner never sets
+    another org's password, and no secret travels in this request.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    slug: str = Field(min_length=1, max_length=63)
+    admin_email: str = Field(min_length=3, max_length=320)
+    admin_name: str | None = Field(default=None, max_length=200)
+    plan: str = Field(default="free", max_length=50)
+
+
+class ProvisionChildResponse(ChildTenantSummary):
+    """The newly provisioned child + the first-login credentials.
+
+    The temp password is returned EXACTLY once (like an API-key mint) so the
+    partner can hand the new admin their first credential; it is never stored in
+    plaintext or re-fetchable. The admin must change it on first login
+    (``must_change_password``).
+    """
+
+    admin_email: str
+    temp_password: str
+
+
+@router.post(
+    "/children/provision",
+    response_model=ProvisionChildResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def provision_child(
+    body: ProvisionChildRequest,
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN)),
+    db: AsyncSession = Depends(get_control_db),
+) -> ProvisionChildResponse:
+    """Provision a brand-new child tenant already parented to the caller.
+
+    Admin-only; the caller is its OWN partner org via the ``get_tenant``
+    chokepoint (JWT ``org``-claim cross-check), so a partner can only ever
+    provision a child UNDER ITSELF — there is no way to point the new tenant at a
+    different parent (no ``parent_org_id`` is accepted from the client; it is
+    always ``org.id``). This is the new-tenant counterpart of ``attach_child``:
+    attach adopts an *existing* consenting org, this *creates* a fresh one.
+
+    Flow: validate the slug (format + reserved-word + availability) → provision
+    the full tenant via the shared ``provision_tenant`` primitive (control-plane
+    org + admin user + the ``ap_<slug>`` tenant DB + tables, with its own
+    drop-the-orphan-DB rollback on any partial failure) → stamp
+    ``parent_org_id = org.id`` on the new org → audit ``partner.child_provisioned``
+    on BOTH trails (the partner's and the new child's), PII-free (org ids + slug
+    only, never the admin email or password).
+
+    Errors mirror the siblings + signup: an invalid slug is a 422, a taken slug a
+    409 (the only enumeration surface here is the partner's OWN choice of slug,
+    which signup already exposes publicly — not a cross-tenant leak).
+    """
+    # Validate the admin email shape (same conservative check as signup).
+    if not _EMAIL_PATTERN.match(body.admin_email):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Enter a valid admin email address.",
+        )
+
+    # Validate slug shape (format + reserved words) before doing any work.
+    try:
+        validate_slug_format(body.slug)
+    except SlugError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    # Availability check (re-checked transactionally below by the unique slug
+    # column; this gives a clean 409 before we spin up a DB).
+    try:
+        await ensure_slug_available(body.slug, db)
+    except SlugError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    admin_name = body.admin_name or f"{body.name} Admin"
+    temp_password = generate_temp_password()
+
+    # provision_tenant owns the orphan-DB rollback: if the control-plane insert
+    # or tenant-table creation fails after CREATE DATABASE, it drops the DB it
+    # created. We never half-create. A slug that raced past the pre-check trips
+    # the unique constraint inside provisioning → IntegrityError → clean 409.
+    try:
+        result = await provision_tenant(
+            company_name=body.name,
+            slug=body.slug,
+            admin_email=body.admin_email,
+            admin_name=admin_name,
+            admin_password=temp_password,
+            plan=body.plan,
+            must_change_password=True,
+        )
+    except IntegrityError as exc:
+        # Two provisions racing the same slug (or email) — the loser gets a 409,
+        # not a 500. provision_tenant already dropped its orphan DB.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"'{body.slug}' is already taken.",
+        ) from exc
+
+    # Stamp the parent link on the freshly created org. This is the whole point
+    # of the endpoint over plain provisioning — the new tenant is born parented.
+    child = await db.get(Organization, result.organization_id)
+    if child is None:  # pragma: no cover - provisioning just created it
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provisioning succeeded but the new organization could not be loaded.",
+        )
+    child.parent_org_id = org.id
+    await db.commit()
+
+    # Audit BOTH org trails, PII-free (org ids + slug only — never the admin
+    # email or the temp password).
+    await dispatch_auth_audit(
+        organization_id=org.id,
+        actor_id=user.id,
+        action="partner.child_provisioned",
+        entity_type="organization",
+        entity_id=child.id,
+        details={"child_org_id": str(child.id), "child_slug": child.slug},
+    )
+    await dispatch_auth_audit(
+        organization_id=child.id,
+        actor_id=user.id,
+        action="partner.parent_linked",
+        entity_type="organization",
+        entity_id=child.id,
+        details={"partner_org_id": str(org.id), "via": "provision"},
+    )
+
+    summary = _child_summary(child)
+    return ProvisionChildResponse(
+        **summary.model_dump(),
+        admin_email=body.admin_email,
+        temp_password=temp_password,
     )
 
 

@@ -3,7 +3,14 @@
 // raw fetch. Backend: `backend/app/api/partner.py` (admin + JWT gated, scoped to
 // the caller's own child tenants). See `docs/white-label.md` § Partner admin.
 import { api } from '$lib/api';
-import type { ChildBranding, ChildTenant, LinkCode, PartnerOverview } from '$lib/types/partner';
+import type {
+	ChildBranding,
+	ChildTenant,
+	LinkCode,
+	PartnerOverview,
+	ProvisionChildRequest,
+	ProvisionedChild
+} from '$lib/types/partner';
 
 /** The caller's partner overview — its identity + the child tenants it administers. */
 export function getPartnerOverview(): Promise<PartnerOverview> {
@@ -38,6 +45,15 @@ export function mintLinkCode(): Promise<LinkCode> {
  *  409 on a replay or a child already linked elsewhere. */
 export function attachChild(linkCode: string): Promise<ChildTenant> {
 	return api.post<ChildTenant>('/api/partner/children', { link_code: linkCode });
+}
+
+/** Provision a brand-NEW child tenant already parented to the caller's partner
+ *  org (the new-tenant counterpart of `attachChild`, which adopts an existing
+ *  one). Admin-only; the new tenant is ALWAYS parented to the caller — no parent
+ *  id is sent. Returns the child + a one-time temp password for the new admin.
+ *  422 on an invalid slug/email, 409 on a slug already taken. */
+export function provisionChild(body: ProvisionChildRequest): Promise<ProvisionedChild> {
+	return api.post<ProvisionedChild>('/api/partner/children/provision', body);
 }
 
 /** Detach a child tenant from the caller's partner org (back to standalone).

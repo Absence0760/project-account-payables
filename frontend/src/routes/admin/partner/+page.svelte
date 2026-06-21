@@ -14,9 +14,15 @@
 		updateChildBranding,
 		mintLinkCode,
 		attachChild,
+		provisionChild,
 		detachChild
 	} from '$lib/api/partner';
-	import type { ChildBranding, ChildTenant, PartnerOverview } from '$lib/types/partner';
+	import type {
+		ChildBranding,
+		ChildTenant,
+		PartnerOverview,
+		ProvisionedChild
+	} from '$lib/types/partner';
 
 	// RBAC: the backend gates every /api/partner endpoint to admin only and 403s
 	// the rest. Wait for `auth.user` to resolve before redirecting so we don't
@@ -192,6 +198,72 @@
 		}
 	}
 
+	// ── Provision a brand-NEW child tenant under this partner ───────────────────
+	let showProvision = $state(false);
+	let provName = $state('');
+	let provSlug = $state('');
+	let provEmail = $state('');
+	let provisioning = $state(false);
+	// The temp credential is returned exactly once — held only until the result
+	// dialog is dismissed, then dropped (never re-fetchable).
+	let provisioned = $state<ProvisionedChild | null>(null);
+
+	const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+	const EMAIL_RE = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
+
+	function openProvision() {
+		provName = '';
+		provSlug = '';
+		provEmail = '';
+		provisioned = null;
+		showProvision = true;
+	}
+
+	async function submitProvision() {
+		const name = provName.trim();
+		const slug = provSlug.trim().toLowerCase();
+		const email = provEmail.trim();
+		if (!name) {
+			toast('Enter a company name', 'error');
+			return;
+		}
+		if (!SLUG_RE.test(slug)) {
+			toast('Slug must be lowercase letters, digits, and hyphens (e.g. acme-eu)', 'error');
+			return;
+		}
+		if (!EMAIL_RE.test(email)) {
+			toast('Enter a valid admin email address', 'error');
+			return;
+		}
+		provisioning = true;
+		try {
+			const child = await provisionChild({ name, slug, admin_email: email });
+			provisioned = child;
+			toast(`Provisioned ${child.name}`, 'success');
+			// Refresh the children list so the new tenant appears immediately.
+			await load();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Failed to provision child tenant', 'error');
+		} finally {
+			provisioning = false;
+		}
+	}
+
+	async function copyTempPassword() {
+		if (!provisioned) return;
+		try {
+			await navigator.clipboard.writeText(provisioned.temp_password);
+			toast('Temporary password copied', 'success');
+		} catch {
+			toast('Copy failed — select and copy the password manually', 'error');
+		}
+	}
+
+	function closeProvision() {
+		showProvision = false;
+		provisioned = null;
+	}
+
 	// ── Detach a child (armed two-click confirm) ───────────────────────────────
 	let confirmDetachId = $state<string | null>(null);
 	let detaching = $state(false);
@@ -226,6 +298,14 @@
 
 <PageHeader title="Partner Admin">
 	{#snippet actions()}
+		<button
+			type="button"
+			class="btn-cancel"
+			onclick={openProvision}
+			data-testid="provision-child-btn"
+		>
+			+ Create child tenant
+		</button>
 		<button type="button" class="btn-primary" onclick={openAttach} data-testid="attach-child-btn">
 			+ Attach child
 		</button>
@@ -416,6 +496,86 @@
 	</form>
 </Modal>
 
+<!-- Provision a brand-new child tenant already parented to this partner -->
+<Modal
+	open={showProvision}
+	ariaLabel="Create child tenant"
+	title="Create a child tenant"
+	width="sm"
+	onclose={closeProvision}
+>
+	{#if provisioned}
+		<!-- Result: the one-time temp credentials. Shown once; dropped on close. -->
+		<div class="provisioned-result" data-testid="provisioned-result">
+			<p class="modal-hint">
+				<strong>{provisioned.name}</strong> ({provisioned.slug}) is ready. Give the new admin these
+				first-login credentials — the temporary password is shown <strong>only once</strong> and can't
+				be retrieved later.
+			</p>
+			<dl class="cred">
+				<dt>Admin email</dt>
+				<dd class="mono">{provisioned.admin_email}</dd>
+				<dt>Temporary password</dt>
+				<dd class="mono pw">
+					<code class="code-value">{provisioned.temp_password}</code>
+					<button type="button" class="btn-cancel copy-btn" onclick={copyTempPassword}>Copy</button>
+				</dd>
+			</dl>
+			<p class="panel-hint">The admin will be required to change it on first login.</p>
+			<div class="modal-footer">
+				<button type="button" class="btn-primary" onclick={closeProvision}>Done</button>
+			</div>
+		</div>
+	{:else}
+		<form
+			onsubmit={(e) => {
+				e.preventDefault();
+				submitProvision();
+			}}
+		>
+			<p class="modal-hint">
+				Spin up a brand-new tenant already linked under this workspace as a partner / reseller. It
+				gets its own subdomain and database; you can then push its white-label branding from here.
+			</p>
+			<label>
+				<span>Company name <em class="required">*</em></span>
+				<input
+					type="text"
+					bind:value={provName}
+					maxlength="200"
+					placeholder="Acme Europe"
+					data-testid="provision-name-input"
+				/>
+			</label>
+			<label>
+				<span>Slug <em class="required">*</em></span>
+				<input
+					type="text"
+					bind:value={provSlug}
+					maxlength="63"
+					placeholder="acme-eu"
+					data-testid="provision-slug-input"
+				/>
+			</label>
+			<label>
+				<span>Admin email <em class="required">*</em></span>
+				<input
+					type="email"
+					bind:value={provEmail}
+					placeholder="admin@acme.eu"
+					data-testid="provision-email-input"
+				/>
+			</label>
+			<div class="modal-footer">
+				<button type="button" class="btn-cancel" onclick={closeProvision}>Cancel</button>
+				<button type="submit" class="btn-primary" disabled={provisioning}>
+					{provisioning ? 'Creating…' : 'Create tenant'}
+				</button>
+			</div>
+		</form>
+	{/if}
+</Modal>
+
 <style>
 	.page-hint {
 		margin: 0;
@@ -496,5 +656,34 @@
 		margin: 0 0 0.75rem;
 		color: var(--text-muted);
 		font-size: 0.82rem;
+	}
+
+	.cred {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: 0.4rem 0.9rem;
+		align-items: center;
+		margin: 0 0 0.5rem;
+	}
+
+	.cred dt {
+		color: var(--text-muted);
+		font-size: 0.82rem;
+	}
+
+	.cred dd {
+		margin: 0;
+		font-size: 0.85rem;
+	}
+
+	.cred dd.pw {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.copy-btn {
+		flex: none;
 	}
 </style>
