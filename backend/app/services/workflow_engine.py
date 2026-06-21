@@ -459,13 +459,20 @@ async def create_workflow_step(
     *,
     assigned_to: uuid.UUID | None = None,
 ) -> WorkflowStep:
+    # Normalise to the canonical step type BEFORE persisting. Callers pass a mix
+    # of canonical names and legacy aliases ("upload"/"review"/"erp_push"); if we
+    # stored the raw alias, queries that filter on the canonical name (e.g. the
+    # dashboard pending-approvals / analytics / assistant lookups for
+    # step_type == "approval") would silently miss alias-named rows. Storing the
+    # resolved name keeps the persisted data consistent across all call sites
+    # (and matches what scripts/seed.py writes).
     resolved = _STEP_TYPE_ALIASES.get(step_type, step_type)
     step_number = STEP_TYPES.index(resolved) + 1
     step = WorkflowStep(
         correlation_id=instance.correlation_id,
         instance_id=instance.id,
         step_number=step_number,
-        step_type=step_type,
+        step_type=resolved,
         assigned_to=assigned_to,
     )
     db.add(step)
