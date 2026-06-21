@@ -90,3 +90,49 @@ export interface BillingInvoicesResponse {
 	/** Past invoices / receipts, newest first. Empty when the org has none. */
 	invoices: BillingInvoice[];
 }
+
+/**
+ * One saved payment method — PII-safe metadata ONLY (brand / last4 / expiry).
+ * NEVER a full PAN. Mirrors `GET /api/billing/payment-methods`
+ * (`backend/app/api/billing.py`).
+ */
+export interface BillingPaymentMethod {
+	/** Provider-side payment-method id (stable row key). */
+	id: string;
+	/** Card brand (e.g. `visa`), null when the provider omits it. */
+	brand: string | null;
+	/** Last four digits of the card — never the full PAN. */
+	last4: string | null;
+	/** Expiry month (1–12), null when unknown. */
+	exp_month: number | null;
+	/** Expiry year (four-digit), null when unknown. */
+	exp_year: number | null;
+	/** Whether this is the org's default card. */
+	is_default: boolean;
+}
+
+export interface BillingPaymentMethodsResponse {
+	/** Active billing adapter (e.g. `mock`, `stripe_billing`). */
+	provider: string;
+	/** Saved cards as PII-safe metadata. Empty when the org has none on file. */
+	payment_methods: BillingPaymentMethod[];
+}
+
+/**
+ * Result of starting a SetupIntent to add / replace a card. Mirrors
+ * `POST /api/billing/payment-method/setup-intent` (`backend/app/api/billing.py`).
+ * `client_secret` is the single-use secret the provider's JS SDK (Stripe
+ * Elements, deployed-only) confirms the card against — never a long-lived secret
+ * or a PAN. `configured=false` (no customer / unconfigured provider) → null
+ * secret + the UI shows a "billing not configured" state, not an error.
+ */
+export interface BillingSetupIntentResponse {
+	/** Active billing adapter (e.g. `mock`, `stripe_billing`). */
+	provider: string;
+	/** True once a SetupIntent could be started (org provisioned + provider configured). */
+	configured: boolean;
+	/** Single-use secret the frontend confirms the card with. Null when not configured. */
+	client_secret: string | null;
+	/** Provider-side SetupIntent id. Null when not configured. */
+	setup_intent_id: string | null;
+}

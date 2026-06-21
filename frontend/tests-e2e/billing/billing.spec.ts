@@ -223,6 +223,126 @@ test.describe('/billing (admin)', () => {
 		await expect(section.getByText('No invoices yet.')).toBeVisible();
 	});
 
+	test('renders the payment-methods section (mock provider seeds a card)', async ({ page }) => {
+		// `GET /api/billing/payment-methods` is admin/cfo-gated and sourced through
+		// the org's billing adapter. The `mock` adapter fabricates a deterministic
+		// `visa ····4242` only when the org has a provider customer id; a fresh e2e
+		// tenant has none, so the list is legitimately empty and the section shows
+		// "No payment method on file." Either way the section renders with its
+		// table (never a 500), which is what we assert here.
+		const section = page.getByTestId('billing-payment-methods');
+		await expect(section).toBeVisible({ timeout: 10_000 });
+		await expect(section.getByRole('heading', { name: 'Payment methods' })).toBeVisible();
+		// The add/replace-card action and the DataTable shell both render.
+		await expect(page.getByTestId('billing-add-card')).toBeVisible();
+		await expect(section.locator('.grid-container table')).toBeVisible();
+	});
+
+	test('with a saved card stubbed, the list shows the brand · ****last4 · exp', async ({
+		page
+	}) => {
+		// Stub a card so the row is deterministic regardless of provider seed state.
+		// PII-safe metadata only — never a PAN.
+		await page.route('**/api/billing/payment-methods', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					provider: 'mock',
+					payment_methods: [
+						{
+							id: 'mock_pm_e2e',
+							brand: 'visa',
+							last4: '4242',
+							exp_month: 12,
+							exp_year: 2030,
+							is_default: true
+						}
+					]
+				})
+			});
+		});
+
+		await page.goto('/billing');
+		await page.waitForLoadState('networkidle');
+
+		const section = page.getByTestId('billing-payment-methods');
+		await expect(section).toBeVisible({ timeout: 10_000 });
+		await expect(section.getByText('Visa ····4242')).toBeVisible();
+		await expect(section.getByText('Expires 12/2030')).toBeVisible();
+		await expect(section.getByText('Default', { exact: true })).toBeVisible();
+	});
+
+	test('with no card, the payment-methods section shows the empty state', async ({ page }) => {
+		await page.route('**/api/billing/payment-methods', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ provider: 'mock', payment_methods: [] })
+			});
+		});
+
+		await page.goto('/billing');
+		await page.waitForLoadState('networkidle');
+
+		const section = page.getByTestId('billing-payment-methods');
+		await expect(section).toBeVisible({ timeout: 10_000 });
+		await expect(section.getByText('No payment method on file.')).toBeVisible();
+	});
+
+	test('add-card with a returned client_secret shows the ready / Elements seam', async ({
+		page
+	}) => {
+		// A configured provider returns a single-use client_secret; the UI moves to
+		// the "ready" state and surfaces the deployed-only Elements seam (no real
+		// Stripe in the local-first stack, no secret-bearing call from the client).
+		await page.route('**/api/billing/payment-method/setup-intent', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					provider: 'mock',
+					configured: true,
+					client_secret: 'mock_seti_e2e_secret',
+					setup_intent_id: 'mock_seti_e2e'
+				})
+			});
+		});
+
+		await page.goto('/billing');
+		await page.waitForLoadState('networkidle');
+
+		await page.getByTestId('billing-add-card').click();
+		const setup = page.getByTestId('billing-card-setup');
+		await expect(setup).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByTestId('billing-card-elements-placeholder')).toBeVisible();
+	});
+
+	test('add-card when not configured shows the billing-not-configured state', async ({ page }) => {
+		// No provider customer / unconfigured provider → configured=false, null
+		// secret. The UI shows a clear "not configured" affordance, not an error.
+		await page.route('**/api/billing/payment-method/setup-intent', async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({
+					provider: 'mock',
+					configured: false,
+					client_secret: null,
+					setup_intent_id: null
+				})
+			});
+		});
+
+		await page.goto('/billing');
+		await page.waitForLoadState('networkidle');
+
+		await page.getByTestId('billing-add-card').click();
+		const setup = page.getByTestId('billing-card-setup');
+		await expect(setup).toBeVisible({ timeout: 10_000 });
+		await expect(setup.getByText(/Billing is not configured/)).toBeVisible();
+	});
+
 	test('the Subscription section tab is visible + active for the admin', async ({ page }) => {
 		// /billing is a child of the Billing nav group, so it surfaces as a
 		// section sub-tab (not a top-level sidebar row). On /billing the Billing
@@ -256,10 +376,17 @@ test.describe('/billing (clerk — not authorized)', () => {
 		const token = await page.evaluate(() => localStorage.getItem('auth_token'));
 		const base = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
 		const headers = { Authorization: `Bearer ${token}`, 'X-Tenant-Slug': currentTenantSlug() };
-		// Both billing reads (subscription + invoices) are admin/cfo-only.
+		// Every billing read (subscription + invoices + payment methods) is
+		// admin/cfo-only; so is starting a SetupIntent.
 		const sub = await page.request.get(`${base}/api/billing/subscription`, { headers });
 		expect(sub.status()).toBe(403);
 		const invoices = await page.request.get(`${base}/api/billing/invoices`, { headers });
 		expect(invoices.status()).toBe(403);
+		const methods = await page.request.get(`${base}/api/billing/payment-methods`, { headers });
+		expect(methods.status()).toBe(403);
+		const setup = await page.request.post(`${base}/api/billing/payment-method/setup-intent`, {
+			headers
+		});
+		expect(setup.status()).toBe(403);
 	});
 });

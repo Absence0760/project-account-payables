@@ -17,9 +17,11 @@ accounts-payable money path the app manages for customers.
 > billing invoices / receipts list (`GET /api/billing/invoices` + the adapter
 > `list_invoices` capability), **and the payment-method endpoint (`POST
 > /api/billing/payment-method/setup-intent` + `GET /api/billing/payment-methods`
-> + the adapter `create_setup_intent` / `list_payment_methods` capabilities).**
-> **Deferred to later slices:** the frontend invoices/receipts + payment-method
-> UI (owned by the frontend track).
+> + the adapter `create_setup_intent` / `list_payment_methods` capabilities),
+> **and the frontend invoices/receipts + payment-method UI** (the saved-cards
+> list + the add/replace-card SetupIntent flow, with a clearly-marked
+> deployed-only Stripe Elements seam).** **Deferred to a later slice:** the
+> live-Stripe **plan-change** UI (rides the live-Stripe plan-change path).
 
 ## Where it lives (control plane)
 
@@ -391,18 +393,46 @@ dashboard and never sees the tab.
 - **States:** loading, error-with-retry, and a friendly **empty state** (no
   live subscription → "No active subscription" + a contact-sales link, usage
   meters still shown).
-- The live-Stripe **plan-change / payment-method** actions are a later backend
-  slice; they're surfaced as **disabled** "coming soon" buttons + a "contact
-  us" link so the surface reads complete without implying an unwired action.
+- **Payment methods** (`GET /api/billing/payment-methods` via
+  `$lib/api/billing.ts::getBillingPaymentMethods`, types in
+  `$lib/types/billing.ts`) is a `DataTable` of the org's saved cards — PII-safe
+  metadata only (`Brand ····last4` + `Expires MM/YYYY` + a `Default` pill,
+  **never a PAN**) — loaded **independently** of the plan/usage/invoices blocks
+  (its own loading / error / **empty** "No payment method on file." states), so
+  a slow or failed fetch never blocks the rest of the surface.
+- The **Add / replace card** button calls
+  `POST /api/billing/payment-method/setup-intent`
+  (`startBillingSetupIntent`). The real card-collection form (the provider's
+  **Stripe Elements**) is a **deployed-only** piece — it can't run in the
+  local-first stack and the static frontend must never call a secret-bearing
+  service directly — so the flow surfaces the right next-step state and leaves a
+  **clearly-marked seam** for Elements rather than mounting it or hardcoding any
+  Stripe key:
+  - `configured=false` / null secret (org never provisioned, or the live
+    adapter fails closed without a key) → a clear **"Billing is not configured"**
+    affordance + a contact link, not an error;
+  - a returned `client_secret` → a **"ready"** state with the
+    `data-testid="billing-card-elements-placeholder"` seam where Elements mounts
+    in production (the `client_secret` is confirmed against the provider's JS SDK
+    there; it never leaves that boundary). After the flow the saved-cards list is
+    re-fetched.
+- The live-Stripe **plan-change** action stays a **disabled** "coming soon"
+  button + a "contact us" link (it rides the live-Stripe plan-change path — a
+  later frontend slice).
 - `SubscriptionBadge.svelte` (`$lib/components/ui/`) is a new shared status pill
   for the four subscription states (WCAG-1.4.3-calibrated tones, matching
   `StatusBadge`).
 - e2e: `frontend/tests-e2e/billing/billing.spec.ts` — header + empty state +
   usage meters, a seeded-Plan/Subscription happy path (plan name, exact `$49.00`
-  price, Active badge, entitlement flag), the Subscription section tab
-  visible/active for admin, and clerk RBAC (redirect + no tab + API 403). The
-  billing rows live in the control plane, so the spec seeds them via
-  control-plane psql and tears down in `finally`.
+  price, Active badge, entitlement flag), the invoices/receipts list (stubbed
+  rows + hosted-url link, empty state), the **payment-methods list** (stubbed
+  card → `Visa ····4242` / `Expires 12/2030` / `Default`, empty state) + the
+  **add-card flow** (returned `client_secret` → ready/Elements seam;
+  `configured=false` → not-configured state), the Subscription section tab
+  visible/active for admin, and clerk RBAC (redirect + no tab + API 403 on
+  subscription / invoices / payment-methods / setup-intent). The billing rows
+  live in the control plane, so the spec seeds them via control-plane psql and
+  tears down in `finally`.
 
 ## Config
 
