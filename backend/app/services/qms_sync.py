@@ -67,12 +67,19 @@ async def _resolve_po_id(
 ) -> uuid.UUID | None:
     if not po_number:
         return None
+    # po_number is NOT unique (it can repeat across vendors / entities), so cap
+    # the lookup at one deterministic row — newest first — rather than
+    # `scalar_one_or_none()`, which raises MultipleResultsFound on a duplicate
+    # number and fails the whole tenant sweep (every inspection lost).
     return (
         await db.execute(
-            select(PurchaseOrder.id).where(
+            select(PurchaseOrder.id)
+            .where(
                 PurchaseOrder.organization_id == org_id,
                 PurchaseOrder.po_number == po_number,
             )
+            .order_by(PurchaseOrder.created_at.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
 
@@ -82,12 +89,17 @@ async def _resolve_gr_id(
 ) -> uuid.UUID | None:
     if not gr_number:
         return None
+    # gr_number is NOT unique either — same deterministic single-row cap as the
+    # PO resolver above (a duplicate gr_number must not crash the sweep).
     return (
         await db.execute(
-            select(GoodsReceipt.id).where(
+            select(GoodsReceipt.id)
+            .where(
                 GoodsReceipt.organization_id == org_id,
                 GoodsReceipt.gr_number == gr_number,
             )
+            .order_by(GoodsReceipt.created_at.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
 
