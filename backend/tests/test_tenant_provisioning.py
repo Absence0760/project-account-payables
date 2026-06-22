@@ -34,6 +34,7 @@ from app.models.user import Role, User, UserRole
 from app.services.tenant_provisioning import (
     CONTROL_TABLES,
     _create_postgres_database,
+    _drop_postgres_database,
     provision_tenant,
 )
 from app.utils.passwords import pwd_context
@@ -118,6 +119,34 @@ async def test_create_postgres_database_creates_when_absent():
     assert "CREATE DATABASE" in created_sql
     assert "ap_freshslug" in created_sql
     conn.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "evil_name",
+    [
+        'ap_x"; DROP DATABASE account_payables; --',
+        "ap_a b",  # whitespace
+        "ap_a;b",  # statement separator
+        "ap_a)b",  # paren
+        "ap_UPPER",  # uppercase not allowed
+        "1ap_x",  # must start with a letter
+        "ap",  # too short (< 3 chars)
+        "",  # empty
+        "ap_" + "x" * 70,  # over Postgres's 63-char identifier limit
+    ],
+)
+async def test_create_postgres_database_rejects_unsafe_name(evil_name):
+    # SQL-injection guard: a db name that isn't a strict lowercase identifier
+    # must be rejected BEFORE any connection or DDL — defense-in-depth at the
+    # one DDL sink where the value can't be parameterized.
+    connect = AsyncMock()
+    with patch("app.services.tenant_provisioning.asyncpg.connect", new=connect):
+        with pytest.raises(ValueError, match="unsafe tenant database name"):
+            await _create_postgres_database(evil_name)
+        with pytest.raises(ValueError, match="unsafe tenant database name"):
+            await _drop_postgres_database(evil_name)
+    # Never even opened a connection to the maintenance DB.
+    connect.assert_not_called()
 
 
 async def test_create_postgres_database_idempotent_when_present():

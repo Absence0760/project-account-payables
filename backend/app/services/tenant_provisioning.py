@@ -9,6 +9,7 @@ partial-failure diagnostics without re-running everything on retry.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -24,6 +25,24 @@ from app.models.user import Role, User, UserRole
 from app.utils.passwords import pwd_context
 
 logger = logging.getLogger(__name__)
+
+# Postgres identifiers can't be parameterized, so a tenant DB name is the one
+# value that has to be interpolated into CREATE/DROP DATABASE DDL. Guard the
+# sink with a strict allowlist: every legitimate name is "<prefix><slug>" where
+# the prefix is lowercase ASCII and the slug already passed utils.slug
+# (^[a-z][a-z0-9-]{2,29}$). This is defense-in-depth — the API callers validate
+# the slug, but scripts/create_tenant.py forwards --slug straight through, so
+# the guard lives at the DDL sink where it can never be bypassed. Capped at
+# Postgres's 63-char identifier limit.
+_SAFE_DB_NAME = re.compile(r"^[a-z][a-z0-9_-]{2,62}$")
+
+
+def _assert_safe_db_name(db_name: str) -> None:
+    """Reject any tenant DB name that isn't a strict lowercase identifier
+    before it reaches CREATE/DROP DATABASE DDL (SQL-injection guard)."""
+    if not _SAFE_DB_NAME.fullmatch(db_name):
+        raise ValueError(f"unsafe tenant database name: {db_name!r}")
+
 
 # Tables that live in the CONTROL plane DB and must NOT be created inside a
 # tenant DB. Anything not in this set belongs to the tenant schema.
@@ -93,6 +112,7 @@ async def _create_postgres_database(db_name: str) -> bool:
     Returns True if this call created the database, False if it already existed
     — so the caller knows whether it's safe to drop on a later failure.
     """
+    _assert_safe_db_name(db_name)
     conn = await asyncpg.connect(**_parse_maintenance_dsn())
     try:
         exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
@@ -109,6 +129,7 @@ async def _create_postgres_database(db_name: str) -> bool:
 async def _drop_postgres_database(db_name: str) -> None:
     """Drop a tenant DB we created during a provisioning attempt that then
     failed, so a partial failure doesn't leak orphan databases."""
+    _assert_safe_db_name(db_name)
     conn = await asyncpg.connect(**_parse_maintenance_dsn())
     try:
         await conn.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
