@@ -17,10 +17,10 @@
 	},
 	"devDependencies": {
 		"@axe-core/playwright": "^4.11.3",
-		"@iconify-json/material-symbols": "1.2.76",
-		"@playwright/test": "1.60.0",
+		"@iconify-json/material-symbols": "1.2.79",
+		"@playwright/test": "1.61.0",
 		"@sveltejs/adapter-static": "3.0.10",
-		"@sveltejs/kit": "2.65.0",
+		"@sveltejs/kit": "2.66.0",
 		"@sveltejs/vite-plugin-svelte": "7.1.2",
 		"axe-core": "^4.12.1",
 		"mdsvex": "^0.12.7",
@@ -34,7 +34,7 @@
 	},
 	"type": "module",
 	"dependencies": {
-		"isomorphic-dompurify": "^3.16.0"
+		"isomorphic-dompurify": "^3.18.0"
 	},
 	"pnpm": {
 		"overrides": {
