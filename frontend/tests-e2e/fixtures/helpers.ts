@@ -172,6 +172,15 @@ async function _ensureAdminStorageState(
 		// dashboard URL before snapshotting storage. If the redirect
 		// hasn't happened, the localStorage hasn't been written yet.
 		await page.waitForURL(/^http:\/\/[^/]+:7777\/?$/, { timeout: 15_000 });
+		// Bake a recorded cookie-consent choice into the persisted state so the
+		// GDPR consent banner (position:fixed, bottom-centre, z-index 10000) is
+		// hidden for every authenticated spec. The banner otherwise overlaps the
+		// app's bottom-anchored controls (BulkBar, modal footers, Load-more) and
+		// intercepts their clicks — the systemic cause of the e2e shard failures.
+		// This is the post-consent steady state every real session is in after
+		// the first visit; it is NOT an init script, so consent-banner.spec.ts
+		// (which removes the key and reloads to assert the banner) still works.
+		await page.evaluate(() => localStorage.setItem('ap_consent_choice', 'accepted'));
 		await context.storageState({ path: file });
 	} finally {
 		await context.close();
@@ -267,6 +276,20 @@ export async function signIn(
 	// specific tenant (cross-tenant isolation tests, etc.) pass `creds`
 	// explicitly.
 	const resolved = creds ?? _currentWorkerAdmin();
+	// Record a cookie-consent choice before the first paint so the GDPR consent
+	// banner (position:fixed, bottom-centre, z-index 10000) stays hidden for
+	// specs that sign in fresh via this path (non-admin roles, cross-tenant
+	// flows) — it otherwise overlaps the app's bottom-anchored controls and
+	// intercepts their clicks. Mirrors the persisted-state injection in
+	// _ensureAdminStorageState. consent-banner.spec.ts uses neither path, so the
+	// banner still shows there.
+	await page.addInitScript(() => {
+		try {
+			localStorage.setItem('ap_consent_choice', 'accepted');
+		} catch {
+			/* about:blank — ignore */
+		}
+	});
 	await page.goto('/login');
 	await page.waitForLoadState('networkidle');
 
