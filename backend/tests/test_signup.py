@@ -341,15 +341,26 @@ def test_config_requires_captcha_in_deployed_env():
 
     from app.config import Settings
 
+    # A deployed env also requires a real JWT signing key
+    # (_require_real_secret_key_in_deployed_envs). Pass a valid one explicitly
+    # so this test isolates the captcha axis and doesn't depend on the ambient
+    # AP_SECRET_KEY (CI's is shorter than the 32-char floor).
+    strong_key = "x" * 32
+
     # Local/CI (development) is fine with an empty secret.
     assert Settings(environment="development", hcaptcha_secret="").is_deployed is False
 
-    # A deployed env with no secret must blow up at construction.
+    # A deployed env with no captcha secret must blow up at construction.
     with pytest.raises(ValidationError):
-        Settings(environment="production", hcaptcha_secret="")
+        Settings(environment="production", hcaptcha_secret="", secret_key=strong_key)
 
-    # ...and is satisfied once the secret is provided.
-    assert Settings(environment="production", hcaptcha_secret="0xabc").is_deployed is True
+    # ...and is satisfied once the captcha secret is provided.
+    assert (
+        Settings(
+            environment="production", hcaptcha_secret="0xabc", secret_key=strong_key
+        ).is_deployed
+        is True
+    )
 
 
 # ---------------------------------------------------------------------------
