@@ -24,8 +24,20 @@ import { SERVICES, skipUnlessReachable } from '../fixtures/services';
 test.use({ baseURL: ACME_BASE, storageState: { cookies: [], origins: [] } });
 
 test.describe('SAML login via Keycloak', () => {
-	test.beforeEach(async () => {
+	test.beforeEach(async ({ page }) => {
 		await skipUnlessReachable(SERVICES.keycloakSaml);
+		// Pre-record the cookie-consent choice so the GDPR banner (fixed at the
+		// bottom-centre of the viewport, z-index 10000) never intercepts the
+		// SSO button on the vertically-centred login card. The banner is
+		// orthogonal to the SAML handshake and has its own coverage in
+		// consent-banner.spec.ts; mirrors sso/login.spec.ts.
+		await page.addInitScript(() => {
+			try {
+				localStorage.setItem('ap_consent_choice', 'accepted');
+			} catch {
+				/* about:blank — ignore */
+			}
+		});
 	});
 
 	test('the login page renders the SSO button when SAML is configured', async ({ page }) => {
