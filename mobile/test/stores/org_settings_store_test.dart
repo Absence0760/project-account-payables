@@ -35,7 +35,7 @@ Map<String, dynamic> _orgJson({
               'payment_terms': 'Net 30',
               'number_prefix': 'INV-',
             },
-        if (extra != null) ...extra,
+        ...?extra,
       },
     };
 
