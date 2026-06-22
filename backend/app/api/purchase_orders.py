@@ -245,9 +245,7 @@ async def sync_pos_from_erp(
     await db.commit()
     return {
         "success": True,
-        "message": (
-            f"Synced {created} new POs, updated {updated}, {skipped} already exist"
-        ),
+        "message": (f"Synced {created} new POs, updated {updated}, {skipped} already exist"),
         "created": created,
         "updated": updated,
         "skipped": skipped,

@@ -92,12 +92,16 @@ async def test_cancelled_card_does_not_block_reissue(realdb):
 
     async with mk() as s:
         live = (
-            await s.execute(
-                select(VirtualCard).where(
-                    VirtualCard.invoice_id == inv_id,
-                    VirtualCard.status != "cancelled",
+            (
+                await s.execute(
+                    select(VirtualCard).where(
+                        VirtualCard.invoice_id == inv_id,
+                        VirtualCard.status != "cancelled",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(live) == 1
     assert live[0].provider_card_id == "card_new"

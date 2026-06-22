@@ -161,9 +161,7 @@ async def match_invoice_to_po(
         # carries received lines (an empty GR header has nothing to verify).
         if po.line_items and any(g.line_items for g in grs):
             po_qty_total = sum(float(li.quantity or 0) for li in po.line_items)
-            gr_qty_total = sum(
-                float(li.quantity_received or 0) for g in grs for li in g.line_items
-            )
+            gr_qty_total = sum(float(li.quantity_received or 0) for g in grs for li in g.line_items)
 
             if po_qty_total > 0 and gr_qty_total < po_qty_total:
                 pct_received = (gr_qty_total / po_qty_total) * 100

@@ -175,9 +175,7 @@ class BillingAdapter:
         """
         return None
 
-    async def list_payment_methods(
-        self, customer_id: str | None
-    ) -> list[ProviderPaymentMethod]:
+    async def list_payment_methods(self, customer_id: str | None) -> list[ProviderPaymentMethod]:
         """List the org's saved cards — PII-SAFE metadata only (brand/last4/exp).
 
         NEVER returns a full PAN. ``customer_id is None`` (never provisioned) →

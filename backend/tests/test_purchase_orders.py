@@ -400,9 +400,7 @@ async def test_sync_erp_does_not_clobber_human_set_expected_delivery_date(realdb
 
     async with mk() as s:
         kept = (
-            await s.execute(
-                select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-200")
-            )
+            await s.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-200"))
         ).scalar_one()
     # Human value preserved — the sync neither overwrote it nor created a dup.
     assert kept.expected_delivery_date == human_date
@@ -437,8 +435,6 @@ async def test_sync_erp_backfills_missing_expected_delivery_date_on_existing_po(
 
     async with mk() as s:
         filled = (
-            await s.execute(
-                select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-201")
-            )
+            await s.execute(select(PurchaseOrder).where(PurchaseOrder.po_number == "PO-2024-201"))
         ).scalar_one()
     assert filled.expected_delivery_date == date(2024, 7, 1)

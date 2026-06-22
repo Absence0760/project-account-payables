@@ -348,9 +348,7 @@ class StripeBillingAdapter(BillingAdapter):
             status=str(payload.get("status") or "requires_payment_method"),
         )
 
-    async def list_payment_methods(
-        self, customer_id: str | None
-    ) -> list[ProviderPaymentMethod]:
+    async def list_payment_methods(self, customer_id: str | None) -> list[ProviderPaymentMethod]:
         """List the org's saved Stripe cards — PII-SAFE metadata only.
 
         Fails closed without a key. ``customer_id is None`` (never provisioned) →

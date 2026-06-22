@@ -116,9 +116,7 @@ class MockBillingAdapter(BillingAdapter):
             status="requires_payment_method",
         )
 
-    async def list_payment_methods(
-        self, customer_id: str | None
-    ) -> list[ProviderPaymentMethod]:
+    async def list_payment_methods(self, customer_id: str | None) -> list[ProviderPaymentMethod]:
         """Deterministic synthetic saved card (visa ****4242) so the dev UI has
         data. PII-safe — brand/last4/exp only, never a PAN. No customer →
         ``[]``."""
