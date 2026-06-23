@@ -71,6 +71,12 @@ dependencies = [
 dev = [
     "pytest>=9.1.0,<10",
     "pytest-asyncio>=1.4.0,<2",
+    # CI shards the backend suite across parallel jobs (ci.yml → backend-test
+    # matrix). pytest-split's `--splits N --group G` partitions the suite by
+    # the committed `.test_durations` baseline so each shard gets a roughly
+    # equal wall-clock slice. Regenerate the baseline with
+    # `pytest --store-durations` after large test-surface changes.
+    "pytest-split>=0.10,<1",
     "httpx>=0.28.1,<1",
     # Tight pin: ruff occasionally adds new lint rules in patch
     # releases (0.15 added the I001 check that bit us once). Pinning

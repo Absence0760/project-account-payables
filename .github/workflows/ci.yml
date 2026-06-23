@@ -69,9 +69,64 @@ jobs:
               - 'pnpm-lock.yaml'
               - '.github/workflows/ci.yml'
 
-  backend:
-    name: Backend
+  # Backend lint is split out from the test shards: ruff needs no
+  # Postgres/Redis/MinIO and shouldn't run four times across the matrix below.
+  # A formatting / lint miss fails fast here in ~30s instead of riding along a
+  # full sharded test run.
+  backend-lint:
+    name: Backend lint
     runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.1.0
+        with:
+          # Match backend/Dockerfile — runtime parity catches bugs
+          # that only manifest on 3.14 (e.g. removed deprecated APIs).
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install dependencies
+        # Hash-pinned install (Scorecard PinnedDependencies) — same lock as
+        # backend-test; see that job for the full rationale. ruff lints source
+        # directly, so the editable install isn't needed here.
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+  # The backend pytest suite (~3900 tests against a real Postgres/Redis/MinIO)
+  # ran ~27 min as one serial job — the longest job in CI. It's sharded the same
+  # way the Playwright e2e job below is: a matrix of runners, each booting its
+  # OWN Postgres + Redis + MinIO and running a deterministic slice via
+  # pytest-split (`--splits 4 --group G`). Each shard is its own process + DB,
+  # which sidesteps the realdb event-loop-per-worker hazards that make in-process
+  # `pytest -n auto` parallelism unsafe in this suite. ~27 min ÷ 4 ≈ ~7 min/shard.
+  #
+  # Balance: pytest-split partitions by the committed `backend/.test_durations`
+  # baseline when present; absent, it falls back to an even split by test count
+  # (still correct + deterministic, just less wall-clock-balanced). Regenerate
+  # the baseline with `pytest --store-durations` — see backend/CLAUDE.md.
+  backend-test:
+    name: Backend (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+
+    strategy:
+      # One shard failing shouldn't cancel the others — mirrors the e2e matrix
+      # so a single-shard failure reads as shard-specific, not systemic.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -132,12 +187,6 @@ jobs:
           python -m pip install --require-hashes -r requirements-dev.lock
           pip install -e . --no-deps
 
-      - name: Lint
-        run: ruff check .
-
-      - name: Format check
-        run: ruff format --check .
-
       # MinIO can't be a `services:` container: the official minio/minio image
       # needs a `server /data` argument, which GitHub Actions service containers
       # can't supply (they only take flags, not the command). Start it via
@@ -145,7 +194,8 @@ jobs:
       # docs, chat attachments, PEPPOL inbound) hit a real S3 backend rather
       # than failing with connection-refused — same local-first parity as the
       # Postgres/Redis services above. The `invoices` bucket is auto-created by
-      # storage._ensure_bucket on first upload.
+      # storage._ensure_bucket on first upload. Each matrix shard runs on its own
+      # runner, so the fixed `--name minio` never collides across shards.
       - name: Start MinIO (S3)
         run: |
           docker run -d --name minio -p 9000:9000 \
@@ -160,7 +210,7 @@ jobs:
           done
           echo "::error::MinIO did not become healthy in time"; exit 1
 
-      - name: Run tests
+      - name: Run tests (shard ${{ matrix.shard }}/4)
         env:
           AP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables
           AP_REDIS_URL: redis://localhost:6379
@@ -176,7 +226,9 @@ jobs:
           # unreachable DB hard-fails instead of dropping the tenant-isolation /
           # token-rotation coverage while the job stays green.
           AP_REQUIRE_REALDB: "1"
-        run: pytest
+        # pytest-split partitions the suite into 4 deterministic slices; this
+        # shard runs slice `matrix.shard`. See the job-level comment for balance.
+        run: pytest --splits 4 --group ${{ matrix.shard }}
 
   frontend:
     name: Frontend

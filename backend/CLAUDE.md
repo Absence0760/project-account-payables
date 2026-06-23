@@ -116,6 +116,35 @@ uv pip compile pyproject.toml \
 the regenerated locks in the same change as the `pyproject.toml` edit, or
 the `--require-hashes` installs (CI + image build) fail.
 
+## CI test sharding
+
+The full suite (~3900 tests against a real Postgres/Redis/MinIO) ran ~27 min as
+a single serial job — the longest job in CI. In `ci.yml` it's split into:
+
+- **`backend-lint`** — `ruff check` + `ruff format --check` only. No services,
+  ~30s, fails fast on a formatting/lint miss.
+- **`backend-test`** — a `strategy.matrix` of 4 shards, each on its own runner
+  booting its OWN Postgres + Redis + MinIO and running a deterministic slice via
+  [`pytest-split`](https://pypi.org/project/pytest-split/): `pytest --splits 4
+  --group ${{ matrix.shard }}`. Each shard is a separate process + DB, which is
+  why this is safe where in-process `pytest -n auto` is not — the suite's realdb
+  fixtures hit event-loop-per-worker hazards under xdist. ~27 min ÷ 4 ≈ ~7 min/shard.
+
+`pytest-split` partitions by a committed `backend/.test_durations` baseline when
+present; absent, it falls back to an even split by **test count** (still correct
+and deterministic — every test runs in exactly one shard — just less
+wall-clock-balanced). To regenerate the baseline for better balance (e.g. after a
+large test-surface change), run the full suite once with the DB stack up:
+
+```bash
+# from backend/, stack up (docker compose up -d) and venv active
+pytest --store-durations          # writes backend/.test_durations
+```
+
+Commit the updated `.test_durations` alongside the test changes. Bumping the
+shard count means editing the `matrix.shard` list, the `--splits N` flag, and the
+`name:` (`shard N/4`) together in `ci.yml`.
+
 ## Project structure
 
 ```
