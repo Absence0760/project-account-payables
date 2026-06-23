@@ -24,9 +24,10 @@ import type { Page } from '@playwright/test';
  *           Vendors(adm/mgr/cfo) · Exceptions(adm/mgr)
  *   Procurement: PurchaseOrders·GoodsReceipts·Budgets(adm/mgr/cfo);
  *                Requisitions·Intake·Catalogs(all)
- *   Billing: Contracts·Expenses(all); CreditMemos·Discounts(adm/mgr/cfo)
+ *   Billing: Contracts·Expenses·VendorStatements(all); CreditMemos·Discounts(adm/mgr/cfo)
  *   Insights: AIAssistant(all); CashFlow(adm/cfo); 1099(adm/mgr/cfo)
- *   Settings: Organization·Users·Roles·Workflows(admin); AuditTrail(adm/cfo)
+ *   Settings: Organization·Users·Roles·Workflows·APIKeys·Webhooks·Partner(admin);
+ *             AuditTrail(adm/cfo); Experiments(adm/mgr/cfo)
  */
 
 async function sidebarHrefs(page: Page): Promise<string[]> {
@@ -64,24 +65,33 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		expect(await sectionTabHrefs(page, '/requisitions')).toEqual(
 			['/requisitions', '/intake', '/catalogs'].sort()
 		);
-		// Billing tabs: no Credit Memos / Discounts for a clerk.
-		expect(await sectionTabHrefs(page, '/contracts')).toEqual(['/contracts', '/expenses'].sort());
+		// Billing tabs: no Credit Memos / Discounts for a clerk; Vendor Statements
+		// is all-roles read, so a clerk does see it.
+		expect(await sectionTabHrefs(page, '/contracts')).toEqual(
+			['/contracts', '/expenses', '/vendor-statements'].sort()
+		);
 	});
 
-	test('manager: + Payments/Vendors/Exceptions; full Procurement tabs; no Settings', async ({
+	test('manager: + Payments/Vendors/Exceptions; full Procurement tabs; Settings = Experiments only', async ({
 		page,
 		tenantManager
 	}) => {
 		await signInAndWait(page, tenantManager);
+		// Experiments is manager-readable and lives in Settings, so a manager now
+		// gets the Settings group landing (→ /experiments, its only Settings child).
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/payments', '/vendors', '/exceptions', '/purchase-orders', '/contracts', '/assistant'].sort()
+			['/', '/invoices', '/payments', '/vendors', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/experiments'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/purchase-orders')).toEqual(
 			['/purchase-orders', '/goods-receipts', '/requisitions', '/intake', '/catalogs', '/budgets'].sort()
 		);
+		// Experiments is the lone Settings tab a manager can see → bar suppressed.
+		await page.goto('/experiments');
+		await expect(page.locator('aside.sidebar')).toBeVisible();
+		await expect(page.locator('.section-tabs')).toHaveCount(0);
 	});
 
-	test('cfo: gains Settings (Audit landing); lone Settings tab suppresses the bar', async ({
+	test('cfo: gains Settings (Audit landing); Audit + Experiments tabs', async ({
 		page,
 		tenantCfo
 	}) => {
@@ -89,11 +99,9 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		expect(await sidebarHrefs(page)).toEqual(
 			['/', '/invoices', '/payments', '/vendors', '/purchase-orders', '/contracts', '/assistant', '/audit'].sort()
 		);
-		// Only Audit Trail is cfo-visible in Settings → no section bar (a lone tab
-		// would just duplicate the page title).
-		await page.goto('/audit');
-		await expect(page.locator('aside.sidebar')).toBeVisible();
-		await expect(page.locator('.section-tabs')).toHaveCount(0);
+		// cfo sees Audit Trail + Experiments in Settings → the section bar renders
+		// both (more than one tab, so it's no longer suppressed).
+		expect(await sectionTabHrefs(page, '/audit')).toEqual(['/audit', '/experiments'].sort());
 	});
 });
 
@@ -105,7 +113,7 @@ test.describe('RBAC — admin (cached session, no extra login)', () => {
 			['/', '/invoices', '/payments', '/vendors', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/organization'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/organization')).toEqual(
-			['/organization', '/admin?tab=users', '/admin?tab=roles', '/audit', '/workflows'].sort()
+			['/organization', '/admin?tab=users', '/admin?tab=roles', '/audit', '/workflows', '/experiments', '/admin/api-keys', '/admin/webhooks', '/admin/partner'].sort()
 		);
 		// Direct (non-grouped) routes have no section bar.
 		await page.goto('/invoices');
