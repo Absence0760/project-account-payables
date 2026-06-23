@@ -1,4 +1,6 @@
 import {
+	ACME_ADMIN,
+	ACME_BASE,
 	API_BASE,
 	authToken,
 	expect,
@@ -187,16 +189,17 @@ test.describe('matching tenant isolation', () => {
 		// A DIFFERENT tenant, using its own JWT + slug, must not see it. We sign
 		// into the other tenant in a throwaway context (read-only — no writes to
 		// its DB) and confirm the PO number is absent.
-		const otherSlug = tenantSlug === 'e2e1' ? 'e2e2' : 'e2e1';
+		// Use the always-seeded `acme` tenant as the "other" side. The dynamic
+		// `e2e<N>` neighbours are only present when AP_E2E_TENANT_COUNT > 1,
+		// which is NOT the case on CI shards (TENANT_COUNT=1 → only e2e1).
+		// `acme` + `techflow` are always seeded regardless of TENANT_COUNT.
+		const otherSlug = 'acme';
 		const ctx = await page.context().browser()!.newContext({
-			baseURL: `http://${otherSlug}.localhost:7777`
+			baseURL: ACME_BASE
 		});
 		try {
 			const otherPage = await ctx.newPage();
-			await signInAndWait(otherPage, {
-				email: `demo+admin@${otherSlug}.localhost`,
-				password: 'demo'
-			});
+			await signInAndWait(otherPage, ACME_ADMIN);
 			const otherHeaders = tenantHeaders(await authToken(otherPage), otherSlug);
 			const other = await otherPage.request.get(
 				`${API_BASE}/api/purchase-orders?search=${poNumber}&page_size=100`,
