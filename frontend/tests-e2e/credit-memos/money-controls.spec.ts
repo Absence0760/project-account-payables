@@ -46,12 +46,14 @@ async function makeInvoice(
 		data: {
 			vendor: vendor.name,
 			invoice_number: `CM-MC-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-			amount,
-			status: 'approved'
+			amount
 		}
 	});
 	const inv = (await resp.json()) as { id: string };
-	tenantPsql(`UPDATE invoices SET vendor_id='${vendor.id}' WHERE id='${inv.id}'`);
+	// POST /api/invoices intentionally ignores a client-supplied status (the
+	// status-injection fix). Force `approved` and bind vendor_id via SQL so
+	// the credit-memo vendor-match guard is deterministic.
+	tenantPsql(`UPDATE invoices SET status='approved', vendor_id='${vendor.id}' WHERE id='${inv.id}'`);
 	return inv.id;
 }
 

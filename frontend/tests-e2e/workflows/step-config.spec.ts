@@ -11,7 +11,7 @@ async function createWorkflow(page: import('@playwright/test').Page): Promise<st
 	await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
 	const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
 	// Editor ready — pipeline rendered.
-	await expect(page.locator('.step-list .step-card').first()).toBeVisible();
+	await expect(page.locator('.canvas .node').first()).toBeVisible();
 	return id;
 }
 
@@ -64,7 +64,7 @@ test.describe('/workflows/[id] step config', () => {
 			await page.reload();
 			await page.waitForLoadState('networkidle');
 			await expect(
-				page.locator('.step-list .step-card').first().locator('.step-name')
+				page.locator('.canvas .node').first().locator('.node-name')
 			).toHaveText(newName);
 		} finally {
 			await deleteWorkflow(page, id);
@@ -103,7 +103,7 @@ test.describe('/workflows/[id] step config', () => {
 
 		try {
 			// Click the Approval step to focus its config panel.
-			await page.locator('.step-list .step-card').nth(1).click();
+			await page.locator('.canvas .node').nth(1).click();
 			await expect(page.locator('.config-header h3')).toContainText('Approval');
 
 			// Strategy dropdown defaults to "manual"; flip to "specific".

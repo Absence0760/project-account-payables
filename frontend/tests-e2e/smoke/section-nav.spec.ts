@@ -35,7 +35,16 @@ test.describe('grouped sidebar navigation', () => {
 		// Billing → Contracts (first child).
 		await expect(page).toHaveURL(/\/contracts$/);
 		const tabs = page.locator('.section-tabs a.section-tab');
-		await expect(tabs).toHaveText(['Contracts', 'Expenses', 'Credit Memos', 'Discounts']);
+		await expect(tabs).toHaveText([
+			'Contracts',
+			'Expenses',
+			'Credit Memos',
+			'Discounts',
+			'Recurring',
+			'Statements',
+			'Positive Pay',
+			'Subscription'
+		]);
 		// The landing tab is the active one.
 		await expect(page.locator('.section-tab.active')).toHaveText('Contracts');
 		// The sidebar group row reflects the active section.

@@ -40,12 +40,21 @@ async function createApprovedInvoice(
 			vendor: 'E2E Void/Cancel Vendor',
 			invoice_number: `E2E-VC-${suffix}`,
 			amount: 525.0,
-			currency: 'USD',
-			status: 'approved'
+			currency: 'USD'
 		}
 	});
 	expect(resp.status()).toBe(201);
-	return ((await resp.json()) as { id: string }).id;
+	const body = (await resp.json()) as { id: string };
+	// POST /api/invoices intentionally ignores a client-supplied status (the
+	// status-injection fix — InvoiceCreate has no `status` field). Force the
+	// row to `approved` and bind a real vendor_id (required by the compliance
+	// gate in execute_payment_run — NULL vendor → pending_compliance) via SQL.
+	const vendorId = tenantPsql(
+		`SELECT id FROM vendors WHERE status='active' LIMIT 1`
+	).trim();
+	const sets = `status='approved'${vendorId ? `, vendor_id='${vendorId}'` : ''}`;
+	tenantPsql(`UPDATE invoices SET ${sets} WHERE id='${body.id}'`);
+	return body.id;
 }
 
 async function createRun(
@@ -59,13 +68,26 @@ async function createRun(
 	return ((await resp.json()) as { id: string }).id;
 }
 
-async function executeRun(
+/**
+ * Execute a payment run as a different user from the creator (SoD).
+ * The run is created by the tenant admin; the CFO (a different user) executes
+ * it to satisfy the maker-checker segregation-of-duties check enforced by
+ * `check_run_segregation` in `execute_payment_run`.
+ */
+async function executeRunAsCfo(
 	page: import('@playwright/test').Page,
-	runId: string
+	runId: string,
+	tenantCfo: { email: string; password: string },
+	tenantAdmin: { email: string; password: string }
 ): Promise<void> {
-	await page.request.post(`${API_BASE}/api/payments/runs/${runId}/execute`, {
+	// Switch to the CFO session to satisfy the SoD gate (admin created the run).
+	await signInAndWait(page, tenantCfo);
+	const resp = await page.request.post(`${API_BASE}/api/payments/runs/${runId}/execute`, {
 		headers: await authedTenantHeaders(page)
 	});
+	expect(resp.status()).toBe(200);
+	// Restore the admin session so subsequent API calls use admin scope.
+	await signInAndWait(page, tenantAdmin);
 }
 
 async function getRunPayment(
@@ -108,14 +130,18 @@ function deletePaymentRun(runId: string): void {
 
 test.describe('/payments — void completed payment', () => {
 	test('void flips payment to voided, invoice back to approved, audit row written', async ({
-		page
+		page,
+		tenantCfo,
+		tenantAdmin
 	}) => {
 		const stamp = Date.now();
 		const invoiceId = await createApprovedInvoice(page, `void-${stamp}`);
 		let runId: string | null = null;
 		try {
 			runId = await createRun(page, invoiceId);
-			await executeRun(page, runId);
+			// Execute as CFO (different user from admin who created the run) to
+			// satisfy the maker-checker SoD gate in execute_payment_run.
+			await executeRunAsCfo(page, runId, tenantCfo, tenantAdmin);
 			const before = await getRunPayment(page, runId);
 			expect(before.status).toBe('completed');
 
@@ -140,13 +166,15 @@ test.describe('/payments — void completed payment', () => {
 		}
 	});
 
-	test('voiding a failed payment is rejected with 409', async ({ page }) => {
+	test('voiding a failed payment is rejected with 409', async ({ page, tenantCfo, tenantAdmin }) => {
 		const stamp = Date.now();
 		const invoiceId = await createApprovedInvoice(page, `void-failed-${stamp}`);
 		let runId: string | null = null;
 		try {
 			runId = await createRun(page, invoiceId);
-			await executeRun(page, runId);
+			// Execute as CFO to satisfy SoD; the mock adapter always completes, so
+			// we then force the payment to `failed` via SQL for the 409 test.
+			await executeRunAsCfo(page, runId, tenantCfo, tenantAdmin);
 			const before = await getRunPayment(page, runId);
 
 			// Force the payment into `failed` via SQL — the mock adapter
@@ -225,13 +253,14 @@ test.describe('/payments — cancel draft run', () => {
 		}
 	});
 
-	test('cannot cancel a run that has already executed', async ({ page }) => {
+	test('cannot cancel a run that has already executed', async ({ page, tenantCfo, tenantAdmin }) => {
 		const stamp = Date.now();
 		const invoiceId = await createApprovedInvoice(page, `noex-${stamp}`);
 		let runId: string | null = null;
 		try {
 			runId = await createRun(page, invoiceId);
-			await executeRun(page, runId);
+			// Execute as CFO to satisfy SoD; then assert cancel is rejected.
+			await executeRunAsCfo(page, runId, tenantCfo, tenantAdmin);
 
 			const resp = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/cancel`,

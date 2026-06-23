@@ -473,6 +473,8 @@ test.describe('spend-to-contract attribution', () => {
 
 			// Three invoices with decimal amounts that exercise rounding:
 			// 100.10 + 100.20 = 200.30 counted; a rejected 999.99 excluded.
+			// POST /api/invoices ignores a client-supplied status (status-injection
+			// fix), so we set the intended status via SQL after each POST.
 			const amounts: Array<{ amt: string; status: string }> = [
 				{ amt: '100.10', status: 'new' },
 				{ amt: '100.20', status: 'approved' },
@@ -486,13 +488,14 @@ test.describe('spend-to-contract attribution', () => {
 						vendor: vendor.name,
 						invoice_number: `SPEND-${Date.now()}-${i}`,
 						amount: amt,
-						currency: 'USD',
-						status
+						currency: 'USD'
 					}
 				});
 				expect(r.status()).toBe(201);
 				const inv = (await r.json()) as { id: string };
 				invoiceIds.push(inv.id);
+				// Force the intended status — API always creates `new`.
+				tenantPsql(`UPDATE invoices SET status='${status}' WHERE id='${inv.id}'`);
 				// Link the invoice to the contract (spend attribution).
 				const link = await page.request.post(
 					`${API_BASE}/api/invoices/${inv.id}/link-contract`,

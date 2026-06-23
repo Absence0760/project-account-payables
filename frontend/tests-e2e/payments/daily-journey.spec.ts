@@ -7,6 +7,14 @@ import {
 	test
 } from '../fixtures/helpers';
 
+/** Patch org settings (admin-scoped). */
+async function patchOrg(page: import('@playwright/test').Page, partial: object): Promise<void> {
+	await page.request.patch(`${API_BASE}/api/organization`, {
+		headers: await authedTenantHeaders(page),
+		data: { settings: partial }
+	});
+}
+
 /**
  * /payments — the AP user's pay-run daily journey through the Runs tab,
  * end to end:
@@ -84,6 +92,20 @@ function resetInvoiceStatus(id: string, status: string): void {
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test.describe('/payments pay-run daily journey (Runs tab)', () => {
+	// The execute_payment_run maker-checker gate (SoD) blocks the same user
+	// who created a run from also executing it. This daily-journey spec uses
+	// a single admin session for both steps, so disable SoD for the test and
+	// restore it afterwards. The explicit SoD tests live in run-cfo-signoff.spec.ts.
+	test.beforeEach(async ({ page, tenantAdmin }) => {
+		await signInAndWait(page, tenantAdmin);
+		await patchOrg(page, { payments: { require_run_segregation: false } });
+	});
+
+	test.afterEach(async ({ page, tenantAdmin }) => {
+		await signInAndWait(page, tenantAdmin);
+		await patchOrg(page, { payments: { require_run_segregation: true } });
+	});
+
 	test('open a draft run from the Runs tab → Execute → run completed + invoice scheduled + leaves queue', async ({
 		page,
 		tenantAdmin

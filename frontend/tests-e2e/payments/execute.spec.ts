@@ -2,6 +2,7 @@ import {
 	API_BASE,
 	authedTenantHeaders,
 	expect,
+	signInAndWait,
 	tenantPsql,
 	test
 } from '../fixtures/helpers';
@@ -28,6 +29,17 @@ async function getInvoiceStatus(
 		headers: await authedTenantHeaders(page)
 	});
 	return ((await resp.json()) as { status: string }).status;
+}
+
+/** Disable / re-enable the maker-checker run-segregation gate. */
+async function patchOrg(
+	page: import('@playwright/test').Page,
+	partial: object
+): Promise<void> {
+	await page.request.patch(`${API_BASE}/api/organization`, {
+		headers: await authedTenantHeaders(page),
+		data: { settings: partial }
+	});
 }
 
 /**
@@ -61,12 +73,34 @@ function deletePaymentRun(runId: string): void {
  *
  * Each test reverts via direct DB cleanup + invoice PATCH back to the
  * source status.
+ *
+ * SoD note: `execute_payment_run` enforces maker-checker (the user who
+ * creates a run cannot also execute it). Tests that use the same admin
+ * session for both operations disable SoD via `require_run_segregation:
+ * false` — a legitimate per-org single-operator configuration — and reset
+ * it afterward. Tests that explicitly cover SoD live in run-cfo-signoff.spec.ts.
  */
 
 test.describe('/payments execute', () => {
 	test.beforeEach(async ({ page }) => {
+		// Disable maker-checker SoD so a single admin can both create and
+		// execute a run within the same UI session. This is a valid per-org
+		// configuration (single-operator accounts). SoD enforcement is tested
+		// in run-cfo-signoff.spec.ts.
+		await patchOrg(page, { payments: { require_run_segregation: false } });
+		// Wait for the page to settle before navigating — avoids ERR_ABORTED
+		// when the pre-navigated tenant root still has in-flight HMR/redirect
+		// requests outstanding from the storageState fixture's initial goto.
+		await page.waitForLoadState('networkidle');
 		await page.goto('/payments');
 		await page.waitForLoadState('networkidle');
+	});
+
+	test.afterEach(async ({ page, tenantAdmin }) => {
+		// Restore the admin session (a test may have switched to a different role)
+		// and re-enable SoD so the org setting is hermetic across the suite.
+		await signInAndWait(page, tenantAdmin);
+		await patchOrg(page, { payments: { require_run_segregation: true } });
 	});
 
 	test('Create Draft → Execute flips run + payment + invoice statuses', async ({
@@ -148,7 +182,8 @@ test.describe('/payments execute', () => {
 		const runId = ((await createResp.json()) as { id: string }).id;
 
 		try {
-			// First execute: 200.
+			// First execute: 200 (SoD disabled in beforeEach so admin can both
+			// create and execute).
 			const first = await page.request.post(
 				`${API_BASE}/api/payments/runs/${runId}/execute`,
 				{ headers }

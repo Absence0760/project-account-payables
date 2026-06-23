@@ -9,9 +9,9 @@ const MARKER = 'PAGE-VND-';
 
 function seedVendors(n: number): void {
 	tenantPsql(
-		`INSERT INTO vendors (id, organization_id, name, status, source, accepts_virtual_cards, is_1099_eligible, kyc_status, created_at, updated_at)
+		`INSERT INTO vendors (id, organization_id, name, status, source, accepts_virtual_cards, is_1099_eligible, kyc_status, screening_status, payments_blocked, risk_level, created_at, updated_at)
 		 SELECT gen_random_uuid(), (SELECT organization_id FROM vendors LIMIT 1),
-		        '${MARKER}' || lpad(g::text, 3, '0'), 'active', 'manual', false, false, 'not_required', now(), now()
+		        '${MARKER}' || lpad(g::text, 3, '0'), 'active', 'manual', false, false, 'not_required', 'unscreened', false, 'unknown', now(), now()
 		 FROM generate_series(1, ${n}) g`
 	);
 }

@@ -1,4 +1,11 @@
-import { API_BASE, authedTenantHeaders, expect, signInAndWait, test } from '../fixtures/helpers';
+import {
+	API_BASE,
+	authedTenantHeaders,
+	expect,
+	signInAndWait,
+	tenantPsql,
+	test
+} from '../fixtures/helpers';
 
 /**
  * /invoices — the AP user's daily approval journey, end to end through
@@ -39,18 +46,16 @@ async function listInvoices(
 	return ((await resp.json()) as { items: Inv[] }).items;
 }
 
-async function patchStatus(
-	page: import('@playwright/test').Page,
-	id: string,
-	status: string
-) {
-	const resp = await page.request.patch(`${API_BASE}/api/invoices/${id}`, {
-		headers: await authedTenantHeaders(page),
-		data: { status }
-	});
-	if (resp.status() !== 200) {
-		throw new Error(`PATCH ${id} → ${status} failed (${resp.status()})`);
-	}
+/**
+ * Force an invoice to a given status via direct SQL.
+ * PATCH /api/invoices intentionally ignores the `status` field (it was removed
+ * from InvoiceUpdate to prevent status-injection), so for test setup / teardown
+ * that needs to place an invoice in a specific status regardless of the current
+ * state, direct SQL is the only reliable path. This is the same pattern used in
+ * transitions.spec.ts and void-cancel.spec.ts.
+ */
+function forceStatus(id: string, status: string): void {
+	tenantPsql(`UPDATE invoices SET status='${status}' WHERE id='${id}'`);
 }
 
 async function getInvoice(
@@ -89,7 +94,7 @@ async function ensureReadyForReview(
 	if (!promotable) {
 		throw new Error('No mutable invoice to promote into ready_for_review — seed exhausted?');
 	}
-	await patchStatus(page, promotable.id, 'ready_for_review');
+	forceStatus(promotable.id, 'ready_for_review');
 	return { ...promotable, status: 'ready_for_review' };
 }
 
@@ -123,6 +128,25 @@ async function signInAndGotoInvoices(
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test.describe('/invoices daily approval journey', () => {
+	test.beforeEach(() => {
+		// Ensure the tenant's "Default Workflow" (with approval enabled) is the
+		// active default. `workflows/` test runs can create extra workflow
+		// definitions with is_default=TRUE, including ones with all steps disabled.
+		// If a stale is_default=TRUE definition is picked instead of "Default
+		// Workflow", the "Ready for Review" chip is hidden because approval=false.
+		// We demote all non-seed definitions and guarantee "Default Workflow" is
+		// active and default. The multi-entity entity_id context is irrelevant here
+		// because the app-level fallback (fixed in workflow_engine.py) now correctly
+		// finds any active workflow when no entity_id=NULL org-wide definition
+		// exists — the entity-scoped "Default Workflow" is always in scope.
+		tenantPsql(
+			`UPDATE workflow_definitions SET is_default=FALSE, is_active=FALSE WHERE name <> 'Default Workflow'`
+		);
+		tenantPsql(
+			`UPDATE workflow_definitions SET is_default=TRUE, is_active=TRUE WHERE name='Default Workflow'`
+		);
+	});
+
 	test('queue → Ready-for-Review filter → open → Approve → leaves the queue', async ({
 		page,
 		tenantAdmin

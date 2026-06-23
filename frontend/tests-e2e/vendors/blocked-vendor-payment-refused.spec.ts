@@ -6,6 +6,17 @@ import {
 	test
 } from '../fixtures/helpers';
 
+async function patchOrg(
+	page: import('@playwright/test').Page,
+	partial: object,
+	headers: Record<string, string>
+): Promise<void> {
+	await page.request.patch(`${API_BASE}/api/organization`, {
+		headers,
+		data: { settings: partial }
+	});
+}
+
 /**
  * Blocked-vendor payment refusal — the sticky payment-block fraud gate.
  *
@@ -162,6 +173,13 @@ test.describe('blocked vendor cannot be paid (domestic ACH)', () => {
 		await page.goto('/vendors');
 		SLUG = slugFromPage(page);
 		H = await authedTenantHeaders(page, SLUG);
+		// Disable SoD so the admin session can both create and execute a run.
+		// The SoD tests live in run-cfo-signoff.spec.ts.
+		await patchOrg(page, { payments: { require_run_segregation: false } }, H);
+	});
+
+	test.afterEach(async ({ page }) => {
+		await patchOrg(page, { payments: { require_run_segregation: true } }, H);
 	});
 
 	test('a manually-blocked vendor is refused a domestic-ACH payment', async ({ page }) => {

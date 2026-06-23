@@ -3,27 +3,48 @@ import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixt
 /**
  * /payments cards-tab pagination. The cards tab previously fetched every card;
  * it now uses the shared Load-More at page_size=20. We bulk-insert virtual
- * cards (against a seeded invoice) past the boundary and assert the contract.
+ * cards (against stub invoices) past the boundary and assert the contract.
  * Cards isn't the default tab (queue is), so the test switches to it first.
  *
  * Real card issuance needs an approved invoice + a card-adapter round trip, so
  * the fixture inserts rows directly — the list/pagination path under test
  * doesn't care how the cards were created, only that there are >page_size of
  * them.
+ *
+ * `uq_virtual_cards_one_live_per_invoice` enforces at most one active card per
+ * invoice, so we seed one stub invoice per card via a `generate_series` cross-
+ * join. The stub invoices use a `CARD-STUB-` number prefix so `purge()` can
+ * clean both the cards and the invoices atomically.
  */
 
-const MARKER = 'PAGE-CARD-';
+const CARD_MARKER = 'PAGE-CARD-';
+const INV_MARKER = 'CARD-STUB-';
+
+function getOrgId(): string {
+	return tenantPsql(`SELECT organization_id FROM invoices LIMIT 1`).trim();
+}
 
 function seedCards(n: number): void {
+	const orgId = getOrgId();
+	// One stub invoice per card to satisfy uq_virtual_cards_one_live_per_invoice
+	// (one active card per invoice). The CARD-STUB- prefix lets purge() identify
+	// and remove them. All NOT NULL columns must be provided: correlation_id,
+	// vendor_name, amount, currency, status, organization_id.
+	tenantPsql(
+		`INSERT INTO invoices (id, organization_id, correlation_id, invoice_number, vendor_name, amount, currency, status, created_at, updated_at)
+		 SELECT gen_random_uuid(), '${orgId}', gen_random_uuid(), '${INV_MARKER}' || g, 'Card Stub Vendor', 1.00, 'USD', 'new', now(), now()
+		 FROM generate_series(1, ${n}) g`
+	);
 	tenantPsql(
 		`INSERT INTO virtual_cards (id, invoice_id, organization_id, card_provider, provider_card_id, amount_limit, currency, status, last_four, created_at, updated_at)
-		 SELECT gen_random_uuid(), i.id, i.organization_id, 'mock', '${MARKER}' || g, 500.00, 'USD', 'active', '4242', now(), now()
-		 FROM generate_series(1, ${n}) g, (SELECT id, organization_id FROM invoices LIMIT 1) i`
+		 SELECT gen_random_uuid(), i.id, i.organization_id, 'mock', '${CARD_MARKER}' || row_number() OVER (), 500.00, 'USD', 'active', '4242', now(), now()
+		 FROM invoices i WHERE i.invoice_number LIKE '${INV_MARKER}%'`
 	);
 }
 
 function purge(): void {
-	tenantPsql(`DELETE FROM virtual_cards WHERE provider_card_id LIKE '${MARKER}%'`);
+	tenantPsql(`DELETE FROM virtual_cards WHERE provider_card_id LIKE '${CARD_MARKER}%'`);
+	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${INV_MARKER}%'`);
 }
 
 test.describe('/payments cards pagination', () => {

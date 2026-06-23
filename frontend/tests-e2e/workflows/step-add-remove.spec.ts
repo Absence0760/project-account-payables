@@ -7,7 +7,8 @@ async function createWorkflow(page: import('@playwright/test').Page): Promise<st
 	await page.getByRole('button', { name: /^Create$/ }).click();
 	await page.waitForURL(/\/workflows\/[a-f0-9-]{36}/, { timeout: 10_000 });
 	const id = page.url().match(/\/workflows\/([a-f0-9-]{36})/)![1];
-	await expect(page.locator('.step-list .step-card').first()).toBeVisible();
+	// Editor ready — wait for the first step node in the canvas.
+	await expect(page.locator('.canvas .node').first()).toBeVisible();
 	return id;
 }
 
@@ -39,15 +40,19 @@ test.describe('/workflows/[id] add/remove steps', () => {
 		const id = await createWorkflow(page);
 
 		try {
-			const before = await page.locator('.step-list .step-card').count();
-			await page.locator('.add-step').getByRole('button', { name: 'Approval' }).click();
+			const before = await page.locator('.canvas .node').count();
+			// Exact: /Approval/ also matches the "Parallel Approval" step button.
+			await page
+				.locator('.palette')
+				.getByRole('button', { name: 'Add Approval step', exact: true })
+				.click();
 
-			const cards = page.locator('.step-list .step-card');
-			await expect(cards).toHaveCount(before + 1);
-			// New step is auto-selected (last card).
-			await expect(cards.last()).toHaveClass(/selected/);
+			const nodes = page.locator('.canvas .node');
+			await expect(nodes).toHaveCount(before + 1);
+			// New step is auto-selected (last node).
+			await expect(nodes.last()).toHaveClass(/selected/);
 			// Step number cascades.
-			await expect(cards.last().locator('.step-number')).toHaveText(String(before + 1));
+			await expect(nodes.last().locator('.node-number')).toHaveText(String(before + 1));
 			// Save becomes enabled because the editor is dirty.
 			await expect(page.locator('button.btn-save')).toBeEnabled();
 		} finally {
@@ -61,7 +66,7 @@ test.describe('/workflows/[id] add/remove steps', () => {
 		try {
 			const initial = (await getWorkflow(page, id)).steps_config.steps.length;
 
-			await page.locator('.add-step').getByRole('button', { name: 'ERP Export' }).click();
+			await page.locator('.palette').getByRole('button', { name: /ERP Export/ }).click();
 
 			const saved = page.waitForResponse(
 				(r) =>
@@ -87,7 +92,7 @@ test.describe('/workflows/[id] add/remove steps', () => {
 
 		try {
 			// Default workflow has 3 steps; we can remove down to 1.
-			const beforeRows = await page.locator('.step-list .step-card').count();
+			const beforeRows = await page.locator('.canvas .node').count();
 			expect(beforeRows).toBeGreaterThan(1);
 
 			// Removal happens when a step is selected via the config panel's
@@ -115,7 +120,7 @@ test.describe('/workflows/[id] add/remove steps', () => {
 
 			await page.reload();
 			await page.waitForLoadState('networkidle');
-			await expect(page.locator('.step-list .step-card')).toHaveCount(1);
+			await expect(page.locator('.canvas .node')).toHaveCount(1);
 		} finally {
 			await deleteWorkflow(page, id);
 		}
@@ -125,15 +130,19 @@ test.describe('/workflows/[id] add/remove steps', () => {
 		const id = await createWorkflow(page);
 
 		try {
-			const before = await page.locator('.step-list .step-card').count();
-			await page.locator('.add-step').getByRole('button', { name: 'Approval' }).click();
-			await page.locator('.add-step').getByRole('button', { name: 'ERP Export' }).click();
+			const before = await page.locator('.canvas .node').count();
+			// Exact: /Approval/ also matches the "Parallel Approval" step button.
+			await page
+				.locator('.palette')
+				.getByRole('button', { name: 'Add Approval step', exact: true })
+				.click();
+			await page.locator('.palette').getByRole('button', { name: /ERP Export/ }).click();
 
-			const cards = page.locator('.step-list .step-card');
-			await expect(cards).toHaveCount(before + 2);
+			const nodes = page.locator('.canvas .node');
+			await expect(nodes).toHaveCount(before + 2);
 
 			// All step numbers cascade 1..N from top to bottom.
-			const nums = await cards.locator('.step-number').allTextContents();
+			const nums = await nodes.locator('.node-number').allTextContents();
 			expect(nums).toEqual(Array.from({ length: before + 2 }, (_, i) => String(i + 1)));
 		} finally {
 			await deleteWorkflow(page, id);

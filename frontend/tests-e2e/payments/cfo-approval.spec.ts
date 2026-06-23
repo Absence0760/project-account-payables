@@ -25,12 +25,21 @@ async function createApprovedInvoice(
 			vendor: 'E2E CFO Vendor',
 			invoice_number: `E2E-CFO-${suffix}`,
 			amount,
-			currency: 'USD',
-			status: 'approved'
+			currency: 'USD'
 		}
 	});
 	expect(resp.status()).toBe(201);
-	return ((await resp.json()) as { id: string }).id;
+	const body = (await resp.json()) as { id: string };
+	// POST /api/invoices intentionally ignores a client-supplied status (the
+	// status-injection fix — InvoiceCreate has no `status` field). Force the
+	// row to `approved` and bind a real vendor_id (required by the compliance
+	// gate in execute_payment_run — NULL vendor → pending_compliance) via SQL.
+	const vendorId = tenantPsql(
+		`SELECT id FROM vendors WHERE status='active' LIMIT 1`
+	).trim();
+	const sets = `status='approved'${vendorId ? `, vendor_id='${vendorId}'` : ''}`;
+	tenantPsql(`UPDATE invoices SET ${sets} WHERE id='${body.id}'`);
+	return body.id;
 }
 
 async function createRun(
@@ -70,17 +79,27 @@ function deletePaymentRun(runId: string): void {
  * CFO sign-off on high-value payment runs. The threshold lives in the
  * org settings (`payments.cfo_approval_above`). Each test sets a known
  * threshold and resets it in `finally` so the suite is hermetic.
+ *
+ * SoD note: `execute_payment_run` enforces maker-checker (the user who
+ * creates a run cannot also execute it). These tests disable SoD via
+ * `require_run_segregation: false` so a single admin session can both
+ * create and execute, letting the CFO-approval gate fire. The explicit
+ * SoD tests live in run-cfo-signoff.spec.ts.
  */
 test.describe('/payments — CFO approval gate', () => {
 	test.beforeEach(async ({ page }) => {
-		await patchOrg(page, { payments: { cfo_approval_above: 1000 } });
+		await patchOrg(page, {
+			payments: { cfo_approval_above: 1000, require_run_segregation: false }
+		});
 	});
 
 	test.afterEach(async ({ page, tenantAdmin }) => {
 		// A test may have signed this page in as CFO; restore the admin
 		// session so the patch below goes through with admin scope.
 		await signInAndWait(page, tenantAdmin);
-		await patchOrg(page, { payments: { cfo_approval_above: null } });
+		await patchOrg(page, {
+			payments: { cfo_approval_above: null, require_run_segregation: true }
+		});
 	});
 
 	test('runs over the threshold land with requires_cfo_approval=true', async ({ page }) => {
@@ -200,6 +219,17 @@ test.describe('/payments — CFO approval gate', () => {
 });
 
 test.describe('/payments — remittance PDF', () => {
+	test.beforeEach(async ({ page }) => {
+		// Disable SoD so the admin can both create and execute a run in the
+		// same session. The SoD tests live in run-cfo-signoff.spec.ts.
+		await patchOrg(page, { payments: { require_run_segregation: false } });
+	});
+
+	test.afterEach(async ({ page, tenantAdmin }) => {
+		await signInAndWait(page, tenantAdmin);
+		await patchOrg(page, { payments: { require_run_segregation: true } });
+	});
+
 	test('GET /payments/{id}/remittance returns a PDF for completed payments', async ({
 		page
 	}) => {

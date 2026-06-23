@@ -49,13 +49,15 @@ async function makeInvoice(
 		data: {
 			vendor: vendor.name,
 			invoice_number: `DISC-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-			amount,
-			status: 'approved'
+			amount
 		}
 	});
 	const inv = (await resp.json()) as { id: string };
+	// POST /api/invoices intentionally ignores a client-supplied status (the
+	// status-injection fix). Force `approved`, bind vendor_id, and set due_date
+	// all in one SQL call so discount ROI math sees the right inputs.
 	tenantPsql(
-		`UPDATE invoices SET vendor_id='${vendor.id}', due_date = CURRENT_DATE + ${dueInDays} WHERE id='${inv.id}'`
+		`UPDATE invoices SET status='approved', vendor_id='${vendor.id}', due_date = CURRENT_DATE + ${dueInDays} WHERE id='${inv.id}'`
 	);
 	return inv.id;
 }

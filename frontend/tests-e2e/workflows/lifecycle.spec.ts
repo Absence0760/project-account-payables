@@ -67,7 +67,7 @@ test.describe('workflow lifecycle', () => {
 		const newId = match![1];
 
 		try {
-			await expect(page.locator('h2.page-title')).toContainText(name);
+			await expect(page.locator('h1.page-title')).toContainText(name);
 
 			// Newly-created workflows start `is_active=False` per the
 			// API contract. Toggle button should reflect that.

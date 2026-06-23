@@ -145,17 +145,75 @@ export const test = base.extend<object, WorkerFixtures>({
 	}
 });
 
+/**
+ * Read the auth_token value out of a persisted storageState JSON
+ * (format: `{origins:[{localStorage:[{name,value}]}]}`).
+ * Returns null when the file is missing, malformed, or holds no token.
+ */
+function _readStoredToken(file: string): string | null {
+	try {
+		const raw = fs.readFileSync(file, 'utf8');
+		const parsed = JSON.parse(raw) as {
+			origins?: Array<{ localStorage?: Array<{ name: string; value: string }> }>;
+		};
+		for (const origin of parsed.origins ?? []) {
+			for (const entry of origin.localStorage ?? []) {
+				if (entry.name === 'auth_token') return entry.value;
+			}
+		}
+	} catch {
+		/* missing or corrupt file — treat as invalid */
+	}
+	return null;
+}
+
+/**
+ * Probe the API with a stored JWT to decide if the storageState file is
+ * still usable. Returns true only when `/api/auth/me` responds 2xx.
+ * A 401 (expired, blocklisted, or otherwise revoked) returns false.
+ * Network errors also return false so the caller re-logs in.
+ */
+async function _isStoredTokenValid(token: string, tenantSlug: string): Promise<boolean> {
+	const apiBase = process.env.PUBLIC_API_URL ?? 'http://localhost:8000';
+	try {
+		const res = await fetch(`${apiBase}/api/auth/me`, {
+			headers: {
+				Authorization: `Bearer ${token}`,
+				'X-Tenant-Slug': tenantSlug
+			}
+		});
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
 /** Worker-scoped lazy creator for the per-tenant admin storage-state
  *  file. The first test in a worker signs the admin into a throwaway
  *  context, persists the localStorage to disk, and closes the
- *  context. Subsequent tests just read the file path. */
+ *  context. Subsequent tests just read the file path.
+ *
+ *  The file is validated on every use: the stored JWT is probed against
+ *  `/api/auth/me`. If it returns 401 (expired or blocklisted by the
+ *  session-management eviction system) the stale file is deleted and
+ *  a fresh login regenerates it. This prevents the "not signed in" flake
+ *  that occurs when another test's `signInAndWait` call pushes the cached
+ *  JTI out of the active-sessions set and into the Redis blocklist. */
 async function _ensureAdminStorageState(
 	browser: Browser,
 	tenantSlug: string,
 	creds: TenantCreds
 ): Promise<string> {
 	const file = path.join(AUTH_DIR, `${tenantSlug}-admin.json`);
-	if (fs.existsSync(file)) return file;
+	if (fs.existsSync(file)) {
+		const token = _readStoredToken(file);
+		if (token && (await _isStoredTokenValid(token, tenantSlug))) {
+			return file;
+		}
+		// Token missing, expired, or blocklisted — remove the stale file so
+		// we fall through to re-login below.
+		fs.unlinkSync(file);
+	}
 
 	fs.mkdirSync(AUTH_DIR, { recursive: true });
 	const context = await browser.newContext({

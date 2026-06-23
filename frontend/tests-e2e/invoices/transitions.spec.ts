@@ -1,4 +1,4 @@
-import { API_BASE, authedTenantHeaders, expect, test } from '../fixtures/helpers';
+import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixtures/helpers';
 
 async function fetchInvoiceByStatus(
 	page: import('@playwright/test').Page,
@@ -14,15 +14,18 @@ async function fetchInvoiceByStatus(
 	return body.items.find((i) => i.status === wanted) ?? null;
 }
 
-async function patchInvoiceStatus(
-	page: import('@playwright/test').Page,
-	id: string,
-	status: string
-) {
-	return page.request.patch(`${API_BASE}/api/invoices/${id}`, {
-		headers: await authedTenantHeaders(page),
-		data: { status }
-	});
+/**
+ * Force an invoice to a given status via direct SQL. The PATCH /api/invoices
+ * endpoint intentionally ignores the `status` field (it was removed from
+ * InvoiceUpdate to prevent status-injection), and the workflow API only
+ * supports a subset of transitions via HTTP. For e2e cleanup and setup that
+ * need to place an invoice into a specific status regardless of its current
+ * state (e.g. restoring a rejected invoice to ready_for_review), direct SQL
+ * is the only fully reliable path. This matches the pattern used in other
+ * specs (void-cancel, run-cfo-signoff) that also bypass the API to set state.
+ */
+function forceInvoiceStatus(id: string, status: string): void {
+	tenantPsql(`UPDATE invoices SET status='${status}' WHERE id='${id}'`);
 }
 
 /**
@@ -68,10 +71,10 @@ async function ensureReadyForReviewQueueHasOne(page: import('@playwright/test').
 			'Cannot find a mutable invoice to promote into ready_for_review — seed exhausted?'
 		);
 	}
-	const resp = await patchInvoiceStatus(page, promotable.id, 'ready_for_review');
-	if (resp.status() !== 200) {
-		throw new Error(`Failed to promote invoice into ready_for_review: ${resp.status()}`);
-	}
+	// Use SQL to bypass the API's VALID_TRANSITIONS check — PATCH /api/invoices
+	// ignores `status` by design, and `approved → ready_for_review` is not a
+	// valid API transition. Direct SQL is the correct path for test setup.
+	forceInvoiceStatus(promotable.id, 'ready_for_review');
 }
 
 /**
@@ -171,8 +174,12 @@ test.describe('/invoices status transitions', () => {
 			);
 			expect(((await fresh.json()) as { status: string }).status).toBe('rejected');
 		} finally {
-			// rejected → ready_for_review is in VALID_TRANSITIONS.
-			await patchInvoiceStatus(page, target!.id, 'ready_for_review');
+			// Restore invoice to ready_for_review so subsequent tests have supply.
+			// Use SQL directly: PATCH /api/invoices ignores `status`, and
+			// rejected → ready_for_review requires the resubmit endpoint which
+			// is an extra round-trip we don't need here. SQL is consistent with
+			// the setup path in ensureReadyForReviewQueueHasOne.
+			forceInvoiceStatus(target!.id, 'ready_for_review');
 		}
 	});
 

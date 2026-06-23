@@ -56,7 +56,9 @@ test.describe('/cfo (admin)', () => {
 			r.url().includes('/api/analytics/cash_position') && r.url().includes('opening_balance=500000')
 		);
 		await page.getByLabel('Opening bank balance').fill('500000');
-		await page.getByLabel('Minimum balance threshold').fill('100000');
+		// Label was renamed in i18n extraction from 'Minimum balance threshold'
+		// to 'Min balance alert' (cfo.control.minBalance in en.ts).
+		await page.getByLabel('Min balance alert').fill('100000');
 		const resp = await respPromise;
 		expect(resp.status()).toBe(200);
 		// The running-balance table renders rows with opening/closing columns.

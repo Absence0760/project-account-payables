@@ -11,12 +11,55 @@ interface Vendor {
 	name: string;
 }
 
-async function getFirstVendor(page: import('@playwright/test').Page): Promise<Vendor> {
-	const resp = await page.request.get(`${API_BASE}/api/vendors`, {
-		headers: await authedTenantHeaders(page)
-	});
-	const body = (await resp.json()) as { items: Vendor[] };
-	return body.items[0];
+// Prefix used by the enrichment spec's fixture vendors. Filtering these out
+// makes all helpers immune to leftover test-vendor pollution from prior runs
+// where the cleanup was interrupted (e.g. by a test timeout).
+const _FIXTURE_VENDOR_PREFIX = 'ENRICH-TEST-';
+
+/**
+ * Return a seed vendor (not an ENRICH-TEST fixture vendor) that has at
+ * least one invoice, together with the id of that invoice.
+ *
+ * Strategy: list all invoices (which carry the denormalized vendor name
+ * string as `vendor`, but NOT vendor_id in the API response), then
+ * look up each invoice's vendor by searching the vendor list for an
+ * exact name match that is not a fixture vendor.
+ */
+async function getVendorWithInvoice(
+	page: import('@playwright/test').Page
+): Promise<Vendor & { invoiceId: string }> {
+	const headers = await authedTenantHeaders(page);
+
+	const invResp = await page.request.get(`${API_BASE}/api/invoices`, { headers });
+	const invBody = (await invResp.json()) as {
+		items: Array<{ id: string; vendor: string }>;
+	};
+	if (!invBody.items.length) throw new Error('No invoices found in the tenant');
+
+	// For each invoice, search the vendor list for an exact name match that
+	// is a real (non-fixture) vendor. The vendor's name may have been mutated
+	// by the enrichment spec (e.g. suffixed with "(MOCK)"), so we try both the
+	// exact invoice vendor-name and also a prefix-search fallback.
+	for (const inv of invBody.items.slice(0, 20)) {
+		if (!inv.vendor || inv.vendor.startsWith(_FIXTURE_VENDOR_PREFIX)) continue;
+
+		// Exact-match search.
+		const vResp = await page.request.get(
+			`${API_BASE}/api/vendors?search=${encodeURIComponent(inv.vendor)}`,
+			{ headers }
+		);
+		const vBody = (await vResp.json()) as { items: Vendor[] };
+		// The vendor record's current name may carry extra suffixes from
+		// enrichment tests. Accept any vendor whose name starts with the
+		// invoice's vendor-name string (covers original name + enriched variants).
+		const vendor = vBody.items.find(
+			(v) =>
+				!v.name.startsWith(_FIXTURE_VENDOR_PREFIX) &&
+				(v.name === inv.vendor || v.name.startsWith(inv.vendor))
+		);
+		if (vendor) return { ...vendor, invoiceId: inv.id };
+	}
+	throw new Error('Could not find a non-fixture vendor with an invoice in the tenant');
 }
 
 async function createMemo(
@@ -61,7 +104,7 @@ test.describe('/credit-memos', () => {
 	});
 
 	test('Create modal validates and creates a memo via the API', async ({ page }) => {
-		const vendor = await getFirstVendor(page);
+		const vendor = await getVendorWithInvoice(page);
 		const memoNumber = `CM-E2E-${Date.now()}`;
 		let createdId: string | null = null;
 
@@ -98,7 +141,7 @@ test.describe('/credit-memos', () => {
 	});
 
 	test('Status filter chips narrow the list', async ({ page }) => {
-		const vendor = await getFirstVendor(page);
+		const vendor = await getVendorWithInvoice(page);
 		const created: string[] = [];
 
 		try {
@@ -140,18 +183,9 @@ test.describe('/credit-memos', () => {
 	});
 
 	test('Apply flips an open memo to applied via the UI', async ({ page }) => {
-		const vendor = await getFirstVendor(page);
-
-		// Find an invoice belonging to this vendor.
-		const invoicesResp = await page.request.get(
-			`${API_BASE}/api/invoices?vendor=${encodeURIComponent(vendor.name)}`,
-			{ headers: await authedTenantHeaders(page) }
-		);
-		const invoices = (await invoicesResp.json()) as {
-			items: Array<{ id: string; vendor: string; vendor_id: string | null }>;
-		};
-		const targetInvoice = invoices.items.find((i) => i.vendor === vendor.name);
-		expect(targetInvoice, 'no matching invoice for vendor').toBeTruthy();
+		// getVendorWithInvoice returns a vendor that already has an invoice,
+		// so we can skip the separate invoice-search step.
+		const vendor = await getVendorWithInvoice(page);
 
 		const memo = await createMemo(page, {
 			memo_number: `CM-APPLY-${Date.now()}`,
@@ -170,7 +204,7 @@ test.describe('/credit-memos', () => {
 				'div.modal[role="dialog"][aria-label="Apply credit memo"]'
 			);
 			await expect(applyModal).toBeVisible();
-			await applyModal.locator('select').selectOption(targetInvoice!.id);
+			await applyModal.locator('select').selectOption(vendor.invoiceId);
 
 			const applied = page.waitForResponse(
 				(r) =>
@@ -182,7 +216,7 @@ test.describe('/credit-memos', () => {
 			const resp = await applied;
 			const body = (await resp.json()) as { status: string; invoice_id: string };
 			expect(body.status).toBe('applied');
-			expect(body.invoice_id).toBe(targetInvoice!.id);
+			expect(body.invoice_id).toBe(vendor.invoiceId);
 		} finally {
 			deleteMemo(memo.id);
 		}
@@ -237,27 +271,23 @@ test.describe('/credit-memos', () => {
 				`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${invoiceB.id}')`
 			);
 			tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${invoiceB.id}'`);
-			tenantPsql(`DELETE FROM audit_log WHERE entity_id='${invoiceB.id}'`);
+			// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
+			// orphan rows for the removed invoice are harmless (no FK back to invoices).
 			tenantPsql(`DELETE FROM invoices WHERE id='${invoiceB.id}'`);
 		}
 	});
 
 	test('API: cannot void an already-applied memo (audit immutability)', async ({ page }) => {
 		const headers = await authedTenantHeaders(page);
-		const vendor = await getFirstVendor(page);
-
-		const invoicesResp = await page.request.get(`${API_BASE}/api/invoices`, { headers });
-		const invoices = (await invoicesResp.json()) as {
-			items: Array<{ id: string; vendor: string }>;
-		};
-		const sameVendorInv = invoices.items.find((i) => i.vendor === vendor.name);
-		expect(sameVendorInv).toBeTruthy();
+		// Use getVendorWithInvoice to guarantee we have a vendor+invoice pair
+		// regardless of leftover test-vendor pollution in the tenant.
+		const vendor = await getVendorWithInvoice(page);
 
 		const memo = await createMemo(page, {
 			memo_number: `CM-VOID-${Date.now()}`,
 			vendor_id: vendor.id,
 			amount: 25,
-			invoice_id: sameVendorInv!.id
+			invoice_id: vendor.invoiceId
 		});
 		expect(memo.status).toBe('applied');
 
@@ -273,7 +303,7 @@ test.describe('/credit-memos', () => {
 	});
 
 	test('Void flips an open memo to void status', async ({ page }) => {
-		const vendor = await getFirstVendor(page);
+		const vendor = await getVendorWithInvoice(page);
 		const memo = await createMemo(page, {
 			memo_number: `CM-VOID-OK-${Date.now()}`,
 			vendor_id: vendor.id,
@@ -285,13 +315,21 @@ test.describe('/credit-memos', () => {
 			await page.waitForLoadState('networkidle');
 			const row = page.locator('table tbody tr', { hasText: `CM-VOID-OK-` });
 
+			// Void is a two-click armed-confirm action (irreversible-action guard).
+			// First click arms the button (Void → Confirm); the API call fires on
+			// the second click.  Set up the response listener BETWEEN the two clicks
+			// so it's in place before the confirming click but not racing the arm.
+			await row.getByRole('button', { name: 'Void' }).click();
+			const confirmBtn = row.getByRole('button', { name: 'Confirm' });
+			await expect(confirmBtn).toBeVisible();
+
 			const voided = page.waitForResponse(
 				(r) =>
 					r.url().includes(`/api/credit-memos/${memo.id}/void`) &&
 					r.request().method() === 'POST' &&
 					r.status() === 200
 			);
-			await row.getByRole('button', { name: 'Void' }).click();
+			await confirmBtn.click();
 			const resp = await voided;
 			expect(((await resp.json()) as { status: string }).status).toBe('void');
 		} finally {

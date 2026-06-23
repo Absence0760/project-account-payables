@@ -16,12 +16,20 @@ async function createApprovedInvoice(
 			vendor: 'E2E Pluralization Vendor',
 			invoice_number: invoiceNumber,
 			amount: 250.0,
-			currency: 'USD',
-			status: 'approved'
+			currency: 'USD'
 		}
 	});
 	expect(resp.status()).toBe(201);
 	const body = (await resp.json()) as { id: string };
+	// POST /api/invoices intentionally ignores a client-supplied status (the
+	// status-injection fix — InvoiceCreate has no `status` field). Force the
+	// row to `approved` and bind a real vendor_id (required by the compliance
+	// gate in execute_payment_run — NULL vendor → pending_compliance) via SQL.
+	const vendorId = tenantPsql(
+		`SELECT id FROM vendors WHERE status='active' LIMIT 1`
+	).trim();
+	const sets = `status='approved'${vendorId ? `, vendor_id='${vendorId}'` : ''}`;
+	tenantPsql(`UPDATE invoices SET ${sets} WHERE id='${body.id}'`);
 	return body.id;
 }
 
@@ -33,7 +41,8 @@ function hardDeleteInvoice(id: string): void {
 		`DELETE FROM workflow_steps WHERE instance_id IN (SELECT id FROM workflow_instances WHERE invoice_id='${id}')`
 	);
 	tenantPsql(`DELETE FROM workflow_instances WHERE invoice_id='${id}'`);
-	tenantPsql(`DELETE FROM audit_log WHERE entity_id='${id}'`);
+	// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
+	// orphan rows for the removed invoice are harmless (no FK back to invoices).
 	tenantPsql(`DELETE FROM invoices WHERE id='${id}'`);
 }
 

@@ -11,6 +11,14 @@ import { expect, test } from '../fixtures/helpers';
  * Tests that *mutate* state live in lifecycle.spec.ts so they can
  * clean up after themselves; this file is read-only assertions
  * against the editor's render contract.
+ *
+ * Selectors reference the WorkflowCanvas component structure:
+ *   - step nodes: `.canvas .node`   (was `.step-list .step-card`)
+ *   - step type label: `.node-type` (was `.step-type`)
+ *   - step number:    `.node-number`(was `.step-number`)
+ *   - step name:      `.node-name`  (was `.step-name`)
+ *   - add-step palette: `.palette`  (was `.add-step`)
+ *   - page heading: `h1.page-title` (was `h2.page-title`)
  */
 
 test.describe('/workflows/[id] editor (acme admin)', () => {
@@ -21,8 +29,8 @@ test.describe('/workflows/[id] editor (acme admin)', () => {
 	});
 
 	test('header shows the workflow name and Default badge', async ({ page }) => {
-		await expect(page.locator('h2.page-title')).toContainText('Default Workflow');
-		await expect(page.locator('h2.page-title .default-badge')).toBeVisible();
+		await expect(page.locator('h1.page-title')).toContainText('Default Workflow');
+		await expect(page.locator('h1.page-title .default-badge')).toBeVisible();
 	});
 
 	test('toolbar has Active toggle (initially Active) and disabled Save button', async ({
@@ -36,24 +44,22 @@ test.describe('/workflows/[id] editor (acme admin)', () => {
 	});
 
 	test('pipeline shows the three seeded steps in order', async ({ page }) => {
-		const steps = page.locator('.step-list .step-card');
+		const steps = page.locator('.canvas .node');
 		await expect(steps).toHaveCount(3);
 
 		// Step type labels should read in pipeline order.
-		await expect(steps.nth(0).locator('.step-type')).toHaveText('Data Extraction');
-		await expect(steps.nth(1).locator('.step-type')).toHaveText('Approval');
-		await expect(steps.nth(2).locator('.step-type')).toHaveText('ERP Export');
+		await expect(steps.nth(0).locator('.node-type')).toHaveText('Data Extraction');
+		await expect(steps.nth(1).locator('.node-type')).toHaveText('Approval');
+		await expect(steps.nth(2).locator('.node-type')).toHaveText('ERP Export');
 
 		// Step numbers cascade 1 → 3.
-		await expect(steps.nth(0).locator('.step-number')).toHaveText('1');
-		await expect(steps.nth(1).locator('.step-number')).toHaveText('2');
-		await expect(steps.nth(2).locator('.step-number')).toHaveText('3');
+		await expect(steps.nth(0).locator('.node-number')).toHaveText('1');
+		await expect(steps.nth(1).locator('.node-number')).toHaveText('2');
+		await expect(steps.nth(2).locator('.node-number')).toHaveText('3');
 	});
 
 	test('first step is selected by default and renders its config', async ({ page }) => {
-		await expect(page.locator('.step-list .step-card').first()).toHaveClass(
-			/selected/
-		);
+		await expect(page.locator('.canvas .node').first()).toHaveClass(/selected/);
 		// The right panel shows the selected step's heading + name input.
 		await expect(page.locator('.config-header h3')).toContainText('Data Extraction');
 		await expect(page.locator('input#step-name')).toHaveValue('Data Extraction');
@@ -62,8 +68,8 @@ test.describe('/workflows/[id] editor (acme admin)', () => {
 	test('clicking another step in the pipeline switches the config panel', async ({
 		page
 	}) => {
-		await page.locator('.step-list .step-card').nth(1).click();
-		await expect(page.locator('.step-list .step-card').nth(1)).toHaveClass(/selected/);
+		await page.locator('.canvas .node').nth(1).click();
+		await expect(page.locator('.canvas .node').nth(1)).toHaveClass(/selected/);
 		await expect(page.locator('.config-header h3')).toContainText('Approval');
 	});
 
@@ -79,11 +85,13 @@ test.describe('/workflows/[id] editor (acme admin)', () => {
 	});
 
 	test('add-step buttons are present for every step type', async ({ page }) => {
-		const addRow = page.locator('.add-step');
-		await expect(addRow).toBeVisible();
-		await expect(addRow.getByRole('button', { name: 'Extraction' })).toBeVisible();
-		await expect(addRow.getByRole('button', { name: 'Approval' })).toBeVisible();
-		await expect(addRow.getByRole('button', { name: 'ERP Export' })).toBeVisible();
+		// The palette sidebar has one button per step type.
+		const palette = page.locator('.palette');
+		await expect(palette).toBeVisible();
+		await expect(palette.getByRole('button', { name: /Extraction/ })).toBeVisible();
+		// Exact: /Approval/ also matches the "Parallel Approval" step button.
+		await expect(palette.getByRole('button', { name: 'Add Approval step', exact: true })).toBeVisible();
+		await expect(palette.getByRole('button', { name: /ERP Export/ })).toBeVisible();
 	});
 
 	test('back-link returns to the list page', async ({ page }) => {

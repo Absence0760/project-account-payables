@@ -122,7 +122,8 @@ test.describe('/admin user-delete safety', () => {
 		} finally {
 			tenantPsql(`DELETE FROM workflow_steps WHERE id='${stepRow}'`);
 			tenantPsql(`DELETE FROM workflow_instances WHERE id='${instanceId}'`);
-			tenantPsql(`DELETE FROM audit_log WHERE entity_id='${invoice.id}'`);
+			// audit_log is append-only (DB trigger, migration 0022 + seed) — never DELETE;
+			// orphan rows for the removed invoice are harmless (no FK back to invoices).
 			tenantPsql(`DELETE FROM invoices WHERE id='${invoice.id}'`);
 			await deleteUser(page, id);
 		}
