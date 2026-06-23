@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -712,6 +713,10 @@ async def delete_workflow(
             },
         )
 
+    # workflow_versions FK-reference the definition with no DB cascade, so they
+    # must be removed first or the DELETE raises a ForeignKeyViolation. (Every
+    # PATCH snapshots a version, so any edited workflow has rows here.)
+    await db.execute(sql_delete(WorkflowVersion).where(WorkflowVersion.definition_id == defn.id))
     await db.delete(defn)
 
 
@@ -781,6 +786,10 @@ async def bulk_delete_workflows(
             )
             continue
 
+        # Remove version-history rows first (no DB cascade on the FK).
+        await db.execute(
+            sql_delete(WorkflowVersion).where(WorkflowVersion.definition_id == defn.id)
+        )
         await db.delete(defn)
         deleted.append(raw_id)
 
