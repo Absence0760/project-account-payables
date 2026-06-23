@@ -33,7 +33,7 @@ from app.schemas.workflow import (
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.workflow_engine import DEFAULT_STEPS_CONFIG
-from app.tenant import get_tenant_db
+from app.tenant import get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -153,11 +153,17 @@ async def get_active_steps(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     org_id: uuid.UUID = Depends(get_org_id),
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
-    """Return which steps are enabled in the active workflow."""
+    """Return which steps are enabled in the active workflow.
+
+    Passes the entity context from ``X-Entity-ID`` so that multi-entity
+    tenants get the entity-scoped (or shared org-wide) definition rather
+    than always triggering the org-wide auto-create fallback.
+    """
     from app.services.workflow_engine import get_or_create_workflow_definition
 
-    defn = await get_or_create_workflow_definition(db, org_id)
+    defn = await get_or_create_workflow_definition(db, org_id, entity_id)
     steps = defn.steps_config.get("steps", [])
     result: dict = {}
     for step in steps:

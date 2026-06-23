@@ -389,18 +389,43 @@ async def get_or_create_workflow_definition(
         if defn:
             return defn
 
-    result = await db.execute(
-        select(WorkflowDefinition)
-        .where(
-            WorkflowDefinition.organization_id == organization_id,
-            WorkflowDefinition.entity_id.is_(None),
-            WorkflowDefinition.is_active == True,  # noqa: E712
+    if entity_id is not None:
+        # An entity was requested but has no definition of its own — fall back
+        # to a shared (entity_id IS NULL) org-wide definition.
+        result = await db.execute(
+            select(WorkflowDefinition)
+            .where(
+                WorkflowDefinition.organization_id == organization_id,
+                WorkflowDefinition.entity_id.is_(None),
+                WorkflowDefinition.is_active == True,  # noqa: E712
+            )
+            .order_by(*order)
         )
-        .order_by(*order)
-    )
-    defn = result.scalars().first()
-    if defn:
-        return defn
+        defn = result.scalars().first()
+        if defn:
+            return defn
+    else:
+        # No entity context (consolidated / no X-Entity-ID view). Resolve the
+        # org's real default across ALL active definitions — NULL-scoped OR
+        # entity-scoped — ordered is_default-then-oldest. Crucially this must
+        # NOT prefer a NULL-scoped row blindly: a fully-disabled "Invoice
+        # Processing" stub (auto-created below by an earlier no-entity call, or
+        # left over from migration 0029) is also is_default, so a NULL-only
+        # lookup would return the stub and shadow the seeded entity-scoped
+        # default — breaking active-steps (every step reads disabled) and
+        # routing no-entity invoices through an empty workflow. Oldest-default-
+        # wins returns the genuine seeded definition instead.
+        result = await db.execute(
+            select(WorkflowDefinition)
+            .where(
+                WorkflowDefinition.organization_id == organization_id,
+                WorkflowDefinition.is_active == True,  # noqa: E712
+            )
+            .order_by(*order)
+        )
+        defn = result.scalars().first()
+        if defn:
+            return defn
 
     defn = WorkflowDefinition(
         name="Invoice Processing",
