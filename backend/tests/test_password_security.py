@@ -105,24 +105,18 @@ def test_password_with_unicode_and_symbols_is_accepted():
 
 
 def test_generated_temp_password_passes_complexity():
-    """The temp password emitted by the signup welcome email must
-    itself satisfy complexity — otherwise the user's first login is
-    immediately bounced to /change-password with a confusing error."""
-    # token_urlsafe doesn't guarantee a digit by chance, so we may
-    # need many samples to be statistically confident. The contract
-    # IS "passes complexity at least most of the time" — a flaky
-    # temp password is a real defect. If this fails intermittently,
-    # the temp generator needs to ensure a digit (it currently relies
-    # on random-byte distribution).
-    failures = 0
-    for _ in range(20):
-        try:
-            validate_password_complexity(generate_temp_password())
-        except PasswordError:
-            failures += 1
-    # Allow a tiny rate but no more — flag a regression in the
-    # generator if every other sample fails.
-    assert failures <= 4, f"temp generator produced {failures}/20 weak passwords"
+    """The temp password emitted by the signup welcome email must itself
+    satisfy complexity — otherwise the user's first login is immediately
+    bounced to /change-password with a confusing error.
+
+    generate_temp_password constructs the password to guarantee an uppercase
+    letter, a lowercase letter, and a digit at >= MIN_LENGTH, so EVERY sample
+    must pass — no statistical tolerance. (It previously used token_urlsafe,
+    which relied on random-byte distribution and failed intermittently.)
+    """
+    for _ in range(200):
+        # Raises PasswordError if any generated password fails complexity.
+        validate_password_complexity(generate_temp_password())
 
 
 # ---------------------------------------------------------------------------

@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import re
 import secrets
+import string
 
 from passlib.context import CryptContext
 
 # Minimum constraints for a user-chosen password. The auto-generated
-# temporary password (generate_temp_password) already satisfies these by
-# virtue of token_urlsafe's output alphabet and length.
+# temporary password (generate_temp_password) is constructed to satisfy
+# these deterministically — see that function.
 MIN_LENGTH = 12
 
 pwd_context = CryptContext(
@@ -55,12 +56,29 @@ class PasswordError(ValueError):
 
 
 def generate_temp_password() -> str:
-    """Generate a 16-char URL-safe temporary password for a new admin user.
+    """Generate a 16-char temporary password for a new admin user.
 
-    The password is sent in the welcome email and must be changed on first
-    login (see User.must_change_password).
+    Sent in the welcome email and must be changed on first login (see
+    User.must_change_password). Constructed to ALWAYS satisfy
+    validate_password_complexity — at least one uppercase letter, one lowercase
+    letter, and one digit, length 16 (>= MIN_LENGTH) — so a new user's first
+    login is never bounced by the complexity gate. (The previous
+    `secrets.token_urlsafe(12)` relied on random-byte distribution and could
+    emit a password with no digit or no case mix.) The alphabet is alphanumeric,
+    a subset of the URL-safe set, so the password stays safe in the welcome URL.
     """
-    return secrets.token_urlsafe(12)  # ~16 chars after base64 encoding
+    alphabet = string.ascii_letters + string.digits
+    # Seed one character of each required class so complexity is guaranteed,
+    # fill the rest from the full alphanumeric alphabet, then shuffle so the
+    # seeded positions aren't predictable.
+    chars = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        *(secrets.choice(alphabet) for _ in range(13)),
+    ]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
 
 
 def validate_password_complexity(password: str) -> None:
