@@ -188,8 +188,8 @@ test.describe('no-code workflow builder management', () => {
 			const dialog = page.getByRole('dialog', { name: 'Simulate workflow' });
 			await expect(dialog).toBeVisible();
 
-			await dialog.getByLabel('Invoice amount').fill('5000.00');
-			await dialog.getByLabel('Invoice currency').fill('USD');
+			await dialog.getByLabel('Amount', { exact: true }).fill('5000.00');
+			await dialog.getByLabel('Currency', { exact: true }).fill('USD');
 			await dialog.getByRole('button', { name: 'Run simulation' }).click();
 
 			// The returned path renders step-by-step with a terminal state.
