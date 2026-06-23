@@ -296,7 +296,7 @@ async def test_reap_tenant_transitions_stuck_invoice_as_system_action():
     cutoff = datetime.now(UTC) - timedelta(seconds=600)
 
     with _reaper_harness([inv], transition) as h:
-        reaped = await extraction_reaper._reap_tenant("ap_acme", cutoff)
+        reaped = await extraction_reaper._reap_tenant("ap_acme", cutoff, threshold_seconds=600)
 
     assert reaped == 1
     transition.assert_awaited_once()
@@ -308,6 +308,9 @@ async def test_reap_tenant_transitions_stuck_invoice_as_system_action():
     assert kwargs["actor_id"] is None
     assert kwargs["action_name"] == "invoice.extraction_reaped"
     assert "age_seconds" in kwargs["details"]
+    # The configured threshold is recorded on the audit row (commit d6af418 —
+    # real threshold_seconds, not a cutoff epoch).
+    assert kwargs["details"]["threshold_seconds"] == 600
     # Reviewer-facing warning appended on top of the audit row.
     assert any(w["type"] == "extraction_timeout" for w in inv.warnings)
     assert inv.warnings[-1]["severity"] == "error"
@@ -321,7 +324,7 @@ async def test_reap_tenant_no_stuck_invoices_does_not_commit():
     transition = AsyncMock()
     cutoff = datetime.now(UTC) - timedelta(seconds=600)
     with _reaper_harness([], transition) as h:
-        reaped = await extraction_reaper._reap_tenant("ap_acme", cutoff)
+        reaped = await extraction_reaper._reap_tenant("ap_acme", cutoff, threshold_seconds=600)
 
     assert reaped == 0
     transition.assert_not_awaited()
@@ -357,7 +360,9 @@ async def test_reap_tenant_disposes_engine_even_on_query_failure():
         patch.object(extraction_reaper, "_make_tenant_url", MagicMock(return_value="url")),
     ):
         with pytest.raises(RuntimeError, match="connection refused"):
-            await extraction_reaper._reap_tenant("ap_acme", datetime.now(UTC))
+            await extraction_reaper._reap_tenant(
+                "ap_acme", datetime.now(UTC), threshold_seconds=600
+            )
     engine.dispose.assert_awaited_once()
 
 
