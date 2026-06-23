@@ -47,15 +47,28 @@ jobs:
           # bump it isn't.
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Approve + auto-merge minor / patch
+      # The bot self-approval is a courtesy for repos that gate merge on a
+      # review — it is NOT load-bearing here (main is unprotected). The
+      # GITHUB_TOKEN also cannot approve unless the org enables "Allow GitHub
+      # Actions to create and approve pull requests" (off by default). Keep it
+      # in its own continue-on-error step so a disabled setting can't abort the
+      # merge: previously both commands shared one `bash -e` step, so the
+      # blocked `gh pr review --approve` exited 1 and the merge below never ran.
+      - name: Approve (best-effort)
+        if: steps.meta.outputs.update-type == 'version-update:semver-minor' || steps.meta.outputs.update-type == 'version-update:semver-patch'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr review --approve "$PR_URL"
+
+      - name: Enable auto-merge (squash)
         if: steps.meta.outputs.update-type == 'version-update:semver-minor' || steps.meta.outputs.update-type == 'version-update:semver-patch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          gh pr review --approve "$PR_URL"
-          # `--auto --squash` lands the merge as soon as every required
-          # check turns green. If branch protection blocks the merge,
-          # `--auto` queues it — the user can land it manually after
-          # the protection is satisfied.
-          gh pr merge --auto --squash "$PR_URL"
+        # `--auto --squash` lands the merge as soon as every required check
+        # turns green (needs the repo "Allow auto-merge" setting, now enabled).
+        # With no required checks configured, GitHub merges as soon as the PR
+        # is mergeable.
+        run: gh pr merge --auto --squash "$PR_URL"
