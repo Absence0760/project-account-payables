@@ -69,7 +69,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.1.0,<10",
+    "pytest>=9.1.1,<10",
     "pytest-asyncio>=1.4.0,<2",
     # CI shards the backend suite across parallel jobs (ci.yml → backend-test
     # matrix). pytest-split's `--splits N --group G` partitions the suite by
