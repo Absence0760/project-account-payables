@@ -63,6 +63,24 @@ async function waitForEmail(page: Page, email: string, subjectPrefix: string): P
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
+// The consent banner is position:fixed at the bottom of the viewport with
+// z-index 10000. On the signup/verify pages (unauthenticated, empty storage
+// state) the banner would overlap the submit button — on Ubuntu CI the form
+// renders slightly taller than on macOS/Fedora due to font metrics, pushing
+// the button centre below the banner's top edge and making Playwright's
+// click() fail with a 30 s intercept timeout. Suppress the banner for all
+// tests in this file by recording the consent choice before each navigation;
+// no test here is verifying the consent banner itself.
+test.beforeEach(async ({ page }) => {
+	await page.addInitScript(() => {
+		try {
+			localStorage.setItem('ap_consent_choice', 'accepted');
+		} catch {
+			// about:blank — ignore
+		}
+	});
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // 1. Signup form — validation + success state (no email delivery needed)
 // ───────────────────────────────────────────────────────────────────────────
