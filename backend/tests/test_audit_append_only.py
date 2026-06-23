@@ -55,16 +55,27 @@ def test_no_router_defines_a_put_patch_or_delete_on_audit_log():
 def test_audit_log_get_endpoint_is_read_only_in_signature():
     """The lone audit endpoint (`get_audit_log` in workflow.py) must
     be a GET. A regression to POST/PUT shape would imply mutation."""
-    from fastapi.routing import APIRoute
-
     from app.main import app
 
-    audit_get_routes = [
-        r for r in app.routes if isinstance(r, APIRoute) and "audit" in r.path.lower()
-    ]
-    assert audit_get_routes, "expected at least one audit-log GET endpoint"
-    for r in audit_get_routes:
-        assert r.methods == {"GET"}, f"audit route {r.path} must only respond to GET"
+    # FastAPI 0.138's `include_router` keeps nested `_IncludedRouter` objects in
+    # `app.routes` instead of flattening sub-routes, so scan via the supported
+    # `iter_route_contexts` flattener (full path + methods); fall back to the
+    # flat list on an older FastAPI.
+    try:
+        from fastapi.routing import iter_route_contexts
+
+        flat = [(c.path, c.methods or set()) for c in iter_route_contexts(app.routes)]
+    except ImportError:
+        from fastapi.routing import APIRoute
+
+        flat = [
+            (r.path, r.methods or set()) for r in app.routes if isinstance(r, APIRoute)
+        ]
+
+    audit_routes = [(path, methods) for path, methods in flat if "audit" in path.lower()]
+    assert audit_routes, "expected at least one audit-log GET endpoint"
+    for path, methods in audit_routes:
+        assert methods == {"GET"}, f"audit route {path} must only respond to GET"
 
 
 # ---------------------------------------------------------------------------

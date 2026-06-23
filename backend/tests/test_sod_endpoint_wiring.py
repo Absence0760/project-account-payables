@@ -30,9 +30,29 @@ from app.api.permissions import (
 from app.main import app
 
 
+def _iter_app_routes():
+    """Yield (path, methods, route) for every route in the app.
+
+    FastAPI 0.138 changed `include_router` to keep nested `_IncludedRouter`
+    objects in `app.routes` instead of flattening sub-routes into top-level
+    `APIRoute`s, so the old flat scan no longer sees included routes. Flatten
+    via the supported `iter_route_contexts` helper (full path + the underlying
+    `APIRoute`, which still carries `.dependant`); fall back to the flat list on
+    a FastAPI that predates the helper.
+    """
+    try:
+        from fastapi.routing import iter_route_contexts
+    except ImportError:
+        for route in app.routes:
+            yield getattr(route, "path", None), getattr(route, "methods", set()) or set(), route
+        return
+    for ctx in iter_route_contexts(app.routes):
+        yield ctx.path, ctx.methods or set(), ctx.route
+
+
 def _find_route(path: str, method: str):
-    for route in app.routes:
-        if getattr(route, "path", None) == path and method in getattr(route, "methods", set()):
+    for route_path, methods, route in _iter_app_routes():
+        if route_path == path and method in methods:
             return route
     raise AssertionError(f"route not found: {method} {path}")
 
