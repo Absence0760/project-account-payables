@@ -59,21 +59,31 @@ class MockEnrichmentAdapter:
         if not name or name_key in self._no_match:
             return VendorFirmographics(provider=self.provider_name, matched=False)
 
-        # Deterministic synthetic data from a stable hash of the name.
-        digest = hashlib.sha256(name_key.encode("utf-8")).hexdigest()
+        # Strip the mock suffix before computing the canonical legal name so that
+        # a second enrich call on a vendor whose name was already updated to
+        # ``<name> (MOCK)`` returns the same suggestion (``<name> (MOCK)``)
+        # rather than ever-growing ``<name> (MOCK) (MOCK)``.  This mirrors what
+        # a real D&B / Clearbit would do: return the same canonical registered
+        # name regardless of what the local AP record currently stores.
+        _MOCK_SUFFIX = " (MOCK)"
+        canonical_name = name[: -len(_MOCK_SUFFIX)] if name.endswith(_MOCK_SUFFIX) else name
+        canonical_key = canonical_name.lower()
+
+        # Deterministic synthetic data from a stable hash of the canonical name.
+        digest = hashlib.sha256(canonical_key.encode("utf-8")).hexdigest()
         h = int(digest[:8], 16)
 
         industry, sic, naics = _INDUSTRIES[h % len(_INDUSTRIES)]
         employees = 5 + (h % 4995)  # 5..4999, stable
         year_founded = 1950 + (h % 73)  # 1950..2022
         revenue = str(employees * 250_000)  # crude headcount-scaled figure
-        domain = query.domain or f"{name_key.replace(' ', '')[:24] or 'vendor'}.example"
+        domain = query.domain or f"{canonical_key.replace(' ', '')[:24] or 'vendor'}.example"
         country = query.vendor_country or "US"
 
         return VendorFirmographics(
             provider=self.provider_name,
             matched=True,
-            legal_name=f"{name} (MOCK)",
+            legal_name=f"{canonical_name} (MOCK)",
             address="1 Mock Plaza, Suite 100",
             country=country,
             industry=industry,
