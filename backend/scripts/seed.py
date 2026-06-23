@@ -181,6 +181,7 @@ async def create_tenant_tables(db_name: str):
         # 0022 so the seed path stays consistent with the production path.
         # Statements are CREATE OR REPLACE / DROP IF EXISTS — safe to re-run.
         from app.services.audit_immutability import install_statements as _audit_stmts
+
         for stmt in _audit_stmts():
             await conn.exec_driver_sql(stmt)
         # Add columns that may be missing on existing tables
