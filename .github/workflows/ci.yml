@@ -411,6 +411,14 @@ jobs:
       # HMR compile-on-demand, sub-second cold start. Read in
       # `frontend/tests-e2e/playwright.config.ts`.
       AP_E2E_USE_PREVIEW: "true"
+      # MinIO started via `docker run` in a step below (can't be a
+      # `services:` container — needs the `server /data` argument).
+      # The positive-pay and other storage-backed e2e specs write real
+      # S3 objects; without this the upload returns 500.
+      AP_S3_ENDPOINT_URL: http://localhost:9000
+      AP_S3_ACCESS_KEY: minioadmin
+      AP_S3_SECRET_KEY: minioadmin
+      AP_S3_BUCKET: invoices
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -450,6 +458,29 @@ jobs:
           PNPM_PID=$!
           wait $PIP_PID || { echo "::error::backend pip install failed"; exit 1; }
           wait $PNPM_PID || { echo "::error::frontend pnpm install failed"; exit 1; }
+
+      # MinIO can't be a `services:` container: the official minio/minio image
+      # needs a `server /data` argument, which GitHub Actions service containers
+      # can't supply (they only take flags, not the command). Start it via
+      # `docker run` instead. The storage layer (positive-pay file upload,
+      # invoice receipts, contract docs, chat attachments) hits a real S3
+      # backend rather than failing with connection-refused. The `invoices`
+      # bucket is auto-created by storage._ensure_bucket on first upload.
+      # Each matrix shard runs on its own runner, so the fixed `--name minio`
+      # never collides across shards.
+      - name: Start MinIO (S3)
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live; then
+              echo "MinIO ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::MinIO did not become healthy in time"; exit 1
 
       - name: "Seed database (lean — acme + techflow + e2e1..e2e4)"
         working-directory: backend
