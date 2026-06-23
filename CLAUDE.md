@@ -13,7 +13,7 @@ Full-stack accounts payable management app. SvelteKit frontend + FastAPI backend
 - **mobile/** — Flutter 3.41+, Dart 3.11+, iOS + Android. Material 3, ChangeNotifier stores.
 - **infra/** — Terraform skeleton for future AWS resources; SOPS-encrypted tfvars. See `infra/README.md`.
 - **Local infra** — Docker Compose for Postgres/Redis/MinIO. GitHub Pages for frontend deploy.
-- **Secrets** — `backend/.env.sops` + `infra/terraform.tfvars.sops`, both AWS KMS-encrypted via SOPS. Bootstrap with `./bin/sops-init.sh`. See `backend/CLAUDE.md` → Secrets management.
+- **Secrets** — `backend/.env.sops` + `infra/terraform.tfvars.sops`, both AWS KMS-encrypted via SOPS. **This repo is PUBLIC and no encrypted payload is committed yet.** Do NOT bootstrap the in-repo sops (`./bin/sops-init.sh`) and commit `*.sops` here — that would put ciphertext in public history (the mistake meryl-green-designs made). Instead adopt the private estate secrets repo: `Absence0760/infra-secrets` (per-project subdir + KMS). Pattern + onboarding: `~/github/templates/docs/secrets-management.md`. See `backend/CLAUDE.md` → Secrets management for the local-dev flow.
 
 ## Commands
 
