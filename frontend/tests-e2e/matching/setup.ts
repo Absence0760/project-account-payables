@@ -112,12 +112,16 @@ export async function createMatchedInvoice(
 	if (!created.ok()) throw new Error(`create invoice failed: ${created.status()} ${await created.text()}`);
 	const invoiceId = ((await created.json()) as { id: string }).id;
 
-	// Setting vendor_id is not exposed on the create/update API; the matcher's
-	// per-vendor rule + vendor-scoped PO lookup need it, so clobber it directly
-	// before the matcher runs. (This is the legitimate tenantPsql use case.)
-	if (opts.vendorId) {
-		sql(`update invoices set vendor_id = '${opts.vendorId}' where id = '${invoiceId}';`);
-	}
+	// POST /api/invoices intentionally ignores a client-supplied status (the
+	// status-injection fix — InvoiceCreate has no `status` field), so the row is
+	// always created as the draft `new`, and `_refresh_po_match` short-circuits
+	// `new` invoices. Move it to `pending` so the matcher actually runs. Setting
+	// vendor_id isn't exposed on the API either (the per-vendor rule + vendor-
+	// scoped PO lookup need it). Both are the legitimate tenantPsql use case —
+	// state the API can't build, same as the PO/GR seeds above.
+	const sets = ["status = 'pending'"];
+	if (opts.vendorId) sets.push(`vendor_id = '${opts.vendorId}'`);
+	sql(`update invoices set ${sets.join(', ')} where id = '${invoiceId}';`);
 
 	const poMatch = await recompute(page, invoiceId);
 	return { invoiceId, poMatch };
