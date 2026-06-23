@@ -68,9 +68,7 @@ def test_audit_log_get_endpoint_is_read_only_in_signature():
     except ImportError:
         from fastapi.routing import APIRoute
 
-        flat = [
-            (r.path, r.methods or set()) for r in app.routes if isinstance(r, APIRoute)
-        ]
+        flat = [(r.path, r.methods or set()) for r in app.routes if isinstance(r, APIRoute)]
 
     audit_routes = [(path, methods) for path, methods in flat if "audit" in path.lower()]
     assert audit_routes, "expected at least one audit-log GET endpoint"
