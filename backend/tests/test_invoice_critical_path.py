@@ -169,6 +169,51 @@ async def test_approve_with_corrections_persists_fields_and_records_field_diff(r
 
 
 # ---------------------------------------------------------------------------
+# PII — the raw vendor tax id is never echoed in a response
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_invoice_vendor_tax_id_masked_and_round_trip_safe(realdb):
+    """The invoice response masks the raw `vendor_tax_id` to `***<last4>` (PII
+    invariant), and a UI that echoes the masked value back on edit must NOT
+    overwrite the stored raw value (the schema drops an echoed mask)."""
+    async with realdb.client(key="a", role="admin") as c:
+        created = await c.post(
+            "/api/invoices",
+            json={
+                "vendor": "Masked Vendor Inc",
+                "invoice_number": "MASK-001",
+                "amount": "42.00",
+                "vendor_tax_id": "12-3456789",
+            },
+        )
+        assert created.status_code == 201, created.text
+        inv_id = created.json()["id"]
+        # Create response never echoes the raw tax id.
+        assert created.json()["vendor_tax_id"] == "***6789"
+
+        got = await c.get(f"/api/invoices/{inv_id}")
+        assert got.json()["vendor_tax_id"] == "***6789"
+
+        # Echo the masked value back on an unrelated edit.
+        patched = await c.patch(
+            f"/api/invoices/{inv_id}",
+            json={"vendor_tax_id": "***6789", "description": "edited"},
+        )
+        assert patched.status_code == 200, patched.text
+
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        inv = (
+            await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(inv_id)))
+        ).scalar_one()
+        # Raw value persisted on create and untouched by the masked round-trip.
+        assert inv.vendor_tax_id == "12-3456789"
+        assert inv.description == "edited"
+
+
+# ---------------------------------------------------------------------------
 # Reject (HTTP) — persists + opens exception + audits the reason
 # ---------------------------------------------------------------------------
 

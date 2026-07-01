@@ -2,9 +2,16 @@ from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.money import MoneyAmount, OptionalMoneyAmount
+from app.services.vendor_consolidation import mask_tax_id
+
+
+def _is_masked_tax_id(value) -> bool:
+    """True when a caller echoed back the ``***<last4>`` masked value we return
+    in responses. Real tax ids are digits/separators and never start ``***``."""
+    return isinstance(value, str) and value.startswith("***")
 
 
 class InvoiceStatus(StrEnum):
@@ -59,6 +66,18 @@ class InvoiceBase(BaseModel):
     department: str | None = Field(default=None, max_length=100)
     project: str | None = Field(default=None, max_length=100)
 
+    @model_validator(mode="after")
+    def _guard_masked_tax_id(self):
+        # `vendor_tax_id` is returned masked (`***<last4>`) in responses. A UI that
+        # round-trips the invoice on save echoes that masked value back — never
+        # persist the mask over the stored raw tax id. Null it and drop it from the
+        # write set so `model_dump(exclude_unset=True)` skips it on update (leaving
+        # the stored value unchanged) and a create stores nothing.
+        if _is_masked_tax_id(self.vendor_tax_id):
+            self.vendor_tax_id = None
+            self.__pydantic_fields_set__.discard("vendor_tax_id")
+        return self
+
 
 class InvoiceCreate(InvoiceBase):
     pass
@@ -101,6 +120,14 @@ class InvoiceUpdate(BaseModel):
     cost_center: str | None = Field(default=None, max_length=100)
     department: str | None = Field(default=None, max_length=100)
     project: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def _guard_masked_tax_id(self):
+        # See InvoiceBase._guard_masked_tax_id — same round-trip protection on edit.
+        if _is_masked_tax_id(self.vendor_tax_id):
+            self.vendor_tax_id = None
+            self.__pydantic_fields_set__.discard("vendor_tax_id")
+        return self
 
 
 class InvoiceResponse(BaseModel):
@@ -186,7 +213,8 @@ class InvoiceResponse(BaseModel):
             remit_to_address=inv.remit_to_address,
             bill_to_address=inv.bill_to_address,
             vendor_address=inv.vendor_address,
-            vendor_tax_id=inv.vendor_tax_id,
+            # PII: never return the raw extracted tax id — mask to `***<last4>`.
+            vendor_tax_id=mask_tax_id(inv.vendor_tax_id),
             ship_to_address=inv.ship_to_address,
             tax_rate=float(inv.tax_rate) if inv.tax_rate is not None else None,
             payment_method=inv.payment_method,
