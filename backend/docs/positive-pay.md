@@ -33,8 +33,8 @@ number is a `Critical` PII-invariant violation.
 
 One tenant-scoped table in `app/models/positive_pay.py`
 (`PositivePayFile(Base, EntityMixin, TimestampMixin)`), migration
-`0048_positive_pay`. Money is exact: `total_amount` is `Numeric(18, 2)` — never
-float.
+`0048_positive_pay` (+ `0070_positive_pay_currency` adds `currency`). Money is
+exact: `total_amount` is `Numeric(18, 2)` — never float.
 
 ### `PositivePayFile` — `positive_pay_files`
 
@@ -48,6 +48,7 @@ float.
 | `status` | varchar(20) | `generated` → `returned_processed` (once the bank's return is processed). Indexed. |
 | `item_count` | integer | Number of cheques / authorized accounts in the file. |
 | `total_amount` | numeric(18,2) | Sum of cheque amounts (always 0 for an ACH-authorization file). |
+| `currency` | varchar(3) (nullable) | Currency `total_amount` is denominated in — the org's reporting (home) currency stamped at generation via `resolve_reporting_currency` (migration `0070`). `Payment.amount` is already home-currency, so this is a **stored label, not an FX conversion**. NULL for legacy rows created before the column; the UI falls back to the org default for those. |
 | `content_hash` | varchar(64) | sha256 hex of the rendered file content — tamper-evidence / dedupe aid. |
 | `file_key` | varchar(512) | MinIO key of the rendered file (the file holding the full account numbers). |
 | `account_last4` | varchar(4) | Masked originating / cheque account — **never** the full number. |
@@ -260,8 +261,10 @@ clerks excluded, matching the backend). Built from the shared `ui/` components:
 `PageHeader` + a KPI row (`KpiCard`: total files, items exported, returns
 flagged) + file-type `FilterChips` (All / Check issue / ACH auth) + `SearchBox`
 + a `DataTable` of files with clickable rows (`RowLink`) and an armed-confirm
-delete (`RowAction`). Money renders via `<Money>`; URL-backed filter state via
-`$page` + `replaceState` (deep-link `?id=` opens a file's detail modal).
+delete (`RowAction`). Money renders via `<Money>` in the file's stored
+`currency` (falling back to the org default for legacy NULL rows); URL-backed
+filter state via `$page` + `replaceState` (deep-link `?id=` opens a file's
+detail modal).
 
 The modal (`$lib/components/modals/PositivePayModal.svelte`) is dual-mode:
 

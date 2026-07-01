@@ -52,6 +52,10 @@ class PositivePayFileResponse(BaseModel):
     payment_run_id: str | None
     item_count: int
     total_amount: MoneyAmount
+    # Currency ``total_amount`` is denominated in — the org's reporting (home)
+    # currency stamped at generation. ``None`` for legacy rows created before
+    # the column existed; the UI falls back to the org default for those.
+    currency: str | None
     account_last4: str | None
     file_key: str | None
     created_at: str

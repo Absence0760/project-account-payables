@@ -59,6 +59,7 @@ from app.schemas.positive_pay import (
 from app.services import positive_pay as service
 from app.services import storage
 from app.services.audit_dispatch import dispatch_audit
+from app.services.currency_conversion import resolve_reporting_currency
 from app.services.exception_service import create_exception
 from app.services.positive_pay import (
     CLASS_AMOUNT_MISMATCH,
@@ -100,6 +101,7 @@ def _file_to_response(row: PositivePayFile) -> PositivePayFileResponse:
         payment_run_id=str(row.payment_run_id) if row.payment_run_id else None,
         item_count=row.item_count,
         total_amount=row.total_amount,
+        currency=row.currency,
         account_last4=row.account_last4,
         file_key=row.file_key,
         created_at=row.created_at.isoformat() if row.created_at else "",
@@ -227,6 +229,7 @@ async def generate_check_issue(
         bank_format=bank_format,
         item_count=len(items),
         total_amount=total,
+        currency=resolve_reporting_currency(org.settings),
         content_hash=content_hash,
         file_key=file_key,
         account_last4=_last4(account_number),
@@ -324,6 +327,7 @@ async def generate_ach_authorization(
         bank_format=bank_format,
         item_count=len(items),
         total_amount=Decimal("0"),
+        currency=resolve_reporting_currency(org.settings),
         content_hash=content_hash,
         file_key=file_key,
         account_last4=_last4(account_number),

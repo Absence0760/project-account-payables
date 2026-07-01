@@ -177,6 +177,73 @@ async def test_generate_check_issue_creates_file_and_audits(realdb):
         await _clear_settings(realdb, org_id)
 
 
+async def _set_reporting_currency(realdb, org_id, currency: str | None) -> None:
+    """Set/clear ``Organization.settings.reporting_currency`` (control plane)."""
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        settings = dict(org.settings or {})
+        if currency is None:
+            settings.pop("reporting_currency", None)
+        else:
+            settings["reporting_currency"] = currency
+        org.settings = settings
+        await s.commit()
+
+
+async def test_generate_check_issue_persists_reporting_currency(realdb):
+    """The generated file stamps + returns the org's reporting currency so its
+    total_amount has a stored currency context (not a UI guess)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    await _set_check_account(realdb, org_id)
+    await _set_reporting_currency(realdb, org_id, "EUR")
+    try:
+        vendor_id = await _add_vendor(mk, org_id)
+        invoice_id = await _add_invoice(mk, org_id, vendor_id=vendor_id, invoice_number="INV-EUR")
+        run_id = await _add_check_run(mk, org_id, invoice_id=invoice_id, check_number="CHKEUR1")
+
+        async with realdb.client(key="a", role="ap_manager") as c:
+            gen = await c.post(f"/api/positive-pay/payment-runs/{run_id}/check-issue", json={})
+            assert gen.status_code == 201, gen.text
+            assert gen.json()["currency"] == "EUR"
+            file_id = gen.json()["id"]
+
+            # List + detail round-trip the stored currency.
+            listed = await c.get("/api/positive-pay")
+            row = next(f for f in listed.json()["items"] if f["id"] == file_id)
+            assert row["currency"] == "EUR"
+            detail = await c.get(f"/api/positive-pay/{file_id}")
+            assert detail.json()["currency"] == "EUR"
+
+        # Persisted on the DB row.
+        async with mk() as s:
+            from app.models.positive_pay import PositivePayFile
+
+            stored = (
+                await s.execute(
+                    select(PositivePayFile).where(PositivePayFile.id == uuid.UUID(file_id))
+                )
+            ).scalar_one()
+            assert stored.currency == "EUR"
+    finally:
+        await _set_reporting_currency(realdb, org_id, None)
+        await _clear_settings(realdb, org_id)
+
+
+async def test_generate_ach_authorization_defaults_currency_usd(realdb):
+    """No reporting currency set → the file falls back to the platform default."""
+    org_id = realdb.info("a").org_id
+    await _set_check_account(realdb, org_id)
+    try:
+        async with realdb.client(key="a", role="ap_manager") as c:
+            gen = await c.post("/api/positive-pay/ach-authorization", json={})
+        assert gen.status_code == 201, gen.text
+        assert gen.json()["currency"] == "USD"
+    finally:
+        await _clear_settings(realdb, org_id)
+
+
 async def test_generate_check_issue_is_idempotent(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id
