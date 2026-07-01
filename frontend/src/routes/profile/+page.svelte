@@ -360,9 +360,11 @@
 								autocomplete="current-password"
 							/>
 						</label>
-						<button type="submit" class="danger" disabled={loading || !disablePassword}>
-							{loading ? 'Disabling...' : 'Disable two-factor'}
-						</button>
+						<div class="actions">
+							<button type="submit" class="danger" disabled={loading || !disablePassword}>
+								{loading ? 'Disabling...' : 'Disable two-factor'}
+							</button>
+						</div>
 					</form>
 				{/if}
 			{:else if enrollment}
@@ -468,9 +470,11 @@
 							placeholder="e.g. MacBook Touch ID"
 						/>
 					</label>
-					<button type="submit" disabled={registeringPasskey}>
-						{registeringPasskey ? 'Waiting for passkey…' : 'Add a passkey'}
-					</button>
+					<div class="actions">
+						<button type="submit" disabled={registeringPasskey}>
+							{registeringPasskey ? 'Waiting for passkey…' : 'Add a passkey'}
+						</button>
+					</div>
 				</form>
 			{/if}
 		</section>
