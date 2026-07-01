@@ -1,5 +1,6 @@
 """ERP webhook endpoint — receives status callbacks from ERPs and Merge.dev."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -15,6 +16,8 @@ from app.services.webhook_security import (
     verify_hmac_sha256,
 )
 from app.services.workflow_engine import transition_invoice
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/erp", tags=["erp"])
 
@@ -86,7 +89,6 @@ async def erp_webhook(
     erp_document_id = body.get("erp_document_id")
     erp_status = body.get("status", "")
     event_id = body.get("event_id") or erp_document_id or correlation_id
-    details = body.get("details")
 
     if not tenant_slug:
         return  # silent — body didn't name a tenant
@@ -103,6 +105,17 @@ async def erp_webhook(
     # Verify HMAC against the tenant's configured signing secret.
     erp_config = (org.settings or {}).get("erp") or {}
     signing_secret = erp_config.get("webhook_signing_secret", "")
+    if not signing_secret:
+        # Fail closed (verify_hmac_sha256 would 204 on an empty secret anyway),
+        # but surface a PII-free config error so an operator learns the ERP
+        # integration is unconfigured rather than silently dropping every event.
+        # tenant_slug / erp_type are non-PII identifiers; the secret is never logged.
+        logger.warning(
+            "ERP webhook dropped: no webhook_signing_secret configured for tenant '%s' (%s)",
+            tenant_slug,
+            erp_type,
+        )
+        return  # silent 204 to the caller (no enumeration)
     provided_sig = extract_signature_header(
         dict(request.headers),
         "X-Webhook-Signature",
@@ -162,11 +175,14 @@ async def erp_webhook(
                 invoice,
                 target_status,
                 action_name=f"invoice.erp_status_{target_status.value}",
+                # PII guard: never splat the raw ERP `details` payload into the
+                # append-only audit row — the ERP may include vendor bank/tax/address
+                # fields. Whitelist only the safe, non-PII routing identifiers.
                 details={
                     "erp_type": erp_type,
                     "erp_status": erp_status,
                     "erp_document_id": erp_document_id,
-                    **(details or {}),
+                    "raw_event_id": str(event_id) if event_id else None,
                 },
             )
             await db.commit()
