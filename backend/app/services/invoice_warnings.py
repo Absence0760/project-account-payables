@@ -7,7 +7,7 @@ import logging
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.exception import Exception as APException
@@ -118,19 +118,27 @@ async def refresh_warnings(
             {"type": "missing_field", "severity": "error", "message": "Missing or zero amount"}
         )
 
-    # Duplicate detection — another invoice with the same vendor + invoice #.
-    # Compare case-insensitively and whitespace-trimmed on BOTH sides: strict
-    # byte-equality let "ACME Corp"/"acme corp" and "INV-001"/"INV-001 " (a
-    # trailing space) slip through as distinct, which is exactly how a duplicate
-    # re-submission evades this always-on first gate.
+    # Duplicate detection — another invoice with the same invoice # AND the same
+    # vendor. "Same vendor" matches on the STABLE vendor_id (when set) OR the
+    # case-insensitive / whitespace-trimmed vendor_name. Keying on vendor_name
+    # alone missed a resent invoice whenever the vendor carries two name
+    # spellings in the DB (a manual row + an ERP-synced row → different vendor_id
+    # but same real supplier); the vendor_id leg closes that. Trimmed + lowered
+    # comparison also stops "ACME Corp"/"acme corp" and "INV-001"/"INV-001 " (a
+    # trailing space) evading this always-on first gate.
     if invoice.vendor_name and invoice.vendor_name.strip() and invoice.invoice_number:
+        vendor_match = func.lower(func.trim(Invoice.vendor_name)) == (
+            invoice.vendor_name.strip().lower()
+        )
+        if invoice.vendor_id is not None:
+            vendor_match = or_(vendor_match, Invoice.vendor_id == invoice.vendor_id)
         dup_count = await db.execute(
             select(func.count())
             .select_from(Invoice)
             .where(
-                func.lower(func.trim(Invoice.vendor_name)) == invoice.vendor_name.strip().lower(),
                 func.lower(func.trim(Invoice.invoice_number))
                 == invoice.invoice_number.strip().lower(),
+                vendor_match,
                 Invoice.id != invoice.id,
             )
         )

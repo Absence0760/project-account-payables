@@ -93,3 +93,58 @@ async def test_distinct_invoice_number_is_not_flagged_duplicate(realdb):
         await s.commit()
 
     assert not any(w["type"] == "duplicate" for w in warnings), warnings
+
+
+@pytest.mark.asyncio
+async def test_duplicate_matched_by_vendor_id_across_name_spellings(realdb):
+    """A vendor with two name spellings (same STABLE vendor_id) resending the
+    same invoice number must be flagged — the vendor_id leg catches what the
+    free-text vendor_name match misses."""
+    from app.models.vendor import Vendor
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        vendor = Vendor(
+            organization_id=org_id,
+            entity_id=ent,
+            name="ZZ Acme Corp",
+            status="active",
+        )
+        s.add(vendor)
+        await s.flush()
+        vendor_id = vendor.id
+        first = Invoice(
+            organization_id=org_id,
+            entity_id=ent,
+            vendor_id=vendor_id,
+            vendor_name="ZZ Acme Corp",
+            invoice_number="ZZ-VID-1",
+            amount=Decimal("123.45"),
+            currency="USD",
+            status=InvoiceStatus.new,
+        )
+        s.add(first)
+        await s.commit()
+
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        # Same vendor_id, a DIFFERENT name spelling, same invoice number.
+        dup = Invoice(
+            organization_id=org_id,
+            entity_id=ent,
+            vendor_id=vendor_id,
+            vendor_name="ZZ Acme Corporation",  # differs from "ZZ Acme Corp"
+            invoice_number="ZZ-VID-1",
+            amount=Decimal("123.45"),
+            currency="USD",
+            status=InvoiceStatus.new,
+        )
+        s.add(dup)
+        await s.flush()
+        warnings = await refresh_warnings(s, dup)
+        await s.commit()
+
+    assert any(w["type"] == "duplicate" for w in warnings), warnings
