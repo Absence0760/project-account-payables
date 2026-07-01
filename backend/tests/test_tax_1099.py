@@ -69,7 +69,26 @@ def test_summary_counts_eligible_over_threshold():
     assert summary["vendor_count_total"] == 4
     assert summary["vendor_count_eligible_over_threshold"] == 2
     assert summary["vendor_count_over_threshold_without_w9"] == 1
+    assert summary["total_reportable"] == "5700"
+    # Back-compat alias carries the same value.
     assert summary["total_reportable_usd"] == "5700"
+    # Currency defaults to USD when the caller supplies none.
+    assert summary["currency"] == "USD"
+
+
+def test_summary_labels_totals_with_reporting_currency():
+    """A non-USD reporting currency is surfaced honestly — the total is the
+    same home-currency sum, just labelled EUR instead of silently "USD"."""
+    report = Report1099(
+        year=2026,
+        generated_at=date.today(),
+        rows=[_row(name="B", ytd="700", eligible=True, w9=True)],
+        currency="EUR",
+    )
+    summary = report.summary()
+    assert summary["currency"] == "EUR"
+    assert summary["total_reportable"] == "700"
+    assert summary["total_reportable_usd"] == "700"
 
 
 def test_summary_zero_when_no_eligible_vendors():

@@ -77,18 +77,31 @@ class Report1099:
     generated_at: date
     rows: list[VendorReportRow]
     threshold_usd: Decimal = THRESHOLD_USD
+    # The currency the reportable totals + per-vendor ``ytd_paid`` are actually
+    # denominated in — the org's reporting (home) currency. ``Payment.amount``
+    # is already home-currency, so this is a LABEL, never an FX conversion. 1099
+    # is a US/IRS concept (dollars), but a non-USD tenant's home currency is
+    # surfaced honestly here instead of being silently called "USD".
+    currency: str = "USD"
 
     def summary(self) -> dict:
         eligible_over = [r for r in self.rows if r.is_1099_eligible and r.over_threshold]
+        total_reportable = str(sum((r.ytd_paid for r in eligible_over), Decimal("0")))
         return {
             "year": self.year,
             "threshold_usd": str(self.threshold_usd),
+            "currency": self.currency,
             "vendor_count_total": len(self.rows),
             "vendor_count_eligible_over_threshold": len(eligible_over),
             "vendor_count_over_threshold_without_w9": sum(
                 1 for r in eligible_over if not r.w9_on_file
             ),
-            "total_reportable_usd": str(sum((r.ytd_paid for r in eligible_over), Decimal("0"))),
+            "total_reportable": total_reportable,
+            # Back-compat alias of ``total_reportable`` — historically named
+            # ``_usd`` before the currency became explicit. Same value; kept so
+            # existing API consumers don't break. Prefer ``total_reportable`` +
+            # ``currency``.
+            "total_reportable_usd": total_reportable,
         }
 
     def to_dict(self) -> dict:
@@ -103,6 +116,7 @@ async def build_1099_report(
     db: AsyncSession,
     organization_id: uuid.UUID,
     year: int,
+    reporting_currency: str = "USD",
 ) -> Report1099:
     """Aggregate completed payments per vendor for the given calendar year.
 
@@ -110,6 +124,11 @@ async def build_1099_report(
     the target year are counted — pending/failed payments don't show up
     on a 1099. ``completed_at`` is preferred over the invoice date
     because the IRS reports payments in the year they were actually made.
+
+    ``reporting_currency`` is the org's reporting (home) currency, resolved by
+    the caller via ``currency_conversion.resolve_reporting_currency``. It only
+    LABELS the totals — ``Payment.amount`` is already home-currency, so no FX
+    conversion happens here.
     """
     # Join payment → invoice (for vendor_id) → vendor. Aggregate by vendor.
     q = (
@@ -173,6 +192,7 @@ async def build_1099_report(
         year=year,
         generated_at=date.today(),
         rows=rows,
+        currency=(reporting_currency or "USD").upper(),
     )
 
 
@@ -202,13 +222,18 @@ class Dashboard1099:
     generated_at: date
     rows: list[VendorReportRow]
     threshold_usd: Decimal = THRESHOLD_USD
+    # See ``Report1099.currency`` — the reporting (home) currency the totals are
+    # denominated in. Label only, never an FX conversion.
+    currency: str = "USD"
 
     def summary(self) -> dict:
         eligible = [r for r in self.rows if r.is_1099_eligible]
         eligible_over = [r for r in eligible if r.over_threshold]
+        total_reportable = str(sum((r.ytd_paid for r in eligible_over), Decimal("0")))
         return {
             "year": self.year,
             "threshold_usd": str(self.threshold_usd),
+            "currency": self.currency,
             "vendor_count_total": len(self.rows),
             "vendor_count_eligible": len(eligible),
             "vendor_count_eligible_over_threshold": len(eligible_over),
@@ -219,7 +244,9 @@ class Dashboard1099:
                 1 for r in eligible_over if not r.tin_verified
             ),
             "vendor_count_needs_attention": sum(1 for r in self.rows if _row_needs_attention(r)),
-            "total_reportable_usd": str(sum((r.ytd_paid for r in eligible_over), Decimal("0"))),
+            "total_reportable": total_reportable,
+            # Back-compat alias — see ``Report1099.summary``.
+            "total_reportable_usd": total_reportable,
         }
 
     def to_dict(self) -> dict:
@@ -236,14 +263,16 @@ async def build_1099_dashboard(
     db: AsyncSession,
     organization_id: uuid.UUID,
     year: int,
+    reporting_currency: str = "USD",
 ) -> Dashboard1099:
     """Build the 1099-eligible vendor dashboard for a year.
 
     Reuses ``build_1099_report``'s aggregation and re-frames it around filing
     readiness (W-9-on-file, TIN-verified, threshold, needs-attention)."""
-    report = await build_1099_report(db, organization_id, year)
+    report = await build_1099_report(db, organization_id, year, reporting_currency)
     return Dashboard1099(
         year=report.year,
         generated_at=report.generated_at,
         rows=report.rows,
+        currency=report.currency,
     )

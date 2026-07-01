@@ -40,6 +40,7 @@ from app.models.tax_filing import Tax1099Filing
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.services.branding import get_brand_context
+from app.services.currency_conversion import resolve_reporting_currency
 from app.services.storage import (
     ALLOWED_CONTENT_TYPES,
     _ensure_bucket,
@@ -99,6 +100,7 @@ def _company_profile(org: Organization) -> dict:
 async def get_1099_report(
     year: int = Query(..., ge=2000, le=2100),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
@@ -106,9 +108,11 @@ async def get_1099_report(
 
     Aggregates ``completed`` payments by vendor for the given year. The
     response includes every vendor so the tenant can spot vendors they
-    haven't yet flagged as 1099-eligible.
+    haven't yet flagged as 1099-eligible. The totals are labelled with the
+    org's reporting (home) currency — ``Payment.amount`` is already
+    home-currency, so this is honest naming, not an FX conversion.
     """
-    report = await build_1099_report(db, org_id, year)
+    report = await build_1099_report(db, org_id, year, resolve_reporting_currency(org.settings))
     return report.to_dict()
 
 
@@ -116,6 +120,7 @@ async def get_1099_report(
 async def get_1099_dashboard(
     year: int = Query(..., ge=2000, le=2100),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
@@ -126,7 +131,9 @@ async def get_1099_dashboard(
     flag for over-threshold vendors missing a W-9 or TIN verification — i.e.
     the chase list before filing season.
     """
-    dashboard = await build_1099_dashboard(db, org_id, year)
+    dashboard = await build_1099_dashboard(
+        db, org_id, year, resolve_reporting_currency(org.settings)
+    )
     return dashboard.to_dict()
 
 

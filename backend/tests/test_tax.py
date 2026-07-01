@@ -104,6 +104,25 @@ async def _make_paid_vendor(
 # ---------------------------------------------------------------------------
 
 
+async def _set_reporting_currency(realdb, org_id, currency: str | None) -> None:
+    """Set (or clear) ``Organization.settings.reporting_currency`` on the
+    control plane — the report labels its totals with the resolved value."""
+    from sqlalchemy import select
+
+    from app.models.organization import Organization
+
+    mk = realdb.control_sessionmaker()
+    async with mk() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        settings = dict(org.settings or {})
+        if currency is None:
+            settings.pop("reporting_currency", None)
+        else:
+            settings["reporting_currency"] = currency
+        org.settings = settings
+        await s.commit()
+
+
 async def test_1099_report_aggregates_completed_payments(realdb):
     await _make_paid_vendor(realdb, "a", name="Contractor", amount="1500.00", year=2026)
 
@@ -119,7 +138,33 @@ async def test_1099_report_aggregates_completed_payments(realdb):
     assert row["over_threshold"] is True
     assert row["payment_count"] == 1
     assert body["vendor_count_eligible_over_threshold"] == 1
+    assert body["total_reportable"] == "1500.00"
+    # Back-compat alias still present with the same value.
     assert body["total_reportable_usd"] == "1500.00"
+    # Currency is explicit — the org default resolves to USD here.
+    assert body["currency"] == "USD"
+
+
+async def test_1099_report_labels_totals_with_org_reporting_currency(realdb):
+    """A EUR-reporting tenant gets its 1099 totals labelled EUR, not "USD" —
+    the amounts are home-currency (no FX), so this is honest naming."""
+    org_id = realdb.info("a").org_id
+    await _set_reporting_currency(realdb, org_id, "EUR")
+    try:
+        await _make_paid_vendor(realdb, "a", name="EuroContractor", amount="1500.00", year=2026)
+        async with realdb.client(key="a", role="ap_manager") as c:
+            resp = await c.get("/api/tax/1099-report", params={"year": 2026})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["currency"] == "EUR"
+        assert body["total_reportable"] == "1500.00"
+        # The dashboard surfaces the same currency.
+        async with realdb.client(key="a", role="ap_manager") as c:
+            dash = await c.get("/api/tax/1099-dashboard", params={"year": 2026})
+        assert dash.status_code == 200
+        assert dash.json()["currency"] == "EUR"
+    finally:
+        await _set_reporting_currency(realdb, org_id, None)
 
 
 async def test_1099_report_excludes_other_year_payments(realdb):
