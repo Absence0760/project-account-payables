@@ -33,6 +33,7 @@ from app.models.payment import Payment, PaymentSchedule
 from app.models.user import User
 from app.models.virtual_card import CardRebate
 from app.services.analytics import (
+    OPEN_AP_STATUSES,
     ReceivedPO,
     apply_payment_timing_scenario,
     bucket_outflows,
@@ -540,15 +541,7 @@ async def get_cfo_analytics(
     ap_balance_q = await db.execute(
         _inv(
             select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                Invoice.status.in_(
-                    [
-                        InvoiceStatus.approved.value,
-                        InvoiceStatus.sending_to_erp.value,
-                        InvoiceStatus.sent_to_erp.value,
-                        InvoiceStatus.posted_in_erp.value,
-                        InvoiceStatus.payment_scheduled.value,
-                    ]
-                )
+                Invoice.status.in_(OPEN_AP_STATUSES)
             )
         )
     )
@@ -747,16 +740,15 @@ async def get_cfo_analytics(
     # liability to today's rate and report the difference vs the booked
     # (rate-locked) reporting amount. One FX call per distinct foreign currency;
     # best-effort so an FX outage doesn't 500 the whole CFO dashboard.
-    open_statuses = [
-        InvoiceStatus.approved.value,
-        InvoiceStatus.sending_to_erp.value,
-        InvoiceStatus.sent_to_erp.value,
-        InvoiceStatus.posted_in_erp.value,
-        InvoiceStatus.payment_scheduled.value,
-    ]
+    open_statuses = OPEN_AP_STATUSES
     unrealized_payload: dict = {
         "reporting_currency": reporting_currency,
-        "total_unrealized_gain_loss": 0.0,
+        # Money flows through Decimal even for the fallback zero (money
+        # invariant), serialised to float at this JSON boundary like every
+        # other figure in this response. The real "FX unavailable vs a
+        # genuine zero gain/loss" signal is `available` (flipped False in the
+        # except branch below) — never this number.
+        "total_unrealized_gain_loss": float(Decimal("0")),
         "by_currency": [],
         "available": True,
     }
@@ -950,16 +942,11 @@ async def _received_amount(db: AsyncSession, entity_id: uuid.UUID | None) -> Dec
 # /api/analytics/by-entity — per-entity rollup + consolidated cross-check
 # ---------------------------------------------------------------------------
 
-# Open (still-payable) statuses — the AP balance / outstanding leg. Shared by
-# the per-entity rollup so every row counts "outstanding" the same way the
-# /cfo dashboard's accounts_payable_balance does.
-_OPEN_AP_STATUSES = (
-    InvoiceStatus.approved.value,
-    InvoiceStatus.sending_to_erp.value,
-    InvoiceStatus.sent_to_erp.value,
-    InvoiceStatus.posted_in_erp.value,
-    InvoiceStatus.payment_scheduled.value,
-)
+# Open (still-payable) statuses — the AP balance / outstanding leg. Aliased to
+# the canonical `OPEN_AP_STATUSES` (services.analytics) so the per-entity rollup,
+# the /cfo accounts_payable_balance, and the aging buckets all count
+# "outstanding" identically and reconcile.
+_OPEN_AP_STATUSES = OPEN_AP_STATUSES
 
 
 async def _entity_metrics(
@@ -1332,16 +1319,13 @@ async def export_report(
         payload = EXPORTERS[report](rows.all())
     else:  # aging_snapshot
         today = date.today()
-        open_statuses = (
-            "new",
-            "pending",
-            "ready_for_review",
-            "approved",
-        )
+        # Aging covers the same open-payable population as the AP balance so the
+        # buckets sum to it (F-4): approved → payment_scheduled, not the
+        # pre-approval statuses that aren't a confirmed liability yet.
         aging_rows = await db.execute(
             apply_entity_scope(
                 select(Invoice.due_date, Invoice.amount).where(
-                    Invoice.status.in_(open_statuses),
+                    Invoice.status.in_(OPEN_AP_STATUSES),
                     Invoice.due_date.isnot(None),
                 ),
                 Invoice,

@@ -47,6 +47,24 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+# Canonical "open accounts-payable" invoice-status set — an approved liability
+# that is still outstanding (not yet paid, not voided/rejected). This is the ONE
+# population every payable aggregate must share so they reconcile: the CFO
+# `accounts_payable_balance` KPI, the per-entity outstanding rollup, AND the
+# aging buckets (dashboard + CSV export + scheduled report) all filter on it, so
+# the aging bands always sum to the AP balance. Kept here (pure, IO-free module)
+# so the API layer, the dashboard, and the scheduled-report runner import the
+# same tuple instead of maintaining drifting copies (the F-4 root cause). Values
+# are the `InvoiceStatus` enum's `.value` strings — stated literally to keep this
+# module free of an ORM-model import.
+OPEN_AP_STATUSES: tuple[str, ...] = (
+    "approved",
+    "sending_to_erp",
+    "sent_to_erp",
+    "posted_in_erp",
+    "payment_scheduled",
+)
+
 
 @dataclass(frozen=True)
 class ProcessingTimeMetrics:

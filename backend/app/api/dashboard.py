@@ -16,6 +16,7 @@ from app.models.organization import Organization
 from app.models.payment import Payment
 from app.models.user import User
 from app.models.virtual_card import CardRebate
+from app.services.analytics import OPEN_AP_STATUSES
 from app.services.currency_conversion import (
     resolve_reporting_currency,
     rollup_to_reporting_currency,
@@ -147,11 +148,12 @@ async def get_dashboard(
         "days_90": Decimal("0"),
         "days_90_plus": Decimal("0"),
     }
-    open_statuses = ("new", "pending", "ready_for_review", "approved")
+    # Aging covers the same open-payable population as the AP balance so the
+    # bands reconcile with it (F-4): approved → payment_scheduled.
     aging_rows = await db.execute(
         _inv(
             select(Invoice.due_date, Invoice.amount).where(
-                Invoice.status.in_(open_statuses), Invoice.due_date.isnot(None)
+                Invoice.status.in_(OPEN_AP_STATUSES), Invoice.due_date.isnot(None)
             )
         )
     )
