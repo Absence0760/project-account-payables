@@ -337,8 +337,8 @@ The org's provider-side customer id is read from
 **Graceful degradation:** an org never provisioned with the provider (no customer
 id), an unconfigured/unavailable provider (the live adapter fails closed without
 a key), or any provider error yields an **empty list** — never a 500. Money is an
-exact decimal **string**. The frontend invoices/receipts UI is owned by the
-frontend track.
+exact decimal **string**. The frontend invoices/receipts UI ships — see
+§ Customer-facing UI below.
 
 ### Payment-method endpoint
 

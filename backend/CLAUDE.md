@@ -550,7 +550,9 @@ unconfigured), and the payment-method endpoint (`POST
 /api/billing/payment-method/setup-intent` + `GET /api/billing/payment-methods`,
 admin/cfo, PII-safe card metadata only, graceful not-configured / empty on
 no-customer / unconfigured) are shipped; the invoices/receipts + payment-method
-UI (frontend track) are later. See `docs/billing.md`.
+UI ships on `/billing` (`frontend/src/routes/billing/` — saved-cards list +
+add/replace-card SetupIntent flow with a deployed-only Stripe Elements seam),
+only the live-Stripe plan-change UI is later. See `docs/billing.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
