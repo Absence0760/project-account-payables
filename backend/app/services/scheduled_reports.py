@@ -143,11 +143,15 @@ async def _materialise_rows(
     # aging_snapshot doesn't paginate by period — always as-of-now.
     from decimal import Decimal as _D
 
+    from app.services.analytics import OPEN_AP_STATUSES
+
     today = date.today()
-    open_statuses = ("new", "pending", "ready_for_review", "approved")
+    # Same open-payable population as the AP balance + the API aging export so
+    # the emailed snapshot reconciles with them (F-4): approved →
+    # payment_scheduled, not the pre-approval statuses.
     aging_rows = await db.execute(
         select(Invoice.due_date, Invoice.amount).where(
-            Invoice.status.in_(open_statuses),
+            Invoice.status.in_(OPEN_AP_STATUSES),
             Invoice.due_date.isnot(None),
         )
     )
@@ -339,7 +343,11 @@ async def run_scheduled_reports_once(*, now: datetime | None = None) -> SweepRes
             result.schedules_run += run
             result.failures += failed
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
-            logger.warning("[scheduled_reports] failed sweeping %s: %s", db_name, exc)
+            # Log the exception CLASS only — a DB/SMTP error message can echo a
+            # vendor name / recipient address / partial SQL value (PII-out-of-logs).
+            logger.warning(
+                "[scheduled_reports] failed sweeping %s: %s", db_name, exc.__class__.__name__
+            )
             result.failures += 1
 
     if result.schedules_run or result.failures:
@@ -365,7 +373,12 @@ async def run_scheduled_reports_loop() -> None:
             try:
                 await run_scheduled_reports_once()
             except Exception as exc:  # noqa: BLE001
-                logger.error("[scheduled_reports] sweep raised: %s", exc, exc_info=True)
+                # Class name in the message; exc_info=True keeps the traceback
+                # for debugging without putting the exception text (possible PII)
+                # in the log format string.
+                logger.error(
+                    "[scheduled_reports] sweep raised: %s", exc.__class__.__name__, exc_info=True
+                )
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[scheduled_reports] shutting down")
