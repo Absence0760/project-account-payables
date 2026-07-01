@@ -400,6 +400,32 @@ def test_resolve_card_config_byok_honors_expiry_override():
     assert cfg["default_expiry_days"] == 45
     assert cfg["provider"] == "lithic"
     assert cfg["api_key"] == "byok-key"
+    # BYOK sandbox is opt-IN: an org supplying its own real keys and omitting
+    # `sandbox` must get LIVE rails, not a silent sandbox that pays into a void.
+    assert cfg["sandbox"] is False
+
+
+def test_resolve_card_config_byok_sandbox_is_explicit_opt_in():
+    """`"sandbox": true` still routes to the provider's sandbox — the flag is
+    honoured when set; only the DEFAULT flipped from sandbox to live."""
+    live = _resolve_card_config(
+        {"cards": {"enabled": True, "program_type": "byok", "provider": "lithic", "api_key": "k"}},
+        _app_settings(),
+    )
+    assert live["sandbox"] is False
+    sandboxed = _resolve_card_config(
+        {
+            "cards": {
+                "enabled": True,
+                "program_type": "byok",
+                "provider": "lithic",
+                "api_key": "k",
+                "sandbox": True,
+            }
+        },
+        _app_settings(),
+    )
+    assert sandboxed["sandbox"] is True
 
 
 def test_resolve_card_config_garbage_expiry_value_falls_back():

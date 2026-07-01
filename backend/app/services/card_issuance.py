@@ -80,7 +80,10 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
             "client_secret": org_cards.get("client_secret", ""),
             "customer_hash_id": org_cards.get("customer_hash_id", ""),
             "wallet_hash_id": org_cards.get("wallet_hash_id", ""),
-            "sandbox": org_cards.get("sandbox", True),
+            # BYOK sandbox is opt-IN — a customer supplying their own real keys
+            # expects live rails; defaulting to sandbox silently paid invoices
+            # into the provider's sandbox. Mirror api.cards._resolve_card_config.
+            "sandbox": org_cards.get("sandbox", False),
             "default_expiry_days": expiry_days,
         }
 

@@ -41,3 +41,54 @@ def test_local_dev_keeps_the_default_secret_key():
     # must run with no secret setup.
     s = Settings(environment="development", secret_key="change-me-in-production")
     assert s.secret_key == "change-me-in-production"
+
+
+# ── Card sandbox rails (deployed-env boot guard) ──────────────────────
+
+
+def test_deployed_env_refuses_lithic_live_key_with_sandbox_on():
+    # A live Lithic key + sandbox=True routes every call at the sandbox host:
+    # cards "issue" but can't be charged. Refuse to boot pointed at the void.
+    with pytest.raises(ValidationError, match="AP_LITHIC_SANDBOX"):
+        Settings(
+            environment="production",
+            hcaptcha_secret="hc",
+            secret_key=_GOOD_KEY,
+            lithic_api_key="sk_live_abc",
+            lithic_sandbox=True,
+        )
+
+
+def test_deployed_env_accepts_lithic_live_key_with_sandbox_off():
+    s = Settings(
+        environment="production",
+        hcaptcha_secret="hc",
+        secret_key=_GOOD_KEY,
+        lithic_api_key="sk_live_abc",
+        lithic_sandbox=False,
+    )
+    assert s.lithic_sandbox is False
+
+
+def test_deployed_env_refuses_nium_creds_with_sandbox_on():
+    with pytest.raises(ValidationError, match="AP_NIUM_SANDBOX"):
+        Settings(
+            environment="production",
+            hcaptcha_secret="hc",
+            secret_key=_GOOD_KEY,
+            nium_client_id="nium_live",
+            nium_sandbox=True,
+        )
+
+
+def test_deployed_env_without_card_keys_ignores_sandbox_flag():
+    # No card program configured → the default sandbox=True is irrelevant and
+    # must not block boot.
+    s = Settings(environment="production", hcaptcha_secret="hc", secret_key=_GOOD_KEY)
+    assert s.lithic_sandbox is True  # default unchanged, but boot succeeds
+
+
+def test_local_dev_keeps_sandbox_defaults_even_with_keys():
+    # Non-deployed envs never trip the card sandbox guard.
+    s = Settings(environment="development", lithic_api_key="sk_test", lithic_sandbox=True)
+    assert s.lithic_sandbox is True

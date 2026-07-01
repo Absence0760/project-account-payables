@@ -710,5 +710,28 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _require_live_card_rails_in_deployed_envs(self) -> "Settings":
+        # A deployed env that ships real platform card credentials but leaves the
+        # sandbox flag True routes every live call to the provider's sandbox host:
+        # cards "issue" fine but vendors can't charge them — revenue lost silently
+        # with no error. `*_sandbox` defaults to True, so this is the easy miss.
+        # Refuse to boot rather than ship a card program pointed at the void.
+        if not self.is_deployed:
+            return self
+        if self.lithic_api_key and self.lithic_sandbox:
+            raise ValueError(
+                "AP_LITHIC_SANDBOX must be false when AP_LITHIC_API_KEY is set in a "
+                f"deployed environment ({self.environment!r}); refusing to boot a live "
+                "card program pointed at the Lithic sandbox host."
+            )
+        if (self.nium_client_id or self.nium_client_secret) and self.nium_sandbox:
+            raise ValueError(
+                "AP_NIUM_SANDBOX must be false when Nium credentials are set in a "
+                f"deployed environment ({self.environment!r}); refusing to boot a live "
+                "card program pointed at the Nium sandbox host."
+            )
+        return self
+
 
 settings = Settings()
