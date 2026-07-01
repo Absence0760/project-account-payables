@@ -49,7 +49,7 @@ dependencies = [
     # WebAuthn / passkeys — the second MFA factor alongside pyotp's TOTP.
     # Wraps the FIDO2 register/authenticate ceremonies (services/webauthn.py).
     "webauthn>=3.0.0,<4",
-    "reportlab>=4.5.1,<5",
+    "reportlab>=5.0.0,<6",
     # Loaded by the local-dev entrypoint (main.py) to read .env.development /
     # .env. Already pulled in transitively by uvicorn[standard]; declared here
     # because main.py imports it directly. Never imported on Lambda/prod paths.
