@@ -118,8 +118,11 @@ test.describe('/vendors/screening review queue (admin — cached session)', () =
 			const modal = page.getByRole('dialog', { name: 'Vendor screening review' });
 			await expect(modal).toBeVisible();
 			await expect(modal.getByRole('heading', { name: 'Screening history' })).toBeVisible();
-			// The seeded sanctions_checks row surfaces its matched-list name.
-			await expect(modal.getByText('MOCK_TEST_SDN')).toBeVisible();
+			// The seeded sanctions_checks row surfaces its matched-list name in the
+			// history timeline. Scope to `ul.history` — the summary "Matched list"
+			// field above renders the same matched-list name, so an unscoped
+			// getByText resolves to two legitimate elements (strict-mode violation).
+			await expect(modal.locator('ul.history').getByText('MOCK_TEST_SDN')).toBeVisible();
 		} finally {
 			deleteVendorCascade(vendor.id);
 		}
