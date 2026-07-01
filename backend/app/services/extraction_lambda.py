@@ -31,7 +31,6 @@ async def _process_message(body: dict) -> None:
     import os
 
     db_url = os.environ["DATABASE_URL"]
-    os.environ.get("TENANT_DB_PREFIX", "ap_")
 
     # Look up the org to find the tenant DB name
     control_engine = create_async_engine(db_url)
