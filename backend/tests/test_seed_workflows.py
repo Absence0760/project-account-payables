@@ -14,9 +14,11 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import text
+
 from app.models.invoice import Invoice
 from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowStep
-from scripts.seed import _seed_workflows_for_invoices
+from scripts.seed import _seed_workflows_for_invoices, finalize_entities
 
 _NOW = datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC)
 _APPROVER = uuid.UUID("00000000-0000-0000-0000-000000000010")
@@ -121,3 +123,59 @@ def test_one_instance_per_invoice():
     instances, _steps = _run(invoices)
     assert len(instances) == 3
     assert {i.invoice_id for i in instances} == {inv.id for inv in invoices}
+
+
+async def test_finalize_entities_idempotent_wont_collide_on_second_default(realdb):
+    """Seed re-run guard for the ``uq_workflow_definitions_one_default`` collision.
+
+    ``finalize_entities`` back-fills ``entity_id`` onto seeded rows exactly once.
+    Its blanket ``WHERE entity_id IS NULL`` UPDATE, re-run against an already-
+    finalized tenant, used to sweep up a *second* ``is_default`` WorkflowDefinition
+    that an e2e test leaves behind (NULL entity_id alongside the seeded
+    entity-scoped default) and move it under the Default entity — violating the
+    one-default-per-(org, entity) constraint. It must now skip once the Default
+    entity exists, leaving the extra default untouched.
+    """
+    info = realdb.info("a")
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        default_entity_id = (
+            await s.execute(text("SELECT id FROM entities WHERE is_default LIMIT 1"))
+        ).scalar_one()
+        # Seeded, already-finalized entity-scoped default ...
+        s.add(
+            WorkflowDefinition(
+                id=uuid.uuid4(),
+                organization_id=info.org_id,
+                name="Default Workflow",
+                steps_config={"steps": []},
+                is_default=True,
+                entity_id=default_entity_id,
+            )
+        )
+        # ... plus a second default with a NULL entity_id (the e2e-test shape).
+        null_default_id = uuid.uuid4()
+        s.add(
+            WorkflowDefinition(
+                id=null_default_id,
+                organization_id=info.org_id,
+                name="Invoice Processing",
+                steps_config={"steps": []},
+                is_default=True,
+                entity_id=None,
+            )
+        )
+        await s.commit()
+
+    # Previously raised asyncpg UniqueViolationError; must be a clean no-op now.
+    await finalize_entities(info.db_name, info.org_id)
+
+    async with mk() as s:
+        still_null = (
+            await s.execute(
+                text("SELECT entity_id FROM workflow_definitions WHERE id = :id"),
+                {"id": null_default_id},
+            )
+        ).scalar_one()
+    # Skipped, not force-migrated into a collision.
+    assert still_null is None

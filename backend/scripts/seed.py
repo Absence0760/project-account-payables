@@ -2167,6 +2167,21 @@ async def finalize_entities(db_name: str, org_id: uuid.UUID):
     engine = create_async_engine(_make_tenant_url(db_name))
     try:
         async with engine.begin() as conn:
+            # Idempotency guard. This backfill is a one-time operation (it
+            # mirrors migration 0029): a fresh tenant has no Default entity
+            # until we create it here, and once it exists the seeded rows are
+            # already assigned. Re-running is not just wasted work — the
+            # blanket `entity_id IS NULL` UPDATE would sweep up rows created
+            # *after* the seed (e.g. an e2e-test-authored second default
+            # WorkflowDefinition, which legitimately carries a NULL entity_id
+            # alongside the seeded entity-scoped default) and moving it under
+            # the Default entity violates uq_workflow_definitions_one_default.
+            # So skip entirely once the Default entity is present.
+            if (
+                await conn.execute(text("SELECT 1 FROM entities WHERE is_default LIMIT 1"))
+            ).scalar():
+                print("  Default entity already assigned — skipping")
+                return
             await conn.execute(
                 text(
                     "INSERT INTO entities "
