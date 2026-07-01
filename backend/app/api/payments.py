@@ -680,6 +680,34 @@ async def create_payment_run(
             detail=f"Invoice(s) not approved for payment: {', '.join(not_payable)}",
         )
 
+    # Financial-integrity gate: an invoice carrying an UNRESOLVED `duplicate` or
+    # `fraud_flag` exception must not enter a payment run. Approval status alone
+    # doesn't cover this — the duplicate warning is advisory, so a same-invoice
+    # duplicate could otherwise be approved and paid a second time (a real
+    # double-payment). A human clears the flag by resolving/dismissing the
+    # exception (that IS the sign-off); only `open`/`escalated` block here.
+    from app.models.exception import Exception as InvoiceException
+
+    blocking_res = await db.execute(
+        select(InvoiceException.invoice_id).where(
+            InvoiceException.invoice_id.in_(invoice_ids),
+            InvoiceException.exception_type.in_(("duplicate", "fraud_flag")),
+            InvoiceException.status.notin_(("resolved", "dismissed")),
+        )
+    )
+    blocked_ids = {str(iid) for iid in blocking_res.scalars().all()}
+    if blocked_ids:
+        blocked_numbers = [
+            inv.invoice_number for iid, inv in invoices.items() if iid in blocked_ids
+        ]
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice(s) have an unresolved duplicate/fraud exception and can't be "
+                f"paid until it's cleared: {', '.join(sorted(blocked_numbers))}"
+            ),
+        )
+
     total = Decimal("0")
     for item in body.items:
         inv = invoices[item.invoice_id]

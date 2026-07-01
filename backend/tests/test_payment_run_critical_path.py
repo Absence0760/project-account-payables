@@ -85,22 +85,31 @@ def _invoice(*, amount: Decimal, status=InvoiceStatus.approved):
     )
 
 
-def _create_run_db(invoices: list):
+def _create_run_db(invoices: list, blocking_invoice_ids: list | None = None):
     """Build an AsyncSession mock for `create_payment_run`.
 
-    The handler issues exactly one SELECT — `select(Invoice).where(
-    Invoice.id.in_(...))` → `.scalars().all()`. It then `db.add(run)`,
-    `db.flush()`, `db.add(payment)` per item, and `db.commit()`. We
-    capture every added object so a test can inspect the created run +
-    payment rows.
+    The handler issues exactly two SELECTs: (1) `select(Invoice).where(
+    Invoice.id.in_(...))` → `.scalars().all()`, then (2) the unresolved
+    `duplicate`/`fraud_flag` exception gate → `.scalars().all()` of the
+    blocked invoice ids. It then `db.add(run)`, `db.flush()`, `db.add(
+    payment)` per item, and `db.commit()`. We capture every added object
+    so a test can inspect the created run + payment rows.
+
+    `blocking_invoice_ids` seeds the second SELECT so a test can simulate
+    an invoice sitting under an open duplicate/fraud exception.
     """
     sel = MagicMock()
     scalars = MagicMock()
     scalars.all = MagicMock(return_value=invoices)
     sel.scalars = MagicMock(return_value=scalars)
 
+    block_sel = MagicMock()
+    block_scalars = MagicMock()
+    block_scalars.all = MagicMock(return_value=list(blocking_invoice_ids or []))
+    block_sel.scalars = MagicMock(return_value=block_scalars)
+
     db = AsyncMock()
-    db.execute = AsyncMock(return_value=sel)
+    db.execute = AsyncMock(side_effect=[sel, block_sel])
     db.commit = AsyncMock()
     db.flush = AsyncMock()
     db.added = []
@@ -139,6 +148,63 @@ async def test_create_run_rejects_an_unapproved_invoice():
         )
     assert exc.value.status_code == 409
     db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_run_rejects_invoice_with_unresolved_duplicate_exception():
+    """An approved invoice that still carries an OPEN `duplicate` (or
+    `fraud_flag`) exception must not enter a payment run — otherwise a
+    same-invoice duplicate could be approved and paid a second time (a real
+    double-payment; the duplicate warning is advisory and doesn't block on its
+    own). A human clears it by resolving/dismissing the exception. Refused with
+    409; nothing committed."""
+    from fastapi import HTTPException
+
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.approved)
+    body = CreatePaymentRunRequest(
+        items=[CreatePaymentRunItem(invoice_id=str(inv.id), method="ach")]
+    )
+    # Invoice is payable by status but sits under an unresolved duplicate flag.
+    db = _create_run_db([inv], blocking_invoice_ids=[inv.id])
+
+    with pytest.raises(HTTPException) as exc:
+        await create_payment_run(
+            body=body, db=db, org=_org(), user=_user(), org_id=uuid.uuid4(), entity_id=uuid.uuid4()
+        )
+    assert exc.value.status_code == 409
+    assert "duplicate" in exc.value.detail.lower()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_run_allows_invoice_whose_duplicate_exception_is_cleared():
+    """The gate keys on UNRESOLVED exceptions only. Once a human resolves or
+    dismisses the duplicate/fraud exception (the sign-off), the invoice is
+    payable again — the blocking query returns no rows and the run builds."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("100.00"), status=InvoiceStatus.approved)
+    body = CreatePaymentRunRequest(
+        items=[CreatePaymentRunItem(invoice_id=str(inv.id), method="ach")]
+    )
+    # No unresolved blocking exceptions (dismissed/resolved ones don't match).
+    db = _create_run_db([inv], blocking_invoice_ids=[])
+
+    result = await create_payment_run(
+        body=body, db=db, org=_org(), user=_user(), org_id=uuid.uuid4(), entity_id=uuid.uuid4()
+    )
+    assert result["payment_count"] == 1
+    db.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
