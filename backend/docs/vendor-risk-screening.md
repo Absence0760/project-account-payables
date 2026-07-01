@@ -81,6 +81,19 @@ override.
 `sanctions_checks(result)` + the `vendors(screening_status)` index).
 `GET /api/vendors/{id}/screening-history` returns the full trail for one vendor.
 
+**Frontend surface.** The dedicated review-queue page lives at
+`frontend/src/routes/vendors/screening/+page.svelte` (sidebar link
+**Screening**, gated to admin / ap_manager / cfo). It lists the flagged
+vendors with their screening pill (`ui/ScreeningBadge.svelte`), risk score, and
+last-screened date over `getScreeningReviewQueue()`, and a detail modal opens
+the per-vendor screening-history timeline plus **block / unblock** and
+**re-screen** actions. Block/unblock is gated in the UI on the granular
+permission `vendor.block` (`auth.can('vendor.block')`) — not a role check — so
+the control is hidden for a non-holder; re-screen is gated on
+`auth.isManager`. The backend enforces both regardless. (The vendor LIST page
+`/vendors` also surfaces the same screening/risk actions per-vendor via
+`VendorModal`.)
+
 ## Periodic re-screening
 
 `services/vendor_rescreen.py` is a background loop (same shape as

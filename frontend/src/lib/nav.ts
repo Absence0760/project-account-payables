@@ -58,6 +58,10 @@ export const NAV: NavEntry[] = [
 	{ kind: 'link', label: 'Invoices', labelKey: 'nav.invoices', href: '/invoices', icon: 'invoices' },
 	{ kind: 'link', label: 'Payments', labelKey: 'nav.payments', href: '/payments', icon: 'payments', roles: ['admin', 'ap_manager', 'cfo'] },
 	{ kind: 'link', label: 'Vendors', labelKey: 'nav.vendors', href: '/vendors', icon: 'vendors', roles: ['admin', 'ap_manager', 'cfo'] },
+	// Sanctions-screening review queue (a sub-route of /vendors). Reuses the
+	// existing `vendors.col.screening` message ("Screening") as its label — a
+	// dedicated `nav.screening` key is a later i18n slice (Lane A owns locales).
+	{ kind: 'link', label: 'Screening', labelKey: 'vendors.col.screening', href: '/vendors/screening', icon: 'exceptions', roles: ['admin', 'ap_manager', 'cfo'] },
 	{ kind: 'link', label: 'Exceptions', labelKey: 'nav.exceptions', href: '/exceptions', icon: 'exceptions', roles: ['admin', 'ap_manager'] },
 	{
 		kind: 'group',

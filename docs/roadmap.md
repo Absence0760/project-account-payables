@@ -740,7 +740,7 @@ Use AP data to forecast cash outflows and optimize payment timing.
 ## Priority 10: Compliance & E-Invoicing
 
 ### Sanctions & Vendor Risk Screening
-**Status:** Shipped (first slice) — screening on vendor create/update, periodic re-screen sweep, payment-block gate, adverse-media support, composite risk scoring, Dow Jones/Refinitiv/ComplyAdvantage adapter skeletons, and the append-only screening trail all landed. Real-provider wiring (live keys) + a dedicated review-queue page are the remaining deployment work.
+**Status:** Shipped — screening on vendor create/update, periodic re-screen sweep, payment-block gate, adverse-media support, composite risk scoring, Dow Jones/Refinitiv/ComplyAdvantage adapter skeletons, the append-only screening trail, and the dedicated review-queue page (`/vendors/screening`) all landed. Real-provider wiring (live keys) is the remaining deployment work.
 
 Tipalti, Coupa, Medius, and Basware all screen vendors against sanctions lists. Required for financial services, government contractors, and regulated industries. See `backend/docs/vendor-risk-screening.md`.
 
