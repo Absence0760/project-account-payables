@@ -8,11 +8,14 @@ Checkeeper prints and ships it. Tracking webhooks fire on print
 API docs: https://checkeeper.com/api/
 
 Auth: Bearer token in `Authorization` header.
-Idempotency: NOT supported natively by Checkeeper — we de-dupe on
-our side via `correlation_id`-keyed Redis SETNX before issuing. The
-adapter does its part by stamping `metadata.correlation_id` so a
-later reconciliation can match webhook → payment row even if a
-duplicate accidentally slipped through.
+Idempotency: NOT supported natively by Checkeeper — a physical check is
+an irreversible negotiable instrument, so we de-dupe client-side via a
+`correlation_id`-keyed Redis `SET NX` claimed right before issuing (see
+`create_payment`). A second call with the same correlation_id finds the
+slot taken and is suppressed instead of printing a second check;
+correlation_id is fresh per payment ATTEMPT, so a legitimate re-pay
+(new attempt) gets its own slot. We also stamp `metadata.correlation_id`
+on the check so a later reconciliation can match webhook → payment row.
 Webhooks: HMAC-SHA256 over body, header `X-Checkeeper-Signature`.
 Sandbox: `api.sandbox.checkeeper.com` vs `api.checkeeper.com`.
 
@@ -44,6 +47,10 @@ logger = logging.getLogger(__name__)
 PROD_BASE = "https://api.checkeeper.com"
 SANDBOX_BASE = "https://api.sandbox.checkeeper.com"
 TIMEOUT = 15.0
+# How long a correlation_id's idempotency slot is held. 48h comfortably
+# covers the check print + USPS delivery + reconciliation window, so a
+# late retry of the same attempt can't slip a second physical check out.
+CHECK_IDEMPOTENCY_TTL_SECONDS = 48 * 60 * 60
 
 _STATUS_MAP: dict[str, PaymentStatus] = {
     "queued": PaymentStatus.submitted,
@@ -130,6 +137,40 @@ class CheckeeperAdapter(PaymentAdapter):
             "Content-Type": "application/json",
         }
 
+        # Client-side idempotency gate. Checkeeper has no native idempotency
+        # key, so this Redis SET-NX is the ONLY thing standing between a
+        # retried create_payment (same correlation_id) and a second physical
+        # check in the mail. Claim the slot right before issuing; a taken slot
+        # means a prior attempt already issued (or is issuing) this check.
+        from app.redis import get_redis
+
+        idem_key = f"checkeeper:payment:{payload.correlation_id}"
+        try:
+            r = await get_redis()
+            was_set = await r.set(idem_key, "1", nx=True, ex=CHECK_IDEMPOTENCY_TTL_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            # Without Redis we can't guarantee idempotency — fail CLOSED rather
+            # than risk a duplicate irreversible check. The operator retries
+            # once Redis is healthy. Log the class only (never the body).
+            logger.warning(
+                "checkeeper idempotency gate unavailable (%s); refusing to issue "
+                "a check without a dedup guard",
+                exc.__class__.__name__,
+            )
+            return PaymentResult(
+                success=False,
+                status=PaymentStatus.failed,
+                failure_reason="checkeeper_idempotency_unavailable",
+            )
+        if not was_set:
+            # A prior attempt with this exact correlation_id already claimed the
+            # slot. Suppress the duplicate — do NOT POST a second check.
+            return PaymentResult(
+                success=False,
+                status=PaymentStatus.failed,
+                failure_reason="checkeeper_duplicate_suppressed",
+            )
+
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
                 response = await client.post(
@@ -138,6 +179,10 @@ class CheckeeperAdapter(PaymentAdapter):
                     headers=headers,
                 )
         except httpx.RequestError as exc:
+            # Ambiguous: Checkeeper may have received + printed the check before
+            # the transport failed. Leave the idempotency slot CLAIMED so an
+            # automatic retry can't print a second check; the operator
+            # reconciles via the tracking webhook / audit log.
             return PaymentResult(
                 success=False,
                 status=PaymentStatus.failed,
@@ -145,6 +190,12 @@ class CheckeeperAdapter(PaymentAdapter):
             )
 
         if response.status_code >= 400:
+            # A clean API rejection means NO check was printed — release the
+            # slot so a legitimate retry of this correlation_id can proceed.
+            try:
+                await r.delete(idem_key)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 err = response.json() or {}
             except ValueError:

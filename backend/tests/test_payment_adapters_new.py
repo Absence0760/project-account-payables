@@ -27,7 +27,7 @@ import hmac
 import json
 import time
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -523,7 +523,14 @@ async def test_checkeeper_create_check_sends_full_address():
             },
         },
     )
-    with patch("app.services.payment_adapters.checkeeper.httpx.AsyncClient", fake_client):
+    # Mock the client-side idempotency gate's Redis so the unit test doesn't
+    # couple to (or persist keys in) a live Redis — first-issue slot is free.
+    fake_redis = AsyncMock()
+    fake_redis.set = AsyncMock(return_value=True)  # slot claimed
+    with (
+        patch("app.services.payment_adapters.checkeeper.httpx.AsyncClient", fake_client),
+        patch("app.redis.get_redis", AsyncMock(return_value=fake_redis)),
+    ):
         result = await adapter.create_payment(payload)
 
     assert result.success is True
