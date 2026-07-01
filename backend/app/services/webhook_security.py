@@ -11,8 +11,10 @@ handlers (which don't go through the adapter abstraction) can reuse.
 
 Dedup uses Redis with a TTL so retries within the provider's
 re-delivery window are caught, but the key set doesn't grow without
-bound. The 24-hour default covers every processor we integrate with;
-most retry for a few hours then back off.
+bound. The 72-hour default covers the widest processor retry window we
+integrate with (Lithic retries a failed delivery on an exponential
+backoff over ~3 days); a shorter TTL would let a late redelivery slip
+past the dedup and replay the one-time effect.
 """
 
 from __future__ import annotations
@@ -26,7 +28,9 @@ from app.redis import get_redis
 logger = logging.getLogger(__name__)
 
 DEDUP_PREFIX = "webhook:event:"
-DEFAULT_DEDUP_TTL_SECONDS = 24 * 60 * 60
+# 3 days — must cover the LONGEST provider retry window (Lithic ~72h), or a
+# redelivery after the key expires reprocesses the event (double rebate).
+DEFAULT_DEDUP_TTL_SECONDS = 72 * 60 * 60
 
 
 def verify_hmac_sha256(secret: str, raw_body: bytes, provided_hex: str | None) -> bool:
@@ -72,6 +76,28 @@ async def is_event_already_processed(
     # existed. redis-py's `set` returns True / None for that.
     was_set = await r.set(key, "1", nx=True, ex=ttl_seconds)
     return not was_set
+
+
+async def release_event_claim(provider: str, event_id: str) -> None:
+    """Release a dedup claim made by `is_event_already_processed`.
+
+    A Redis `SET NX` claim is durable the instant it's written — but the side
+    effect it guards (a rebate mint, a charge transition) isn't durable until
+    the DB transaction commits. If that commit rolls back AFTER the claim, the
+    event id would stay claimed for the full TTL, so the provider's retry is
+    silently deduped and the one-time effect is lost forever. Callers must
+    release the claim on any post-claim failure so the retry can reprocess.
+
+    Best-effort: an empty event id is a no-op (nothing was claimed), and a Redis
+    hiccup here just falls back to TTL expiry rather than raising.
+    """
+    if not event_id:
+        return
+    try:
+        r = await get_redis()
+        await r.delete(f"{DEDUP_PREFIX}{provider}:{event_id}")
+    except Exception:  # noqa: BLE001 — release is best-effort; never raise
+        logger.warning("[webhook-dedup] failed to release claim for provider=%s", provider)
 
 
 def extract_signature_header(headers: dict, *candidates: str) -> str | None:
