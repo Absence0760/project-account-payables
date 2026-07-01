@@ -26,7 +26,8 @@
 		invoice_id: string;
 		invoice_number: string | null;
 		vendor_name: string | null;
-		amount: number;
+		// Exact Decimal STRING money (never float); formatMoney coerces to display.
+		amount: string;
 		method: string | null;
 		status: string;
 		reference: string | null;
@@ -35,7 +36,7 @@
 	interface RunDetail {
 		id: string;
 		status: string;
-		total_amount: number;
+		total_amount: string;
 		initiated_by: string | null;
 		executed_at: string | null;
 		created_at: string;
@@ -126,7 +127,8 @@
 
 	// Esc + focus trap/restore are handled by the shared `focusTrap` action.
 
-	function fmt(amount: number, currency?: string | null): string {
+	function fmt(amount: number | string | null | undefined, currency?: string | null): string {
+		// Money arrives as string-Decimal from the API; formatMoney coerces it.
 		return formatMoney(amount, { currency });
 	}
 

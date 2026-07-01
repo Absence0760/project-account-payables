@@ -59,11 +59,13 @@
 	let activeStatus = $state<PaymentStatus | 'all'>('all');
 
 	// Summary
+	// Money fields arrive as exact Decimal STRINGS from the backend (money
+	// invariant — never float). formatMoney/Number() coerce at each use site.
 	interface Summary {
-		total_paid: number;
-		total_pending: number;
+		total_paid: string;
+		total_pending: string;
 		payment_count: number;
-		total_rebates: number;
+		total_rebates: string;
 		queue_count: number;
 	}
 	let summary = $state<Summary | null>(null);
@@ -73,7 +75,8 @@
 		id: string;
 		invoice_number: string;
 		vendor_name: string;
-		amount: number;
+		// Exact Decimal STRING money (never float); coerce with Number() to sum.
+		amount: string;
 		currency: string;
 		due_date: string | null;
 		payment_terms: string | null;
@@ -81,8 +84,9 @@
 		is_overdue: boolean;
 		discount_eligible: boolean;
 		discount_date: string | null;
+		// discount_percent is a rate, not money — stays a JSON number.
 		discount_percent: number | null;
-		discount_amount: number | null;
+		discount_amount: string | null;
 	}
 	let queue = $state<QueueItem[]>([]);
 	let queueTotalSavings = $state(0);
@@ -113,14 +117,16 @@
 		queue.length > 0 && queue.every(q => selectedQueue.has(q.id))
 	);
 
+	// Money arrives as string-Decimal — coerce with Number() before summing so
+	// `+` stays arithmetic (string `+` would concatenate into "0.100.20").
 	let selectedTotal = $derived(
-		queue.filter(q => selectedQueue.has(q.id)).reduce((sum, q) => sum + q.amount, 0)
+		queue.filter(q => selectedQueue.has(q.id)).reduce((sum, q) => sum + Number(q.amount), 0)
 	);
 
 	let selectedSavings = $derived(
 		queue
 			.filter(q => selectedQueue.has(q.id) && q.discount_eligible && q.discount_amount)
-			.reduce((sum, q) => sum + (q.discount_amount ?? 0), 0)
+			.reduce((sum, q) => sum + Number(q.discount_amount ?? 0), 0)
 	);
 
 	function toggleQueueSelect(id: string) {
@@ -311,11 +317,12 @@
 
 	async function loadQueue() {
 		try {
-			const data = await api.get<{ items: QueueItem[]; total_savings: number }>(
+			const data = await api.get<{ items: QueueItem[]; total_savings: string }>(
 				'/api/payments/queue'
 			);
 			queue = data.items;
-			queueTotalSavings = data.total_savings ?? 0;
+			// total_savings is string-Decimal money — coerce for the numeric banner.
+			queueTotalSavings = Number(data.total_savings ?? 0);
 		} catch (err) {
 			toast(err instanceof Error ? err.message : 'Failed to load payment queue', 'error');
 		}
@@ -438,9 +445,13 @@
 		return paymentCounts[s] ?? paymentStore.all.filter((p) => p.status === s).length;
 	}
 
-	function formatCurrency(amount: number, currency?: string | null): string {
+	function formatCurrency(
+		amount: number | string | null | undefined,
+		currency?: string | null
+	): string {
 		// Per-row amounts pass their own currency; tenant-wide summary
 		// totals omit it and fall back to the org's configured default.
+		// Accepts string-Decimal money (formatMoney coerces) as well as numbers.
 		return formatMoney(amount, { currency: currency ?? orgCurrency.currency });
 	}
 
@@ -479,7 +490,7 @@
 				<span class="scard-value">{summary.payment_count}</span>
 				<span class="scard-label">{m('payments.summary.payments')}</span>
 			</div>
-			{#if summary.total_rebates > 0}
+			{#if Number(summary.total_rebates) > 0}
 				<div class="scard rebate">
 					<span class="scard-value">{formatCurrency(summary.total_rebates)}</span>
 					<span class="scard-label">{m('payments.summary.rebatesEarned')}</span>

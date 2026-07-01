@@ -142,6 +142,41 @@ test.describe('/payments queue selection', () => {
 		await expect(select).toHaveValue('check');
 	});
 
+	test('pay-bar total is the numeric SUM of selected amounts, not a string concat', async ({
+		page
+	}) => {
+		// Regression guard for the money-on-the-wire change: /api/payments/queue
+		// now returns `amount` as a Decimal STRING. The pay-bar total reduces
+		// those amounts, so a missing Number() coercion would concatenate them
+		// ("$0250.00250.00") instead of summing. Two $250.00 invoices must total
+		// exactly $500.00.
+		const stamp = Date.now();
+		const created: string[] = [];
+		try {
+			created.push(await createApprovedInvoice(page, `E2E-SUM-${stamp}-A`));
+			created.push(await createApprovedInvoice(page, `E2E-SUM-${stamp}-B`));
+
+			await page.reload();
+			await page.waitForLoadState('networkidle');
+			await page.locator('.tab', { hasText: 'Queue' }).click();
+
+			const rowA = page.locator('table tbody tr', { hasText: `E2E-SUM-${stamp}-A` });
+			const rowB = page.locator('table tbody tr', { hasText: `E2E-SUM-${stamp}-B` });
+			await expect(rowA).toBeVisible();
+			await expect(rowB).toBeVisible();
+
+			await rowA.locator('input[type="checkbox"]').check();
+			await rowB.locator('input[type="checkbox"]').check();
+
+			const count = page.locator('.pay-bar .pay-bar-count');
+			await expect(count).toContainText('2 selected');
+			// The exact summed total — proves the reduce is arithmetic, not concat.
+			await expect(count).toContainText('$500.00');
+		} finally {
+			for (const id of created) hardDeleteInvoice(id);
+		}
+	});
+
 	test('Review panel button label reflects selection size pluralization', async ({
 		page
 	}) => {
