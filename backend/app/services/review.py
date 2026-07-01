@@ -108,6 +108,7 @@ async def approve_invoice(
     actor_name: str,
     actor_roles: set[str] | None = None,
     corrections: dict | None = None,
+    org_settings: dict | None = None,
 ) -> Invoice:
     from app.services.approval_chain import (
         advance_approval_chain,
@@ -151,6 +152,20 @@ async def approve_invoice(
         # Store vendor-consistent corrections in the correction cache so
         # future extractions from the same vendor pick up the right values.
         await record_corrections(db, invoice, corrections)
+
+        # Recompute warnings + po_match against the CORRECTED fields. Without
+        # this the approved invoice keeps the pre-correction artefacts: a
+        # po_number correction leaves a stale `po_mismatch` warning and a failed
+        # match against the old PO on the row, and a vendor_name correction skips
+        # the duplicate check on the new value. The PATCH path already refreshes
+        # after setattr; the approve path must too. Best-effort — a warnings
+        # recompute must never break an otherwise-valid approval.
+        from app.services.invoice_warnings import refresh_warnings
+
+        try:
+            await refresh_warnings(db, invoice, org_settings=org_settings)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("refresh_warnings after corrections failed for %s: %s", invoice.id, exc)
 
     # Threshold enforcement — runs against the now-corrected invoice amount.
     await _enforce_approval_thresholds(db, invoice, actor_roles or set())

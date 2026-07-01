@@ -305,3 +305,87 @@ async def test_completing_chain_approval_writes_final_approved_row_not_step():
     assert invoice.approval_date is not None
     step_rows = [r for r in captured if r.get("action") == "invoice.approval_step"]
     assert step_rows == [], "the completing approval must not write a partial step row"
+
+
+# ---------------------------------------------------------------------------
+# refresh_warnings after approve-with-corrections (stale po_match / warnings)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_corrections_rerun_refresh_warnings():
+    """approve-with-corrections must recompute warnings + po_match against the
+    corrected fields, else a po_number/vendor correction leaves stale artefacts
+    (a failed match against the old PO, a missed duplicate) on the approved row.
+    The refresh runs with the invoice AND the passed org_settings."""
+    from app.services import review
+
+    invoice = _make_invoice(amount=250)
+    instance = _instance(_single_level_snapshot({}))
+    db = AsyncMock()
+    org_settings = {"fraud_rules": {"round_amount_enabled": False}}
+
+    captured: dict = {}
+
+    async def _capture_refresh(_db, inv, *, org_settings=None):
+        captured["invoice"] = inv
+        captured["org_settings"] = org_settings
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch.object(review, "transition_invoice", new=AsyncMock()),
+        patch.object(review, "advance_workflow", new=AsyncMock()),
+        patch("app.services.invoice_warnings.refresh_warnings", new=_capture_refresh),
+    ):
+        await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=uuid.uuid4(),
+            actor_name="Manager",
+            actor_roles={"ap_manager"},
+            corrections={"po_number": "PO-123"},
+            org_settings=org_settings,
+        )
+
+    assert captured["invoice"] is invoice
+    assert captured["org_settings"] is org_settings
+    # The correction was applied before the refresh ran.
+    assert invoice.po_number == "PO-123"
+
+
+@pytest.mark.asyncio
+async def test_no_corrections_does_not_rerun_refresh_warnings():
+    """With no corrections there's nothing to make the persisted warnings stale,
+    so the (non-trivial) refresh is skipped — the approve path stays cheap."""
+    from app.services import review
+
+    invoice = _make_invoice(amount=250)
+    instance = _instance(_single_level_snapshot({}))
+    db = AsyncMock()
+
+    calls: list = []
+
+    async def _refresh(_db, inv, *, org_settings=None):
+        calls.append(inv)
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch.object(review, "transition_invoice", new=AsyncMock()),
+        patch.object(review, "advance_workflow", new=AsyncMock()),
+        patch("app.services.invoice_warnings.refresh_warnings", new=_refresh),
+    ):
+        await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=uuid.uuid4(),
+            actor_name="Manager",
+            actor_roles={"ap_manager"},
+        )
+
+    assert calls == []
