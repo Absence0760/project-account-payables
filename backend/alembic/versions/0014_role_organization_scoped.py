@@ -66,7 +66,26 @@ def upgrade() -> None:
         END $$;
         """
     )
-    op.execute("ALTER TABLE roles ADD CONSTRAINT uq_roles_name_org UNIQUE (name, organization_id)")
+    # Idempotent add: Postgres has no ``ADD CONSTRAINT IF NOT EXISTS``, so guard
+    # via the catalog (same DO-block idiom as the drop above). A control DB whose
+    # tables were bootstrapped with ``create_all`` already carries this constraint
+    # from the model's ``__table_args__``; re-running the migration from a reset
+    # ``alembic_version`` must no-op instead of erroring ``already exists``.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'roles'::regclass
+                  AND conname = 'uq_roles_name_org'
+            ) THEN
+                ALTER TABLE roles
+                    ADD CONSTRAINT uq_roles_name_org UNIQUE (name, organization_id);
+            END IF;
+        END $$;
+        """
+    )
 
 
 def downgrade() -> None:
