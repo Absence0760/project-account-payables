@@ -76,7 +76,7 @@ dev = [
     # the committed `.test_durations` baseline so each shard gets a roughly
     # equal wall-clock slice. Regenerate the baseline with
     # `pytest --store-durations` after large test-surface changes.
-    "pytest-split>=0.10,<1",
+    "pytest-split>=0.11.0,<1",
     "httpx>=0.28.1,<1",
     # Tight pin: ruff occasionally adds new lint rules in patch
     # releases (0.15 added the I001 check that bit us once). Pinning
