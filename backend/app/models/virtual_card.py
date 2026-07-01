@@ -80,6 +80,14 @@ class CardRevealToken(Base, TimestampMixin):
 class CardRebate(Base, TimestampMixin):
     __tablename__ = "card_rebates"
 
+    # One rebate per virtual card — a single-use card yields exactly one
+    # settlement → exactly one rebate. This unique index is the hard DB-level
+    # backstop against a double-rebate under a race / Redis-outage (the webhook
+    # already guards on card.status == "charged" + event-id dedup). Mirrors
+    # migration 0069; declared here so fresh tenants built via create_all in
+    # tenant_provisioning get it too, not only migrated ones.
+    __table_args__ = (Index("uq_card_rebates_virtual_card", "virtual_card_id", unique=True),)
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     virtual_card_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("virtual_cards.id"), nullable=False

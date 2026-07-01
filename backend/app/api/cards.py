@@ -672,7 +672,19 @@ async def card_webhook(provider: str, request: Request):
                         period=datetime.now(UTC).strftime("%Y-%m"),
                         organization_id=card.organization_id,
                     )
-                    db.add(rebate)
+                    # One rebate per card is enforced by the unique index
+                    # uq_card_rebates_virtual_card (migration 0069). Under a race
+                    # / Redis-outage a second settlement could reach here; insert
+                    # inside a savepoint so a duplicate is silently skipped WITHOUT
+                    # aborting the card completion + audit row (which must still
+                    # land — the money-state transition is the point of the event).
+                    rebate_created = True
+                    try:
+                        async with db.begin_nested():
+                            db.add(rebate)
+                            await db.flush()
+                    except IntegrityError:
+                        rebate_created = False
                     await dispatch_audit(
                         db,
                         correlation_id=card.correlation_id or uuid.uuid4(),
@@ -687,6 +699,7 @@ async def card_webhook(provider: str, request: Request):
                             "to": "completed",
                             "rebate_amount": str(rebate_amount),
                             "rebate_rate": str(rebate_rate),
+                            "rebate_created": rebate_created,
                         },
                     )
 
