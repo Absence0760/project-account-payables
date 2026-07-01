@@ -1473,8 +1473,23 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     # payment to `completed` twice and re-fire the ERP-sync dispatch.
     from app.services.webhook_security import is_event_already_processed
 
-    if event.event_id and await is_event_already_processed(provider, event.event_id):
-        return
+    if event.event_id:
+        if await is_event_already_processed(provider, event.event_id):
+            return
+    else:
+        # A provider (or a future adapter) that stopped populating event_id
+        # can't be Redis-deduped. Make that an explicit, logged branch rather
+        # than a silent short-circuit of the check: we proceed WITHOUT the
+        # first-line dedup, and the terminal-state allowlist below (only
+        # pending/submitted/processing are overwritable, under the FOR UPDATE
+        # row lock) is the backstop that keeps a re-delivery from
+        # double-completing a payment. If this warning ever fires in
+        # production it means an adapter's parse_webhook needs an event_id.
+        logger.warning(
+            "[payment-webhook] empty event_id from provider=%s; skipping Redis "
+            "dedup — relying on the terminal-state allowlist backstop",
+            provider,
+        )
 
     # Open a tenant-DB session to look up + update the Payment row.
     engine = get_tenant_engine(org.db_name)
