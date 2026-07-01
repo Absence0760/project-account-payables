@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -30,8 +31,31 @@ from app.database import _make_tenant_url, control_session_factory
 from app.models.organization import Organization
 from app.models.workflow import WorkflowInstance
 from app.services.approval_chain import apply_escalation
+from app.services.audit_dispatch import dispatch_audit
 
 logger = logging.getLogger(__name__)
+
+
+def _last_escalation_detail(instance: WorkflowInstance) -> dict:
+    """The escalation event apply_escalation just appended to the current level.
+
+    Escalation expands who may approve an invoice — a material control event —
+    so it must land in the immutable audit trail, not only in mutable
+    state_data. Extracts the current level's most-recent escalation (the added
+    approver ids + after_hours) for the audit ``details``; PII-free (only user
+    ids + hours, never bank/tax data)."""
+    chain = (instance.state_data or {}).get("approval_levels") or {}
+    levels = chain.get("levels") or []
+    idx = chain.get("current_level", 0)
+    detail: dict = {"level": idx}
+    if 0 <= idx < len(levels):
+        escalations = levels[idx].get("escalations") or []
+        if escalations:
+            last = escalations[-1]
+            detail["added_user_ids"] = last.get("added_user_ids")
+            detail["after_hours"] = last.get("after_hours")
+            detail["at"] = last.get("at")
+    return detail
 
 
 @dataclass
@@ -50,13 +74,16 @@ async def escalate_once(*, now: datetime | None = None) -> EscalateResult:
         rows = await ctrl.execute(select(Organization.id, Organization.db_name))
         tenants = list(rows.all())
 
-    for _org_id, db_name in tenants:
+    for org_id, db_name in tenants:
         result.tenants_scanned += 1
         try:
-            n = await _escalate_tenant(db_name, now)
+            n = await _escalate_tenant(db_name, now, org_id=org_id)
             result.instances_escalated += n
         except Exception as exc:
-            logger.warning("[approval-escalation] failed to sweep %s: %s", db_name, exc)
+            # Log the exception CLASS only — a raw message could carry PII.
+            logger.warning(
+                "[approval-escalation] failed to sweep %s: %s", db_name, exc.__class__.__name__
+            )
             result.failures += 1
 
     if result.instances_escalated or result.failures:
@@ -69,11 +96,21 @@ async def escalate_once(*, now: datetime | None = None) -> EscalateResult:
     return result
 
 
-async def _escalate_tenant(db_name: str, now: datetime) -> int:
+async def _escalate_tenant(
+    db_name: str, now: datetime, *, org_id: uuid.UUID | None = None
+) -> int:
     """Mutate every active instance whose current chain level is overdue.
 
     Reads only `state="active"` rows — completed/abandoned instances don't
     move money and shouldn't bring a sweeper down if their JSON is malformed.
+
+    The instance rows are locked ``FOR UPDATE`` for the sweep so an escalation
+    can't clobber a concurrent approval: the approve path (review.approve_invoice)
+    takes the same row lock, so escalation either waits for an in-flight approval
+    to commit (then reads the fresh state_data) or holds the row while it
+    escalates. Each escalation writes an ``invoice.approval_escalated`` audit row
+    — expanding who may approve an invoice is a material control event and must
+    be reconstructable from the immutable trail, not just mutable state_data.
     """
     engine = create_async_engine(_make_tenant_url(db_name))
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -84,7 +121,9 @@ async def _escalate_tenant(db_name: str, now: datetime) -> int:
             instances = (
                 (
                     await db.execute(
-                        select(WorkflowInstance).where(WorkflowInstance.state == "active")
+                        select(WorkflowInstance)
+                        .where(WorkflowInstance.state == "active")
+                        .with_for_update()
                     )
                 )
                 .scalars()
@@ -94,6 +133,17 @@ async def _escalate_tenant(db_name: str, now: datetime) -> int:
             for inst in instances:
                 if apply_escalation(inst, now=now):
                     escalated += 1
+                    if org_id is not None:
+                        await dispatch_audit(
+                            db,
+                            correlation_id=inst.correlation_id or uuid.uuid4(),
+                            organization_id=org_id,
+                            actor_id=None,  # system-initiated sweep
+                            action="invoice.approval_escalated",
+                            entity_type="invoice",
+                            entity_id=inst.invoice_id,
+                            details=_last_escalation_detail(inst),
+                        )
 
             if escalated:
                 await db.commit()

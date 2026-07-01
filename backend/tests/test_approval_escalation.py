@@ -124,6 +124,59 @@ async def test_escalate_tenant_commits_only_when_something_escalated():
     engine.dispose.assert_awaited_once()
 
 
+async def test_escalate_tenant_writes_audit_row_per_escalation():
+    """Every escalation is a material control event (it expands who may approve
+    an invoice), so it must write an append-only `invoice.approval_escalated`
+    audit row — not only mutate state_data."""
+    inst = SimpleNamespace(
+        correlation_id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        state_data={
+            "approval_levels": {
+                "current_level": 0,
+                "levels": [
+                    {
+                        "approver_ids": ["u1", "u2"],
+                        "escalations": [
+                            {
+                                "at": "2026-07-01T00:00:00+00:00",
+                                "added_user_ids": ["u2"],
+                                "after_hours": 24,
+                            },
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+    session = _FakeTenantSession([inst])
+    engine, patches = _patch_tenant(session)
+    audit_calls: list[dict] = []
+
+    async def _capture_audit(_db, **kwargs):
+        audit_calls.append(kwargs)
+
+    org_id = uuid.uuid4()
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patch.object(approval_escalation, "apply_escalation", MagicMock(return_value=True)),
+        patch.object(approval_escalation, "dispatch_audit", _capture_audit),
+    ):
+        n = await approval_escalation._escalate_tenant("ap_acme", datetime.now(UTC), org_id=org_id)
+
+    assert n == 1
+    assert len(audit_calls) == 1
+    call = audit_calls[0]
+    assert call["action"] == "invoice.approval_escalated"
+    assert call["entity_type"] == "invoice"
+    assert call["entity_id"] == inst.invoice_id
+    assert call["organization_id"] == org_id
+    assert call["actor_id"] is None  # system sweep
+    assert call["details"]["added_user_ids"] == ["u2"]
+
+
 async def test_escalate_tenant_does_not_commit_when_nothing_overdue():
     session = _FakeTenantSession([object()])
     engine, patches = _patch_tenant(session)
