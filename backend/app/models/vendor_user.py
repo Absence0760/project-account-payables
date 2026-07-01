@@ -25,6 +25,18 @@ class VendorUser(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
+    # The tenant Organization this portal user belongs to. A `vendor_users` row
+    # already lives in exactly one tenant DB, so isolation currently rests on the
+    # per-tenant DB boundary + a UUID-collision assumption (the same VendorUser.id
+    # can't exist in two tenant DBs). This column makes the tenant binding
+    # explicit and positively verifiable: `get_current_vendor_user` cross-checks
+    # it against the resolved tenant, so even a (astronomically unlikely) id
+    # collision — or a manually mis-provisioned row — can't authenticate against
+    # the wrong tenant. Nullable so the additive migration can backfill legacy
+    # rows; every creation site populates it (from `vendor.organization_id`).
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     hashed_password: Mapped[str | None] = mapped_column(String(255))

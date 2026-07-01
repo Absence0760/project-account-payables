@@ -1071,6 +1071,7 @@ async def invite_vendor_portal_user(
     temp_password = generate_temp_password()
     vu = VendorUser(
         vendor_id=vendor.id,
+        organization_id=vendor.organization_id,
         email=body.email,
         full_name=body.full_name,
         hashed_password=_pwd.hash(temp_password),

@@ -72,9 +72,12 @@ async def test_get_current_vendor_user_resolves_active_user(monkeypatch):
     """Happy path: valid vendor JWT + existing active VendorUser → returns the row."""
     vu_id = uuid.uuid4()
     vendor_id = uuid.uuid4()
+    org_id = uuid.uuid4()
     token = create_vendor_access_token(vu_id, vendor_id)
 
-    fake_vu = SimpleNamespace(id=vu_id, vendor_id=vendor_id, email="p@v.com", is_active=True)
+    fake_vu = SimpleNamespace(
+        id=vu_id, vendor_id=vendor_id, email="p@v.com", is_active=True, organization_id=org_id
+    )
     scalars_result = MagicMock()
     scalars_result.scalar_one_or_none.return_value = fake_vu
     db = MagicMock()
@@ -85,7 +88,8 @@ async def test_get_current_vendor_user_resolves_active_user(monkeypatch):
 
     monkeypatch.setattr("app.api.portal_deps.is_token_blocked", _not_blocked)
 
-    resolved = await get_current_vendor_user(authorization=f"Bearer {token}", db=db)
+    tenant = SimpleNamespace(id=org_id)
+    resolved = await get_current_vendor_user(authorization=f"Bearer {token}", tenant=tenant, db=db)
     assert resolved is fake_vu
 
 

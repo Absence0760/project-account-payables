@@ -189,6 +189,100 @@ async def test_portal_endpoint_dep_rejects_employee_token():
 
 
 # ---------------------------------------------------------------------------
+# get_current_vendor_user — the portal user's org must match the resolved tenant
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vendor_user_dep_rejects_org_mismatch():
+    """A VendorUser row whose `organization_id` does not match the resolved
+    tenant must be refused (opaque 401), even though the id lookup succeeded —
+    this is the positive tenant binding that no longer rests on a UUID-collision
+    assumption. If a colliding VendorUser.id existed in the wrong tenant DB, its
+    org wouldn't match the requested tenant, so it can't authenticate."""
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from app.api.deps import create_vendor_access_token
+    from app.api.portal_deps import get_current_vendor_user
+
+    vu_id = uuid.uuid4()
+    row_org = uuid.uuid4()
+    requested_tenant_org = uuid.uuid4()  # a DIFFERENT org than the row's
+
+    vu = SimpleNamespace(id=vu_id, vendor_id=uuid.uuid4(), is_active=True, organization_id=row_org)
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=vu)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    tenant = SimpleNamespace(id=requested_tenant_org)
+    token = create_vendor_access_token(vu_id, vu.vendor_id)
+
+    with patch("app.api.portal_deps.is_token_blocked", AsyncMock(return_value=False)):
+        with pytest.raises(HTTPException) as exc:
+            await get_current_vendor_user(authorization=f"Bearer {token}", tenant=tenant, db=db)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_vendor_user_dep_accepts_matching_org():
+    """Positive control — a VendorUser whose org matches the resolved tenant
+    authenticates (the guard isn't rejecting everything)."""
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.api.deps import create_vendor_access_token
+    from app.api.portal_deps import get_current_vendor_user
+
+    vu_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    vu = SimpleNamespace(id=vu_id, vendor_id=uuid.uuid4(), is_active=True, organization_id=org_id)
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=vu)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    tenant = SimpleNamespace(id=org_id)
+    token = create_vendor_access_token(vu_id, vu.vendor_id)
+
+    with patch("app.api.portal_deps.is_token_blocked", AsyncMock(return_value=False)):
+        got = await get_current_vendor_user(authorization=f"Bearer {token}", tenant=tenant, db=db)
+    assert got is vu
+
+
+@pytest.mark.asyncio
+async def test_vendor_user_dep_tolerates_null_org_for_legacy_rows():
+    """A legacy (un-backfilled) row with organization_id=NULL still
+    authenticates — the additive migration is nullable and the DB-per-tenant
+    boundary still holds; the positive check only fires when the org is set."""
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.api.deps import create_vendor_access_token
+    from app.api.portal_deps import get_current_vendor_user
+
+    vu_id = uuid.uuid4()
+    vu = SimpleNamespace(id=vu_id, vendor_id=uuid.uuid4(), is_active=True, organization_id=None)
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=vu)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    tenant = SimpleNamespace(id=uuid.uuid4())
+    token = create_vendor_access_token(vu_id, vu.vendor_id)
+
+    with patch("app.api.portal_deps.is_token_blocked", AsyncMock(return_value=False)):
+        got = await get_current_vendor_user(authorization=f"Bearer {token}", tenant=tenant, db=db)
+    assert got is vu
+
+
+# ---------------------------------------------------------------------------
 # Card reveal token — single-use + lookup is by token, not vendor
 # ---------------------------------------------------------------------------
 

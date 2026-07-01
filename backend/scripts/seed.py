@@ -106,6 +106,7 @@ def _make_portal_user(vendor: "Vendor") -> "VendorUser":
     """
     return VendorUser(
         vendor_id=vendor.id,
+        organization_id=vendor.organization_id,
         email=PORTAL_USER_EMAIL,
         full_name="Portal Demo User",
         hashed_password=pwd_context.hash(PORTAL_USER_PASSWORD),
