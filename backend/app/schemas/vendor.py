@@ -1,4 +1,12 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.services.vendor_consolidation import mask_tax_id
+
+
+def _is_masked_tax_id(value) -> bool:
+    """True when a caller echoed back the ``***<last4>`` masked value we return
+    in responses. Real tax ids are digits/separators and never start ``***``."""
+    return isinstance(value, str) and value.startswith("***")
 
 
 class VendorBankDetails(BaseModel):
@@ -42,6 +50,18 @@ class VendorBase(BaseModel):
     accepts_virtual_cards: bool = False
     bank_details: VendorBankDetails | None = None
 
+    @model_validator(mode="after")
+    def _guard_masked_tax_id(self):
+        # `tax_id` is returned masked (`***<last4>`) in VendorResponse. A UI that
+        # round-trips the vendor on save echoes that masked value back — never
+        # persist the mask over the stored raw tax id. Null it and drop it from
+        # the write set so `model_dump(exclude_unset=True)` skips it on update
+        # (leaving the stored value unchanged) and a create stores nothing.
+        if _is_masked_tax_id(self.tax_id):
+            self.tax_id = None
+            self.__pydantic_fields_set__.discard("tax_id")
+        return self
+
 
 class VendorCreate(VendorBase):
     pass
@@ -58,6 +78,14 @@ class VendorUpdate(BaseModel):
     accepts_virtual_cards: bool | None = None
     status: str | None = None
     bank_details: VendorBankDetails | None = None
+
+    @model_validator(mode="after")
+    def _guard_masked_tax_id(self):
+        # See VendorBase._guard_masked_tax_id — same round-trip protection on edit.
+        if _is_masked_tax_id(self.tax_id):
+            self.tax_id = None
+            self.__pydantic_fields_set__.discard("tax_id")
+        return self
 
 
 class VendorResponse(BaseModel):
@@ -118,7 +146,8 @@ class VendorResponse(BaseModel):
             phone=v.phone,
             address=v.address,
             website=getattr(v, "website", None),
-            tax_id=v.tax_id,
+            # PII: never return the raw tax id — mask to `***<last4>`.
+            tax_id=mask_tax_id(v.tax_id),
             payment_terms=v.payment_terms,
             accepts_virtual_cards=v.accepts_virtual_cards,
             status=v.status,

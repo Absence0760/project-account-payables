@@ -175,9 +175,15 @@ async def test_identity_update_persists_and_rescreens(realdb, mk):
         vendor_id = created.json()["id"]
         patched = await client.patch(f"/api/vendors/{vendor_id}", json={"tax_id": "98-7654321"})
     assert patched.status_code == 200, patched.text
-    assert patched.json()["tax_id"] == "98-7654321"
+    # PII: the response masks the raw tax id to `***<last4>` — it is never echoed.
+    assert patched.json()["tax_id"] == "***4321"
 
     async with mk() as s:
+        # ...but the raw value is persisted to the row (masking is response-only).
+        v = (
+            await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))
+        ).scalar_one()
+        assert v.tax_id == "98-7654321"
         rows = (
             (
                 await s.execute(
@@ -189,6 +195,35 @@ async def test_identity_update_persists_and_rescreens(realdb, mk):
         )
     # initial (create) + initial (rescreen on identity change).
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_masked_tax_id_round_trip_does_not_corrupt_stored_value(realdb, mk):
+    """A UI that PATCHes the vendor back with the masked `***<last4>` tax id it
+    received must NOT overwrite the stored raw value with the mask. The Update
+    schema drops an echoed masked value from the write set."""
+    async with realdb.client(key=TENANT, role="admin") as client:
+        created = await client.post(
+            "/api/vendors",
+            json={"name": "Round Trip Co", "code": "RT-1", "tax_id": "12-3456789"},
+        )
+        vendor_id = created.json()["id"]
+        # Create response is already masked.
+        assert created.json()["tax_id"] == "***6789"
+        # Echo the masked value back on an unrelated edit.
+        patched = await client.patch(
+            f"/api/vendors/{vendor_id}",
+            json={"tax_id": "***6789", "phone": "+1-555-0000"},
+        )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["phone"] == "+1-555-0000"
+
+    async with mk() as s:
+        v = (
+            await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))
+        ).scalar_one()
+        # Raw value untouched — the mask was never persisted.
+        assert v.tax_id == "12-3456789"
 
 
 # ===========================================================================
