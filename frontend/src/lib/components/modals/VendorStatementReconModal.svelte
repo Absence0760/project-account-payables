@@ -16,6 +16,8 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import {
 		createReconciliation,
 		uploadReconciliation,
@@ -117,11 +119,11 @@
 					lines: payloadLines
 				});
 			}
-			toast('Reconciliation created', 'success');
+			toast(m('vendorStatements.modal.toastCreated'), 'success');
 			onsaved(saved);
 			onclose();
 		} catch (err) {
-			handleError(err, 'Create failed');
+			handleError(err, m('vendorStatements.modal.toastCreateFailed'));
 		} finally {
 			saving = false;
 		}
@@ -134,7 +136,12 @@
 			const updated = await resolveLine(detail.id, line.id, { resolution_status: status });
 			detail = updated;
 			onsaved(updated);
-			toast(status === 'resolved' ? 'Line resolved' : 'Line ignored', 'success');
+			toast(
+				status === 'resolved'
+					? m('vendorStatements.modal.toastResolved')
+					: m('vendorStatements.modal.toastIgnored'),
+				'success'
+			);
 		} catch (err) {
 			// Refresh from the server so the modal doesn't show stale state.
 			try {
@@ -142,7 +149,7 @@
 			} catch {
 				/* keep the existing snapshot */
 			}
-			handleError(err, 'Could not update line');
+			handleError(err, m('vendorStatements.modal.toastUpdateFailed'));
 		} finally {
 			busyLineId = null;
 		}
@@ -161,23 +168,18 @@
 		return c === 'matched' ? 'ok' : c === 'amount_mismatch' ? 'warn' : 'flag';
 	}
 
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		const d = new Date(s);
-		if (Number.isNaN(d.getTime())) return s;
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
-
 	const status = $derived<ReconStatus>(detail?.status ?? 'open');
 	const sortedLines = $derived(detail?.lines ?? []);
 
 	const modalTitle = $derived(
 		isCreate
-			? 'New Vendor Statement Reconciliation'
-			: `Reconciliation — ${detail?.vendor_name ?? 'Statement'}`
+			? m('vendorStatements.modal.titleCreate')
+			: m('vendorStatements.modal.titleDetail', {
+					vendor: detail?.vendor_name ?? m('vendorStatements.modal.statementFallback')
+				})
 	);
 	const ariaLabel = $derived(
-		isCreate ? 'New vendor statement reconciliation' : 'Vendor statement reconciliation detail'
+		isCreate ? m('vendorStatements.modal.ariaCreate') : m('vendorStatements.modal.ariaDetail')
 	);
 </script>
 
@@ -186,43 +188,45 @@
 		<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 			<div class="form-grid">
 				<label>
-					<span>Vendor <em class="required">*</em></span>
+					<span>{m('vendorStatements.modal.vendor')} <em class="required">*</em></span>
 					<select bind:value={vendor_id} required disabled={!canEdit}>
-						<option value="">Select vendor…</option>
+						<option value="">{m('vendorStatements.modal.selectVendor')}</option>
 						{#each vendors as v (v.id)}
 							<option value={v.id}>{v.name}</option>
 						{/each}
 					</select>
 				</label>
 				<label>
-					<span>Statement Date <em class="required">*</em></span>
+					<span>{m('vendorStatements.modal.statementDate')} <em class="required">*</em></span>
 					<input type="date" bind:value={statement_date} required disabled={!canEdit} />
 				</label>
 				<label>
-					<span>Statement Reference</span>
+					<span>{m('vendorStatements.modal.statementReference')}</span>
 					<input type="text" bind:value={statement_reference} disabled={!canEdit} />
 				</label>
 				<label>
-					<span>Currency</span>
+					<span>{m('vendorStatements.modal.currency')}</span>
 					<input type="text" bind:value={currency} maxlength="3" disabled={!canEdit} />
 				</label>
 				<label class="full-width">
-					<span>Notes</span>
+					<span>{m('vendorStatements.modal.notes')}</span>
 					<input type="text" bind:value={notes} disabled={!canEdit} />
 				</label>
 			</div>
 
 			<div class="intake-section">
-				<div class="intake-title">Statement lines</div>
+				<div class="intake-title">{m('vendorStatements.modal.statementLines')}</div>
 				<p class="intake-hint">
-					Paste the lines from the supplier statement, <strong>or</strong> upload a CSV below.
+					{m('vendorStatements.modal.intakeHintPre')}<strong
+						>{m('vendorStatements.modal.intakeHintOr')}</strong
+					>{m('vendorStatements.modal.intakeHintPost')}
 				</p>
 
-				<div class="lines-editor" aria-label="Statement lines editor">
+				<div class="lines-editor" aria-label={m('vendorStatements.modal.linesEditorAria')}>
 					<div class="line-head">
-						<span>Invoice #</span>
-						<span>Amount</span>
-						<span>Date</span>
+						<span>{m('vendorStatements.modal.colInvoice')}</span>
+						<span>{m('vendorStatements.modal.colAmount')}</span>
+						<span>{m('vendorStatements.modal.colDate')}</span>
 						<span></span>
 					</div>
 					{#each lines as line, idx (idx)}
@@ -231,7 +235,7 @@
 								type="text"
 								bind:value={line.invoice_number}
 								placeholder="INV-1001"
-								aria-label={`Statement line ${idx + 1} invoice number`}
+								aria-label={m('vendorStatements.modal.lineInvoiceAria', { n: idx + 1 })}
 								disabled={!canEdit}
 							/>
 							<input
@@ -241,20 +245,20 @@
 								value={line.amount ?? ''}
 								oninput={(e) => (line.amount = numOrNull(e.currentTarget.value))}
 								placeholder="0.00"
-								aria-label={`Statement line ${idx + 1} amount`}
+								aria-label={m('vendorStatements.modal.lineAmountAria', { n: idx + 1 })}
 								disabled={!canEdit}
 							/>
 							<input
 								type="date"
 								bind:value={line.invoice_date}
-								aria-label={`Statement line ${idx + 1} date`}
+								aria-label={m('vendorStatements.modal.lineDateAria', { n: idx + 1 })}
 								disabled={!canEdit}
 							/>
 							<button
 								type="button"
 								class="line-remove"
 								onclick={() => removeLine(idx)}
-								aria-label={`Remove statement line ${idx + 1}`}
+								aria-label={m('vendorStatements.modal.removeLineAria', { n: idx + 1 })}
 								disabled={!canEdit}
 							>
 								×
@@ -262,27 +266,33 @@
 						</div>
 					{/each}
 					{#if canEdit}
-						<button type="button" class="line-add" onclick={addLine}>+ Add line</button>
+						<button type="button" class="line-add" onclick={addLine}
+							>{m('vendorStatements.modal.addLine')}</button
+						>
 					{/if}
 				</div>
 
 				<label class="file-label">
-					<span>Or upload a statement CSV</span>
+					<span>{m('vendorStatements.modal.uploadCsv')}</span>
 					<input
 						type="file"
 						accept=".csv,text/csv,application/pdf"
 						onchange={onFile}
-						aria-label="Statement file"
+						aria-label={m('vendorStatements.modal.fileAria')}
 						disabled={!canEdit}
 					/>
 				</label>
 			</div>
 
 			<div class="modal-footer">
-				<button type="button" class="btn-cancel" onclick={onclose}>Cancel</button>
+				<button type="button" class="btn-cancel" onclick={onclose}
+					>{m('vendorStatements.modal.cancel')}</button
+				>
 				{#if canEdit}
 					<button type="submit" class="btn-primary" disabled={saving || !vendor_id || !statement_date}>
-						{saving ? 'Reconciling…' : 'Reconcile'}
+						{saving
+							? m('vendorStatements.modal.reconciling')
+							: m('vendorStatements.modal.reconcile')}
 					</button>
 				{/if}
 			</div>
@@ -293,28 +303,44 @@
 			<span class="badge {status}">{RECON_STATUS_LABELS[status]}</span>
 			<span class="meta-pill">{formatDate(detail.statement_date)}</span>
 			{#if detail.statement_reference}
-				<span class="meta-pill">Ref {detail.statement_reference}</span>
+				<span class="meta-pill"
+					>{m('vendorStatements.modal.refPill', { reference: detail.statement_reference })}</span
+				>
 			{/if}
 		</div>
 
 		<!-- Summary counts -->
 		<div class="stat-chips">
-			<span class="stat-chip">{detail.summary.line_count} lines</span>
-			<span class="stat-chip ok">{detail.summary.matched_count} matched</span>
-			<span class="stat-chip warn">{detail.summary.amount_mismatch_count} mismatch</span>
-			<span class="stat-chip flag">{detail.summary.missing_our_side_count} missing (ours)</span>
-			<span class="stat-chip flag">{detail.summary.missing_their_side_count} missing (theirs)</span>
+			<span class="stat-chip"
+				>{m('vendorStatements.modal.statLines', { n: detail.summary.line_count })}</span
+			>
+			<span class="stat-chip ok"
+				>{m('vendorStatements.modal.statMatched', { n: detail.summary.matched_count })}</span
+			>
+			<span class="stat-chip warn"
+				>{m('vendorStatements.modal.statMismatch', { n: detail.summary.amount_mismatch_count })}</span
+			>
+			<span class="stat-chip flag"
+				>{m('vendorStatements.modal.statMissingOurs', {
+					n: detail.summary.missing_our_side_count
+				})}</span
+			>
+			<span class="stat-chip flag"
+				>{m('vendorStatements.modal.statMissingTheirs', {
+					n: detail.summary.missing_their_side_count
+				})}</span
+			>
 		</div>
 
 		<div class="totals-row">
 			<div class="total-box">
-				<span class="total-label">Statement total</span>
+				<span class="total-label">{m('vendorStatements.modal.statementTotal')}</span>
 				<span class="total-value">
 					<Money amount={detail.summary.statement_total} currency={detail.currency} mono />
 				</span>
 			</div>
 			<div class="total-box">
-				<span class="total-label">Ledger total</span>
+				<span class="total-label">{m('vendorStatements.modal.ledgerTotal')}</span>
 				<span class="total-value">
 					<Money amount={detail.summary.ledger_total} currency={detail.currency} mono />
 				</span>
@@ -326,17 +352,17 @@
 			<table class="diff-table">
 				<thead>
 					<tr>
-						<th>Statement Inv#</th>
-						<th class="right">Statement Amount</th>
-						<th class="right">Our Amount</th>
-						<th class="right">Difference</th>
-						<th>Classification</th>
-						<th>Resolution</th>
+						<th>{m('vendorStatements.modal.thStatementInv')}</th>
+						<th class="right">{m('vendorStatements.modal.thStatementAmount')}</th>
+						<th class="right">{m('vendorStatements.modal.thOurAmount')}</th>
+						<th class="right">{m('vendorStatements.modal.thDifference')}</th>
+						<th>{m('vendorStatements.modal.thClassification')}</th>
+						<th>{m('vendorStatements.modal.thResolution')}</th>
 					</tr>
 				</thead>
 				<tbody>
 					{#if sortedLines.length === 0}
-						<tr><td colspan="6" class="diff-empty">No statement lines.</td></tr>
+						<tr><td colspan="6" class="diff-empty">{m('vendorStatements.modal.noLines')}</td></tr>
 					{/if}
 					{#each sortedLines as line (line.id)}
 						<tr>
@@ -364,16 +390,20 @@
 										variant="success"
 										disabled={busyLineId === line.id}
 										onclick={() => runResolve(line, 'resolved')}
-										ariaLabel={`Resolve line ${line.statement_invoice_number ?? line.id}`}
+										ariaLabel={m('vendorStatements.modal.resolveAria', {
+											line: line.statement_invoice_number ?? line.id
+										})}
 									>
-										Resolve
+										{m('vendorStatements.modal.resolve')}
 									</RowAction>
 									<RowAction
 										disabled={busyLineId === line.id}
 										onclick={() => runResolve(line, 'ignored')}
-										ariaLabel={`Ignore line ${line.statement_invoice_number ?? line.id}`}
+										ariaLabel={m('vendorStatements.modal.ignoreAria', {
+											line: line.statement_invoice_number ?? line.id
+										})}
 									>
-										Ignore
+										{m('vendorStatements.modal.ignore')}
 									</RowAction>
 								{:else}
 									<span class="res-state {line.resolution_status}">
@@ -388,7 +418,9 @@
 		</div>
 
 		<div class="modal-footer">
-			<button type="button" class="btn-cancel" onclick={onclose}>Close</button>
+			<button type="button" class="btn-cancel" onclick={onclose}
+				>{m('vendorStatements.modal.close')}</button
+			>
 		</div>
 	{/if}
 </Modal>
