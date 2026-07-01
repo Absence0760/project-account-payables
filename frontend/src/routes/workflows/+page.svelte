@@ -17,6 +17,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { goto } from '$app/navigation';
 	import TemplateLibraryModal from '$lib/components/workflow-mgmt/TemplateLibraryModal.svelte';
@@ -112,15 +113,6 @@
 			.filter((s: { enabled: boolean }) => s.enabled)
 			.map((s: { type: WorkflowStepType }) => STEP_TYPE_LABELS[s.type] ?? s.type)
 			.join(' → ');
-	}
-
-	function formatDate(iso: string): string {
-		if (!iso) return '—';
-		return new Date(iso).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			year: 'numeric',
-		});
 	}
 
 	async function handleCreate() {

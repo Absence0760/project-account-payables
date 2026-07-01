@@ -21,6 +21,7 @@
 	import VendorStatementReconModal from '$lib/components/modals/VendorStatementReconModal.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
@@ -236,12 +237,6 @@
 		);
 	}
 
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		const d = new Date(s);
-		if (Number.isNaN(d.getTime())) return s;
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
 
 	// --- KPI math (derived from the loaded rows) ---
 	const openCount = $derived(recons.filter((r) => r.status === 'open').length);

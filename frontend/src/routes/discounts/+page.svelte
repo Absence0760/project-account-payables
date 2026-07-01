@@ -3,6 +3,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { formatDate } from '$lib/utils/time';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
@@ -78,13 +79,6 @@
 	// rows render their own `currency` via <Money>.
 	function aggMoney(n: number | null | undefined): string {
 		return formatMoney(n ?? 0, { currency: orgCurrency.currency, whole: true });
-	}
-
-	function formatDate(dateStr: string | null): string {
-		if (!dateStr) return '—';
-		const d = new Date(dateStr);
-		if (Number.isNaN(d.getTime())) return dateStr;
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
 	/** Friendly relative "in 3 days" / "5 days ago" for a deadline. */

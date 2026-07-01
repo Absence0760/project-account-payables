@@ -8,6 +8,7 @@
 	import Money from '$lib/components/ui/Money.svelte';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { m } from '$lib/i18n/store.svelte';
+	import { formatDate } from '$lib/utils/time';
 
 	const STATUS_CHIPS = $derived([
 		{ key: 'all', label: m('common.all') },
@@ -202,11 +203,6 @@
 		} finally {
 			voidingId = null;
 		}
-	}
-
-	function formatDate(s: string | null): string {
-		if (!s) return '—';
-		return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
 	let invoicesForVendor = $derived.by(() => {
