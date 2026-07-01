@@ -64,19 +64,22 @@ test.describe('/positive-pay (admin)', () => {
 		await expect(dialog.getByLabel('Bank format')).toBeVisible();
 	});
 
-	test('the file total renders in the org reporting currency, not a hardcoded USD', async ({
+	test('the file total renders in the stored per-file currency, not a hardcoded USD', async ({
 		page
 	}) => {
-		// Mock only the org-settings endpoint (the sole source `orgCurrency`
-		// reads) to a non-USD reporting currency. Fresh page per test → fresh
-		// store, so this can't leak into the USD-default tests above.
-		await page.route('**/api/organization', async (route) => {
+		// Each file now carries its OWN currency (the org reporting currency
+		// stamped at generation). Patch the list response to a non-USD currency
+		// and assert the total cell follows it — a hardcoded USD fallback would
+		// show "$". Fresh page per test → no leak into the USD-default tests.
+		await page.route('**/api/positive-pay?**', async (route) => {
 			if (route.request().method() !== 'GET') return route.continue();
-			await route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({ settings: { invoice_defaults: { currency: 'EUR' } } })
-			});
+			const resp = await route.fetch();
+			const body = await resp.json();
+			body.items = (body.items ?? []).map((f: Record<string, unknown>) => ({
+				...f,
+				currency: 'EUR'
+			}));
+			await route.fulfill({ response: resp, json: body });
 		});
 
 		let id: string | null = null;
@@ -98,6 +101,31 @@ test.describe('/positive-pay (admin)', () => {
 			const totalCell = row.locator('td').nth(4);
 			await expect(totalCell).toContainText('€');
 			await expect(totalCell).not.toContainText('$');
+		} finally {
+			if (id) {
+				await page.request.delete(`${API_BASE}/api/positive-pay/${id}`, {
+					headers: await authedTenantHeaders(page)
+				});
+			}
+		}
+	});
+
+	test('a generated ACH file stamps + returns the org reporting currency (USD default)', async ({
+		page
+	}) => {
+		// No reporting currency configured → the file falls back to the platform
+		// default (USD) and returns it, proving the column is populated at
+		// creation (not left null for fresh files).
+		let id: string | null = null;
+		try {
+			const resp = await page.request.post(`${API_BASE}/api/positive-pay/ach-authorization`, {
+				headers: await authedTenantHeaders(page),
+				data: { bank_format: 'csv' }
+			});
+			expect(resp.ok()).toBeTruthy();
+			const file = (await resp.json()) as { id: string; currency: string };
+			id = file.id;
+			expect(file.currency).toBe('USD');
 		} finally {
 			if (id) {
 				await page.request.delete(`${API_BASE}/api/positive-pay/${id}`, {

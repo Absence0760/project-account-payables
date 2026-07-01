@@ -61,6 +61,12 @@ export interface PositivePayFile {
 	payment_run_id: string | null;
 	item_count: number;
 	total_amount: number;
+	/**
+	 * Currency `total_amount` is denominated in — the org's reporting (home)
+	 * currency stamped at generation. `null` for legacy rows created before the
+	 * column existed; the UI falls back to the org default for those.
+	 */
+	currency: string | null;
 	account_last4: string | null;
 	file_key: string | null;
 	created_at: string;

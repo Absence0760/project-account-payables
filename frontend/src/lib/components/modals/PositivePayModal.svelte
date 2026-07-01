@@ -265,7 +265,7 @@
 			</div>
 			<div class="total-box">
 				<span class="total-label">Total amount</span>
-				<span class="total-value"><Money amount={detail.total_amount} currency={orgCurrency.currency} mono /></span>
+				<span class="total-value"><Money amount={detail.total_amount} currency={detail.currency ?? orgCurrency.currency} mono /></span>
 			</div>
 			<div class="total-box">
 				<span class="total-label">Account</span>
