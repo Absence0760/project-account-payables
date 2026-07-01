@@ -477,7 +477,20 @@ The invoice side of a payment is audited separately by
 | View payment history | Yes | Yes | No | Yes |
 | Void a payment | Yes | No | No | Yes |
 
-CFO approval is required for executing payment runs above a configurable threshold (set in organization settings, future).
+CFO approval is required for executing payment runs above a configurable
+threshold (`Organization.settings.payments.cfo_approval_above`, a `Decimal`).
+The gate is **strict `>`**, matching the setting name (`cfo_approval_above`): a
+run whose total is *above* the threshold requires CFO sign-off; a run exactly
+*at* the threshold does not, and a threshold of `0` (or negative) disables the
+gate entirely. A configured-but-unparseable threshold fails **closed** — the run
+is created `requires_cfo_approval=True` and the misconfiguration is logged
+(PII-free) for an admin to correct, rather than silently disabling the control.
+
+Independently, `create_payment_run` refuses any invoice that still carries an
+**unresolved** (`open`/`escalated`) `duplicate` or `fraud_flag` exception — the
+duplicate warning is advisory and doesn't block on its own, so this stops the
+same invoice being approved and paid twice. Resolving or dismissing the
+exception (the human sign-off) makes the invoice payable again.
 
 ## Code Structure
 
