@@ -5,7 +5,7 @@ import uuid
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 
 from app.config import settings
 
@@ -300,8 +300,28 @@ async def upload_positive_pay_file(
     return file_key, file_url
 
 
-def get_file(file_key: str) -> tuple[bytes, str]:
-    """Download a file from S3 and return (content, content_type)."""
+def get_file(file_key: str, *, expected_prefix: str | None = None) -> tuple[bytes, str]:
+    """Download a file from S3 and return (content, content_type).
+
+    SECURITY — this is a raw object fetch with NO tenant/org scoping of its own.
+    Every stored key is namespaced by a leading `<organization_id>/...` (or
+    `<organization_id>/chat/<invoice_id>/...`) segment, but this function does
+    not enforce that: whatever key the caller passes is fetched verbatim. The
+    CALLER MUST validate the key against the requesting principal's tenant/owner
+    before calling — otherwise a user-supplied `file_key` is a cross-tenant file
+    IDOR. Every current call site does this (portal chat/tax-form downloads, the
+    AP contract/expense/workflow file endpoints each check the leading segment).
+
+    Pass `expected_prefix` to have this function enforce the check itself: the
+    key must start with that prefix or a 404 `HTTPException` is raised (the same
+    opaque status the ownership checks use, so it never enumerates). Prefer
+    passing it wherever the caller knows the owning prefix — belt-and-suspenders
+    on top of the caller's own check.
+    """
+    if expected_prefix is not None and not file_key.startswith(expected_prefix):
+        # 404 (not 403) so a probe can't distinguish "wrong owner" from
+        # "missing key" — matches the cross-tenant download guards elsewhere.
+        raise HTTPException(status_code=404, detail="File not found")
     client = _get_client()
     response = client.get_object(Bucket=settings.s3_bucket, Key=file_key)
     content = response["Body"].read()
