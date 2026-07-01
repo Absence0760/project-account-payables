@@ -56,8 +56,13 @@ class ExceptionResolver(ABC):
         invoice: Invoice,
         evaluation: AgentEvaluation,
         actor_id: uuid.UUID,
+        actor_roles: set[str] | None = None,
     ) -> None:
         """Mutate to enact the resolution. Override in resolvers that auto-fix.
         MUST write audit_log row(s) for any invoice mutation. Default no-op
-        (used by escalate-only stubs)."""
+        (used by escalate-only stubs).
+
+        ``actor_roles`` is the triggering user's real role set — threaded into
+        ``approve_invoice`` so the CFO gate + audit trail reflect who actually
+        authorised the resolution, not a hardcoded role."""
         return None

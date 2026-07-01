@@ -49,6 +49,7 @@ async def run_agent(
     exception: APException,
     actor_id: uuid.UUID,
     org_settings: dict | None,
+    actor_roles: set[str] | None = None,
 ) -> AgentRunResult:
     """Run the matching resolver on one OPEN/ESCALATED exception.
 
@@ -130,6 +131,7 @@ async def run_agent(
                 invoice=invoice,
                 evaluation=evaluation,
                 actor_id=actor_id,
+                actor_roles=actor_roles,
             )
         except NotApprovable as exc:
             # The invoice can't legally reach `approved` from its current state.

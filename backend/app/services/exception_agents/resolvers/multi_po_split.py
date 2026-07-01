@@ -388,7 +388,9 @@ class MultiPOSplitResolver(ExceptionResolver):
             changes=changes,
         )
 
-    async def apply(self, db, *, exception, invoice, evaluation, actor_id) -> None:
+    async def apply(
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+    ) -> None:
         """Link the invoice to the matched PO set, persist a multi-PO match
         snapshot, and approve via the audited path. Idempotent + race-safe:
         re-locks the invoice, re-asserts review-readiness + a still-``no_po``
@@ -481,7 +483,9 @@ class MultiPOSplitResolver(ExceptionResolver):
             locked,
             actor_id=actor_id,
             actor_name="AP Agent",
-            actor_roles={"ap_manager"},
+            # Real triggering-user roles when provided; ap_manager fallback for
+            # a non-user-triggered (background) run so behaviour is unchanged.
+            actor_roles=actor_roles or {"ap_manager"},
         )
         # Re-point the caller's reference (coordinator commits).
         invoice.po_number = locked.po_number

@@ -177,7 +177,9 @@ class AmountMismatchResolver(ExceptionResolver):
             changes=changes,
         )
 
-    async def apply(self, db, *, exception, invoice, evaluation, actor_id) -> None:
+    async def apply(
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+    ) -> None:
         """Adjust amount → approve. Writes audit rows for BOTH the field change
         and the approval (the latter via review.approve_invoice → transition)."""
         from app.services.po_matching import match_invoice_to_po
@@ -218,7 +220,9 @@ class AmountMismatchResolver(ExceptionResolver):
             locked,
             actor_id=actor_id,
             actor_name="AP Agent",
-            actor_roles={"ap_manager"},
+            # Real triggering-user roles when provided; ap_manager fallback for
+            # a non-user-triggered (background) run so behaviour is unchanged.
+            actor_roles=actor_roles or {"ap_manager"},
             corrections={"amount": new_amount},
         )
         # Re-point the caller's invoice reference (coordinator commits).

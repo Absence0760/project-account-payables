@@ -286,7 +286,9 @@ class GLCodingResolver(ExceptionResolver):
             changes=changes,
         )
 
-    async def apply(self, db, *, exception, invoice, evaluation, actor_id) -> None:
+    async def apply(
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+    ) -> None:
         """Re-lock the invoice, re-derive the dominant GL under the lock, and apply
         the correction through the audited ``approve_invoice`` path. Money-safe:
         recodes GL (+ optional empty cost center) only; honours the CFO / maximum
@@ -349,7 +351,9 @@ class GLCodingResolver(ExceptionResolver):
             locked,
             actor_id=actor_id,
             actor_name="AP Agent",
-            actor_roles={"ap_manager"},
+            # Real triggering-user roles when provided; ap_manager fallback for
+            # a non-user-triggered (background) run so behaviour is unchanged.
+            actor_roles=actor_roles or {"ap_manager"},
             corrections=corrections,
         )
         # Re-point the caller's reference (coordinator commits).

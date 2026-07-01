@@ -115,7 +115,14 @@ async def agent_resolve(
 
     try:
         result = await run_agent(
-            db, exception=exc, actor_id=user.id, org_settings=org.settings or {}
+            db,
+            exception=exc,
+            actor_id=user.id,
+            org_settings=org.settings or {},
+            # The triggering user's REAL roles — so a CFO-gated invoice resolved
+            # by a CFO isn't blocked by a hardcoded ap_manager set, and the audit
+            # trail's authoriser role matches the actor_id it records.
+            actor_roles={r.name for r in user.roles},
         )
     except ExceptionNotActionable as e:
         # Lost a race with a concurrent agent-resolve — the row lock found the
