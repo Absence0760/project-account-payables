@@ -218,7 +218,9 @@ async def payment_queue(
                 "id": str(inv.id),
                 "invoice_number": inv.invoice_number,
                 "vendor_name": inv.vendor_name,
-                "amount": float(inv.amount),
+                # Money serialises as an exact Decimal STRING, never float() —
+                # the frontend coerces with Number() at its arithmetic sites.
+                "amount": str(inv.amount),
                 "currency": inv.currency,
                 "due_date": inv.due_date.isoformat() if inv.due_date else None,
                 "payment_terms": inv.payment_terms,
@@ -231,20 +233,21 @@ async def payment_queue(
                 "discount_date": sched.discount_date.isoformat()
                 if sched and sched.discount_date
                 else None,
+                # discount_percent is a rate, not money — stays a JSON number.
                 "discount_percent": float(sched.discount_percent)
                 if sched and sched.discount_percent
                 else None,
-                "discount_amount": float(discount_amount) if discount_amount else None,
+                "discount_amount": str(discount_amount) if discount_amount else None,
             }
         )
 
-    # Both totals are Decimal-accumulated; only the wire-encoding hop is float
-    # so the dict response matches the existing frontend contract (number).
+    # Both totals are Decimal-accumulated; money serialises as an exact Decimal
+    # STRING (never float) — the frontend coerces with Number() where it sums.
     return {
         "items": items,
         "total": len(items),
-        "total_amount": float(total_amount),
-        "total_savings": float(total_savings),
+        "total_amount": str(total_amount),
+        "total_savings": str(total_savings),
     }
 
 
@@ -260,7 +263,8 @@ async def payment_summary(
         Payment,
         entity_id,
     )
-    total_paid = float((await db.execute(paid_q)).scalar() or 0)
+    # Money serialises as an exact Decimal STRING, never float().
+    total_paid = str((await db.execute(paid_q)).scalar() or Decimal("0"))
 
     pending_q = apply_entity_scope(
         select(func.coalesce(func.sum(Payment.amount), 0)).where(
@@ -269,7 +273,7 @@ async def payment_summary(
         Payment,
         entity_id,
     )
-    total_pending = float((await db.execute(pending_q)).scalar() or 0)
+    total_pending = str((await db.execute(pending_q)).scalar() or Decimal("0"))
 
     count_q = apply_entity_scope(select(func.count()).select_from(Payment), Payment, entity_id)
     payment_count = (await db.execute(count_q)).scalar() or 0
@@ -281,10 +285,10 @@ async def payment_summary(
     # org-wide within the tenant — matching the dashboard KPI.
     try:
         rebate_q = select(func.coalesce(func.sum(CardRebate.amount), 0))
-        total_rebates = float((await db.execute(rebate_q)).scalar() or 0)
+        total_rebates = str((await db.execute(rebate_q)).scalar() or Decimal("0"))
     except Exception:
         await db.rollback()
-        total_rebates = 0.0
+        total_rebates = "0"
 
     paid_ids = select(Payment.invoice_id).where(Payment.status == "completed").scalar_subquery()
     # Match the workflow state machine: only statuses that can directly
@@ -811,7 +815,8 @@ async def create_payment_run(
     return {
         "id": str(run.id),
         "status": run.status,
-        "total_amount": float(total),
+        # Money serialises as an exact Decimal STRING, never float().
+        "total_amount": str(total),
         "payment_count": len(body.items),
         "requires_cfo_approval": run.requires_cfo_approval,
         "message": (
@@ -845,7 +850,8 @@ async def get_payment_run(
             "invoice_id": str(p.invoice_id),
             "invoice_number": inv.invoice_number if inv else None,
             "vendor_name": inv.vendor_name if inv else None,
-            "amount": float(p.amount),
+            # Money serialises as an exact Decimal STRING, never float().
+            "amount": str(p.amount),
             "method": p.method,
             "status": p.status,
             "reference": p.reference,
@@ -856,7 +862,8 @@ async def get_payment_run(
     return {
         "id": str(run.id),
         "status": run.status,
-        "total_amount": float(run.total_amount) if run.total_amount else 0,
+        # Money serialises as an exact Decimal STRING, never float().
+        "total_amount": str(run.total_amount) if run.total_amount else "0",
         "initiated_by": str(run.initiated_by) if run.initiated_by else None,
         "executed_at": run.executed_at.isoformat() if run.executed_at else None,
         "created_at": run.created_at.isoformat() if run.created_at else "",

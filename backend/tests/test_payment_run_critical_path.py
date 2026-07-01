@@ -329,6 +329,78 @@ async def test_create_run_sums_total_as_decimal_and_creates_pending_payments():
 
 
 @pytest.mark.asyncio
+async def test_create_run_serialises_total_as_exact_decimal_string_not_float():
+    """Money invariant on the wire: the `create_payment_run` JSON response
+    encodes `total_amount` as an EXACT Decimal STRING, never a float. A float
+    hop is forbidden even where `Numeric(15, 2)` currently loses no precision —
+    the string is the contract the frontend coerces at its arithmetic sites."""
+    from app.api.payments import (
+        CreatePaymentRunItem,
+        CreatePaymentRunRequest,
+        create_payment_run,
+    )
+
+    inv = _invoice(amount=Decimal("100.00"))
+    body = CreatePaymentRunRequest(
+        items=[CreatePaymentRunItem(invoice_id=str(inv.id), method="ach")]
+    )
+    db = _create_run_db([inv])
+
+    result = await create_payment_run(
+        body=body, db=db, org=_org(), user=_user(), org_id=uuid.uuid4(), entity_id=uuid.uuid4()
+    )
+
+    assert result["total_amount"] == "100.00"
+    assert isinstance(result["total_amount"], str)
+    assert not isinstance(result["total_amount"], float)
+
+
+@pytest.mark.asyncio
+async def test_get_run_detail_serialises_money_as_strings_not_floats():
+    """The run-detail JSON (`GET /api/payments/runs/{id}`, a raw dict, not a
+    Pydantic schema) must encode both the run `total_amount` and every child
+    payment `amount` as exact Decimal STRINGS — the same money-on-the-wire
+    invariant as the run-create response. Feeds RunDetailModal."""
+    from app.api.payments import get_payment_run
+
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="draft",
+        total_amount=Decimal("250.00"),
+        initiated_by=uuid.uuid4(),
+        executed_at=None,
+        created_at=datetime.now(UTC),
+        requires_cfo_approval=False,
+        cfo_approved_by=None,
+        cfo_approved_at=None,
+    )
+    pay = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_id=uuid.uuid4(),
+        amount=Decimal("250.00"),
+        method="ach",
+        status="pending",
+        reference=None,
+    )
+    inv = _invoice(amount=Decimal("250.00"))
+
+    run_res = MagicMock()
+    run_res.scalar_one_or_none = MagicMock(return_value=run)
+    pay_res = MagicMock()
+    pay_res.all = MagicMock(return_value=[(pay, inv)])
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[run_res, pay_res])
+
+    result = await get_payment_run(run_id=run.id, db=db, user=_user())
+
+    assert result["total_amount"] == "250.00"
+    assert isinstance(result["total_amount"], str)
+    assert result["payments"][0]["amount"] == "250.00"
+    assert isinstance(result["payments"][0]["amount"], str)
+
+
+@pytest.mark.asyncio
 async def test_create_run_writes_creation_audit_row():
     """Assembling a payment run must write a `payment_run.created` audit row —
     the SOX trail for a run begins at assembly, not execution. Without it, an
