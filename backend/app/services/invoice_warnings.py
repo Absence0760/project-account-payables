@@ -4,7 +4,6 @@ Also creates exception records for issues that need human resolution.
 """
 
 import logging
-from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -668,7 +667,10 @@ async def _refresh_po_match(
         require_inspection=rule.require_inspection,
         tolerance_pct=rule.tolerance_pct,
     )
-    invoice.po_match = asdict(match)
+    # to_json_dict() renders the MatchResult's exact-Decimal money fields back to
+    # numbers for the JSONB column (the default JSON serialiser can't encode
+    # Decimal); every variance figure was computed and compared in Decimal.
+    invoice.po_match = match.to_json_dict()
 
     if match.status == "no_po":
         warnings.append(

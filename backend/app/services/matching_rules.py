@@ -41,9 +41,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 
 DEFAULT_REQUIRE_INSPECTION = False
-DEFAULT_TOLERANCE_PCT = 5.0
+# Decimal, never float — this tolerance flows straight into the PO-match gate,
+# which compares in exact Decimal. Keeping the whole path Decimal means a
+# per-vendor tolerance like 2.5 never picks up a binary-float artefact.
+DEFAULT_TOLERANCE_PCT = Decimal("5.0")
 
 
 @dataclass(frozen=True)
@@ -55,7 +59,7 @@ class EffectiveMatchRule:
     """
 
     require_inspection: bool
-    tolerance_pct: float
+    tolerance_pct: Decimal
     source: str
 
 
@@ -74,15 +78,20 @@ def _coerce_inspection(rule: dict) -> bool | None:
     return bool(rule["require_inspection"])
 
 
-def _coerce_tolerance(rule: dict) -> float | None:
-    """Extract a numeric ``tolerance_pct`` from a rule dict, or ``None`` if absent/non-numeric."""
+def _coerce_tolerance(rule: dict) -> Decimal | None:
+    """Extract a numeric ``tolerance_pct`` as exact Decimal, or ``None`` if
+    absent/non-numeric. Floats bridge through ``str`` so ``2.5`` lands as
+    ``Decimal('2.5')``, never the binary-float artefact ``Decimal(2.5)`` gives."""
     if "tolerance_pct" not in rule:
         return None
     value = rule["tolerance_pct"]
     # Reject bools (a bool is an int subclass) and anything non-numeric.
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         return None
-    return float(value)
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 
 def resolve_match_rule(

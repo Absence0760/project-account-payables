@@ -434,3 +434,56 @@ def test_match_result_defaults_make_sense_for_short_circuit_path():
     assert r.within_tolerance is False
     assert r.issues == []
     assert r.details == {}
+
+
+# ---------------------------------------------------------------------------
+# Money is exact Decimal end-to-end (invariant) — the tolerance gate and every
+# variance figure are Decimal, and the JSONB artefact stays numeric.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_match_result_money_fields_are_decimal():
+    """po_total / amount_variance / amount_variance_pct are exact Decimal in
+    memory — never float. A consumer doing Decimal money math off the result
+    must not inherit a binary-float artefact."""
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1040.00")))
+    assert isinstance(result.po_total, Decimal)
+    assert isinstance(result.amount_variance, Decimal)
+    assert isinstance(result.amount_variance_pct, Decimal)
+    assert result.amount_variance == Decimal("40.00")
+    assert result.amount_variance_pct == Decimal("4")
+
+
+@pytest.mark.asyncio
+async def test_boundary_tolerance_gate_is_exact_decimal():
+    """An invoice exactly 5.01% over a $10,000 PO is over a 5% tolerance and
+    must be `mismatch`. Computed in exact Decimal so an IEEE-754 residual can
+    never flip the `<= tolerance` gate and auto-match it."""
+    db = _mk_db(po=_po(total=Decimal("10000.00")))
+    result = await match_invoice_to_po(
+        db, _invoice(amount=Decimal("10501.00")), tolerance_pct=Decimal("5.0")
+    )
+    assert result.amount_variance_pct == Decimal("5.01")
+    assert result.within_tolerance is False
+    assert result.status == "mismatch"
+
+
+@pytest.mark.asyncio
+async def test_to_json_dict_is_json_serialisable_and_numeric():
+    """to_json_dict() renders the Decimal money fields back to plain numbers so
+    the JSONB column's default serialiser can encode them — no Decimal leaks
+    into the persisted po_match."""
+    import json
+
+    db = _mk_db(po=_po(total=Decimal("1000.00")))
+    result = await match_invoice_to_po(db, _invoice(amount=Decimal("1040.00")))
+    payload = result.to_json_dict()
+    # Round-trips through json without a custom encoder.
+    encoded = json.dumps(payload)
+    assert json.loads(encoded)["po_total"] == 1000.0
+    assert isinstance(payload["amount_variance"], float)
+    assert isinstance(payload["details"]["tolerance_pct"], float)
+    # No Decimal anywhere in the serialised artefact.
+    assert not isinstance(payload["po_total"], Decimal)

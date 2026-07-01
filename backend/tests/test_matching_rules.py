@@ -8,6 +8,7 @@ commodity override, per-field fallthrough, malformed-config robustness, and
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 from app.services.matching_rules import (
     DEFAULT_REQUIRE_INSPECTION,
@@ -173,11 +174,23 @@ def test_bool_tolerance_rejected():
     assert rule.tolerance_pct == DEFAULT_TOLERANCE_PCT
 
 
-def test_int_tolerance_coerced_to_float():
+def test_int_tolerance_coerced_to_decimal():
+    # Money/percent is exact Decimal end-to-end — the resolved tolerance flows
+    # straight into the PO-match gate, which compares in Decimal. An int (or
+    # float) config value is coerced to Decimal, never left as a binary float.
     settings = {"matching": {"tolerance_pct": 2}}
     rule = resolve_match_rule(settings, vendor_id=None, gl_account=None)
-    assert rule.tolerance_pct == 2.0
-    assert isinstance(rule.tolerance_pct, float)
+    assert rule.tolerance_pct == Decimal("2")
+    assert isinstance(rule.tolerance_pct, Decimal)
+
+
+def test_float_tolerance_bridged_through_str_not_binary_float():
+    # A float config literal like 2.5 must land as Decimal('2.5'), not the
+    # binary-float artefact Decimal(2.5) would produce.
+    settings = {"matching": {"tolerance_pct": 2.5}}
+    rule = resolve_match_rule(settings, vendor_id=None, gl_account=None)
+    assert rule.tolerance_pct == Decimal("2.5")
+    assert isinstance(rule.tolerance_pct, Decimal)
 
 
 def test_commodity_inspection_false_overrides_org_true():

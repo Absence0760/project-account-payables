@@ -4,8 +4,8 @@ Supports 2-way (invoice vs PO), 3-way (invoice vs PO vs GR), and 4-way
 (invoice vs PO vs GR vs Quality Inspection) matching.
 """
 
-from dataclasses import dataclass, field
-from decimal import Decimal
+from dataclasses import asdict, dataclass, field
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,20 +16,58 @@ from app.models.procurement import GoodsReceipt, PurchaseOrder
 from app.models.quality_inspection import QualityInspection
 
 
+def _to_decimal(value, default: Decimal = Decimal("0")) -> Decimal:
+    """Coerce a money/percent value to exact Decimal via str() (never Decimal(float)).
+
+    Floats are bridged through ``str`` so a config literal like ``5.1`` lands as
+    ``Decimal('5.1')`` rather than the binary-float artefact. Unparseable /
+    ``None`` values fall back to ``default``."""
+    if value is None:
+        return default
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+
+
+def _json_safe(value):
+    """Recursively convert Decimals to JSON-serialisable floats.
+
+    ``MatchResult`` carries exact Decimal money fields in memory (money is never
+    float), but ``invoice.po_match`` is a JSONB column whose default serialiser
+    can't encode Decimal. This renders the persisted display artefact back to the
+    numeric wire shape every downstream reader (UI modal, analytics) expects,
+    while every arithmetic/comparison upstream stayed in exact Decimal."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 @dataclass
 class MatchResult:
-    """Result of PO matching for an invoice."""
+    """Result of PO matching for an invoice.
+
+    Money fields (``po_total``, ``amount_variance``, ``amount_variance_pct``) are
+    exact ``Decimal`` — the tolerance gate and every variance figure are computed
+    and compared in Decimal, never float. Use ``to_json_dict()`` to persist onto
+    the ``invoice.po_match`` JSONB column (Decimals rendered back to numbers)."""
 
     match_type: str = "none"  # "none", "2-way", "3-way", "4-way"
     status: str = "no_po"  # "no_po", "matched", "mismatch", "partial"
 
     po_id: str | None = None
     po_number: str | None = None
-    po_total: float | None = None
+    po_total: Decimal | None = None
     gr_id: str | None = None
 
-    amount_variance: float = 0.0  # invoice - PO
-    amount_variance_pct: float = 0.0
+    amount_variance: Decimal = Decimal("0")  # invoice - PO
+    amount_variance_pct: Decimal = Decimal("0")
     within_tolerance: bool = False
 
     # 4-way: quality inspection leg
@@ -41,11 +79,15 @@ class MatchResult:
     issues: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
 
+    def to_json_dict(self) -> dict:
+        """JSON-safe dict for the ``invoice.po_match`` JSONB column."""
+        return _json_safe(asdict(self))
+
 
 async def match_invoice_to_po(
     db: AsyncSession,
     invoice: Invoice,
-    tolerance_pct: float = 5.0,
+    tolerance_pct: Decimal | float | int | str = Decimal("5.0"),
     require_inspection: bool = False,
 ) -> MatchResult:
     """Match an invoice against POs, goods receipts, and quality inspections.
@@ -100,16 +142,17 @@ async def match_invoice_to_po(
 
     result.po_id = str(po.id)
     result.po_number = po.po_number
-    result.po_total = float(po.total)
+    result.po_total = _to_decimal(po.total)
 
-    # 2-way match: invoice amount vs PO total. The tolerance comparison is done
-    # in exact Decimal — money is never compared in float. The old code cast
-    # both sides to float, so on a boundary amount (e.g. exactly 5.01% over a PO)
-    # the IEEE-754 residual could flip `<= tolerance_pct` and auto-match an
-    # out-of-tolerance invoice (or falsely flag a clean one). The stored result
-    # fields stay float because MatchResult is asdict()'d into the po_match JSONB.
-    invoice_amount = Decimal(str(invoice.amount or 0))
-    po_total = Decimal(str(po.total or 0))
+    # 2-way match: invoice amount vs PO total. Every figure — the variance, the
+    # variance %, and the tolerance gate — is exact Decimal end-to-end; money is
+    # never cast to float. On a boundary amount (e.g. exactly 5.01% over a PO) an
+    # IEEE-754 residual could otherwise flip `<= tolerance_pct` and auto-match an
+    # out-of-tolerance invoice (or falsely flag a clean one). The result fields
+    # stay Decimal in memory; `to_json_dict()` renders them for the JSONB column.
+    invoice_amount = _to_decimal(invoice.amount)
+    po_total = _to_decimal(po.total)
+    tolerance = _to_decimal(tolerance_pct, Decimal("5.0"))
 
     variance = invoice_amount - po_total
     if po_total > 0:
@@ -117,9 +160,9 @@ async def match_invoice_to_po(
     else:
         variance_pct = Decimal(100) if invoice_amount > 0 else Decimal(0)
 
-    result.amount_variance = float(variance)
-    result.amount_variance_pct = float(variance_pct)
-    result.within_tolerance = abs(variance_pct) <= Decimal(str(tolerance_pct))
+    result.amount_variance = variance
+    result.amount_variance_pct = variance_pct
+    result.within_tolerance = abs(variance_pct) <= tolerance
     result.match_type = "2-way"
 
     if not result.within_tolerance:
@@ -211,15 +254,15 @@ async def match_invoice_to_po(
         result.inspection_required = True
         result.issues.append("Quality inspection required but missing")
 
+    # Decimal values here are rendered to numbers by `to_json_dict()` at the
+    # JSONB boundary — the arithmetic that produced them was exact Decimal.
     result.details = {
         "match_type": result.match_type,
         "po_total": result.po_total,
-        # float for JSON (po_match is asdict()'d to JSONB) — the tolerance
-        # comparison above is the part that must be exact Decimal.
-        "invoice_amount": float(invoice_amount),
+        "invoice_amount": invoice_amount,
         "variance": result.amount_variance,
         "variance_pct": result.amount_variance_pct,
-        "tolerance_pct": tolerance_pct,
+        "tolerance_pct": tolerance,
         "within_tolerance": result.within_tolerance,
         "has_gr": gr is not None,
         "has_inspection": inspection is not None,
