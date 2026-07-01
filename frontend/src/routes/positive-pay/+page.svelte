@@ -285,7 +285,7 @@
 					<td class="muted">{POSITIVE_PAY_FILE_TYPE_LABELS[file.file_type]}</td>
 					<td class="muted">{file.bank_format}</td>
 					<td class="right mono">{file.item_count}</td>
-					<td class="right mono"><Money amount={file.total_amount} /></td>
+					<td class="right mono"><Money amount={file.total_amount} currency={orgCurrency.currency} /></td>
 					<td class="mono muted">{file.account_last4 ? `••••${file.account_last4}` : '—'}</td>
 					<td class="muted">{formatDate(file.created_at)}</td>
 					<td><span class="badge {file.status}">{POSITIVE_PAY_STATUS_LABELS[file.status]}</span></td>

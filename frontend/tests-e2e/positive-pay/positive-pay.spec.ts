@@ -64,6 +64,49 @@ test.describe('/positive-pay (admin)', () => {
 		await expect(dialog.getByLabel('Bank format')).toBeVisible();
 	});
 
+	test('the file total renders in the org reporting currency, not a hardcoded USD', async ({
+		page
+	}) => {
+		// Mock only the org-settings endpoint (the sole source `orgCurrency`
+		// reads) to a non-USD reporting currency. Fresh page per test → fresh
+		// store, so this can't leak into the USD-default tests above.
+		await page.route('**/api/organization', async (route) => {
+			if (route.request().method() !== 'GET') return route.continue();
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ settings: { invoice_defaults: { currency: 'EUR' } } })
+			});
+		});
+
+		let id: string | null = null;
+		try {
+			// page.request bypasses page.route, so this create hits the real API.
+			const resp = await page.request.post(`${API_BASE}/api/positive-pay/ach-authorization`, {
+				headers: await authedTenantHeaders(page),
+				data: { bank_format: 'csv' }
+			});
+			expect(resp.ok()).toBeTruthy();
+			id = ((await resp.json()) as { id: string }).id;
+
+			await page.goto('/positive-pay?file_type=ach_authorization');
+			await page.waitForLoadState('networkidle');
+
+			const row = page.locator('tr', { hasText: id!.slice(0, 8) });
+			await expect(row).toBeVisible({ timeout: 10_000 });
+			// Total cell (file, type, format, items, TOTAL) — 5th column, index 4.
+			const totalCell = row.locator('td').nth(4);
+			await expect(totalCell).toContainText('€');
+			await expect(totalCell).not.toContainText('$');
+		} finally {
+			if (id) {
+				await page.request.delete(`${API_BASE}/api/positive-pay/${id}`, {
+					headers: await authedTenantHeaders(page)
+				});
+			}
+		}
+	});
+
 	test('generating an ACH authorization file lands it in the list', async ({ page }) => {
 		// ACH authorization needs no payment run, so it generates from any tenant
 		// state. Drive it via the API (the modal path is covered above) then assert

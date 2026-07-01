@@ -12,6 +12,7 @@
 		BANK_FORMAT_LABELS
 	} from '$lib/types/positivePay';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { api } from '$lib/api';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
@@ -264,7 +265,7 @@
 			</div>
 			<div class="total-box">
 				<span class="total-label">Total amount</span>
-				<span class="total-value"><Money amount={detail.total_amount} mono /></span>
+				<span class="total-value"><Money amount={detail.total_amount} currency={orgCurrency.currency} mono /></span>
 			</div>
 			<div class="total-box">
 				<span class="total-label">Account</span>
