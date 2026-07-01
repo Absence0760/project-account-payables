@@ -175,8 +175,21 @@ export function pathMatches(href: string, pathname: string): boolean {
  */
 export function sectionTabActive(child: NavChild, siblings: NavChild[], url: URL): boolean {
 	const [path, qs] = child.href.split('?');
-	if (!pathMatches(path, url.pathname)) return false;
-	if (!qs) return true;
+	if (!qs) {
+		// A plain-path tab is active on its path or a sub-path — unless a
+		// more-specific sibling tab claims that same URL (so a parent tab
+		// doesn't stay lit on a deeper sibling's page).
+		if (!pathMatches(path, url.pathname)) return false;
+		return !siblings.some(
+			(s) => s !== child && s.href.split('?')[0].startsWith(path + '/') && pathMatches(s.href, url.pathname)
+		);
+	}
+
+	// A query-bearing tab (e.g. `/admin?tab=users`) shares its path with a
+	// sibling, so it matches only the EXACT path + query — never a sub-path.
+	// Prefix-matching here lit up `/admin?tab=users` on `/admin/api-keys` (which
+	// is its own, deeper tab).
+	if (url.pathname !== path) return false;
 
 	const want = new URLSearchParams(qs);
 	const keys = [...want.keys()];
@@ -193,9 +206,22 @@ export function sectionTabActive(child: NavChild, siblings: NavChild[], url: URL
 
 /** True when the current path belongs to this entry (link or any group child). */
 export function isEntryActive(entry: NavEntry, pathname: string): boolean {
-	return entry.kind === 'link'
-		? pathMatches(entry.href, pathname)
-		: entry.children.some((c) => pathMatches(c.href, pathname));
+	if (entry.kind === 'group') {
+		return entry.children.some((c) => pathMatches(c.href, pathname));
+	}
+	// A link matches its path or any sub-path — but when two top-level links
+	// nest (`/vendors` and `/vendors/screening`), only the most specific (longest
+	// matching href) should light up, so `/vendors` doesn't stay active while on
+	// `/vendors/screening`.
+	if (!pathMatches(entry.href, pathname)) return false;
+	const here = entry.href.split(/[?#]/)[0];
+	return !NAV.some(
+		(other) =>
+			other !== entry &&
+			other.kind === 'link' &&
+			other.href.split(/[?#]/)[0].length > here.length &&
+			pathMatches(other.href, pathname)
+	);
 }
 
 /**
