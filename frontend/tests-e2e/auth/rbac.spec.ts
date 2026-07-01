@@ -21,7 +21,7 @@ import type { Page } from '@playwright/test';
  *
  * Per-route gates (mirroring the backend read-RBAC):
  *   Direct: Dashboard(all) · Invoices(all) · Payments(adm/mgr/cfo) ·
- *           Vendors(adm/mgr/cfo) · Exceptions(adm/mgr)
+ *           Vendors(adm/mgr/cfo) · Screening(adm/mgr/cfo) · Exceptions(adm/mgr)
  *   Procurement: PurchaseOrders·GoodsReceipts·Budgets(adm/mgr/cfo);
  *                Requisitions·Intake·Catalogs(all)
  *   Billing: Contracts·Expenses·VendorStatements(all); CreditMemos·Discounts(adm/mgr/cfo)
@@ -80,7 +80,7 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 		// Experiments is manager-readable and lives in Settings, so a manager now
 		// gets the Settings group landing (→ /experiments, its only Settings child).
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/payments', '/vendors', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/experiments'].sort()
+			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/experiments'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/purchase-orders')).toEqual(
 			['/purchase-orders', '/goods-receipts', '/requisitions', '/intake', '/catalogs', '/budgets'].sort()
@@ -97,7 +97,7 @@ test.describe('RBAC — non-admin roles (one fresh sign-in each)', () => {
 	}) => {
 		await signInAndWait(page, tenantCfo);
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/payments', '/vendors', '/purchase-orders', '/contracts', '/assistant', '/audit'].sort()
+			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/purchase-orders', '/contracts', '/assistant', '/audit'].sort()
 		);
 		// cfo sees Audit Trail + Experiments in Settings → the section bar renders
 		// both (more than one tab, so it's no longer suppressed).
@@ -110,7 +110,7 @@ test.describe('RBAC — admin (cached session, no extra login)', () => {
 		await page.goto('/');
 		await expect(page.locator('aside.sidebar')).toBeVisible();
 		expect(await sidebarHrefs(page)).toEqual(
-			['/', '/invoices', '/payments', '/vendors', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/organization'].sort()
+			['/', '/invoices', '/payments', '/vendors', '/vendors/screening', '/exceptions', '/purchase-orders', '/contracts', '/assistant', '/organization'].sort()
 		);
 		expect(await sectionTabHrefs(page, '/organization')).toEqual(
 			['/organization', '/admin?tab=users', '/admin?tab=roles', '/audit', '/workflows', '/experiments', '/admin/api-keys', '/admin/webhooks', '/admin/partner'].sort()

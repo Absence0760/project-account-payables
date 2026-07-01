@@ -20,6 +20,7 @@ test.describe('grouped sidebar navigation', () => {
 			'Invoices',
 			'Payments',
 			'Vendors',
+			'Screening',
 			'Exceptions',
 			'Procurement',
 			'Billing',
