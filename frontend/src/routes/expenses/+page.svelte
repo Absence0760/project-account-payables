@@ -69,6 +69,7 @@
 	import { pruneSelection } from '$lib/utils/selection';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
+	import { untrack } from 'svelte';
 	import { m } from '$lib/i18n/store.svelte';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
@@ -136,8 +137,11 @@
 		return params;
 	}
 
+	// Read the URL untracked — syncUrl() writes it via replaceState inside a
+	// filter $effect; a tracked $page.url read would self-trigger the effect
+	// (Svelte effect_update_depth_exceeded loop).
 	function syncUrl() {
-		const url = new URL($page.url);
+		const url = new URL(untrack(() => $page.url));
 		if (tab !== 'expenses') url.searchParams.set('tab', tab);
 		else url.searchParams.delete('tab');
 		if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);

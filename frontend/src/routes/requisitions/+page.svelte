@@ -29,7 +29,7 @@
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 
 	const canCreate = $derived(auth.hasAnyRole('admin', 'ap_manager', 'ap_clerk'));
 	// approve / reject / convert = admin | ap_manager (convert is the money step).
@@ -80,8 +80,11 @@
 	);
 	const periodTotal = $derived(requisitions.reduce((sum, r) => sum + (r.total || 0), 0));
 
+	// Read the URL untracked — syncUrl() writes it via replaceState inside a
+	// filter $effect; a tracked $page.url read would self-trigger the effect
+	// (Svelte effect_update_depth_exceeded loop).
 	function syncUrl() {
-		const url = new URL($page.url);
+		const url = new URL(untrack(() => $page.url));
 		// `id` is a transient deep-link param (see deepLinkId below) — it is
 		// consumed once at load and never persisted, so the filter-state sync
 		// always drops it rather than resurrecting it from a stale URL read.

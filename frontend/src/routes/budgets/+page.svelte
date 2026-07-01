@@ -23,6 +23,7 @@
 	import { m } from '$lib/i18n/store.svelte';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
+	import { untrack } from 'svelte';
 
 	// Mutations are admin / cfo only (financial config).
 	const canManage = $derived(auth.hasAnyRole('admin', 'cfo'));
@@ -77,8 +78,11 @@
 		return params;
 	}
 
+	// Read the URL untracked — syncUrl() writes it via replaceState inside a
+	// filter $effect; a tracked $page.url read would self-trigger the effect
+	// (Svelte effect_update_depth_exceeded loop).
 	function syncUrl() {
-		const url = new URL($page.url);
+		const url = new URL(untrack(() => $page.url));
 		if (dimensionFilter !== 'all') url.searchParams.set('dimension', dimensionFilter);
 		else url.searchParams.delete('dimension');
 		if (search.trim()) url.searchParams.set('search', search.trim());

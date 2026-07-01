@@ -25,6 +25,7 @@
 	import { isRowOpenClick } from '$lib/utils/rowNav';
 	import { page } from '$app/stores';
 	import { replaceState } from '$app/navigation';
+	import { untrack } from 'svelte';
 
 	const canCreate = $derived(auth.isManager);
 
@@ -89,8 +90,12 @@
 	}
 
 	// Reflect filter state into the URL so it survives reload / back-forward.
+	// Read the current URL untracked: syncUrl() runs synchronously inside the
+	// status-filter $effect and writes the URL via replaceState — a tracked
+	// $page.url read here would make that effect depend on the state it mutates
+	// (Svelte effect_update_depth_exceeded loop).
 	function syncUrl() {
-		const url = new URL($page.url);
+		const url = new URL(untrack(() => $page.url));
 		if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
 		else url.searchParams.delete('status');
 		if (search.trim()) url.searchParams.set('search', search.trim());
