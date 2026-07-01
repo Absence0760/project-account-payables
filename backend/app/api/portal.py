@@ -1511,6 +1511,7 @@ async def update_my_notification_preferences(
 @router.get("/cards/{token}")
 async def reveal_card(
     token: str,
+    tenant: Organization = Depends(get_tenant),
     db: AsyncSession = Depends(get_tenant_db),
 ):
     """Vendor-facing single-use card reveal.
@@ -1519,6 +1520,14 @@ async def reveal_card(
     first hit, and marks the token used so a second visit returns
     `gone`. The token itself is the credential — no portal-auth dep
     here. Tokens expire after 7 days regardless of use.
+
+    The tenant is resolved by the `get_tenant` chokepoint (public-by-design,
+    same as `/portal/branding`) and its `Organization` id is passed to
+    `consume_reveal_token` as a defense-in-depth binding: the token AND the card
+    it points at must both carry this tenant's org id, so a token can never be
+    pivoted onto a card outside the resolved tenant even if the DB routing were
+    ever wrong. It also gives us `tenant.settings` directly — no need for a raw
+    control-plane session.
 
     Errors come back as small JSON bodies with stable shapes so the
     portal UI can show a sensible message:
@@ -1532,7 +1541,7 @@ async def reveal_card(
     )
     from app.services.card_reveal import consume_reveal_token
 
-    card, error = await consume_reveal_token(db, token)
+    card, error = await consume_reveal_token(db, token, organization_id=tenant.id)
     if error == "invalid":
         raise HTTPException(status_code=404, detail="Invalid token")
     if error == "expired":
@@ -1541,35 +1550,19 @@ async def reveal_card(
         raise HTTPException(status_code=410, detail="This link has already been used")
     assert card is not None  # narrowing for mypy
 
-    # Re-fetch + decrypt the PAN via the adapter, same path the
-    # /api/cards/{id}/details endpoint uses internally.
-    org_settings_result = await db.execute(
-        select(Vendor).where(Vendor.id == card.vendor_id)
-        if card.vendor_id
-        else select(Vendor).limit(0)
-    )
-    _ = org_settings_result.scalar_one_or_none()  # not strictly needed; left for parity
-
-    # Build a config that matches the cards section of the org settings.
-    # Loading the Organization here is unusual — portal sessions don't
-    # carry one — so we read it directly via the org_id on the card.
+    # Resolve the card program config from the tenant's own settings. `tenant`
+    # is the resolved `Organization` (loaded by `get_tenant` on the control
+    # session) — its `settings` are already loaded, so we read them directly and
+    # never open a raw module-global `control_session_factory()` here. That
+    # factory bypasses FastAPI dependency overrides and can race on the
+    # module-level pool under async test loops (see the remittance handler's
+    # note) — the injected `get_tenant` session rides the request's event loop.
     from app.config import settings as app_settings
-    from app.database import control_session_factory
-    from app.models.organization import Organization
-
-    async with control_session_factory() as ctrl:
-        org_row = await ctrl.execute(
-            select(Organization).where(Organization.id == card.organization_id)
-        )
-        org = org_row.scalar_one_or_none()
-
     from app.services.card_issuance import _resolve_card_config
 
-    config = _resolve_card_config(org.settings if org else {}, app_settings)
-    if config is None:
-        # Org disabled cards after issuance — surface the saved last4
-        # only so the vendor still has something to call about.
-        await db.commit()
+    # Fallback metadata shown on any degraded path (cards disabled / provider
+    # outage). PII-free: last4 + limit only, never the PAN/CVV.
+    def _fallback(message: str) -> dict:
         return {
             "last_four": card.last_four,
             "amount_limit": float(card.amount_limit),
@@ -1577,8 +1570,18 @@ async def reveal_card(
             "expires_at": card.expires_at.isoformat() if card.expires_at else None,
             "pan": None,
             "cvv": None,
-            "warning": "Card details are no longer available for retrieval.",
+            "warning": message,
         }
+
+    config = _resolve_card_config(tenant.settings or {}, app_settings)
+    if config is None:
+        # Cards were disabled after issuance — no live PAN retrieval possible.
+        # Do NOT burn the single-use token: leave `used_at` NULL (roll back the
+        # consume mutation) so the vendor can retry if the org re-enables cards.
+        # `get_tenant_db` would otherwise commit the session on a clean return.
+        body = _fallback("Card details are no longer available for retrieval.")
+        await db.rollback()
+        return body
 
     import app.services.card_adapters.lithic  # noqa: F401
     import app.services.card_adapters.mock_adapter  # noqa: F401
@@ -1588,18 +1591,14 @@ async def reveal_card(
     try:
         details = await adapter.get_card_details(card.provider_card_id)
     except Exception:  # noqa: BLE001
-        # Adapter outage — return the saved metadata so the vendor at
-        # least sees the link worked, and tell them to contact AP.
-        await db.commit()
-        return {
-            "last_four": card.last_four,
-            "amount_limit": float(card.amount_limit),
-            "currency": card.currency,
-            "expires_at": card.expires_at.isoformat() if card.expires_at else None,
-            "pan": None,
-            "cvv": None,
-            "warning": "Card details are temporarily unavailable. Please contact AP.",
-        }
+        # Provider outage — a TRANSIENT failure. The single-use token must NOT be
+        # consumed, or the vendor's link is permanently dead once the provider
+        # recovers. Capture the fallback body, then roll back so `used_at` stays
+        # NULL and the link is re-usable. (`get_tenant_db` commits on a clean
+        # return, so an explicit rollback is required to un-burn the token.)
+        body = _fallback("Card details are temporarily unavailable. Please contact AP.")
+        await db.rollback()
+        return body
 
     await dispatch_audit(
         db,

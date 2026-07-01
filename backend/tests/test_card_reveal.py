@@ -137,6 +137,92 @@ async def test_consume_returns_card_and_marks_used_on_first_call():
     assert (datetime.now(UTC) - row.used_at) < timedelta(seconds=5)
 
 
+@pytest.mark.asyncio
+async def test_consume_refuses_card_belonging_to_another_org():
+    """Defense-in-depth org binding: the token row resolves (its own
+    organization_id matches the caller's), but the card it points at carries a
+    DIFFERENT organization_id. The reveal must be refused as opaque `invalid`
+    and the token must NOT be marked used (nothing burned on a rejected reveal)."""
+    from app.services.card_reveal import consume_reveal_token
+
+    org_a = uuid.uuid4()
+    org_b = uuid.uuid4()
+    row = SimpleNamespace(
+        token_hash="x",
+        card_id=uuid.uuid4(),
+        organization_id=org_a,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+        used_at=None,
+    )
+    # Card lives in a different org than the token/caller.
+    card_obj = _card(id=row.card_id, organization_id=org_b)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[_result_for(scalar=row), _result_for(scalar=card_obj)])
+
+    card, error = await consume_reveal_token(db, "anything", organization_id=org_a)
+    assert card is None
+    assert error == "invalid"
+    # The single-use token stays unburned on a rejected cross-org reveal.
+    assert row.used_at is None
+
+
+@pytest.mark.asyncio
+async def test_consume_scopes_token_lookup_to_the_org(realdb):
+    """A valid token consumed with the WRONG organization_id must not resolve —
+    the token-row query itself is org-scoped, so a token can't be pivoted onto
+    another tenant even if the (impossible) wrong DB were queried."""
+    from app.services.card_reveal import consume_reveal_token
+
+    mk = realdb.sessionmaker("a")
+    org_a = realdb.info("a").org_id
+    _card_id, token = await _seed_card_with_token(mk, org_a)
+
+    # Wrong org id → invalid, and the token stays consumable.
+    async with mk() as s:
+        card_bad, error_bad = await consume_reveal_token(s, token, organization_id=uuid.uuid4())
+        await s.commit()
+    assert card_bad is None
+    assert error_bad == "invalid"
+
+    # The correct org id reveals it (proving the guard isn't failing-closed
+    # for the wrong reason).
+    async with mk() as s:
+        card_ok, error_ok = await consume_reveal_token(s, token, organization_id=org_a)
+        await s.commit()
+    assert error_ok is None
+    assert card_ok is not None
+
+
+@pytest.mark.asyncio
+async def test_reveal_token_not_burned_when_session_rolled_back(realdb):
+    """The handler's outage path rolls back instead of committing so a transient
+    provider failure doesn't permanently kill the single-use link. Simulate that
+    at the service layer: consume (flips used_at in-session) then ROLL BACK — a
+    fresh reveal afterwards must still succeed, because used_at was never
+    persisted."""
+    from app.services.card_reveal import consume_reveal_token
+
+    mk = realdb.sessionmaker("a")
+    org_a = realdb.info("a").org_id
+    card_id, token = await _seed_card_with_token(mk, org_a)
+
+    # First attempt: consume marks used_at, but we roll back (mimics the outage
+    # branch that returns the fallback body without committing).
+    async with mk() as s:
+        card, error = await consume_reveal_token(s, token, organization_id=org_a)
+        assert error is None
+        await s.rollback()
+
+    # Retry after "provider recovery": the token is still alive.
+    async with mk() as s:
+        card2, error2 = await consume_reveal_token(s, token, organization_id=org_a)
+        await s.commit()
+    assert error2 is None
+    assert card2 is not None
+    assert card2.id == card_id
+
+
 # ---------------------------------------------------------------------------
 # Real-Postgres: single-use survives a real commit + re-read, and the token
 # is scoped to its own tenant DB (a token minted in A can't reveal in B).
