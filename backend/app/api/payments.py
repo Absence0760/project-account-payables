@@ -1068,37 +1068,45 @@ async def execute_payment_run(
             # same compliance gate applies: a blocked / sanctioned vendor must
             # not receive a card. Refuse outright; a review-hold leaves the
             # payment in pending_compliance for AP (no card minted).
-            if invoice.vendor_id:
-                from app.services.compliance import check_payment_compliance
+            from app.services.compliance import check_payment_compliance
 
+            v_card = None
+            if invoice.vendor_id:
                 v_card = (
                     await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
                 ).scalar_one_or_none()
-                if v_card is not None:
-                    card_decision = await check_payment_compliance(
-                        db,
-                        vendor=v_card,
-                        payment_amount=payment.amount,
-                        payment_method=payment.method,
-                        org_settings=org.settings or {},
-                        organization_id=org.id,
-                        correlation_id=payment.correlation_id,
-                    )
-                    if card_decision.verdict == "refuse":
-                        payment.status = "failed"
-                        payment.failure_reason = "compliance_refusal: " + "; ".join(
-                            card_decision.reasons
-                        )
-                        payment.completed_at = now
-                        failed += 1
-                        continue
-                    if card_decision.verdict == "hold":
-                        payment.status = "pending_compliance"
-                        payment.failure_reason = "compliance_hold: " + "; ".join(
-                            card_decision.reasons
-                        )
-                        in_flight += 1
-                        continue
+            if v_card is None:
+                # No screenable vendor (invoice never matched a Vendor, or the
+                # row was deleted). We cannot run sanctions/KYC against a payee
+                # we don't have — and an AI-extracted / email-intake invoice can
+                # reach here with vendor_id NULL. Minting a card anyway would put
+                # funds on a card for an unscreened name, defeating the gate.
+                # Fail-safe: hold for AP to attach + verify a vendor (mirrors the
+                # ACH/wire leg); never mint a card unscreened.
+                payment.status = "pending_compliance"
+                payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
+                in_flight += 1
+                continue
+            card_decision = await check_payment_compliance(
+                db,
+                vendor=v_card,
+                payment_amount=payment.amount,
+                payment_method=payment.method,
+                org_settings=org.settings or {},
+                organization_id=org.id,
+                correlation_id=payment.correlation_id,
+            )
+            if card_decision.verdict == "refuse":
+                payment.status = "failed"
+                payment.failure_reason = "compliance_refusal: " + "; ".join(card_decision.reasons)
+                payment.completed_at = now
+                failed += 1
+                continue
+            if card_decision.verdict == "hold":
+                payment.status = "pending_compliance"
+                payment.failure_reason = "compliance_hold: " + "; ".join(card_decision.reasons)
+                in_flight += 1
+                continue
 
             issue = await issue_card_for_invoice(
                 invoice=invoice,

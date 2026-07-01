@@ -526,3 +526,105 @@ async def test_execute_payment_run_refuses_sanctions_matched_vendor_without_call
     adapter.create_payment.assert_not_called()
     # Invoice did NOT flip to payment_scheduled.
     assert inv.status == InvoiceStatus.approved
+
+
+@pytest.mark.asyncio
+async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
+    """A `virtual_card` payment on an invoice with NO matched vendor
+    (`vendor_id is None` — the AI-extracted / email-intake case) must be
+    HELD for AP, not minted. Without a Vendor row there is nothing to run
+    sanctions/KYC against, so issuing a card anyway would put funds on a
+    card for an unscreened payee — defeating the compliance gate. This
+    mirrors the ACH/wire leg's fail-safe hold. Regression guard: the card
+    leg previously fell straight through to card issuance when vendor_id
+    was NULL."""
+    from app.api.payments import execute_payment_run
+    from app.models.invoice import InvoiceStatus
+
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="draft",
+        total_amount=Decimal("500.00"),
+        organization_id=uuid.uuid4(),
+        initiated_by=uuid.uuid4(),
+        requires_cfo_approval=False,
+        cfo_approved_at=None,
+        cfo_approved_by=None,
+        executed_at=None,
+    )
+    inv_id = uuid.uuid4()
+    inv = SimpleNamespace(
+        id=inv_id,
+        status=InvoiceStatus.approved,
+        invoice_number="INV-NOVENDOR-1",
+        vendor_name="Unmatched Supplier LLC",
+        vendor_id=None,  # never matched to a Vendor row
+        currency="USD",
+        description="",
+        amount=Decimal("500.00"),
+        correlation_id=uuid.uuid4(),
+        organization_id=run.organization_id,
+        entity_id=None,
+        vendor_country=None,
+    )
+    pay = SimpleNamespace(
+        id=uuid.uuid4(),
+        payment_run_id=run.id,
+        invoice_id=inv_id,
+        amount=Decimal("500.00"),
+        method="virtual_card",
+        status="pending",
+        provider=None,
+        provider_payment_id=None,
+        reference=None,
+        submitted_at=None,
+        completed_at=None,
+        failure_reason=None,
+        correlation_id=uuid.uuid4(),
+        source_currency=None,
+        source_amount=None,
+        fx_rate=None,
+        fx_locked_at=None,
+        corridor=None,
+        target_country=None,
+    )
+
+    run_res = MagicMock()
+    run_res.scalar_one_or_none = MagicMock(return_value=run)
+    pay_res = MagicMock()
+    pay_scalars = MagicMock()
+    pay_scalars.all = MagicMock(return_value=[pay])
+    pay_res.scalars = MagicMock(return_value=pay_scalars)
+    inv_res = MagicMock()
+    inv_res.scalar_one_or_none = MagicMock(return_value=inv)
+
+    db = AsyncMock()
+    # Only three queries fire before the hold: run lookup, payments fan-out,
+    # invoice lookup. The vendor.bank_details lookup is skipped (vendor_id
+    # NULL) and no compliance/card query runs.
+    db.execute = AsyncMock(side_effect=[run_res, pay_res, inv_res])
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+
+    org = SimpleNamespace(
+        id=run.organization_id,
+        slug="acme",
+        name="Acme",
+        settings={"payments": {"provider": "mock", "home_currency": "USD"}},
+    )
+    user = SimpleNamespace(id=uuid.uuid4(), full_name="Tester", roles=["admin"])
+
+    issue_mock = AsyncMock()
+    with (
+        patch("app.services.card_issuance.issue_card_for_invoice", issue_mock),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync", AsyncMock()),
+    ):
+        await execute_payment_run(run_id=run.id, db=db, org=org, user=user)
+
+    assert pay.status == "pending_compliance"
+    assert (pay.failure_reason or "").startswith("compliance_hold")
+    assert "no screenable vendor" in (pay.failure_reason or "")
+    # CRITICAL: no card minted for an unscreened payee.
+    issue_mock.assert_not_called()
+    # Invoice did NOT flip to payment_scheduled.
+    assert inv.status == InvoiceStatus.approved
