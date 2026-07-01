@@ -11,18 +11,41 @@ REGION_DEFAULTS: dict[str, str] = {
     "US": "lithic",
     "UK": "lithic",
     "GB": "lithic",
-    # EU countries
-    "DE": "lithic",
-    "FR": "lithic",
-    "NL": "lithic",
-    "IE": "lithic",
-    "ES": "lithic",
-    "IT": "lithic",
-    "BE": "lithic",
-    "AT": "lithic",
-    "PT": "lithic",
-    "FI": "lithic",
-    "LU": "lithic",
+    # EU member states (all 27) — Lithic has an EU entity; routing a EUR/SEPA
+    # vendor to Nium by omission could fail at the terminal or add FX fees.
+    "AT": "lithic",  # Austria
+    "BE": "lithic",  # Belgium
+    "BG": "lithic",  # Bulgaria
+    "HR": "lithic",  # Croatia
+    "CY": "lithic",  # Cyprus
+    "CZ": "lithic",  # Czechia
+    "DK": "lithic",  # Denmark
+    "EE": "lithic",  # Estonia
+    "FI": "lithic",  # Finland
+    "FR": "lithic",  # France
+    "DE": "lithic",  # Germany
+    "GR": "lithic",  # Greece
+    "EL": "lithic",  # Greece (EU/ISO alt code)
+    "HU": "lithic",  # Hungary
+    "IE": "lithic",  # Ireland
+    "IT": "lithic",  # Italy
+    "LV": "lithic",  # Latvia
+    "LT": "lithic",  # Lithuania
+    "LU": "lithic",  # Luxembourg
+    "MT": "lithic",  # Malta
+    "NL": "lithic",  # Netherlands
+    "PL": "lithic",  # Poland
+    "PT": "lithic",  # Portugal
+    "RO": "lithic",  # Romania
+    "SK": "lithic",  # Slovakia
+    "SI": "lithic",  # Slovenia
+    "ES": "lithic",  # Spain
+    "SE": "lithic",  # Sweden
+    # EEA / EFTA non-EU but SEPA — also Lithic
+    "NO": "lithic",  # Norway
+    "IS": "lithic",  # Iceland
+    "LI": "lithic",  # Liechtenstein
+    "CH": "lithic",  # Switzerland
     # Rest of world → Nium
     "ZA": "nium",
     "AU": "nium",
