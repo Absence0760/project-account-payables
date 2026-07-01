@@ -38,10 +38,17 @@ test.describe('token tampering', () => {
 		// JWT = header.payload.signature. Flip a character in the
 		// signature segment so verification fails — keeping the
 		// structure intact ensures we exercise the verify path, not the
-		// parse path.
+		// parse path. Flip the FIRST character, not the last: base64url's
+		// final character of a 32-byte HMAC-SHA256 signature (43 chars)
+		// only encodes 4 significant bits — its low 2 bits are unused
+		// padding, so an A<->B swap there can decode to the SAME bytes
+		// and silently fail to tamper anything (intermittently passing a
+		// still-valid signature through and flaking this test). Every
+		// non-trailing character maps 1:1 onto real signature bits, so a
+		// flip there is guaranteed to change the decoded bytes.
 		const parts = valid.split('.');
 		expect(parts).toHaveLength(3);
-		const tamperedSig = parts[2].slice(0, -1) + (parts[2].slice(-1) === 'A' ? 'B' : 'A');
+		const tamperedSig = (parts[2][0] === 'A' ? 'B' : 'A') + parts[2].slice(1);
 		const tampered = [parts[0], parts[1], tamperedSig].join('.');
 
 		const res = await request.get(`${API_BASE}/api/invoices`, {
@@ -57,11 +64,12 @@ test.describe('token tampering', () => {
 		await signInAndWait(page);
 		const valid = await getStoredToken(page);
 		const parts = valid.split('.');
-		const tampered = [
-			parts[0],
-			parts[1],
-			parts[2].slice(0, -1) + (parts[2].slice(-1) === 'A' ? 'B' : 'A')
-		].join('.');
+		// See the sibling test above — flip the first (always-significant)
+		// character of the signature, not the last (whose low bits can be
+		// unused base64url padding and no-op the tamper).
+		const tampered = [parts[0], parts[1], (parts[2][0] === 'A' ? 'B' : 'A') + parts[2].slice(1)].join(
+			'.'
+		);
 		await page.evaluate((t) => localStorage.setItem('auth_token', t), tampered);
 
 		// Force a fresh API request — invoices page boot calls
