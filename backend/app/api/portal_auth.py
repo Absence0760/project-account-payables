@@ -110,6 +110,14 @@ async def portal_login(
 async def portal_logout(authorization: str = Header()):
     token = authorization.removeprefix("Bearer ")
     payload = decode_token(token)
+    # Only a vendor-portal token may be revoked here. Without this guard the
+    # endpoint accepted ANY JWT signed with AP_SECRET_KEY — including an employee
+    # `typ=user` token — and added its jti to the shared Redis blocklist, letting
+    # the public portal-logout route revoke an employee session. Mirror the
+    # symmetric `typ` check `get_current_vendor_user` enforces on every other
+    # portal route.
+    if payload.get("typ") != "vendor":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     jti = payload.get("jti")
     if jti:
         exp = payload.get("exp", 0)
