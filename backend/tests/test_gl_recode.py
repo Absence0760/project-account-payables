@@ -490,3 +490,43 @@ def test_report_dict_uses_would_change_in_dry_run_else_applied():
     wet = RecodeReport(dry_run=False).as_dict()
     assert "applied" in wet and "would_change" not in wet
     assert "ai_candidates" in wet
+
+
+@pytest.mark.asyncio
+async def test_audit_routes_through_dispatch_audit_not_raw_log_action(monkeypatch):
+    """Recode audit rows must go through the mode-aware `dispatch_audit`
+    chokepoint (so `lambda` audit mode ships them to SQS like every other
+    mutation), not the low-level `log_action` shim directly."""
+    from app.services import gl_recode as gl_recode_mod
+
+    dispatch_calls: list[dict] = []
+
+    async def fake_dispatch(db_, **kwargs):
+        dispatch_calls.append(kwargs)
+
+    # dispatch_audit is imported lazily inside bulk_recode_gl; patch it on its
+    # own module so the lazy `from app.services.audit_dispatch import dispatch_audit`
+    # resolves to the fake.
+    import app.services.audit_dispatch as audit_dispatch_mod
+
+    monkeypatch.setattr(audit_dispatch_mod, "dispatch_audit", fake_dispatch)
+
+    vendor_id = uuid.uuid4()
+    inv = _make_invoice(vendor_id=vendor_id, gl_account=None)
+    db = _make_db_for(
+        active_codes=["6100"],
+        eligible_invoices=[inv],
+        priors={vendor_id: "6100"},
+    )
+    await bulk_recode_gl(
+        db,
+        organization_id=uuid.uuid4(),
+        filt=RecodeFilter(),
+        dry_run=False,
+        actor_id=uuid.uuid4(),
+    )
+    assert len(dispatch_calls) == 1
+    assert dispatch_calls[0]["action"] == "invoice.gl_recoded"
+    assert dispatch_calls[0]["entity_id"] == inv.id
+    assert "correlation_id" in dispatch_calls[0]
+    _ = gl_recode_mod  # module referenced for clarity

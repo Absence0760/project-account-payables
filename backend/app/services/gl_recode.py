@@ -408,12 +408,15 @@ async def bulk_recode_gl(
     elif needs_ai and not include_ai_fallback:
         report.skipped_no_prior_no_ai += len(needs_ai)
 
-    # Audit log + commit when persisting.
+    # Audit log + commit when persisting. Route through dispatch_audit (the
+    # mode-aware chokepoint every other mutation uses), NOT the low-level
+    # log_action shim — so in `lambda` audit mode these recode rows go to SQS
+    # like the rest of the trail instead of being written on a foreign path.
     if not dry_run and report.changes:
-        from app.services.audit import log_action
+        from app.services.audit_dispatch import dispatch_audit
 
         for change in report.changes:
-            await log_action(
+            await dispatch_audit(
                 db,
                 correlation_id=uuid.uuid4(),
                 organization_id=organization_id,
