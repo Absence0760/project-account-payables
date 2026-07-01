@@ -39,6 +39,11 @@ class CardResult:
     provider_card_id: str | None = None
     last_four: str | None = None
     message: str | None = None
+    # Machine-readable reason a create/cancel FAILED (e.g. "insufficient_funds",
+    # "kyc_blocked"). Read by card_issuance when `success` is False; without the
+    # field a real adapter returning a failure raised AttributeError, masking
+    # every provider business error as an internal error in the exception queue.
+    failure_reason: str | None = None
     raw_response: dict | None = None
 
 
