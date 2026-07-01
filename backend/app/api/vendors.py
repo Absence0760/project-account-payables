@@ -266,6 +266,58 @@ async def _screen_best_effort(
         )
 
 
+# Invoices already cleared for payment (mirrors payments.PAYABLE_INVOICE_STATUSES).
+# Defined locally to avoid importing the payments router into vendors.
+_BANK_CHANGE_PAYABLE_STATUSES = (
+    "approved",
+    "posted_in_erp",
+    "payment_scheduled",
+)
+
+
+async def _flag_payable_invoices_for_bank_change(db: AsyncSession, *, vendor: Vendor) -> None:
+    """Raise a de-duped ``fraud_flag`` exception on every in-queue invoice for a
+    vendor whose bank details just changed, forcing a human second look before
+    the next payment run pays into the new account. Description is PII-free."""
+    from app.models.exception import Exception as APException
+    from app.services.exception_service import create_exception
+
+    invoices = (
+        (
+            await db.execute(
+                select(Invoice).where(
+                    Invoice.vendor_id == vendor.id,
+                    Invoice.status.in_(_BANK_CHANGE_PAYABLE_STATUSES),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for inv in invoices:
+        # De-dupe: don't pile a second open fraud_flag on the same invoice.
+        existing = (
+            await db.execute(
+                select(func.count()).where(
+                    APException.invoice_id == inv.id,
+                    APException.exception_type == "fraud_flag",
+                    APException.status.in_(["open", "escalated"]),
+                )
+            )
+        ).scalar() or 0
+        if existing:
+            continue
+        await create_exception(
+            db,
+            exception_type="fraud_flag",
+            severity="error",
+            description="Vendor bank details changed; verify before payment.",
+            status="open",
+            organization_id=inv.organization_id,
+            invoice=inv,
+        )
+
+
 @router.get("")
 async def list_vendors(
     pagination: PaginationParams = Depends(pagination_params),
@@ -1243,6 +1295,24 @@ async def approve_change_request(
         # PII guard: never log the value — only a last-4 + the request id.
         details={"request_id": str(req.id), "change_type": req.change_type, "last4": last4},
     )
+
+    # BEC gate: a bank-detail change silently re-points where money goes. After
+    # applying it, (a) re-screen the vendor against sanctions/KYC with the new
+    # coordinates, and (b) raise a fraud_flag exception on every invoice already
+    # in the payment queue for this vendor — so the next payment run gets a human
+    # second look before money leaves. Without this the queue shows nothing and a
+    # phished/insider approval lands the redirect with no operational signal.
+    if req.change_type == "bank_details":
+        await _screen_best_effort(
+            db,
+            vendor=vendor,
+            org=org,
+            org_id=org.id,
+            check_type="bank_change",
+            actor_id=user.id,
+        )
+        await _flag_payable_invoices_for_bank_change(db, vendor=vendor)
+
     await db.commit()
     await db.refresh(req)
     return VendorChangeRequestResponse.from_db(req, vendor_name=vendor.name, reveal=True)

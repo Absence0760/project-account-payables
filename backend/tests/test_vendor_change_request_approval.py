@@ -303,3 +303,81 @@ async def test_a_different_approver_applies_the_ap_bank_change(realdb):
     async with mk() as s:
         v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
         assert (v.bank_details or {}).get("counterparty_id") == "cp_new", "now applied"
+
+
+@pytest.mark.asyncio
+async def test_bank_change_approval_flags_payable_invoices(realdb):
+    """BEC gate: approving a bank-detail change must raise a fraud_flag on every
+    invoice already in the payment queue for that vendor, so the next run gets a
+    human second look before paying into the new account."""
+    from decimal import Decimal
+
+    from app.models.exception import Exception as APException
+    from app.models.invoice import Invoice, InvoiceStatus
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id = await _seed_vendor(mk, org_id, bank_details={"bank_name": "Old Bank"})
+
+    # One invoice in the payment queue (approved) and one still in review.
+    payable_id, review_id = uuid.uuid4(), uuid.uuid4()
+    async with mk() as s:
+        s.add_all(
+            [
+                Invoice(
+                    id=payable_id,
+                    organization_id=org_id,
+                    vendor_id=vendor_id,
+                    invoice_number="BEC-PAYABLE",
+                    vendor_name="Acme Supply",
+                    amount=Decimal("75000.00"),
+                    currency="USD",
+                    status=InvoiceStatus.approved,
+                ),
+                Invoice(
+                    id=review_id,
+                    organization_id=org_id,
+                    vendor_id=vendor_id,
+                    invoice_number="BEC-REVIEW",
+                    vendor_name="Acme Supply",
+                    amount=Decimal("10.00"),
+                    currency="USD",
+                    status=InvoiceStatus.ready_for_review,
+                ),
+            ]
+        )
+        await s.commit()
+
+    req_id = await _stage(
+        mk,
+        org_id,
+        vendor_id,
+        "bank_details",
+        {"bank_details": {"account_number": "99999999", "bank_name": "Attacker Bank"}},
+    )
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(f"/api/vendors/change-requests/{req_id}/approve")
+    assert resp.status_code == 200, resp.text
+
+    async with mk() as s:
+        # The payable invoice got a fraud_flag payment hold.
+        payable_flags = (
+            await s.execute(
+                select(APException).where(
+                    APException.invoice_id == payable_id,
+                    APException.exception_type == "fraud_flag",
+                )
+            )
+        ).scalars().all()
+        assert len(payable_flags) == 1
+        assert "bank details" in (payable_flags[0].description or "").lower()
+        # The in-review invoice (not in the payment queue) is NOT flagged.
+        review_flags = (
+            await s.execute(
+                select(APException).where(
+                    APException.invoice_id == review_id,
+                    APException.exception_type == "fraud_flag",
+                )
+            )
+        ).scalars().all()
+    assert review_flags == []
