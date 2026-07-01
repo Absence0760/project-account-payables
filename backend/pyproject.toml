@@ -13,7 +13,7 @@ dependencies = [
     "uvicorn[standard]>=0.49.0,<1",
     "sqlalchemy[asyncio]>=2.0.51,<3",
     "asyncpg>=0.31.0,<1",
-    "alembic>=1.18.4,<2",
+    "alembic>=1.18.5,<2",
     "pydantic>=2.13.4,<3",
     # >=2.14.2 fixes GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource follows
     # symlinks outside secrets_dir).
