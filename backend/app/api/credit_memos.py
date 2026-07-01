@@ -128,6 +128,15 @@ async def create_credit_memo(
                 status_code=409,
                 detail="Credit memo vendor does not match invoice vendor",
             )
+        # Same currency guard as the /apply path — the remaining-balance math
+        # below subtracts the memo amount from the invoice amount directly, so a
+        # EUR memo created against a USD invoice would silently mix currencies
+        # and corrupt the balance.
+        if body.currency and invoice.currency and body.currency != invoice.currency:
+            raise HTTPException(
+                status_code=409,
+                detail="Credit memo currency does not match invoice currency",
+            )
         already_applied = (
             await db.execute(
                 select(func.coalesce(func.sum(CreditMemo.amount), Decimal("0"))).where(

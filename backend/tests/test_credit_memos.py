@@ -379,6 +379,31 @@ async def test_apply_currency_mismatch_409(realdb):
     assert "currency" in resp.json()["detail"].lower()
 
 
+async def test_create_with_invoice_currency_mismatch_409(realdb):
+    """Creating a memo directly against an invoice (invoice_id at create) applies
+    it immediately — so the same currency guard as /apply must reject a EUR memo
+    against a USD invoice, or the remaining-balance math mixes currencies."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    vendor_id = await _add_vendor(mk, org_id, name="FX Create Vendor")
+    # _add_invoice leaves currency at the USD default.
+    invoice_id = await _add_invoice(mk, org_id, vendor_id=vendor_id, number="INV-FXC")
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        resp = await c.post(
+            "/api/credit-memos",
+            json={
+                "memo_number": "CM-EURC",
+                "vendor_id": vendor_id,
+                "invoice_id": invoice_id,
+                "amount": "50.00",
+                "currency": "EUR",
+            },
+        )
+    assert resp.status_code == 409, resp.text
+    assert "currency" in resp.json()["detail"].lower()
+
+
 async def test_apply_invoice_without_vendor_allowed(realdb):
     # When the invoice has no vendor_id, the vendor-match guard is skipped.
     mk = realdb.sessionmaker("a")
