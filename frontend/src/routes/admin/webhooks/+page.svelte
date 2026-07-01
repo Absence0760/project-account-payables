@@ -203,7 +203,7 @@
 	]);
 
 	const DELIVERY_STATUSES = ['pending', 'delivered', 'failed', 'dead'] as const;
-	function deliveryStatusLabel(s: (typeof DELIVERY_STATUSES)[number]): string {
+	function deliveryStatusLabel(s: string): string {
 		switch (s) {
 			case 'pending':
 				return m('admin.webhooks.filter.pending');
@@ -213,6 +213,10 @@
 				return m('admin.webhooks.filter.failed');
 			case 'dead':
 				return m('admin.webhooks.filter.dead');
+			default:
+				// Unknown status from the API — degrade to the raw value rather
+				// than rendering blank.
+				return s;
 		}
 	}
 
@@ -405,7 +409,7 @@
 							<td>{d.response_code ?? '—'}</td>
 							<td>{fmtDate(d.last_attempt_at)}</td>
 							<td>
-								<span class="status-pill {d.status}">{d.status}</span>
+								<span class="status-pill {d.status}">{deliveryStatusLabel(d.status)}</span>
 							</td>
 							<td class="actions">
 								{#if canRedeliver(d)}

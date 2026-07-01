@@ -165,6 +165,53 @@ test.describe('/admin/webhooks (admin)', () => {
 		await expect(page).not.toHaveURL(/[?&]status=/);
 	});
 
+	test('delivery status cell renders the friendly label, not the raw value', async ({ page }) => {
+		const name = `e2e-label-${Date.now()}`;
+		const created = await createSub(page, name);
+		const subId = created.subscription.id;
+
+		// Seed a FAILED delivery directly in the control DB so a status pill renders.
+		const eventId = `e2e-lbl-${Date.now()}`;
+		const headers = await apiHeaders(page);
+		const orgId = (await (
+			await page.request.get(`${API_BASE}/api/auth/me`, { headers })
+		).json())?.organization_id as string | undefined;
+
+		const { execFileSync } = await import('node:child_process');
+		execFileSync(
+			'psql',
+			[
+				'-h',
+				'localhost',
+				'-U',
+				'postgres',
+				'-p',
+				'5432',
+				'-d',
+				'account_payables',
+				'-c',
+				`INSERT INTO webhook_deliveries
+				   (id, subscription_id, organization_id, event_id, event_type, payload, status, attempt_count)
+				 VALUES
+				   (gen_random_uuid(), '${subId}', '${orgId}', '${eventId}', 'invoice.approved',
+				    '{}'::jsonb, 'failed', 1);`
+			],
+			{ env: { ...process.env, PGPASSWORD: 'postgres' }, stdio: ['ignore', 'pipe', 'pipe'] }
+		);
+
+		await page.goto('/admin/webhooks?status=failed');
+		const row = page.locator('tr', { hasText: eventId });
+		await expect(row).toBeVisible({ timeout: 10_000 });
+
+		// The status pill shows the localized "Failed" label (capitalized), NOT the
+		// raw lowercase API value "failed". `exact` is case-sensitive, so it can
+		// only match the friendly label routed through deliveryStatusLabel().
+		const pill = row.locator('.status-pill');
+		await expect(pill).toHaveText('Failed');
+
+		await deleteSub(page, subId);
+	});
+
 	test('redeliver re-queues a failed delivery', async ({ page }) => {
 		const name = `e2e-redeliver-${Date.now()}`;
 		const created = await createSub(page, name);
