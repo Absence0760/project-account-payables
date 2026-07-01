@@ -132,7 +132,11 @@ def _resolve_card_config(org: Organization) -> dict:
             "client_secret": org_cards.get("client_secret", ""),
             "customer_hash_id": org_cards.get("customer_hash_id", ""),
             "wallet_hash_id": org_cards.get("wallet_hash_id", ""),
-            "sandbox": org_cards.get("sandbox", True),
+            # BYOK sandbox is opt-IN: a customer who wires their own real
+            # provider keys expects live rails. Defaulting to sandbox silently
+            # routed their production key at the sandbox host (invoices paid
+            # into a void). Sandbox must be an explicit `"sandbox": true`.
+            "sandbox": org_cards.get("sandbox", False),
             "default_expiry_days": expiry_days,
         }
     else:
@@ -465,7 +469,29 @@ async def cancel_card(
     from app.services.card_adapters import get_card_adapter
 
     adapter = get_card_adapter(card_config)
-    await adapter.cancel_card(card.provider_card_id)
+    # Cancel at the provider FIRST, then reflect it in the DB — never the other
+    # way round. The fail-safe direction is "dead at the provider, maybe stale
+    # in the DB"; the dangerous direction is a card the AP team believes is
+    # cancelled while it is still chargeable at the provider. So we only mark
+    # the row cancelled once the provider CONFIRMS the close.
+    try:
+        cancelled_ok = await adapter.cancel_card(card.provider_card_id)
+    except Exception as exc:  # noqa: BLE001
+        # Provider unreachable — its state is unknown. Don't record an
+        # unverified cancel; let the client retry. (PII guard: type only.)
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "[cards] provider cancel raised for card %s: %s", card.id, exc.__class__.__name__
+        )
+        raise HTTPException(
+            status_code=502, detail="Card provider is unavailable; please retry."
+        ) from None
+    if not cancelled_ok:
+        raise HTTPException(
+            status_code=502,
+            detail="Card provider did not confirm cancellation; please retry.",
+        )
     prior_status = card.status
     card.status = "cancelled"
 
@@ -545,6 +571,7 @@ async def card_webhook(provider: str, request: Request):
     from app.services.webhook_security import (
         extract_signature_header,
         is_event_already_processed,
+        release_event_claim,
         verify_hmac_sha256,
     )
 
@@ -556,9 +583,16 @@ async def card_webhook(provider: str, request: Request):
         engine = get_tenant_engine(org_obj.db_name)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as db:
+            claimed_event: str | None = None
             try:
+                # Row-lock the card so two concurrent deliveries of events for
+                # the SAME card serialize at the DB layer (one waits for the
+                # other's commit/rollback) — the Redis dedup alone can't order
+                # them if both slip through the NX gap under load.
                 result = await db.execute(
-                    select(VirtualCard).where(VirtualCard.provider_card_id == card_token)
+                    select(VirtualCard)
+                    .where(VirtualCard.provider_card_id == card_token)
+                    .with_for_update()
                 )
                 card = result.scalar_one_or_none()
                 if not card:
@@ -583,6 +617,11 @@ async def card_webhook(provider: str, request: Request):
                 # as first delivery so the provider doesn't retry.
                 if await is_event_already_processed(provider, str(event_id or "")):
                     return
+                # Track the claim so we can release it if the commit below
+                # fails — the Redis claim is only durable AFTER the DB change
+                # commits; otherwise a rolled-back txn would strand the event
+                # id as "processed" and the retry would be deduped away.
+                claimed_event = str(event_id) if event_id else None
 
                 # Update card based on event (declines / reversals excluded).
                 is_auth, is_settled = _classify_card_event(event_type)
@@ -656,6 +695,11 @@ async def card_webhook(provider: str, request: Request):
 
             except Exception:
                 await db.rollback()
+                # The dedup claim guards a side effect that just rolled back —
+                # release it so the provider's retry can reprocess (otherwise
+                # the rebate / charge is dropped for the full TTL window).
+                if claimed_event is not None:
+                    await release_event_claim(provider, claimed_event)
                 continue
 
     return

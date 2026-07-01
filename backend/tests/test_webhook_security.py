@@ -140,6 +140,10 @@ class _FakeRedis:
         self.store[key] = (expiry, value)
         return True
 
+    async def delete(self, key):
+        self.store.pop(key, None)
+        return 1
+
 
 @pytest.fixture
 def fake_redis(monkeypatch):
@@ -429,6 +433,52 @@ async def test_card_webhook_accepts_correctly_signed_first_delivery(fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_card_webhook_releases_dedup_claim_when_commit_fails(fake_redis):
+    """The lost-event guard: if the DB commit rolls back AFTER the Redis
+    dedup claim, the claim must be RELEASED so the provider's retry can
+    reprocess. Otherwise the event is stranded as "processed" for the full
+    TTL and the rebate / charge is dropped forever."""
+    import json
+
+    from app.api.cards import card_webhook
+    from app.services.webhook_security import is_event_already_processed
+
+    secret = "real-secret"
+    org = _org_with_card_secret(secret)
+    card = _card_row("card_token_abc")
+
+    body_bytes = json.dumps(
+        {
+            "card_token": "card_token_abc",
+            "type": "authorization",
+            "amount": 5000,
+            "event_id": "evt_commit_fail",
+        }
+    ).encode("utf-8")
+    sig = _sign(secret, body_bytes)
+
+    tenant_factory, db = _fake_tenant_session_factory(card)
+    # The commit fails (deadlock / pool exhaustion) — the handler must roll
+    # back AND release the dedup claim.
+    db.commit = AsyncMock(side_effect=RuntimeError("db overloaded"))
+
+    with (
+        patch("app.database.control_session_factory", _fake_ctrl_session_factory([org])),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+    ):
+        result = await card_webhook(
+            provider="lithic",
+            request=_fake_request(body_bytes, {"Webhook-Signature": sig}),
+        )
+
+    assert result is None  # still a silent 204
+    db.rollback.assert_called()
+    # The claim was released → a retry is NOT deduped (returns False = "first").
+    assert await is_event_already_processed("lithic", "evt_commit_fail") is False
+
+
+@pytest.mark.asyncio
 async def test_card_webhook_rejects_when_secret_unconfigured(fake_redis):
     """An org that hasn't configured a webhook secret must NOT accept
     any webhook — even an "unsigned" one. Otherwise activating cards
@@ -579,3 +629,97 @@ async def test_erp_webhook_silently_returns_for_unknown_tenant(fake_redis):
         )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_erp_webhook_whitelists_audit_details_no_pii(fake_redis):
+    """A signed ERP webhook whose `details` block carries vendor PII (bank
+    account / tax id / address) must NOT splat that into the append-only audit
+    row. Only the non-PII routing identifiers are recorded."""
+    import json
+
+    from app.api.erp_webhook import erp_webhook
+    from app.models.invoice import InvoiceStatus
+
+    secret = "erp-secret"
+    org = _org_with_erp_secret(secret)
+    body = {
+        "tenant_slug": "acme",
+        "correlation_id": str(uuid.uuid4()),
+        "erp_document_id": "doc_9",
+        "status": "Open",  # → posted_in_erp (a legal step from sent_to_erp)
+        "event_id": "ev_9",
+        "details": {
+            "vendor_bank_account": "123456789",
+            "vendor_tin": "12-3456789",
+            "vendor_address": "1 Secret Lane",
+        },
+    }
+    body_bytes = json.dumps(body).encode("utf-8")
+    sig = _sign(secret, body_bytes)
+
+    invoice = SimpleNamespace(status=InvoiceStatus.sent_to_erp)
+    tenant_factory, db = _fake_tenant_session_factory(invoice)
+
+    captured: dict = {}
+
+    async def _capture(_db, _inv, _target, *, action_name, details):
+        captured["details"] = details
+
+    with (
+        patch("app.api.erp_webhook.control_session_factory", _ctrl_session_for_org(org)),
+        patch("app.api.erp_webhook.get_tenant_engine", return_value=MagicMock()),
+        patch("app.api.erp_webhook.async_sessionmaker", return_value=tenant_factory),
+        patch("app.api.erp_webhook.transition_invoice", _capture),
+    ):
+        await erp_webhook(
+            erp_type="generic",
+            request=_fake_request(body_bytes, {"X-Webhook-Signature": sig}),
+        )
+
+    details = captured["details"]
+    assert set(details) == {"erp_type", "erp_status", "erp_document_id", "raw_event_id"}
+    # None of the ERP payload's PII leaked into the audit row.
+    serialized = json.dumps(details)
+    assert "123456789" not in serialized
+    assert "12-3456789" not in serialized
+    assert "Secret Lane" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_erp_webhook_logs_when_signing_secret_unconfigured(fake_redis, caplog):
+    """An org that never set an ERP webhook signing secret must fail closed
+    (silent 204, no tenant DB touched) AND surface a PII-free config warning so
+    operators learn the integration is unconfigured rather than silently
+    dropping every event. The secret value is never logged (it's empty here)."""
+    import json
+    import logging
+
+    from app.api.erp_webhook import erp_webhook
+
+    org = _org_with_erp_secret("")  # unconfigured
+    body_bytes = json.dumps(
+        {
+            "tenant_slug": "acme",
+            "correlation_id": str(uuid.uuid4()),
+            "erp_document_id": "doc_x",
+            "status": "Paid",
+            "event_id": "ev_x",
+        }
+    ).encode("utf-8")
+
+    with (
+        patch("app.api.erp_webhook.control_session_factory", _ctrl_session_for_org(org)),
+        patch("app.api.erp_webhook.get_tenant_engine") as mk_engine,
+        caplog.at_level(logging.WARNING, logger="app.api.erp_webhook"),
+    ):
+        result = await erp_webhook(
+            erp_type="generic",
+            request=_fake_request(body_bytes, {"X-Webhook-Signature": _sign("x", body_bytes)}),
+        )
+
+    assert result is None  # silent 204 to the caller
+    mk_engine.assert_not_called()  # never opened the tenant DB
+    assert any(
+        "signing_secret" in r.getMessage() and "acme" in r.getMessage() for r in caplog.records
+    ), "expected a PII-free unconfigured-secret warning"
