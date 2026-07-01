@@ -21,7 +21,7 @@ import hashlib
 import hmac
 import json
 import logging
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 
@@ -108,7 +108,12 @@ class ColumnAdapter(PaymentAdapter):
                 failure_reason="column_no_counterparty",
             )
 
-        amount_minor = int((payload.amount * 100).to_integral_value())
+        # ROUND_HALF_UP for the minor-unit conversion (not Decimal's default
+        # banker's rounding) — consistent with international_payments and the
+        # rest of the money path so a .x5 cent never rounds down.
+        amount_minor = int(
+            (payload.amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
         # Column uses `same_day` flag for SDA; default to standard.
         body = {
             "amount": amount_minor,

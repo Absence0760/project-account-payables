@@ -33,7 +33,7 @@ import hmac
 import json
 import logging
 import time
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 
@@ -109,8 +109,12 @@ class StripeTreasuryAdapter(PaymentAdapter):
             )
 
         # Stripe expects integer minor-units. We persist Decimal but
-        # the wire format is cents.
-        amount_minor = int((payload.amount * 100).to_integral_value())
+        # the wire format is cents. ROUND_HALF_UP (not Decimal's default
+        # banker's rounding) matches the rest of the money path — e.g.
+        # international_payments — so a .x5 minor cent never rounds *down*.
+        amount_minor = int(
+            (payload.amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
         network = "us_domestic_wire" if payload.method == "wire" else "ach"
 
         # External-account ID lives on vendor_bank.counterparty_id by
