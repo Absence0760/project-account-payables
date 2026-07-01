@@ -205,9 +205,7 @@ async def test_invoice_vendor_tax_id_masked_and_round_trip_safe(realdb):
 
     mk = realdb.sessionmaker("a")
     async with mk() as s:
-        inv = (
-            await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(inv_id)))
-        ).scalar_one()
+        inv = (await s.execute(select(Invoice).where(Invoice.id == uuid.UUID(inv_id)))).scalar_one()
         # Raw value persisted on create and untouched by the masked round-trip.
         assert inv.vendor_tax_id == "12-3456789"
         assert inv.description == "edited"

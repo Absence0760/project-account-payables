@@ -180,9 +180,7 @@ async def test_identity_update_persists_and_rescreens(realdb, mk):
 
     async with mk() as s:
         # ...but the raw value is persisted to the row (masking is response-only).
-        v = (
-            await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))
-        ).scalar_one()
+        v = (await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))).scalar_one()
         assert v.tax_id == "98-7654321"
         rows = (
             (
@@ -219,9 +217,7 @@ async def test_masked_tax_id_round_trip_does_not_corrupt_stored_value(realdb, mk
     assert patched.json()["phone"] == "+1-555-0000"
 
     async with mk() as s:
-        v = (
-            await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))
-        ).scalar_one()
+        v = (await s.execute(select(Vendor).where(Vendor.id == uuid.UUID(vendor_id)))).scalar_one()
         # Raw value untouched — the mask was never persisted.
         assert v.tax_id == "12-3456789"
 

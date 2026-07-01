@@ -362,22 +362,30 @@ async def test_bank_change_approval_flags_payable_invoices(realdb):
     async with mk() as s:
         # The payable invoice got a fraud_flag payment hold.
         payable_flags = (
-            await s.execute(
-                select(APException).where(
-                    APException.invoice_id == payable_id,
-                    APException.exception_type == "fraud_flag",
+            (
+                await s.execute(
+                    select(APException).where(
+                        APException.invoice_id == payable_id,
+                        APException.exception_type == "fraud_flag",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(payable_flags) == 1
         assert "bank details" in (payable_flags[0].description or "").lower()
         # The in-review invoice (not in the payment queue) is NOT flagged.
         review_flags = (
-            await s.execute(
-                select(APException).where(
-                    APException.invoice_id == review_id,
-                    APException.exception_type == "fraud_flag",
+            (
+                await s.execute(
+                    select(APException).where(
+                        APException.invoice_id == review_id,
+                        APException.exception_type == "fraud_flag",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert review_flags == []

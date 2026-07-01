@@ -96,9 +96,7 @@ async def escalate_once(*, now: datetime | None = None) -> EscalateResult:
     return result
 
 
-async def _escalate_tenant(
-    db_name: str, now: datetime, *, org_id: uuid.UUID | None = None
-) -> int:
+async def _escalate_tenant(db_name: str, now: datetime, *, org_id: uuid.UUID | None = None) -> int:
     """Mutate every active instance whose current chain level is overdue.
 
     Reads only `state="active"` rows — completed/abandoned instances don't

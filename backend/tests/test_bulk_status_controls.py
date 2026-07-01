@@ -43,8 +43,9 @@ async def test_bulk_approve_of_own_upload_is_skipped_by_segregation(realdb):
     info = realdb.info("a")
     actor_id = info.users["ap_manager"]
     # Invoice the acting ap_manager uploaded — segregation must block self-approve.
-    inv_id = await _seed(realdb.sessionmaker("a"), info.org_id, number="BULK-SELF",
-                         uploaded_by_id=actor_id)
+    inv_id = await _seed(
+        realdb.sessionmaker("a"), info.org_id, number="BULK-SELF", uploaded_by_id=actor_id
+    )
 
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.post(
