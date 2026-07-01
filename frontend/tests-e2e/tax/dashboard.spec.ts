@@ -64,24 +64,24 @@ test.describe('/tax (admin)', () => {
 		await expect(firstYtd).toContainText(/\$[\d,]+\.\d{2}/);
 	});
 
-	test('money follows the org reporting currency, not a hardcoded USD', async ({ page }) => {
-		// Mock only the org-settings endpoint (the sole source `orgCurrency`
-		// reads) to a non-USD reporting currency. Fresh page per test → fresh
-		// store, so this can't leak into the USD-default tests above.
-		await page.route('**/api/organization', async (route) => {
-			if (route.request().method() !== 'GET') return route.continue();
-			await route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({ settings: { invoice_defaults: { currency: 'EUR' } } })
-			});
+	test('money follows the report currency, not a hardcoded USD', async ({ page }) => {
+		// The report response is now authoritative for the display currency (it
+		// carries the org's reporting/home currency the totals are denominated
+		// in). Patch it to a non-USD currency and assert the money follows. A
+		// fresh page per test → no leak into the USD-default tests above.
+		await page.route('**/api/tax/1099-report**', async (route) => {
+			const resp = await route.fetch();
+			const body = await resp.json();
+			body.currency = 'EUR';
+			await route.fulfill({ response: resp, json: body });
 		});
 
 		await page.goto('/tax');
 		await page.waitForLoadState('networkidle');
 
 		// The Total-Reportable KPI (4th card) and every per-vendor YTD cell now
-		// render in EUR (€) — a hardcoded USD fallback would show "$".
+		// render in EUR (€) from the report's currency — a hardcoded USD fallback
+		// would show "$".
 		const totalReportable = page.locator('.kpi').nth(3).locator('.kpi-value');
 		await expect(totalReportable).toBeVisible({ timeout: 10_000 });
 		await expect(totalReportable).toContainText('€');

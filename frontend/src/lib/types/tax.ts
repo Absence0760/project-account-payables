@@ -23,10 +23,19 @@ export interface Report1099 {
 	year: number;
 	/** IRS reporting threshold — string-Decimal (e.g. "600"). */
 	threshold_usd: string;
+	/**
+	 * The currency the totals + per-vendor `ytd_paid` are denominated in — the
+	 * org's reporting (home) currency. `Payment.amount` is already home-currency
+	 * so this is an honest label, not an FX conversion. Authoritative for the
+	 * display currency — prefer it over the org-default store.
+	 */
+	currency: string;
 	vendor_count_total: number;
 	vendor_count_eligible_over_threshold: number;
 	vendor_count_over_threshold_without_w9: number;
 	/** Sum of YTD paid across eligible-over-threshold vendors — string-Decimal. */
+	total_reportable: string;
+	/** @deprecated Back-compat alias of `total_reportable` (same value). */
 	total_reportable_usd: string;
 	/** ISO date the report was generated. */
 	generated_at: string;
