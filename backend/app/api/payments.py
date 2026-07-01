@@ -1,5 +1,6 @@
 """Payment endpoints."""
 
+import logging
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -52,6 +53,8 @@ from app.tenant import (
     get_tenant_db,
     get_write_entity_id,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -692,13 +695,29 @@ async def create_payment_run(
     if cfo_threshold_raw is not None:
         try:
             cfo_threshold = Decimal(str(cfo_threshold_raw))
+        except (ValueError, ArithmeticError):
+            # Malformed threshold (a settings typo — or an insider who
+            # corrupted `cfo_approval_above` to defeat the gate). Fail
+            # CLOSED: a configured-but-unparseable CFO gate must require
+            # sign-off, never silently disable itself (the old behaviour
+            # here was a `pass` that let a single settings write turn a
+            # fraud control off for every run). We deliberately do NOT 422
+            # the whole run — a typo must not halt all payments org-wide —
+            # so the run is created *requiring* CFO approval and the
+            # misconfiguration is logged PII-free for an admin to correct.
+            logger.error(
+                "payments.cfo_approval_above is unparseable (%r) for org %s; "
+                "requiring CFO approval on this run (fail-closed)",
+                cfo_threshold_raw,
+                org.id,
+            )
+            requires_cfo = True
+        else:
+            # Strict `>` is intentional and matches the setting name
+            # (`cfo_approval_above`): a run *above* the threshold needs
+            # sign-off; a threshold of 0 / negative means "no gate".
             if cfo_threshold > 0 and total > cfo_threshold:
                 requires_cfo = True
-        except (ValueError, ArithmeticError):
-            # Malformed threshold (typo in settings): fail open. The
-            # alternative — refuse to create runs — is far worse than
-            # missing the gate, which any audit will catch.
-            pass
 
     # Create the run. The run is stamped with the selected (or default) entity;
     # its individual payments each follow their own invoice's entity, so a run

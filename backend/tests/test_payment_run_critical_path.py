@@ -15,9 +15,10 @@ What's NOT covered there, and lives here:
 
   1. `create_payment_run` — entirely untested. The CFO-threshold
      computation (sets `requires_cfo_approval` by total vs the org's
-     `payments.cfo_approval_above`), the malformed-threshold fail-open,
-     404 on a missing invoice, and the Decimal total summation are all
-     money-path invariants with no coverage.
+     `payments.cfo_approval_above`), the malformed-threshold fail-CLOSED
+     (a corrupted threshold must require CFO sign-off, never silently
+     disable the gate), 404 on a missing invoice, and the Decimal total
+     summation are all money-path invariants with no coverage.
   2. `approve_payment_run` happy path — only the guard rejections are
      tested; the actual CFO sign-off (stamps `cfo_approved_at`, writes
      the `payment_run.cfo_approved` audit row) is not.
@@ -398,10 +399,14 @@ async def test_create_run_does_not_flag_cfo_when_total_at_or_below_threshold():
 
 
 @pytest.mark.asyncio
-async def test_create_run_fails_open_on_malformed_threshold():
+async def test_create_run_fails_closed_on_malformed_threshold():
     """A typo'd `cfo_approval_above` (non-numeric) must not blow up run
-    creation. The handler fails *open* (no gate) on a malformed value —
-    a missed gate is auditable; a 500 on every run is an outage."""
+    creation — but it must fail *CLOSED*, not open. A configured-but-
+    unparseable CFO gate that silently disabled itself let a single
+    settings write turn a fraud control off for every run (an insider
+    could corrupt the value on purpose). The handler now creates the run
+    *requiring* CFO approval and logs the misconfig, rather than 500-ing
+    every run (which would halt payments org-wide) or skipping the gate."""
     from app.api.payments import (
         CreatePaymentRunItem,
         CreatePaymentRunRequest,
@@ -413,8 +418,8 @@ async def test_create_run_fails_open_on_malformed_threshold():
     body = CreatePaymentRunRequest(items=[CreatePaymentRunItem(invoice_id=str(inv.id))])
     db = _create_run_db([inv])
 
-    # Should not raise.
-    await create_payment_run(
+    # Should not raise — a settings typo can't halt all payments.
+    result = await create_payment_run(
         body=body,
         db=db,
         org=_org(cfo_above="not-a-number"),
@@ -424,7 +429,9 @@ async def test_create_run_fails_open_on_malformed_threshold():
     )
 
     run = next(o for o in db.added if isinstance(o, PaymentRun))
-    assert run.requires_cfo_approval is False
+    # Fail-closed: the un-parseable gate REQUIRES CFO sign-off.
+    assert run.requires_cfo_approval is True
+    assert result["requires_cfo_approval"] is True
     db.commit.assert_awaited_once()
 
 
