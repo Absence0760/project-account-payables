@@ -574,14 +574,22 @@ async def flip_purchase_order(
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
+    # Capture the scalars the recovery branch needs into plain locals BEFORE the
+    # flush. A failing flush + `db.rollback()` expires every ORM instance in the
+    # session (`po`, `vu`, `vendor`), so re-reading `po.id` / `vu.vendor_id`
+    # afterwards would fire a sync lazy-load in an async context (MissingGreenlet).
+    # `po_id` is the path param (never expires); pin the vendor id here too.
+    flip_marker = f"po-flip:{po_id}"
+    vendor_id_scope = vu.vendor_id
+
     # Idempotency guard: an invoice already flipped from this PO by this
     # vendor short-circuits to that invoice rather than creating a duplicate.
     existing = (
         await db.execute(
             select(Invoice).where(
-                Invoice.vendor_id == vu.vendor_id,
+                Invoice.vendor_id == vendor_id_scope,
                 Invoice.po_number == po.po_number,
-                Invoice.reference_number == f"po-flip:{po.id}",
+                Invoice.reference_number == flip_marker,
             )
         )
     ).scalar_one_or_none()
@@ -607,7 +615,7 @@ async def flip_purchase_order(
         status=InvoiceStatus.new,
         po_number=po.po_number,
         # Stable per-PO marker — drives the idempotency guard above.
-        reference_number=f"po-flip:{po.id}",
+        reference_number=flip_marker,
         organization_id=vendor.organization_id,
         # Inherit the PO's entity so the flipped invoice stays in the same
         # subsidiary as the order it came from (multi-entity Phase 2).
@@ -622,8 +630,18 @@ async def flip_purchase_order(
         # duplicate before it could enter the AP→payment pipeline. Roll back and
         # return the same idempotent short-circuit as the fast-path check above.
         await db.rollback()
+        # Scope the recovery lookup to THIS vendor, exactly like the fast-path
+        # idempotency check above. Filtering on `reference_number` alone would
+        # hand back a foreign invoice's id / correlation_id / status if a row
+        # with a `po-flip:<uuid>` marker ever existed for another vendor — a
+        # cross-vendor disclosure. The vendor-scoped query 404s that case.
         existing = (
-            await db.execute(select(Invoice).where(Invoice.reference_number == f"po-flip:{po.id}"))
+            await db.execute(
+                select(Invoice).where(
+                    Invoice.vendor_id == vendor_id_scope,
+                    Invoice.reference_number == flip_marker,
+                )
+            )
         ).scalar_one_or_none()
         if existing:
             return PortalFlipResponse(

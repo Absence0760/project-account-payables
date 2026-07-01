@@ -261,6 +261,75 @@ async def test_po_flip_cross_vendor_404(realdb):
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_po_flip_recovery_path_does_not_leak_foreign_invoice(realdb):
+    """IntegrityError-recovery isolation: if the `po-flip:<po_id>` marker slot is
+    already occupied by ANOTHER vendor's invoice, the losing flush's recovery
+    query must be vendor-scoped — it must NOT hand our vendor the foreign
+    invoice's id / correlation_id / status.
+
+    We seed a foreign-vendor invoice carrying our PO's flip marker, then flip the
+    PO as our vendor. The insert collides on the partial unique marker index →
+    IntegrityError → the recovery branch runs. With the vendor-scoped recovery
+    query, it finds nothing for our vendor and re-raises rather than returning a
+    `PortalFlipResponse` built from the foreign invoice. (An unscoped recovery —
+    the bug — would return the other supplier's non-public identifiers.)
+    """
+    from types import SimpleNamespace
+
+    from app.api.portal import flip_purchase_order
+
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    vendor_id, vu_id = await _seed_vendor_and_user(mk, org_id, name="Mine Co")
+    foreign_vendor_id, _ = await _seed_vendor_and_user(mk, org_id, name="Foreign Co")
+
+    po_id = uuid.uuid4()
+    foreign_invoice_id = uuid.uuid4()
+    marker = f"po-flip:{po_id}"
+    async with mk() as s:
+        # Our vendor owns the PO (so the fast-path PO lookup passes)…
+        s.add(
+            PurchaseOrder(
+                id=po_id,
+                po_number="PO-RACE",
+                vendor_id=vendor_id,
+                total=Decimal("100.00"),
+                status="open",
+                organization_id=org_id,
+            )
+        )
+        # …but the flip marker slot is already taken by a FOREIGN vendor's invoice.
+        s.add(
+            Invoice(
+                id=foreign_invoice_id,
+                invoice_number="",
+                vendor_name="Foreign Co",
+                vendor_id=foreign_vendor_id,
+                amount=Decimal("100.00"),
+                status=InvoiceStatus.new,
+                reference_number=marker,
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+
+    vu = SimpleNamespace(id=vu_id, vendor_id=vendor_id)
+    # The scoped recovery finds no invoice for OUR vendor → the original
+    # IntegrityError propagates. The foreign invoice's id is never disclosed.
+    async with mk() as s:
+        with pytest.raises(IntegrityError):
+            await flip_purchase_order(po_id=po_id, db=s, vu=vu, idempotency_key=None)
+
+    # Belt-and-suspenders: no new invoice was minted for our vendor, and the
+    # foreign row is untouched.
+    async with mk() as s:
+        mine = (
+            (await s.execute(select(Invoice).where(Invoice.vendor_id == vendor_id))).scalars().all()
+        )
+        assert mine == []
+
+
 # ---------------------------------------------------------------------------
 # Remittance
 # ---------------------------------------------------------------------------
