@@ -6,6 +6,7 @@
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { get1099Report } from '$lib/api/tax';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { Report1099, Vendor1099Row } from '$lib/types/tax';
@@ -42,6 +43,12 @@
 		// Re-load whenever the year changes.
 		void year;
 		load();
+	});
+
+	$effect(() => {
+		// Tenant-wide aggregates (Total Reportable KPI, per-vendor YTD) carry no
+		// per-row currency, so they render in the org's reporting currency.
+		orgCurrency.ensureLoaded();
 	});
 
 	// A vendor is "reportable" when it's 1099-eligible and crossed the
@@ -128,7 +135,10 @@
 				label={m('tax.kpi.reportableWithoutW9')}
 				highlight={report.vendor_count_over_threshold_without_w9 > 0 ? 'red' : null}
 			/>
-			<KpiCard value={formatMoney(report.total_reportable_usd)} label={m('tax.kpi.totalReportable')} />
+			<KpiCard
+				value={formatMoney(report.total_reportable_usd, { currency: orgCurrency.currency })}
+				label={m('tax.kpi.totalReportable')}
+			/>
 		</div>
 
 		<div class="toolbar-row">
@@ -193,7 +203,7 @@
 						<td class="right mono">{r.payment_count}</td>
 						<td class="right mono">
 							<span class:over={r.over_threshold}>
-								<Money amount={r.ytd_paid} />
+								<Money amount={r.ytd_paid} currency={orgCurrency.currency} />
 							</span>
 							{#if r.over_threshold}
 								<span

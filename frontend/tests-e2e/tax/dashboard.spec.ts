@@ -64,6 +64,35 @@ test.describe('/tax (admin)', () => {
 		await expect(firstYtd).toContainText(/\$[\d,]+\.\d{2}/);
 	});
 
+	test('money follows the org reporting currency, not a hardcoded USD', async ({ page }) => {
+		// Mock only the org-settings endpoint (the sole source `orgCurrency`
+		// reads) to a non-USD reporting currency. Fresh page per test → fresh
+		// store, so this can't leak into the USD-default tests above.
+		await page.route('**/api/organization', async (route) => {
+			if (route.request().method() !== 'GET') return route.continue();
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ settings: { invoice_defaults: { currency: 'EUR' } } })
+			});
+		});
+
+		await page.goto('/tax');
+		await page.waitForLoadState('networkidle');
+
+		// The Total-Reportable KPI (4th card) and every per-vendor YTD cell now
+		// render in EUR (€) — a hardcoded USD fallback would show "$".
+		const totalReportable = page.locator('.kpi').nth(3).locator('.kpi-value');
+		await expect(totalReportable).toBeVisible({ timeout: 10_000 });
+		await expect(totalReportable).toContainText('€');
+		await expect(totalReportable).not.toContainText('$');
+
+		const firstYtd = page.locator('.grid-container tbody tr').first().locator('td').last();
+		await expect(firstYtd).toBeVisible({ timeout: 10_000 });
+		await expect(firstYtd).toContainText('€');
+		await expect(firstYtd).not.toContainText('$');
+	});
+
 	test('a no-match search shows the empty state', async ({ page }) => {
 		await expect(page.locator('.grid-container tbody tr').first()).toBeVisible({ timeout: 10_000 });
 		await page.getByLabel('Search vendors').fill('zzz-no-such-vendor-zzz');
