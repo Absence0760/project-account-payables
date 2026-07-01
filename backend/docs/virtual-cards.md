@@ -139,6 +139,17 @@ Card Auto-Expires                (single-use, no further charges possible)
 | organization_id | UUID | Tenant scoping |
 | created_at | Timestamp | |
 
+**One rebate per card (hard backstop).** A single-use card settles exactly once
+→ exactly one rebate. On top of the webhook's `card.status == "charged"` guard +
+event-id dedup, a UNIQUE index `uq_card_rebates_virtual_card` on
+`card_rebates(virtual_card_id)` (migration `0069_card_rebate_unique`, fanned out
+to every tenant DB — `card_rebates` is tenant-scoped) is the DB-level last line
+against a double-rebate under a race / Redis-outage. The settlement branch in
+`api/cards.py` inserts the rebate inside a savepoint (`begin_nested`), so a
+duplicate is silently skipped (`rebate_created: false` on the `card.settled`
+audit row) **without aborting** the card completion + audit write — the
+money-state transition still lands.
+
 ## User Interface
 
 ### Cards Page (`/cards` or tab within `/payments`)
@@ -396,7 +407,26 @@ float.
 | `card.details_viewed` | PAN reveal (`GET /{id}/details`) | `last_four` |
 | `card.cancelled` | manual cancel (`POST /{id}/cancel`) | `last_four`, `from`, `to` |
 | `card.charged` | authorization webhook applies a charge | `last_four`, `from`, `to`, `amount_charged` (string Decimal) |
-| `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals) |
+| `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals), `rebate_created` (bool — `false` if the one-per-card unique index skipped a duplicate) |
+
+### Cancel (`POST /{id}/cancel`) — provider-first + idempotent
+
+The handler cancels at the **provider first**, then reflects it in the DB — never
+the other way round. The fail-safe direction is "dead at the provider, maybe
+stale in the DB"; the dangerous one is a card the AP team believes is cancelled
+while it is still chargeable. So the row is marked `cancelled` only once the
+provider **confirms** the close (a raise → `502`, a non-confirming `False` →
+`502`, no DB change).
+
+The adapter `cancel_card` is **idempotent**: a card already closed/terminated at
+the provider counts as a confirmed cancel (returns `True`), not a failure. Lithic
+treats a `404`/`409` or a `200` echoing an already-`CLOSED`/`TERMINATED` state as
+success; Nium treats a `404`/`409` on the block call the same; on any other error
+both fall back to a live status check (`get_card_status` → `cancelled`),
+otherwise stay `False` (fail-safe). This cleanly resolves the retry case where a
+first cancel closed the card at the provider but the DB write failed and AP
+retries — the second attempt confirms and marks the row cancelled instead of
+erroring.
 
 ### Webhook handler (`POST /cards/webhook/{provider}`)
 
