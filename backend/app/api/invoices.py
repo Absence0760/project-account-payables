@@ -1374,9 +1374,37 @@ async def bulk_status_change(
     target = DBInvoiceStatus(body.status.value)
     updated = 0
     skipped: list[str] = []
+    # Bulk-approving must NOT bypass the approval controls. Routing a transition
+    # straight to `approved` skipped segregation-of-duties, the max-amount cap,
+    # and the CFO gate — so an AP manager could bulk-approve their own uploads or
+    # push a CFO-gated invoice through. When the target is `approved`, run each
+    # invoice through the same review.approve_invoice path the single-invoice
+    # endpoint uses; an invoice that fails a control (403/422) is skipped, not
+    # aborting the batch.
+    approving = target == DBInvoiceStatus.approved
+    actor_roles = {r.name for r in user.roles}
     for inv in invoices:
         if inv.status in IMMUTABLE_STATUSES:
             skipped.append(str(inv.id))
+            continue
+        if approving:
+            from app.services.review import approve_invoice
+
+            try:
+                await approve_invoice(
+                    db,
+                    inv,
+                    actor_id=user.id,
+                    actor_name=user.full_name,
+                    actor_roles=actor_roles,
+                    org_settings=org.settings,
+                )
+            except HTTPException:
+                # Segregation / threshold / CFO-gate violation — skip this one,
+                # keep processing the rest of the batch.
+                skipped.append(str(inv.id))
+                continue
+            updated += 1
         else:
             await transition_invoice(
                 db,
