@@ -155,7 +155,21 @@ class NiumAdapter(CardAdapter):
                 json={"reason": "CANCELLED_BY_AP_SYSTEM"},
                 headers=headers,
             )
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return True
+        # Idempotent cancel: a card already blocked/terminated at the provider is
+        # SUCCESS, not a failure. This cleanly resolves the retry case where a
+        # first block succeeded at the provider but the DB write failed and AP
+        # retries — the second attempt should confirm, not error.
+        #   - 404: the card no longer exists at the provider → nothing to block
+        #   - 409: state conflict (already BLOCKED/HOTLISTED) → nothing to block
+        if resp.status_code in (404, 409):
+            return True
+        # Any other error: confirm against the live state — an already
+        # BLOCKED/HOTLISTED card maps to CardStatus.cancelled; anything else (or
+        # an unreachable status check) stays a non-confirmed False, preserving
+        # the fail-safe direction.
+        return await self.get_card_status(provider_card_id) == CardStatus.cancelled
 
     async def get_card_status(self, provider_card_id: str) -> CardStatus:
         customer = self.config["customer_hash_id"]

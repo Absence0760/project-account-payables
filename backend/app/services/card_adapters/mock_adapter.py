@@ -40,6 +40,9 @@ class MockCardAdapter(CardAdapter):
 
     async def cancel_card(self, provider_card_id: str) -> bool:
         await asyncio.sleep(0.05)
+        # Idempotent by design: cancelling an already-closed card is SUCCESS, not
+        # a failure — mirrors the real lithic/nium adapters, which treat a
+        # 404/409 or an already-CLOSED/TERMINATED state as a confirmed cancel.
         return True
 
     async def get_card_status(self, provider_card_id: str) -> CardStatus:

@@ -104,7 +104,28 @@ class LithicAdapter(CardAdapter):
                 json={"state": "CLOSED"},
                 headers=self._headers(),
             )
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            # A 200 may echo the resulting state; a card already CLOSED/TERMINATED
+            # is still a success, not a failed cancel.
+            try:
+                state = str(resp.json().get("state", "")).upper()
+            except Exception:  # noqa: BLE001
+                state = ""
+            if state in ("", "CLOSED", "TERMINATED"):
+                return True
+            return False
+        # Idempotent cancel: a card already closed/terminated at the provider is
+        # SUCCESS, not a failure. This cleanly resolves the retry case where a
+        # first cancel closed the card at the provider but the DB write failed
+        # and AP retries — the second attempt should confirm, not error.
+        #   - 404: the card no longer exists at the provider → nothing to close
+        #   - 409: state conflict (already CLOSED) → nothing to close
+        if resp.status_code in (404, 409):
+            return True
+        # Any other error: confirm against the live state — an already-CLOSED
+        # card counts as cancelled; anything else (or an unreachable status
+        # check) stays a non-confirmed False, preserving the fail-safe direction.
+        return await self.get_card_status(provider_card_id) == CardStatus.cancelled
 
     async def get_card_status(self, provider_card_id: str) -> CardStatus:
         async with httpx.AsyncClient(timeout=15) as client:
