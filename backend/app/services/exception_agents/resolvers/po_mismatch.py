@@ -82,7 +82,9 @@ class PoMismatchDispatcher(ExceptionResolver):
         self._selected = None
         return last_eval  # always set: there is at least one delegate
 
-    async def apply(self, db, *, exception, invoice, evaluation, actor_id) -> None:
+    async def apply(
+        self, db, *, exception, invoice, evaluation, actor_id, actor_roles=None
+    ) -> None:
         """Delegate the mutation to whichever resolver evaluate selected. Only
         reached when evaluate recommended auto_resolve (coordinator gate), so
         ``_selected`` is set; guard defensively anyway."""
@@ -94,4 +96,5 @@ class PoMismatchDispatcher(ExceptionResolver):
             invoice=invoice,
             evaluation=evaluation,
             actor_id=actor_id,
+            actor_roles=actor_roles,
         )
