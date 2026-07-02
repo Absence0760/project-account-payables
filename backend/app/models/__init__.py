@@ -51,6 +51,7 @@ from app.models.procurement import (
 )
 from app.models.quality_inspection import QualityInspection
 from app.models.recurring_invoice import RecurringInvoiceTemplate
+from app.models.report_definition import ReportDefinition
 from app.models.sanctions_check import SanctionsCheck
 from app.models.scheduled_report import ScheduledReport
 from app.models.signup import EmailVerification
@@ -150,6 +151,7 @@ __all__ = [
     "QualityInspection",
     "ReconciliationStatus",
     "RecurringInvoiceTemplate",
+    "ReportDefinition",
     "RequisitionLineItem",
     "RequisitionStatus",
     "SanctionsCheck",
