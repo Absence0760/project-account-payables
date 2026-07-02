@@ -19,7 +19,7 @@ class Exception(Base, EntityMixin, TimestampMixin):
     # field. Agent auto-resolution requires an invoice, so the agent-resolve
     # path 422s on an invoice-less exception (human triage only).
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True, index=True
     )
     exception_type: Mapped[str] = mapped_column(String(50), nullable=False)
     # Types: duplicate, po_mismatch, fraud_flag, extraction_failed,

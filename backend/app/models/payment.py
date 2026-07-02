@@ -36,7 +36,7 @@ class PaymentSchedule(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True
     )
     due_date: Mapped[date] = mapped_column(Date, nullable=False)
     discount_date: Mapped[date | None] = mapped_column(Date)
@@ -50,7 +50,7 @@ class Payment(Base, EntityMixin, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True
     )
     payment_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("payment_runs.id")

@@ -174,6 +174,24 @@ class Invoice(Base, EntityMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("recurring_template_id IS NOT NULL"),
         ),
+        # invoice_warnings.refresh_warnings runs on EVERY invoice save and issues
+        # several vendor-scoped "last N approved invoices" lookups (bank-change
+        # detection, stat-anomaly history, price-variance history) filtered by
+        # vendor_id + a status IN (...) list, ordered by created_at DESC LIMIT N.
+        # Without this index each lookup was a full-table Parallel Seq Scan (a
+        # ~300ms scan of ~30k buffers at 1.2M rows) — status stays a cheap
+        # in-index Filter since vendor_id already narrows the scan to one
+        # vendor's rows and the created_at order lets Postgres stop at LIMIT.
+        Index("ix_invoices_vendor_id_created_at", "vendor_id", "created_at"),
+        # Same duplicate-detection gate's invoice_number equality check
+        # (`func.lower(func.trim(Invoice.invoice_number)) == ...`) was also a
+        # full-table seq scan — a plain btree index can't be used against a
+        # wrapped column, so this mirrors the exact expression as a functional
+        # index.
+        Index(
+            "ix_invoices_invoice_number_norm",
+            text("lower(trim(invoice_number))"),
+        ),
     )
 
     vendor_rel: Mapped["Vendor | None"] = relationship(back_populates="invoices")  # noqa: F821
@@ -190,7 +208,7 @@ class InvoiceLineItem(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True
     )
     line_number: Mapped[int | None] = mapped_column(Integer)
     item_code: Mapped[str | None] = mapped_column(String(100))
@@ -209,7 +227,7 @@ class InvoiceExtractionResult(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True
     )
     method: Mapped[str] = mapped_column(String(50), nullable=False)
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))

@@ -144,7 +144,7 @@ class VendorStatementReconLine(Base, EntityMixin):
     # Our view — the invoice we matched (or the orphan invoice, for
     # `missing_on_their_side`). NULL for `missing_on_our_side`.
     matched_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id")
+        UUID(as_uuid=True), ForeignKey("invoices.id"), index=True
     )
     ledger_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     # statement_amount − ledger_amount (signed), for the amount_mismatch view.

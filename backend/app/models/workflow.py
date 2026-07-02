@@ -79,7 +79,7 @@ class WorkflowInstance(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("workflow_definitions.id"), nullable=False
     )
     invoice_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True
     )
     current_step: Mapped[int] = mapped_column(default=0)
     state: Mapped[str] = mapped_column(String(30), default="active")
