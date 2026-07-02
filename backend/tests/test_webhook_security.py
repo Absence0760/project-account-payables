@@ -234,6 +234,12 @@ def _fake_tenant_session_factory(card):
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
     db.rollback = AsyncMock()
+    # Session.begin_nested() is synchronous and returns an async context
+    # manager (the savepoint). A plain MagicMock supports the async-CM
+    # protocol; leaving it as an AsyncMock child would return a coroutine
+    # and blow up `async with db.begin_nested():` — the rebate savepoint the
+    # settled-event path opens for the one-rebate-per-card backstop.
+    db.begin_nested = MagicMock()
     factory = MagicMock()
     factory.return_value.__aenter__ = AsyncMock(return_value=db)
     factory.return_value.__aexit__ = AsyncMock(return_value=False)
