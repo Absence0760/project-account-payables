@@ -555,3 +555,60 @@ async def test_apply_billing_event_idempotent_direct(realdb, _audit_engine_on_lo
         assert r2.reason == "already_in_status"
     finally:
         await _cleanup(realdb, org_id)
+
+
+# ---------------------------------------------------------------------------
+# Boot guard
+# ---------------------------------------------------------------------------
+#
+# The mock billing adapter's `parse_webhook` performs zero signature
+# verification (it's a local-only dev double). Serving the mock adapter on
+# the public webhook route would accept unauthenticated POSTs that flip a
+# Subscription's status — e.g. a caller deriving `mock_sub_<org_id>` from
+# their own JWT `org` claim. Mirrors the email-intake / PEPPOL-inbound
+# boot-time guards in `app/main.py::lifespan`.
+
+
+@pytest.mark.asyncio
+async def test_boot_refuses_mock_provider_with_webhook_enabled(monkeypatch):
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
+    monkeypatch.setattr(settings, "billing_webhook_enabled", True)
+    monkeypatch.setattr(settings, "billing_provider", "mock")
+
+    with pytest.raises(RuntimeError, match="AP_BILLING_PROVIDER"):
+        async with lifespan(object()):  # pragma: no cover - never enters body
+            pass
+
+
+@pytest.mark.asyncio
+async def test_boot_allows_mock_provider_with_webhook_disabled(monkeypatch):
+    """The documented local-first default: mock provider + the webhook route OFF
+    (both defaults) must never trip the guard — a fresh `pnpm dev` clone boots fine."""
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
+    monkeypatch.setattr(settings, "billing_webhook_enabled", False)
+    monkeypatch.setattr(settings, "billing_provider", "mock")
+    monkeypatch.setattr(settings, "extraction_reaper_enabled", False)
+
+    async with lifespan(object()):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_boot_allows_live_provider_with_webhook_enabled(monkeypatch):
+    """A deployed env with a real provider configured is unaffected by the guard."""
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "secret_key", "a-real-non-default-secret-value")
+    monkeypatch.setattr(settings, "billing_webhook_enabled", True)
+    monkeypatch.setattr(settings, "billing_provider", "stripe_billing")
+    monkeypatch.setattr(settings, "extraction_reaper_enabled", False)
+
+    async with lifespan(object()):
+        pass

@@ -126,6 +126,20 @@ which carries the tenant slug in its URL path — this route resolves the affect
 (`external_subscription_id`, persisted on the row at create time). The provider
 id is the tenant boundary here.
 
+**Boot guard.** `app/main.py::lifespan` refuses to start (`RuntimeError`, same
+pattern as the email-intake / PEPPOL-inbound guards) when
+`AP_BILLING_WEBHOOK_ENABLED=true` **and** `AP_BILLING_PROVIDER` is still `mock`.
+The `mock` adapter's `parse_webhook` does zero signature verification by design
+(it's a local-only dev double — see "Mock" above) and its
+`create_subscription` mints a deterministic `mock_sub_<organization_id>`, so
+serving it on the public route in a deployed env would let anyone who knows (or
+derives, from their own JWT `org` claim) an org id flip that org's
+`Subscription.status` with an unauthenticated POST. The guard only fires when
+the webhook route is explicitly turned on — the documented local-first default
+(`mock` + `AP_BILLING_WEBHOOK_ENABLED=false`) is unaffected, so `pnpm dev` never
+requires a real Stripe key. Deployed envs must pair the switch with a real
+provider (`AP_BILLING_PROVIDER=stripe_billing`, key via sops).
+
 Pipeline (mirrors the PEPPOL-inbound webhook, honouring invariant #9):
 
 1. **Master switch** `AP_BILLING_WEBHOOK_ENABLED` — OFF in local dev (no outbound
@@ -442,7 +456,7 @@ dashboard and never sees the tab.
 | `AP_BILLING_STRIPE_API_KEY` | (empty) | Live Stripe Billing secret key — **no hardcoded fallback**; sops in deployed. The `stripe_billing` adapter fails closed without it. |
 | `AP_BILLING_STRIPE_WEBHOOK_SECRET` | (empty) | HMAC secret for Stripe webhook signature verification — no fallback; sops in deployed. |
 | `AP_BILLING_STRIPE_API_BASE` | `https://api.stripe.com` | Stripe REST API base URL — overridable so a sandbox / test can point the adapter elsewhere. The adapter still fails closed without an API key regardless. |
-| `AP_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. |
+| `AP_BILLING_WEBHOOK_ENABLED` | `false` | Master switch for the inbound billing webhook route (`POST /api/billing/webhook/{provider}`). OFF in local dev (no outbound billing integration); flip ON in deployed envs. The route is HMAC-gated regardless; off → silent 204. **Boot guard**: refuses to start when this is `true` and `AP_BILLING_PROVIDER` is still `mock` (the mock adapter's `parse_webhook` does no signature verification) — pair with a real provider in deployed envs. |
 | `AP_BILLING_DUNNING_ENABLED` | `false` | Master switch for the dunning / past-due automation sweep. OFF by default; flip ON in deployed envs. The sweep only cancels subscriptions overdue past the grace window — it NEVER moves money. |
 | `AP_BILLING_DUNNING_INTERVAL_SECONDS` | `3600` | Dunning sweep tick interval. |
 | `AP_BILLING_DUNNING_GRACE_DAYS` | `14` | Grace window (days from `current_period_end`) a subscription may sit `past_due` before the dunning sweep cancels it. |

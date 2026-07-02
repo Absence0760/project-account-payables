@@ -93,6 +93,12 @@ async def lifespan(app: FastAPI):
                 "AP_PEPPOL_INBOUND_SIGNING_SECRET must be set when "
                 "AP_PEPPOL_INBOUND_ENABLED is true"
             )
+        if settings.billing_webhook_enabled and settings.billing_provider == "mock":
+            raise RuntimeError(
+                "AP_BILLING_PROVIDER must not be 'mock' when AP_BILLING_WEBHOOK_ENABLED "
+                "is true — the mock adapter's parse_webhook performs no signature "
+                "verification, so serving it publicly would accept unauthenticated events"
+            )
 
     # Background reaper for invoices stuck in `pending` extraction. Started
     # on app boot, cancelled cleanly on shutdown. Toggleable via
