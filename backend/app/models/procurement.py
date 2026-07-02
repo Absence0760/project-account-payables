@@ -24,9 +24,9 @@ class PurchaseOrder(Base, EntityMixin, TimestampMixin):
     __tablename__ = "purchase_orders"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    po_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    po_number: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("vendors.id")
+        UUID(as_uuid=True), ForeignKey("vendors.id"), index=True
     )
     total: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="open")
@@ -49,7 +49,7 @@ class POLineItem(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     po_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=False, index=True
     )
     description: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
@@ -65,7 +65,7 @@ class GoodsReceipt(Base, EntityMixin, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     gr_number: Mapped[str] = mapped_column(String(100), nullable=False)
     po_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("purchase_orders.id")
+        UUID(as_uuid=True), ForeignKey("purchase_orders.id"), index=True
     )
     received_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(30), default="received")
@@ -84,7 +84,7 @@ class GRLineItem(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     gr_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("goods_receipts.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("goods_receipts.id"), nullable=False, index=True
     )
     description: Mapped[str | None] = mapped_column(Text)
     quantity_received: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
