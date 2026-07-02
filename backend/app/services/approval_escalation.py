@@ -164,7 +164,12 @@ async def run_escalation_loop() -> None:
             try:
                 await escalate_once()
             except Exception as exc:
-                logger.error("[approval-escalation] sweep raised: %s", exc, exc_info=True)
+                # Class only, not the message (PII-out-of-logs invariant).
+                logger.error(
+                    "[approval-escalation] sweep raised: %s",
+                    exc.__class__.__name__,
+                    exc_info=True,
+                )
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[approval-escalation] shutting down")

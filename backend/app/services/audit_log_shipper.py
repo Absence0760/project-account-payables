@@ -99,7 +99,8 @@ async def ship_once(*, adapters: list[AuditShippingAdapter] | None = None) -> Sh
         except Exception as exc:
             # One tenant's outage / bad config shouldn't halt the sweep.
             # Log + move on; rows stay unshipped and next tick retries.
-            logger.warning("[audit-shipper] failed to ship %s: %s", db_name, exc)
+            # Class only, not the message (PII-out-of-logs invariant).
+            logger.warning("[audit-shipper] failed to ship %s: %s", db_name, exc.__class__.__name__)
             result.failures += 1
 
     if result.rows_shipped or result.failures:
@@ -202,7 +203,10 @@ async def run_shipper_loop() -> None:
             except Exception as exc:
                 # Catch-all so one bad sweep doesn't kill the loop. Logged
                 # at ERROR so it surfaces without taking the app down.
-                logger.error("[audit-shipper] sweep raised: %s", exc, exc_info=True)
+                # Class only, not the message (PII-out-of-logs invariant).
+                logger.error(
+                    "[audit-shipper] sweep raised: %s", exc.__class__.__name__, exc_info=True
+                )
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[audit-shipper] shutting down")
