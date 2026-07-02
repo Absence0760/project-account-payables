@@ -428,6 +428,16 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
                     "WHERE table_name = 'invoices' AND column_name = 'entity_id'"
                 )
                 assert has_col.scalar() == 1
+                # Perf: the vendor-scoped history index (bank-change /
+                # stat-anomaly / price-variance lookups in invoice_warnings.py)
+                # and the duplicate-detection functional index must be built by
+                # create_all on a fresh tenant — identical to migration 0072.
+                invoice_indexes = await conn.exec_driver_sql(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'invoices'"
+                )
+                built_invoice_indexes = {row[0] for row in invoice_indexes}
+                assert "ix_invoices_vendor_id_created_at" in built_invoice_indexes
+                assert "ix_invoices_invoice_number_norm" in built_invoice_indexes
         finally:
             await tenant_engine.dispose()
     finally:
