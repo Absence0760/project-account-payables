@@ -753,6 +753,36 @@ Use AP data to forecast cash outflows and optimize payment timing.
 
 ---
 
+### AI Cash-Flow Copilot
+**Status:** Planned (design proposed) — see [cash-flow-copilot.md](cash-flow-copilot.md).
+
+A **beyond-parity** differentiator, not a competitive gap: a natural-language,
+forward-looking copilot that answers "when do I run low on cash?" and "what
+should I pay early / on time / defer, and what does it cost me?", and can
+*propose* a cash-constrained payment plan. It builds directly on the shipped
+primitives above — pairing the conversational assistant (tenant isolation,
+audit, budgeting, local-first mock/ollama/claude adapters) with the cash-flow
+forecast, the payment-timing what-if, and the ROI-ranked discount optimizer.
+No mid-market competitor pairs a conversational interface with a cash-constrained
+early-pay optimizer.
+
+**Hard boundary: the copilot never moves money.** The LLM only turns NL into a
+typed tool call and narrates the result — every dollar figure comes from an
+existing deterministic pure function (`bucket_outflows`, `compute_cash_position`,
+`apply_payment_timing_scenario`, `discount_optimizer.optimize`), so answers are
+exact and reproducible under the `mock` adapter. Its most privileged write is
+staging a **draft** payment run (existing idempotent, CFO-gated path); funding
+stays behind the unchanged human review + CFO gate + segregation.
+
+- [ ] Phase 1 — read-only cash Q&A: four new entity-scoped, finance-leader-gated (`admin`/`ap_manager`/`cfo`, not `ap_clerk`) planning tools (`get_cashflow_forecast`, `get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`) registered alongside the existing assistant tools; `/api/cash-flow/copilot(+/stream)` façade; `/cash-flow` chat + cash-position chart. Money as exact strings (must NOT inherit the analytics endpoints' `float()` coercion).
+- [ ] Phase 2 — proposed plans: `propose_payment_plan` tool assembles a plan artifact (period-by-period schedule + discounts to capture + resulting cash curve) from the pure functions; plan-card UI (display only).
+- [ ] Phase 3 — draft-only enactment: `POST /api/cash-flow/plans/{id}/draft-run` (idempotent draft run, execute stays CFO-gated) + `.../capture-discounts` (status-only accept), human-confirmed + audited.
+- [ ] Deferred: saved plans / plan-vs-actual (`CashPlan` model + migration), opening-balance provenance surfacing, consolidated cross-entity mode, proactive shortfall-alert sweep.
+
+**Competitors:** none pair NL + cash-constrained early-pay optimization; Coupa/Basware have cash analytics without a conversational copilot.
+
+---
+
 ## Priority 10: Compliance & E-Invoicing
 
 ### Sanctions & Vendor Risk Screening
