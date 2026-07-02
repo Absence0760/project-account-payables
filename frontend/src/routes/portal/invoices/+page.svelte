@@ -3,6 +3,7 @@
 	import { portalAuth } from '$lib/stores/portalAuth.svelte';
 	import { onMount } from 'svelte';
 	import { formatMoney } from '$lib/utils/money';
+	import { formatDate } from '$lib/utils/time';
 	import { m } from '$lib/i18n/store.svelte';
 	import SupplierChatThread from '$lib/components/chat/SupplierChatThread.svelte';
 	import type { PortalChatThread } from '$lib/types/supplierChat';
@@ -122,11 +123,6 @@
 		URL.revokeObjectURL(url);
 	}
 
-	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return m('portal.common.dash');
-		return new Date(iso).toLocaleDateString();
-	}
-
 	function fmtAmount(amount: number | string, ccy: string): string {
 		return formatMoney(amount, { currency: ccy }, formatMoney(0, { currency: ccy }));
 	}
@@ -191,9 +187,9 @@
 								{inv.invoice_number || m('portal.invoices.pendingExtraction')}
 							</button>
 						</td>
-						<td>{fmtDate(inv.submitted_at)}</td>
-						<td>{fmtDate(inv.invoice_date)}</td>
-						<td>{fmtDate(inv.due_date)}</td>
+						<td>{formatDate(inv.submitted_at, m('portal.common.dash'))}</td>
+						<td>{formatDate(inv.invoice_date, m('portal.common.dash'))}</td>
+						<td>{formatDate(inv.due_date, m('portal.common.dash'))}</td>
 						<td class="num">{fmtAmount(inv.amount, inv.currency)}</td>
 						<td><span class="status s-{inv.status}">{inv.status}</span></td>
 					</tr>

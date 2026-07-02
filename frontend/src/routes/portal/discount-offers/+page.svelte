@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import Money from '$lib/components/ui/Money.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import { m } from '$lib/i18n/store.svelte';
 	import {
 		listPortalDiscountOffers,
@@ -83,11 +84,6 @@
 		} finally {
 			busy = null;
 		}
-	}
-
-	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return m('portal.common.dash');
-		return new Date(iso).toLocaleDateString();
 	}
 
 	function fmtPct(n: number): string {
@@ -174,7 +170,7 @@
 								—
 							{/if}
 						</td>
-						<td class="window">{fmtDate(o.valid_from)} – {fmtDate(o.valid_until)}</td>
+						<td class="window">{formatDate(o.valid_from, m('portal.common.dash'))} – {formatDate(o.valid_until, m('portal.common.dash'))}</td>
 						<td><span class="status s-{o.status}">{o.status}</span></td>
 						<td class="actions">
 							{#if o.status === 'offered'}

@@ -2,6 +2,7 @@
 	import { portalApi } from '$lib/portalApi';
 	import { onMount } from 'svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import { m } from '$lib/i18n/store.svelte';
 
 	interface PortalPayment {
@@ -60,11 +61,6 @@
 		}
 	}
 
-	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return m('portal.common.dash');
-		return new Date(iso).toLocaleDateString();
-	}
-
 	onMount(refresh);
 </script>
 
@@ -100,8 +96,8 @@
 				{#each items as p}
 					<tr>
 						<td>{p.invoice_number}</td>
-						<td>{fmtDate(p.submitted_at)}</td>
-						<td>{fmtDate(p.completed_at)}</td>
+						<td>{formatDate(p.submitted_at, m('portal.common.dash'))}</td>
+						<td>{formatDate(p.completed_at, m('portal.common.dash'))}</td>
 						<td>{p.method || m('portal.common.dash')}</td>
 						<td class="num"><Money amount={p.amount} currency={p.currency} /></td>
 						<td><span class="status s-{p.status}">{p.status}</span></td>

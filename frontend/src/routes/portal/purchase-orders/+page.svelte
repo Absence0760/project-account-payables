@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import Money from '$lib/components/ui/Money.svelte';
+	import { formatDate } from '$lib/utils/time';
 	import { m } from '$lib/i18n/store.svelte';
 
 	interface PortalPO {
@@ -58,11 +59,6 @@
 		}
 	}
 
-	function fmtDate(iso: string | null | undefined): string {
-		if (!iso) return m('portal.common.dash');
-		return new Date(iso).toLocaleDateString();
-	}
-
 	onMount(refresh);
 </script>
 
@@ -97,7 +93,7 @@
 				{#each items as po (po.id)}
 					<tr>
 						<td>{po.po_number}</td>
-						<td>{fmtDate(po.created_at)}</td>
+						<td>{formatDate(po.created_at, m('portal.common.dash'))}</td>
 						<td>{po.line_item_count}</td>
 						<td class="num"><Money amount={po.total} currency={po.currency} /></td>
 						<td><span class="status s-{po.status}">{po.status}</span></td>
