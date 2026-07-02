@@ -77,12 +77,23 @@ function anInvoiceId(): string {
 	return tenantPsql(`SELECT id FROM invoices LIMIT 1`).trim();
 }
 
+/** A seeded invoice in a payable status — the only statuses
+ *  `POST /api/cards/generate` will mint a card against (mirrors
+ *  `PAYABLE_INVOICE_STATUSES` in `backend/app/api/payments.py`, which
+ *  `generate_cards` filters on). The lean e2e seed's first invoice is
+ *  deliberately `new`-status, so `anInvoiceId()` alone isn't safe here. */
+function aPayableInvoiceId(): string {
+	return tenantPsql(
+		`SELECT id FROM invoices WHERE status IN ('approved', 'posted_in_erp', 'payment_scheduled') LIMIT 1`
+	).trim();
+}
+
 test.describe('virtual card lifecycle', () => {
 	test.beforeAll(() => useMockCardAdapter());
 	test.afterAll(() => restoreCardConfig());
 
 	test('issue → list → cancel writes audit rows and refuses double-cancel', async ({ page }) => {
-		const invoiceId = anInvoiceId();
+		const invoiceId = aPayableInvoiceId();
 		purgeGenerated(invoiceId);
 		const headers = await authedTenantHeaders(page);
 
