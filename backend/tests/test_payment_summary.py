@@ -6,8 +6,9 @@ Key contracts tested:
   per-tenant table, NOT control-plane — querying control_db silently caught
   the missing-table error and always reported $0 rebates).
 - When CardRebate raises (table not yet provisioned), total_rebates falls
-  back to 0.0 and db.rollback() is called.
-- The response shape matches what the frontend summary bar depends on.
+  back to "0" and db.rollback() is called.
+- Money fields serialise as exact Decimal STRINGS (never float) — the
+  "Money is exact" invariant; the frontend summary bar parses the string.
 
 The endpoint issues exactly five tenant-db queries, in order:
 paid, pending, payment_count, rebates, queue_count.
@@ -76,10 +77,11 @@ async def test_payment_summary_returns_expected_shape():
         "total_rebates",
         "queue_count",
     }
-    assert result["total_paid"] == 500.0
-    assert result["total_pending"] == 200.0
+    # Money serialises as an exact Decimal STRING (never float) — invariant.
+    assert result["total_paid"] == "500.00"
+    assert result["total_pending"] == "200.00"
     assert result["payment_count"] == 10
-    assert result["total_rebates"] == 50.0
+    assert result["total_rebates"] == "50.00"
     assert result["queue_count"] == 3
 
 
@@ -92,10 +94,10 @@ async def test_payment_summary_all_zeros_when_no_data():
 
     result = await payment_summary(db=db, user=_make_user())
 
-    assert result["total_paid"] == 0.0
-    assert result["total_pending"] == 0.0
+    assert result["total_paid"] == "0"
+    assert result["total_pending"] == "0"
     assert result["payment_count"] == 0
-    assert result["total_rebates"] == 0.0
+    assert result["total_rebates"] == "0"
     assert result["queue_count"] == 0
 
 
@@ -119,7 +121,7 @@ async def test_payment_summary_rebate_query_targets_tenant_db():
 
     # All five queries went to the tenant db, and the rebate value is real.
     assert db.execute.call_count == 5
-    assert result["total_rebates"] == 12.34
+    assert result["total_rebates"] == "12.34"
 
 
 # ---------------------------------------------------------------------------
@@ -144,27 +146,32 @@ async def test_payment_summary_rebates_fallback_when_table_missing():
 
     result = await payment_summary(db=db, user=_make_user())
 
-    assert result["total_rebates"] == 0.0
-    assert result["total_paid"] == 300.0
-    assert result["total_pending"] == 75.0
+    assert result["total_rebates"] == "0"
+    assert result["total_paid"] == "300.00"
+    assert result["total_pending"] == "75.00"
     assert result["payment_count"] == 7
     assert result["queue_count"] == 1
     db.rollback.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# Values are floats in the response (not Decimal) for JSON serialisation
+# Money values are exact Decimal STRINGS in the response (never float) —
+# the "Money is exact" invariant. A float would round-trip through IEEE-754
+# and lose cents; the frontend parses the string.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_payment_summary_returns_float_not_decimal():
+async def test_payment_summary_returns_decimal_string_not_float():
     from app.api.payments import payment_summary
 
     db = _make_db_session(Decimal("1.50"), Decimal("2.50"), 3, Decimal("0.75"), 1)
 
     result = await payment_summary(db=db, user=_make_user())
 
-    assert isinstance(result["total_paid"], float)
-    assert isinstance(result["total_pending"], float)
-    assert isinstance(result["total_rebates"], float)
+    assert isinstance(result["total_paid"], str)
+    assert isinstance(result["total_pending"], str)
+    assert isinstance(result["total_rebates"], str)
+    assert result["total_paid"] == "1.50"
+    assert result["total_pending"] == "2.50"
+    assert result["total_rebates"] == "0.75"
