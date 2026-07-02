@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import json
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -184,6 +185,75 @@ async def test_inbound_webhook_returns_204_on_parse_error():
     ):
         response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
     assert response.status_code == 204
+
+
+async def test_inbound_webhook_returns_uniform_ack_regardless_of_tenant_resolution():
+    """Once the signature verifies, the response body/status must be
+    IDENTICAL whether the recipient token resolved to a real tenant (and
+    created invoices) or not — otherwise anyone holding the platform-wide
+    signing secret could grind per-tenant intake tokens by watching for
+    ``tenant_slug`` to populate in the response."""
+    import json as json_mod
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+    from app.services.email_intake import IntakeResult
+
+    def _request():
+        return SimpleNamespace(
+            headers={"X-Signature": "sig"},
+            body=AsyncMock(return_value=b"{}"),
+        )
+
+    hit = IntakeResult(tenant_slug="acme", invoices_created=[uuid.uuid4()])
+    miss = IntakeResult(tenant_slug=None, error="Unknown or disabled intake address")
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch("app.api.email_intake.verify_signature", return_value=True),
+        patch("app.api.email_intake.process_inbound_email", AsyncMock(return_value=hit)),
+    ):
+        resp_hit = await inbound_webhook(provider="ses", request=_request(), ctrl_db=None)
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch("app.api.email_intake.verify_signature", return_value=True),
+        patch("app.api.email_intake.process_inbound_email", AsyncMock(return_value=miss)),
+    ):
+        resp_miss = await inbound_webhook(provider="ses", request=_request(), ctrl_db=None)
+
+    assert resp_hit.status_code == 200
+    assert resp_miss.status_code == 200
+    assert resp_hit.status_code == resp_miss.status_code
+    assert json_mod.loads(resp_hit.body) == json_mod.loads(resp_miss.body)
+
+
+async def test_inbound_webhook_returns_ack_not_500_on_processing_exception():
+    """An unexpected exception while processing (e.g. S3/tenant-DB
+    unreachable) must still return the documented webhook ack, not a raw
+    500 — matching the try/except-and-silently-ack pattern every other
+    webhook handler in this codebase uses."""
+    from unittest.mock import AsyncMock
+
+    from app.api.email_intake import inbound_webhook
+
+    request = SimpleNamespace(
+        headers={"X-Signature": "sig"},
+        body=AsyncMock(return_value=b"{}"),
+    )
+
+    with (
+        patch("app.api.email_intake.get_parser", return_value=lambda b, h: {"x": 1}),
+        patch("app.api.email_intake.verify_signature", return_value=True),
+        patch(
+            "app.api.email_intake.process_inbound_email",
+            AsyncMock(side_effect=RuntimeError("s3 unreachable")),
+        ),
+    ):
+        response = await inbound_webhook(provider="ses", request=request, ctrl_db=None)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"status": "received"}
 
 
 def test_verify_signature_accepts_valid_signature():
