@@ -10,7 +10,10 @@ real security weight:
   * ``process_inbound_email`` orchestration — unknown recipient short-circuits
     with no tenant engine / S3 write; the happy path creates one invoice per
     usable attachment and dispatches extraction once per invoice with the
-    ``SYSTEM_ACTOR_ID`` (email intake has no human actor).
+    ``SYSTEM_ACTOR_ID`` (email intake has no human actor); a redelivery
+    carrying the same Message-ID is deduped before any tenant engine opens
+    (only the first delivery ever creates an invoice), while two distinct
+    Message-IDs are both processed.
   * ``_create_invoice_from_attachment`` — the seeded invoice is ``pending``,
     ``amount == Decimal('0')`` (exact, not float), no human uploader, and the
     S3 object is written under the org-prefixed key.
@@ -30,6 +33,8 @@ import uuid
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.models.invoice import InvoiceStatus
 from app.services import email_intake
@@ -85,6 +90,20 @@ async def test_resolve_tenant_unknown_token_returns_none():
     org = _org(token="aaa", enabled=True)
     ctrl = _FakeOrgsCtrl([org])
     assert await email_intake.resolve_tenant_from_recipient(ctrl, "invoices+zzz@ap.co") is None
+
+
+async def test_resolve_tenant_handles_non_string_stored_token():
+    """A malformed settings blob (token not a string) must not raise — the
+    constant-time compare guards with an isinstance check before ever calling
+    hmac.compare_digest (which requires matching str/bytes types)."""
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        slug="acme",
+        db_name="ap_acme",
+        settings={"email_intake": {"token": None, "enabled": True}},
+    )
+    ctrl = _FakeOrgsCtrl([org])
+    assert await email_intake.resolve_tenant_from_recipient(ctrl, "invoices+aaa@ap.co") is None
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +270,170 @@ async def test_process_creates_invoice_per_attachment_and_dispatches_system_extr
     assert dispatch.await_count == 2
     for call, inv_id in zip(dispatch.await_args_list, ids, strict=True):
         assert call.args == (inv_id, org.id, email_intake.SYSTEM_ACTOR_ID)
+
+
+async def test_process_dedupes_identical_message_id_across_deliveries():
+    """A provider retry (SES/Mailgun retry-on-timeout) or a duplicate
+    delivery carrying the SAME Message-ID must create only ONE invoice, not
+    two. The dedup guard runs right after tenant resolution and before any
+    tenant engine is opened, so a replay never touches the tenant DB or S3."""
+    org = _org(token="aaa", enabled=True, slug="acme")
+    ids = [uuid.uuid4()]
+    session = _FakeSession()
+    engine = MagicMock(dispose=AsyncMock())
+    dispatch = AsyncMock()
+    create_engine = MagicMock(return_value=engine)
+    email = InboundEmail(
+        to="invoices+aaa@ap.co",
+        sender="v@x.com",
+        message_id="<same-delivery@vendor.example.com>",
+        attachments=[_pdf("bill.pdf")],
+    )
+
+    with (
+        patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=org)),
+        patch.object(email_intake, "_create_invoice_from_attachment", AsyncMock(side_effect=ids)),
+        patch(
+            "app.database._make_tenant_url",
+            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+        ),
+        patch("sqlalchemy.ext.asyncio.create_async_engine", create_engine),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
+        patch("app.services.storage._get_client", MagicMock(return_value=MagicMock())),
+        patch("app.services.storage._ensure_bucket", MagicMock()),
+        patch("app.services.extraction_dispatch.dispatch_extraction", dispatch),
+    ):
+        first = await email_intake.process_inbound_email(MagicMock(), email)
+        second = await email_intake.process_inbound_email(MagicMock(), email)
+
+    assert first.error is None
+    assert first.invoices_created == ids
+    assert second.error == "Duplicate delivery"
+    assert second.invoices_created == []
+    assert second.tenant_slug == "acme"  # tenant still resolved before the dedup check
+
+    # Only the FIRST delivery ever opened a tenant engine / dispatched extraction.
+    create_engine.assert_called_once()
+    dispatch.assert_awaited_once()
+
+
+async def test_process_does_not_dedupe_distinct_message_ids():
+    """Two genuinely different emails (distinct Message-IDs) must both be
+    processed — the dedup guard must not over-match."""
+    org = _org(token="aaa", enabled=True, slug="acme")
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    session = _FakeSession()
+    engine = MagicMock(dispose=AsyncMock())
+    dispatch = AsyncMock()
+    create_engine = MagicMock(return_value=engine)
+
+    with (
+        patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=org)),
+        patch.object(email_intake, "_create_invoice_from_attachment", AsyncMock(side_effect=ids)),
+        patch(
+            "app.database._make_tenant_url",
+            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+        ),
+        patch("sqlalchemy.ext.asyncio.create_async_engine", create_engine),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
+        patch("app.services.storage._get_client", MagicMock(return_value=MagicMock())),
+        patch("app.services.storage._ensure_bucket", MagicMock()),
+        patch("app.services.extraction_dispatch.dispatch_extraction", dispatch),
+    ):
+        first = await email_intake.process_inbound_email(
+            MagicMock(),
+            InboundEmail(
+                to="invoices+aaa@ap.co",
+                sender="v@x.com",
+                message_id="<first@vendor.example.com>",
+                attachments=[_pdf("bill1.pdf")],
+            ),
+        )
+        second = await email_intake.process_inbound_email(
+            MagicMock(),
+            InboundEmail(
+                to="invoices+aaa@ap.co",
+                sender="v@x.com",
+                message_id="<second@vendor.example.com>",
+                attachments=[_pdf("bill2.pdf")],
+            ),
+        )
+
+    assert first.error is None
+    assert second.error is None
+    assert first.invoices_created == [ids[0]]
+    assert second.invoices_created == [ids[1]]
+    assert create_engine.call_count == 2
+    assert dispatch.await_count == 2
+
+
+async def test_process_releases_dedup_claim_on_downstream_failure_so_retry_succeeds():
+    """If invoice creation blows up AFTER the dedup claim is made (e.g. a
+    transient S3/tenant-DB outage), the claim must be released so the
+    provider's next redelivery of the SAME Message-ID can retry — otherwise
+    the message would be wrongly treated as a duplicate and the invoice
+    would never be created, for the full dedup TTL window."""
+    org = _org(token="aaa", enabled=True, slug="acme")
+    session = _FakeSession()
+    engine = MagicMock(dispose=AsyncMock())
+    dispatch = AsyncMock()
+    email = InboundEmail(
+        to="invoices+aaa@ap.co",
+        sender="v@x.com",
+        message_id="<retry-me@vendor.example.com>",
+        attachments=[_pdf("bill.pdf")],
+    )
+
+    # First delivery: invoice creation blows up mid-flight.
+    with (
+        patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=org)),
+        patch.object(
+            email_intake,
+            "_create_invoice_from_attachment",
+            AsyncMock(side_effect=RuntimeError("s3 unreachable")),
+        ),
+        patch(
+            "app.database._make_tenant_url",
+            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+        ),
+        patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine)),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session)),
+        patch("app.services.storage._get_client", MagicMock(return_value=MagicMock())),
+        patch("app.services.storage._ensure_bucket", MagicMock()),
+        patch("app.services.extraction_dispatch.dispatch_extraction", dispatch),
+        pytest.raises(RuntimeError, match="s3 unreachable"),
+    ):
+        await email_intake.process_inbound_email(MagicMock(), email)
+
+    # Second delivery of the SAME message_id: creation now succeeds. If the
+    # dedup claim from the failed first attempt weren't released, this
+    # would be wrongly short-circuited as "Duplicate delivery".
+    inv_id = uuid.uuid4()
+    session2 = _FakeSession()
+    engine2 = MagicMock(dispose=AsyncMock())
+    dispatch2 = AsyncMock()
+    with (
+        patch.object(email_intake, "resolve_tenant_from_recipient", AsyncMock(return_value=org)),
+        patch.object(
+            email_intake, "_create_invoice_from_attachment", AsyncMock(return_value=inv_id)
+        ),
+        patch(
+            "app.database._make_tenant_url",
+            MagicMock(return_value="postgresql+asyncpg://x/ap_acme"),
+        ),
+        patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock(return_value=engine2)),
+        patch(
+            "sqlalchemy.ext.asyncio.async_sessionmaker", MagicMock(return_value=lambda: session2)
+        ),
+        patch("app.services.storage._get_client", MagicMock(return_value=MagicMock())),
+        patch("app.services.storage._ensure_bucket", MagicMock()),
+        patch("app.services.extraction_dispatch.dispatch_extraction", dispatch2),
+    ):
+        result = await email_intake.process_inbound_email(MagicMock(), email)
+
+    assert result.error is None
+    assert result.invoices_created == [inv_id]
+    dispatch2.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

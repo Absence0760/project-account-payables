@@ -19,9 +19,18 @@ isolated.
 
 Security:
     - Token in the recipient address is the tenant bearer — treat it like
-      a password. Leaked token = spam channel into that tenant's AP queue.
+      a password (constant-time compare against the stored token).
+      Leaked token = spam channel into that tenant's AP queue.
     - HMAC-SHA256 signature verification against
       ``settings.email_intake_signing_secret`` when the header is present.
+    - Dedup by the provider's ``message_id`` (shared
+      ``webhook_security.is_event_already_processed`` Redis guard) before
+      any Invoice is created — a provider retry or duplicate delivery of
+      the same message must not create a second invoice. If invoice
+      creation then fails downstream (e.g. S3/tenant-DB outage), the claim
+      is released via ``release_event_claim`` so the next redelivery can
+      retry instead of the message being silently dropped for the TTL
+      window (mirrors ``api/cards.py``'s webhook claim/release discipline).
     - We silently drop attachments that are not PDFs / images (avoid
       shipping .docx Trojans into the extraction pipeline).
     - Rate-limiting is the provider's job — point SES at a Lambda that
@@ -48,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
+from app.services.webhook_security import is_event_already_processed, release_event_claim
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +181,12 @@ async def resolve_tenant_from_recipient(
     q = await ctrl_db.execute(select(Organization))
     for org in q.scalars().all():
         intake = (org.settings or {}).get("email_intake") or {}
-        if intake.get("enabled") and intake.get("token") == token:
+        stored_token = intake.get("token")
+        if (
+            intake.get("enabled")
+            and isinstance(stored_token, str)
+            and hmac.compare_digest(stored_token.encode(), token.encode())
+        ):
             return org
     return None
 
@@ -210,8 +225,11 @@ async def process_inbound_email(
 ) -> IntakeResult:
     """Route an inbound email to the right tenant and create invoices.
 
-    Returns :class:`IntakeResult` — the caller (webhook endpoint) returns
-    it verbatim to the email provider for debugging.
+    Returns :class:`IntakeResult`. The caller (webhook endpoint) logs the
+    result server-side and returns an opaque, uniform ack to the email
+    provider — never the result body verbatim, which would let a caller
+    holding the platform-wide signing secret enumerate valid intake tokens
+    by watching for ``tenant_slug`` to populate.
     """
     result = IntakeResult()
 
@@ -222,6 +240,22 @@ async def process_inbound_email(
         return result
 
     result.tenant_slug = org.slug
+
+    # Dedup by the provider's message id — a provider retry (SES/Mailgun
+    # retry-on-timeout) or a duplicate delivery must not create a second
+    # Invoice from the same attachment. Mirrors payment/card/ERP webhook
+    # dedup via the shared Redis SET-NX helper. A missing message id can't
+    # be deduped (logged by the helper) — always processed, same as the
+    # other webhook handlers.
+    if await is_event_already_processed("email_intake", payload.message_id):
+        result.error = "Duplicate delivery"
+        logger.info(
+            "Email intake: duplicate delivery for tenant=%s message_id=%s",
+            org.slug,
+            payload.message_id,
+        )
+        return result
+
     attachments = list(_usable_attachments(payload.attachments, result))
     if not attachments:
         result.error = "No usable PDF / image / XML attachments"
@@ -267,6 +301,17 @@ async def process_inbound_email(
         # here don't roll back the invoice rows.
         for invoice_id in result.invoices_created:
             await dispatch_extraction(invoice_id, org.id, SYSTEM_ACTOR_ID)
+    except Exception:
+        # The dedup claim above guards a side effect (the invoice rows) that
+        # may not have actually landed — e.g. S3 or the tenant DB briefly
+        # unreachable. Release it so the provider's retry can reprocess this
+        # message instead of the invoice being silently dropped for the full
+        # dedup TTL window. Mirrors the same release-on-failure discipline in
+        # api/cards.py's webhook handler. The caller (inbound_webhook) still
+        # acks this request silently — release-then-reraise lets the NEXT
+        # delivery of the same message_id actually retry the work.
+        await release_event_claim("email_intake", payload.message_id)
+        raise
     finally:
         await tenant_engine.dispose()
 

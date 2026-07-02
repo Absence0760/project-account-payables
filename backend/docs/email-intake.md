@@ -176,8 +176,12 @@ SELECT slug, settings->'email_intake'->>'token'
 FROM organizations;
 ```
 
-The response includes the created invoice ids so you can watch them
-flow through the normal extraction pipeline.
+The HTTP response is a deliberately opaque `200 {"status": "received"}` ack —
+identical whether the token resolved, was unknown, was a duplicate delivery,
+or processing failed internally (see "What the response does NOT tell you"
+below). Watch the backend log for the real outcome (`Email intake processed:
+provider=... tenant=... invoices_created=N error=...`) or just check the
+invoice queue in the tenant UI.
 
 ## What the intake does NOT do
 
@@ -195,13 +199,49 @@ flow through the normal extraction pipeline.
   attachment` parts are processed. Images embedded inline in the body
   are ignored (avoids turning email signature logos into invoices).
 
+## What the response does NOT tell you
+
+The webhook response is intentionally uninformative. Pre-signature rejections
+(unknown `{provider}`, bad/missing HMAC signature, a payload the adapter can't
+parse) return a bare `204`. Once the signature verifies, **every** remaining
+outcome — an unresolved or disabled intake token, a duplicate delivery of a
+message already processed, no usable attachments, an internal error while
+creating the invoice, or a genuine success — returns the identical `200
+{"status": "received"}` ack. This is deliberate: the HMAC signing secret is
+shared across every tenant on the platform (the email provider has no notion
+of tenants), so if the response body or status code varied by outcome,
+anyone who can produce a validly-signed request could grind through
+candidate tokens and watch for the response to change — an oracle for a
+per-tenant intake token, which is a bearer secret. See "Redelivery /
+duplicate handling" below for how retries are still handled correctly despite
+the opaque ack.
+
+Distinguish outcomes from the **backend log** (`Email intake processed:
+provider=... tenant=... invoices_created=N error=...`) or by watching the
+tenant's invoice queue, never from the HTTP response.
+
+## Redelivery / duplicate handling
+
+Every inbound message is deduped by the provider's `Message-ID` (via the
+shared `is_event_already_processed("email_intake", message_id)` Redis guard —
+the same primitive the payment/card/ERP webhooks use). A provider retry or a
+genuine duplicate delivery of the same message creates **zero** additional
+invoices; the second delivery still gets the same opaque `200` ack. Providers
+that don't set `Message-ID` (or set an empty one) can't be deduped and are
+always processed — call out to your provider's docs to confirm they always
+populate it.
+
+If invoice creation fails partway through (e.g. a transient S3 or tenant-DB
+outage) the dedup claim is released so the *next* redelivery of that same
+`Message-ID` retries the work instead of the message being silently dropped
+for the dedup TTL window.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| 401 Invalid signature | Secret mismatch between provider and backend, or the provider's signature header isn't one we check. |
-| 404 Unknown email provider | Wrong URL — `{provider}` must be `ses`, `mailgun`, or `generic`. |
-| 400 Could not parse provider payload | Adapter received a shape it didn't expect. Check raw body in provider logs. |
-| 200 with `"error": "Unknown or disabled intake address"` | Token doesn't match any tenant, or tenant's `email_intake.enabled` is false. |
+| 204 with no body | Unknown `{provider}` in the URL, a bad/missing signature, or a payload the adapter couldn't parse. Wrong URL — `{provider}` must be `ses`, `mailgun`, or `generic`. Check the backend log for the specific rejection reason (never surfaced in the response). |
+| 200 `{"status": "received"}` but no invoice appears | Could be an unresolved/disabled token, a duplicate delivery, no usable attachments, or an internal failure — the response can't tell you which. Check the backend log line for the real `error` / `invoices_created` count. |
 | Invoice created but stays in `pending` | Extraction worker not running / tenant ERP config broken. Same as any other upload failure — check `extraction_reaper` logs. |
-| "No usable PDF / image / XML attachments" | Vendor attached `.docx` or `.zip`. Tell the vendor to send PDF, an image, or a structured e-invoice XML. |
+| "No usable PDF / image / XML attachments" (in the log) | Vendor attached `.docx` or `.zip`. Tell the vendor to send PDF, an image, or a structured e-invoice XML. |
+| "Duplicate delivery" (in the log) | The provider redelivered a message with a `Message-ID` already processed — expected behavior, not a bug. |

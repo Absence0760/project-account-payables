@@ -19,6 +19,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +41,20 @@ public_router = APIRouter(prefix="/email-intake", tags=["email-intake"])
 admin_router = APIRouter(prefix="/organization/email-intake", tags=["email-intake"])
 
 
+def _ack() -> JSONResponse:
+    """Opaque 200 ack — the SAME body on every outcome once the request has
+    passed signature verification: unknown/disabled intake token, no usable
+    attachment, an internal processing failure, or genuine success.
+
+    Anyone holding the platform-wide ``AP_EMAIL_INTAKE_SIGNING_SECRET`` (shared
+    across all tenants, since the provider doesn't know tenants) could
+    otherwise grind per-tenant intake tokens by watching for ``tenant_slug`` to
+    populate in the response body. Per-request detail is logged server-side
+    only. Mirrors ``slack_approvals.py``'s ``_ack`` helper.
+    """
+    return JSONResponse({"status": "received"})
+
+
 # ---------------------------------------------------------------------------
 # Public webhook
 # ---------------------------------------------------------------------------
@@ -56,9 +71,15 @@ async def inbound_webhook(
     Signature header names differ per provider; we check a few common ones
     so founders can point any provider at this URL without rewriting it.
     """
-    # Every rejection path returns 204 silently so the response can't be
-    # used to enumerate which providers / signing secrets / payload shapes
-    # the tenant accepts. Distinct 4xx codes leaked that information.
+    # Pre-signature rejections (unknown provider / bad signature / unparseable
+    # body) return 204 silently so the response can't be used to enumerate
+    # which providers / signing secrets / payload shapes the tenant accepts.
+    # Distinct 4xx codes leaked that information. Once the signature verifies,
+    # every remaining outcome — unknown/disabled intake token, duplicate
+    # delivery, no usable attachments, a processing exception, or genuine
+    # success — returns the SAME opaque 200 ack via `_ack()` below, so the
+    # per-tenant intake token can't be enumerated either (see `_ack`'s
+    # docstring).
     parser = get_parser(provider)
     if parser is None:
         logger.warning("Email intake: unknown provider %s", provider)
@@ -79,8 +100,22 @@ async def inbound_webhook(
         logger.warning("Email intake: could not parse payload for provider=%s", provider)
         return Response(status_code=204)
 
-    result = await process_inbound_email(ctrl_db, payload)
-    return result.to_dict()
+    try:
+        result = await process_inbound_email(ctrl_db, payload)
+    except Exception:  # noqa: BLE001 — never surface a stack trace / 500 on a public route
+        logger.exception("Email intake: processing failed for provider=%s", provider)
+        return _ack()
+
+    # Log the real outcome server-side only; the response is a uniform ack
+    # regardless of tenant/token resolution so it can't be used as an oracle.
+    logger.info(
+        "Email intake processed: provider=%s tenant=%s invoices_created=%d error=%s",
+        provider,
+        result.tenant_slug,
+        len(result.invoices_created),
+        result.error,
+    )
+    return _ack()
 
 
 # ---------------------------------------------------------------------------
