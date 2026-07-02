@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { formatDate } from '$lib/utils/time';
 	import { auth } from '$lib/stores/auth.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -155,12 +156,6 @@
 		}
 	}
 
-	function fmtDate(d: string | null): string {
-		if (!d) return '—';
-		const dt = new Date(d);
-		if (Number.isNaN(dt.getTime())) return d;
-		return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
 
 	function isRevoked(k: ApiKey): boolean {
 		return k.revoked_at !== null;
@@ -207,8 +202,8 @@
 						</td>
 						<td class="mono">{key.key_prefix}…</td>
 						<td>{key.scopes.join(', ')}</td>
-						<td>{fmtDate(key.created_at)}</td>
-						<td>{fmtDate(key.last_used_at)}</td>
+						<td>{formatDate(key.created_at)}</td>
+						<td>{formatDate(key.last_used_at)}</td>
 						<td>
 							{#if isRevoked(key)}
 								<span class="status-pill revoked">{m('admin.apiKeys.statusRevoked')}</span>
@@ -322,7 +317,7 @@
 					<span class="usage-lbl">{m('admin.apiKeys.usage.windowDays', { days: usage.window_days })}</span>
 				</div>
 				<div class="usage-stat">
-					<span class="usage-num">{fmtDate(usage.last_used_at)}</span>
+					<span class="usage-num">{formatDate(usage.last_used_at)}</span>
 					<span class="usage-lbl">{m('admin.apiKeys.usage.lastUsed')}</span>
 				</div>
 			</div>
@@ -339,7 +334,7 @@
 					{#snippet body()}
 						{#each usageDays as day (day.usage_date)}
 							<tr>
-								<td>{fmtDate(day.usage_date)}</td>
+								<td>{formatDate(day.usage_date)}</td>
 								<td class="num-col">{day.request_count.toLocaleString()}</td>
 							</tr>
 						{/each}

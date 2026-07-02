@@ -8,6 +8,7 @@
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import { isRowOpenClick } from '$lib/utils/rowNav';
+	import { formatDate } from '$lib/utils/time';
 	import { pruneSelection } from '$lib/utils/selection';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -212,11 +213,6 @@
 
 	function toggleRole(role: string, list: string[]): string[] {
 		return list.includes(role) ? list.filter((r) => r !== role) : [...list, role];
-	}
-
-	function formatDate(iso: string): string {
-		if (!iso) return '—';
-		return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
 	function handleWindowClick(e: MouseEvent) {

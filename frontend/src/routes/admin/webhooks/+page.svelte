@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
+	import { formatDate } from '$lib/utils/time';
 	import { auth } from '$lib/stores/auth.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -295,12 +296,6 @@
 		}
 	}
 
-	function fmtDate(d: string | null): string {
-		if (!d) return '—';
-		const dt = new Date(d);
-		if (Number.isNaN(dt.getTime())) return d;
-		return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-	}
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -347,7 +342,7 @@
 							<td class="url-cell" title={sub.target_url}>{sub.target_url}</td>
 							<td class="events-cell">{sub.event_types.join(', ')}</td>
 							<td class="mono">{sub.secret_prefix}…</td>
-							<td>{fmtDate(sub.created_at)}</td>
+							<td>{formatDate(sub.created_at)}</td>
 							<td>
 								{#if sub.active}
 									<span class="status-pill active">{m('admin.webhooks.statusActive')}</span>
@@ -407,7 +402,7 @@
 							<td class="mono">{d.event_id}</td>
 							<td>{d.attempt_count}</td>
 							<td>{d.response_code ?? '—'}</td>
-							<td>{fmtDate(d.last_attempt_at)}</td>
+							<td>{formatDate(d.last_attempt_at)}</td>
 							<td>
 								<span class="status-pill {d.status}">{deliveryStatusLabel(d.status)}</span>
 							</td>
