@@ -438,6 +438,28 @@ async def test_provision_tenant_creates_org_user_and_tenant_tables(
                 built_invoice_indexes = {row[0] for row in invoice_indexes}
                 assert "ix_invoices_vendor_id_created_at" in built_invoice_indexes
                 assert "ix_invoices_invoice_number_norm" in built_invoice_indexes
+                # Perf: the PO-matching lookups (services.po_matching.
+                # match_invoice_to_po, called for every invoice with a
+                # po_number) must also be indexed by create_all — identical
+                # to migration 0073.
+                po_indexes = await conn.exec_driver_sql(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'purchase_orders'"
+                )
+                built_po_indexes = {row[0] for row in po_indexes}
+                assert "ix_purchase_orders_po_number" in built_po_indexes
+                assert "ix_purchase_orders_vendor_id" in built_po_indexes
+                gr_indexes = await conn.exec_driver_sql(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'goods_receipts'"
+                )
+                assert "ix_goods_receipts_po_id" in {row[0] for row in gr_indexes}
+                po_li_indexes = await conn.exec_driver_sql(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'po_line_items'"
+                )
+                assert "ix_po_line_items_po_id" in {row[0] for row in po_li_indexes}
+                gr_li_indexes = await conn.exec_driver_sql(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'gr_line_items'"
+                )
+                assert "ix_gr_line_items_gr_id" in {row[0] for row in gr_li_indexes}
         finally:
             await tenant_engine.dispose()
     finally:
