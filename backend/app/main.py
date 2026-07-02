@@ -51,6 +51,7 @@ from app.api import (
     privacy,
     purchase_orders,
     recurring,
+    reports,
     requisitions,
     retention,
     scim,
@@ -311,6 +312,7 @@ app.include_router(contracts.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
 app.include_router(discounts.router, prefix="/api")
 app.include_router(recurring.router, prefix="/api")
+app.include_router(reports.router, prefix="/api")
 app.include_router(enrichment.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")
 app.include_router(erp_webhook.router, prefix="/api")
