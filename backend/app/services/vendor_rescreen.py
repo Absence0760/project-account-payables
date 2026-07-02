@@ -82,7 +82,12 @@ async def rescreen_vendors_once(*, now: datetime | None = None) -> RescreenResul
             result.vendors_screened += screened
             result.new_flags += flags
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
-            logger.warning("[vendor-rescreen] failed sweeping %s: %s", db_name, exc)
+            # Log the exception CLASS only — a DB/asyncpg or sanctions-adapter
+            # error message can echo a vendor name / partial banking value
+            # (PII-out-of-logs).
+            logger.warning(
+                "[vendor-rescreen] failed sweeping %s: %s", db_name, exc.__class__.__name__
+            )
             result.failures += 1
 
     if result.vendors_screened or result.new_flags or result.failures:
@@ -168,7 +173,12 @@ async def run_vendor_rescreen_loop() -> None:
             try:
                 await rescreen_vendors_once()
             except Exception as exc:  # noqa: BLE001
-                logger.error("[vendor-rescreen] sweep raised: %s", exc, exc_info=True)
+                # Class name in the message; exc_info=True keeps the traceback
+                # for debugging without putting the exception text (possible PII)
+                # in the log format string.
+                logger.error(
+                    "[vendor-rescreen] sweep raised: %s", exc.__class__.__name__, exc_info=True
+                )
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[vendor-rescreen] shutting down")

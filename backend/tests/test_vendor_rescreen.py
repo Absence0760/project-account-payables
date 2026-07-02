@@ -17,6 +17,7 @@ Two layers, mirroring the other background-sweep suites:
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -125,6 +126,69 @@ async def test_rescreen_once_continues_after_one_tenant_fails():
     assert result.vendors_screened == 3  # 2 + (skipped) + 1
     assert result.new_flags == 1
     assert result.failures == 1
+
+
+# A sentinel that stands in for the vendor name / partial banking value an
+# asyncpg or sanctions-adapter error can carry in ``str(exc)``. It must never
+# reach a log record (PII-out-of-logs invariant) — only the exception CLASS may.
+_PII_SENTINEL = "SECRET_VENDOR_BANK_123"
+
+
+async def test_sweep_failure_logs_exception_class_not_message(caplog):
+    """A per-tenant sweep failure logs the exception CLASS only — the raw
+    message (which can carry a vendor name / partial bank value) never lands in
+    the log (CloudWatch), honouring the PII-out-of-logs invariant."""
+    with (
+        patch.object(
+            vendor_rescreen,
+            "control_session_factory",
+            _fake_control_session(["ap_a"]),
+        ),
+        patch.object(
+            vendor_rescreen,
+            "_sweep_tenant",
+            AsyncMock(side_effect=RuntimeError(_PII_SENTINEL)),
+        ),
+        caplog.at_level(logging.WARNING, logger=vendor_rescreen.logger.name),
+    ):
+        result = await rescreen_vendors_once()
+
+    assert result.failures == 1
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a WARNING log for the failed sweep"
+    for record in caplog.records:
+        assert _PII_SENTINEL not in record.getMessage()
+    assert any("RuntimeError" in r.getMessage() for r in warnings)
+
+
+async def test_loop_failure_logs_exception_class_not_message(caplog):
+    """The long-lived loop's top-level catch also logs the exception CLASS only
+    (with exc_info for the traceback), never the raw message."""
+
+    async def flaky():
+        raise RuntimeError(_PII_SENTINEL)
+
+    with (
+        patch.object(vendor_rescreen, "rescreen_vendors_once", flaky),
+        patch.object(vendor_rescreen.settings, "vendor_rescreen_interval_seconds", 0.01),
+        caplog.at_level(logging.ERROR, logger=vendor_rescreen.logger.name),
+    ):
+        task = asyncio.create_task(vendor_rescreen.run_vendor_rescreen_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors, "expected an ERROR log for the failed sweep"
+    # The format string must not carry the raw message. exc_info attaches the
+    # traceback out-of-band; getMessage() returns only the rendered format
+    # string, which is what ships as the CloudWatch message field.
+    for record in errors:
+        assert _PII_SENTINEL not in record.getMessage()
+    assert any("RuntimeError" in r.getMessage() for r in errors)
 
 
 async def test_run_loop_cancels_cleanly():
