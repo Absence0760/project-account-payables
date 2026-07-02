@@ -26,6 +26,7 @@ Deep-dive docs live in `backend/docs/`:
 | Vendor statement reconciliation | `docs/vendor-statement-reconciliation.md` |
 | Positive Pay / payment-fraud file | `docs/positive-pay.md` |
 | Analytics + CFO dashboard + CSV + scheduled reports | `docs/analytics.md` |
+| Custom (ad-hoc) report builder | `docs/report-builder.md` |
 | Virtual cards (Lithic / Nium) | `docs/virtual-cards.md` |
 | PO matching (2-way / 3-way) | `docs/po-matching.md` |
 | Vendor management | `docs/vendor-management.md` |

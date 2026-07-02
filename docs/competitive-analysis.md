@@ -153,7 +153,7 @@ Analysis of the AP automation market as of June 2026. Covers 10 major competitor
 | Aging reports | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | Cash flow forecasting (+ what-if) | Have | Y | - | Y | - | - | - | - | - | Y | Y |
 | CFO analytics (DPO, CCC, concentration, accruals) | Have | - | Y | Y | - | - | - | - | - | Y | Y |
-| Custom report builder (ad-hoc) | Gap | - | Y | Y | Y | - | - | Y | Y | Y | Y |
+| Custom report builder (ad-hoc) | Have | - | Y | Y | Y | - | - | Y | Y | Y | Y |
 | Scheduled report delivery | Have | - | Y | Y | Y | - | - | - | - | Y | Y |
 | Touchless rate tracking | Have | - | - | Y | - | - | - | - | - | Y | Y |
 
@@ -236,7 +236,6 @@ Most of the original deal-blockers have since shipped (see **Recently Closed** b
 | Gap | Why It Matters | Who Has It |
 |-----|---------------|-----------|
 | **Email / Slack / Teams approval** | Approval routing is otherwise complete (chains, parallel, delegation, escalation, matrix UI), but approvers can't act from email or chat. Both are *skipped pending credentials* (SMTP signed-token / Slack app secret), not unbuilt logic. | Bill, Tipalti, Stampli, Airbase |
-| **Custom report builder (ad-hoc)** | Operational + CFO analytics, scheduled delivery, and CSV/PDF export all ship, but reporting is fixed-shape. Mid-market+ buyers expect ad-hoc/self-serve report building. | Coupa, Tipalti, Stampli, Airbase, Medius, Basware |
 | **Full multi-entity / intercompany** | Phases 1–2b shipped (entity scoping, switcher, CFO analytics by entity); per-entity workflow + chart-of-accounts and intercompany routing/consolidation remain. Blocks larger mid-market customers with subsidiaries. | All enterprise competitors |
 
 ### Tier 3: Market Expansion (opens new segments / revenue)

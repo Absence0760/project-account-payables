@@ -1,0 +1,141 @@
+# Custom (ad-hoc) Report Builder
+
+Self-serve reporting: a user picks a data source, group-by dimensions, aggregate
+measures, and filters, then runs / saves / exports the result. Complements the
+fixed-shape Dashboard, CFO analytics, and scheduled reports (`docs/analytics.md`)
+by letting finance users build their own reports without engineering.
+
+- **API surface:** `app/api/reports.py` (`/api/reports`)
+- **Security boundary + query engine:** `app/services/report_builder.py`
+- **Schemas:** `app/schemas/report.py`
+- **Model + migration:** `app/models/report_definition.py`, `alembic/versions/0071_report_definitions.py`
+- **Tests:** `backend/tests/test_report_builder.py`
+
+## Security model — whitelist-only query building
+
+This is the load-bearing invariant. The client **never** sends a raw SQL
+fragment, column name, or table name that reaches the database. It sends
+**catalog keys** only. `report_builder.REPORT_SOURCES` is a hardcoded whitelist
+mapping each key -> a real, server-defined SQLAlchemy column, plus the
+aggregations / filter operators / date grains that key is allowed to use.
+
+`compile_spec(spec)` validates every reference (data source, dimension, measure,
+aggregation, filter, operator, date grain, sort key) against the catalog
+**before any SQL is built**. Anything not in the catalog raises
+`ReportValidationError`, which the router turns into a **422** — and is never
+compiled into a query. Filter values are always bound as parameters (never
+string-interpolated) and coerced to the column's Python type (bad value -> 422).
+
+Every run also goes through the tenant `get_tenant` chokepoint (tenant
+isolation) and honours the `X-Entity-ID` header via `apply_entity_scope` — the
+same scoping as the rest of analytics. Money measures are serialized as **exact
+decimal strings**, never floats.
+
+## The catalog (`REPORT_SOURCES`)
+
+Four sources ship. Each exposes group-by **dimensions**, aggregate **measures**,
+and **filters**. `GET /api/reports/catalog` returns this shape for the frontend.
+
+| Source | Dimensions | Measures | Filters |
+|--------|-----------|----------|---------|
+| `invoices` | vendor_name, status (enum), currency, gl_account, cost_center, department, project, payment_terms, invoice_date (date), due_date (date), created_at (date) | amount (money), tax_amount (money), id (count) | status, vendor_name, currency, gl_account, department, project, amount, invoice_date, due_date, created_at |
+| `payments` | status, method, provider, corridor, created_at (date), submitted_at (date), completed_at (date) | amount (money), id (count) | status, method, provider, amount, created_at, completed_at |
+| `vendors` | status, source, risk_level, kyc_status, payment_terms, created_at (date) | id (count), risk_score (number: avg/min/max) | status, source, name, risk_level, kyc_status, created_at |
+| `expenses` | category, status (enum), payment_method (enum), merchant, currency, expense_date (date), created_at (date) | amount (money), id (count) | status, category, payment_method, merchant, currency, amount, expense_date, created_at |
+
+- **Dimensions** have a `type` of `string` | `date` | `enum`. Date dimensions
+  support a `grain` of `day` | `month` | `quarter` | `year` (default `month`),
+  bucketed via `date_trunc`. Enum dimensions carry `enumValues`.
+- **Measures** declare their allowed `aggs` (subset of `sum` / `avg` / `count` /
+  `min` / `max`) and a `type` of `money` | `number`. A `count` result is always
+  a `number` regardless of the underlying column. The output column key is
+  `<measure_key>_<agg>` (e.g. `amount_sum`, `id_count`).
+- **Filters** declare their allowed `ops` (subset of `eq` / `ne` / `gt` / `gte`
+  / `lt` / `lte` / `in` / `contains` / `between`); the server rejects any op not
+  in a filter's list. `in` needs a non-empty list; `between` needs a `[low, high]`
+  pair; `contains` is a parameterised `ILIKE`.
+
+Adding a field is a one-line catalog entry pointing at a real column — never a
+free-form column name from the client.
+
+## Endpoints (`/api/reports`, JWT + tenant-gated)
+
+| Method + path | Roles | Purpose |
+|---|---|---|
+| `GET /catalog` | all four | The catalog (sources + dimensions/measures/filters). |
+| `GET /` | all four | List saved definitions (entity-scoped). |
+| `POST /` | admin/ap_manager/cfo | Save a spec as a named `ReportDefinition` (201). Validates against the catalog. |
+| `GET /{id}` | all four | A saved definition. |
+| `PATCH /{id}` | admin/ap_manager/cfo | Update a saved definition (re-validated). |
+| `DELETE /{id}` | admin/ap_manager/cfo | Delete (204). |
+| `POST /run` | all four | Run an ad-hoc spec (paginated), not saved. |
+| `POST /{id}/run` | all four | Run a saved spec. |
+| `GET /{id}/export?format=csv\|pdf` | all four | Branded download. |
+
+Every mutation (`POST` / `PATCH` / `DELETE`) writes a PII-free audit row
+(`report.created` / `report.updated` / `report.deleted`, `entity_type =
+report_definition`, details = `{name, data_source}`).
+
+## JSON shapes
+
+`ReportSpec`:
+
+```json
+{
+  "data_source": "invoices",
+  "dimensions": [ { "key": "vendor_name", "grain": null } ],
+  "measures":   [ { "key": "amount", "agg": "sum" }, { "key": "id", "agg": "count" } ],
+  "filters":    [ { "key": "status", "op": "in", "value": ["approved","paid"] },
+                  { "key": "invoice_date", "op": "between", "value": ["2026-01-01","2026-06-30"] } ],
+  "sort":       [ { "key": "amount_sum", "dir": "desc" } ],
+  "limit":      null
+}
+```
+
+- `POST /run` body = `ReportSpec` + `{ page?, page_size? }` (default `page=1`,
+  `page_size=100`, cap `1000`).
+- `POST /` body = `ReportSpec` + `{ name, description? }`.
+- `sort[].key` is a measure output key (`<measure_key>_<agg>`) or a dimension key
+  that is actually selected — otherwise 422.
+
+`ReportResult`:
+
+```json
+{
+  "columns": [ { "key": "vendor_name", "label": "Vendor", "kind": "dimension", "type": "string" },
+               { "key": "amount_sum",  "label": "Sum of Amount", "kind": "measure", "type": "money" },
+               { "key": "id_count",    "label": "Count", "kind": "measure", "type": "number" } ],
+  "rows":    [ { "vendor_name": "Acme", "amount_sum": "12345.67", "id_count": 42 } ],
+  "total_rows": 137,
+  "page": 1, "page_size": 100
+}
+```
+
+Money values in `rows` are exact decimal **strings**; counts are ints; date
+dimensions are ISO date strings.
+
+`ReportDefinition` = `ReportSpec` + `{ id, name, description, created_by_user_id,
+created_at, updated_at }`.
+
+## Persistence
+
+`ReportDefinition` is tenant-scoped + entity-scoped (`EntityMixin`), spec
+fragments stored as JSONB (`dimensions` / `measures` / `filters` / `sort`), the
+row limit as `row_limit` (the JSON key is `limit`). Migration
+`0071_report_definitions` creates the table gated on the `invoices` table
+existing, so it no-ops on the control plane and fans out to every tenant DB via
+`scripts/migrate_all_tenants.py`. Fresh tenants get the table from `create_all`
+in `tenant_provisioning`.
+
+## Export
+
+`GET /{id}/export?format=csv|pdf` runs the saved spec (bounded to 1000 rows) and
+renders:
+
+- **CSV** — a `#`-comment brand-provenance header (`report_export.brand_provenance_header`)
+  followed by a column-positional grid (column labels as the header row).
+- **PDF** — the branded analytics-report renderer
+  (`services/analytics_report_pdf.render_analytics_report_pdf`), the same
+  white-label chrome as the analytics export surface.
+
+Both reuse the shared helpers so the brand treatment matches every other export.

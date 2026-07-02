@@ -396,6 +396,22 @@ Dashboard Enhancements above is *operational* (for AP clerks/managers). CFOs and
 
 ---
 
+### Custom Report Builder (ad-hoc / self-serve)
+**Status:** Shipped. Closes the last Tier-2 competitive gap — Dashboard / CFO analytics + scheduled delivery + CSV/PDF export were all fixed-shape; this adds self-serve report building. A user picks a **data source** (`invoices` / `payments` / `vendors` / `expenses`), **group-by dimensions** (with optional `day|month|quarter|year` date-grain bucketing), **aggregate measures** (`sum`/`avg`/`count`/`min`/`max`), and **whitelisted filters** (`eq/ne/gt/gte/lt/lte/in/contains/between`), then runs it ad-hoc, saves it, or exports it branded (CSV / PDF).
+
+The security boundary is `app/services/report_builder.py`: a hardcoded `REPORT_SOURCES` catalog maps catalog KEYS → real SQLAlchemy columns. The client only ever sends catalog keys — never a raw column/table name — and any key/agg/op/grain outside the catalog is a 422 that never reaches SQL (`compile_spec`). Runs go through the `get_tenant` chokepoint (tenant isolation) + honour `X-Entity-ID`; money measures serialize as exact decimal **strings**.
+
+- [x] Catalog — `GET /api/reports/catalog` (four sources with their dimensions / measures / filters + enum values).
+- [x] Saved definitions — `GET/POST/PATCH/DELETE /api/reports` (tenant + entity-scoped `ReportDefinition`, migration 0071, spec as JSONB). Reads = all four roles; mutate = admin/ap_manager/cfo; every mutation writes a PII-free `report.created/updated/deleted` audit row.
+- [x] Run — `POST /api/reports/run` (ad-hoc, paginated) + `POST /api/reports/{id}/run` (saved).
+- [x] Export — `GET /api/reports/{id}/export?format=csv|pdf` (reuses the shared brand provenance-header + branded analytics-report PDF).
+
+See `backend/docs/report-builder.md`.
+
+**Competitors:** Coupa, Tipalti, Stampli, Airbase, Medius, Basware.
+
+---
+
 ## Priority 5: Multi-Currency & Tax
 
 ### Multi-Currency Support
