@@ -5,6 +5,7 @@ Records sync status on each payment for retry capability.
 """
 
 import asyncio
+import logging
 import threading
 import uuid
 
@@ -16,6 +17,8 @@ from app.database import _make_tenant_url
 from app.models.invoice import Invoice
 from app.models.organization import Organization
 from app.models.payment import Payment
+
+logger = logging.getLogger(__name__)
 
 
 async def dispatch_payment_sync(
@@ -108,7 +111,7 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                         print(
                             f"[payment-sync] Syncing payment {payment.id}: "
                             f"invoice={invoice.invoice_number if invoice else '?'}, "
-                            f"amount=${float(payment.amount):.2f}, method={payment.method}"
+                            f"amount=${payment.amount:.2f}, method={payment.method}"
                         )
 
                         # Update invoice status to paid if currently payment_scheduled
@@ -128,7 +131,14 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                         synced += 1
 
                     except Exception as exc:
-                        print(f"[payment-sync] Failed to sync payment {payment.id}: {exc}")
+                        # Log the exception CLASS only, not the message — a
+                        # processor/ERP SDK error string can embed partial
+                        # account / PAN data (PII-out-of-logs invariant).
+                        logger.warning(
+                            "[payment-sync] failed to sync payment %s: %s",
+                            payment.id,
+                            exc.__class__.__name__,
+                        )
                         failed += 1
 
                 await db.commit()
@@ -138,7 +148,10 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                 )
 
             except Exception as exc:
-                print(f"[payment-sync] ERROR for run {run_id}: {exc}")
+                # Same PII rationale as above — class only, never the message.
+                logger.warning(
+                    "[payment-sync] error for run %s: %s", run_id, exc.__class__.__name__
+                )
                 await db.rollback()
 
         await tenant_engine.dispose()

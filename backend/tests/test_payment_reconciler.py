@@ -12,6 +12,8 @@ the test DB-free without losing coverage of the decision branch.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -19,6 +21,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from app.services import payment_reconciler
 
 
 def _payment(*, status="submitted", submitted_at=None, provider_payment_id="px_123"):
@@ -583,3 +587,84 @@ async def test_reconcile_once_passes_caller_supplied_now_through():
 
     args, _kwargs = per_tenant.call_args
     assert args[1] == fixed_now
+
+
+# ---------------------------------------------------------------------------
+# run_reconciler_loop — lifecycle + PII-out-of-logs
+# ---------------------------------------------------------------------------
+
+# Stands in for the vendor/account-number fragment a payment-processor SDK
+# error can carry in ``str(exc)``. It must never reach a log record
+# (PII-out-of-logs invariant) — only the exception CLASS may.
+_PII_SENTINEL = "SECRET_ACCOUNT_1234567890"
+
+
+@pytest.mark.asyncio
+async def test_run_reconciler_loop_cancels_cleanly():
+    with patch.object(
+        payment_reconciler, "reconcile_once", AsyncMock(return_value=SimpleNamespace())
+    ):
+        task = asyncio.create_task(payment_reconciler.run_reconciler_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert task.cancelled() or task.done()
+
+
+@pytest.mark.asyncio
+async def test_run_reconciler_loop_survives_a_failed_sweep():
+    """A raise inside reconcile_once must not kill the long-lived loop."""
+    call_count = 0
+
+    async def flaky():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError(_PII_SENTINEL)
+        return SimpleNamespace()
+
+    with (
+        patch.object(payment_reconciler, "reconcile_once", flaky),
+        patch.object(payment_reconciler.settings, "payment_reconcile_interval_seconds", 0.01),
+    ):
+        task = asyncio.create_task(payment_reconciler.run_reconciler_loop())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert call_count >= 2  # didn't die on the first raise
+
+
+@pytest.mark.asyncio
+async def test_run_reconciler_loop_failure_logs_exception_class_not_message(caplog):
+    """The long-lived loop's top-level catch logs the exception CLASS only
+    (with exc_info for the traceback) — a processor SDK error string can
+    carry a partial account number, which must never land in the log sink."""
+
+    async def flaky():
+        raise RuntimeError(_PII_SENTINEL)
+
+    with (
+        patch.object(payment_reconciler, "reconcile_once", flaky),
+        patch.object(payment_reconciler.settings, "payment_reconcile_interval_seconds", 0.01),
+        caplog.at_level(logging.ERROR, logger=payment_reconciler.logger.name),
+    ):
+        task = asyncio.create_task(payment_reconciler.run_reconciler_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors, "expected an ERROR log for the failed sweep"
+    for record in errors:
+        assert _PII_SENTINEL not in record.getMessage()
+    assert any("RuntimeError" in r.getMessage() for r in errors)
