@@ -28,7 +28,7 @@ def _fake_request(ip: str = "10.0.0.1"):
 
 def _db_returning(user, org=None):
     """Build an AsyncMock DB whose first execute() returns the user, second the org."""
-    from passlib.context import CryptContext
+    from app.utils.passwords import pwd_context
 
     db = AsyncMock()
     user_result = MagicMock()
@@ -45,18 +45,17 @@ def _db_returning(user, org=None):
     db.commit = AsyncMock()
     # Hash the user's password so verification works in the "success" path.
     if user and getattr(user, "hashed_password", None) == "REAL":
-        user.hashed_password = CryptContext(schemes=["bcrypt"]).hash("secret")
+        user.hashed_password = pwd_context.hash("secret")
     return db
 
 
 def _make_user(*, email="alice@acme.com", password="secret"):
-    from passlib.context import CryptContext
+    from app.utils.passwords import pwd_context
 
-    pwd = CryptContext(schemes=["bcrypt"])
     return SimpleNamespace(
         id=uuid.uuid4(),
         email=email,
-        hashed_password=pwd.hash(password),
+        hashed_password=pwd_context.hash(password),
         organization_id=uuid.uuid4(),
         is_active=True,
         must_change_password=False,
