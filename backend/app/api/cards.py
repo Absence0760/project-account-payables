@@ -1,7 +1,7 @@
 """Virtual card endpoints — generate, list, cancel, webhook."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -301,27 +301,54 @@ async def generate_cards(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
     org_id: uuid.UUID = Depends(get_org_id),
 ):
+    """Mint a virtual card directly for one or more invoices (outside a
+    payment run).
+
+    This is a second entry point into card issuance — the other is the
+    ``virtual_card`` leg of ``execute_payment_run`` in ``api/payments.py``.
+    Both MUST enforce the same gates a card mint moves real money, so this
+    handler reuses the same building blocks the payment-run executor uses
+    rather than re-implementing them:
+
+      - ``PAYABLE_INVOICE_STATUSES`` (from ``api/payments``) — the invoice
+        must have cleared AP approval. An invoice still in
+        new/pending/ready_for_review/rejected/failed is filtered out before
+        any card is minted.
+      - ``check_payment_compliance`` — sanctions/KYC/AML screening. Card
+        issuance moves money just like an ACH/wire, so a blocked or
+        sanctioned vendor must not receive a card; a hold/refuse verdict
+        skips the invoice (mirrors the payment-run leg).
+      - ``issue_card_for_invoice`` — the single adapter-dispatch + VirtualCard
+        construction routine, so provider selection / expiry / entity
+        propagation can't drift between the two entry points.
+      - ``dispatch_audit`` — every other card-lifecycle event in this module
+        (cancel, PAN reveal, webhook charge/settle) writes an append-only
+        audit row; a direct mint must too (SOX trail).
+    """
     org_cards = (org.settings or {}).get("cards", {})
     if not org_cards.get("enabled"):
         raise HTTPException(
             status_code=400,
             detail="Virtual cards are not enabled. Configure in Organization Settings.",
         )
-    card_config = _resolve_card_config(org)
 
-    # Import adapters
-    import app.services.card_adapters.lithic  # noqa: F401
-    import app.services.card_adapters.mock_adapter  # noqa: F401
-    import app.services.card_adapters.nium  # noqa: F401
-    from app.services.card_adapters import VirtualCardPayload, get_card_adapter
-    from app.services.card_issuance import DEFAULT_CARD_EXPIRY_DAYS
+    from app.api.payments import PAYABLE_INVOICE_STATUSES
+    from app.config import settings as app_settings
+    from app.services.audit_dispatch import dispatch_audit
+    from app.services.card_issuance import issue_card_for_invoice
+    from app.services.compliance import check_payment_compliance
 
-    adapter = get_card_adapter(card_config)
-    expiry_days = card_config.get("default_expiry_days", DEFAULT_CARD_EXPIRY_DAYS)
-
-    # Load invoices
+    # Load invoices — only ones that have cleared AP approval are eligible.
+    # PAYABLE_INVOICE_STATUSES is the single source of truth shared with the
+    # payment queue / run builder so a card can't be minted against an
+    # unapproved invoice on any path.
     ids = [uuid.UUID(i) for i in body.invoice_ids]
-    result = await db.execute(select(Invoice).where(Invoice.id.in_(ids)))
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.id.in_(ids),
+            Invoice.status.in_(PAYABLE_INVOICE_STATUSES),
+        )
+    )
     invoices = result.scalars().all()
 
     # Idempotency: skip invoices that already have a LIVE (non-cancelled) card so
@@ -346,35 +373,39 @@ async def generate_cards(
     for inv in invoices:
         if inv.id in already_carded:
             continue
-        payload = VirtualCardPayload(
-            correlation_id=str(inv.correlation_id),
-            invoice_id=str(inv.id),
-            vendor_name=inv.vendor_name,
-            vendor_email=None,
-            amount=inv.amount,
-            currency=inv.currency or "USD",
-            description=inv.description,
-            expiry_days=expiry_days,
-        )
 
-        card_result = await adapter.create_card(payload)
-        if not card_result.success:
+        # Compliance gate: mirrors execute_payment_run's virtual_card leg. No
+        # screenable vendor (no vendor_id, or the row was deleted) → skip
+        # rather than mint unscreened; a refuse/hold verdict also skips.
+        if not inv.vendor_id:
+            continue
+        vendor = (
+            await db.execute(select(Vendor).where(Vendor.id == inv.vendor_id))
+        ).scalar_one_or_none()
+        if vendor is None:
+            continue
+        decision = await check_payment_compliance(
+            db,
+            vendor=vendor,
+            payment_amount=inv.amount,
+            payment_method="virtual_card",
+            org_settings=org.settings or {},
+            organization_id=org_id,
+            correlation_id=inv.correlation_id,
+        )
+        if decision.verdict != "allow":
+            continue  # blocked/held vendor — skip, don't block the batch
+
+        issue = await issue_card_for_invoice(
+            invoice=inv,
+            organization_id=org_id,
+            org_settings=org.settings or {},
+            app_settings=app_settings,
+        )
+        if not issue.success or issue.card is None:
             continue  # skip failed cards, don't block the batch
 
-        card = VirtualCard(
-            invoice_id=inv.id,
-            vendor_id=inv.vendor_id,
-            correlation_id=inv.correlation_id,
-            card_provider=adapter.provider_name,
-            provider_card_id=card_result.provider_card_id or "",
-            last_four=card_result.last_four,
-            amount_limit=inv.amount,
-            currency=inv.currency or "USD",
-            status="created",
-            expires_at=datetime.now(UTC) + timedelta(days=expiry_days),
-            organization_id=org_id,
-            entity_id=inv.entity_id,  # card follows the invoice it pays (P2)
-        )
+        card = issue.card
         db.add(card)
         # Flush inside a savepoint so a concurrent duplicate (caught by the
         # partial unique index) skips just that card instead of aborting the
@@ -385,6 +416,23 @@ async def generate_cards(
         except IntegrityError:
             already_carded.add(inv.id)
             continue
+
+        # SOX trail: every other card-lifecycle event in this module audits
+        # (cancel, PAN reveal, webhook charge/settle) — a direct mint must too.
+        await dispatch_audit(
+            db,
+            correlation_id=inv.correlation_id or uuid.uuid4(),
+            organization_id=org_id,
+            actor_id=user.id,
+            action="card.generated",
+            entity_type="virtual_card",
+            entity_id=card.id,
+            details={
+                "invoice_id": str(inv.id),
+                "last_four": card.last_four,
+                "amount_limit": str(card.amount_limit),
+            },
+        )
         cards.append(card)
 
     await db.commit()

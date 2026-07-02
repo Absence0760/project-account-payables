@@ -190,6 +190,11 @@ async def issue_card_for_invoice(
         status="created",
         expires_at=datetime.now(UTC) + timedelta(days=expiry_days),
         organization_id=organization_id,
+        # Card follows the invoice it pays (multi-entity P2). `getattr` because
+        # some lightweight test doubles construct an invoice-like object
+        # without the attribute — a real ORM `Invoice` always has it via
+        # `EntityMixin`.
+        entity_id=getattr(invoice, "entity_id", None),
     )
     return CardIssueResult(card=card, success=True)
 

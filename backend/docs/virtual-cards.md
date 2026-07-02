@@ -392,6 +392,24 @@ If the supplier portal is implemented, vendors can:
 - Declined charges trigger alerts
 - All card operations require authentication
 - Provider API keys stored encrypted in org settings (future: secrets manager)
+- **Card issuance moves money, so it's gated like any other payment rail.**
+  There are two mint entry points — `POST /api/cards/generate` (direct,
+  admin/ap_manager/cfo) and the `virtual_card` leg of `execute_payment_run`
+  (`api/payments.py`) — and both route through the same
+  `services/card_issuance.py::issue_card_for_invoice` helper so the gates
+  can't drift between them:
+  - **Approval gate** — only invoices in `PAYABLE_INVOICE_STATUSES`
+    (`approved` / `posted_in_erp` / `payment_scheduled`, the same set the
+    payment queue uses) are eligible; an unapproved invoice is silently
+    excluded from the batch, never minted.
+  - **Compliance gate** — `services/compliance.check_payment_compliance`
+    (sanctions/KYC/AML) runs per invoice before the adapter call, exactly
+    like the ACH/wire path; a `hold`/`refuse` verdict — including a vendor
+    with `payments_blocked=True` — skips that invoice without minting.
+  - **Audit trail** — a successful mint writes a `card.generated` audit row
+    (invoice id, last_four, string-Decimal `amount_limit`) via
+    `dispatch_audit`, matching every other card-lifecycle event
+    (`card.cancelled`, `card.charged`, `card.settled`, `card.details_viewed`).
 
 ### Audit trail (every card state change is logged)
 
