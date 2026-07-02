@@ -58,7 +58,7 @@ Analysis of the AP automation market as of June 2026. Covers 10 major competitor
 | Escalation rules | Have | - | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | Department/GL-based routing | Have | - | Y | Y | - | - | - | Y | Y | Y | Y |
 | Approval matrix builder UI | Have | - | Y | Y | - | - | - | Y | - | Y | Y |
-| Email/Slack approval | Gap | Y | Y | Y | Y | Y | Y | Y | Y | - | - |
+| Email/Slack/Teams approval | **Have** | Y | Y | Y | Y | Y | Y | Y | Y | - | - |
 | Segregation of duties | Have | - | Y | Y | - | - | Y | Y | Y | Y | Y |
 
 ### Payments
@@ -132,17 +132,17 @@ Analysis of the AP automation market as of June 2026. Covers 10 major competitor
 | VAT/GST/withholding handling | Have | - | Y | Y | Y | - | - | - | - | Y | Y |
 | E-invoicing (Peppol AS4 send + receive) | Have | - | - | - | - | - | - | - | - | Y | Y |
 | Country e-invoice formats (FatturaPA/CFDI/NF-e/DIAN) | Have | - | - | - | - | - | - | - | - | Partial | Y |
-| GDPR/CCPA DSAR + data residency | Gap | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
-| Accessibility (WCAG 2.2 AA / VPAT) | Gap | - | - | Y | Y | - | - | - | - | Y | Y |
+| GDPR/CCPA DSAR + data residency | **Have** | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| Accessibility (WCAG 2.2 AA / VPAT) | **Have** | - | - | Y | Y | - | - | - | - | Y | Y |
 
 ### Architecture & Multi-Tenancy
 
 | Feature | Us | Bill | Tipalti | Coupa | Concur | Avid | Mineral | Stampli | Airbase | Medius | Basware |
 |---------|-----|------|---------|-------|--------|------|---------|---------|---------|--------|---------|
 | Database-per-tenant isolation | **Have** | - | - | - | - | - | - | - | - | - | - |
-| Multi-entity within tenant | Partial | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
+| Multi-entity within tenant | Have | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y |
 | Subdomain-based routing | Have | - | - | - | - | - | - | - | - | - | - |
-| Intercompany transactions | Gap | - | Y | Y | Y | - | - | - | Y | Y | Y |
+| Intercompany transactions | Have | - | Y | Y | Y | - | - | - | Y | Y | Y |
 
 ### Analytics & Reporting
 
@@ -172,7 +172,7 @@ Analysis of the AP automation market as of June 2026. Covers 10 major competitor
 | Email inbox ingestion | Have | Y | Y | Y | Y | Y | - | Y | Y | Y | Y |
 | Embedded supplier chat / collaboration | Have | - | - | - | - | - | - | Y | - | - | - |
 | No-code workflow builder | **Have** | - | - | Y | - | - | - | - | - | Y | Y |
-| Slack/Teams integration | Gap | - | Y | - | - | - | - | Y | Y | - | - |
+| Slack/Teams integration | **Have** | - | Y | - | - | - | - | Y | Y | - | - |
 
 *Bill.com expense via Divvy acquisition; SAP Concur procurement/contracts via Ariba integration
 
@@ -221,38 +221,32 @@ These are areas where we are genuinely ahead of most or all competitors:
 
 Ranked by competitive impact — features where we are behind most or all competitors. Matches the prioritization in `roadmap.md`.
 
-Most of the original deal-blockers have since shipped (see **Recently Closed** below); the remaining gaps are concentrated in trust/compliance attestation, a few approval/reporting niceties, and the next wave of expansion bets.
+As of this revision the entire prior Tier-2 and Tier-3 gap sets have shipped (see **Recently Closed** below). **Only one competitive gap remains, and it is not a coding gap** — SOC 2 Type II attestation. Beyond it, the frontier is now *beyond-parity* differentiation rather than catch-up (see **Beyond-parity bets**).
 
 ### Tier 1: Deal-Blockers (hard filter on every mid-market+ RFP)
 
 | Gap | Why It Matters | Who Has It |
 |-----|---------------|-----------|
-| **SOC 2 Type II** | Engineering controls are largely in place (immutable + WORM-shipped audit log, access reviews, encryption verification); the remaining work is the observation window + auditor attestation. Still a hard security-review blocker until the report exists. | All competitors |
-| **GDPR/CCPA DSAR + data residency** | No data-subject export / right-to-erasure path and no regional data-pinning story. Hard blocker for EU/enterprise procurement, which the international push (multi-language, e-invoicing) otherwise targets. We hold vendor + banking PII across tenants — real legal exposure. | All EU-serving competitors |
-| **Accessibility (WCAG 2.2 AA / VPAT)** | The EU Accessibility Act is in force (June 2025); ADA Title III + Section 508 apply to US enterprise/public-sector buyers. No conformance target, audit, or VPAT today. Increasingly a procurement gate. | Coupa, Concur, Medius, Basware |
+| **SOC 2 Type II** | Engineering controls are in place (immutable + WORM-shipped audit log, access reviews, encryption verification). The remaining work is **not code** — it's the observation window + external auditor attestation. Still a hard security-review blocker until the report exists. | All competitors |
 
-### Tier 2: Competitive Disadvantages (lose deals against peers)
+Tiers 2 and 3 from the prior revision are empty — every entry shipped. See **Recently Closed**.
 
-| Gap | Why It Matters | Who Has It |
-|-----|---------------|-----------|
-| **Email / Slack / Teams approval** | Approval routing is otherwise complete (chains, parallel, delegation, escalation, matrix UI), but approvers can't act from email or chat. Both are *skipped pending credentials* (SMTP signed-token / Slack app secret), not unbuilt logic. | Bill, Tipalti, Stampli, Airbase |
-| **Full multi-entity / intercompany** | Phases 1–2b shipped (entity scoping, switcher, CFO analytics by entity); per-entity workflow + chart-of-accounts and intercompany routing/consolidation remain. Blocks larger mid-market customers with subsidiaries. | All enterprise competitors |
+### Beyond-parity bets (differentiators, not gaps)
 
-### Tier 3: Market Expansion (opens new segments / revenue)
+We are at or ahead of parity almost everywhere, so the highest-leverage work is now features **no competitor has**, not catch-up:
 
-| Gap | Why It Matters | Who Has It |
-|-----|---------------|-----------|
-| **Recurring / subscription invoices** | Fixed-cadence spend (rent, SaaS, utilities) still needs a fresh upload each period. Template-driven auto-generation is table stakes down-market. | Bill, Tipalti, Stampli, Airbase |
-| **Vendor statement reconciliation** | Reconcile a supplier's open-items statement vs our ledger to catch missing/double-posted bills before close. Classic AP-clerk task, entirely manual today. | Tipalti, Basware, Medius |
-| **Positive Pay / payment fraud file** | Bank-side check/ACH fraud control file. Treasury-controls requirement for many enterprise buyers; natural extension of existing check printing + rails. | Coupa Pay, Tipalti, AvidXchange |
-| **Public developer API + outbound webhooks** | No published/versioned API contract or API-key auth — integrators can't build on the platform. Turns the product into a platform partners extend. | Bill, Tipalti, Coupa |
-| **Platform billing & metering** | Usage is metered (`ExtractionUsage`, rebates) but there's no plan/subscription/dunning surface to bill for the SaaS itself. Needed before self-serve commercial launch. | (SaaS table stakes) |
-| **White-label / partner branding** | Per-tenant theming + custom domains for reseller/bank distribution channels. | AvidXchange, bank-channel AP products |
+| Bet | Why It's an Edge | Status |
+|-----|------------------|--------|
+| **AI Cash-Flow Copilot** | NL, forward-looking copilot that answers "when do I run low on cash / what should I pay when" and *proposes* a cash-constrained payment plan — pairing a conversational interface with the ROI-ranked early-pay optimizer. No mid-market competitor combines the two; runs fully local (mock/ollama). | Design proposed — `cash-flow-copilot.md` (see `roadmap.md`) |
+| **Cross-tenant benchmark intelligence** | Privacy-preserving, aggregated DPO / payment-terms / price benchmarks across the tenant base — a Coupa-style "community intelligence" the database-per-tenant model can do safely. | Idea |
+| **Agentic month-end close** | Chain the existing exception agents + statement reconciliation + accruals into an autonomous close-readiness checklist. All primitives already exist. | Idea |
 
 ### Recently Closed (formerly Tier 1–3 gaps)
 
-These were open gaps in the prior revision of this doc and have since shipped — most of the original deal-blocker set:
+These were open gaps in a prior revision of this doc and have since shipped — the entire original deal-blocker set plus the Tier-2/Tier-3 expansion set:
 
+- **Custom (ad-hoc) report builder** (catalog-driven query engine + `/reports` + branded CSV/PDF export) · **Email / Slack / Teams interactive approval** · **GDPR/CCPA DSAR + right-to-erasure + data residency** · **Accessibility (WCAG 2.2 AA + VPAT)** · **Full multi-entity + intercompany routing/consolidation** (Phases 1–4)
+- **Recurring / subscription invoices** · **Vendor statement reconciliation** · **Positive Pay / payment-fraud file** · **Public developer API + outbound webhooks** (API keys, versioned `/api/v1` + OpenAPI, HMAC webhooks) · **Platform billing & metering** (plans / subscriptions / entitlements / dunning) · **White-label / partner-reseller branding + custom domains**
 - **SAML 2.0 SSO** (alongside the existing OIDC + SCIM) · **MFA** · **API-level RBAC** · **SOX immutable + WORM-shipped audit trail**
 - **PO matching pipeline** wired into extraction/review (+ **4-way matching** with quality inspection, per-vendor/commodity rules)
 - **Real ACH / wire execution** (Modern Treasury + others) · **International payments** (cross-border ACH, SEPA, SWIFT, FX rate lock, corridor optimization)
