@@ -820,7 +820,7 @@ async def create_payment_run(
         "payment_count": len(body.items),
         "requires_cfo_approval": run.requires_cfo_approval,
         "message": (
-            f"Payment run created with {len(body.items)} payments totaling ${float(total):,.2f}"
+            f"Payment run created with {len(body.items)} payments totaling ${total:,.2f}"
             + (" (CFO approval required)" if run.requires_cfo_approval else "")
         ),
     }

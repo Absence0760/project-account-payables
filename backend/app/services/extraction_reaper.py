@@ -62,7 +62,8 @@ async def reap_once(*, threshold_seconds: int | None = None) -> ReapResult:
             result.invoices_reaped += reaped
         except Exception as exc:
             # Don't let one tenant's DB outage halt the sweep — log and move on.
-            logger.warning("[reaper] failed to sweep %s: %s", db_name, exc)
+            # Class only, not the message (PII-out-of-logs invariant).
+            logger.warning("[reaper] failed to sweep %s: %s", db_name, exc.__class__.__name__)
             result.failures += 1
 
     if result.invoices_reaped or result.failures:
@@ -164,7 +165,8 @@ async def run_reaper_loop() -> None:
             except Exception as exc:
                 # Catch-all so one bad sweep doesn't kill the loop. Logs at
                 # ERROR so it's noticeable but doesn't take the app down.
-                logger.error("[reaper] sweep raised: %s", exc, exc_info=True)
+                # Class only, not the message (PII-out-of-logs invariant).
+                logger.error("[reaper] sweep raised: %s", exc.__class__.__name__, exc_info=True)
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[reaper] shutting down")

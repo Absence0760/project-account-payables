@@ -64,7 +64,10 @@ async def notify_renewals_once(*, today: date | None = None) -> RenewalResult:
         try:
             result.alerts_sent += await _sweep_tenant(db_name, ref_today)
         except Exception as exc:  # noqa: BLE001 — one tenant must not halt the sweep
-            logger.warning("[contract-renewal] failed sweeping %s: %s", db_name, exc)
+            # Log the class, not the message (PII-out-of-logs invariant).
+            logger.warning(
+                "[contract-renewal] failed sweeping %s: %s", db_name, exc.__class__.__name__
+            )
             result.failures += 1
 
     if result.alerts_sent or result.failures:
@@ -157,7 +160,12 @@ async def run_renewal_loop() -> None:
             try:
                 await notify_renewals_once()
             except Exception as exc:  # noqa: BLE001
-                logger.error("[contract-renewal] sweep raised: %s", exc, exc_info=True)
+                # Log the class, not the message (PII-out-of-logs invariant).
+                logger.error(
+                    "[contract-renewal] sweep raised: %s",
+                    exc.__class__.__name__,
+                    exc_info=True,
+                )
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[contract-renewal] shutting down")

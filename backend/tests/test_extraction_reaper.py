@@ -9,6 +9,7 @@ the smoke pattern.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -198,3 +199,40 @@ async def test_run_reaper_loop_survives_a_failed_sweep():
             pass
 
     assert call_count >= 2  # didn't die on the first raise
+
+
+# A sentinel that stands in for a tenant-DB error's message fragment. It must
+# never reach a log record (PII-out-of-logs invariant) — only the exception
+# CLASS may.
+_PII_SENTINEL = "SECRET_ACCOUNT_1234567890"
+
+
+@pytest.mark.asyncio
+async def test_run_reaper_loop_failure_logs_exception_class_not_message(caplog):
+    """The long-lived loop's top-level catch logs the exception CLASS only
+    (with exc_info for the traceback), never the raw message."""
+    import asyncio
+
+    from app.services import extraction_reaper
+
+    async def flaky():
+        raise RuntimeError(_PII_SENTINEL)
+
+    with (
+        patch.object(extraction_reaper, "reap_once", flaky),
+        patch.object(extraction_reaper.settings, "extraction_reaper_interval_seconds", 0.01),
+        caplog.at_level(logging.ERROR, logger=extraction_reaper.logger.name),
+    ):
+        task = asyncio.create_task(extraction_reaper.run_reaper_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors, "expected an ERROR log for the failed sweep"
+    for record in errors:
+        assert _PII_SENTINEL not in record.getMessage()
+    assert any("RuntimeError" in r.getMessage() for r in errors)

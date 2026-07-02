@@ -17,6 +17,7 @@ Two layers:
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -199,6 +200,40 @@ async def test_run_shipper_loop_survives_a_failed_sweep():
             pass
 
     assert call_count >= 2  # didn't die on the first raise
+
+
+# A sentinel that stands in for the vendor/account fragment an adapter or
+# tenant-DB error can carry in `str(exc)`. It must never reach a log record
+# (PII-out-of-logs invariant) — only the exception CLASS may.
+_PII_SENTINEL = "SECRET_ACCOUNT_1234567890"
+
+
+async def test_run_shipper_loop_failure_logs_exception_class_not_message(caplog):
+    """The long-lived loop's top-level catch logs the exception CLASS only
+    (with exc_info for the traceback), never the raw message — mirrors the
+    other background-sweep suites' PII-out-of-logs regression guard."""
+
+    async def flaky():
+        raise RuntimeError(_PII_SENTINEL)
+
+    with (
+        patch.object(audit_log_shipper, "ship_once", flaky),
+        patch.object(audit_log_shipper.settings, "audit_shipping_interval_seconds", 0.01),
+        caplog.at_level(logging.ERROR, logger=audit_log_shipper.logger.name),
+    ):
+        task = asyncio.create_task(audit_log_shipper.run_shipper_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors, "expected an ERROR log for the failed sweep"
+    for record in errors:
+        assert _PII_SENTINEL not in record.getMessage()
+    assert any("RuntimeError" in r.getMessage() for r in errors)
 
 
 # ---------------------------------------------------------------------------

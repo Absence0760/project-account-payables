@@ -623,6 +623,45 @@ async def test_renewal_alert_sweep(realdb):
     assert after == before
 
 
+async def test_run_renewal_loop_failure_logs_exception_class_not_message(caplog):
+    """The contract-renewal background loop's top-level catch must log only
+    the exception CLASS, never the raw message — an org/tenant-DB error
+    string could carry PII (PII-out-of-logs invariant). DB-free: mirrors the
+    equivalent loop-resilience tests in test_extraction_reaper.py /
+    test_approval_escalation.py / test_audit_log_shipper.py."""
+    import asyncio
+    import logging
+    from unittest.mock import patch
+
+    from app.services import contract_renewal
+
+    # Stands in for a fragment an org/tenant-DB error can carry in `str(exc)`.
+    # Must never reach a log record — only the exception CLASS may.
+    pii_sentinel = "SECRET_ACCOUNT_1234567890"
+
+    async def flaky():
+        raise RuntimeError(pii_sentinel)
+
+    with (
+        patch.object(contract_renewal, "notify_renewals_once", flaky),
+        patch.object(contract_renewal.settings, "contract_renewal_interval_seconds", 0.01),
+        caplog.at_level(logging.ERROR, logger=contract_renewal.logger.name),
+    ):
+        task = asyncio.create_task(contract_renewal.run_renewal_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors, "expected an ERROR log for the failed sweep"
+    for record in errors:
+        assert pii_sentinel not in record.getMessage()
+    assert any("RuntimeError" in r.getMessage() for r in errors)
+
+
 async def test_create_po_from_cancelled_contract_409(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id

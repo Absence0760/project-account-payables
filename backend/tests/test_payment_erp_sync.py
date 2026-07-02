@@ -11,8 +11,10 @@ data is committed before the call, and re-read with a fresh session after.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -20,6 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentRun
 from app.models.workflow import AuditLog
+from app.services import payment_erp_sync
 from app.services.payment_erp_sync import _sync_payments
 
 
@@ -273,3 +276,35 @@ async def test_sync_tenant_isolation(realdb):
     async with mk_b() as s:
         inv = (await s.execute(select(Invoice).where(Invoice.id == b_invoice_id))).scalar_one()
     assert inv.status == InvoiceStatus.payment_scheduled
+
+
+# ---------------------------------------------------------------------------
+# PII-out-of-logs — a per-payment sync failure logs the exception CLASS only
+# ---------------------------------------------------------------------------
+
+_PII_SENTINEL = "SECRET_ACCOUNT_NUMBER_1234567890"
+
+
+async def test_sync_logs_exception_class_not_message_on_failure(realdb, caplog):
+    """A per-payment sync failure (e.g. `transition_invoice` raising) must log
+    only the exception CLASS, never the raw message — an ERP/processor SDK
+    error string can carry partial account data (PII-out-of-logs invariant).
+    Regression for the bare `print(f"...: {exc}")` this module used to have."""
+    await _set_org_erp(realdb, "a", {"type": "mock", "integration_method": "direct"})
+    run_id, _invoice_id = await _seed_run(realdb, "a")
+
+    with (
+        patch(
+            "app.services.workflow_engine.transition_invoice",
+            AsyncMock(side_effect=RuntimeError(_PII_SENTINEL)),
+        ),
+        caplog.at_level(logging.WARNING, logger=payment_erp_sync.logger.name),
+    ):
+        await _sync_payments(run_id, realdb.info("a").org_id)
+
+    assert caplog.records, "expected a WARNING log for the failed sync"
+    for record in caplog.records:
+        assert _PII_SENTINEL not in record.getMessage(), (
+            f"PII leaked into log: {record.getMessage()}"
+        )
+    assert any("RuntimeError" in r.getMessage() for r in caplog.records)

@@ -287,7 +287,13 @@ async def run_reconciler_loop() -> None:
             try:
                 await reconcile_once()
             except Exception as exc:  # noqa: BLE001
-                logger.error("[payment-reconciler] sweep raised: %s", exc, exc_info=True)
+                # Log the class, not the message — see the note on the inner
+                # per-payment catch above (PII-out-of-logs invariant).
+                logger.error(
+                    "[payment-reconciler] sweep raised: %s",
+                    exc.__class__.__name__,
+                    exc_info=True,
+                )
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("[payment-reconciler] shutting down")
