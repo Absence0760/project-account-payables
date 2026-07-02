@@ -44,6 +44,7 @@ export const en = {
 	'nav.aiAssistant': 'AI Assistant',
 	'nav.cashFlow': 'Cash Flow',
 	'nav.taxReporting': '1099 Reporting',
+	'nav.reports': 'Report Builder',
 	'nav.organization': 'Organization',
 	'nav.users': 'Users',
 	'nav.roles': 'Roles',

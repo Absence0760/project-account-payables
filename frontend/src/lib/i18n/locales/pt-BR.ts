@@ -36,6 +36,7 @@ export const messages = {
 	'nav.aiAssistant': 'Assistente de IA',
 	'nav.cashFlow': 'Fluxo de caixa',
 	'nav.taxReporting': 'Relatório 1099',
+	'nav.reports': 'Gerador de relatórios',
 	'nav.organization': 'Organização',
 	'nav.users': 'Usuários',
 	'nav.roles': 'Funções',

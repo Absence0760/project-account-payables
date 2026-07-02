@@ -105,6 +105,9 @@ export const NAV: NavEntry[] = [
 			{ label: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/assistant', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Cash Flow', labelKey: 'nav.cashFlow', href: '/cfo', roles: ['admin', 'cfo'] },
 			{ label: '1099 Reporting', labelKey: 'nav.taxReporting', href: '/tax', roles: ['admin', 'ap_manager', 'cfo'] },
+			// Ad-hoc / custom Report Builder — read is all four roles (the backend
+			// gates saving/patching/deleting a definition to admin/ap_manager/cfo).
+			{ label: 'Report Builder', labelKey: 'nav.reports', href: '/reports', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 		],
 	},
 	{

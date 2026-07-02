@@ -35,6 +35,7 @@ export const messages = {
 	'nav.aiAssistant': 'KI-Assistent',
 	'nav.cashFlow': 'Liquidität',
 	'nav.taxReporting': '1099-Meldung',
+	'nav.reports': 'Berichtsgenerator',
 	'nav.organization': 'Organisation',
 	'nav.users': 'Benutzer',
 	'nav.roles': 'Rollen',
