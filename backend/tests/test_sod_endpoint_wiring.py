@@ -114,6 +114,10 @@ def _iter_deps(dep):
 
 CASES = [
     ("/api/invoices/{invoice_id}/approve", "POST", PERM_INVOICE_APPROVE),
+    # Reject is the other half of the approve duty: an approver must be able to
+    # reject, and a custom role from which `invoice.approve` was stripped must
+    # not be able to reject through the back door. Same permission as approve.
+    ("/api/invoices/{invoice_id}/reject", "POST", PERM_INVOICE_APPROVE),
     ("/api/payments", "POST", PERM_PAYMENT_EXECUTE),
     ("/api/payments/runs", "POST", PERM_PAYMENT_RUN_APPROVE),
 ]

@@ -26,26 +26,39 @@ from app.models.workflow import WorkflowInstance
 # ------------------------------------------------------------------
 
 
-def check_segregation(
+def violates_segregation(
     invoice: Invoice,
     actor_id: uuid.UUID,
     approval_config: dict,
-) -> None:
-    """Raise 403 if the approver is the same user who uploaded the invoice.
+) -> bool:
+    """Return True if approving as ``actor_id`` would breach segregation of duties.
 
     SoD is the classic AP invariant and a SOC 2 baseline — default-on. Orgs
     that need to disable it (e.g. single-operator accounts) must set
     ``require_segregation: false`` explicitly on the approval step config.
 
-    Skips when:
+    Returns False (no breach) when:
     - require_segregation is explicitly set to False in the approval config
     - uploaded_by_id is NULL (pre-existing invoices)
+
+    The pure predicate is shared by ``check_segregation`` (which raises) and by
+    the amount-floor auto-approve path (which degrades to human review rather
+    than 403 a legitimate submission) so both honour one definition of the rule.
     """
     if approval_config.get("require_segregation", True) is False:
-        return
+        return False
     if invoice.uploaded_by_id is None:
-        return
-    if invoice.uploaded_by_id == actor_id:
+        return False
+    return invoice.uploaded_by_id == actor_id
+
+
+def check_segregation(
+    invoice: Invoice,
+    actor_id: uuid.UUID,
+    approval_config: dict,
+) -> None:
+    """Raise 403 if the approver is the same user who uploaded the invoice."""
+    if violates_segregation(invoice, actor_id, approval_config):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(

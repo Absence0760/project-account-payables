@@ -131,6 +131,43 @@ def test_segregation_defaults_on_when_key_missing():
     assert exc_info.value.status_code == 403
 
 
+# ---------------------------------------------------------------------------
+# violates_segregation — the pure predicate shared by check_segregation and the
+# amount-floor auto-approve path (which degrades to human review, not a 403).
+# ---------------------------------------------------------------------------
+
+
+def test_violates_segregation_true_for_self_uploader():
+    """Uploader == actor with require_segregation on → predicate is True."""
+    from app.services.approval_chain import violates_segregation
+
+    actor_id = uuid.uuid4()
+    invoice = _make_invoice(uploaded_by_id=actor_id)
+    assert violates_segregation(invoice, actor_id, {"require_segregation": True}) is True
+    # Default-on when the key is absent.
+    assert violates_segregation(invoice, actor_id, {}) is True
+
+
+def test_violates_segregation_false_for_other_user():
+    """A different actor from the uploader never violates SoD."""
+    from app.services.approval_chain import violates_segregation
+
+    invoice = _make_invoice(uploaded_by_id=uuid.uuid4())
+    assert violates_segregation(invoice, uuid.uuid4(), {"require_segregation": True}) is False
+
+
+def test_violates_segregation_false_when_disabled_or_null_uploader():
+    """Opt-out and pre-existing (NULL uploader) invoices don't violate SoD."""
+    from app.services.approval_chain import violates_segregation
+
+    actor_id = uuid.uuid4()
+    self_uploaded = _make_invoice(uploaded_by_id=actor_id)
+    assert violates_segregation(self_uploaded, actor_id, {"require_segregation": False}) is False
+
+    legacy = _make_invoice(uploaded_by_id=None)
+    assert violates_segregation(legacy, actor_id, {"require_segregation": True}) is False
+
+
 def test_default_steps_config_has_segregation_enabled():
     """New workflow definitions default to require_segregation=True on the approval step."""
     from app.services.workflow_engine import DEFAULT_STEPS_CONFIG

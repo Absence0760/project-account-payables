@@ -292,7 +292,7 @@ async def reject_invoice(
     invoice_id: uuid.UUID,
     body: RejectRequest,
     db: AsyncSession = Depends(get_tenant_db),
-    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    user: User = Depends(require_permission(PERM_INVOICE_APPROVE)),
 ):
     invoice = await get_invoice_for_update(db, invoice_id)
 
@@ -430,14 +430,21 @@ async def complete_invoice(
         # honours the max_invoice_amount / require_cfo_above money-control gates
         # (a misconfigured high `auto_approve_below` must not slip a CFO-gated
         # amount past review). confidence 0.0 → only the amount floor can fire.
+        from app.services.approval_chain import violates_segregation
         from app.services.extraction import decide_auto_approve
 
+        # Segregation of duties is another control gate the amount floor must
+        # honour: if the caller uploaded this invoice and the org requires
+        # segregation, the amount-floor auto-approve would make them the
+        # effective approver of their own invoice. Degrade to human review (as
+        # the CFO/max-amount gates already do) rather than 403 a legitimate
+        # submission — a second pair of eyes still signs off.
         if decide_auto_approve(
             extraction_config,
             approval_config,
             overall_confidence=0.0,
             amount=invoice.amount,
-        ):
+        ) and not violates_segregation(invoice, user.id, approval_config):
             from datetime import date
 
             invoice.approval_date = date.today()
