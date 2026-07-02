@@ -19,54 +19,6 @@ import pytest
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
 
-from app.api import (
-    access_reviews,
-    admin,
-    analytics,
-    api_keys,
-    audit,
-    auth,
-    auth_saml,
-    auth_sso,
-    billing,
-    billing_webhook,
-    budgets,
-    cards,
-    catalogs,
-    contracts,
-    credit_memos,
-    dashboard,
-    email_actions,
-    email_intake,
-    entities,
-    erp_webhook,
-    exception_agents,
-    exceptions,
-    gl_accounts,
-    goods_receipts,
-    intake,
-    invoices,
-    notifications,
-    organization,
-    partner,
-    payments,
-    peppol_inbound,
-    portal,
-    portal_auth,
-    purchase_orders,
-    recurring,
-    requisitions,
-    scim,
-    signup,
-    slack_approvals,
-    tax,
-    tax_intl,
-    teams_approvals,
-    vendor_statement_recon,
-    vendors,
-    workflow,
-    workflow_definitions,
-)
 from app.api.deps import (
     ALL_ROLES,
     ROLE_ADMIN,
@@ -78,7 +30,7 @@ from app.api.deps import (
     require_roles,
 )
 from app.api.portal_deps import get_current_vendor_user
-from app.api.v1 import router as public_v1_router
+from app.main import app
 
 # ---------- Endpoints that legitimately don't take a JWT --------------------
 
@@ -172,71 +124,61 @@ NO_AUTH_REQUIRED = {
     # path. Public-by-design (the billing provider POSTs it); resolves the
     # control-plane Subscription by the provider id carried in the event.
     ("POST", "/billing/webhook/{provider}"),
+    # main.py — liveness probe. No identity, no tenant data.
+    ("GET", "/health"),
+    # main.py — non-secret config (hCaptcha sitekey, tenant URL template) the
+    # frontend needs before a session exists (signup form, tenant lookup).
+    ("GET", "/public-config"),
+    # v1_openapi.py — the published OpenAPI contract + Swagger UI for the public
+    # /api/v1 surface. Public-to-read like any API doc page; 404s when
+    # AP_PUBLIC_API_ENABLED is off (see _ensure_enabled). No tenant data.
+    ("GET", "/v1/openapi.json"),
+    ("GET", "/v1/docs"),
 }
 
-# Routers wired into the app at /api — same set as app/main.py.
-ROUTERS = [
-    access_reviews.router,
-    admin.router,
-    analytics.router,
-    api_keys.router,
-    public_v1_router,
-    audit.router,
-    auth.router,
-    auth_saml.router,
-    auth_sso.router,
-    billing.router,
-    billing_webhook.public_router,
-    budgets.router,
-    cards.router,
-    catalogs.router,
-    catalogs.public_router,
-    contracts.router,
-    credit_memos.router,
-    dashboard.router,
-    email_actions.public_router,
-    email_intake.admin_router,
-    email_intake.public_router,
-    entities.router,
-    erp_webhook.router,
-    exception_agents.router,
-    exceptions.router,
-    gl_accounts.router,
-    goods_receipts.router,
-    intake.router,
-    invoices.router,
-    notifications.router,
-    organization.router,
-    partner.router,
-    payments.router,
-    peppol_inbound.public_router,
-    portal.router,
-    portal_auth.router,
-    purchase_orders.router,
-    recurring.router,
-    requisitions.router,
-    scim.router,
-    signup.router,
-    slack_approvals.public_router,
-    tax.router,
-    tax_intl.router,
-    teams_approvals.public_router,
-    vendor_statement_recon.router,
-    vendors.router,
-    workflow.router,
-    workflow_definitions.router,
-]
+
+def _iter_api_routes() -> Iterable[tuple[str, set[str], APIRoute]]:
+    """Every `APIRoute` mounted under `/api` in the live app, with its full
+    method set and path.
+
+    FastAPI 0.139 keeps routers pulled in via `app.include_router(...)` as
+    nested objects on `app.routes` rather than flattening their routes into
+    top-level `APIRoute`s, so a naive `for route in app.routes` scan silently
+    misses everything mounted through a sub-router. `iter_route_contexts` is
+    the supported way to flatten the nested router tree into (path, methods,
+    route) tuples — see `test_sod_endpoint_wiring.py` for the same pattern.
+    """
+    try:
+        from fastapi.routing import iter_route_contexts
+    except ImportError:  # pragma: no cover - pre-0.139 FastAPI fallback
+        for route in app.routes:
+            if isinstance(route, APIRoute):
+                yield route.path, route.methods or set(), route
+        return
+    for ctx in iter_route_contexts(app.routes):
+        if isinstance(ctx.route, APIRoute):
+            yield ctx.path, ctx.methods or set(), ctx.route
 
 
-def _iter_endpoints(routers: Iterable) -> Iterable[tuple[str, str, callable]]:
-    for r in routers:
-        for route in r.routes:
-            if not isinstance(route, APIRoute):
+def _iter_endpoints() -> Iterable[tuple[str, str, callable]]:
+    """(method, path, endpoint) for every `/api` endpoint in the live app.
+
+    Introspects the running `FastAPI` app instead of a hand-maintained router
+    list — a new `app.include_router(...)` in `app/main.py` is automatically
+    picked up here, so this coverage gate can't silently go blind to a router
+    the way the old list did. `/docs`, `/redoc`, `/openapi.json` (FastAPI's own
+    auto-generated meta routes, mounted outside `/api`) are excluded; the path
+    is stripped of its leading `/api` to match the existing NO_AUTH_REQUIRED /
+    _PERMISSION_GATED_ENDPOINTS path convention.
+    """
+    for path, methods, route in _iter_api_routes():
+        if not path.startswith("/api"):
+            continue
+        stripped = path[len("/api") :] or "/"
+        for method in methods:
+            if method == "HEAD":
                 continue
-            for method in route.methods or ():
-                if method == "HEAD":
-                    continue
-                yield method, route.path, route.endpoint
+            yield method, stripped, route.endpoint
 
 
 def _has_auth_dep(endpoint: callable) -> bool:
@@ -266,7 +208,7 @@ def test_every_endpoint_requires_auth_or_is_explicitly_public():
     dependency or be added to NO_AUTH_REQUIRED. This is the *one* test that
     has to fail noisily in CI if someone forgets RBAC."""
     missing: list[str] = []
-    for method, path, endpoint in _iter_endpoints(ROUTERS):
+    for method, path, endpoint in _iter_endpoints():
         if (method, path) in NO_AUTH_REQUIRED:
             continue
         if not _has_auth_dep(endpoint):
@@ -278,7 +220,7 @@ def test_no_auth_required_paths_actually_exist():
     """Don't let NO_AUTH_REQUIRED rot — every entry should match a real
     route. A renamed endpoint that no longer exists silently weakens the
     coverage gate above."""
-    seen = {(m, p) for m, p, _ in _iter_endpoints(ROUTERS)}
+    seen = {(m, p) for m, p, _ in _iter_endpoints()}
     stale = NO_AUTH_REQUIRED - seen
     assert not stale, f"NO_AUTH_REQUIRED has entries that no longer exist: {sorted(stale)}"
 
@@ -415,7 +357,7 @@ def test_split_endpoints_are_permission_gated():
     permission via `require_permission` — not just on `require_roles`. This is
     the SoD enforcement contract; a regression that reverts one of these to a
     role gate (or drops the permission) fails here."""
-    by_path = {(m, p): ep for m, p, ep in _iter_endpoints(ROUTERS)}
+    by_path = {(m, p): ep for m, p, ep in _iter_endpoints()}
     failures: list[str] = []
     for key, expected_perm in _PERMISSION_GATED_ENDPOINTS.items():
         endpoint = by_path.get(key)
