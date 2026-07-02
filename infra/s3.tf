@@ -84,6 +84,57 @@ resource "aws_s3_bucket_logging" "invoice_files" {
   target_prefix = "invoice-files/"
 }
 
+# Object Lock doesn't stop a lifecycle rule from being defined or evaluated —
+# AWS just defers deletion of any version still inside its own lock window.
+# Without this, noncurrent versions accumulate forever once retention starts
+# elapsing. The `+ 30` buffer keeps expiration from racing the lock itself.
+resource "aws_s3_bucket_lifecycle_configuration" "invoice_files" {
+  bucket = aws_s3_bucket.invoice_files.id
+
+  rule {
+    id     = "expire-noncurrent-invoice-file-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.invoice_retention_days + 30
+    }
+  }
+}
+
+# Defense-in-depth: explicitly deny any request over plain HTTP. Public
+# Access Block already stops unauthenticated/public access, so this is
+# hardening rather than closing an open hole.
+data "aws_iam_policy_document" "invoice_files_tls" {
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+
+    resources = [
+      aws_s3_bucket.invoice_files.arn,
+      "${aws_s3_bucket.invoice_files.arn}/*",
+    ]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "invoice_files_tls" {
+  bucket = aws_s3_bucket.invoice_files.id
+  policy = data.aws_iam_policy_document.invoice_files_tls.json
+}
+
 
 # --- Audit-log shipping bucket ----------------------------------------------
 # Receives rows exported from each tenant's `audit_log` table. Compliance
@@ -144,6 +195,57 @@ resource "aws_s3_bucket_logging" "audit_logs" {
   bucket        = aws_s3_bucket.audit_logs.id
   target_bucket = aws_s3_bucket.access_logs.id
   target_prefix = "audit-logs/"
+}
+
+# Object Lock doesn't stop a lifecycle rule from being defined or evaluated —
+# AWS just defers deletion of any version still inside its own lock window.
+# Without this, noncurrent versions accumulate forever once retention starts
+# elapsing. The `+ 30` buffer keeps expiration from racing the lock itself.
+resource "aws_s3_bucket_lifecycle_configuration" "audit_logs" {
+  bucket = aws_s3_bucket.audit_logs.id
+
+  rule {
+    id     = "expire-noncurrent-audit-log-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.audit_retention_days + 30
+    }
+  }
+}
+
+# Defense-in-depth: explicitly deny any request over plain HTTP. Public
+# Access Block already stops unauthenticated/public access, so this is
+# hardening rather than closing an open hole.
+data "aws_iam_policy_document" "audit_logs_tls" {
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+
+    resources = [
+      aws_s3_bucket.audit_logs.arn,
+      "${aws_s3_bucket.audit_logs.arn}/*",
+    ]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "audit_logs_tls" {
+  bucket = aws_s3_bucket.audit_logs.id
+  policy = data.aws_iam_policy_document.audit_logs_tls.json
 }
 
 
