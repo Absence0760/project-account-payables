@@ -237,7 +237,12 @@ export const api = {
 	patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
 	put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
 	delete: (path: string) => request<void>(path, { method: 'DELETE' }),
-	upload: <T>(path: string, file: File, fields?: Record<string, string | string[] | undefined>) => {
+	upload: <T>(
+		path: string,
+		file: File,
+		fields?: Record<string, string | string[] | undefined>,
+		method: 'POST' | 'PUT' = 'POST'
+	) => {
 		const form = new FormData();
 		form.append('file', file);
 		// Optional extra multipart form fields (e.g. chat attachment body /
@@ -254,7 +259,7 @@ export const api = {
 			}
 		}
 		return request<T>(path, {
-			method: 'POST',
+			method,
 			body: form,
 			headers: {},  // let browser set Content-Type with boundary
 		});

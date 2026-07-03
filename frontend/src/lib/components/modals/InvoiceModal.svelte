@@ -7,6 +7,7 @@
 	import { adminStore } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
+	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
@@ -65,6 +66,8 @@
 		'invoice.completed': 'invoices.modal.action.markedComplete',
 		'invoice.edited': 'invoices.modal.action.editedFields',
 		'invoice.file_attached': 'invoices.modal.action.fileAttached',
+		'invoice.file_replaced': 'invoices.modal.action.fileReplaced',
+		'invoice.file_deleted': 'invoices.modal.action.fileDeleted',
 		'audit.viewed': 'invoices.modal.action.auditViewed',
 		'audit.exported': 'invoices.modal.action.auditExported',
 		'chat_message_posted': 'invoices.modal.action.chatPosted',
@@ -92,6 +95,7 @@
 	let amount = $state(invoice.amount);
 	let due_date = $state(invoice.due_date);
 	let status = $state(invoice.status);
+	let currentFileUrl = $state(invoice.file_url);
 	let po_number = $state(invoice.po_number);
 	let description = $state(invoice.description);
 	let vendor_address = $state(invoice.vendor_address ?? '');
@@ -168,6 +172,10 @@
 	let deleting = $state(false);
 	let confirmDelete = $state(false);
 	let reviewing = $state(false);
+	let uploadingFile = $state(false);
+	let confirmDeleteFile = $state(false);
+	let deletingFile = $state(false);
+	let fileInput: HTMLInputElement | undefined = $state();
 	let showRejectForm = $state(false);
 	let rejectReason = $state('');
 	let selectedApproverId = $state('');
@@ -210,12 +218,13 @@
 	let canRetryErp = $derived(status === 'failed' && !isClerkOnly && invoice.approved_by);
 	let retryingErp = $state(false);
 	let canExtract = $derived(
-		(status === 'new' || status === 'failed') && invoice.file_url
+		(status === 'new' || status === 'failed') && currentFileUrl
 	);
 	let extracting = $state(false);
 	let canDelete = $derived(
 		!isClerkOnly && status !== 'done' && status !== 'sent_to_erp' && status !== 'sending_to_erp'
 	);
+	let canManageFile = $derived(!isClerkOnly && status !== 'done');
 	let isReadyForReview = $derived(status === 'ready_for_review');
 	let canReview = $derived(isReadyForReview && !isClerkOnly && (
 		!invoice.assigned_to_id || invoice.assigned_to_id === auth.user?.id
@@ -448,6 +457,57 @@
 		} finally {
 			deleting = false;
 			confirmDelete = false;
+		}
+	}
+
+	async function handleFileSelected(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		const isReplace = !!currentFileUrl;
+		uploadingFile = true;
+		try {
+			const response = await api.upload<Invoice>(
+				`/api/invoices/${invoice.id}/file`,
+				file,
+				undefined,
+				isReplace ? 'PUT' : 'POST'
+			);
+			currentFileUrl = response.file_url;
+			invoiceStore.patchLocal(invoice.id, { file_url: response.file_url });
+			toast(isReplace ? m('invoices.modal.toast.fileReplaced') : m('invoices.modal.toast.fileUploaded'), 'success');
+			await loadAuditLog();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.fileActionFailed'), 'error');
+		} finally {
+			uploadingFile = false;
+			input.value = '';
+		}
+	}
+
+	async function handleDeleteFile() {
+		if (!confirmDeleteFile) {
+			confirmDeleteFile = true;
+			return;
+		}
+		deletingFile = true;
+		try {
+			await api.delete(`/api/invoices/${invoice.id}/file`);
+			currentFileUrl = null;
+			invoiceStore.patchLocal(invoice.id, { file_url: null });
+			toast(m('invoices.modal.toast.fileDeleted'), 'success');
+			await loadAuditLog();
+		} catch (err) {
+			toast(err instanceof Error ? err.message : m('invoices.modal.toast.fileActionFailed'), 'error');
+		} finally {
+			deletingFile = false;
+			confirmDeleteFile = false;
+		}
+	}
+
+	function handleFileActionsWindowClick(e: MouseEvent) {
+		if (confirmDeleteFile && !(e.target as HTMLElement).closest('.row-action')) {
+			confirmDeleteFile = false;
 		}
 	}
 
@@ -718,7 +778,7 @@
 	let fileLoadError = $state(false);
 
 	$effect(() => {
-		const path = invoice.file_url;
+		const path = currentFileUrl;
 		fileLoadError = false;
 		if (!path) {
 			fileBlobUrl = null;
@@ -885,6 +945,8 @@
 	// Esc + focus trap/restore are handled by the shared `focusTrap` action.
 </script>
 
+<svelte:window onclick={handleFileActionsWindowClick} />
+
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div class="backdrop" onclick={handleBackdrop}>
 	<div
@@ -917,8 +979,47 @@
 
 		<div class="split" class:resizing>
 			<div class="pdf-pane">
-				{#if invoice.file_url}
-					{@const isImage = /\.(png|jpg|jpeg|tiff?)$/i.test(invoice.file_url)}
+				{#if canManageFile}
+					<div class="file-actions">
+						{#if !currentFileUrl}
+							<button
+								type="button"
+								class="btn-file-action"
+								disabled={uploadingFile}
+								aria-label={m('invoices.modal.file.uploadAria')}
+								onclick={() => fileInput?.click()}
+							>
+								{m('invoices.modal.file.upload')}
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="btn-file-action"
+								disabled={uploadingFile}
+								onclick={() => fileInput?.click()}
+							>
+								{m('invoices.modal.file.replace')}
+							</button>
+							<RowAction
+								variant="danger"
+								armed={confirmDeleteFile}
+								disabled={deletingFile}
+								onclick={handleDeleteFile}
+							>
+								{confirmDeleteFile ? m('invoices.modal.file.deleteConfirm') : m('invoices.modal.file.delete')}
+							</RowAction>
+						{/if}
+						<input
+							type="file"
+							accept=".pdf,.png,.jpg,.jpeg,.tiff"
+							bind:this={fileInput}
+							onchange={handleFileSelected}
+							hidden
+						/>
+					</div>
+				{/if}
+				{#if currentFileUrl}
+					{@const isImage = /\.(png|jpg|jpeg|tiff?)$/i.test(currentFileUrl)}
 					{#if fileLoadError}
 						<div class="no-pdf">{m('invoices.modal.fileLoadError')}</div>
 					{:else if !fileBlobUrl}
@@ -1616,12 +1717,15 @@
 		border-right: 1px solid var(--border);
 		background: #1a1a24;
 		display: flex;
+		flex-direction: column;
 		contain: paint;
 	}
 
 	.pdf-pane iframe {
 		width: 100%;
 		height: 100%;
+		flex: 1;
+		min-height: 0;
 		border: none;
 		/* Own compositing layer — prevents the browser from repainting the
 		   heavyweight PDF renderer on every scroll frame of the form pane. */
@@ -1631,12 +1735,15 @@
 	.pdf-pane .invoice-image {
 		width: 100%;
 		height: 100%;
+		flex: 1;
+		min-height: 0;
 		object-fit: contain;
 		will-change: transform;
 	}
 
 	.no-pdf {
 		flex: 1;
+		min-height: 0;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -1644,6 +1751,37 @@
 		gap: 12px;
 		color: var(--text-muted);
 		font-size: 0.9rem;
+	}
+
+	.file-actions {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--border);
+		background: var(--surface);
+	}
+
+	.btn-file-action {
+		padding: 5px 12px;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.btn-file-action:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.btn-file-action:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	/* --- Form pane --- */

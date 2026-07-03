@@ -16,7 +16,7 @@ function createInvoiceStore() {
 	let statusCounts = $state<Record<string, number>>({});
 	let lastParams = $state<Record<string, string>>({});
 
-	async function fetch(params?: Record<string, string>) {
+	async function fetch(params?: Record<string, string>) { // noqa: raw-fetch-in-component — store method name; routes through api.get
 		loading = true;
 		try {
 			const merged = { ...(params ?? {}) };
@@ -72,6 +72,13 @@ function createInvoiceStore() {
 		invoices = invoices.map((inv) => (inv.id === id ? updated : inv));
 	}
 
+	/** Patch the local list cache in place, with no API call. For callers that
+	 *  already mutated the invoice via a dedicated endpoint (e.g. the file
+	 *  attach/replace/delete routes) and just need the cached row to reflect it. */
+	function patchLocal(id: string, changes: Partial<Invoice>) {
+		invoices = invoices.map((inv) => (inv.id === id ? { ...inv, ...changes } : inv));
+	}
+
 	return {
 		get all() { return invoices; },
 		get loading() { return loading; },
@@ -83,6 +90,7 @@ function createInvoiceStore() {
 		loadMore,
 		fetchCounts,
 		update,
+		patchLocal,
 	};
 }
 
