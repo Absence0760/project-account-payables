@@ -295,7 +295,7 @@ section on `/organization` (UI maps onto `settings.fraud_rules`).
 ---
 
 ### Virtual Card Program
-**Status:** Partial — adapter pattern (Lithic + Nium), models, API endpoints, org config UI, and webhook handler done. Frontend card list page and payment run integration not yet built.
+**Status:** Done — adapter pattern (Lithic + Nium), models, API endpoints, org config UI, webhook handler, frontend Cards tab (list + dashboard + rebates), and payment-run integration (`virtual_card` method + `execute_payment_run` card issuance) all shipped.
 
 Generate single-use virtual cards per invoice payment. Earn 1-2% rebates on every card payment. Primary monetization channel. See [virtual-cards.md](../backend/docs/virtual-cards.md) for full design.
 
