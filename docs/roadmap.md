@@ -112,14 +112,13 @@ Let a reviewer fix a bad attachment (wrong file, illegible scan, missing pages) 
 ---
 
 ### Manual Invoice Entry (No-OCR Creation)
-**Status:** Partial — `POST /api/invoices` (`create_invoice` in `backend/app/api/invoices.py`) already exists and does most of this: takes a full field set (vendor, amounts, dates, GL coding, etc.), always enters at `new` status (not caller-settable), gated to `admin`/`ap_manager`/`cfo`, and snapshots a workflow instance like every other invoice. What's missing is (a) any frontend path to reach it — the only invoice-creation UI today is Upload Invoices, which always runs the extraction pipeline — and (b) attaching a source PDF on manual create.
+**Status:** Done. `POST /api/invoices` (`create_invoice`) already keyed a full field set at `new` status; this shipped the missing frontend path plus optional-file attach. AP clerks can now key an invoice in directly instead of being forced through OCR.
 
-Not every invoice arrives as a scannable document — phone/email-verbal orders, corrections to a botched extraction, or a vendor with no PDF at all. AP clerks need a way to key an invoice in directly rather than being forced through OCR.
-
-- [ ] `POST /api/invoices` accepts an optional file alongside the field payload (multipart, mirroring `/upload`'s storage path) — a manually-entered invoice can still carry its source document even though it skips extraction
-- [ ] Frontend "Create Invoice" flow — a form (reusing `InvoiceModal`'s field layout) for vendor/amount/dates/GL coding/etc. + an optional file picker, reachable from the `/invoices` page toolbar alongside Upload Invoices
-- [ ] Submits into the invoice's normal starting status (`new`) — no different treatment than an extracted invoice from that point on; goes through the same review/approval/PO-match pipeline
-- [ ] `InvoiceExtractionResult` is simply absent for a manually-entered invoice (no extraction ran) — confirm the invoice modal's priors/confidence UI degrades cleanly (no extraction panel) rather than showing an empty/broken state
+- [x] `POST /api/invoices/{id}/file` — a new attach-only companion endpoint (not a single multipart POST on create, to keep `create_invoice`'s existing JSON contract untouched): refuses with 409 once the invoice already has a file, so it can never double as a "replace" path (that's the separate, still-TBD Invoice PDF Management item below). Same admin/ap_manager/cfo gate as create; audits `invoice.file_attached`
+- [x] Frontend `CreateInvoiceModal` — a fresh, focused create form (vendor/invoice#/amount/currency/dates/PO/payment terms/GL account (dropdown when the org catalog is loaded)/cost center) + an optional file picker; deliberately NOT built into the existing edit-focused `InvoiceModal` (which carries audit-timeline/chat/PO-match/extraction-confidence machinery that doesn't apply to a blank form). Reachable via "+ Create Invoice" on the `/invoices` toolbar, gated to admin/ap_manager/cfo (`auth.hasAnyRole`); the backend enforces regardless. A rejected file (bad type/oversized) surfaces its own toast without rolling back the already-created invoice
+- [x] Submits into `new` — no different treatment than an extracted invoice from that point on; goes through the same review/approval/PO-match pipeline
+- [x] `InvoiceExtractionResult` is simply absent for a manually-entered invoice — the invoice modal's summary/activity view degrades cleanly (verified manually: no extraction panel, no broken state)
+- [x] i18n across all 6 locales + e2e coverage (`tests-e2e/invoices/create-manual.spec.ts`: required-field gating, create with/without a file, ap_clerk role-gate) + backend tests (`backend/tests/test_invoice_manual_entry.py`)
 
 ---
 
