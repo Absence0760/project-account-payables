@@ -63,7 +63,7 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
-from app.services.storage import get_file, upload_chat_file, upload_invoice_file
+from app.services.storage import delete_file, get_file, upload_chat_file, upload_invoice_file
 from app.services.supplier_chat import (
     CHAT_TEMPLATES,
     chat_enabled,
@@ -765,6 +765,116 @@ async def attach_invoice_file(
         details={"filename": file.filename, "content_type": file.content_type},
     )
     await db.flush()
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice.id)
+    )
+    invoice = result.scalar_one()
+    return InvoiceResponse.from_db(invoice)
+
+
+@router.put("/{invoice_id}/file", response_model=InvoiceResponse, status_code=status.HTTP_200_OK)
+async def replace_invoice_file(
+    invoice_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Replace an invoice's existing file — the companion to `attach_invoice_file`.
+
+    `attach_invoice_file` only works when the invoice has no file yet; this
+    endpoint is the reverse — it requires one to already be present (404
+    otherwise, pointing the caller at attach instead) and swaps it for a new
+    upload. Refused once the invoice is `done` (terminal, financially frozen)
+    to match the rest of the file-mutation gating in this file.
+    """
+    invoice = await _load_invoice_or_404(db, invoice_id)
+    if not invoice.file_key:
+        raise HTTPException(status_code=404, detail="No file to replace. Use upload to attach one.")
+    if invoice.status == DBInvoiceStatus.done:
+        raise HTTPException(
+            status_code=409, detail="Cannot modify the file once the invoice is done."
+        )
+
+    old_file_key = invoice.file_key
+    try:
+        file_key, file_url = await upload_invoice_file(org_id, invoice.id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    invoice.file_key = file_key
+    invoice.file_url = file_url
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        actor_id=user.id,
+        action="invoice.file_replaced",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={
+            "previous_filename": old_file_key.rsplit("/", 1)[-1],
+            "filename": file_key.rsplit("/", 1)[-1],
+            "content_type": file.content_type,
+        },
+    )
+    # Commit before touching storage — the row pointing at the new key must be
+    # durable before the old object is removed, so a failure here never leaves
+    # `file_key` referencing an object we already deleted (mirrors the
+    # commit-then-delete order in api/positive_pay.py's delete route).
+    await db.commit()
+    # upload_invoice_file's S3 key is deterministic on the sanitized filename
+    # (no uniquifier) — replacing a file with one of the SAME name overwrites
+    # the old object in place, so old_file_key == file_key. Deleting it in
+    # that case would delete the file we just wrote.
+    if old_file_key != file_key:
+        delete_file(old_file_key)
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice.id)
+    )
+    invoice = result.scalar_one()
+    return InvoiceResponse.from_db(invoice)
+
+
+@router.delete("/{invoice_id}/file", response_model=InvoiceResponse, status_code=status.HTTP_200_OK)
+async def delete_invoice_file(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+):
+    """Delete an invoice's file without replacing it."""
+    invoice = await _load_invoice_or_404(db, invoice_id)
+    if not invoice.file_key:
+        raise HTTPException(status_code=404, detail="No file to delete.")
+    if invoice.status == DBInvoiceStatus.done:
+        raise HTTPException(
+            status_code=409, detail="Cannot modify the file once the invoice is done."
+        )
+
+    filename = invoice.file_key.rsplit("/", 1)[-1]
+    file_key_to_delete = invoice.file_key
+    invoice.file_key = None
+    invoice.file_url = None
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        actor_id=user.id,
+        action="invoice.file_deleted",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={"filename": filename},
+    )
+    # Commit before touching storage — see replace_invoice_file for why
+    # (mirrors api/positive_pay.py's commit-then-delete order).
+    await db.commit()
+    delete_file(file_key_to_delete)
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.extraction_results))

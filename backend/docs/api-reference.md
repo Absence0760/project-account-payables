@@ -169,6 +169,9 @@ See [`docs/self-service-signup.md`](../../docs/self-service-signup.md) for the f
 | `GET`    | `/api/invoices/{id}/line-items`     | *     | Get invoice line items |
 | `PUT`    | `/api/invoices/{id}/line-items`     | admin/manager/cfo | Replace all line items |
 | `POST`   | `/api/invoices`                     | admin/manager/cfo | Create invoice |
+| `POST`   | `/api/invoices/{id}/file`           | admin/manager/cfo | Attach a source file to a manually-entered invoice that has none yet. 409 if it already has one. |
+| `PUT`    | `/api/invoices/{id}/file`           | admin/manager/cfo | Replace an invoice's existing file. 404 if none to replace, 409 if the invoice is done. |
+| `DELETE` | `/api/invoices/{id}/file`           | admin/manager/cfo | Delete an invoice's file. 404 if none to delete, 409 if the invoice is done. |
 | `PATCH`  | `/api/invoices/{id}`                | admin/manager/cfo | Update invoice |
 | `DELETE` | `/api/invoices/{id}`                | admin/manager/cfo | Delete invoice |
 | `POST`   | `/api/invoices/bulk/delete`         | admin/manager/cfo | Bulk delete |
