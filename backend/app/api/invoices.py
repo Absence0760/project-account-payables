@@ -63,7 +63,7 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
-from app.services.storage import get_file, upload_chat_file
+from app.services.storage import get_file, upload_chat_file, upload_invoice_file
 from app.services.supplier_chat import (
     CHAT_TEMPLATES,
     chat_enabled,
@@ -713,6 +713,58 @@ async def create_invoice(
     await create_workflow_instance(db, invoice)
     # Re-fetch with extraction_results eager-loaded so InvoiceResponse.from_db
     # → _priors_summary doesn't trigger an async-illegal lazy load.
+    result = await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.extraction_results))
+        .where(Invoice.id == invoice.id)
+    )
+    invoice = result.scalar_one()
+    return InvoiceResponse.from_db(invoice)
+
+
+@router.post(
+    "/{invoice_id}/file", response_model=InvoiceResponse, status_code=status.HTTP_201_CREATED
+)
+async def attach_invoice_file(
+    invoice_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO)),
+    org_id: uuid.UUID = Depends(get_org_id),
+):
+    """Attach a source file to a manually-entered invoice that has none yet.
+
+    Manual entry (``create_invoice``) never runs extraction, so a caller who
+    wants to keep the source document alongside a manually-keyed invoice
+    attaches it as a second step. Attach-only: refuses once the invoice
+    already has a file rather than silently replacing it — replacing an
+    existing invoice file is a separate, not-yet-built feature with its own
+    role/status gating still to be decided (see docs/roadmap.md § Invoice PDF
+    Management).
+    """
+    invoice = await _load_invoice_or_404(db, invoice_id)
+    if invoice.file_key:
+        raise HTTPException(status_code=409, detail="Invoice already has a file attached.")
+
+    try:
+        file_key, file_url = await upload_invoice_file(org_id, invoice.id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    invoice.file_key = file_key
+    invoice.file_url = file_url
+    await dispatch_audit(
+        db,
+        correlation_id=invoice.correlation_id,
+        organization_id=invoice.organization_id,
+        actor_id=user.id,
+        action="invoice.file_attached",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        details={"filename": file.filename, "content_type": file.content_type},
+    )
+    await db.flush()
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.extraction_results))
