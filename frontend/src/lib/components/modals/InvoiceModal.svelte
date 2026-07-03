@@ -64,6 +64,7 @@
 		'invoice.extraction_failed': 'invoices.modal.action.extractionFailed',
 		'invoice.completed': 'invoices.modal.action.markedComplete',
 		'invoice.edited': 'invoices.modal.action.editedFields',
+		'invoice.file_attached': 'invoices.modal.action.fileAttached',
 		'audit.viewed': 'invoices.modal.action.auditViewed',
 		'audit.exported': 'invoices.modal.action.auditExported',
 		'chat_message_posted': 'invoices.modal.action.chatPosted',

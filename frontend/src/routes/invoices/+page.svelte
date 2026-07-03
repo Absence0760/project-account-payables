@@ -6,6 +6,7 @@
 	import { api } from '$lib/api';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import InvoiceModal from '$lib/components/modals/InvoiceModal.svelte';
+	import CreateInvoiceModal from '$lib/components/modals/CreateInvoiceModal.svelte';
 	import AdvancedSearchModal from '$lib/components/modals/AdvancedSearchModal.svelte';
 	import BulkRecodeGLModal from '$lib/components/modals/BulkRecodeGLModal.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
@@ -31,6 +32,12 @@
 	let uploadProgress = $state('');
 	let fileInput: HTMLInputElement;
 	let showBulkRecode = $state(false);
+	let showCreate = $state(false);
+
+	async function handleInvoiceCreated() {
+		await invoiceStore.fetch(buildParams());
+		await invoiceStore.fetchCounts();
+	}
 
 	async function handleUpload(e: Event) {
 		const input = e.target as HTMLInputElement;
@@ -395,6 +402,11 @@
 				{m('invoices.action.bulkRecode')}
 			</button>
 		{/if}
+		{#if auth.hasAnyRole('admin', 'ap_manager', 'cfo')}
+			<button class="btn-secondary" onclick={() => (showCreate = true)}>
+				{m('invoices.action.create')}
+			</button>
+		{/if}
 		<button class="btn-upload" disabled={uploading} onclick={() => fileInput.click()}>
 			{uploading ? uploadProgress || m('invoices.action.uploading') : m('invoices.action.upload')}
 		</button>
@@ -622,6 +634,10 @@
 			invoiceStore.fetchCounts();
 		}}
 	/>
+{/if}
+
+{#if showCreate}
+	<CreateInvoiceModal onclose={() => (showCreate = false)} onsaved={handleInvoiceCreated} />
 {/if}
 
 <style>
