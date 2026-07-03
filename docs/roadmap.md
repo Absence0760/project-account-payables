@@ -98,6 +98,31 @@ Predictable, fixed-cadence spend (rent, SaaS seats, utilities, insurance) should
 
 ---
 
+### Invoice PDF Management (Upload / Replace / Delete from Invoice Detail)
+**Status:** Planned. Today the invoice's source file (`Invoice.file_key`) is set once at intake (`POST /api/invoices/upload`) and there's no path to replace or remove it afterward — a mis-scanned or wrong-file upload is stuck for the life of the invoice.
+
+Let a reviewer fix a bad attachment (wrong file, illegible scan, missing pages) directly from the invoice detail page instead of deleting and re-creating the whole invoice.
+
+- [ ] `POST /api/invoices/{id}/file` (replace) + `DELETE /api/invoices/{id}/file` (remove) — reuse the existing `storage.upload_invoice_file` / filename-sanitizer path, cross-tenant-checked like the other file endpoints
+- [ ] Role gate — **TBD**; likely mirrors the existing invoice-edit gate (`admin`/`ap_manager`, possibly `ap_clerk`) rather than a new permission, but needs a decision before implementation
+- [ ] Status gate — refuse the mutation once the invoice has reached a terminal state (`done`); open question whether `paid` should also be frozen given money has already moved
+- [ ] Audit trail — every replace/delete writes an entry a reviewer can see against the invoice, not just the general `audit_log` table. Open question: reuse the existing append-only `audit_log` + the invoice modal's Activity timeline (`services/audit_summary.py`, consistent with every other status-change/correction on the invoice), vs. surfacing it in the supplier chat thread (`supplier_chat.py`) — the chat is vendor-facing collaboration today, so audit_log is the more consistent fit unless there's a reason AP wants it externally visible
+- [ ] Frontend — replace/delete affordance in `InvoiceModal` (file viewer section), gated on the same role + status checks the backend enforces (never client-only)
+
+---
+
+### Manual Invoice Entry (No-OCR Creation)
+**Status:** Partial — `POST /api/invoices` (`create_invoice` in `backend/app/api/invoices.py`) already exists and does most of this: takes a full field set (vendor, amounts, dates, GL coding, etc.), always enters at `new` status (not caller-settable), gated to `admin`/`ap_manager`/`cfo`, and snapshots a workflow instance like every other invoice. What's missing is (a) any frontend path to reach it — the only invoice-creation UI today is Upload Invoices, which always runs the extraction pipeline — and (b) attaching a source PDF on manual create.
+
+Not every invoice arrives as a scannable document — phone/email-verbal orders, corrections to a botched extraction, or a vendor with no PDF at all. AP clerks need a way to key an invoice in directly rather than being forced through OCR.
+
+- [ ] `POST /api/invoices` accepts an optional file alongside the field payload (multipart, mirroring `/upload`'s storage path) — a manually-entered invoice can still carry its source document even though it skips extraction
+- [ ] Frontend "Create Invoice" flow — a form (reusing `InvoiceModal`'s field layout) for vendor/amount/dates/GL coding/etc. + an optional file picker, reachable from the `/invoices` page toolbar alongside Upload Invoices
+- [ ] Submits into the invoice's normal starting status (`new`) — no different treatment than an extracted invoice from that point on; goes through the same review/approval/PO-match pipeline
+- [ ] `InvoiceExtractionResult` is simply absent for a manually-entered invoice (no extraction ran) — confirm the invoice modal's priors/confidence UI degrades cleanly (no extraction panel) rather than showing an empty/broken state
+
+---
+
 ## Priority 2: Workflow, Approvals & Exceptions
 
 ### Exception Queue
