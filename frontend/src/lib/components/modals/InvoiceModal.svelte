@@ -128,6 +128,17 @@
 	let formPaneWidth = $state(480);
 	let resizing = $state(false);
 
+	// Lock the background page from scrolling while the modal is open, so a
+	// wheel event over the PDF pane (which has no internal scroll) can't bleed
+	// through to the invoice grid behind the backdrop. Restored on close.
+	$effect(() => {
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	});
+
 	function toggleFullscreen() {
 		fullscreen = !fullscreen;
 		formPaneWidth = fullscreen ? 480 : 600;

@@ -10,6 +10,16 @@
 
 	let { onclose, onapplied }: Props = $props();
 
+	// Freeze background page scroll while the dialog is open (restored on close),
+	// so a wheel event over the backdrop can't bleed through to the list behind it.
+	$effect(() => {
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	});
+
 	interface RecodeChange {
 		invoice_id: string;
 		invoice_number: string;

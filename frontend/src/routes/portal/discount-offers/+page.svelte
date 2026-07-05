@@ -28,6 +28,17 @@
 	let accepting = $state<PortalDiscountOffer | null>(null);
 	let chosenTierDays = $state<number | null>(null);
 
+	// Freeze background page scroll while the accept dialog is open (restored on
+	// close), so a wheel event over the backdrop can't scroll the offers behind it.
+	$effect(() => {
+		if (!accepting) return;
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	});
+
 	async function refresh() {
 		loading = true;
 		error = '';

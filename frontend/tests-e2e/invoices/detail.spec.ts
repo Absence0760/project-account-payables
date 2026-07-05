@@ -75,6 +75,24 @@ test.describe('/invoices invoice detail modal', () => {
 		await expect(modal).toBeHidden();
 	});
 
+	test('open modal locks background page scroll; close restores it', async ({ page }) => {
+		// Regression: scrolling over the PDF pane (which has no internal scroll)
+		// used to bleed through to the invoice grid behind the backdrop. The modal
+		// now freezes `body` overflow while open and restores it on close.
+		const bodyOverflow = () => page.evaluate(() => document.body.style.overflow);
+
+		const before = await bodyOverflow();
+
+		await page.locator('table tbody tr').first().getByRole('button', { name: 'Edit' }).click();
+		const modal = page.locator('div.modal[role="dialog"]');
+		await expect(modal).toBeVisible();
+		await expect.poll(bodyOverflow).toBe('hidden');
+
+		await modal.getByRole('button', { name: 'Close' }).click();
+		await expect(modal).toBeHidden();
+		await expect.poll(bodyOverflow).toBe(before);
+	});
+
 	test('Activity timeline renders the per-field before/after change diff', async ({
 		page
 	}) => {

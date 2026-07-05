@@ -22,6 +22,18 @@
 
 	let { open = true, ariaLabel, title, width = 'md', onclose, header, children }: Props = $props();
 
+	// Freeze the background page from scrolling while the dialog is open, so a
+	// wheel event over the backdrop (or a non-scrolling area of the dialog) can't
+	// bleed through and scroll the list behind it. Restored when closed/unmounted.
+	$effect(() => {
+		if (!open) return;
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	});
+
 	function onBackdrop(e: MouseEvent) {
 		if (e.target === e.currentTarget) onclose();
 	}
