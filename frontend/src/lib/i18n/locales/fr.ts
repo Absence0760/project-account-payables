@@ -34,6 +34,7 @@ export const messages = {
 	'nav.platformBilling': 'Abonnement',
 	'nav.aiAssistant': 'Assistant IA',
 	'nav.cashFlow': 'Trésorerie',
+	'nav.cashFlowCopilot': 'Copilote de trésorerie',
 	'nav.taxReporting': 'Déclaration 1099',
 	'nav.reports': 'Générateur de rapports',
 	'nav.organization': 'Organisation',
@@ -737,6 +738,35 @@ export const messages = {
 	'org.plan.pro': 'Pro',
 	'org.plan.enterprise': 'Enterprise',
 
+	// Cash-Flow Copilot (routes/cash-flow/+page.svelte)
+	'cashFlow.title': 'Copilote de trésorerie',
+	'cashFlow.newChat': 'Nouvelle discussion',
+	'cashFlow.tips.heading': 'Astuces',
+	'cashFlow.tips.body':
+		'Posez des questions sur votre trésorerie, les décaissements à venir, les arbitrages de délai de paiement ou les escomptes à saisir.',
+	'cashFlow.empty.heading': 'Interrogez votre trésorerie',
+	'cashFlow.empty.sub':
+		'Prévoyez les décaissements, projetez votre position de trésorerie et trouvez les escomptes à saisir — chaque chiffre provient directement de votre grand livre.',
+	'cashFlow.composer.placeholder': 'Posez une question sur la trésorerie, les paiements à venir ou les escomptes…',
+	'cashFlow.composer.ariaLabel': 'Interroger le copilote de trésorerie',
+	'cashFlow.send': 'Envoyer',
+	'cashFlow.thinking': 'Réflexion…',
+	'cashFlow.chart.title': 'Position de trésorerie projetée',
+	'cashFlow.chart.opening': 'Solde d’ouverture {amount} ({source})',
+	'cashFlow.chart.source.explicit': 'saisi',
+	'cashFlow.chart.source.provider': 'de votre banque',
+	'cashFlow.chart.source.settings': 'solde enregistré',
+	'cashFlow.chart.source.none': 'supposé nul',
+	'cashFlow.chart.breach':
+		'{n, plural, one {⚠ # période passe sous votre solde minimum.} other {⚠ # périodes passent sous votre solde minimum.}}',
+	'cashFlow.chart.firstShortfall': 'Premier déficit en {period}.',
+	'cashFlow.chart.empty': 'Aucun mouvement de trésorerie projeté sur cette période.',
+	'cashFlow.chart.legend.closing': 'Solde de clôture',
+	'cashFlow.chart.legend.threshold': 'Solde min. {amount}',
+	'cashFlow.chart.legend.breach': 'Sous le seuil',
+	'cashFlow.chart.aria': 'Position de trésorerie de {start} à {end}. {shortfall}',
+	'cashFlow.chart.ariaShortfall': 'Premier déficit projeté en {period}.',
+	'cashFlow.chart.ariaHealthy': 'Reste au-dessus du solde minimum sur toute la période.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Trésorerie',
 	'cfo.exportCsv': 'Exporter en CSV',

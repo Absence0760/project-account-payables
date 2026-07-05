@@ -104,6 +104,9 @@ export const NAV: NavEntry[] = [
 		children: [
 			{ label: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/assistant', roles: ['admin', 'ap_manager', 'ap_clerk', 'cfo'] },
 			{ label: 'Cash Flow', labelKey: 'nav.cashFlow', href: '/cfo', roles: ['admin', 'cfo'] },
+			// Conversational cash-flow copilot (finance leaders — mirrors the
+			// /api/cash-flow façade RBAC; distinct from the /cfo analytics dashboard).
+			{ label: 'Cash-Flow Copilot', labelKey: 'nav.cashFlowCopilot', href: '/cash-flow', roles: ['admin', 'ap_manager', 'cfo'] },
 			{ label: '1099 Reporting', labelKey: 'nav.taxReporting', href: '/tax', roles: ['admin', 'ap_manager', 'cfo'] },
 			// Ad-hoc / custom Report Builder — read is all four roles (the backend
 			// gates saving/patching/deleting a definition to admin/ap_manager/cfo).

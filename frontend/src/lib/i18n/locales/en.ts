@@ -43,6 +43,7 @@ export const en = {
 	'nav.platformBilling': 'Subscription',
 	'nav.aiAssistant': 'AI Assistant',
 	'nav.cashFlow': 'Cash Flow',
+	'nav.cashFlowCopilot': 'Cash-Flow Copilot',
 	'nav.taxReporting': '1099 Reporting',
 	'nav.reports': 'Report Builder',
 	'nav.organization': 'Organization',
@@ -765,6 +766,35 @@ export const en = {
 	'org.plan.pro': 'Pro',
 	'org.plan.enterprise': 'Enterprise',
 
+	// Cash-Flow Copilot (routes/cash-flow/+page.svelte)
+	'cashFlow.title': 'Cash-Flow Copilot',
+	'cashFlow.newChat': 'New chat',
+	'cashFlow.tips.heading': 'Tips',
+	'cashFlow.tips.body':
+		'Ask about your cash position, upcoming outflows, payment-timing trade-offs, or which early-payment discounts are worth capturing.',
+	'cashFlow.empty.heading': 'Ask about your cash',
+	'cashFlow.empty.sub':
+		'Forecast outflows, project your running cash position, and find the early-payment discounts worth capturing — every figure comes straight from your ledger.',
+	'cashFlow.composer.placeholder': 'Ask about cash flow, upcoming payments, or discounts…',
+	'cashFlow.composer.ariaLabel': 'Ask the cash-flow copilot',
+	'cashFlow.send': 'Send',
+	'cashFlow.thinking': 'Thinking…',
+	'cashFlow.chart.title': 'Projected cash position',
+	'cashFlow.chart.opening': 'Opening {amount} ({source})',
+	'cashFlow.chart.source.explicit': 'entered',
+	'cashFlow.chart.source.provider': 'from your bank',
+	'cashFlow.chart.source.settings': 'saved balance',
+	'cashFlow.chart.source.none': 'assumed zero',
+	'cashFlow.chart.breach':
+		'{n, plural, one {⚠ # period projects below your minimum-balance threshold.} other {⚠ # periods project below your minimum-balance threshold.}}',
+	'cashFlow.chart.firstShortfall': 'First shortfall in {period}.',
+	'cashFlow.chart.empty': 'No projected cash movement in this window.',
+	'cashFlow.chart.legend.closing': 'Closing balance',
+	'cashFlow.chart.legend.threshold': 'Min balance {amount}',
+	'cashFlow.chart.legend.breach': 'Below threshold',
+	'cashFlow.chart.aria': 'Cash position from {start} to {end}. {shortfall}',
+	'cashFlow.chart.ariaShortfall': 'First projected shortfall in {period}.',
+	'cashFlow.chart.ariaHealthy': 'Stays above the minimum-balance threshold throughout.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Cash Flow',
 	'cfo.exportCsv': 'Export CSV',

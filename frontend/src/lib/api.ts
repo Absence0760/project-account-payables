@@ -151,8 +151,36 @@ export async function streamAssistantChat(
 	cb: StreamCallbacks,
 	signal?: AbortSignal
 ): Promise<void> {
+	return streamChatTurn('/api/assistant/chat/stream', body, cb, signal);
+}
+
+/**
+ * Stream a turn from the AI Cash-Flow Copilot (`POST /api/cash-flow/copilot/stream`).
+ *
+ * The copilot rides the SAME orchestrator + SSE contract as the assistant
+ * (`tool`/`delta`/`done`/`error` frames), so it reuses the exact SSE parser and
+ * header logic below — only the endpoint path differs. Throws `AssistantBudgetError`
+ * on a pre-stream HTTP 429, or a plain `Error` on any other non-OK / network
+ * failure — the `/cash-flow` page falls back to the non-streaming `/copilot`.
+ */
+export async function streamCashFlowCopilot(
+	body: { message: string; conversation_id?: string },
+	cb: StreamCallbacks,
+	signal?: AbortSignal
+): Promise<void> {
+	return streamChatTurn('/api/cash-flow/copilot/stream', body, cb, signal);
+}
+
+/** Shared SSE streaming client for the assistant + cash-flow copilot turns —
+ *  one parser, one header path, so the two surfaces can't drift. */
+async function streamChatTurn(
+	path: string,
+	body: { message: string; conversation_id?: string },
+	cb: StreamCallbacks,
+	signal?: AbortSignal
+): Promise<void> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeaders() };
-	const res = await fetch(`${BASE}/api/assistant/chat/stream`, {
+	const res = await fetch(`${BASE}${path}`, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify(body),

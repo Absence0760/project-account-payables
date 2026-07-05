@@ -35,6 +35,7 @@ export const messages = {
 	'nav.platformBilling': 'Assinatura',
 	'nav.aiAssistant': 'Assistente de IA',
 	'nav.cashFlow': 'Fluxo de caixa',
+	'nav.cashFlowCopilot': 'Copiloto de fluxo de caixa',
 	'nav.taxReporting': 'Relatório 1099',
 	'nav.reports': 'Gerador de relatórios',
 	'nav.organization': 'Organização',
@@ -738,6 +739,35 @@ export const messages = {
 	'org.plan.pro': 'Pro',
 	'org.plan.enterprise': 'Enterprise',
 
+	// Cash-Flow Copilot (routes/cash-flow/+page.svelte)
+	'cashFlow.title': 'Copiloto de fluxo de caixa',
+	'cashFlow.newChat': 'Nova conversa',
+	'cashFlow.tips.heading': 'Dicas',
+	'cashFlow.tips.body':
+		'Pergunte sobre sua posição de caixa, os desembolsos futuros, as escolhas de prazo de pagamento ou quais descontos por pagamento antecipado valem a pena.',
+	'cashFlow.empty.heading': 'Pergunte sobre seu caixa',
+	'cashFlow.empty.sub':
+		'Projete desembolsos, calcule sua posição de caixa e encontre os descontos por pagamento antecipado que valem a pena — cada valor vem direto do seu razão.',
+	'cashFlow.composer.placeholder': 'Pergunte sobre fluxo de caixa, pagamentos futuros ou descontos…',
+	'cashFlow.composer.ariaLabel': 'Perguntar ao copiloto de fluxo de caixa',
+	'cashFlow.send': 'Enviar',
+	'cashFlow.thinking': 'Pensando…',
+	'cashFlow.chart.title': 'Posição de caixa projetada',
+	'cashFlow.chart.opening': 'Saldo inicial {amount} ({source})',
+	'cashFlow.chart.source.explicit': 'informado',
+	'cashFlow.chart.source.provider': 'do seu banco',
+	'cashFlow.chart.source.settings': 'saldo salvo',
+	'cashFlow.chart.source.none': 'assumido zero',
+	'cashFlow.chart.breach':
+		'{n, plural, one {⚠ # período fica abaixo do seu saldo mínimo.} other {⚠ # períodos ficam abaixo do seu saldo mínimo.}}',
+	'cashFlow.chart.firstShortfall': 'Primeiro déficit em {period}.',
+	'cashFlow.chart.empty': 'Nenhuma movimentação de caixa projetada nesta janela.',
+	'cashFlow.chart.legend.closing': 'Saldo final',
+	'cashFlow.chart.legend.threshold': 'Saldo mín. {amount}',
+	'cashFlow.chart.legend.breach': 'Abaixo do limite',
+	'cashFlow.chart.aria': 'Posição de caixa de {start} a {end}. {shortfall}',
+	'cashFlow.chart.ariaShortfall': 'Primeiro déficit projetado em {period}.',
+	'cashFlow.chart.ariaHealthy': 'Permanece acima do saldo mínimo o tempo todo.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Fluxo de caixa',
 	'cfo.exportCsv': 'Exportar CSV',

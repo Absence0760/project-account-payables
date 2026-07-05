@@ -34,6 +34,7 @@ export const messages = {
 	'nav.platformBilling': 'Abonnement',
 	'nav.aiAssistant': 'KI-Assistent',
 	'nav.cashFlow': 'Liquidität',
+	'nav.cashFlowCopilot': 'Cashflow-Copilot',
 	'nav.taxReporting': '1099-Meldung',
 	'nav.reports': 'Berichtsgenerator',
 	'nav.organization': 'Organisation',
@@ -738,6 +739,35 @@ export const messages = {
 	'org.plan.pro': 'Pro',
 	'org.plan.enterprise': 'Enterprise',
 
+	// Cash-Flow Copilot (routes/cash-flow/+page.svelte)
+	'cashFlow.title': 'Cashflow-Copilot',
+	'cashFlow.newChat': 'Neuer Chat',
+	'cashFlow.tips.heading': 'Tipps',
+	'cashFlow.tips.body':
+		'Fragen Sie nach Ihrer Liquidität, anstehenden Abflüssen, Abwägungen zum Zahlungszeitpunkt oder welche Skonti sich lohnen.',
+	'cashFlow.empty.heading': 'Fragen Sie zu Ihrer Liquidität',
+	'cashFlow.empty.sub':
+		'Prognostizieren Sie Abflüsse, projizieren Sie Ihre laufende Liquidität und finden Sie lohnende Skonti — jede Zahl stammt direkt aus Ihrem Hauptbuch.',
+	'cashFlow.composer.placeholder': 'Fragen Sie zu Cashflow, anstehenden Zahlungen oder Skonti…',
+	'cashFlow.composer.ariaLabel': 'Den Cashflow-Copiloten fragen',
+	'cashFlow.send': 'Senden',
+	'cashFlow.thinking': 'Denkt nach…',
+	'cashFlow.chart.title': 'Prognostizierte Liquidität',
+	'cashFlow.chart.opening': 'Anfangsbestand {amount} ({source})',
+	'cashFlow.chart.source.explicit': 'eingegeben',
+	'cashFlow.chart.source.provider': 'von Ihrer Bank',
+	'cashFlow.chart.source.settings': 'gespeicherter Saldo',
+	'cashFlow.chart.source.none': 'als null angenommen',
+	'cashFlow.chart.breach':
+		'{n, plural, one {⚠ # Periode fällt unter Ihren Mindestsaldo.} other {⚠ # Perioden fallen unter Ihren Mindestsaldo.}}',
+	'cashFlow.chart.firstShortfall': 'Erste Unterdeckung in {period}.',
+	'cashFlow.chart.empty': 'Keine prognostizierten Cashflow-Bewegungen in diesem Zeitraum.',
+	'cashFlow.chart.legend.closing': 'Schlussbestand',
+	'cashFlow.chart.legend.threshold': 'Mindestsaldo {amount}',
+	'cashFlow.chart.legend.breach': 'Unter Schwelle',
+	'cashFlow.chart.aria': 'Liquidität von {start} bis {end}. {shortfall}',
+	'cashFlow.chart.ariaShortfall': 'Erste prognostizierte Unterdeckung in {period}.',
+	'cashFlow.chart.ariaHealthy': 'Bleibt durchgehend über dem Mindestsaldo.',
 	// Cash Flow / CFO dashboard (routes/cfo/+page.svelte)
 	'cfo.title': 'Liquidität',
 	'cfo.exportCsv': 'CSV exportieren',
