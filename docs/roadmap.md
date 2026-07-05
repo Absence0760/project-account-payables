@@ -779,7 +779,7 @@ Use AP data to forecast cash outflows and optimize payment timing.
 ---
 
 ### AI Cash-Flow Copilot
-**Status:** Planned (design proposed) — see [cash-flow-copilot.md](cash-flow-copilot.md).
+**Status:** Phase 1 shipped (read-only cash Q&A + `/cash-flow` copilot); Phases 2–3 planned — see [cash-flow-copilot.md](cash-flow-copilot.md).
 
 A **beyond-parity** differentiator, not a competitive gap: a natural-language,
 forward-looking copilot that answers "when do I run low on cash?" and "what
@@ -799,7 +799,7 @@ exact and reproducible under the `mock` adapter. Its most privileged write is
 staging a **draft** payment run (existing idempotent, CFO-gated path); funding
 stays behind the unchanged human review + CFO gate + segregation.
 
-- [ ] Phase 1 — read-only cash Q&A: four new entity-scoped, finance-leader-gated (`admin`/`ap_manager`/`cfo`, not `ap_clerk`) planning tools (`get_cashflow_forecast`, `get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`) registered alongside the existing assistant tools; `/api/cash-flow/copilot(+/stream)` façade; `/cash-flow` chat + cash-position chart. Money as exact strings (must NOT inherit the analytics endpoints' `float()` coercion).
+- [x] Phase 1 — read-only cash Q&A: four new entity-scoped, finance-leader-gated (`admin`/`ap_manager`/`cfo`, not `ap_clerk`) planning tools (`get_cashflow_forecast`, `get_cash_position`, `run_payment_whatif`, `optimize_discount_capture`) registered alongside the existing assistant tools; `/api/cash-flow/copilot(+/stream)` façade; `/cash-flow` chat + cash-position chart. Money as exact strings (must NOT inherit the analytics endpoints' `float()` coercion). Gated by `AP_CASHFLOW_COPILOT_ENABLED` (default on); `AP_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS` (default 90).
 - [ ] Phase 2 — proposed plans: `propose_payment_plan` tool assembles a plan artifact (period-by-period schedule + discounts to capture + resulting cash curve) from the pure functions; plan-card UI (display only).
 - [ ] Phase 3 — draft-only enactment: `POST /api/cash-flow/plans/{id}/draft-run` (idempotent draft run, execute stays CFO-gated) + `.../capture-discounts` (status-only accept), human-confirmed + audited.
 - [ ] Deferred: saved plans / plan-vs-actual (`CashPlan` model + migration), opening-balance provenance surfacing, consolidated cross-entity mode, proactive shortfall-alert sweep.

@@ -13,6 +13,7 @@ Deep-dive docs live in `backend/docs/`:
 | AI extraction adapters | `docs/ai-extraction.md` |
 | Inbound structured e-invoicing (UBL / Factur-X / ZUGFeRD) | `docs/e-invoicing.md` |
 | Conversational AP assistant | `docs/conversational-assistant.md` |
+| AI Cash-Flow Copilot (Phase 1 — read-only cash tools + `/api/cash-flow` façade) | `../docs/cash-flow-copilot.md` (repo-root `docs/`) |
 | ERP adapters (Merge.dev + direct) | `docs/erp-integration.md` |
 | Workflow state machine | `docs/workflow-design.md` |
 | Workflow snapshot semantics | `docs/workflow-snapshots.md` |

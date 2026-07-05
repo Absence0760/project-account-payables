@@ -1,9 +1,13 @@
-# AI Cash-Flow Copilot — Design Proposal
+# AI Cash-Flow Copilot
 
-**Status: PROPOSED (design only — not yet built).** This document describes a
-feature we intend to build, not current behavior. Do not treat any path,
-endpoint, model, or flag named here as existing until it ships and this banner
-is removed.
+**Status: Phase 1 SHIPPED (read-only cash Q&A + `/cash-flow` copilot); Phases 2–3
+planned.** Phase 1 — the four read-only, finance-leader-gated planning tools plus
+the `/api/cash-flow/copilot(+/stream)` façade and the `/cash-flow` chat &
+cash-position chart — is built and live. Phases 2 (proposed plans) and 3
+(draft-only enactment) below remain design-only: the `propose_payment_plan` tool,
+the plan-card UI, and the enact routes (`.../draft-run`, `.../capture-discounts`)
+do **not** exist yet — do not treat any Phase 2/3 path, endpoint, model, or flag
+named here as shipped.
 
 **Author:** platform · **Target:** beyond-parity differentiator · **Est. size:** M (3 phases)
 
@@ -198,12 +202,12 @@ Minimal — the copilot rides the existing assistant routes; a thin façade give
 it a first-class URL and lets us set copilot-specific defaults (finance-leader
 RBAC, a system-prompt hint, streaming on by default).
 
-| Method | Path | Notes |
-|--------|------|-------|
-| POST | `/api/cash-flow/copilot` | Façade over `orchestrator.run_turn`; body `{message, conversation_id?}`; RBAC `admin/ap_manager/cfo`; entity-scoped |
-| POST | `/api/cash-flow/copilot/stream` | SSE variant (reuses `run_turn_streaming`, identical event contract) |
-| POST | `/api/cash-flow/plans/{plan_id}/draft-run` | Enact: create a **draft** payment run from a proposal (idempotent, audited, CFO gate at execute-time unchanged) |
-| POST | `/api/cash-flow/plans/{plan_id}/capture-discounts` | Enact: accept the plan's discount offers (status-only, reuses discount accept) |
+| Method | Path | Status | Notes |
+|--------|------|--------|-------|
+| POST | `/api/cash-flow/copilot` | Phase 1 · shipped | Façade over `orchestrator.run_turn`; body `{message, conversation_id?}`; RBAC `admin/ap_manager/cfo`; entity-scoped |
+| POST | `/api/cash-flow/copilot/stream` | Phase 1 · shipped | SSE variant (reuses `run_turn_streaming`, identical event contract) |
+| POST | `/api/cash-flow/plans/{plan_id}/draft-run` | Phase 3 · planned | Enact: create a **draft** payment run from a proposal (idempotent, audited, CFO gate at execute-time unchanged) |
+| POST | `/api/cash-flow/plans/{plan_id}/capture-discounts` | Phase 3 · planned | Enact: accept the plan's discount offers (status-only, reuses discount accept) |
 
 The plain `/api/assistant/chat` also gains the four read-only cash tools, so a
 clerk-free finance user can ask cash questions in the general assistant too
@@ -293,15 +297,19 @@ Reuses the assistant's config; a couple of additive knobs:
 
 ## 11. Phasing
 
-1. **Phase 1 — Read-only cash Q&A.** The four planning tools + per-tool RBAC +
-   the `/api/cash-flow/copilot(+/stream)` façade + the `/cash-flow` chat &
-   cash-position chart. Ship value with zero write surface.
-2. **Phase 2 — Proposed plans.** `propose_payment_plan` tool + the plan card UI
-   (display only, no enact). The optimizer + what-if drive a concrete schedule.
-3. **Phase 3 — Draft-only enactment.** The two enact endpoints (draft run +
-   discount capture), idempotent + audited, human-confirmed, CFO gate unchanged.
+1. **Phase 1 — Read-only cash Q&A. ✅ SHIPPED.** The four planning tools + per-tool
+   RBAC + the `/api/cash-flow/copilot(+/stream)` façade + the `/cash-flow` chat &
+   cash-position chart. Ships value with zero write surface.
+2. **Phase 2 — Proposed plans. (planned)** `propose_payment_plan` tool + the plan
+   card UI (display only, no enact). The optimizer + what-if drive a concrete
+   schedule.
+3. **Phase 3 — Draft-only enactment. (planned)** The two enact endpoints (draft
+   run + discount capture), idempotent + audited, human-confirmed, CFO gate
+   unchanged.
 
-Each phase is independently shippable and independently valuable.
+Each phase is independently shippable and independently valuable. As of Phase 1,
+the `propose_payment_plan` action (§5) and the enact routes in §6
+(`.../draft-run`, `.../capture-discounts`) are still design-only.
 
 ---
 
