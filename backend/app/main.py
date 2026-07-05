@@ -19,6 +19,7 @@ from app.api import (
     billing_webhook,
     budgets,
     cards,
+    cash_flow,
     catalogs,
     contracts,
     credit_memos,
@@ -314,6 +315,7 @@ app.include_router(public_v1_openapi_router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
+app.include_router(cash_flow.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
 app.include_router(credit_memos.router, prefix="/api")
 app.include_router(discounts.router, prefix="/api")

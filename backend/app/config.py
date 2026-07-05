@@ -244,6 +244,14 @@ class Settings(BaseSettings):
     # adapter fails soft to `mock`, so a fresh clone still runs (local-first).
     assistant_ollama_model: str = "qwen2.5:7b"
 
+    # AI Cash-Flow Copilot (see docs/cash-flow-copilot.md). Master switch for the
+    # finance-leader copilot tools (forecast / cash position / payment what-if /
+    # discount optimizer) + their façade routes. When False the tools return a
+    # clean "not available" refusal (never a 500) and the routes 404.
+    cashflow_copilot_enabled: bool = True
+    # Default forecast horizon (days) when the user doesn't specify one.
+    cashflow_copilot_default_horizon_days: int = 90
+
     # Virtual Cards (platform-level keys — used when customers choose "Platform" card program)
     lithic_api_key: str = ""  # your Lithic API key
     lithic_sandbox: bool = True

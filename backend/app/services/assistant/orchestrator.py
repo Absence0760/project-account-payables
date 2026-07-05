@@ -40,6 +40,19 @@ from app.services.audit_dispatch import dispatch_audit
 # Cap how much prior context we replay to the adapter.
 _HISTORY_TURNS = 20
 
+# The finance-leader-only cash-flow copilot tools. Gated per-call in run_tool by
+# both the caller's roles (spec.allowed_roles) and the copilot master switch
+# (settings.cashflow_copilot_enabled) — a clerk or a disabled deployment gets a
+# clean refusal tool result, never data and never a 500.
+_COPILOT_TOOLS = frozenset(
+    {
+        "get_cashflow_forecast",
+        "get_cash_position",
+        "run_payment_whatif",
+        "optimize_discount_capture",
+    }
+)
+
 
 def _assistant_config(org: Organization) -> dict:
     return {
@@ -200,6 +213,31 @@ def _build_run_tool(
             return ToolInvocation(
                 tool=tool_name, args={}, result=None, error=f"Unknown tool: {tool_name}"
             )
+
+        # Per-tool role gate + copilot kill-switch, BEFORE param validation or any
+        # data read. A missing role or a disabled copilot yields a clean refusal
+        # tool result (never a 500, never leaking data), with a PII-safe audit row.
+        held_roles = {r.name for r in user.roles}
+        copilot_disabled = tool_name in _COPILOT_TOOLS and not settings.cashflow_copilot_enabled
+        role_denied = spec.allowed_roles is not None and held_roles.isdisjoint(spec.allowed_roles)
+        if role_denied or copilot_disabled:
+            error_code = "copilot_disabled" if copilot_disabled else "role_not_permitted"
+            await dispatch_audit(
+                tenant_db,
+                correlation_id=uuid.uuid4(),
+                organization_id=org.id,
+                actor_id=user.id,
+                action="assistant.tool_invoked",
+                entity_type="assistant_conversation",
+                entity_id=conv.id,
+                details={"tool": tool_name, "args": {}, "error": error_code},
+            )
+            message = (
+                "This tool is not available."
+                if copilot_disabled
+                else "You do not have permission to use this tool."
+            )
+            return ToolInvocation(tool=tool_name, args={}, result=None, error=message)
 
         try:
             params = spec.param_model.model_validate(raw_args)

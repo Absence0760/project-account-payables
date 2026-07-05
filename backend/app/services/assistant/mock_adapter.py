@@ -1,7 +1,8 @@
 """Mock assistant adapter — the local-first default.
 
-Deterministically routes a natural-language message to ONE of the five fixed
-tools via ordered keyword/intent rules, calls ``run_tool``, and formats a
+Deterministically routes a natural-language message to ONE of the fixed
+tools (the five base tools + the four finance-leader cash-flow copilot tools)
+via ordered keyword/intent rules, calls ``run_tool``, and formats a
 templated answer. No LLM, no network, no key. Token counts are a deterministic
 estimate so the usage meter + budget path are exercised identically to the
 claude path.
@@ -46,6 +47,16 @@ def _parse_horizon(text: str) -> str:
     if m:
         return f"{m.group(1)}d"
     return "30d"
+
+
+def _parse_horizon_days(text: str) -> int | None:
+    """Explicit day horizon (e.g. "next 90 days") → int within the copilot
+    tools' [7, 730] clamp, or None to accept the tool's default horizon."""
+    m = re.search(r"\b(\d{1,3})\s*day", text)
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if 7 <= n <= 730 else None
 
 
 def _parse_granularity(text: str) -> str:
@@ -163,6 +174,96 @@ def route(message: str) -> tuple[str, dict]:
     ):
         assignee = "anyone" if any(w in text for w in ("all", "everyone", "anyone")) else "me"
         return "list_pending_approvals", {"assignee": assignee}
+
+    # ── Cash-flow copilot intents (finance-leader tools). These precede the
+    # generic payment-forecast rule below because several also contain the bare
+    # word "cash". A clerk who reaches one gets a clean refusal from run_tool. ──
+
+    # 1b. cash position / runway — "when do we run low on cash".
+    if any(
+        kw in text
+        for kw in (
+            "cash position",
+            "run low on cash",
+            "low on cash",
+            "run out of cash",
+            "runway",
+            "shortfall",
+            "cash balance",
+            "run low",
+        )
+    ):
+        pos_args: dict = {"granularity": _parse_granularity(text)}
+        hd = _parse_horizon_days(text)
+        if hd is not None:
+            pos_args["horizon_days"] = hd
+        return "get_cash_position", pos_args
+
+    # 1c. payment-timing what-if — pay early / on time / late trade-offs.
+    if any(
+        kw in text
+        for kw in (
+            "what if",
+            "pay early",
+            "everything early",
+            "pay late",
+            "pay on time",
+            "payment timing",
+            "timing what-if",
+            "accelerate payment",
+            "defer payment",
+        )
+    ):
+        wi_args: dict = {"granularity": _parse_granularity(text)}
+        hd = _parse_horizon_days(text)
+        if hd is not None:
+            wi_args["horizon_days"] = hd
+        return "run_payment_whatif", wi_args
+
+    # 1d. discount-capture optimizer — which early-pay discounts are worth taking.
+    if any(
+        kw in text
+        for kw in (
+            "discount",
+            "capture",
+            "early pay",
+            "early-pay",
+            "worth taking",
+            "worth capturing",
+        )
+    ):
+        opt_args: dict = {}
+        # A cash ceiling can be phrased "$50k", "budget of 50000", "with 50000".
+        budget = (
+            re.search(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", text)
+            or re.search(r"budget[^0-9]{0,12}([0-9][0-9,]*(?:\.\d+)?)", text)
+            or re.search(r"\bwith[^0-9]{0,12}([0-9][0-9,]*(?:\.\d+)?)", text)
+        )
+        if budget:
+            amt = _parse_money(budget.group(1))
+            if amt is not None:
+                opt_args["cash_budget"] = amt
+        return "optimize_discount_capture", opt_args
+
+    # 1e. detailed outflow forecast (committed vs pending) — the copilot's richer
+    # forecast. Specific phrasings only, so the base "forecast/cash/due" intent
+    # still maps to get_payment_forecast below.
+    if any(
+        kw in text
+        for kw in (
+            "outflow",
+            "committed vs pending",
+            "cashflow forecast",
+            "cash flow forecast",
+            "projected payables",
+            "payables by",
+        )
+    ):
+        cf_args: dict = {"granularity": _parse_granularity(text)}
+        hd = _parse_horizon_days(text)
+        if hd is not None:
+            cf_args["horizon_days"] = hd
+        return "get_cashflow_forecast", cf_args
 
     # 2. payment forecast (time-flavoured cash questions)
     if any(
@@ -286,6 +387,66 @@ def _template_answer(tool: str, result: dict | None, error: str | None) -> str:
         for b in buckets:
             lines.append(
                 f"• {b['period']}: {_fmt_money(b['amount'], currency)} ({b['count']} invoice(s))"
+            )
+        return "\n".join(lines)
+
+    if tool == "get_cash_position":
+        currency = result.get("currency", "")
+        opening = result.get("opening_balance", 0)
+        first = result.get("first_shortfall_period")
+        periods = result.get("periods", [])
+        breaches = sum(1 for p in periods if p.get("below_threshold"))
+        if first:
+            return (
+                f"Opening balance {_fmt_money(opening, currency)}. Projected to run below "
+                f"your minimum balance in {first} ({breaches} period(s) breached)."
+            )
+        return (
+            f"Opening balance {_fmt_money(opening, currency)}. Cash stays above your "
+            "minimum balance across the horizon."
+        )
+
+    if tool == "get_cashflow_forecast":
+        currency = result.get("currency", "")
+        periods = result.get("periods", [])
+        if not periods:
+            return "No projected outflow over the horizon."
+        return (
+            f"Projected outflow: {_fmt_money(result.get('total_committed', 0), currency)} "
+            f"committed, {_fmt_money(result.get('total_pending', 0), currency)} pending "
+            f"across {len(periods)} period(s)."
+        )
+
+    if tool == "run_payment_whatif":
+        currency = result.get("currency", "")
+        by_scenario = {s.get("scenario"): s for s in result.get("scenarios", [])}
+        lines = ["Payment-timing scenarios:"]
+        for name in ("early", "on_time", "late"):
+            s = by_scenario.get(name)
+            if s:
+                lines.append(
+                    f"• {name}: outflow {_fmt_money(s['total_outflow'], currency)}, "
+                    f"discount captured {_fmt_money(s['discount_captured'], currency)}, "
+                    f"~{s['weighted_avg_days_to_pay']} days to pay"
+                )
+        return "\n".join(lines)
+
+    if tool == "optimize_discount_capture":
+        currency = result.get("currency", "")
+        recs = result.get("recommendations", [])
+        if not recs:
+            return "No open early-payment discount offers to evaluate."
+        selected = [r for r in recs if r.get("selected")]
+        lines = [
+            f"Capturing {len(selected)} of {len(recs)} offer(s) saves "
+            f"{_fmt_money(result.get('total_savings_selected', 0), currency)} (of "
+            f"{_fmt_money(result.get('total_savings_available', 0), currency)} available)."
+        ]
+        for r in selected[:5]:
+            vendor = r.get("vendor_name") or "(vendor)"
+            lines.append(
+                f"• {vendor} — save {_fmt_money(r['savings'], currency)} "
+                f"@ {r['annualized_return_pct']}% APR"
             )
         return "\n".join(lines)
 

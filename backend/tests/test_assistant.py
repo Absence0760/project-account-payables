@@ -45,6 +45,13 @@ from app.services.assistant.mock_adapter import route
         ("what's my payment forecast next 30 days?", "get_payment_forecast"),
         ("how much cash is due in the next 14 days?", "get_payment_forecast"),
         ("what do we owe this month?", "get_payment_forecast"),
+        # cash-flow copilot intents (finance-leader tools) — these must beat the
+        # generic forecast rule even when they contain the bare word "cash".
+        ("when are we going to run low on cash?", "get_cash_position"),
+        ("what's our cash position over the next 90 days?", "get_cash_position"),
+        ("what if we paid everything early?", "run_payment_whatif"),
+        ("which discounts should I capture to save the most?", "optimize_discount_capture"),
+        ("show me committed vs pending outflow by month", "get_cashflow_forecast"),
         # free-text / similarity search
         ("find invoices about cloud hosting", "find_invoices_by_text"),
         ("search for invoices like AWS January", "find_invoices_by_text"),
@@ -87,6 +94,25 @@ def test_router_list_invoices_parses_amount_over():
     tool, args = route("show invoices over 10000")
     assert tool == "list_invoices"
     assert args["amount_min"] == Decimal("10000")
+
+
+def test_router_cash_position_parses_horizon_days():
+    tool, args = route("what's our cash position over the next 90 days?")
+    assert tool == "get_cash_position"
+    assert args["horizon_days"] == 90
+
+
+def test_router_discount_capture_parses_cash_budget():
+    tool, args = route("which discounts should I capture with a budget of 50000?")
+    assert tool == "optimize_discount_capture"
+    assert args["cash_budget"] == Decimal("50000")
+
+
+def test_router_cash_position_beats_generic_forecast():
+    # "run low on cash" contains the bare word "cash" but must route to the
+    # dedicated cash-position tool, not the generic payment forecast.
+    tool, _args = route("when will we run low on cash?")
+    assert tool == "get_cash_position"
 
 
 def test_router_approved_status_is_list_not_queue():

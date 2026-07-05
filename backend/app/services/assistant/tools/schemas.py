@@ -140,3 +140,108 @@ class TextSearchMatch(BaseModel):
 
 class TextSearchResult(BaseModel):
     matches: list[TextSearchMatch]
+
+
+# ---------------------------------------------------------------------------
+# Cash-flow copilot tools (finance-leader only — see ToolSpec.allowed_roles)
+# ---------------------------------------------------------------------------
+
+
+class CashflowForecastParams(BaseModel):
+    granularity: Literal["day", "week", "month"] = "week"
+    # None → AP_CASHFLOW_COPILOT_DEFAULT_HORIZON_DAYS (resolved in the tool).
+    horizon_days: int | None = Field(default=None, ge=7, le=730)
+    include_pending: bool = True
+
+
+class CashflowPeriod(BaseModel):
+    period: str
+    scheduled: Decimal
+    committed: Decimal
+    pending: Decimal
+    discount_eligible: Decimal
+    count: int
+
+
+class CashflowForecastResult(BaseModel):
+    currency: str
+    granularity: str
+    horizon_days: int
+    periods: list[CashflowPeriod]
+    total_scheduled: Decimal
+    total_committed: Decimal
+    total_pending: Decimal
+
+
+class CashPositionParams(BaseModel):
+    granularity: Literal["day", "week", "month"] = "week"
+    horizon_days: int | None = Field(default=None, ge=7, le=730)
+    opening_balance: Decimal | None = None
+    min_balance_threshold: Decimal | None = None
+
+
+class CashPositionPeriod(BaseModel):
+    period: str
+    opening: Decimal
+    outflow: Decimal
+    closing: Decimal
+    below_threshold: bool
+
+
+class CashPositionResult(BaseModel):
+    currency: str
+    granularity: str
+    horizon_days: int
+    opening_balance: Decimal
+    # Which link of the resolution chain supplied the balance —
+    # "explicit" (caller) | "provider" (bank sync) | "settings" | "none".
+    opening_balance_source: str
+    min_balance_threshold: Decimal | None
+    periods: list[CashPositionPeriod]
+    first_shortfall_period: str | None
+
+
+class PaymentWhatifParams(BaseModel):
+    granularity: Literal["day", "week", "month"] = "week"
+    horizon_days: int | None = Field(default=None, ge=7, le=730)
+    grace_days: int = Field(default=15, ge=0, le=90)
+
+
+class WhatifScenario(BaseModel):
+    scenario: str
+    total_outflow: Decimal
+    discount_captured: Decimal
+    weighted_avg_days_to_pay: Decimal
+
+
+class PaymentWhatifResult(BaseModel):
+    currency: str
+    horizon_days: int
+    grace_days: int
+    scenarios: list[WhatifScenario]
+
+
+class OptimizeDiscountsParams(BaseModel):
+    cash_budget: Decimal | None = Field(default=None, ge=0)
+    cost_of_capital_pct: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class DiscountRecommendation(BaseModel):
+    offer_id: str
+    vendor_name: str | None
+    invoice_number: str | None
+    base_amount: Decimal
+    discount_percent: Decimal
+    annualized_return_pct: Decimal
+    savings: Decimal
+    pay_by: str
+    selected: bool
+
+
+class OptimizeDiscountsResult(BaseModel):
+    currency: str
+    cost_of_capital_pct: Decimal
+    total_savings_available: Decimal
+    total_savings_selected: Decimal
+    total_outlay_selected: Decimal
+    recommendations: list[DiscountRecommendation]

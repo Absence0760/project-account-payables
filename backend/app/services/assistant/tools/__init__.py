@@ -17,10 +17,22 @@ from pydantic import BaseModel
 
 from app.services.assistant.tools import schemas
 from app.services.assistant.tools.approvals import list_pending_approvals
+from app.services.assistant.tools.cashflow import (
+    get_cash_position,
+    get_cashflow_forecast,
+    run_payment_whatif,
+)
 from app.services.assistant.tools.forecast import get_payment_forecast
 from app.services.assistant.tools.invoices import list_invoices
+from app.services.assistant.tools.optimizer import optimize_discount_capture
 from app.services.assistant.tools.text_search import find_invoices_by_text
 from app.services.assistant.tools.vendor_spend import get_vendor_spend
+
+# The cash-flow copilot tools read org-wide cash exposure — finance-leader
+# only. Stricter than the assistant's blanket four-role access; enforced
+# per-call by the orchestrator's run_tool closure (a clerk gets a clean
+# refusal tool result, never data and never a 500).
+FINANCE_LEADER_ROLES = ("admin", "ap_manager", "cfo")
 
 
 @dataclass(frozen=True)
@@ -30,6 +42,8 @@ class ToolSpec:
     param_model: type[BaseModel]
     return_model: type[BaseModel]
     fn: Callable[..., Awaitable[BaseModel]]
+    # None → any role the assistant itself admits (the current four).
+    allowed_roles: tuple[str, ...] | None = None
 
     @property
     def anthropic_spec(self) -> dict[str, Any]:
@@ -114,6 +128,61 @@ TOOLS: dict[str, ToolSpec] = {
         param_model=schemas.TextSearchParams,
         return_model=schemas.TextSearchResult,
         fn=find_invoices_by_text,
+    ),
+    # ── Cash-flow copilot tools (finance-leader only) ──────────────────────
+    "get_cashflow_forecast": ToolSpec(
+        name="get_cashflow_forecast",
+        description=(
+            "Projected AP cash outflow by period (day/week/month) over a horizon "
+            "up to 730 days, split into committed (approved and later) vs pending "
+            "(pre-approval pipeline) vs discount-eligible amounts. Use for "
+            "detailed outflow-forecast questions ('what's our committed outflow "
+            "next quarter', 'projected payables by month')."
+        ),
+        param_model=schemas.CashflowForecastParams,
+        return_model=schemas.CashflowForecastResult,
+        fn=get_cashflow_forecast,
+        allowed_roles=FINANCE_LEADER_ROLES,
+    ),
+    "get_cash_position": ToolSpec(
+        name="get_cash_position",
+        description=(
+            "Running cash balance per period: opening balance carried forward "
+            "minus projected AP outflows, flagging periods that close below the "
+            "minimum-balance threshold and reporting the first shortfall period. "
+            "Use for 'when do we run low on cash', 'cash position', 'runway', "
+            "'shortfall' questions."
+        ),
+        param_model=schemas.CashPositionParams,
+        return_model=schemas.CashPositionResult,
+        fn=get_cash_position,
+        allowed_roles=FINANCE_LEADER_ROLES,
+    ),
+    "run_payment_whatif": ToolSpec(
+        name="run_payment_whatif",
+        description=(
+            "Compare pay-early vs pay-on-time vs pay-late scenarios: total "
+            "outflow, discount captured, and amount-weighted days-to-pay for "
+            "each. Use for 'what if we paid everything early', 'what does paying "
+            "late save/cost us', payment-timing trade-off questions."
+        ),
+        param_model=schemas.PaymentWhatifParams,
+        return_model=schemas.PaymentWhatifResult,
+        fn=run_payment_whatif,
+        allowed_roles=FINANCE_LEADER_ROLES,
+    ),
+    "optimize_discount_capture": ToolSpec(
+        name="optimize_discount_capture",
+        description=(
+            "Rank open early-payment discount offers by annualized return and "
+            "select the highest-yield worthwhile ones within an optional cash "
+            "budget. Use for 'which discounts are worth taking', 'what should we "
+            "pay early with $X', discount-capture planning."
+        ),
+        param_model=schemas.OptimizeDiscountsParams,
+        return_model=schemas.OptimizeDiscountsResult,
+        fn=optimize_discount_capture,
+        allowed_roles=FINANCE_LEADER_ROLES,
     ),
 }
 
