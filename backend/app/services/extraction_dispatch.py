@@ -7,14 +7,16 @@ AI API calls that get rate-limited (429) and fail.
 
 import asyncio
 import json
+import logging
 import queue
 import threading
-import traceback
 import uuid
 
 import boto3
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Local extraction queue — a small pool of worker threads processes jobs
@@ -47,28 +49,36 @@ def _extraction_worker() -> None:
     there's no upload activity.  The next ``dispatch_extraction`` call
     will restart it.
     """
-    print("[extraction] Worker thread started")
+    logger.info("[extraction] Worker thread started")
     while True:
         try:
             invoice_id, org_id, actor_id = _job_queue.get(timeout=120)
         except queue.Empty:
-            print("[extraction] Worker idle — exiting")
+            logger.info("[extraction] Worker idle — exiting")
             break  # idle timeout — exit
 
-        print(f"[extraction] Worker picked up job for invoice {invoice_id}")
+        logger.info("[extraction] Worker picked up job for invoice %s", invoice_id)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(_run_local(invoice_id, org_id, actor_id))
-        except Exception:
-            print(f"[extraction] Unexpected error for invoice {invoice_id}")
-            traceback.print_exc()
+        except Exception as exc:
+            # Class name only — a pipeline exception can carry extracted PII.
+            logger.error(
+                "[extraction] Unexpected error for invoice %s: %s",
+                invoice_id,
+                exc.__class__.__name__,
+            )
             try:
                 loop.run_until_complete(
                     _mark_failed(invoice_id, org_id, "Extraction crashed unexpectedly")
                 )
-            except Exception:
-                traceback.print_exc()
+            except Exception as mark_exc:
+                logger.error(
+                    "[extraction] Failed to mark invoice %s failed after crash: %s",
+                    invoice_id,
+                    mark_exc.__class__.__name__,
+                )
         finally:
             loop.close()
 
@@ -159,7 +169,7 @@ async def _run_local(
             result = await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
             org = result.scalar_one_or_none()
             if not org:
-                print(f"[extraction] Organization {org_id} not found")
+                logger.warning("[extraction] Organization %s not found", org_id)
                 return
 
             # Create a fresh tenant engine for this thread
@@ -173,13 +183,13 @@ async def _run_local(
                         result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
                         invoice = result.scalar_one_or_none()
                         if not invoice:
-                            print(f"[extraction] Invoice {invoice_id} not found")
+                            logger.warning("[extraction] Invoice %s not found", invoice_id)
                             return
 
-                        print(
-                            f"[extraction] Starting extraction for "
-                            f"invoice {invoice_id}, "
-                            f"file_key={invoice.file_key}"
+                        logger.info(
+                            "[extraction] Starting extraction for invoice %s, file_key=%s",
+                            invoice_id,
+                            invoice.file_key,
                         )
                         await run_extraction(
                             db,
@@ -188,14 +198,21 @@ async def _run_local(
                             org_settings=org.settings,
                             ctrl_db=ctrl_db,
                         )
-                        print(
-                            f"[extraction] Completed extraction for "
-                            f"invoice {invoice_id}, "
-                            f"status={invoice.status}"
+                        logger.info(
+                            "[extraction] Completed extraction for invoice %s, status=%s",
+                            invoice_id,
+                            invoice.status,
                         )
                     except Exception as exc:
-                        print(f"[extraction] ERROR for invoice {invoice_id}: {exc}")
-                        traceback.print_exc()
+                        # Class name only — never the raw message. An extraction
+                        # exception (vision/OCR SDK, GL validation, dup-detect)
+                        # can carry invoice PII (vendor tax id / bank / address),
+                        # and no log-redaction filter is installed here.
+                        logger.error(
+                            "[extraction] ERROR for invoice %s: %s",
+                            invoice_id,
+                            exc.__class__.__name__,
+                        )
                         await db.rollback()
                         # Ensure the invoice doesn't stay stuck in 'pending' —
                         # run_extraction's own error handler transitions to 'failed',
@@ -233,9 +250,13 @@ async def _fail_invoice_safely(
                 details={"error": error},
             )
             await db.commit()
-            print(f"[extraction] Fallback: marked invoice {invoice_id} as failed")
-    except Exception:
-        traceback.print_exc()
+            logger.info("[extraction] Fallback: marked invoice %s as failed", invoice_id)
+    except Exception as exc:
+        logger.error(
+            "[extraction] Fallback fail-invoice path errored for invoice %s: %s",
+            invoice_id,
+            exc.__class__.__name__,
+        )
 
 
 async def _mark_failed(invoice_id: uuid.UUID, org_id: uuid.UUID, reason: str) -> None:
@@ -278,10 +299,14 @@ async def _mark_failed(invoice_id: uuid.UUID, org_id: uuid.UUID, reason: str) ->
                         details={"reason": reason},
                     )
                     await db.commit()
-                    print(f"[extraction] Marked invoice {invoice_id} as failed: {reason}")
+                    logger.info("[extraction] Marked invoice %s as failed: %s", invoice_id, reason)
         finally:
             await tenant_engine.dispose()
-    except Exception:
-        traceback.print_exc()
+    except Exception as exc:
+        logger.error(
+            "[extraction] _mark_failed errored for invoice %s: %s",
+            invoice_id,
+            exc.__class__.__name__,
+        )
     finally:
         await ctrl_engine.dispose()

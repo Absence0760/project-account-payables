@@ -6,6 +6,7 @@ Uses the extraction adapter pattern — supports platform (Claude Vision) and BY
 Tracks usage for billing when platform mode is used.
 """
 
+import logging
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -21,6 +22,8 @@ from app.services.workflow_engine import (
     get_workflow_instance,
     transition_invoice,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _detect_structured_format(file_bytes: bytes, file_key: str) -> str | None:
@@ -137,7 +140,7 @@ async def run_extraction(
         from app.services.extraction_adapters import get_extraction_adapter
 
         adapter = get_extraction_adapter(config)
-        print(f"[extraction] Using adapter: {adapter.provider_name}")
+        logger.info("[extraction] Using adapter: %s", adapter.provider_name)
 
         # Fetch file bytes from S3/MinIO directly (authenticated)
         import boto3 as _boto3
@@ -151,12 +154,14 @@ async def run_extraction(
             aws_secret_access_key=app_settings.s3_secret_key,
         )
         file_key = invoice.file_key or ""
-        print(
-            f"[extraction] Fetching file from S3: bucket={app_settings.s3_bucket}, key={file_key}"
+        logger.info(
+            "[extraction] Fetching file from S3: bucket=%s, key=%s",
+            app_settings.s3_bucket,
+            file_key,
         )
         s3_obj = s3.get_object(Bucket=app_settings.s3_bucket, Key=file_key)
         file_bytes = s3_obj["Body"].read()
-        print(f"[extraction] File fetched: {len(file_bytes)} bytes")
+        logger.info("[extraction] File fetched: %s bytes", len(file_bytes))
 
         # Structured e-invoice auto-detect (pure, no network). A UBL / CII /
         # Factur-X file is routed to the deterministic `einvoice` adapter,
@@ -172,7 +177,7 @@ async def run_extraction(
             extract_mime_type = (
                 "application/pdf" if structured_format == "facturx_pdf" else "application/xml"
             )
-            print(f"[extraction] Structured e-invoice detected: {structured_format}")
+            logger.info("[extraction] Structured e-invoice detected: %s", structured_format)
 
         # RAG: embed the invoice text and fetch similar past extractions to
         # prime the adapter. No-op when rag_enabled=False, text layer empty,
@@ -188,7 +193,7 @@ async def run_extraction(
         neighbors = await retrieve_similar(db, invoice_text, exclude_invoice_id=invoice_id)
         if neighbors:
             config["few_shot_prompt"] = build_few_shot_prompt(neighbors)
-            print(f"[extraction] RAG: {len(neighbors)} neighbors injected as few-shot")
+            logger.info("[extraction] RAG: %s neighbors injected as few-shot", len(neighbors))
 
         # GL catalog: inject org-specific chart of accounts so the AI
         # uses real codes instead of the hardcoded default list.
@@ -226,7 +231,7 @@ async def run_extraction(
                 for gl in gl_accounts
             ]
             config["gl_account_catalog"] = "\n".join(gl_lines)
-            print(f"[extraction] GL catalog: {len(gl_accounts)} accounts injected")
+            logger.info("[extraction] GL catalog: %s accounts injected", len(gl_accounts))
 
         # Build a fresh adapter now that config is fully populated.
         adapter = get_extraction_adapter(config)
@@ -238,13 +243,17 @@ async def run_extraction(
         )
 
         if not result.success:
-            print(f"[extraction] Adapter returned failure: {result.error}")
+            # Don't log result.error: adapters build it from the raw provider
+            # exception / response body (see extraction_adapters/*), which can
+            # echo request/response content (PII). The provider name is enough
+            # for triage; the structured failure lands on the exception record.
+            logger.warning("[extraction] Adapter %s returned failure", adapter.provider_name)
             raise RuntimeError(result.error or "Extraction failed")
 
-        print(
-            f"[extraction] Success! Confidence: "
-            f"{result.overall_confidence}, "
-            f"vendor: {result.vendor_name.value}"
+        logger.info(
+            "[extraction] Success! Confidence: %s, vendor: %s",
+            result.overall_confidence,
+            result.vendor_name.value,
         )
 
         # Apply extracted fields to invoice
@@ -268,7 +277,10 @@ async def run_extraction(
                     }
                 )
             invoice.warnings = existing_warnings
-            print(f"[extraction] Self-correction: {len(correction_report.violations)} violation(s)")
+            logger.info(
+                "[extraction] Self-correction: %s violation(s)",
+                len(correction_report.violations),
+            )
 
         # Save line items if extracted. Drop GL codes that aren't in the
         # active chart of accounts so the invoice can still post but the
@@ -325,8 +337,9 @@ async def run_extraction(
                 }
             )
             invoice.warnings = existing_warnings
-            print(
-                f"[extraction] GL validation: rejected {len(set(invalid_gl_codes))} unknown code(s)"
+            logger.info(
+                "[extraction] GL validation: rejected %s unknown code(s)",
+                len(set(invalid_gl_codes)),
             )
 
         # Vendor matching
@@ -345,7 +358,10 @@ async def run_extraction(
 
         applied_priors = await apply_priors_to_invoice(db, invoice, result)
         if applied_priors:
-            print(f"[extraction] Applied vendor priors: {applied_priors}")
+            # Log the field NAMES overlaid, not their values (a prior value can
+            # be a sensitive field like tax_id). Mirrors audit_access field-diff
+            # discipline (names, never values).
+            logger.info("[extraction] Applied vendor priors: %s", sorted(applied_priors))
 
         # Priors can overwrite the AI-validated gl_account with a cached
         # value that was valid at the time of prior caching but has since
@@ -371,7 +387,7 @@ async def run_extraction(
                 }
             )
             invoice.warnings = existing_warnings
-            print(f"[extraction] GL validation: rejected stale prior '{stale_code}'")
+            logger.info("[extraction] GL validation: rejected stale prior '%s'", stale_code)
 
         # Semantic duplicate detection — reuses invoice_embeddings. Catches
         # near-duplicates that the rule-based (vendor_name + invoice_number)
@@ -401,7 +417,9 @@ async def run_extraction(
                 organization_id=invoice_org_id,
                 invoice=invoice,  # exception follows its invoice (P2)
             )
-            print(f"[extraction] Duplicate detection: {len(duplicate_matches)} near-match(es)")
+            logger.info(
+                "[extraction] Duplicate detection: %s near-match(es)", len(duplicate_matches)
+            )
 
         # Refresh warnings + PO match — handles missing fields, duplicates,
         # fraud flags, vendor verification status, and 2/3-way PO matching.
@@ -500,7 +518,12 @@ async def run_extraction(
         await db.commit()
 
     except Exception as exc:
-        print(f"[extraction] Failed: {exc}")
+        # Log the exception CLASS only, never the raw message: a vision/OCR SDK
+        # exception can carry extracted invoice PII (vendor tax id / bank /
+        # address). No exc_info either — this codebase installs no log-redaction
+        # filter, so a traceback would put the raw message into the handler. The
+        # structured failure detail lands on the exception record + audit row.
+        logger.error("[extraction] Failed: %s", exc.__class__.__name__)
         await db.rollback()
 
         # Re-fetch invoice after rollback (the old object is expired)
