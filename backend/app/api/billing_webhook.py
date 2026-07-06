@@ -35,7 +35,10 @@ from app.config import settings
 from app.database import get_control_db
 from app.services.billing.webhook_processing import apply_billing_event
 from app.services.billing_adapters import get_billing_adapter
-from app.services.webhook_security import is_event_already_processed
+from app.services.webhook_security import (
+    is_event_already_processed,
+    release_event_claim,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +109,27 @@ async def billing_webhook(
 
     # 4. Dedupe by event id (Redis SET NX EX). A provider redelivery within the
     #    window short-circuits — the lifecycle effect already ran exactly once.
-    if await is_event_already_processed(f"billing:{provider}", event.event_id):
+    #    NB: the claim key MUST match the release-on-failure key below exactly,
+    #    or the release is a no-op against a different Redis key.
+    dedup_provider = f"billing:{provider}"
+    if await is_event_already_processed(dedup_provider, event.event_id):
         logger.info("billing webhook duplicate event ignored")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # 5. Apply the (idempotent) subscription transition + append-only audit.
-    result = await apply_billing_event(control_db, event=event)
+    #    The dedup claim (step 4) is durable the instant it's written, but the
+    #    lifecycle effect it guards isn't durable until `apply_billing_event`
+    #    commits. If that commit — or anything before it — raises, release the
+    #    claim so the provider's retry can reprocess; otherwise the transition
+    #    (e.g. → past_due) is silently deduped away for the full TTL and lost.
+    #    Mirrors the claim/release discipline in `api/cards.py::card_webhook`.
+    #    We re-raise (→ 5xx) so the provider retries, matching the prior
+    #    contract (no try/except → the exception propagated to a 500 already).
+    try:
+        result = await apply_billing_event(control_db, event=event)
+    except Exception:
+        await release_event_claim(dedup_provider, event.event_id)
+        raise
     if not result.applied:
         logger.warning("billing webhook not applied: %s", result.reason or "unknown")
 
