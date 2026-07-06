@@ -640,3 +640,124 @@ async def test_webhook_rejected_path_writes_no_audit_row():
     assert voided.status == "voided"
     db.commit.assert_not_called()
     mk_audit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Dedup-claim release on failure (so the provider's retry can reprocess).
+# The handler claims a Redis dedup slot for the event id, then does the
+# status change. If that DB work raises, the claim is only durable over a
+# rolled-back txn — leaving it set would dedup the retry away for the full
+# TTL and the payment would never reach terminal status. The handler must
+# release the claim and re-raise (a 5xx → the provider retries).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_webhook_releases_claim_when_db_block_raises(_autouse_fake_redis):
+    """A failure AFTER the event is claimed releases the claim so a redelivery
+    reprocesses (and re-raises so the provider actually retries)."""
+    from app.api.payments import payment_webhook
+    from app.services.payment_adapters import PaymentStatus
+    from app.services.webhook_security import is_event_already_processed
+
+    org = _org(slug="acme")
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_fail",
+        payment_run_id=None,
+        status="submitted",
+        completed_at=None,
+        reference=None,
+        failure_reason=None,
+        correlation_id=uuid.uuid4(),
+        amount=Decimal("42.00"),
+        method="ach",
+    )
+
+    adapter = MagicMock()
+    adapter.parse_webhook = MagicMock(
+        return_value=SimpleNamespace(
+            provider_payment_id="px_fail",
+            event_id="evt_fail",
+            status=PaymentStatus.completed,
+            reference="REF",
+            failure_reason=None,
+        )
+    )
+
+    tenant_factory, db = _tenant_session_factory(payment)
+    with (
+        patch("app.database.control_session_factory", _ctrl_session_factory(org)),
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+        # Force the tenant-DB block to raise AFTER the event was claimed.
+        patch(
+            "app.services.audit_dispatch.dispatch_audit",
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        # The handler must re-raise so the provider gets a non-2xx and retries.
+        with pytest.raises(RuntimeError):
+            await payment_webhook(
+                tenant_slug="acme",
+                provider="modern_treasury",
+                request=_fake_request(),
+            )
+
+    # Claim released: a fresh dedup check returns False (i.e. the retry is NOT
+    # deduped away — it would reprocess). Before the fix this returned True.
+    assert await is_event_already_processed("modern_treasury", "evt_fail") is False
+
+
+@pytest.mark.asyncio
+async def test_webhook_keeps_claim_on_success(_autouse_fake_redis):
+    """Contrast: on a clean settle the claim is RETAINED, so a genuine
+    redelivery of the same event is deduped away (the normal dedup contract)."""
+    from app.api.payments import payment_webhook
+    from app.services.payment_adapters import PaymentStatus
+    from app.services.webhook_security import is_event_already_processed
+
+    org = _org(slug="acme")
+    payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_payment_id="px_ok",
+        payment_run_id=None,
+        status="submitted",
+        completed_at=None,
+        reference=None,
+        failure_reason=None,
+        correlation_id=uuid.uuid4(),
+        amount=Decimal("42.00"),
+        method="ach",
+    )
+
+    adapter = MagicMock()
+    adapter.parse_webhook = MagicMock(
+        return_value=SimpleNamespace(
+            provider_payment_id="px_ok",
+            event_id="evt_ok",
+            status=PaymentStatus.completed,
+            reference="REF",
+            failure_reason=None,
+        )
+    )
+
+    tenant_factory, db = _tenant_session_factory(payment)
+    with (
+        patch("app.database.control_session_factory", _ctrl_session_factory(org)),
+        patch("app.api.payments.get_payment_adapter", return_value=adapter),
+        patch("app.database.get_tenant_engine", return_value=MagicMock()),
+        patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=tenant_factory),
+        patch("app.services.audit_dispatch.dispatch_audit"),
+        patch("app.services.payment_erp_sync.dispatch_payment_sync"),
+    ):
+        await payment_webhook(
+            tenant_slug="acme",
+            provider="modern_treasury",
+            request=_fake_request(),
+        )
+
+    db.commit.assert_called_once()
+    # Claim retained → a redelivery of evt_ok is already-processed (deduped).
+    assert await is_event_already_processed("modern_treasury", "evt_ok") is True

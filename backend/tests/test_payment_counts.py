@@ -30,28 +30,42 @@ async def test_payment_counts_span_all_pages(realdb):
     mk = realdb.sessionmaker(TENANT)
     async with mk() as s:
         ent = await _default_entity_id(s)
-        inv = Invoice(
-            organization_id=org_id,
-            entity_id=ent,
-            invoice_number="PCNT-1",
-            vendor_name="Count Vendor",
-            amount=Decimal("10.00"),
-            currency="USD",
-            status=InvoiceStatus.approved,
-        )
-        s.add(inv)
-        await s.flush()
+
+        # One payment PER invoice: the `uq_payments_one_live_per_invoice` index
+        # (one live payment per invoice) forbids stacking many live payments on
+        # a single invoice, which is irrelevant to this test — it only needs 28
+        # payment rows spanning >1 count page, on any invoices.
         # 25 completed (more than the 20-row list page) + 3 pending.
+        def _mk_invoice(n: int) -> Invoice:
+            return Invoice(
+                organization_id=org_id,
+                entity_id=ent,
+                invoice_number=f"PCNT-{n}",
+                vendor_name="Count Vendor",
+                amount=Decimal("10.00"),
+                currency="USD",
+                status=InvoiceStatus.approved,
+            )
+
+        n = 0
         for _ in range(25):
+            inv = _mk_invoice(n)
+            s.add(inv)
+            await s.flush()
             s.add(
                 Payment(
                     invoice_id=inv.id, entity_id=ent, amount=Decimal("10.00"), status="completed"
                 )
             )
+            n += 1
         for _ in range(3):
+            inv = _mk_invoice(n)
+            s.add(inv)
+            await s.flush()
             s.add(
                 Payment(invoice_id=inv.id, entity_id=ent, amount=Decimal("5.00"), status="pending")
             )
+            n += 1
         await s.commit()
 
     async with realdb.client(key=TENANT, role="ap_manager") as c:

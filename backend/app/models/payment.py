@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,6 +46,24 @@ class PaymentSchedule(Base, TimestampMixin):
 
 class Payment(Base, EntityMixin, TimestampMixin):
     __tablename__ = "payments"
+
+    # One LIVE payment per invoice: partial unique index covering every payment
+    # that isn't terminal (`voided`/`failed`/`cancelled`). This is the DB-level
+    # idempotency backstop for the money invariant — a retried / double-clicked /
+    # concurrent `POST /api/payments` can no longer book a second full-amount
+    # payment for the same invoice. Terminal states are excluded so a void
+    # (which hands the invoice back to `approved` to be re-paid) or a failed
+    # attempt still lets a fresh payment be booked. Mirrors migration 0074;
+    # declared here so fresh tenants built via create_all in tenant_provisioning
+    # get it too, not only migrated ones.
+    __table_args__ = (
+        Index(
+            "uq_payments_one_live_per_invoice",
+            "invoice_id",
+            unique=True,
+            postgresql_where=text("status NOT IN ('voided', 'failed', 'cancelled')"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)

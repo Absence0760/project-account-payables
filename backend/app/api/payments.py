@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -70,6 +71,32 @@ PAYABLE_INVOICE_STATUSES = (
     InvoiceStatus.posted_in_erp.value,
     InvoiceStatus.payment_scheduled.value,
 )
+
+# Terminal payment states — a payment in one of these no longer represents a
+# LIVE claim on its invoice, so the "one live payment per invoice" idempotency
+# invariant (both the app-level guard and the `uq_payments_one_live_per_invoice`
+# partial index) excludes them. A void hands the invoice back to `approved` to
+# be re-paid; a failed / cancelled attempt must not block a fresh one.
+LIVE_PAYMENT_TERMINAL_STATUSES = ("voided", "failed", "cancelled")
+
+
+async def _find_live_payment(db: AsyncSession, invoice_id: uuid.UUID) -> Payment | None:
+    """Return the oldest non-terminal (LIVE) payment for an invoice, or None.
+
+    Backs the standalone-payment idempotency guard: a live payment is any that
+    isn't in LIVE_PAYMENT_TERMINAL_STATUSES. Deterministically returns the
+    earliest such row so a double-POST always resolves to the same payment.
+    """
+    result = await db.execute(
+        select(Payment)
+        .where(
+            Payment.invoice_id == invoice_id,
+            Payment.status.notin_(LIVE_PAYMENT_TERMINAL_STATUSES),
+        )
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 # ── Individual Payments ──────────────────────────────────────────────
@@ -554,6 +581,7 @@ async def void_payment(
 async def create_payment(
     body: PaymentCreate,
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     # Recording a standalone payment moves money exactly like executing a run,
     # so it gates on the same splittable SoD permission — not bare roles. An org
     # that strips payment.execute from a custom role must not retain a back door
@@ -563,7 +591,19 @@ async def create_payment(
     # Verify invoice exists and has cleared approval. Recording a payment
     # against a pre-approval invoice (new/pending/ready_for_review/rejected/
     # failed) would book money against something nobody signed off on.
-    inv_result = await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)))
+    #
+    # Lock the invoice FOR UPDATE so two concurrent / double-clicked POSTs for
+    # the same invoice serialize here: the first books the payment and commits,
+    # the second blocks on this lock, then re-reads and returns the payment
+    # already booked instead of creating a duplicate full-amount one. Without
+    # the lock the idempotency check below is a non-atomic read→check→write that
+    # a concurrent POST races through, booking a second payment (a real double-
+    # pay with no audit distinction). The `uq_payments_one_live_per_invoice`
+    # partial index (migration 0074) is the DB-level backstop for any path the
+    # row lock can't cover (e.g. an overlapping payment run).
+    inv_result = await db.execute(
+        select(Invoice).where(Invoice.id == uuid.UUID(body.invoice_id)).with_for_update()
+    )
     invoice = inv_result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -581,8 +621,16 @@ async def create_payment(
             detail="Payment amount must equal the approved invoice amount",
         )
 
+    # Idempotency guard: at most one LIVE payment per invoice. A retried or
+    # double-clicked POST must not book a second payment — return the existing
+    # live one instead of creating a duplicate. Terminal states don't count as
+    # live (see LIVE_PAYMENT_TERMINAL_STATUSES).
+    existing = await _find_live_payment(db, invoice.id)
+    if existing is not None:
+        return PaymentResponse.from_db(existing, invoice)
+
     payment = Payment(
-        invoice_id=uuid.UUID(body.invoice_id),
+        invoice_id=invoice.id,
         # Payment follows the invoice's entity (multi-entity Phase 2).
         entity_id=invoice.entity_id,
         amount=invoice.amount,
@@ -591,8 +639,45 @@ async def create_payment(
         payment_run_id=uuid.UUID(body.payment_run_id) if body.payment_run_id else None,
         correlation_id=uuid.uuid4(),
     )
-    db.add(payment)
-    await db.flush()
+    # Insert inside a savepoint so the DB-level unique index (the backstop for a
+    # race the row lock can't serialize — e.g. an overlapping run booking a live
+    # payment for the same invoice between our check and flush) surfaces as an
+    # IntegrityError we recover from, returning the winning payment rather than
+    # 500ing.
+    try:
+        async with db.begin_nested():
+            db.add(payment)
+            await db.flush()
+    except IntegrityError:
+        existing = await _find_live_payment(db, invoice.id)
+        if existing is not None:
+            return PaymentResponse.from_db(existing, invoice)
+        raise
+
+    # Append-only audit trail for the money-booking event. Every sibling money
+    # handler (void_payment, create_payment_run, execute_payment_run) writes an
+    # audit row; this standalone path was the only one that didn't. PII-free:
+    # ids, the Decimal amount as a string, method, and reference only — no
+    # bank/routing numbers, no PAN.
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=payment.correlation_id or uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment.created",
+        entity_type="payment",
+        entity_id=payment.id,
+        details={
+            "invoice_id": str(invoice.id),
+            "amount": str(payment.amount),
+            "method": payment.method,
+            "reference": payment.reference,
+            "payment_run_id": str(payment.payment_run_id) if payment.payment_run_id else None,
+        },
+    )
+
     await db.refresh(payment)
     return PaymentResponse.from_db(payment, invoice)
 
@@ -788,6 +873,21 @@ async def create_payment_run(
             correlation_id=uuid.uuid4(),
         )
         db.add(payment)
+
+    # Materialize the payment rows now (not at the trailing commit) so the
+    # `uq_payments_one_live_per_invoice` backstop surfaces as a clean 409 here
+    # rather than an unhandled 500 at request teardown: if any selected invoice
+    # already has a live payment (a concurrent standalone POST, or an overlapping
+    # run built from the same invoice), booking a second one is exactly the
+    # double-pay the index prevents. Legitimate runs — every invoice PAYABLE and
+    # not already scheduled — never trip this.
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="One or more invoices already have a live payment scheduled.",
+        ) from exc
 
     # SOX trail starts at run assembly, not at execution — an insider who builds
     # a fraudulent run and cancels it before execution must still leave a record
@@ -1514,11 +1614,21 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     # Dedup by the processor's event id. Webhook providers retry on any
     # non-2xx delivery; without this guard the same event could flip a
     # payment to `completed` twice and re-fire the ERP-sync dispatch.
-    from app.services.webhook_security import is_event_already_processed
+    from app.services.webhook_security import (
+        is_event_already_processed,
+        release_event_claim,
+    )
 
+    claimed_event: str | None = None
     if event.event_id:
         if await is_event_already_processed(provider, event.event_id):
             return
+        # Track the claim so the tenant-DB block below can release it if that
+        # block raises: the Redis dedup claim is only durable once the status
+        # transition commits, so a claim left set over a rolled-back txn would
+        # dedup the provider's retry away for the full TTL — the payment would
+        # then never reach terminal status. (Mirrors api/cards.py's discipline.)
+        claimed_event = event.event_id
     else:
         # A provider (or a future adapter) that stopped populating event_id
         # can't be Redis-deduped. Make that an explicit, logged branch rather
@@ -1534,76 +1644,93 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
             provider,
         )
 
-    # Open a tenant-DB session to look up + update the Payment row.
+    # Open a tenant-DB session to look up + update the Payment row. The whole
+    # block is wrapped so that if anything below raises AFTER we claimed the
+    # Redis dedup slot, we release the claim (see the `except` tail) and let the
+    # exception propagate — the provider then retries (a 5xx), and the released
+    # claim lets that retry actually reprocess instead of being deduped away for
+    # the full TTL. Without this the transition would be dropped and the payment
+    # would never reach terminal status.
     engine = get_tenant_engine(org.db_name)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as db:
-        # Lock the row for the read-check-write below: the terminal-state
-        # allowlist guard is a non-atomic read→check→write, and the reconciler
-        # (a separate code path that doesn't share the Redis event dedup) or a
-        # second concurrent delivery could otherwise interleave between the
-        # check and the UPDATE. FOR UPDATE serialises them.
-        pay_result = await db.execute(
-            select(Payment)
-            .where(Payment.provider_payment_id == event.provider_payment_id)
-            .with_for_update()
-        )
-        payment = pay_result.scalar_one_or_none()
-        if not payment:
-            return  # late retry of a payment we don't have
+    try:
+        async with factory() as db:
+            # Lock the row for the read-check-write below: the terminal-state
+            # allowlist guard is a non-atomic read→check→write, and the
+            # reconciler (a separate code path that doesn't share the Redis event
+            # dedup) or a second concurrent delivery could otherwise interleave
+            # between the check and the UPDATE. FOR UPDATE serialises them.
+            pay_result = await db.execute(
+                select(Payment)
+                .where(Payment.provider_payment_id == event.provider_payment_id)
+                .with_for_update()
+            )
+            payment = pay_result.scalar_one_or_none()
+            if not payment:
+                return  # late retry of a payment we don't have
 
-        # Only a genuinely in-flight payment may be advanced by a webhook.
-        # Webhooks arrive out of order and re-deliveries can land hours after
-        # a status already settled, so we use an allowlist of overwritable
-        # states rather than a blocklist of terminal ones — a blocklist
-        # silently lets through any state it forgot to name. In particular a
-        # late `completed` must NOT resurrect a `voided` / `cancelled` /
-        # `pending_compliance` payment (which would flip money back on with no
-        # audit row). `completed` / `failed` are already terminal too.
-        if payment.status not in ("pending", "submitted", "processing"):
-            return
+            # Only a genuinely in-flight payment may be advanced by a webhook.
+            # Webhooks arrive out of order and re-deliveries can land hours after
+            # a status already settled, so we use an allowlist of overwritable
+            # states rather than a blocklist of terminal ones — a blocklist
+            # silently lets through any state it forgot to name. In particular a
+            # late `completed` must NOT resurrect a `voided` / `cancelled` /
+            # `pending_compliance` payment (which would flip money back on with
+            # no audit row). `completed` / `failed` are already terminal too.
+            if payment.status not in ("pending", "submitted", "processing"):
+                return
 
-        previous_status = payment.status
-        payment.status = event.status.value
-        if event.reference:
-            payment.reference = event.reference
-        if event.failure_reason:
-            payment.failure_reason = event.failure_reason
-        if payment.status in ("completed", "failed", "cancelled"):
-            payment.completed_at = datetime.now(UTC)
+            previous_status = payment.status
+            payment.status = event.status.value
+            if event.reference:
+                payment.reference = event.reference
+            if event.failure_reason:
+                payment.failure_reason = event.failure_reason
+            if payment.status in ("completed", "failed", "cancelled"):
+                payment.completed_at = datetime.now(UTC)
 
-        # Append-only audit trail for the webhook-driven status transition.
-        # This is the production money-movement event — the processor's
-        # webhook is what flips a real payment to `completed`/`failed` and
-        # sets the regulated `completed_at`. Per the project invariant, a
-        # status change touching `completed_at` without an audit row is
-        # Critical. Actor is None (system-initiated by the processor, not a
-        # user). PII-free: only ids, status, the Decimal amount as a string,
-        # and the reference ever enter `details`.
-        from app.services.audit_dispatch import dispatch_audit
+            # Append-only audit trail for the webhook-driven status transition.
+            # This is the production money-movement event — the processor's
+            # webhook is what flips a real payment to `completed`/`failed` and
+            # sets the regulated `completed_at`. Per the project invariant, a
+            # status change touching `completed_at` without an audit row is
+            # Critical. Actor is None (system-initiated by the processor, not a
+            # user). PII-free: only ids, status, the Decimal amount as a string,
+            # and the reference ever enter `details`.
+            from app.services.audit_dispatch import dispatch_audit
 
-        await dispatch_audit(
-            db,
-            correlation_id=payment.correlation_id or uuid.uuid4(),
-            organization_id=org.id,
-            actor_id=None,
-            action=f"payment.{payment.status}",
-            entity_type="payment",
-            entity_id=payment.id,
-            details={
-                "status": payment.status,
-                "previous_status": previous_status or "unknown",
-                "method": payment.method,
-                "amount": str(payment.amount),
-                "reference": payment.reference,
-                "source": "webhook",
-                "provider": provider,
-                "payment_run_id": str(payment.payment_run_id) if payment.payment_run_id else None,
-            },
-        )
+            await dispatch_audit(
+                db,
+                correlation_id=payment.correlation_id or uuid.uuid4(),
+                organization_id=org.id,
+                actor_id=None,
+                action=f"payment.{payment.status}",
+                entity_type="payment",
+                entity_id=payment.id,
+                details={
+                    "status": payment.status,
+                    "previous_status": previous_status or "unknown",
+                    "method": payment.method,
+                    "amount": str(payment.amount),
+                    "reference": payment.reference,
+                    "source": "webhook",
+                    "provider": provider,
+                    "payment_run_id": (
+                        str(payment.payment_run_id) if payment.payment_run_id else None
+                    ),
+                },
+            )
 
-        run_id = payment.payment_run_id if payment.status == "completed" else None
-        await db.commit()
+            run_id = payment.payment_run_id if payment.status == "completed" else None
+            await db.commit()
+    except Exception:
+        # The dedup claim guards a side effect that just rolled back — release
+        # it so the provider's retry can reprocess (otherwise the money-state
+        # transition is dropped for the full TTL). Re-raise so the provider
+        # actually retries. Mirrors api/cards.py's card_webhook.
+        if claimed_event is not None:
+            await release_event_claim(provider, claimed_event)
+        raise
 
     # ERP sync runs after the DB commit so it sees the latest status.
     if run_id:
