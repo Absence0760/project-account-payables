@@ -15,7 +15,7 @@ from app.services.webhook_security import (
     is_event_already_processed,
     verify_hmac_sha256,
 )
-from app.services.workflow_engine import transition_invoice
+from app.services.workflow_engine import VALID_TRANSITIONS, transition_invoice
 
 logger = logging.getLogger(__name__)
 
@@ -154,21 +154,20 @@ async def erp_webhook(
             if not invoice:
                 return  # no matching invoice → silent ack
 
-            # Only transition if the target is a valid forward step
+            # Only transition if the AUTHORITATIVE state machine permits it.
+            # We deliberately do NOT keep a second local transition map here: a
+            # divergent copy that permitted an edge VALID_TRANSITIONS forbids
+            # (e.g. posted_in_erp → paid, or an ERP void/cancel → failed from
+            # posted_in_erp / payment_scheduled) would make transition_invoice
+            # raise a 409 that then escaped this handler — breaking the
+            # documented "every webhook rejection path returns 204 silently"
+            # contract. Screening against the canonical set guarantees the
+            # webhook can never claim a transition the engine will reject, and a
+            # transition the machine legitimately forbids becomes a silent ack
+            # (same as an unknown status / unknown invoice), not a 409.
             current = invoice.status
-            valid_transitions = {
-                InvoiceStatus.sent_to_erp: {InvoiceStatus.posted_in_erp, InvoiceStatus.failed},
-                InvoiceStatus.posted_in_erp: {
-                    InvoiceStatus.payment_scheduled,
-                    InvoiceStatus.paid,
-                    InvoiceStatus.failed,
-                },
-                InvoiceStatus.payment_scheduled: {InvoiceStatus.paid, InvoiceStatus.failed},
-            }
-
-            allowed = valid_transitions.get(current, set())
-            if target_status not in allowed:
-                return  # not a legal forward step — silent ack
+            if target_status not in VALID_TRANSITIONS.get(current, set()):
+                return  # not a legal transition for this state — silent ack
 
             await transition_invoice(
                 db,
@@ -189,7 +188,14 @@ async def erp_webhook(
             return
 
         except HTTPException:
-            raise
+            # Defensive backstop: the VALID_TRANSITIONS guard above already
+            # screens out every edge the state machine forbids, so
+            # transition_invoice's validate_transition should never 409 here.
+            # If a concurrent status change ever slipped one through, honour the
+            # webhook contract anyway — a 409 must NOT escape and break the
+            # silent-204 ack (which would also enumerate invoice state).
+            await db.rollback()
+            return
         except Exception:
             await db.rollback()
             return  # avoid leaking diagnostic detail in 500 body
