@@ -9,18 +9,35 @@ import { API_BASE, authedTenantHeaders, expect, tenantPsql, test } from '../fixt
  */
 
 const MARKER = 'PAGE-PAY-';
+const INV_MARKER = 'PAY-STUB-';
+
+function getOrgId(): string {
+	return tenantPsql(`SELECT organization_id FROM invoices LIMIT 1`).trim();
+}
 
 function seedPayments(n: number): void {
+	const orgId = getOrgId();
+	// One stub invoice per payment to satisfy uq_payments_one_live_per_invoice
+	// (at most one LIVE payment per invoice — 'completed' counts as live, since
+	// an invoice must not be paid twice). Stacking N completed payments on a
+	// single invoice — as this helper used to — is exactly the double-pay the
+	// index prevents. The PAY-STUB- prefix lets purge() remove both the stub
+	// invoices and their payments. Mirrors cards-pagination.spec.ts.
+	tenantPsql(
+		`INSERT INTO invoices (id, organization_id, correlation_id, invoice_number, vendor_name, amount, currency, status, created_at, updated_at)
+		 SELECT gen_random_uuid(), '${orgId}', gen_random_uuid(), '${INV_MARKER}' || g, 'Pay Stub Vendor', 100.00, 'USD', 'new', now(), now()
+		 FROM generate_series(1, ${n}) g`
+	);
 	tenantPsql(
 		`INSERT INTO payments (id, invoice_id, amount, method, status, reference, created_at, updated_at)
-		 SELECT gen_random_uuid(), (SELECT id FROM invoices LIMIT 1), 100.00, 'ach', 'completed',
-		        '${MARKER}' || g, now(), now()
-		 FROM generate_series(1, ${n}) g`
+		 SELECT gen_random_uuid(), i.id, 100.00, 'ach', 'completed', '${MARKER}' || row_number() OVER (), now(), now()
+		 FROM invoices i WHERE i.invoice_number LIKE '${INV_MARKER}%'`
 	);
 }
 
 function purge(): void {
 	tenantPsql(`DELETE FROM payments WHERE reference LIKE '${MARKER}%'`);
+	tenantPsql(`DELETE FROM invoices WHERE invoice_number LIKE '${INV_MARKER}%'`);
 }
 
 test.describe('/payments pagination', () => {
