@@ -27,6 +27,7 @@ EXCEPTION_TYPE_LABELS = {
     "review_rejected": "Rejected",
     "amount_exceeded": "Amount Exceeded",
     "missing_data": "Missing Data",
+    "erp_reconciliation": "ERP Reconciliation",
 }
 
 

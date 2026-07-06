@@ -11,10 +11,15 @@ silently" invariant AND corrupting nothing (no transition applied).
 These tests assert that:
   * an ERP status whose transition the state machine FORBIDS for the invoice's
     current state returns a silent 204 (not a 409/500) and does NOT mutate state
-    or write an audit row (the specific `posted_in_erp` + `voided` case from the
-    finding, plus `posted_in_erp` + `paid`), and
+    or write an audit row, and
   * a legitimately-permitted ERP-driven transition still applies AND goes through
     `transition_invoice` (the audit chokepoint).
+
+The `posted_in_erp` + `voided` case additionally opens an `erp_reconciliation`
+Exception for human review (money may already be in flight) — a side effect that
+is NOT a transition, is idempotent per open exception, and is PII-free — while a
+NON-void forbidden transition (`posted_in_erp` + `paid`) stays a pure silent
+no-op with no exception.
 """
 
 from __future__ import annotations
@@ -58,12 +63,20 @@ def _ctrl_session_for_org(org):
     return factory
 
 
-def _fake_tenant_session_factory(invoice):
-    result = MagicMock()
-    result.scalar_one_or_none = MagicMock(return_value=invoice)
+def _fake_tenant_session_factory(invoice, *, existing_recon_count: int = 0):
+    """Fake tenant session. The handler's FIRST ``execute`` is the invoice
+    lookup; the reconciliation path issues a SECOND ``execute`` — the
+    open-``erp_reconciliation``-exception dedup count — which returns
+    ``existing_recon_count``."""
+    invoice_result = MagicMock()
+    invoice_result.scalar_one_or_none = MagicMock(return_value=invoice)
+    count_result = MagicMock()
+    count_result.scalar = MagicMock(return_value=existing_recon_count)
+
     db = AsyncMock()
     db.add = MagicMock()
-    db.execute = AsyncMock(return_value=result)
+    db.execute = AsyncMock(side_effect=[invoice_result, count_result])
+    db.flush = AsyncMock()
     db.commit = AsyncMock()
     db.rollback = AsyncMock()
     factory = MagicMock()
@@ -108,8 +121,13 @@ def fake_redis(monkeypatch):
     return fake
 
 
-async def _post(*, org, invoice, status_value, event_id, secret="erp-secret"):
+async def _post(
+    *, org, invoice, status_value, event_id, secret="erp-secret", existing_recon_count=0
+):
     """Drive `erp_webhook` with a correctly-signed body for `status_value`.
+
+    `existing_recon_count` seeds the open-`erp_reconciliation`-exception dedup
+    count the reconciliation path reads.
 
     Returns (result, tenant_db, transition_calls) where transition_calls records
     the args every `transition_invoice` invocation received (empty if the guard
@@ -127,7 +145,9 @@ async def _post(*, org, invoice, status_value, event_id, secret="erp-secret"):
     body_bytes = json.dumps(body).encode("utf-8")
     sig = _sign(secret, body_bytes)
 
-    tenant_factory, db = _fake_tenant_session_factory(invoice)
+    tenant_factory, db = _fake_tenant_session_factory(
+        invoice, existing_recon_count=existing_recon_count
+    )
     transition_calls: list[dict] = []
 
     async def _capture(_db, inv, target, *, action_name, details):
@@ -151,31 +171,101 @@ async def _post(*, org, invoice, status_value, event_id, secret="erp-secret"):
 
 
 @pytest.mark.asyncio
-async def test_forbidden_transition_posted_to_voided_is_silent_204(fake_redis):
-    """The finding's exact case: ERP reports `voided` (→ failed) for an invoice
+async def test_forbidden_void_while_advanced_opens_reconciliation_exception(fake_redis):
+    """The reconciliation case: ERP reports `voided` (→ failed) for an invoice
     already `posted_in_erp`. VALID_TRANSITIONS forbids `posted_in_erp → failed`,
     so the webhook must silently 204 — never raise the 409 the old divergent map
-    provoked — and must NOT mutate the invoice or write an audit row."""
+    provoked — and must NOT transition the invoice. But a void/cancel of an
+    already-advanced invoice is a real reconciliation signal (money may be in
+    flight), so it opens exactly ONE open `erp_reconciliation` Exception for
+    human review, with a PII-free description."""
+    from app.api.erp_webhook import ERP_RECONCILIATION_EXCEPTION_TYPE
+    from app.models.exception import Exception as APException
+
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(status=InvoiceStatus.posted_in_erp)
+    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.posted_in_erp)
 
     result, db, transition_calls = await _post(
         org=org, invoice=invoice, status_value="voided", event_id="ev_void"
     )
 
     assert result is None  # silent 204, not a raised HTTPException
-    assert invoice.status is InvoiceStatus.posted_in_erp  # state uncorrupted
+    assert invoice.status is InvoiceStatus.posted_in_erp  # NOT auto-transitioned
     assert transition_calls == []  # never reached the transition/audit chokepoint
-    db.commit.assert_not_called()
+
+    # Exactly one Exception row created, of the reconciliation type, open.
+    added = [a.args[0] for a in db.add.call_args_list if isinstance(a.args[0], APException)]
+    assert len(added) == 1
+    exc = added[0]
+    assert exc.exception_type == ERP_RECONCILIATION_EXCEPTION_TYPE
+    assert exc.status == "open"
+    assert exc.severity == "error"
+    assert exc.invoice_id == invoice.id
+    assert exc.organization_id == org.id
+    # PII-free description: whitelisted ERP routing identifiers only, no raw
+    # ERP `details` payload (no bank/tax/address). Sanity-check the shape.
+    assert "voided" in exc.description
+    assert "posted_in_erp" in exc.description
+    db.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_forbidden_transition_posted_to_paid_is_silent_204(fake_redis):
-    """`posted_in_erp → paid` was permitted by the old local map but is NOT in
-    the canonical machine (`posted_in_erp` → payment_scheduled | done). It must
-    now silently no-op rather than 409."""
+async def test_forbidden_void_skips_when_open_reconciliation_exists(fake_redis):
+    """A DISTINCT later ERP void event (different event id, so the webhook
+    event-id dedup doesn't fire) for an invoice that ALREADY has an open
+    `erp_reconciliation` exception must NOT pile up a second one — the
+    reconciliation path is idempotent on the open exception."""
+    from app.models.exception import Exception as APException
+
     org = _org_with_erp_secret("erp-secret")
-    invoice = SimpleNamespace(status=InvoiceStatus.posted_in_erp)
+    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.payment_scheduled)
+
+    result, db, transition_calls = await _post(
+        org=org,
+        invoice=invoice,
+        status_value="cancelled",
+        event_id="ev_void_2",
+        existing_recon_count=1,  # an open erp_reconciliation already exists
+    )
+
+    assert result is None
+    assert invoice.status is InvoiceStatus.payment_scheduled
+    assert transition_calls == []
+    added = [a.args[0] for a in db.add.call_args_list if isinstance(a.args[0], APException)]
+    assert added == []  # no duplicate exception
+
+
+@pytest.mark.asyncio
+async def test_void_redelivery_is_event_deduped_no_second_exception(fake_redis):
+    """A redelivery (SAME event id) is caught by the webhook event-id dedup
+    BEFORE the invoice lookup — so the second delivery opens no exception at
+    all. Guards against a redelivered void double-flagging."""
+    from app.models.exception import Exception as APException
+
+    org = _org_with_erp_secret("erp-secret")
+
+    first_inv = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.paid)
+    r1, db1, _ = await _post(org=org, invoice=first_inv, status_value="voided", event_id="ev_dup")
+    assert r1 is None
+    added1 = [a.args[0] for a in db1.add.call_args_list if isinstance(a.args[0], APException)]
+    assert len(added1) == 1  # first delivery flags it
+
+    # Redelivery with the same event id → deduped before the tenant DB is opened.
+    second_inv = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.paid)
+    r2, db2, _ = await _post(org=org, invoice=second_inv, status_value="voided", event_id="ev_dup")
+    assert r2 is None
+    db2.add.assert_not_called()  # never reached exception creation
+    db2.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_forbidden_nonvoid_transition_is_pure_silent_204(fake_redis):
+    """`posted_in_erp → paid` was permitted by the old local map but is NOT in
+    the canonical machine (`posted_in_erp` → payment_scheduled | done). Since it
+    is a NON-void forbidden transition it must stay a PURE silent no-op — no
+    transition AND no reconciliation exception (that would be noise)."""
+    org = _org_with_erp_secret("erp-secret")
+    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.posted_in_erp)
 
     result, db, transition_calls = await _post(
         org=org, invoice=invoice, status_value="paidInFull", event_id="ev_paid"
@@ -184,6 +274,7 @@ async def test_forbidden_transition_posted_to_paid_is_silent_204(fake_redis):
     assert result is None
     assert invoice.status is InvoiceStatus.posted_in_erp
     assert transition_calls == []
+    db.add.assert_not_called()  # no exception created for a non-void forbidden edge
     db.commit.assert_not_called()
 
 

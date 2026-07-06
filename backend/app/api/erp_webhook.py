@@ -4,12 +4,14 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import control_session_factory, get_tenant_engine
+from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
+from app.services.exception_service import create_exception
 from app.services.webhook_security import (
     extract_signature_header,
     is_event_already_processed,
@@ -20,6 +22,12 @@ from app.services.workflow_engine import VALID_TRANSITIONS, transition_invoice
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/erp", tags=["erp"])
+
+# Exception type opened when the ERP reports an invoice void/cancel we can no
+# longer safely auto-apply (the invoice already advanced past the point where
+# ``→ failed`` is a legal transition). Free-form ``Exception.exception_type``
+# string — no migration. See the § Exception types list in backend/CLAUDE.md.
+ERP_RECONCILIATION_EXCEPTION_TYPE = "erp_reconciliation"
 
 
 # Map ERP status strings to our internal status transitions
@@ -167,7 +175,30 @@ async def erp_webhook(
             # (same as an unknown status / unknown invoice), not a 409.
             current = invoice.status
             if target_status not in VALID_TRANSITIONS.get(current, set()):
-                return  # not a legal transition for this state — silent ack
+                # The state machine forbids this transition for the invoice's
+                # current state. Almost always a silent no-op — a stale or
+                # duplicate ERP status for an invoice that already moved on.
+                # ONE forbidden case is a real reconciliation signal we must
+                # NOT drop: the ERP reports the invoice VOIDED/CANCELLED
+                # (→ failed) after we already advanced it (sent_to_erp /
+                # posted_in_erp / payment_scheduled / paid). Money may already
+                # be in flight, so we never auto-transition (auto → failed from
+                # payment_scheduled/paid would collide with the money path);
+                # instead we open an Exception for a human to reconcile. Every
+                # OTHER forbidden transition stays a pure silent no-op — turning
+                # them all into exceptions would be noise.
+                if target_status is InvoiceStatus.failed:
+                    await _raise_erp_reconciliation_exception(
+                        db,
+                        invoice,
+                        org_id=org.id,
+                        erp_type=erp_type,
+                        erp_status=erp_status,
+                        erp_document_id=erp_document_id,
+                        event_id=event_id,
+                    )
+                    await db.commit()
+                return  # silent 204 on every forbidden-transition path
 
             await transition_invoice(
                 db,
@@ -199,3 +230,59 @@ async def erp_webhook(
         except Exception:
             await db.rollback()
             return  # avoid leaking diagnostic detail in 500 body
+
+
+async def _raise_erp_reconciliation_exception(
+    db: AsyncSession,
+    invoice: Invoice,
+    *,
+    org_id,
+    erp_type: str,
+    erp_status: str,
+    erp_document_id: str | None,
+    event_id,
+) -> None:
+    """Open an ``erp_reconciliation`` Exception for human review.
+
+    Called when the ERP reports an invoice VOIDED/CANCELLED (``→ failed``) that
+    we've already advanced past the point where ``→ failed`` is a legal
+    transition (``sent_to_erp`` / ``posted_in_erp`` / ``payment_scheduled`` /
+    ``paid``). Money may already be in flight, so this is a review signal — we
+    deliberately do NOT auto-transition the invoice.
+
+    **Idempotent.** The webhook already dedupes redeliveries by event id, but
+    two DISTINCT ERP void events for the same invoice must not pile up duplicate
+    reconciliation exceptions — so we skip if an OPEN ``erp_reconciliation``
+    exception already exists for this invoice.
+
+    **PII-free.** The ``description`` carries only the safe ERP routing
+    identifiers already whitelisted for the audit row (``erp_type`` /
+    ``erp_status`` / ``erp_document_id`` / the event id) plus the invoice's
+    current status — never the raw ERP ``details`` payload (which may include
+    vendor bank / tax / address fields).
+    """
+    existing = await db.execute(
+        select(func.count()).where(
+            APException.invoice_id == invoice.id,
+            APException.exception_type == ERP_RECONCILIATION_EXCEPTION_TYPE,
+            APException.status == "open",
+        )
+    )
+    if (existing.scalar() or 0) > 0:
+        return  # already flagged for this invoice — don't duplicate
+
+    description = (
+        f"ERP reported '{erp_status}' (void/cancel) via {erp_type} for an "
+        f"invoice already at '{invoice.status.value}' — money may be in flight. "
+        f"Needs human reconciliation "
+        f"(erp_document_id={erp_document_id or '-'}, event={event_id or '-'})."
+    )
+    await create_exception(
+        db,
+        exception_type=ERP_RECONCILIATION_EXCEPTION_TYPE,
+        severity="error",
+        description=description,
+        status="open",
+        organization_id=org_id,
+        invoice=invoice,
+    )
