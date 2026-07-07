@@ -134,8 +134,8 @@ Things an auditor expects to see *in code or config*, not just in a policy doc. 
 
 | Control | Status | Where it lives |
 |---|---|---|
-| All changes via PR + review | Done by convention | GitHub branch protection — verify required-reviewer rule on `main` |
-| CI gate (lint + tests) before merge | Done | `.github/workflows/ci.yml` (required check) |
+| All changes via PR + review | Pending | `main` is currently **unprotected** — no PR requirement or required-reviewer rule exists. Enable the estate "sealed main + CI gate" branch protection before claiming this control. |
+| CI gate (lint + tests) before merge | Pending | `.github/workflows/ci.yml` runs on PRs, but it is **not** a required status check — `main` is unprotected, so a red CI does not block a merge (or a direct push). Wire in a "CI gate" required check once branch protection is enabled. |
 | Production deploy from `main` only | Done | `.github/workflows/deploy.yml` triggers on `push: main` |
 | Documented incident-response runbook | Pending | Vendor template + customise; needs on-call rotation |
 
