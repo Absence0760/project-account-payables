@@ -791,3 +791,40 @@ jobs:
         run: |
           echo "===== backend.log =====" && tail -200 /tmp/backend.log || true
           cd backend && docker compose logs keycloak mailpit localstack stripe-mock || true
+
+  # Single required status check for branch protection. `main` requires
+  # only this context; it fans in on every job above via `needs` +
+  # always(), failing the merge if any of them did not pass. A skipped
+  # job counts as passing (GitHub's required-check semantics), so a
+  # docs-only PR — where the heavy jobs skip via the `changes` filter —
+  # still goes green here. This workflow always triggers on PRs (no
+  # paths-ignore), so the gate always reports; no docs-companion needed.
+  # Add a new job's id to `needs` to gate merges on it — the
+  # branch-protection config never changes.
+  ci-gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - changes
+      - backend-lint
+      - backend-test
+      - frontend
+      - mobile
+      - shellcheck
+      - e2e
+      - service-e2e
+    steps:
+      - name: Require every upstream job to have passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON"
+          bad=$(echo "$NEEDS_JSON" | jq -r \
+            'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"')
+          if [ -n "$bad" ]; then
+            echo "::error::CI gate failing — upstream jobs did not pass:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "All upstream jobs passed."
