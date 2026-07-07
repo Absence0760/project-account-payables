@@ -78,6 +78,18 @@ python scripts/migrate_all_tenants.py               # apply to all tenants
 
 The backend dispatch scripts (`lint:backend`, `test:backend`, `format:backend`, `dev:backend`, `seed`, `migrate*`) assume the backend venv is activated — `source backend/.venv/bin/activate` before invoking them, or call the native commands from inside an already-activated shell.
 
+## Root package.json scripts — estate format
+
+Root `scripts` follow the estate-wide format canonized in the templates repo's `base` CLAUDE.md; the exemplar is `project-running/package.json` — read it before restructuring this repo's scripts:
+
+- `"//-- <group> --": "<one-line description>"` comment-key dividers above each cluster; the description carries load-bearing facts (ports, prerequisites, doc pointers), not filler.
+- Verb-first, colon-namespaced names: `setup[:*]`, `dev:*` (orchestrators, then `dev:db:*`, `dev:run:<app>`, per-service groups), `build:<surface>`, `check:<surface>`, `test:<surface>[:unit|:e2e]`, `gen:<what>`. Long-running services reuse the lifecycle verbs `up`/`down`/`status`/`logs`.
+- JSON holds one-liners only — anything longer delegates to a script under `bin/` or `scripts/`; workspace delegation goes through `pnpm -C <workspace> <script>`.
+- New scripts join an existing group (or add a new `//--` divider in the right place); never append ungrouped entries at the bottom.
+- Keep a `test:scripts` guard validating the root script targets (project-running's `scripts/check_root_scripts.mjs` is the reference shape; write it against this repo's layout).
+
+If the current scripts block predates this format, migrate it the next time a change touches it — as its own commit, and renaming a script must update every caller (CI workflows, docs, `bin/`) in the same change.
+
 ## First-time setup
 
 1. `cd backend && docker compose up -d`
