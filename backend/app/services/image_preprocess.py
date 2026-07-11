@@ -51,7 +51,9 @@ def auto_rotate_png(img_bytes: bytes) -> bytes:
         rotated.save(out, format="PNG")
         return out.getvalue()
     except Exception as exc:  # noqa: BLE001 — OSD failure must not break extraction
-        logger.debug("Auto-rotate skipped: %s", exc)
+        # Class only, never the message — the OSD path runs over uploaded invoice
+        # page images, so keep any document content out of logs (PII-out-of-logs).
+        logger.debug("Auto-rotate skipped: %s", exc.__class__.__name__)
         return img_bytes
 
 
