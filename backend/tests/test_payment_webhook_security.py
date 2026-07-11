@@ -133,6 +133,36 @@ async def test_webhook_returns_silently_for_wrong_provider():
     mk_adapter.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_webhook_rejects_mock_provider_before_tenant_lookup():
+    """The `mock` adapter's `parse_webhook` does NO signature verification and
+    `mock` is the default provider for un-configured tenants (seeded demos +
+    fresh signups). Serving it on this public route would accept forged status
+    transitions, so the handler must reject `provider=="mock"` outright — before
+    even resolving the tenant — regardless of what the tenant is configured for.
+    """
+    from app.api.payments import payment_webhook
+
+    # Even a tenant explicitly CONFIGURED for mock must be refused: the provider
+    # cross-check would otherwise pass and reach the unauthenticated parse.
+    org = _org(provider="mock")
+    with (
+        patch("app.database.control_session_factory") as mk_ctrl,
+        patch("app.api.payments.get_payment_adapter") as mk_adapter,
+    ):
+        result = await payment_webhook(
+            tenant_slug="acme",
+            provider="mock",
+            request=_fake_request(body=b'{"provider_payment_id":"px","status":"completed"}'),
+        )
+
+    assert result is None  # 204 No Content path
+    # Rejected before any tenant lookup or adapter resolution.
+    mk_ctrl.assert_not_called()
+    mk_adapter.assert_not_called()
+    _ = org  # constructed to document the "configured for mock" case
+
+
 # ---------------------------------------------------------------------------
 # Signature verification
 # ---------------------------------------------------------------------------

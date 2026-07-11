@@ -1593,6 +1593,18 @@ async def payment_webhook(tenant_slug: str, provider: str, request: Request):
     body = await request.body()
     headers = {k: v for k, v in request.headers.items()}
 
+    # The `mock` adapter's `parse_webhook` performs NO signature verification
+    # (it exists only so test fixtures can simulate a status flip by calling the
+    # adapter directly) and `mock` is the default provider for any tenant that
+    # hasn't configured a real processor — seeded demo tenants and fresh signups
+    # both land there. Serving it on this public, unauthenticated route would
+    # accept forged status transitions. Mock never actually delivers webhooks, so
+    # reject it here outright rather than relying on the downstream terminal-state
+    # guard. Mirrors `cards.card_webhook`'s hardcoded `lithic`/`nium` allowlist
+    # and the boot-time `mock` refusal on the billing webhook route.
+    if provider == "mock":
+        return
+
     # Resolve tenant from the URL path (no JWT, no X-Tenant-Slug header).
     async with control_session_factory() as ctrl_db:
         org_result = await ctrl_db.execute(
