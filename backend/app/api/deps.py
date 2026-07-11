@@ -393,7 +393,11 @@ async def get_api_key_principal(
         await db.commit()
     except Exception as exc:  # pragma: no cover - observability, not auth
         # PII-free: only the key id (a UUID, never the plaintext/hash) + error.
-        logger.warning("api-key usage/last_used write failed: id=%s err=%s", matched.id, exc)
+        logger.warning(
+            "api-key usage/last_used write failed: id=%s err=%s",
+            matched.id,
+            exc.__class__.__name__,
+        )
         await db.rollback()
 
     # Per-key request cap on the whole /api/v1 surface. Enforced AFTER the key
@@ -417,7 +421,11 @@ async def get_api_key_principal(
     except RateLimitExceeded:
         raise
     except Exception as exc:  # pragma: no cover - fail-open on a limiter outage
-        logger.warning("api-key rate-limit check failed open: id=%s err=%s", matched.id, exc)
+        logger.warning(
+            "api-key rate-limit check failed open: id=%s err=%s",
+            matched.id,
+            exc.__class__.__name__,
+        )
 
     return ApiKeyPrincipal(
         api_key_id=matched.id,

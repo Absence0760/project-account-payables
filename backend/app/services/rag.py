@@ -68,7 +68,9 @@ def extract_invoice_text(file_bytes: bytes) -> str:
             for page in doc:
                 text_chunks.append(page.get_text("text"))
     except Exception as exc:
-        logger.warning("PyMuPDF text extraction failed: %s", exc)
+        # Class only, never the message — a parser error on an uploaded invoice
+        # PDF could otherwise echo document content into the log (PII-out-of-logs).
+        logger.warning("PyMuPDF text extraction failed: %s", exc.__class__.__name__)
         return ""
 
     return "\n".join(text_chunks).strip()

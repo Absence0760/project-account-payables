@@ -54,12 +54,12 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
             result = await ctrl_db.execute(select(Organization).where(Organization.id == org_id))
             org = result.scalar_one_or_none()
             if not org:
-                print(f"[payment-sync] Organization {org_id} not found")
+                logger.warning("[payment-sync] organization %s not found", org_id)
                 return
 
         erp_config = (org.settings or {}).get("erp")
         if not erp_config:
-            print(f"[payment-sync] No ERP configured for org {org_id}, skipping sync")
+            logger.info("[payment-sync] no ERP configured for org %s, skipping sync", org_id)
             return
 
         # Import adapters
@@ -107,11 +107,15 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
 
                         # Build payment data for ERP
                         # In production, this would call adapter.post_payment()
-                        # For now, log and mark as synced
-                        print(
-                            f"[payment-sync] Syncing payment {payment.id}: "
-                            f"invoice={invoice.invoice_number if invoice else '?'}, "
-                            f"amount=${payment.amount:.2f}, method={payment.method}"
+                        # For now, log and mark as synced. Amount is not PII; goes
+                        # through the module logger so it reaches the same
+                        # aggregation/redaction pipeline as the rest of the sync.
+                        logger.info(
+                            "[payment-sync] syncing payment %s: invoice=%s, amount=%s, method=%s",
+                            payment.id,
+                            invoice.invoice_number if invoice else "?",
+                            f"{payment.amount:.2f}",
+                            payment.method,
                         )
 
                         # Update invoice status to paid if currently payment_scheduled
@@ -142,9 +146,12 @@ async def _sync_payments(run_id: uuid.UUID, org_id: uuid.UUID) -> None:
                         failed += 1
 
                 await db.commit()
-                print(
-                    f"[payment-sync] Run {run_id}: {synced} synced, "
-                    f"{skipped} skipped (in-flight), {failed} failed"
+                logger.info(
+                    "[payment-sync] run %s: %d synced, %d skipped (in-flight), %d failed",
+                    run_id,
+                    synced,
+                    skipped,
+                    failed,
                 )
 
             except Exception as exc:
