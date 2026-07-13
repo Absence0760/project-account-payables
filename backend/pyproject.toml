@@ -83,7 +83,7 @@ dev = [
     # to a single minor keeps CI's `pip install` from quietly picking
     # up stricter rules than the local venv runs. Bump intentionally
     # via dependabot or a manual upgrade pass.
-    "ruff>=0.15.20,<0.16",
+    "ruff>=0.15.21,<0.16",
 ]
 # Optional: auto-rotation of scanned invoice pages via Tesseract OSD.
 # Install with `pip install -e ".[ocr]"` and ensure the `tesseract` binary
