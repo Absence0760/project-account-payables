@@ -293,6 +293,48 @@ def rollup_to_reporting_currency(
     )
 
 
+def rollup_from_grouped_rows(
+    groups: list[dict],
+    *,
+    reporting_currency: str,
+) -> ReportingRollup:
+    """Same result as `rollup_to_reporting_currency`, but from rows the DB has
+    already aggregated per currency — so an aggregate caller (the dashboard)
+    doesn't have to stream every invoice into Python just to sum it.
+
+    Each group dict carries the per-currency SUM/COUNT the DB computed:
+        {"currency": str, "original_amount": Decimal, "reporting_amount": Decimal,
+         "count": int, "unconverted_count": int}
+    where `reporting_amount` already applied the per-row rule (locked
+    `reporting_amount` when it matches the target currency, else face `amount`)
+    and `unconverted_count` counted the foreign rows that fell back to face
+    value — i.e. the CASE expressions in the query mirror
+    `reporting_amount_for_row`. Because invoice money columns are 2dp, summing
+    then quantizing here matches the row-at-a-time quantize-then-sum above.
+    """
+    tgt = reporting_currency.upper()
+    by_currency = [
+        CurrencyBreakdownEntry(
+            currency=(g["currency"] or tgt).upper(),
+            original_amount=_quantize_money(Decimal(str(g["original_amount"] or 0))),
+            reporting_amount=_quantize_money(Decimal(str(g["reporting_amount"] or 0))),
+            count=int(g["count"] or 0),
+            unconverted_count=int(g["unconverted_count"] or 0),
+        )
+        for g in groups
+    ]
+    by_currency.sort(key=lambda e: e.reporting_amount, reverse=True)
+    return ReportingRollup(
+        reporting_currency=tgt,
+        total_reporting_amount=_quantize_money(
+            sum((e.reporting_amount for e in by_currency), Decimal("0"))
+        ),
+        total_count=sum(e.count for e in by_currency),
+        unconverted_count=sum(e.unconverted_count for e in by_currency),
+        by_currency=by_currency,
+    )
+
+
 @dataclass(frozen=True)
 class UnrealizedFXEntry:
     currency: str

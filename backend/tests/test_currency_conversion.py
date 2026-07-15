@@ -49,6 +49,7 @@ from app.services.currency_conversion import (
     materialize_reporting_amount,
     reporting_amount_for_row,
     resolve_reporting_currency,
+    rollup_from_grouped_rows,
     rollup_to_reporting_currency,
 )
 from app.services.fx_adapters.mock_adapter import MockFXAdapter
@@ -323,6 +324,73 @@ def test_rollup_empty_is_zero_snapshot():
     assert rollup.total_reporting_amount == Decimal("0.00")
     assert rollup.total_count == 0
     assert rollup.by_currency == []
+
+
+# ---------------------------------------------------------------------------
+# rollup_from_grouped_rows — the aggregate (DB-side GROUP BY) path used by the
+# dashboard must produce the EXACT same ReportingRollup as the row-at-a-time
+# path. This pins the equivalence the dashboard perf fix relies on.
+# ---------------------------------------------------------------------------
+
+
+def _group_like_sql(rows: list[dict], *, reporting_currency: str) -> list[dict]:
+    """Reduce per-row dicts to per-currency group dicts exactly the way the
+    dashboard's SQL GROUP BY does (the CASE expressions mirror
+    `reporting_amount_for_row`), so the two rollup entry points can be compared
+    on identical inputs."""
+    tgt = reporting_currency.upper()
+    groups: dict[str, dict] = {}
+    for r in rows:
+        amount = Decimal(str(r["amount"]))
+        cur = (r["currency"] or tgt).upper()
+        rep_cur = r["reporting_currency"]
+        rep_amt = r["reporting_amount"]
+        locked = rep_amt is not None and rep_cur is not None and rep_cur.upper() == tgt
+        g = groups.setdefault(
+            cur,
+            {
+                "currency": cur,
+                "original_amount": Decimal("0"),
+                "reporting_amount": Decimal("0"),
+                "count": 0,
+                "unconverted_count": 0,
+            },
+        )
+        g["original_amount"] += amount
+        g["reporting_amount"] += Decimal(str(rep_amt)) if locked else amount
+        g["count"] += 1
+        if not locked and cur != tgt:
+            g["unconverted_count"] += 1
+    return list(groups.values())
+
+
+def test_rollup_from_grouped_matches_row_path():
+    def _row(amount, currency, rep_amt=None, rep_cur=None):
+        return {
+            "amount": Decimal(amount),
+            "currency": currency,
+            "reporting_amount": Decimal(rep_amt) if rep_amt is not None else None,
+            "reporting_currency": rep_cur,
+        }
+
+    rows = [
+        _row("1000.00", "USD"),  # same-currency, no lock
+        _row("250.50", "USD"),  # second USD row → exercises per-currency grouping
+        _row("1000.00", "EUR", "1086.96", "USD"),  # locked to USD
+        _row("400.00", "EUR", "435.00", "USD"),  # second locked EUR row
+        _row("300.00", "GBP"),  # foreign, no lock → unconverted
+        _row("99.00", "CHF", "120.00", "EUR"),  # stale lock (wrong ccy) → face + unconverted
+    ]
+    row_based = rollup_to_reporting_currency(rows, reporting_currency="USD")
+    grouped = rollup_from_grouped_rows(
+        _group_like_sql(rows, reporting_currency="USD"), reporting_currency="USD"
+    )
+    assert grouped == row_based
+
+
+def test_rollup_from_grouped_empty_is_zero_snapshot():
+    grouped = rollup_from_grouped_rows([], reporting_currency="EUR")
+    assert grouped == rollup_to_reporting_currency([], reporting_currency="EUR")
 
 
 # ---------------------------------------------------------------------------

@@ -68,13 +68,18 @@ def _mk_db(*results):
 # test layout stays sane. Don't change the order without updating the
 # endpoint AND the comments below.
 #
-#   1.  totals (count + sum)              → .one() → (count, sum)
-#   2.  reporting amount rows             → .all()  (multi-currency rollup)
-#   3.  pipeline status rows              → .all()
-#   4.  vendor spend rows                 → .all()
-#   5.  aging rows (due_date, amount)     → .all()
-#   6.  trend invoice rows                → .all()
-#   7.  upcoming payment rows             → .all()
+# Aging bands, the monthly-trend buckets, and the currency rollup are now
+# aggregated in SQL (GROUP BY), so those result rows are already grouped — the
+# off-by-one band boundaries + month bucketing are exercised by the realdb
+# tests in `test_analytics_aging_reconciliation.py`, not here.
+#
+#   1.  totals (count + sum)                       → .one() → (count, sum)
+#   2.  reporting rollup rows (per currency)       → .all() → (ccy, sum_amt, sum_rep, count, unconv)
+#   3.  pipeline status rows                       → .all()
+#   4.  vendor spend rows                          → .all()
+#   5.  aging rows (bucket, sum) — SQL-bucketed    → .all()
+#   6.  trend rows (month, count, sum) — SQL group → .all()
+#   7.  upcoming payment rows                      → .all()
 #   8.  total paid                        → .scalar()
 #   9.  total pending                     → .scalar()
 #  10.  total rebates                     → .scalar()
@@ -121,65 +126,10 @@ def _full_results(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_aging_buckets_split_at_correct_day_boundaries():
-    """One invoice in each bucket, on the exact boundary day, must
-    land in the correct bucket. Bumping any boundary one day either
-    direction silently mis-reports millions in AR aging."""
-    today = date.today()
-    aging_rows = [
-        (today, Decimal("100.00")),  # current (0 days past)
-        (today - timedelta(days=1), Decimal("200.00")),  # days_30 (1 day past)
-        (today - timedelta(days=30), Decimal("400.00")),  # days_30 (exactly 30)
-        (today - timedelta(days=31), Decimal("800.00")),  # days_60 (31 days)
-        (today - timedelta(days=60), Decimal("1600.00")),  # days_60 (exactly 60)
-        (today - timedelta(days=61), Decimal("3200.00")),  # days_90 (61 days)
-        (today - timedelta(days=75), Decimal("500.00")),  # days_90 (61-90 band)
-        (today - timedelta(days=90), Decimal("700.00")),  # days_90 (exactly 90)
-        (today - timedelta(days=91), Decimal("900.00")),  # days_90_plus (91 days)
-        (today - timedelta(days=365), Decimal("6400.00")),  # days_90_plus (way past)
-    ]
-    db = _mk_db(*_full_results(aging=aging_rows))
-
-    result = await get_dashboard(db=db, org=_org(), user=_user())
-    assert result["aging"]["current"] == 100.0
-    assert result["aging"]["days_30"] == 600.0  # 200 + 400
-    assert result["aging"]["days_60"] == 2400.0  # 800 + 1600
-    assert result["aging"]["days_90"] == 4400.0  # 3200 + 500 + 700
-    assert result["aging"]["days_90_plus"] == 7300.0  # 900 + 6400
-
-
-@pytest.mark.asyncio
-async def test_aging_75_days_lands_in_61_90_band_not_90_plus():
-    """The headline BUG 7 case: before the fix, the only "old" bucket was
-    `days_90_plus` for everything past 60 days, so a 75-days-past-due
-    invoice was reported as 90+. It must now sit in the new 61-90
-    (`days_90`) band and contribute nothing to `days_90_plus`."""
-    today = date.today()
-    aging_rows = [(today - timedelta(days=75), Decimal("1000.00"))]
-    db = _mk_db(*_full_results(aging=aging_rows))
-    result = await get_dashboard(db=db, org=_org(), user=_user())
-    assert result["aging"]["days_90"] == 1000.0
-    assert result["aging"]["days_90_plus"] == 0.0
-
-
-@pytest.mark.asyncio
-async def test_aging_buckets_treat_future_due_date_as_current():
-    """A future due_date (not yet due) is `current`. A bug that
-    flipped the sign on `today - due_date` would route future-dated
-    invoices into days_90_plus."""
-    today = date.today()
-    aging_rows = [
-        (today + timedelta(days=10), Decimal("100.00")),  # future
-        (today + timedelta(days=60), Decimal("250.00")),  # far future
-    ]
-    db = _mk_db(*_full_results(aging=aging_rows))
-    result = await get_dashboard(db=db, org=_org(), user=_user())
-    assert result["aging"]["current"] == 350.0
-    assert result["aging"]["days_30"] == 0.0
-    assert result["aging"]["days_60"] == 0.0
-    assert result["aging"]["days_90"] == 0.0
-    assert result["aging"]["days_90_plus"] == 0.0
+# The aging band boundaries (the off-by-one trap: 30/31, 60/61, 90/91, future =
+# current) are now bucketed in SQL, so they're pinned by
+# `test_aging_boundary_bands_realdb` in test_analytics_aging_reconciliation.py —
+# a mocked test here could only assert back the bucket labels it fed in.
 
 
 # ---------------------------------------------------------------------------
@@ -253,31 +203,11 @@ async def test_touchless_rate_is_zero_when_no_invoices_processed():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_monthly_trend_is_sorted_ascending_by_month():
-    """The frontend renders these straight onto an x-axis; out-of-order
-    rows give a sawtooth chart. Feed rows in jumbled order, assert
-    ascending output."""
-    today = date(2026, 5, 15)
-    trend_rows = [
-        (date(2026, 3, 4), Decimal("100")),
-        (date(2026, 1, 22), Decimal("50")),
-        (date(2026, 4, 1), Decimal("75")),
-        (date(2026, 1, 5), Decimal("25")),  # same month as Jan 22
-    ]
-    db = _mk_db(*_full_results(trend=trend_rows))
-    # Patch today() so the 180-day filter doesn't matter — endpoint
-    # already filtered at the query layer (which we mock).
-    result = await get_dashboard(db=db, org=_org(), user=_user())
-    months = [m["month"] for m in result["monthly_trend"]]
-    assert months == sorted(months), "monthly_trend not sorted ascending"
-    # Two Jan rows must collapse into a single bucket with both
-    # counted.
-    jan = next(m for m in result["monthly_trend"] if m["month"] == "2026-01")
-    assert jan["count"] == 2
-    assert jan["amount"] == 75.0  # 50 + 25
-    # Today must not have been used to inject this date — just sanity:
-    assert today.isoformat() not in months
+# Monthly-trend month bucketing + ascending order is now done in SQL
+# (date_trunc + GROUP BY + ORDER BY), so it's pinned by
+# `test_monthly_trend_buckets_by_month_realdb` in
+# test_analytics_aging_reconciliation.py rather than a mock that would just
+# echo pre-bucketed rows back.
 
 
 # ---------------------------------------------------------------------------
@@ -367,10 +297,11 @@ async def test_reporting_rollup_collapses_mixed_currencies_into_one_total():
     add up correctly in the reporting block, while `total_amount` stays the
     legacy naive SUM. Org reports in USD."""
     # totals = naive SUM across currencies (1000 USD + 1000 EUR face = 2000).
+    # The rollup query now GROUP BYs in SQL, so rows are per-currency:
+    # (currency, sum(amount), sum(reporting), count, unconverted_count).
     reporting_rows = [
-        # (amount, currency, reporting_amount, reporting_currency)
-        (Decimal("1000.00"), "USD", None, None),
-        (Decimal("1000.00"), "EUR", Decimal("1086.96"), "USD"),
+        ("USD", Decimal("1000.00"), Decimal("1000.00"), 1, 0),
+        ("EUR", Decimal("1000.00"), Decimal("1086.96"), 1, 0),
     ]
     db = _mk_db(*_full_results(totals=(2, Decimal("2000.00")), reporting_rows=reporting_rows))
     org = _org(settings={"reporting_currency": "USD"})
@@ -393,9 +324,11 @@ async def test_reporting_rollup_flags_foreign_rows_without_a_rate_lock():
     """A foreign invoice with no materialized reporting amount falls back to
     face value and is counted in `unconverted_count` so the UI can warn rather
     than silently mixing currencies."""
+    # GBP group has no rate lock → falls back to face value and is counted
+    # in unconverted_count (the SQL CASE already applied the fallback).
     reporting_rows = [
-        (Decimal("500.00"), "USD", None, None),
-        (Decimal("300.00"), "GBP", None, None),  # no lock
+        ("USD", Decimal("500.00"), Decimal("500.00"), 1, 0),
+        ("GBP", Decimal("300.00"), Decimal("300.00"), 1, 1),
     ]
     db = _mk_db(*_full_results(totals=(2, Decimal("800.00")), reporting_rows=reporting_rows))
     result = await get_dashboard(db=db, org=_org(), user=_user())

@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -19,7 +19,7 @@ from app.models.virtual_card import CardRebate
 from app.services.analytics import OPEN_AP_STATUSES
 from app.services.currency_conversion import (
     resolve_reporting_currency,
-    rollup_to_reporting_currency,
+    rollup_from_grouped_rows,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -88,25 +88,42 @@ async def get_dashboard(
     # (foreign rows without a lock fall back to face value and are counted in
     # `unconverted_count`). See backend/docs/multi-currency.md.
     reporting_currency = resolve_reporting_currency(org.settings)
-    amount_rows = await db.execute(
+    # Aggregate per currency in SQL instead of streaming every invoice into
+    # Python. The CASE expressions mirror `reporting_amount_for_row`: a row is
+    # "locked" (use its persisted `reporting_amount`) iff that column is set AND
+    # its `reporting_currency` equals the org's target; otherwise it falls back
+    # to face `amount`, and a foreign row (currency != target) is counted as
+    # unconverted. `rollup_from_grouped_rows` reduces these per-currency sums to
+    # the exact same `ReportingRollup` the row-at-a-time path produced.
+    tgt = reporting_currency.upper()
+    _cur_key = func.upper(func.coalesce(Invoice.currency, tgt))
+    _has_lock = and_(
+        Invoice.reporting_amount.isnot(None),
+        func.upper(Invoice.reporting_currency) == tgt,
+    )
+    _rep_expr = case((_has_lock, Invoice.reporting_amount), else_=Invoice.amount)
+    _unconv_expr = case((and_(not_(_has_lock), _cur_key != tgt), 1), else_=0)
+    rollup_rows = await db.execute(
         _inv(
             select(
-                Invoice.amount,
-                Invoice.currency,
-                Invoice.reporting_amount,
-                Invoice.reporting_currency,
-            )
+                _cur_key.label("currency"),
+                func.coalesce(func.sum(Invoice.amount), 0),
+                func.coalesce(func.sum(_rep_expr), 0),
+                func.count(),
+                func.coalesce(func.sum(_unconv_expr), 0),
+            ).group_by(_cur_key)
         )
     )
-    rollup = rollup_to_reporting_currency(
+    rollup = rollup_from_grouped_rows(
         [
             {
-                "amount": r[0],
-                "currency": r[1],
+                "currency": r[0],
+                "original_amount": r[1],
                 "reporting_amount": r[2],
-                "reporting_currency": r[3],
+                "count": r[3],
+                "unconverted_count": r[4],
             }
-            for r in amount_rows.all()
+            for r in rollup_rows.all()
         ],
         reporting_currency=reporting_currency,
     )
@@ -149,46 +166,48 @@ async def get_dashboard(
         "days_90_plus": Decimal("0"),
     }
     # Aging covers the same open-payable population as the AP balance so the
-    # bands reconcile with it (F-4): approved → payment_scheduled.
+    # bands reconcile with it (F-4): approved → payment_scheduled. Bucket + sum
+    # in SQL (Postgres `date - date` is integer days) rather than pulling every
+    # open row into Python; the band boundaries match the old loop exactly.
+    _days_past = today - Invoice.due_date
+    _aging_bucket = case(
+        (_days_past <= 0, "current"),
+        (_days_past <= 30, "days_30"),
+        (_days_past <= 60, "days_60"),
+        (_days_past <= 90, "days_90"),
+        else_="days_90_plus",
+    )
     aging_rows = await db.execute(
         _inv(
-            select(Invoice.due_date, Invoice.amount).where(
-                Invoice.status.in_(OPEN_AP_STATUSES), Invoice.due_date.isnot(None)
-            )
+            select(_aging_bucket.label("bucket"), func.coalesce(func.sum(Invoice.amount), 0))
+            .where(Invoice.status.in_(OPEN_AP_STATUSES), Invoice.due_date.isnot(None))
+            .group_by(_aging_bucket)
         )
     )
-    for row in aging_rows.all():
-        days_past = (today - row[0]).days
-        amt = Decimal(str(row[1]))
-        if days_past <= 0:
-            aging_dec["current"] += amt
-        elif days_past <= 30:
-            aging_dec["days_30"] += amt
-        elif days_past <= 60:
-            aging_dec["days_60"] += amt
-        elif days_past <= 90:
-            aging_dec["days_90"] += amt
-        else:
-            aging_dec["days_90_plus"] += amt
+    for bucket, total in aging_rows.all():
+        aging_dec[bucket] = Decimal(str(total))
     aging = {k: float(v) for k, v in aging_dec.items()}
 
-    # Monthly trend (last 6 months) — compute in Python to avoid GROUP BY issues
+    # Monthly trend (last 6 months) — bucket by calendar month in SQL rather
+    # than streaming every recent invoice into Python. Summing amounts in the
+    # DB (Numeric) also avoids the float-accumulation drift the old per-row
+    # `+= float(...)` fold could introduce.
     six_months_ago = today - timedelta(days=180)
-    trend_inv_rows = await db.execute(
+    _month_key = func.to_char(func.date_trunc("month", Invoice.invoice_date), "YYYY-MM")
+    trend_rows = await db.execute(
         _inv(
-            select(Invoice.invoice_date, Invoice.amount).where(
-                Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None)
+            select(
+                _month_key.label("month"), func.count(), func.coalesce(func.sum(Invoice.amount), 0)
             )
+            .where(Invoice.invoice_date >= six_months_ago, Invoice.invoice_date.isnot(None))
+            .group_by(_month_key)
+            .order_by(_month_key)
         )
     )
-    trend_buckets: dict[str, dict] = {}
-    for row in trend_inv_rows.all():
-        month_key = row[0].strftime("%Y-%m")
-        if month_key not in trend_buckets:
-            trend_buckets[month_key] = {"month": month_key, "count": 0, "amount": 0.0}
-        trend_buckets[month_key]["count"] += 1
-        trend_buckets[month_key]["amount"] += float(row[1])
-    monthly_trend = sorted(trend_buckets.values(), key=lambda x: x["month"])
+    monthly_trend = [
+        {"month": month, "count": count, "amount": float(amount)}
+        for month, count, amount in trend_rows.all()
+    ]
 
     # Upcoming payments (due within 7 days + overdue)
     week_ahead = today + timedelta(days=7)
@@ -315,16 +334,24 @@ async def get_dashboard(
             .group_by(Payment.invoice_id)
         )
         paid_at_by_invoice = {row[0]: row[1] for row in paid_rows.all() if row[1]}
-        inv_rows = await db.execute(_inv(select(Invoice.id, Invoice.created_at)))
-        for inv_id, created in inv_rows.all():
-            invoice_legs.append(
-                SimpleNamespaceTimings(
-                    id=inv_id,
-                    created_at=created,
-                    approved_at=approved_at_by_invoice.get(inv_id),
-                    paid_at=paid_at_by_invoice.get(inv_id),
-                )
+        # Only invoices with an approval or paid timestamp contribute a leg —
+        # every other row appends nothing. So fetch just those ids instead of
+        # the whole (potentially multi-million-row) invoice table; the entity
+        # scope still applies, so an out-of-scope id is dropped exactly as before.
+        relevant_ids = set(approved_at_by_invoice) | set(paid_at_by_invoice)
+        if relevant_ids:
+            inv_rows = await db.execute(
+                _inv(select(Invoice.id, Invoice.created_at).where(Invoice.id.in_(relevant_ids)))
             )
+            for inv_id, created in inv_rows.all():
+                invoice_legs.append(
+                    SimpleNamespaceTimings(
+                        id=inv_id,
+                        created_at=created,
+                        approved_at=approved_at_by_invoice.get(inv_id),
+                        paid_at=paid_at_by_invoice.get(inv_id),
+                    )
+                )
     except Exception:  # noqa: BLE001
         # Tenants without the audit_log shipping pipeline enabled can
         # still see the rest of the dashboard. Surface zeros and a
