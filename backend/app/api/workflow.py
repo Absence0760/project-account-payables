@@ -579,10 +579,13 @@ async def export_invoice(
         import csv
         import io
 
+        from app.services.report_export import csv_safe_cell
+
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=data.keys())
         writer.writeheader()
-        writer.writerow(data)
+        # Neutralize CSV formula injection (CWE-1236).
+        writer.writerow({k: csv_safe_cell(v) for k, v in data.items()})
 
         from fastapi.responses import Response
 

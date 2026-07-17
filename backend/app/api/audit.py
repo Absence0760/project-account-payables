@@ -13,7 +13,6 @@ endpoint does. No PUT/PATCH/DELETE is defined anywhere in this router, keeping
 the audit trail GET-only.
 """
 
-import csv
 import io
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
@@ -42,6 +41,7 @@ from app.services.audit_access import log_access
 from app.services.audit_dispatch import dispatch_audit
 from app.services.audit_report_pdf import AuditReportContext, render_audit_report_pdf
 from app.services.branding import get_brand_context
+from app.services.report_export import safe_csv_writer
 from app.tenant import get_tenant_db
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -70,7 +70,7 @@ def _entries_to_csv(entries: list[AuditExportEntry]) -> str:
     banking/tax-id value can reach the CSV surface.
     """
     buf = io.StringIO()
-    writer = csv.writer(buf)
+    writer = safe_csv_writer(buf)
     writer.writerow(
         [
             "created_at",

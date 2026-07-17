@@ -63,6 +63,7 @@ from app.services.audit_dispatch import dispatch_audit
 from app.services.csv_import import import_invoices_csv
 from app.services.gl_recode import RecodeFilter, bulk_recode_gl
 from app.services.invoice_warnings import refresh_warnings
+from app.services.report_export import csv_safe_cell
 from app.services.storage import delete_file, get_file, upload_chat_file, upload_invoice_file
 from app.services.supplier_chat import (
     CHAT_TEMPLATES,
@@ -1615,7 +1616,9 @@ async def bulk_export(
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=rows[0].keys())
         writer.writeheader()
-        writer.writerows(rows)
+        # Neutralize CSV formula injection (CWE-1236) — attacker-controlled
+        # fields (vendor name) flow into a CSV a CFO opens in Excel.
+        writer.writerows({k: csv_safe_cell(v) for k, v in r.items()} for r in rows)
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
