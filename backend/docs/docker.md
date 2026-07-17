@@ -123,6 +123,22 @@ docker compose --profile mail up -d mailpit   # pnpm mail:up (SMTP :1025, UI :80
 Set `AP_EMAIL_PROVIDER=smtp` + `AP_SMTP_HOST=localhost` + `AP_SMTP_PORT=1025`.
 Full walkthrough: [`../../docs/local-email-mailpit.md`](../../docs/local-email-mailpit.md).
 
+## Fake ERP server (fake-erp)
+
+The three real ERP adapters (`merge_dev`, `netsuite`, `dynamics_365_bc`) can
+run e2e against a local fake ERP server — a small FastAPI app built from
+`tools/fake-erp/` (in-memory, deterministic) that fakes all three provider
+surfaces by path prefix. Opt-in under the `erp` profile:
+
+```bash
+docker compose --profile erp up -d fake-erp   # pnpm erp:up (host port 12112, container 8080)
+```
+
+The `AP_ERP_*_BASE` env vars point the adapters at it (the committed
+`backend/.env.development` values already do). `GET /health` for liveness,
+`POST /__reset` to restore fixture state. Details:
+[`erp-integration.md` § Local e2e testing](erp-integration.md#local-e2e-testing-fake-erp-server).
+
 ## Services
 
 | Service    | Image                       | Port(s)         | Profile | Description                                       |
@@ -139,6 +155,7 @@ Full walkthrough: [`../../docs/local-email-mailpit.md`](../../docs/local-email-m
 | Ollama     | `ollama/ollama:latest`        | `11435`| `ai`  | Local AI model server for the `ollama` extraction adapter (opt-in)      |
 | stripe-mock | `stripe/stripe-mock:latest`  | `12111`| `payments` | Stripe API mock for the `stripe_treasury` payment adapter (opt-in) |
 | Mailpit    | `axllent/mailpit:latest`      | `1025`, `8025` | `mail` | Local SMTP sink + web inbox for the `smtp` email adapter (opt-in) |
+| fake-erp   | (built from `tools/fake-erp/`) | `12112` | `erp` | Fake Merge.dev / NetSuite / Dynamics 365 BC server for real-ERP-adapter e2e (opt-in) |
 
 The PostgreSQL image is `pgvector/pgvector:pg16` (official Postgres 16 + the [pgvector](https://github.com/pgvector/pgvector) extension) because the RAG-based extraction priors use a `vector(1536)` column. The image is binary-compatible with the vanilla `postgres:16` data directory, so switching from plain Postgres doesn't require a volume wipe — just `docker compose down && up -d`. If you do swap images on an existing volume, run `REINDEX DATABASE <name>` on each DB once to rebuild any text-column indexes affected by a collation-version change.
 

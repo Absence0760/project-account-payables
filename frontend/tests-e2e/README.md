@@ -81,6 +81,7 @@ tests-e2e/
 ├── payments/                        queue, runs, void/cancel, CFO approval, execute
 ├── workflows/                       lifecycle, step config, approval matrix, etc.
 ├── exceptions/                      queue, assign, filter, resolve
+├── erp/                             merge-dev / netsuite / dynamics adapter e2e (gated — needs fake-erp)
 ├── credit-memos/                    list, pagination
 ├── organization/                    settings, fraud rules, GL accounts sync
 ├── purchase-orders/                 list, sync
@@ -153,6 +154,7 @@ container is up.
 |---|---|---|
 | `sso/login.spec.ts` | Keycloak + acme SSO seeded | `pnpm idp:up && pnpm idp:seed` |
 | `email/signup-email.spec.ts` | Mailpit + backend on `AP_EMAIL_PROVIDER=smtp` | `pnpm mail:up`, restart backend with smtp |
+| `erp/` (merge-dev / netsuite / dynamics specs) | fake-erp on :12112 + backend on the committed `.env.development` `AP_ERP_*` base URLs | `pnpm erp:up`, then `pnpm test:erp` |
 | `scim/provisioning.spec.ts` | (none — CI-safe contract test) | always runs |
 
 Backend-only service flows are pytest integration tests, also gated:
@@ -212,6 +214,16 @@ the Keycloak realm + seed script, the login routes, the `sso/` specs,
 its `fixtures/`) and on manual `workflow_dispatch` — no schedule. Use it
 for fast SSO feedback without waiting on the 25-minute `service-e2e`
 bundle; `service-e2e` remains the comprehensive multi-service gate.
+
+A dedicated **`erp-e2e`** job in `ci.yml` (modeled on `service-e2e`,
+gated by the same `changes.e2e` filter and required by `ci-gate`) does
+the same for the ERP suite: it boots only fake-erp (`docker compose
+--profile erp`), lets the backend pick up the committed
+`.env.development` `AP_ERP_*` base URLs, and runs just `erp/` with
+`AP_REQUIRE_INTEGRATION=1` so a skip there is a hard failure. Locally
+the same specs skip with an actionable message when fake-erp isn't
+reachable (`pnpm erp:up` starts it), so the normal suite stays green
+without the container.
 
 ## Seeded credentials
 

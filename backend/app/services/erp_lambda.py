@@ -44,6 +44,9 @@ async def _process_message(body: dict) -> None:
             await control_engine.dispose()
             return
 
+    # The org's configured ERP adapter; None falls back to mock in _call_erp
+    erp_config = (org.settings or {}).get("erp")
+
     # Connect to the tenant DB
     tenant_url = db_url.rsplit("/", 1)[0] + "/" + org.db_name
     tenant_engine = create_async_engine(tenant_url)
@@ -60,7 +63,7 @@ async def _process_message(body: dict) -> None:
                 return
 
             # Invoice is already in sending_to_erp state — run the ERP call
-            await send_to_erp_internal(db, invoice, actor_id=actor_id)
+            await send_to_erp_internal(db, invoice, actor_id=actor_id, erp_config=erp_config)
         except Exception:
             await db.rollback()
             raise

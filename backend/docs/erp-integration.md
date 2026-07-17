@@ -682,6 +682,68 @@ Each adapter includes a `test_connection()` method that:
 
 Available in the UI via the Organization settings page under ERP configuration.
 
+## Local e2e testing (fake ERP server)
+
+The three real adapters (`merge_dev`, `netsuite`, `dynamics_365_bc`) can be
+exercised end-to-end against a local **fake ERP server** — a small FastAPI app
+(`tools/fake-erp/`, in-memory, deterministic) run as the `fake-erp` service in
+`backend/docker-compose.yml` (opt-in `erp` profile, host port **12112**,
+container 8080). Why: NetSuite has no free sandbox, and the local-first rule
+requires every provider path to have a deterministic local equivalent — the
+fake gives all three direct-HTTP code paths a target with no cloud account or
+credential.
+
+One server fakes three provider surfaces by path prefix:
+
+| Provider | Fake surface | Path prefix |
+|---|---|---|
+| Merge.dev | Unified accounting API | `/merge/api/accounting/v1` |
+| NetSuite | SuiteTalk REST records | `/netsuite/services/rest/record/v1` |
+| Dynamics 365 BC | OData + OAuth token endpoint | `/d365` (token at `/d365/oauth2/token`) |
+
+`GET /health` reports liveness; `POST /__reset` restores the fixture state.
+Fixture data: purchase orders `PO-FAKE-301` (1250.00), `PO-FAKE-302` (980.50),
+`PO-FAKE-303` (4400.00) — cursor-paginated — and GL accounts `6100 Fake Office
+Supplies`, `6200 Fake Software`, `6300 Fake Consulting`.
+
+### Env-overridable base URLs
+
+Four operator-controlled env vars point the adapters at the fake. All four
+carry committed, non-secret local-dev values in `backend/.env.development`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AP_ERP_MERGE_API_BASE` | `https://api.merge.dev/api/accounting/v1` | Merge.dev API base. Dev value: `http://localhost:12112/merge/api/accounting/v1`. |
+| `AP_ERP_NETSUITE_API_BASE` | (empty) | Empty → the per-account URL derived from `account_id`; set → used verbatim. Dev value: `http://localhost:12112/netsuite/services/rest/record/v1`. |
+| `AP_ERP_D365_API_BASE` | (empty) | Empty → the admin-config `base_url` + SSRF guard; set → used verbatim. Dev value: `http://localhost:12112/d365`. |
+| `AP_ERP_D365_TOKEN_URL` | (empty) | Empty → `https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token`. Dev value: `http://localhost:12112/d365/oauth2/token`. |
+
+**Trust model:** these vars are process-level and operator-controlled
+(TRUSTED), so they bypass the SSRF guard that screens *tenant-admin-supplied*
+config. An admin-entered `base_url` in Organization settings is still guarded
+— only the operator who owns the process env can point an adapter at an
+arbitrary host.
+
+### Running the suite
+
+```bash
+pnpm erp:up      # start fake-erp (compose profile erp, :12112); erp:down / erp:logs too
+pnpm dev         # backend picks up the .env.development fake-erp base URLs
+pnpm test:erp    # Playwright suite frontend/tests-e2e/erp/ (merge-dev / netsuite / dynamics specs)
+```
+
+The specs skip gracefully when fake-erp isn't reachable, so the normal suite
+stays green without it. CI runs them in the dedicated `erp-e2e` job in
+`ci.yml` (modeled on `service-e2e`, required by `ci-gate`). `pnpm services:up`
+includes the `erp` profile.
+
+**Caveat — what this does and doesn't test:** the fake *shape-checks* provider
+auth (non-empty bearer + `X-Account-Token` for Merge, OAuth 1.0 header
+presence for NetSuite, client-credentials → the fixed bearer `fake-d365-token`
+for D365) but does **not** cryptographically verify signatures. It validates
+OUR client code — request shape, auth header construction, pagination, status
+mapping — not that a real provider would accept our credentials.
+
 ## Code Structure
 
 ```

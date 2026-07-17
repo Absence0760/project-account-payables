@@ -133,3 +133,43 @@ script above, made a permanent regression test).
 (a user-visible "your invoice disappeared" report), or before it destabilizes
 CI (a flaky e2e spec that traces back to this same root cause is a strong
 signal to prioritize the fix over patching the symptom again).
+
+---
+
+## Workflow-mutating e2e specs can strand a tenant on a disabled workflow definition
+
+**Discovered:** 2026-07-17, while stabilizing the new `tests-e2e/erp/` suite —
+its netsuite spec flaked with a 409 on `/api/invoices/{id}/approve` only when
+its Playwright worker landed on the `e2e3` tenant.
+
+**Symptom:** on a long-lived local dev database, a tenant's genuine seeded
+"Default Workflow" can end up `is_active = false`, leaving the auto-created
+"Invoice Processing" stub (every step `enabled: false`) as the governing
+definition. Any spec (or user) that then relies on the approval / erp_export
+steps being enabled gets surprising transitions: `POST /complete` walks
+`new → done` (no approval step), so a follow-up `/approve` 409s.
+
+**Evidence:** local `ap_e2e3` had `Default Workflow (entity-scoped,
+is_default=t, is_active=f)` + `Invoice Processing (shared, is_default=t,
+is_active=t, all steps disabled)`; `ap_e2e1/2/4` were healthy. The state is
+left behind by workflow-mutating suites (`workflows/`, `workflow-builder`)
+whose cleanup doesn't restore `is_active` / step-enabled flags on the seeded
+default. CI is unaffected today (every run seeds fresh, and the `erp-e2e` job
+runs only `erp/`), but a within-shard ordering that runs a workflow suite
+before an invoice-flow suite could reproduce it in CI.
+
+**Blast radius:** local e2e flakiness for any suite that assumes the seeded
+workflow shape (`invoices/lifecycle-money-path`, `purchase-orders/sync`, …);
+confusing local-dev behavior when clicking through the same tenant. The
+`erp/` suite is immune since 2026-07-17 — its helper approves directly via the
+legal `new → approved` edge instead of relying on `/complete`.
+
+**Recommended fix:** audit the workflow-mutating specs' `afterAll` blocks to
+restore the definitions they touched (`is_active`, step `enabled` flags,
+`is_default`), and prefer creating throwaway definitions over mutating the
+seeded default. A cheap guard: a fixture assertion (or `seed.py --verify`
+mode) that the tenant's governing definition has approval + erp_export
+enabled before suites that depend on it run.
+
+**Trigger to revisit:** the next local flake that traces to workflow state, or
+any plan to run multiple suite directories in one CI shard sequentially.

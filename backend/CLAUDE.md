@@ -309,6 +309,17 @@ Config `integration_method: "merge_dev"|"direct"` selects whether to use Merge.d
 
 ERP send has retry logic: up to 3 attempts with exponential backoff (2s, 4s, 8s).
 
+The three real adapters' provider base URLs are env-overridable via the
+operator-trusted `AP_ERP_MERGE_API_BASE` / `AP_ERP_NETSUITE_API_BASE` /
+`AP_ERP_D365_API_BASE` / `AP_ERP_D365_TOKEN_URL` (process-level, so they bypass
+the admin-config SSRF guard; an admin-supplied `base_url` stays guarded).
+`backend/.env.development` points all four at the local fake ERP server — the
+`fake-erp` compose service (opt-in `erp` profile, :12112, built from
+`tools/fake-erp/`, deterministic PO/GL fixtures, shape-checked auth only) — so
+`pnpm erp:up` → `pnpm test:erp` exercises `merge_dev`/`netsuite`/
+`dynamics_365_bc` end-to-end with no cloud account. See
+`docs/erp-integration.md` § Local e2e testing (fake ERP server).
+
 ### Card adapters (`services/card_adapters/`)
 
 Registered: `lithic`, `nium`, `mock`. Both have sandbox modes.

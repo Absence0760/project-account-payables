@@ -20,9 +20,10 @@ These tests pin:
   - retry_erp refuses to retry an invoice that was never approved
     (the `approved_by` guard) — money invariant: we don't push to
     ERP unless an actual human approved
-  - retry_erp resets erp_retries to 0 before re-driving the call
-    (otherwise the resumed attempt would burn the remaining slots
-    without honoring the user's "fresh start" intent)
+  - retry_erp resets erp_retries to 0 and parks the invoice at
+    sending_to_erp WITHOUT running the ERP call inline — the route's
+    dispatch_erp owns the call (org config + AP_ERP_MODE); an inline
+    call would double-post and always use the mock adapter
 
 Adapter calls and `asyncio.sleep` are stubbed — we never want real
 network latency or real backoff sleeps inside a unit test.
@@ -273,11 +274,17 @@ async def test_retry_erp_refuses_invoice_that_was_never_approved():
 
 
 @pytest.mark.asyncio
-async def test_retry_erp_resets_retry_counter_before_redriving():
+async def test_retry_erp_prepares_state_but_never_runs_the_erp_call_inline():
     """A human pressing "retry" should get a full fresh budget, not
     the leftover slots from the prior failure. Verify by setting
     `erp_retries=3` (exhausted) on the instance and confirming the
-    retry resets it to 0 before send_to_erp_internal runs."""
+    retry resets it to 0 and parks the invoice at sending_to_erp.
+
+    Regression: retry_erp used to ALSO run send_to_erp_internal inline
+    — without the org's erp_config (so the retry always posted via the
+    MOCK adapter), racing the route's own dispatch_erp (double-post),
+    and bypassing AP_ERP_MODE=lambda. The actual call is the
+    dispatcher's job; retry_erp must only prepare state."""
     inv = _invoice(status=InvoiceStatus.failed)
     inst = _instance(state_data={"erp_retries": 3, "last_error": "old"})
     db = AsyncMock()
@@ -291,12 +298,67 @@ async def test_retry_erp_resets_retry_counter_before_redriving():
     ):
         await retry_erp(db, inv)
 
-    # The retry counter was reset BEFORE driving the internal call.
+    # The retry counter was reset and the instance reactivated.
     assert inst.state_data["erp_retries"] == 0
     assert inst.state == "active"
-    # Invoice now sitting at sending_to_erp; the internal helper
-    # takes it from here.
+    # Invoice parked at sending_to_erp; dispatch_erp (the route's next
+    # call) performs the actual ERP post with the org's config.
     assert inv.status == InvoiceStatus.sending_to_erp
-    internal_mock.assert_awaited_once()
+    internal_mock.assert_not_awaited()
     # Audit row marks this as a retry, not a fresh submission.
     assert any(r["action"] == "invoice.erp_retried" for r in recorder.rows)
+
+
+# ---------------------------------------------------------------------------
+# send_to_erp_internal — org ERP config plumbing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_to_erp_internal_passes_org_erp_config_to_call_erp():
+    """Regression: send_to_erp_internal used to drop its erp_config on the
+    floor (`_call_erp(invoice)`), so the local dispatch worker — which
+    resolves the org's settings.erp and passes it in — always posted via
+    the MOCK adapter no matter what ERP the tenant configured. Lock the
+    pass-through."""
+    from app.services.erp import send_to_erp_internal
+
+    inv = _invoice(status=InvoiceStatus.sending_to_erp)
+    inst = _instance()
+    call_erp = AsyncMock(return_value="ERP-REF-1")
+    cfg = {"type": "netsuite", "integration_method": "direct", "account_id": "ACCT"}
+
+    with (
+        patch("app.services.workflow_engine.dispatch_audit", new=_AuditRecorder()),
+        patch("app.services.erp._call_erp", call_erp),
+        patch("app.services.erp.get_workflow_instance", AsyncMock(return_value=inst)),
+        patch("app.services.erp.complete_workflow", AsyncMock()),
+    ):
+        await send_to_erp_internal(AsyncMock(), inv, erp_config=cfg)
+
+    call_erp.assert_awaited_once_with(inv, cfg)
+
+
+@pytest.mark.asyncio
+async def test_call_erp_dispatches_via_configured_adapter_not_mock():
+    """With a merge_dev config, _call_erp must post through the Merge.dev
+    adapter (the returned reference is the Merge model id), not the mock."""
+    import httpx as _httpx  # noqa: F401 — ensure module import for patch target
+
+    from app.services.erp import _call_erp
+
+    resp = AsyncMock()
+    resp.status_code = 201
+    resp.json = lambda: {"model": {"id": "merge-inv-77", "number": "INV-1"}}
+
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.post = AsyncMock(return_value=resp)
+        ref = await _call_erp(
+            _invoice(),
+            {"integration_method": "merge_dev", "api_key": "k", "account_token": "t"},
+        )
+
+    assert ref == "merge-inv-77"
+    posted_url = client.post.await_args.args[0]
+    assert posted_url.endswith("/invoices")

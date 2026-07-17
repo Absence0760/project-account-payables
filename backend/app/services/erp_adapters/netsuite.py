@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.config import settings
 from app.services.erp_adapters.base import (
     ErpAdapter,
     ErpInvoiceStatus,
@@ -32,6 +33,15 @@ class NetSuiteAdapter(ErpAdapter):
     erp_type = "netsuite"
 
     def _base_url(self) -> str:
+        # OPERATOR-controlled override (env/process level, not tenant-admin
+        # config) so local dev + e2e can point the adapter at the fake ERP
+        # container (backend/docker-compose.yml `fake-erp`, host port 12112).
+        # Trusted, so no SSRF guard. Empty (the default) = derive the real
+        # per-account NetSuite URL from account_id. OAuth 1.0 signing below
+        # always signs the URL actually used, so requests to the override
+        # carry a signature computed over the override URL.
+        if settings.erp_netsuite_api_base:
+            return settings.erp_netsuite_api_base.rstrip("/")
         account = self.config["account_id"].replace("_", "-").lower()
         return f"https://{account}.suitetalk.api.netsuite.com/services/rest/record/v1"
 

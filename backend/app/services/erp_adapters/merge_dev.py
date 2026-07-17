@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from app.config import settings
 from app.services.erp_adapters.base import (
     ErpAdapter,
     ErpInvoiceStatus,
@@ -79,7 +80,17 @@ _MERGE_ACCOUNT_TYPE_MAP = {
     "COST_OF_GOODS_SOLD": "expense",
 }
 
-MERGE_API_BASE = "https://api.merge.dev/api/accounting/v1"
+
+def _api_base() -> str:
+    """Merge.dev API base URL.
+
+    Reads ``settings.erp_merge_api_base`` (default: live Merge.dev). The
+    setting is OPERATOR-controlled (env/process level), not tenant-admin
+    config, so it is trusted — it exists to point local dev + e2e at the
+    fake ERP container (backend/docker-compose.yml `fake-erp`, host port
+    12112). Read per-call, not at import, so tests can monkeypatch it.
+    """
+    return settings.erp_merge_api_base.rstrip("/")
 
 
 @register_adapter("merge_dev")
@@ -135,7 +146,7 @@ class MergeDevAdapter(ErpAdapter):
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{MERGE_API_BASE}/invoices",
+                f"{_api_base()}/invoices",
                 json=body,
                 headers=self._headers(),
             )
@@ -162,7 +173,7 @@ class MergeDevAdapter(ErpAdapter):
     async def get_invoice_status(self, erp_document_id: str) -> ErpInvoiceStatus:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
-                f"{MERGE_API_BASE}/invoices/{erp_document_id}",
+                f"{_api_base()}/invoices/{erp_document_id}",
                 headers=self._headers(),
             )
 
@@ -205,7 +216,7 @@ class MergeDevAdapter(ErpAdapter):
                     params["cursor"] = cursor
                 try:
                     resp = await client.get(
-                        f"{MERGE_API_BASE}/purchase-orders",
+                        f"{_api_base()}/purchase-orders",
                         params=params,
                         headers=self._headers(),
                     )
@@ -244,7 +255,7 @@ class MergeDevAdapter(ErpAdapter):
                     params["cursor"] = cursor
                 try:
                     resp = await client.get(
-                        f"{MERGE_API_BASE}/accounts",
+                        f"{_api_base()}/accounts",
                         params=params,
                         headers=self._headers(),
                     )
@@ -270,7 +281,7 @@ class MergeDevAdapter(ErpAdapter):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
-                    f"{MERGE_API_BASE}/account-details",
+                    f"{_api_base()}/account-details",
                     headers=self._headers(),
                 )
             return resp.status_code == 200

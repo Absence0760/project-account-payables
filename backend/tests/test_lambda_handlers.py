@@ -136,7 +136,7 @@ async def test_extraction_lambda_rolls_back_session_on_error():
 
 
 async def test_erp_lambda_rolls_back_session_on_error():
-    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme")
+    org = SimpleNamespace(id=uuid.uuid4(), db_name="ap_acme", settings=None)
     invoice = SimpleNamespace(id=uuid.uuid4())
     boom = AsyncMock(side_effect=RuntimeError("erp 500"))
     with _two_engine_harness(
