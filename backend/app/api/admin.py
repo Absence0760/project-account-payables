@@ -23,6 +23,7 @@ from app.api.permissions import (
     PERM_USER_MANAGE,
     PERMISSION_LABELS,
     effective_permissions,
+    permissions_for_role,
     sanitize_permissions,
 )
 from app.database import get_control_db, get_tenant_engine
@@ -40,7 +41,7 @@ from app.schemas.admin import (
     UpdateUserRequest,
 )
 from app.services.session_management import revoke_user_sessions
-from app.utils.passwords import pwd_context
+from app.utils.passwords import PasswordError, pwd_context, validate_password_complexity
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -248,6 +249,60 @@ async def delete_role(
     return None
 
 
+def _authorize_role_grant(caller: User, roles_to_grant: list[Role]) -> None:
+    """Refuse a privilege-escalating role assignment (issue #158).
+
+    A ``user.manage`` holder must not be able to grant a role that carries more
+    authority than the caller themselves holds — otherwise a custom "User Admin"
+    role scoped to *only* ``user.manage`` could grant itself (or anyone) the
+    system ``admin`` role and take over the org.
+
+    Two guards, both must pass:
+
+    * The system ``admin`` role may only be granted by a caller who is themselves
+      an admin — ``admin`` carries non-catalog superuser authority (org settings,
+      role CRUD) that the permission subset check below can't see.
+    * The union of the *catalog* permissions the granted roles would confer must
+      be a subset of the caller's own effective permissions — you can never hand
+      out a sensitive permission you don't hold.
+    """
+    caller_holds_admin = any(
+        r.name == ROLE_ADMIN and r.organization_id is None for r in (caller.roles or ())
+    )
+    granting_admin = any(r.name == ROLE_ADMIN and r.organization_id is None for r in roles_to_grant)
+    if granting_admin and not caller_holds_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only an admin may grant the admin role.",
+        )
+
+    granted_perms: set[str] = set()
+    for role in roles_to_grant:
+        granted_perms |= permissions_for_role(
+            name=role.name,
+            organization_id=role.organization_id,
+            permissions=role.permissions,
+        )
+    caller_perms = getattr(caller, "effective_permissions", None)
+    if caller_perms is None:
+        caller_perms = effective_permissions(caller.roles)
+    if not granted_perms <= set(caller_perms):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot grant permissions you do not hold.",
+        )
+
+
+def _validate_admin_set_password(password: str) -> None:
+    """Run an admin-set password through the same complexity policy as
+    self-service change-password (issue #158) — a ``user.manage`` actor must not
+    be able to reset an account to a trivial value and log in as it."""
+    try:
+        validate_password_complexity(password)
+    except PasswordError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/users", response_model=CreateUserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     body: CreateUserRequest,
@@ -284,6 +339,7 @@ async def create_user(
             )
         )
         roles = result.scalars().all()
+        _authorize_role_grant(user, list(roles))
         for role in roles:
             db.add(UserRole(user_id=new_user.id, role_id=role.id))
         await db.flush()
@@ -332,6 +388,7 @@ async def update_user(
     if body.is_active is not None:
         target.is_active = body.is_active
     if body.password is not None:
+        _validate_admin_set_password(body.password)
         target.hashed_password = pwd_context.hash(body.password)
 
     roles_changed = False
@@ -347,6 +404,7 @@ async def update_user(
                 )
             )
             roles = result.scalars().all()
+            _authorize_role_grant(current_user, list(roles))
             for role in roles:
                 db.add(UserRole(user_id=user_id, role_id=role.id))
 
