@@ -173,6 +173,23 @@ class Settings(BaseSettings):
     # ERP
     erp_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS
     sqs_erp_queue_url: str = ""  # required when erp_mode = "lambda"
+    # ERP adapter base-URL overrides. These are OPERATOR-controlled (env /
+    # process level), not tenant-admin-supplied config, so they are trusted and
+    # bypass the SSRF guard that protects admin-supplied base URLs. They exist
+    # so local dev + e2e can point the real adapters at the fake ERP container
+    # (see backend/docker-compose.yml `fake-erp` service, host port 12112).
+    # Deployed envs leave them unset / default.
+    # Merge.dev API base URL. Default = live Merge.dev.
+    erp_merge_api_base: str = "https://api.merge.dev/api/accounting/v1"
+    # NetSuite REST base URL. Empty = derive the per-account URL from the
+    # config's account_id as usual (https://<account>.suitetalk.api.netsuite.com).
+    erp_netsuite_api_base: str = ""
+    # Dynamics 365 BC API base URL. Empty = use the admin-supplied config
+    # base_url (with the SSRF guard applied).
+    erp_d365_api_base: str = ""
+    # Dynamics 365 BC OAuth2 token URL. Empty = the real
+    # login.microsoftonline.com URL built from the config's tenant_id.
+    erp_d365_token_url: str = ""
 
     # Audit
     audit_mode: str = "local"  # "local" = in-process, "lambda" = dispatch to SQS

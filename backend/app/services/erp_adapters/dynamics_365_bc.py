@@ -2,6 +2,7 @@
 
 import httpx
 
+from app.config import settings
 from app.services.erp_adapters.base import (
     ErpAdapter,
     ErpInvoiceStatus,
@@ -27,8 +28,16 @@ class BusinessCentralAdapter(ErpAdapter):
     erp_type = "dynamics_365_bc"
 
     async def _get_token(self) -> str:
-        tenant_id = self.config["tenant_id"]
-        url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        # OPERATOR-controlled override (env/process level, not tenant-admin
+        # config) so local dev + e2e can point the token exchange at the fake
+        # ERP container (backend/docker-compose.yml `fake-erp`, host port
+        # 12112). Empty (the default) = the real login.microsoftonline.com
+        # URL built from the config's tenant_id.
+        if settings.erp_d365_token_url:
+            url = settings.erp_d365_token_url
+        else:
+            tenant_id = self.config["tenant_id"]
+            url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 url,
@@ -43,12 +52,20 @@ class BusinessCentralAdapter(ErpAdapter):
         return resp.json()["access_token"]
 
     def _api_url(self, path: str) -> str:
-        base = self.config["base_url"].rstrip("/")
-        # SSRF guard: base_url is admin-supplied config — refuse an internal host
-        # before it's interpolated into a server-side request.
-        from app.utils.url_safety import assert_public_url
+        if settings.erp_d365_api_base:
+            # OPERATOR-controlled override (env/process level, not tenant-admin
+            # config) so local dev + e2e can point the adapter at the fake ERP
+            # container (backend/docker-compose.yml `fake-erp`, host port
+            # 12112). Trusted, so the SSRF guard below is deliberately skipped
+            # — it exists to police admin-supplied config, not operator env.
+            base = settings.erp_d365_api_base.rstrip("/")
+        else:
+            base = self.config["base_url"].rstrip("/")
+            # SSRF guard: base_url is admin-supplied config — refuse an internal
+            # host before it's interpolated into a server-side request.
+            from app.utils.url_safety import assert_public_url
 
-        assert_public_url(base)
+            assert_public_url(base)
         env = self.config.get("environment", "production")
         company = self.config.get("company_id", "")
         return f"{base}/{env}/api/v2.0/companies({company})/{path}"
