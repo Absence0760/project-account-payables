@@ -39,6 +39,10 @@ Spend definitions (the contract the ``/spend`` + ``/check`` endpoints expose):
                Only invoices in a REALISED-SPEND status count — ``approved``,
                ``payment_scheduled``, ``paid``, ``posted_in_erp``, ``sent_to_erp``,
                ``done`` — so a brand-new / rejected invoice never inflates actual.
+               When the budget carries both ``period_start`` and ``period_end``,
+               actual is further bounded to invoices whose ``invoice_date`` falls
+               inside that window, so two budgets tracking the same dimension in
+               different periods don't both report all-time spend.
 
   remaining  — ``allocated - committed - actual`` (can go negative = overspend).
 
@@ -152,13 +156,18 @@ async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> Decimal:
     if match_col is None:
         return Decimal(0)
 
+    conditions = [
+        match_col == budget.dimension_value,
+        Invoice.status.in_(REALISED_INVOICE_STATUSES),
+    ]
+    # Bound realised spend to the budget's own period so two budgets tracking the
+    # same dimension in different periods don't both report all-time spend. Only
+    # applied when both bounds are set; a period-less budget stays all-time.
+    if budget.period_start is not None and budget.period_end is not None:
+        conditions.append(Invoice.invoice_date.between(budget.period_start, budget.period_end))
+
     total = (
-        await db.execute(
-            select(func.coalesce(func.sum(Invoice.amount), 0)).where(
-                match_col == budget.dimension_value,
-                Invoice.status.in_(REALISED_INVOICE_STATUSES),
-            )
-        )
+        await db.execute(select(func.coalesce(func.sum(Invoice.amount), 0)).where(*conditions))
     ).scalar_one()
     return _q(total)
 
