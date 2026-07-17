@@ -74,9 +74,67 @@ def _sanitize_comment(value: str) -> str:
     return value.replace("\r", " ").replace("\n", " ").strip()
 
 
-def _writer(headers: list[str]) -> tuple[io.StringIO, csv.writer]:
+# Leading characters a spreadsheet treats as a formula / DDE lead — a cell
+# starting with one of these is the CSV-injection (CWE-1236) surface.
+_CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _looks_numeric(value: str) -> bool:
+    """True when the whole string is a plain (optionally signed) number, so a
+    negative amount like ``-42.50`` isn't mangled by the ``-`` lead guard."""
+    try:
+        Decimal(value)
+        return True
+    except (ArithmeticError, ValueError):
+        return False
+
+
+def csv_safe_cell(value):
+    """Neutralize CSV/DDE formula injection (CWE-1236).
+
+    A cell whose string form begins with ``= + - @`` (or a tab/CR that Excel
+    treats as a formula lead) is prefixed with a single quote so a spreadsheet
+    renders it as literal text instead of evaluating it. Attacker-controlled
+    fields (AI-extracted vendor names, user full names) flow into CSVs a
+    CFO/admin opens in Excel, so every export cell goes through here.
+
+    Non-string cells (int / Decimal / date) pass through unchanged, and a
+    bare signed number (``-42.50``) is left alone so numeric columns still
+    parse.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] in _CSV_FORMULA_LEADS:
+        if value[0] in ("+", "-") and _looks_numeric(value):
+            return value
+        return "'" + value
+    return value
+
+
+class _SafeCsvWriter:
+    """``csv.writer`` wrapper that runs every cell through ``csv_safe_cell``
+    before writing, so no call site can forget to sanitize."""
+
+    def __init__(self, buf: io.StringIO):
+        self._w = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+
+    def writerow(self, row: Iterable) -> None:
+        self._w.writerow([csv_safe_cell(c) for c in row])
+
+    def writerows(self, rows: Iterable[Iterable]) -> None:
+        for row in rows:
+            self.writerow(row)
+
+
+def safe_csv_writer(buf: io.StringIO) -> _SafeCsvWriter:
+    """Sanitizing stand-in for ``csv.writer`` — use at every export writerow
+    site (formula-injection defense, CWE-1236)."""
+    return _SafeCsvWriter(buf)
+
+
+def _writer(headers: list[str]) -> tuple[io.StringIO, _SafeCsvWriter]:
     buf = io.StringIO()
-    w = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+    w = safe_csv_writer(buf)
     w.writerow(headers)
     return buf, w
 

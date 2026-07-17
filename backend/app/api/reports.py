@@ -17,7 +17,6 @@ Money is always an exact decimal string on the wire. See
 
 from __future__ import annotations
 
-import csv
 import io
 import uuid
 from datetime import UTC, date, datetime
@@ -326,7 +325,7 @@ async def export_report(
     provenance-header (CSV) + branded analytics-report PDF helpers, so the
     white-label chrome matches every other export surface."""
     from app.services.branding import get_brand_context
-    from app.services.report_export import brand_provenance_header
+    from app.services.report_export import brand_provenance_header, safe_csv_writer
 
     row = await _get_scoped(db, report_id, entity_id)
     spec = _spec_from_row(row)
@@ -369,7 +368,7 @@ async def export_report(
 
     # CSV: brand provenance comment block, then the data grid.
     buf = io.StringIO()
-    writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+    writer = safe_csv_writer(buf)
     writer.writerow(header)
     for r in data_rows:
         writer.writerow(r)
