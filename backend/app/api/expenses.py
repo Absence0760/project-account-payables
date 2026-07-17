@@ -173,6 +173,45 @@ async def _get_report_or_404(db: AsyncSession, report_id: uuid.UUID) -> ExpenseR
     return report
 
 
+# Report states whose ``total_amount`` is locked in for an approval decision —
+# the CFO-threshold gate + approval signature were evaluated against that total,
+# so its composition/amount must not change afterwards. ``draft`` is freely
+# editable; ``rejected`` / ``cancelled`` are terminal and their (draft-status)
+# expenses may be detached to be re-reported elsewhere.
+_LOCKED_REPORT_STATUSES = frozenset(
+    {
+        ExpenseReportStatus.submitted,
+        ExpenseReportStatus.pending_approval,
+        ExpenseReportStatus.approved,
+        ExpenseReportStatus.reimbursed,
+    }
+)
+
+
+def _require_draft_report(report: ExpenseReport) -> None:
+    """A report can only be *built up* (attach new expenses) while it's a draft;
+    a report already submitted/approved/terminal never accepts new lines (issue
+    #155)."""
+    if report.status != ExpenseReportStatus.draft:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot modify a report in '{report.status}' state; it has left draft.",
+        )
+
+
+def _require_report_unlocked(report: ExpenseReport) -> None:
+    """Reject any amount-/composition-changing mutation to a report whose total
+    is locked in for an approval decision (issue #155) — editing / deleting /
+    moving an expense off a submitted-or-approved report would silently bypass
+    the CFO gate and stale-sign the approval. Terminal (rejected/cancelled)
+    reports stay editable so their expenses can be corrected + re-reported."""
+    if report.status in _LOCKED_REPORT_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot modify a report in '{report.status}' state; its total is locked.",
+        )
+
+
 async def _recompute_report_total(db: AsyncSession, report: ExpenseReport) -> None:
     """Recompute ``total_amount`` from the report's currently-attached expenses.
 
@@ -576,6 +615,12 @@ async def update_expense(
     if "amount" in changed and expense.report_id:
         affected_reports.add(expense.report_id)
 
+    # Any report whose total this edit would move (an amount change or a
+    # membership change) must not be locked — otherwise the edit bypasses the
+    # CFO gate / stale-signs an already-approved report (issue #155).
+    for rid in affected_reports:
+        _require_report_unlocked(await _get_report_or_404(db, rid))
+
     await db.flush()
     for rid in affected_reports:
         report = await _get_report_or_404(db, rid)
@@ -609,6 +654,10 @@ async def delete_expense(
 ):
     expense = await _get_expense_or_404(db, expense_id)
     owning_report = expense.report_id
+    # Deleting an expense off a locked report would silently shrink its total
+    # below the total the CFO gate / approval signature ran against (issue #155).
+    if owning_report:
+        _require_report_unlocked(await _get_report_or_404(db, owning_report))
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -779,6 +828,9 @@ async def update_report(
     org_id: uuid.UUID = Depends(get_org_id),
 ):
     report = await _get_report_or_404(db, report_id)
+    # Report-level fields (currency in particular) reinterpret a locked total —
+    # only editable while the report isn't locked in for approval (issue #155).
+    _require_report_unlocked(report)
     payload = body.model_dump(exclude_unset=True)
     changed: list[str] = []
     for field in _REPORT_UPDATABLE_FIELDS:
@@ -815,6 +867,8 @@ async def attach_expenses(
     up in this tenant's ``expenses`` table; an unknown / cross-tenant id is a
     404. Detaching nulls ``report_id`` (the expense outlives the report)."""
     report = await _get_report_or_404(db, report_id)
+    # The target report's composition can only change while it's a draft.
+    _require_draft_report(report)
 
     expense_uuids: list[uuid.UUID] = []
     for raw in body.expense_ids:
@@ -837,6 +891,11 @@ async def attach_expenses(
             if expense.report_id and expense.report_id != report.id:
                 affected_reports.add(expense.report_id)
             expense.report_id = report.id
+
+    # Moving an expense off a locked report would silently drop its total —
+    # block that too (the source report also loses composition).
+    for rid in affected_reports:
+        _require_report_unlocked(await _get_report_or_404(db, rid))
 
     await db.flush()
     await _recompute_report_total(db, report)
