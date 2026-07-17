@@ -34,7 +34,10 @@ class ExpenseBase(BaseModel):
     merchant: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
     description: str | None = None
-    amount: Decimal
+    # Must be strictly positive — a negative "expense" would net a report under
+    # the CFO approval threshold while hiding a genuinely large line (a credit
+    # is a credit memo, not an expense). See issue #156.
+    amount: Decimal = Field(gt=0)
     currency: str = Field(default="USD", max_length=3)
     gl_account_id: str | None = None
     payment_method: ExpensePaymentMethod = ExpensePaymentMethod.out_of_pocket
@@ -54,7 +57,7 @@ class ExpenseUpdate(BaseModel):
     merchant: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
     description: str | None = None
-    amount: Decimal | None = None
+    amount: Decimal | None = Field(default=None, gt=0)
     currency: str | None = Field(default=None, max_length=3)
     gl_account_id: str | None = None
     payment_method: ExpensePaymentMethod | None = None
