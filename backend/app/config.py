@@ -467,6 +467,16 @@ class Settings(BaseSettings):
     # See backend/docs/public-api.md § Outbound webhooks.
     webhooks_enabled: bool = False
     webhooks_delivery_interval_seconds: int = 60
+    # SSRF-guard escape hatch for outbound-webhook target URLs. Default false
+    # (SAFE): a target host may not resolve to a loopback / RFC1918 private /
+    # link-local (incl. the 169.254.169.254 metadata endpoint) / unique-local /
+    # multicast / reserved address — enforced at subscription create/update AND
+    # re-checked immediately before every dispatch (DNS-rebinding TOCTOU).
+    # `true` skips only the address checks so local-first dev can point a
+    # webhook at 127.0.0.1 (e.g. a local sink); never enable in a deployed env —
+    # main.lifespan refuses to boot with this on when AP_DEBUG=false.
+    # See backend/docs/public-api.md § Outbound webhooks (target-URL SSRF guard).
+    webhooks_allow_private_targets: bool = False
 
     # ---- Platform billing & metering -------------------------------------
     # Billing provider adapter. `mock` (in-process, deterministic, no network /

@@ -100,6 +100,12 @@ async def lifespan(app: FastAPI):
                 "is true — the mock adapter's parse_webhook performs no signature "
                 "verification, so serving it publicly would accept unauthenticated events"
             )
+        if settings.webhooks_allow_private_targets:
+            raise RuntimeError(
+                "AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS must not be true when AP_DEBUG=false — "
+                "it disables the outbound-webhook SSRF guard, letting a tenant admin point "
+                "signed webhook deliveries at loopback/private/metadata addresses"
+            )
 
     # Background reaper for invoices stuck in `pending` extraction. Started
     # on app boot, cancelled cleanly on shutdown. Toggleable via

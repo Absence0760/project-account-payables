@@ -44,6 +44,18 @@ from app.services.webhooks.signing import (
     sign_payload,
 )
 
+
+@pytest.fixture(autouse=True)
+def _allow_test_targets(monkeypatch):
+    """These tests use non-resolvable `example.test` targets and stub the HTTP
+    layer — flip the SSRF-guard escape hatch (the committed local-dev default)
+    so the target-address check doesn't reject them. The guard itself is
+    covered, with the flag OFF, in test_webhook_url_guard.py."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "webhooks_allow_private_targets", True)
+
+
 # ---------------------------------------------------------------------------
 # Pure signing-primitive tests (no DB).
 # ---------------------------------------------------------------------------
@@ -400,38 +412,11 @@ async def test_create_validates_url_and_event_types(realdb):
         assert bad_evt.status_code == 422
 
 
-@pytest.mark.asyncio
-async def test_create_rejects_ssrf_targets(realdb):
-    """A tenant admin can't point a webhook at an internal / metadata address
-    (SSRF, issue #171) — create is a 400 for each."""
-    async with realdb.client(key="a", role="admin") as c:
-        for target in (
-            "http://169.254.169.254/latest/meta-data/",  # cloud metadata (link-local)
-            "http://127.0.0.1/hook",  # loopback
-            "http://10.0.0.5/hook",  # RFC1918
-            "http://192.168.1.10/hook",  # RFC1918
-            "https://[::1]/hook",  # IPv6 loopback
-        ):
-            resp = await _create_sub(c, target_url=target)
-            assert resp.status_code == 400, f"{target}: {resp.status_code} {resp.text}"
-
-
-@pytest.mark.asyncio
-async def test_update_rejects_ssrf_target(realdb):
-    """Repointing an existing hook at an internal address is rejected too."""
-    control_mk = realdb.control_sessionmaker()
-    sub_id = None
-    try:
-        async with realdb.client(key="a", role="admin") as c:
-            sub_id = uuid.UUID((await _create_sub(c)).json()["subscription"]["id"])
-            resp = await c.patch(
-                f"/api/webhooks/{sub_id}",
-                json={"target_url": "http://169.254.169.254/"},
-            )
-            assert resp.status_code == 400, resp.text
-    finally:
-        if sub_id:
-            await _cleanup(control_mk, sub_id)
+# NOTE: create/update SSRF-rejection coverage (metadata / loopback / RFC1918
+# targets → non-enumerating 422) lives in test_webhook_url_guard.py, which
+# forces the guard ON (flag off) with stubbed resolution. It can't live in this
+# module — the autouse _allow_test_targets fixture disables the address checks
+# for the legacy `example.test` targets used here.
 
 
 @pytest.mark.asyncio

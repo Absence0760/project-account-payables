@@ -252,16 +252,6 @@ gated on the `organizations` table existing — mirrors 0055).
 - **`webhook_subscriptions`** — `id`, `organization_id`, `name`, `target_url`
   (http(s)), `event_types` (JSONB subset of the catalog), `signing_secret`,
   `secret_prefix`, `active`, timestamps.
-  - **SSRF guard on `target_url`** (`services/webhooks/ssrf.py`): the URL is
-    resolved and rejected (400) if the host is an IP literal or resolves to a
-    non-public address — loopback, RFC1918, link-local (incl. the
-    `169.254.169.254` cloud-metadata endpoint), IPv6 unique-local, multicast,
-    reserved, or unspecified. Enforced at create **and** update, and re-checked
-    immediately before **every** dispatch (`delivery._post`) so a hostname whose
-    DNS later flips to an internal IP is caught at send time — a rejected dispatch
-    is a failed attempt, so the payload never leaves. Residual sub-second
-    DNS-rebind is narrowed but not fully closed; the durable control is
-    connection-level IP pinning or a locked-down egress proxy.
 - **`webhook_deliveries`** — `id`, `subscription_id` (FK, `ON DELETE CASCADE`),
   `organization_id`, `event_id`, `event_type`, `payload` (JSONB, frozen at emit),
   `status` (`pending`/`delivered`/`failed`/`dead`), `attempt_count`,
@@ -371,6 +361,52 @@ Like the invoice-status emit, it never raises into the caller and is a silent
 no-op when `AP_WEBHOOKS_ENABLED` is off — a webhook failure can't break
 exception creation or the invoice mutation that triggered it.
 
+### Target-URL SSRF guard
+
+A subscription's `target_url` is attacker-controllable input (any tenant admin
+sets it), and the dispatcher POSTs **signed invoice/payment payloads** to it —
+so the destination is validated, not just the scheme (issue #171). The single
+shared validator is `services/webhooks/url_guard.ensure_public_webhook_target`,
+enforced at **both** boundaries:
+
+- **Create / update** (`POST /api/webhooks`, `PATCH /api/webhooks/{id}`) — a
+  non-public target is rejected with a clean `422` carrying ONE generic message
+  (`target_url must be a publicly routable http(s) URL`) for every rejection
+  reason, so the response can't be used to probe which internal ranges/hosts
+  exist.
+- **Immediately before every dispatch** (`delivery.process_delivery`) — the
+  stored host is **re-resolved at send time**, closing the TOCTOU / DNS-rebinding
+  hole where a hostname passes validation at create and later flips to a private
+  address. A refused send is a normal failed attempt (PII-free log — delivery id
+  + event type, never the URL/host/address; no `response_code`), so the standard
+  retry/backoff → dead-letter path applies.
+
+Blocked: any target whose host resolves to an address that is not globally
+routable — loopback (`127/8`, `::1`), RFC1918 private (`10/8`, `172.16/12`,
+`192.168/16`), link-local `169.254/16` (incl. the AWS/cloud metadata endpoint
+`169.254.169.254`) and IPv6 `fe80::/10`, CGNAT `100.64/10`, unique-local
+`fc00::/7`, unspecified (`0.0.0.0`, `::`), multicast, and reserved ranges
+(stdlib `ipaddress` `is_global`). **Every** address returned by `getaddrinfo`
+(A and AAAA) must pass — one private record poisons the set. A literal-IP host
+is judged the same way, and IPv4-mapped IPv6 (`::ffff:10.0.0.1`) is unwrapped
+and judged as its embedded IPv4 address. A host that fails to resolve is
+rejected (fail-closed) at create time and refused at send time.
+
+**Escape hatch (local-first dev only):** `AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS`
+(default `false` = blocking) skips only the address checks — scheme/host shape
+is still enforced — so the delivery path can be exercised against `127.0.0.1`
+(e.g. a local sink) under `pnpm dev`. The committed `backend/.env.development`
+sets it `true`; deployed envs must leave it at the safe default — and this is
+enforced, not just documented: `app/main.py::lifespan` **refuses to boot** with
+the flag on when `AP_DEBUG=false` (same fail-fast block as the secret-key /
+billing-webhook guards).
+
+**Residual risk:** the actual connection is opened by `httpx`, which performs
+its own DNS lookup — a narrow rebinding window remains between the send-time
+check and the socket connect. Pinning the checked IP for the connection itself
+would close it; re-resolving immediately before send is the accepted fix per
+issue #171, and the window is bounded to a single race per attempt.
+
 ### Management API (`/api/webhooks`)
 
 Admin-gated (JWT + `require_roles(ROLE_ADMIN)`), control-plane. Every mutation
@@ -379,9 +415,9 @@ writes a PII-free audit row (`webhook_subscription.created/updated/deleted`,
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `POST` | `/api/webhooks` | Create a subscription. Validates http(s) URL + known event types. Returns the `signing_secret` **once**. |
+| `POST` | `/api/webhooks` | Create a subscription. Validates http(s) URL + known event types + the [SSRF target guard](#target-url-ssrf-guard). Returns the `signing_secret` **once**. |
 | `GET` | `/api/webhooks` | List this org's subscriptions (metadata only — never the full secret). |
-| `PATCH` | `/api/webhooks/{id}` | Update name / target_url / event_types / active. |
+| `PATCH` | `/api/webhooks/{id}` | Update name / target_url / event_types / active. A new `target_url` passes the same [SSRF target guard](#target-url-ssrf-guard). |
 | `DELETE` | `/api/webhooks/{id}` | Delete (CASCADE removes its deliveries). 404 (opaque) for wrong-org. |
 | `GET` | `/api/webhooks/deliveries` | List deliveries (org-scoped), filter `subscription_id` / `status`, paginated. |
 | `POST` | `/api/webhooks/deliveries/{id}/redeliver` | Re-enqueue a `failed`/`dead` delivery (resets the counter) and attempt inline. `409` on an already-`delivered` row (would double-fire). |
@@ -392,6 +428,7 @@ writes a PII-free audit row (`webhook_subscription.created/updated/deleted`,
 |----------|---------|---------|
 | `AP_WEBHOOKS_ENABLED` | `false` | Master switch for outbound webhooks — gates BOTH `emit_event` (OFF → silent no-op, no outbound HTTP) and the background retry/delivery sweep. OFF by default so a fresh clone / `pnpm dev` never makes outbound calls. Flip on in deployed envs. No secret — each subscription's signing secret is generated at create time and stored on the row. |
 | `AP_WEBHOOKS_DELIVERY_INTERVAL_SECONDS` | `60` | Retry-sweep tick interval. |
+| `AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS` | `false` | SSRF-guard escape hatch — `true` lets a target URL resolve to a private/loopback address (local-first dev of the delivery path against `127.0.0.1` only; the committed `.env.development` sets it). The safe default blocks non-public targets at create/update AND again before every dispatch. Never enable in a deployed env. See [Target-URL SSRF guard](#target-url-ssrf-guard). |
 
 ## Deferred
 

@@ -35,12 +35,29 @@ from app.models.webhook import (
 )
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.webhooks.signing import generate_signing_secret
-from app.services.webhooks.ssrf import SsrfError, assert_public_webhook_url_async
+from app.services.webhooks.url_guard import (
+    REJECT_DETAIL,
+    WebhookTargetNotAllowed,
+    ensure_public_webhook_target,
+)
 from app.tenant import get_tenant
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+async def _require_public_target(target_url: str) -> None:
+    """SSRF gate on the supplied target URL (resolves the host; rejects
+    loopback / private / link-local / metadata / other non-public addresses).
+    One generic, non-enumerating 422 for every rejection reason. The same
+    guard runs again immediately before each dispatch (DNS-rebinding TOCTOU)."""
+    try:
+        await ensure_public_webhook_target(target_url)
+    except WebhookTargetNotAllowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=REJECT_DETAIL
+        ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -145,14 +162,6 @@ class DeliveryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _reject_ssrf_target(url: str) -> None:
-    """400 if the target resolves to a non-public address (SSRF guard, #171)."""
-    try:
-        await assert_public_webhook_url_async(url)
-    except SsrfError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-
 @router.post("", response_model=SubscriptionCreatedResponse, status_code=status.HTTP_201_CREATED)
 async def create_subscription(
     body: CreateSubscriptionRequest,
@@ -161,7 +170,7 @@ async def create_subscription(
     db: AsyncSession = Depends(get_control_db),
 ) -> SubscriptionCreatedResponse:
     """Create a webhook subscription. Returns the signing secret ONCE."""
-    await _reject_ssrf_target(body.target_url)
+    await _require_public_target(body.target_url)
     secret, prefix = generate_signing_secret()
     row = WebhookSubscription(
         id=uuid.uuid4(),
@@ -242,9 +251,9 @@ async def update_subscription(
     user: User = Depends(require_roles(ROLE_ADMIN)),
     db: AsyncSession = Depends(get_control_db),
 ) -> SubscriptionResponse:
-    row = await _get_owned_subscription(db, sub_id, org.id)
     if body.target_url is not None:
-        await _reject_ssrf_target(body.target_url)
+        await _require_public_target(body.target_url)
+    row = await _get_owned_subscription(db, sub_id, org.id)
     changed: dict = {}
     if body.name is not None:
         row.name = body.name

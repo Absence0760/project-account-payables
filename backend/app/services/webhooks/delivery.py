@@ -55,14 +55,6 @@ async def _post(target_url: str, body: bytes, signature: str, delivery: WebhookD
     """POST the signed body. Returns the HTTP status code; raises on transport
     error (timeout / connection refused) so the caller classifies it as a no-code
     failure."""
-    # Re-validate the destination immediately before sending (SSRF guard, #171):
-    # a hostname whose DNS has since flipped to an internal / metadata address is
-    # rejected here too, not just at config time. A rejection raises SsrfError,
-    # which the caller classifies as a failed attempt — the payload never leaves.
-    from app.services.webhooks.ssrf import assert_public_webhook_url_async
-
-    await assert_public_webhook_url_async(target_url)
-
     headers = {
         "Content-Type": "application/json",
         "X-Webhook-Signature": signature,
@@ -102,13 +94,30 @@ async def process_delivery(db: AsyncSession, delivery: WebhookDelivery) -> Webho
     body = json.dumps(delivery.payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     signature = sign_payload(sub.signing_secret, body)
 
+    from app.services.webhooks.url_guard import (
+        WebhookTargetNotAllowed,
+        ensure_public_webhook_target,
+    )
+
     delivery.attempt_count += 1
     delivery.last_attempt_at = datetime.now(UTC)
     code: int | None = None
     ok = False
     try:
+        # SSRF guard, re-checked at send time: the stored host is RE-resolved
+        # so a DNS record that flipped to a private/loopback/metadata address
+        # after create (TOCTOU / DNS rebinding) is refused, not POSTed to.
+        await ensure_public_webhook_target(sub.target_url)
         code = await _post(sub.target_url, body, signature, delivery)
         ok = 200 <= code < 300
+    except WebhookTargetNotAllowed:
+        # PII-free by design: delivery id + event type only — never the URL,
+        # host, or the address it resolved to.
+        logger.warning(
+            "webhook delivery refused: target not publicly routable: delivery=%s event=%s",
+            delivery.id,
+            delivery.event_type,
+        )
     except Exception as exc:  # noqa: BLE001 — any transport error is a failed attempt
         logger.warning(
             "webhook delivery transport error: delivery=%s event=%s err=%s",
