@@ -369,6 +369,9 @@ async def import_corporate_card_csv(
     so a single upload can be reviewed / rolled back as a unit.
 
     PII: only ``card_last_four`` is stored (truncated to 4) — never a full PAN.
+    The ``raw`` JSONB is filtered to the ``_CORPORATE_CARD_COLUMNS`` allowlist
+    (with ``card_last_four`` masked) so an unrecognized PAN/account column in a
+    real bank export is dropped rather than persisted.
     Callers commit the session themselves after inspecting the result."""
     from app.models.expense import CorporateCardTransaction, ReconciliationStatus
 
@@ -415,6 +418,14 @@ async def import_corporate_card_csv(
             seen.add(external_txn_id)
 
         last_four = (row.get("card_last_four") or "").strip()[:4] or None
+        # Persist ONLY the known columns into `raw` — a real bank/card export can
+        # carry a full PAN / account-number column, and the whole unfiltered row
+        # would otherwise sit at rest in the tenant DB (PII/banking invariant,
+        # issue #173). The masked last-4 replaces whatever the source put in the
+        # card_last_four column, so no full PAN survives even there.
+        safe_raw = {k: row[k] for k in _CORPORATE_CARD_COLUMNS if k in row}
+        if "card_last_four" in safe_raw:
+            safe_raw["card_last_four"] = last_four
         txn = CorporateCardTransaction(
             organization_id=organization_id,
             entity_id=entity_id,
@@ -428,7 +439,7 @@ async def import_corporate_card_csv(
             card_ref=(row.get("card_ref") or None) or None,
             import_batch=import_batch,
             reconciliation_status=ReconciliationStatus.unmatched,
-            raw=row,
+            raw=safe_raw,
         )
         db.add(txn)
         result.imported += 1
