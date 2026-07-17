@@ -48,6 +48,12 @@ Spend definitions (the contract the ``/spend`` + ``/check`` endpoints expose):
 
   utilization — ``(committed + actual) / allocated`` as a percentage, rounded to
                2 dp. ``0`` when allocated is 0 (avoid div-by-zero).
+
+Every leg is scoped to the budget's own entity (``apply_entity_scope`` on
+``budget.entity_id``) so a subsidiary's budget never picks up a sibling
+subsidiary's spend on a shared free-text dimension value, and to the budget's
+own ``currency`` — the legs never convert, so mixing currencies would add unlike
+face values (a EUR and a USD invoice on the same cost center are NOT summed).
 """
 
 from dataclasses import dataclass
@@ -64,6 +70,7 @@ from app.models.procurement import (
     PurchaseRequisition,
     RequisitionStatus,
 )
+from app.tenant import apply_entity_scope
 
 # Requisition statuses that represent a live, un-converted commitment against a
 # budget. ``converted`` is intentionally excluded — its spend is counted via the
@@ -118,31 +125,33 @@ def _q(value) -> Decimal:
 
 async def _committed_requisition_total(db: AsyncSession, budget: Budget) -> Decimal:
     """Leg 1 — open, un-converted requisitions linked to this budget."""
-    total = (
-        await db.execute(
-            select(func.coalesce(func.sum(PurchaseRequisition.total), 0)).where(
-                PurchaseRequisition.budget_id == budget.id,
-                PurchaseRequisition.status.in_(OPEN_COMMITMENT_REQ_STATUSES),
-            )
-        )
-    ).scalar_one()
+    query = select(func.coalesce(func.sum(PurchaseRequisition.total), 0)).where(
+        PurchaseRequisition.budget_id == budget.id,
+        PurchaseRequisition.status.in_(OPEN_COMMITMENT_REQ_STATUSES),
+        PurchaseRequisition.currency == budget.currency,
+    )
+    query = apply_entity_scope(query, PurchaseRequisition, budget.entity_id)
+    total = (await db.execute(query)).scalar_one()
     return _q(total)
 
 
 async def _committed_po_total(db: AsyncSession, budget: Budget) -> Decimal:
     """Leg 2 — POs that this budget's converted requisitions turned into."""
-    total = (
-        await db.execute(
-            select(func.coalesce(func.sum(PurchaseOrder.total), 0))
-            .select_from(PurchaseRequisition)
-            .join(PurchaseOrder, PurchaseOrder.id == PurchaseRequisition.converted_po_id)
-            .where(
-                PurchaseRequisition.budget_id == budget.id,
-                PurchaseRequisition.status == RequisitionStatus.converted,
-                PurchaseOrder.status.notin_(_DEAD_PO_STATUSES),
-            )
+    query = (
+        select(func.coalesce(func.sum(PurchaseOrder.total), 0))
+        .select_from(PurchaseRequisition)
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseRequisition.converted_po_id)
+        .where(
+            PurchaseRequisition.budget_id == budget.id,
+            PurchaseRequisition.status == RequisitionStatus.converted,
+            PurchaseOrder.status.notin_(_DEAD_PO_STATUSES),
+            # PurchaseOrder carries no currency; the requisition it converted
+            # from does, and the two share it.
+            PurchaseRequisition.currency == budget.currency,
         )
-    ).scalar_one()
+    )
+    query = apply_entity_scope(query, PurchaseRequisition, budget.entity_id)
+    total = (await db.execute(query)).scalar_one()
     return _q(total)
 
 
@@ -159,6 +168,9 @@ async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> Decimal:
     conditions = [
         match_col == budget.dimension_value,
         Invoice.status.in_(REALISED_INVOICE_STATUSES),
+        # Only sum invoices in the budget's own currency — the legs never
+        # convert, so mixing currencies would add unlike face values.
+        Invoice.currency == budget.currency,
     ]
     # Bound realised spend to the budget's own period so two budgets tracking the
     # same dimension in different periods don't both report all-time spend. Only
@@ -166,9 +178,9 @@ async def _actual_invoice_total(db: AsyncSession, budget: Budget) -> Decimal:
     if budget.period_start is not None and budget.period_end is not None:
         conditions.append(Invoice.invoice_date.between(budget.period_start, budget.period_end))
 
-    total = (
-        await db.execute(select(func.coalesce(func.sum(Invoice.amount), 0)).where(*conditions))
-    ).scalar_one()
+    query = select(func.coalesce(func.sum(Invoice.amount), 0)).where(*conditions)
+    query = apply_entity_scope(query, Invoice, budget.entity_id)
+    total = (await db.execute(query)).scalar_one()
     return _q(total)
 
 

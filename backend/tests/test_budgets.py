@@ -44,6 +44,8 @@ async def _mk_budget_row(
     dimension_value="Engineering",
     amount="10000.00",
     period="2026",
+    currency="USD",
+    entity_id=None,
 ) -> uuid.UUID:
     mk = realdb.sessionmaker(key)
     org_id = realdb.info(key).org_id
@@ -57,7 +59,8 @@ async def _mk_budget_row(
                 dimension_value=dimension_value,
                 period=period,
                 amount=Decimal(amount),
-                currency="USD",
+                currency=currency,
+                entity_id=entity_id,
                 organization_id=org_id,
             )
         )
@@ -117,6 +120,8 @@ async def _mk_invoice(
     department=None,
     project=None,
     invoice_date=None,
+    currency="USD",
+    entity_id=None,
 ) -> uuid.UUID:
     mk = realdb.sessionmaker(key)
     org_id = realdb.info(key).org_id
@@ -134,11 +139,35 @@ async def _mk_invoice(
                 department=department,
                 project=project,
                 invoice_date=invoice_date,
+                currency=currency,
+                entity_id=entity_id,
                 organization_id=org_id,
             )
         )
         await s.commit()
     return iid
+
+
+async def _mk_entity(realdb, key="a", *, slug=None) -> uuid.UUID:
+    """Create a non-default entity in the tenant and return its id."""
+    from app.models.entity import Entity
+
+    mk = realdb.sessionmaker(key)
+    org_id = realdb.info(key).org_id
+    eid = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Entity(
+                id=eid,
+                name=f"Sub {_u()}",
+                slug=slug or f"sub-{_u()}",
+                is_default=False,
+                is_active=True,
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+    return eid
 
 
 async def _mk_budget_row_dated(
@@ -502,6 +531,45 @@ async def test_spend_actual_respects_period_window(realdb):
         q2_body = (await c.get(f"/api/budgets/{q2}/spend")).json()
     assert q1_body["actual"] == 300.0  # only the Feb invoice
     assert q2_body["actual"] == 200.0  # only the May invoice
+
+
+async def test_spend_actual_excludes_foreign_currency_invoices(realdb):
+    """A USD budget never sums a same-dimension invoice denominated in another
+    currency — the legs don't convert (issue #154 bug B)."""
+    cc = f"CC-{_u()}"
+    bid = await _mk_budget_row(
+        realdb, dimension="cost_center", dimension_value=cc, amount="10000.00", currency="USD"
+    )
+    await _mk_invoice(realdb, "a", amount="300.00", status="paid", cost_center=cc, currency="USD")
+    await _mk_invoice(realdb, "a", amount="999.00", status="paid", cost_center=cc, currency="EUR")
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get(f"/api/budgets/{bid}/spend")).json()
+    assert body["actual"] == 300.0  # EUR row excluded, not added as 999
+
+
+async def test_spend_actual_respects_entity_scope(realdb):
+    """A budget scoped to one entity never picks up another entity's spend on a
+    shared free-text dimension value (issue #154 bug A)."""
+    other_entity = await _mk_entity(realdb, "a")
+    cc = f"CC-{_u()}"
+    # Budget belongs to the non-default entity.
+    bid = await _mk_budget_row(
+        realdb,
+        dimension="cost_center",
+        dimension_value=cc,
+        amount="10000.00",
+        entity_id=other_entity,
+    )
+    # One invoice in the budget's entity, one in a different (default/None) entity.
+    await _mk_invoice(
+        realdb, "a", amount="300.00", status="paid", cost_center=cc, entity_id=other_entity
+    )
+    await _mk_invoice(realdb, "a", amount="999.00", status="paid", cost_center=cc, entity_id=None)
+
+    async with realdb.client(key="a", role="cfo") as c:
+        body = (await c.get(f"/api/budgets/{bid}/spend")).json()
+    assert body["actual"] == 300.0  # sibling-entity row excluded
 
 
 async def test_spend_combined_committed_plus_actual(realdb):
