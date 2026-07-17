@@ -17,6 +17,8 @@ validates against VALID_TRANSITIONS before mutating the DB row.
 
 from __future__ import annotations
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # get_step_config
 # ---------------------------------------------------------------------------
@@ -332,4 +334,21 @@ def test_decide_auto_approve_not_triggered_stays_false():
         {"max_invoice_amount": 10000},
         overall_confidence=0.50,
         amount=Decimal("100"),
+    )
+
+
+@pytest.mark.parametrize("bad_threshold", ["abc", "10,000", "", {"x": 1}, "NaN", "Infinity"])
+def test_decide_auto_approve_revoked_on_malformed_cfo_gate(bad_threshold):
+    """A malformed `require_cfo_above` must REVOKE auto-approve (fall back to human
+    review), never silently skip the gate and auto-approve a would-be CFO-gated
+    invoice. Fail-closed at the auto-approve site too."""
+    from decimal import Decimal
+
+    from app.services.extraction import decide_auto_approve
+
+    assert not decide_auto_approve(
+        {"auto_approve_enabled": True, "auto_approve_threshold": 0.95},
+        {"require_cfo_above": bad_threshold},
+        overall_confidence=0.99,
+        amount=Decimal("1000000"),
     )

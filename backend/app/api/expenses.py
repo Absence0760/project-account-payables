@@ -1024,18 +1024,22 @@ async def approve_report(
         {"require_segregation": True},
     )
 
-    # CFO-threshold role gate (Decimal math, never float).
+    # CFO-threshold role gate (Decimal math, never float). `cfo_gate_applies` is
+    # the shared fail-CLOSED parse: a malformed `cfo_threshold` demands CFO/admin
+    # sign-off rather than raising an InvalidOperation that would 500 the approval.
+    from app.services.approval_chain import _to_decimal, cfo_gate_applies
+
     expense_cfg = (org.settings or {}).get("expense_approval") or {}
-    cfo_threshold = Decimal(str(expense_cfg.get("cfo_threshold", _DEFAULT_CFO_THRESHOLD)))
+    cfo_threshold_raw = expense_cfg.get("cfo_threshold", _DEFAULT_CFO_THRESHOLD)
     report_total = Decimal(str(report.total_amount or 0))
-    if report_total > cfo_threshold:
+    if cfo_gate_applies(cfo_threshold_raw, report_total):
         held = {r.name for r in user.roles} if user.roles else set()
         if ROLE_CFO not in held and ROLE_ADMIN not in held:
+            threshold_dec = _to_decimal(cfo_threshold_raw)
+            limit = f"{threshold_dec}" if threshold_dec is not None else "the configured limit"
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"Report total {report_total} exceeds {cfo_threshold}. CFO approval required."
-                ),
+                detail=(f"Report total {report_total} exceeds {limit}. CFO approval required."),
             )
 
     report.status = ExpenseReportStatus.approved

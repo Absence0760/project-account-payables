@@ -99,10 +99,16 @@ def decide_auto_approve(
     if not auto_approved:
         return False
 
+    # `cfo_gate_applies` is the shared fail-CLOSED CFO-threshold parse: a
+    # malformed `require_cfo_above` counts as gate-tripped (needs_cfo=True), so a
+    # settings typo revokes auto-approve into human review rather than raising an
+    # InvalidOperation (which would land the invoice in `failed`) or slipping a
+    # CFO-gated amount past review.
+    from app.services.approval_chain import cfo_gate_applies
+
     max_amount = approval_cfg.get("max_invoice_amount")
-    cfo_above = approval_cfg.get("require_cfo_above")
     exceeds_max = max_amount is not None and amount_dec > Decimal(str(max_amount))
-    needs_cfo = cfo_above is not None and amount_dec > Decimal(str(cfo_above))
+    needs_cfo = cfo_gate_applies(approval_cfg.get("require_cfo_above"), amount_dec)
     if exceeds_max or needs_cfo:
         return False
     return True

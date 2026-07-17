@@ -86,18 +86,21 @@ async def _enforce_approval_thresholds(
                 ),
             )
 
-    # CFO role gate for high-value invoices
+    # CFO role gate for high-value invoices. `cfo_gate_applies` is the shared
+    # fail-CLOSED parse: a configured-but-malformed `require_cfo_above` demands
+    # CFO sign-off (never silently skips the gate) instead of raising an
+    # InvalidOperation that would 500 every approval — even a legitimate CFO's —
+    # and brick the queue on a single settings typo.
+    from app.services.approval_chain import _to_decimal, cfo_gate_applies
+
     cfo_threshold = config.get("require_cfo_above")
-    if cfo_threshold is not None:
-        cfo_threshold_dec = Decimal(str(cfo_threshold))
-        if amount > cfo_threshold_dec and "cfo" not in actor_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"Invoice amount ${amount:,.2f} exceeds"
-                    f" ${cfo_threshold_dec:,.2f}. CFO approval required."
-                ),
-            )
+    if cfo_gate_applies(cfo_threshold, amount) and "cfo" not in actor_roles:
+        threshold_dec = _to_decimal(cfo_threshold)
+        limit = f"${threshold_dec:,.2f}" if threshold_dec is not None else "the configured limit"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(f"Invoice amount ${amount:,.2f} exceeds {limit}. CFO approval required."),
+        )
 
 
 async def approve_invoice(

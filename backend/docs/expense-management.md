@@ -182,6 +182,14 @@ requires the `cfo` (or `admin`) role. It's read off the injected `Organization`
 row in the approve handler; writing it (if a settings UI is added) uses the
 `flag_modified(org, 'settings')` idiom against the control DB.
 
+The threshold is parsed through the shared fail-closed helper
+`approval_chain.cfo_gate_applies` (the same one the invoice-approval and
+auto-approve gates use). A **malformed** `cfo_threshold` (a typo like `"5,000"`,
+an empty string, or a non-finite value) is treated as **"CFO approval
+required"** — it never silently skips the gate and never 500s the approve
+endpoint; a `cfo`/`admin` can still approve past it. See
+`workflow-design.md` § Approval Thresholds.
+
 ### Storage
 
 `app/services/storage.py::upload_expense_receipt` mirrors
