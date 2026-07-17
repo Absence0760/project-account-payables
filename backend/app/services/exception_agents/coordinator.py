@@ -122,6 +122,33 @@ async def run_agent(
         evaluation.recommended_action == ACTION_AUTO_RESOLVED and evaluation.confidence >= threshold
     )
 
+    # Fail-closed authority check. An auto-resolve APPROVES the invoice through
+    # review.approve_invoice with the triggering user's roles (the CFO gate +
+    # segregation-of-duties key off actor_roles). A run that can't name the
+    # acting user's real roles must NOT self-approve on a fabricated elevated
+    # set — it escalates to a human. This is the single chokepoint that
+    # guarantees actor_roles is populated before any resolver.apply runs, so the
+    # leaf resolvers thread it straight through without a hardcoded fallback.
+    if can_resolve and not actor_roles:
+        exception.status = "escalated"
+        decision = _record(
+            db,
+            exception,
+            invoice,
+            action=ACTION_ESCALATED,
+            confidence=evaluation.confidence,
+            rationale=(
+                "Auto-resolution withheld: the triggering actor's roles are "
+                "unknown, so the agent cannot approve on their behalf without "
+                "fabricating authority. Escalated to a human."
+            ),
+            changes=None,
+            level=level,
+            agent_type=resolver.agent_type,
+        )
+        await db.commit()
+        return AgentRunResult(decision=decision, exception=exception)
+
     if can_resolve:
         try:
             # resolver.apply MUST write the audit_log row(s) for the mutation.

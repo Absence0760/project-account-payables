@@ -219,7 +219,13 @@ async def test_clean_two_po_split_auto_resolves(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_AUTO_RESOLVED
 
     async with mk() as s:
@@ -277,7 +283,13 @@ async def test_ambiguous_two_sets_escalate(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -311,7 +323,13 @@ async def test_sum_outside_tolerance_escalates(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -343,7 +361,13 @@ async def test_single_po_match_defers_to_single_resolver(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
 
     async with mk() as s:
         # Two candidate single POs at 600/400 are not full-amount matches, but the
@@ -379,7 +403,13 @@ async def test_undated_split_below_threshold_escalates_under_balanced(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -412,14 +442,26 @@ async def test_rerun_on_resolved_split_is_noop(realdb):
 
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        first = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        first = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert first.decision.action_taken == ACTION_AUTO_RESOLVED
 
     raised = False
     async with mk() as s:
         exc = await s.get(APException, exc_id)
         try:
-            await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+            await run_agent(
+                s,
+                exception=exc,
+                actor_id=actor_id,
+                org_settings=org_settings,
+                actor_roles={"ap_manager"},
+            )
         except ExceptionNotActionable:
             raised = True
     assert raised is True

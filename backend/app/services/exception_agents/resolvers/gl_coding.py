@@ -351,9 +351,10 @@ class GLCodingResolver(ExceptionResolver):
             locked,
             actor_id=actor_id,
             actor_name="AP Agent",
-            # Real triggering-user roles when provided; ap_manager fallback for
-            # a non-user-triggered (background) run so behaviour is unchanged.
-            actor_roles=actor_roles or {"ap_manager"},
+            # The triggering user's REAL roles — never a fabricated elevated set.
+            # The coordinator fails closed (escalates) when they're unknown, so
+            # this is always populated on the auto-resolve path that reaches here.
+            actor_roles=actor_roles,
             corrections=corrections,
         )
         # Re-point the caller's reference (coordinator commits).
