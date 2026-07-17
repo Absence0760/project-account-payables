@@ -184,7 +184,7 @@ async def send_to_erp_internal(
     state_data = (instance.state_data if instance else None) or {}
 
     try:
-        erp_ref = await _call_erp(invoice)
+        erp_ref = await _call_erp(invoice, erp_config)
 
         await transition_invoice(
             db,

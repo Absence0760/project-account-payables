@@ -300,3 +300,58 @@ async def test_retry_erp_resets_retry_counter_before_redriving():
     internal_mock.assert_awaited_once()
     # Audit row marks this as a retry, not a fresh submission.
     assert any(r["action"] == "invoice.erp_retried" for r in recorder.rows)
+
+
+# ---------------------------------------------------------------------------
+# send_to_erp_internal — org ERP config plumbing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_to_erp_internal_passes_org_erp_config_to_call_erp():
+    """Regression: send_to_erp_internal used to drop its erp_config on the
+    floor (`_call_erp(invoice)`), so the local dispatch worker — which
+    resolves the org's settings.erp and passes it in — always posted via
+    the MOCK adapter no matter what ERP the tenant configured. Lock the
+    pass-through."""
+    from app.services.erp import send_to_erp_internal
+
+    inv = _invoice(status=InvoiceStatus.sending_to_erp)
+    inst = _instance()
+    call_erp = AsyncMock(return_value="ERP-REF-1")
+    cfg = {"type": "netsuite", "integration_method": "direct", "account_id": "ACCT"}
+
+    with (
+        patch("app.services.workflow_engine.dispatch_audit", new=_AuditRecorder()),
+        patch("app.services.erp._call_erp", call_erp),
+        patch("app.services.erp.get_workflow_instance", AsyncMock(return_value=inst)),
+        patch("app.services.erp.complete_workflow", AsyncMock()),
+    ):
+        await send_to_erp_internal(AsyncMock(), inv, erp_config=cfg)
+
+    call_erp.assert_awaited_once_with(inv, cfg)
+
+
+@pytest.mark.asyncio
+async def test_call_erp_dispatches_via_configured_adapter_not_mock():
+    """With a merge_dev config, _call_erp must post through the Merge.dev
+    adapter (the returned reference is the Merge model id), not the mock."""
+    import httpx as _httpx  # noqa: F401 — ensure module import for patch target
+
+    from app.services.erp import _call_erp
+
+    resp = AsyncMock()
+    resp.status_code = 201
+    resp.json = lambda: {"model": {"id": "merge-inv-77", "number": "INV-1"}}
+
+    with patch("httpx.AsyncClient") as cm:
+        client = cm.return_value.__aenter__.return_value
+        client.post = AsyncMock(return_value=resp)
+        ref = await _call_erp(
+            _invoice(),
+            {"integration_method": "merge_dev", "api_key": "k", "account_token": "t"},
+        )
+
+    assert ref == "merge-inv-77"
+    posted_url = client.post.await_args.args[0]
+    assert posted_url.endswith("/invoices")
