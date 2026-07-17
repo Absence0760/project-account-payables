@@ -33,7 +33,9 @@ pnpm aws:up                   # local AWS emulator (LocalStack :4566, opt-in `aw
 pnpm ollama:up                # local AI model server (Ollama :11435, opt-in `ai` profile) for the ollama extraction adapter
 pnpm stripe:up                # Stripe API mock (stripe-mock :12111, opt-in `payments` profile) for the stripe_treasury adapter
 pnpm mail:up                  # Mailpit SMTP sink + web inbox (:1025/:8025, opt-in `mail` profile) for the smtp email adapter
-pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama + stripe-mock + Mailpit (services:down / services:logs / services:reset too)
+pnpm erp:up                   # fake ERP server (fake-erp :12112, opt-in `erp` profile) for merge_dev/netsuite/dynamics_365_bc adapter e2e (erp:down / erp:logs too)
+pnpm test:erp                 # ERP adapter e2e (tests-e2e/erp/) — real HTTP against fake-erp; skips if it's down
+pnpm services:up              # everything at once: core + IdPs + LocalStack + Ollama + stripe-mock + Mailpit + fake-erp (services:down / services:logs / services:reset too)
 pnpm seed                     # python scripts/seed.py
 pnpm dev                      # backend (:8000) + frontend (:7777) together, one Ctrl-C stops both
 pnpm dev:all                  # db:up (core only), then pnpm dev (whole web stack from cold)
@@ -211,7 +213,7 @@ defaults. Deployed secrets stay in the `*.sops` files — never in any `.env*`.
 ### Adapter patterns (pluggable providers)
 
 - **Extraction** (`services/extraction_adapters/`): claude_vision, openai_vision, aws_textract, ollama, einvoice, mock. Registry via `@register_extraction_adapter` decorator. `einvoice` is auto-selected (not config-driven) when an ingested file is a structured e-invoice (UBL 2.1 / Factur-X / ZUGFeRD) — see `services/e_invoice/` + `backend/docs/e-invoicing.md`.
-- **ERP** (`services/erp_adapters/`): merge_dev (unified), dynamics_365_bc, netsuite, mock. Registry via `@register_adapter` decorator. Config `integration_method: "merge_dev"|"direct"` selects path.
+- **ERP** (`services/erp_adapters/`): merge_dev (unified), dynamics_365_bc, netsuite, mock. Registry via `@register_adapter` decorator. Config `integration_method: "merge_dev"|"direct"` selects path. Provider base URLs are env-overridable (`AP_ERP_MERGE_API_BASE` / `AP_ERP_NETSUITE_API_BASE` / `AP_ERP_D365_API_BASE` / `AP_ERP_D365_TOKEN_URL`) so the three real adapters can run e2e against the local fake-erp compose stack — see `backend/docs/erp-integration.md` § Local e2e testing.
 - **Cards** (`services/card_adapters/`): lithic, nium, mock. Both have sandbox modes.
 - **Payments** (`services/payment_adapters/`): modern_treasury, stripe_treasury, increase, column, dwolla (ACH only), checkeeper (check printing), mock. Webhook-driven status; HMAC-verified signatures; tenant in webhook URL path.
 - **Positive Pay formatters** (`services/positive_pay_adapters/`): csv (default), fixed_width. Registry via `@register_positive_pay_formatter` decorator; `get_positive_pay_formatter` defaults to `csv` and falls back to `csv` on an unknown key. Renders a payment run's cheques (`check_issue`) or the org's ACH-authorized accounts (`ach_authorization`) into a per-bank Positive Pay file. The rendered file (full account/routing numbers) is stored in MinIO via `storage.upload_positive_pay_file`; the DB row is PII-free. See `backend/docs/positive-pay.md`.
@@ -273,6 +275,10 @@ The void-payment path (`POST /api/payments/{id}/void`) takes `payment_scheduled`
 | `AP_S3_ENDPOINT_URL` | `http://localhost:9000` | MinIO/S3 |
 | `AP_EXTRACTION_MODE` | `local` | `local` or `lambda` |
 | `AP_ERP_MODE` | `local` | `local` or `lambda` |
+| `AP_ERP_MERGE_API_BASE` | `https://api.merge.dev/api/accounting/v1` | Merge.dev API base — operator-controlled (bypasses the admin-config SSRF guard); `.env.development` points it at fake-erp (`http://localhost:12112/merge/api/accounting/v1`) |
+| `AP_ERP_NETSUITE_API_BASE` | (empty) | NetSuite REST base override — empty derives the per-account URL from `account_id`; set → used verbatim (operator-trusted). Dev value targets fake-erp |
+| `AP_ERP_D365_API_BASE` | (empty) | Dynamics 365 BC OData base override — empty → admin-config `base_url` + SSRF guard; set → used verbatim (operator-trusted). Dev value targets fake-erp |
+| `AP_ERP_D365_TOKEN_URL` | (empty) | D365 OAuth token URL override — empty → `https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token`. Dev value targets fake-erp |
 | `AP_ANTHROPIC_API_KEY` | (empty) | Claude Vision for platform extraction |
 | `AP_EXTRACTION_MODEL` | `claude-sonnet-4-20250514` | AI model for extraction |
 | `AP_ASSISTANT_PROVIDER` | `mock` (code) / `ollama` (`.env.development`) | Conversational assistant adapter — `mock` \| `claude` \| `ollama`. Committed dev default is `ollama` (local model); `claude`/`ollama` fail soft to `mock`. See `backend/docs/conversational-assistant.md`. |
