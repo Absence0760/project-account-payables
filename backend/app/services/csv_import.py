@@ -58,6 +58,17 @@ _INVOICE_COLUMNS = {
     "status",
 }
 
+# Statuses a CSV invoice import may land an invoice at *directly* (issue #174).
+# Only initial (`new`) and terminal-historical (`done`/`paid`/`rejected`) states
+# are safe: they don't drop a fabricated invoice into a live, actionable pipeline
+# stage. The mid-pipeline states — `approved` (payable NOW, no second approver),
+# `ready_for_review`, `pending`, the ERP-send + payment_scheduled states, and
+# `failed` — are blocked because reaching them by-passes the workflow engine,
+# so `dispatch_audit`, `check_segregation`, and the approval signature never run.
+# Open AP that still needs paying must be imported as `new` and go through the
+# normal approval controls.
+_IMPORTABLE_INVOICE_STATUSES = frozenset({"new", "done", "paid", "rejected"})
+
 _CORPORATE_CARD_COLUMNS = {
     "external_txn_id",
     "date",
@@ -262,6 +273,21 @@ async def import_invoices_csv(
             status_val = InvoiceStatus(status_raw)
         except ValueError:
             result.errors.append(ImportRowError(row=i, message=f"status invalid: {status_raw!r}"))
+            continue
+        # A CSV import bypasses the workflow engine (no audit / segregation /
+        # approval signature), so it may only land at a safe initial/terminal
+        # status — never a live pipeline stage like `approved` (issue #174).
+        if status_raw not in _IMPORTABLE_INVOICE_STATUSES:
+            result.errors.append(
+                ImportRowError(
+                    row=i,
+                    message=(
+                        f"status not importable: {status_raw!r}; "
+                        f"allowed: {', '.join(sorted(_IMPORTABLE_INVOICE_STATUSES))} "
+                        "(import open AP as 'new' so it goes through approval)"
+                    ),
+                )
+            )
             continue
 
         # Dedup on (vendor_id, invoice_number) — the natural AP uniqueness key

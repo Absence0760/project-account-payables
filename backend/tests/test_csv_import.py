@@ -230,6 +230,29 @@ async def test_import_invoices_rejects_invalid_status():
 
 
 @pytest.mark.asyncio
+async def test_import_invoices_rejects_live_pipeline_status():
+    """A CSV import bypasses the workflow engine, so it can't land an invoice at
+    a live pipeline stage like `approved` (payable, no second approver, no audit)
+    — issue #174. Only new/done/paid/rejected are importable."""
+    db = _StubSession()
+    for bad in ("approved", "ready_for_review", "payment_scheduled", "sending_to_erp"):
+        csv_text = f"invoice_number,vendor_name,amount,status\nINV-X,Acme,100.00,{bad}\n"
+        result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
+        assert result.imported == 0, bad
+        assert len(result.errors) == 1, bad
+        assert "not importable" in result.errors[0].message, bad
+
+
+@pytest.mark.asyncio
+async def test_import_invoices_allows_safe_terminal_statuses():
+    db = _StubSession()
+    for ok in ("new", "done", "paid", "rejected"):
+        csv_text = f"invoice_number,vendor_name,amount,status\nINV-{ok},Acme,100.00,{ok}\n"
+        result = await import_invoices_csv(db, uuid.uuid4(), csv_text)
+        assert result.imported == 1, f"{ok}: {result.to_dict()}"
+
+
+@pytest.mark.asyncio
 async def test_import_invoices_dedupes_existing_invoice():
     """If stubbed session returns an existing invoice, the row is skipped."""
     from app.models.invoice import Invoice as InvoiceModel

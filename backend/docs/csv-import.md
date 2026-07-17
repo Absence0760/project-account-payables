@@ -58,7 +58,7 @@ should review them on the Vendors page before paying any invoices.
 | `description` | no | |
 | `gl_account` | no | |
 | `cost_center` | no | |
-| `status` | no | Default `done` for historical loads. Any valid invoice status works. |
+| `status` | no | Default `done`. Only `new`, `done`, `paid`, `rejected` are importable — a live pipeline stage (`approved`, `ready_for_review`, `payment_scheduled`, …) is rejected per row (issue #174). |
 
 Example:
 
@@ -73,7 +73,15 @@ INV-1002,Globex Corp,"$2,500.50",2026-01-15,2026-02-15,paid,
 For a Day-0 historical load (invoices that already existed and were
 already paid in the old system), use `done` or `paid` so they don't
 re-enter the approval pipeline. For open AP that still needs to be paid,
-use `approved` — they'll show up in the payment queue immediately.
+import it as `new` — it enters the normal approval pipeline and gets a real
+audit trail, segregation check, and approval signature when a human approves it.
+
+**Importable statuses are restricted to `new`, `done`, `paid`, `rejected`.** A
+CSV import bypasses the workflow engine, so landing an invoice directly at a
+live pipeline stage (`approved`, `ready_for_review`, `payment_scheduled`, the
+ERP-send states, …) would drop a fabricated, payable invoice into the queue
+with no audit row and no second approver — so those statuses are rejected per
+row (issue #174). Never try to import open AP as `approved`; import it as `new`.
 
 ## What the import does NOT do
 
@@ -85,9 +93,9 @@ use `approved` — they'll show up in the payment queue immediately.
 - **No ERP sync.** Imported invoices stay local until they flow through
   the ERP-export step like any other invoice.
 - **No workflow instance.** Terminal-status imports (`done`, `paid`)
-  skip the workflow engine. If you import with an in-flight status
-  (`ready_for_review`, etc.), you may need to attach a workflow
-  instance manually — the common path is to land them as `done`.
+  skip the workflow engine — which is exactly why in-flight statuses are
+  no longer importable (they'd bypass the approval controls). Land open AP
+  as `new` and let it flow through the normal pipeline.
 
 ## Preparing a customer's export
 
