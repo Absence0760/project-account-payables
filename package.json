@@ -54,11 +54,16 @@
 		"mail:down": "cd backend && docker compose stop mailpit",
 		"mail:logs": "cd backend && docker compose logs -f mailpit",
 
-		"//-- services --": "Everything at once — core (Postgres/Redis/MinIO) + all opt-in profiles (idp/aws/ai/payments/mail). services:reset also drops volumes.",
-		"services:up": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail up -d",
-		"services:down": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail down",
-		"services:logs": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail logs -f",
-		"services:reset": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail down -v && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail up -d",
+		"//-- erp --": "fake-erp :12112 (opt-in erp profile) — local fake of the three real ERP providers (Merge.dev / NetSuite / Dynamics 365 BC) for the erp/ e2e suite; backend/.env.development already points the adapters at it. Docs: backend/docs/erp-integration.md.",
+		"erp:up": "cd backend && docker compose --profile erp up -d --build fake-erp",
+		"erp:down": "cd backend && docker compose stop fake-erp",
+		"erp:logs": "cd backend && docker compose logs -f fake-erp",
+
+		"//-- services --": "Everything at once — core (Postgres/Redis/MinIO) + all opt-in profiles (idp/aws/ai/payments/mail/erp). services:reset also drops volumes.",
+		"services:up": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp up -d",
+		"services:down": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp down",
+		"services:logs": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp logs -f",
+		"services:reset": "cd backend && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp down -v && docker compose --profile idp --profile aws --profile ai --profile payments --profile mail --profile erp up -d",
 
 		"//-- seed & migrate --": "Demo data + Alembic migrations. Need core services up (db:up) and the backend venv activated. seed creates 2 demo tenants; migrate:all = control plane + every per-tenant ap_<slug> DB. Docs: backend/docs/database.md.",
 		"seed": "cd backend && python scripts/seed.py",
@@ -80,11 +85,12 @@
 		"format": "pnpm run format:backend",
 		"check": "pnpm run lint",
 
-		"//-- test --": "Test suites per surface: pytest (backend — venv + core services required), Playwright e2e (frontend), flutter test (mobile). test:scim/test:saml need the local IdPs up + seeded (idp:up then scim:seed/saml:seed). test:scripts validates this file's script targets.",
+		"//-- test --": "Test suites per surface: pytest (backend — venv + core services required), Playwright e2e (frontend), flutter test (mobile). test:scim/test:saml need the local IdPs up + seeded (idp:up then scim:seed/saml:seed); test:erp needs fake-erp up (erp:up). test:scripts validates this file's script targets.",
 		"test:backend": "cd backend && pytest",
 		"test:frontend": "cd frontend && pnpm test:e2e",
 		"test:scim": "cd frontend && pnpm exec playwright test --config=tests-e2e/playwright.config.ts scim/",
 		"test:saml": "cd frontend && pnpm exec playwright test --config=tests-e2e/playwright.config.ts saml/",
+		"test:erp": "cd frontend && pnpm exec playwright test --config=tests-e2e/playwright.config.ts erp/",
 		"test:mobile": "cd mobile && flutter test",
 		"test:scripts": "node scripts/check_root_scripts.mjs",
 		"test": "pnpm run test:backend && pnpm run test:frontend && pnpm run test:mobile"

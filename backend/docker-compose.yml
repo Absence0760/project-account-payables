@@ -241,6 +241,27 @@ services:
     ports:
       - "12111:12111"
 
+  # Fake ERP server for the real (non-mock) ERP adapters — emulates Merge.dev
+  # unified accounting (/merge/api/accounting/v1), NetSuite SuiteTalk REST
+  # (/netsuite/services/rest/record/v1), and Dynamics 365 Business Central OData
+  # (/d365) in one deterministic in-memory process, so post_invoice / status
+  # polling / PO + GL-account sync run end-to-end with no cloud account. Opt-in
+  # under the `erp` profile (`pnpm erp:up`). Point the adapters at it via the
+  # AP_ERP_MERGE_API_BASE / AP_ERP_NETSUITE_API_BASE / AP_ERP_D365_API_BASE /
+  # AP_ERP_D365_TOKEN_URL overrides in backend/.env.development (host port
+  # 12112). POST /__reset clears state between test runs. See tools/fake-erp/.
+  fake-erp:
+    build:
+      context: ../tools/fake-erp
+    profiles: ["erp"]
+    ports:
+      - "12112:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health', timeout=3).status==200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   # Local SMTP sink + web inbox for outbound email. With AP_EMAIL_PROVIDER=smtp
   # the app's transactional mail (signup, welcome, scheduled reports) lands here
   # instead of the real internet — view rendered HTML at http://localhost:8025.
