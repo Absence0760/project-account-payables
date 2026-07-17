@@ -280,6 +280,18 @@ exactly as before.
   and user create/update/delete/bulk-delete (`user.manage`). Role/permission
   CRUD itself stays admin-only on `require_roles` (managing the catalog must not
   be a grantable permission — that would be a privilege-escalation path).
+  - **Role-grant is bounded by the grantor.** `user.manage` lets you assign
+    roles, but not roles more powerful than you hold: `_authorize_role_grant`
+    refuses to grant the system `admin` role unless the caller is themselves an
+    admin, and refuses to grant any role whose catalog permissions aren't a
+    subset of the caller's own effective permissions. Otherwise a custom role
+    scoped to only `user.manage` could assign itself `admin` and take over the
+    org.
+  - **Admin-set passwords obey the complexity policy.** An admin resetting a
+    user's password (`PATCH /api/admin/users/{id}` `password`) runs it through
+    the same `validate_password_complexity` as self-service change-password
+    (min 12, upper/lower/digit), so a `user.manage` actor can't reset an
+    account to a trivial value and log in as it.
 - **Frontend** — `auth.can(perm)` mirrors `require_permission`; the gated
   controls converted so far are payment Execute, payment Void, and vendor
   Block/Unblock. The `/admin/roles` editor renders permission checkboxes from
