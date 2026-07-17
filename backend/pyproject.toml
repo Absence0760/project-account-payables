@@ -30,7 +30,7 @@ dependencies = [
     "python-jose[cryptography]>=3.5.0,<4",
     "httpx>=0.28.1,<1",
     "PyMuPDF>=1.28.0,<2",
-    "pgvector>=0.4.2,<1",
+    "pgvector>=0.5.0,<1",
     # OIDC ID-token signature + claims verification in services/sso.py.
     # (Successor to authlib.jose, which deprecated that module in favour of
     # joserfc; we use joserfc directly so there's no authlib dependency.)
