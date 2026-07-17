@@ -35,6 +35,7 @@ from app.models.webhook import (
 )
 from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.webhooks.signing import generate_signing_secret
+from app.services.webhooks.ssrf import SsrfError, assert_public_webhook_url_async
 from app.tenant import get_tenant
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,14 @@ class DeliveryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+async def _reject_ssrf_target(url: str) -> None:
+    """400 if the target resolves to a non-public address (SSRF guard, #171)."""
+    try:
+        await assert_public_webhook_url_async(url)
+    except SsrfError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @router.post("", response_model=SubscriptionCreatedResponse, status_code=status.HTTP_201_CREATED)
 async def create_subscription(
     body: CreateSubscriptionRequest,
@@ -152,6 +161,7 @@ async def create_subscription(
     db: AsyncSession = Depends(get_control_db),
 ) -> SubscriptionCreatedResponse:
     """Create a webhook subscription. Returns the signing secret ONCE."""
+    await _reject_ssrf_target(body.target_url)
     secret, prefix = generate_signing_secret()
     row = WebhookSubscription(
         id=uuid.uuid4(),
@@ -233,6 +243,8 @@ async def update_subscription(
     db: AsyncSession = Depends(get_control_db),
 ) -> SubscriptionResponse:
     row = await _get_owned_subscription(db, sub_id, org.id)
+    if body.target_url is not None:
+        await _reject_ssrf_target(body.target_url)
     changed: dict = {}
     if body.name is not None:
         row.name = body.name
