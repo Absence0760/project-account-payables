@@ -37,9 +37,17 @@ only (mirrors `api/expenses.py::report_summary`).
 |------|-----------|
 | **allocated** | `budget.amount` — the cap for this dimension/period. |
 | **committed** | Earmarked but not yet invoiced. Two legs, summed: (1) `PurchaseRequisition.total` for requisitions linked to the budget (`budget_id == budget.id`) in an **open-commitment** status — `submitted`, `pending_approval`, `approved` (live demand not yet a PO); (2) `PurchaseOrder.total` for the POs those budget-linked requisitions converted into (`converted` reqs joined via `converted_po_id`), excluding cancelled/closed/voided POs. A converted req is counted via its PO (leg 2), **not** the req (leg 1) — `converted` is deliberately omitted from leg 1 so the two never double-count. |
-| **actual** | Realised invoice spend matched to the dimension. Invoices have no `budget_id`, so they're attributed by column — one per dimension, all four covered: `cost_center` → `Invoice.cost_center`, `gl_account` → `Invoice.gl_account`, `department` → `Invoice.department`, `project` → `Invoice.project`. Only invoices in a realised status count — `approved`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled`, `paid`, `done` — so a new/rejected invoice never inflates actual. |
+| **actual** | Realised invoice spend matched to the dimension. Invoices have no `budget_id`, so they're attributed by column — one per dimension, all four covered: `cost_center` → `Invoice.cost_center`, `gl_account` → `Invoice.gl_account`, `department` → `Invoice.department`, `project` → `Invoice.project`. Only invoices in a realised status count — `approved`, `sent_to_erp`, `posted_in_erp`, `payment_scheduled`, `paid`, `done` — so a new/rejected invoice never inflates actual. When the budget sets both `period_start`/`period_end`, actual is further bounded to invoices dated inside that window (so a Q1 and a Q2 budget on the same dimension don't both report all-time spend). |
 | **remaining** | `allocated - committed - actual` (negative = overspend). |
 | **utilization_pct** | `(committed + actual) / allocated * 100`, 2 dp. `0` when allocated is 0. |
+
+**Every leg is scoped by entity and currency.** All three (committed reqs,
+committed POs, actual invoices) are narrowed to the budget's own `entity_id`
+(`apply_entity_scope`) so a subsidiary's budget never picks up a sibling
+subsidiary's spend on a shared free-text dimension value, and to the budget's
+own `currency` — the legs never convert, so a EUR and a USD invoice on the same
+dimension are **not** summed as equal (POs carry no currency column, so the PO
+leg filters on the source requisition's currency).
 
 ### `department` / `project` actuals — resolved
 
