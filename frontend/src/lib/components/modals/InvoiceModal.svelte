@@ -262,28 +262,52 @@
 
 	let canSubmit = $derived(canSubmitStatus && missingFields.length === 0);
 
+	// Financial fields are frozen once an invoice is approved: the backend 409s
+	// a PATCH that includes any of them (the signed-off amount is what the
+	// payment run pays — services/api/invoices.py `_FINANCIALLY_LOCKED_STATUSES`).
+	// Both Save and the workflow-submit button ("Send to ERP" / Mark Complete)
+	// reuse this field write, so once locked we must send only the non-financial
+	// metadata (GL coding, addresses, notes) — otherwise every write to an
+	// approved invoice fails and, in particular, "Send to ERP" never fires.
+	const FINANCIALLY_LOCKED_STATUSES = [
+		'approved',
+		'sending_to_erp',
+		'sent_to_erp',
+		'posted_in_erp',
+		'payment_scheduled',
+		'paid',
+		'done',
+	];
+	let financiallyLocked = $derived(FINANCIALLY_LOCKED_STATUSES.includes(status));
+
+	function invoiceFieldPayload(): Record<string, unknown> {
+		const payload: Record<string, unknown> = {
+			vendor,
+			invoice_number,
+			due_date,
+			po_number,
+			description,
+			vendor_address: vendor_address || null,
+			vendor_tax_id: vendor_tax_id || null,
+			ship_to_address: ship_to_address || null,
+			payment_method: payment_method || null,
+			reference_number: reference_number || null,
+			gl_account: gl_account || null,
+			cost_center: cost_center || null,
+			department: department || null,
+			project: project || null,
+		};
+		if (!financiallyLocked) {
+			payload.amount = amount;
+			payload.tax_rate = tax_rate;
+		}
+		return payload;
+	}
+
 	async function save() {
 		saving = true;
 		try {
-			await invoiceStore.update(invoice.id, {
-				vendor,
-				invoice_number,
-				amount,
-				due_date,
-				status,
-				po_number,
-				description,
-				vendor_address: vendor_address || null,
-				vendor_tax_id: vendor_tax_id || null,
-				ship_to_address: ship_to_address || null,
-				tax_rate,
-				payment_method: payment_method || null,
-				reference_number: reference_number || null,
-				gl_account: gl_account || null,
-				cost_center: cost_center || null,
-				department: department || null,
-				project: project || null,
-			});
+			await invoiceStore.update(invoice.id, invoiceFieldPayload());
 			toast(m('invoices.modal.toast.saved'), 'success');
 			onclose();
 		} catch (err) {
@@ -296,25 +320,10 @@
 	async function submitDone() {
 		submitting = true;
 		try {
-			// Save fields first, then mark complete
-			await invoiceStore.update(invoice.id, {
-				vendor,
-				invoice_number,
-				amount,
-				due_date,
-				po_number,
-				description,
-				vendor_address: vendor_address || null,
-				vendor_tax_id: vendor_tax_id || null,
-				ship_to_address: ship_to_address || null,
-				tax_rate,
-				payment_method: payment_method || null,
-				reference_number: reference_number || null,
-				gl_account: gl_account || null,
-				cost_center: cost_center || null,
-				department: department || null,
-				project: project || null,
-			});
+			// Save any edits first, then advance the workflow. On an approved
+			// invoice `invoiceFieldPayload()` omits the frozen financial fields,
+			// so the pre-save no longer 409s and the "Send to ERP" advance runs.
+			await invoiceStore.update(invoice.id, invoiceFieldPayload());
 			const result = await api.post<{ id: string; status: string }>(`/api/invoices/${invoice.id}/complete`, {});
 			// If manually assigning an approver and invoice moved to ready_for_review
 			if (selectedApproverId && result.status === 'ready_for_review') {

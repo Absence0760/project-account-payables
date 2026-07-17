@@ -173,3 +173,122 @@ async def test_cfo_unrealized_fx_fallback_on_outage(realdb, monkeypatch):
     assert fx["available"] is False
     assert Decimal(str(fx["total_unrealized_gain_loss"])) == Decimal("0")
     assert fx["by_currency"] == []
+
+
+# ---------------------------------------------------------------------------
+# The aging band boundaries + monthly-trend bucketing moved from a Python loop
+# into SQL (GROUP BY) for the dashboard perf fix. These realdb tests exercise
+# the SQL directly (the old mocked unit tests in test_dashboard_aggregations.py
+# could only echo pre-bucketed rows back once the bucketing left Python).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aging_boundary_bands_realdb(realdb):
+    """One approved (open-payable) invoice on each side of every band boundary
+    lands in the correct SQL bucket — the classic off-by-one at 30/60/90 days,
+    plus a future due date counted as `current`."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    today = date.today()
+
+    # (due_offset_days_past, amount, expected_band). Negative offset = future.
+    cases = [
+        (-10, "50.00", "current"),  # not yet due
+        (0, "100.00", "current"),  # due today
+        (1, "200.00", "days_30"),
+        (30, "400.00", "days_30"),  # inclusive upper edge
+        (31, "800.00", "days_60"),
+        (60, "1600.00", "days_60"),
+        (61, "3200.00", "days_90"),
+        (75, "500.00", "days_90"),  # the headline BUG-7 case
+        (90, "700.00", "days_90"),
+        (91, "900.00", "days_90_plus"),
+        (365, "6400.00", "days_90_plus"),
+    ]
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add_all(
+            [
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    invoice_number=f"AGB-{i}",
+                    vendor_name="Boundary Co",
+                    amount=Decimal(amt),
+                    currency="USD",
+                    status=InvoiceStatus.approved,
+                    invoice_date=today - timedelta(days=200),
+                    due_date=today - timedelta(days=off),
+                )
+                for i, (off, amt, _band) in enumerate(cases)
+            ]
+        )
+        await s.commit()
+
+    expected = {
+        "current": Decimal("0"),
+        "days_30": Decimal("0"),
+        "days_60": Decimal("0"),
+        "days_90": Decimal("0"),
+        "days_90_plus": Decimal("0"),
+    }
+    for _off, amt, band in cases:
+        expected[band] += Decimal(amt)
+
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        aging = (await c.get("/api/dashboard")).json()["aging"]
+
+    for band, amount in expected.items():
+        assert Decimal(str(aging[band])) == amount, f"{band}: {aging[band]} != {amount}"
+
+
+@pytest.mark.asyncio
+async def test_monthly_trend_buckets_by_month_realdb(realdb):
+    """Invoices inside the 180-day window bucket by calendar month, ascending,
+    collapsing same-month rows and summing their amounts — all in SQL."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    today = date.today()
+
+    # Three recent months, jumbled, two rows sharing a month. Anchor the dates
+    # ~30/60/90 days back so they stay inside the endpoint's 180-day filter
+    # regardless of what "today" is when the suite runs.
+    d_recent = today - timedelta(days=30)
+    d_mid = today - timedelta(days=60)
+    d_old = today - timedelta(days=90)
+    rows = [
+        (d_mid, "100.00"),
+        (d_recent, "75.00"),
+        (d_old, "50.00"),
+        (d_recent.replace(day=1), "25.00"),  # same month as d_recent
+    ]
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add_all(
+            [
+                Invoice(
+                    organization_id=org_id,
+                    entity_id=ent,
+                    invoice_number=f"TR-{i}",
+                    vendor_name="Trend Co",
+                    amount=Decimal(amt),
+                    currency="USD",
+                    status=InvoiceStatus.approved,
+                    invoice_date=d,
+                    due_date=d + timedelta(days=30),
+                )
+                for i, (d, amt) in enumerate(rows)
+            ]
+        )
+        await s.commit()
+
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        trend = (await c.get("/api/dashboard")).json()["monthly_trend"]
+
+    months = [m["month"] for m in trend]
+    assert months == sorted(months), f"not ascending: {months}"
+    recent_key = d_recent.strftime("%Y-%m")
+    bucket = next(m for m in trend if m["month"] == recent_key)
+    assert bucket["count"] == 2  # d_recent + its day-1 sibling
+    assert Decimal(str(bucket["amount"])) == Decimal("100.00")  # 75 + 25
