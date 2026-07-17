@@ -116,6 +116,7 @@ async def _mk_invoice(
     gl_account=None,
     department=None,
     project=None,
+    invoice_date=None,
 ) -> uuid.UUID:
     mk = realdb.sessionmaker(key)
     org_id = realdb.info(key).org_id
@@ -132,11 +133,37 @@ async def _mk_invoice(
                 gl_account=gl_account,
                 department=department,
                 project=project,
+                invoice_date=invoice_date,
                 organization_id=org_id,
             )
         )
         await s.commit()
     return iid
+
+
+async def _mk_budget_row_dated(
+    realdb, *, dimension, dimension_value, amount, period, period_start, period_end
+) -> uuid.UUID:
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    bid = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            Budget(
+                id=bid,
+                name=f"Budget {_u()}",
+                dimension=dimension,
+                dimension_value=dimension_value,
+                period=period,
+                period_start=period_start,
+                period_end=period_end,
+                amount=Decimal(amount),
+                currency="USD",
+                organization_id=org_id,
+            )
+        )
+        await s.commit()
+    return bid
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +464,44 @@ async def test_spend_actual_project_invoices(realdb):
     assert body["actual"] == 500.0  # 450 + 50
     assert body["committed"] == 0.0
     assert body["remaining"] == 9500.0
+
+
+async def test_spend_actual_respects_period_window(realdb):
+    """A period-bounded budget only counts invoices dated inside its window, so
+    two budgets on the same dimension in different periods don't both report
+    all-time spend (issue #153)."""
+    cc = f"CC-{_u()}"
+    q1 = await _mk_budget_row_dated(
+        realdb,
+        dimension="cost_center",
+        dimension_value=cc,
+        amount="10000.00",
+        period="2026-Q1",
+        period_start=date(2026, 1, 1),
+        period_end=date(2026, 3, 31),
+    )
+    q2 = await _mk_budget_row_dated(
+        realdb,
+        dimension="cost_center",
+        dimension_value=cc,
+        amount="10000.00",
+        period="2026-Q2",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 6, 30),
+    )
+    # One invoice in each quarter, both realised, same cost center.
+    await _mk_invoice(
+        realdb, "a", amount="300.00", status="paid", cost_center=cc, invoice_date=date(2026, 2, 15)
+    )
+    await _mk_invoice(
+        realdb, "a", amount="200.00", status="paid", cost_center=cc, invoice_date=date(2026, 5, 15)
+    )
+
+    async with realdb.client(key="a", role="cfo") as c:
+        q1_body = (await c.get(f"/api/budgets/{q1}/spend")).json()
+        q2_body = (await c.get(f"/api/budgets/{q2}/spend")).json()
+    assert q1_body["actual"] == 300.0  # only the Feb invoice
+    assert q2_body["actual"] == 200.0  # only the May invoice
 
 
 async def test_spend_combined_committed_plus_actual(realdb):
