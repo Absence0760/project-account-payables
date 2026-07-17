@@ -17,9 +17,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.csv_import import (
+    _CORPORATE_CARD_COLUMNS,
     _parse_bool,
     _parse_date,
     _parse_decimal,
+    import_corporate_card_csv,
     import_invoices_csv,
     import_vendors_csv,
 )
@@ -429,3 +431,35 @@ async def test_import_vendors_endpoint_rejects_non_utf8(realdb):
     async with realdb.client(key="a", role="ap_manager") as c:
         resp = await c.post("/api/vendors/import-csv", files=file)
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Corporate-card import — raw JSONB must not persist a full PAN (issue #173)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_corporate_card_import_drops_unlisted_pan_column_from_raw():
+    """A real bank export carries a full PAN / account column. The importer must
+    persist ONLY the known allowlisted columns into `raw`, and mask the
+    card_last_four value — no full PAN survives at rest."""
+    csv_text = (
+        "external_txn_id,date,merchant,amount,currency,card_last_four,card_ref,"
+        "pan,account_number\n"
+        "T1,2026-06-01,Uber,42.50,USD,1111222233334444,CARD-9,"
+        "1111222233334444,000123456789\n"
+    )
+    db = _StubSession()
+    result = await import_corporate_card_csv(db, uuid.uuid4(), csv_text)
+    assert result.imported == 1, result.to_dict()
+    txn = db.added[0]
+
+    # raw carries only allowlisted keys — no pan / account_number.
+    assert set(txn.raw).issubset(_CORPORATE_CARD_COLUMNS)
+    assert "pan" not in txn.raw
+    assert "account_number" not in txn.raw
+
+    # The full 16-digit value never survives — neither on the column nor in raw.
+    assert txn.card_last_four == "1111"
+    assert txn.raw["card_last_four"] == "1111"
+    assert "1111222233334444" not in str(txn.raw)
