@@ -24,6 +24,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
+from app.services.approval_chain import cfo_gate_applies
 from app.services.exception_agents.base import (
     ACTION_AUTO_RESOLVED,
     ACTION_ESCALATED,
@@ -136,7 +137,9 @@ class AmountMismatchResolver(ExceptionResolver):
         config = await _approval_thresholds(db, invoice)
         max_amount = config.get("max_invoice_amount")
         cfo_threshold = config.get("require_cfo_above")
-        if max_amount is not None and po_total > Decimal(str(max_amount)):
+        # Both money gates fail CLOSED on a malformed/non-finite threshold — a
+        # bad settings value must escalate to a human, never skip the gate.
+        if cfo_gate_applies(max_amount, po_total):
             return AgentEvaluation(
                 recommended_action=ACTION_ESCALATED,
                 confidence=_ZERO,
@@ -145,7 +148,7 @@ class AmountMismatchResolver(ExceptionResolver):
                     f"{max_amount}; human approval required."
                 ),
             )
-        if cfo_threshold is not None and po_total > Decimal(str(cfo_threshold)):
+        if cfo_gate_applies(cfo_threshold, po_total):
             return AgentEvaluation(
                 recommended_action=ACTION_ESCALATED,
                 confidence=_ZERO,

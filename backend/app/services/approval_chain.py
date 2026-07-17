@@ -172,8 +172,8 @@ def cfo_gate_applies(threshold_raw, amount: Decimal) -> bool:
     # as malformed as an unparseable string — treat it the same, fail-closed.
     if threshold is None or not threshold.is_finite():
         logger.error(
-            "require_cfo_above/cfo_threshold is unparseable (%r); requiring CFO "
-            "approval (fail-closed)",
+            "auto-approval money threshold is unparseable (%r); requiring human "
+            "(CFO) approval (fail-closed)",
             threshold_raw,
         )
         return True

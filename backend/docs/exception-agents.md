@@ -167,6 +167,15 @@ set), so rather than bypassing the gate it reads the snapshot in `evaluate` and
 the hard max). The money-path invariant stays intact — the agent never grants
 itself a role the actor doesn't hold.
 
+Both threshold reads in `evaluate` go through the shared
+`approval_chain.cfo_gate_applies` helper, so a **malformed / non-finite**
+`require_cfo_above` or `max_invoice_amount` in the snapshot (a settings typo, or
+a stringified `Infinity`/`NaN` an insider tampered in to defeat the control)
+**fails closed** — it escalates to a human rather than silently skipping the gate
+(`amount > Decimal("Infinity")` is always False, which previously let a tampered
+threshold auto-approve). The same fail-closed helper backs the human-approval and
+expense-report CFO gates.
+
 **Fail-closed authority.** An auto-resolution approves an invoice with the
 actor's authority, so `run_agent` refuses to self-approve when it can't name the
 acting user's roles: if `actor_roles` is empty/`None` on a would-be auto-resolve,

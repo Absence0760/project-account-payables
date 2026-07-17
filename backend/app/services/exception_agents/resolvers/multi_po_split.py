@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.procurement import PurchaseOrder
+from app.services.approval_chain import cfo_gate_applies
 from app.services.exception_agents.base import (
     ACTION_AUTO_RESOLVED,
     ACTION_ESCALATED,
@@ -449,9 +450,9 @@ class MultiPOSplitResolver(ExceptionResolver):
         config = await _approval_thresholds(db, locked)
         max_amount = config.get("max_invoice_amount")
         cfo_threshold = config.get("require_cfo_above")
-        if (max_amount is not None and target > Decimal(str(max_amount))) or (
-            cfo_threshold is not None and target > Decimal(str(cfo_threshold))
-        ):
+        # Both money gates fail CLOSED on a malformed/non-finite threshold — a
+        # bad settings value must escalate to a human, never skip the gate.
+        if cfo_gate_applies(max_amount, target) or cfo_gate_applies(cfo_threshold, target):
             raise _NotApprovable(locked.status)
 
         # Link by a combined po_number reference + align vendor_id, and persist a
