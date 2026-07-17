@@ -1,9 +1,10 @@
 /**
  * Optional local-service gating for e2e specs.
  *
- * Several flows (SSO, email) need a Docker container that isn't part of the
- * default `pnpm db:up` stack: Keycloak, Mailpit, LocalStack, stripe-mock. Those
- * specs call `skipUnlessReachable(...)` in a `beforeEach`, so they:
+ * Several flows (SSO, email, real-adapter ERP) need a Docker container that
+ * isn't part of the default `pnpm db:up` stack: Keycloak, Mailpit, LocalStack,
+ * stripe-mock, fake-erp. Those specs call `skipUnlessReachable(...)` in a
+ * `beforeEach`, so they:
  *
  *   - run the REAL end-to-end flow when the service is up (locally after
  *     `pnpm <svc>:up`, or in CI where the workflow starts them), and
@@ -22,7 +23,8 @@ export const SERVICES = {
 	keycloakSaml: 'http://localhost:8088/realms/account-payables/protocol/saml/descriptor',
 	mailpit: 'http://localhost:8025/api/v1/info',
 	localstack: 'http://localhost:4566/_localstack/health',
-	stripeMock: 'http://localhost:12111/v1'
+	stripeMock: 'http://localhost:12111/v1',
+	fakeErp: 'http://localhost:12112/health'
 } as const;
 
 /** Hint shown when a service is down, keyed by probe URL. */
@@ -31,7 +33,9 @@ const HINTS: Record<string, string> = {
 	[SERVICES.keycloakSaml]: 'Keycloak SAML not seeded — `pnpm idp:up && pnpm saml:seed`',
 	[SERVICES.mailpit]: 'Mailpit not running — `pnpm mail:up` (+ backend AP_EMAIL_PROVIDER=smtp)',
 	[SERVICES.localstack]: 'LocalStack not running — `pnpm aws:up`',
-	[SERVICES.stripeMock]: 'stripe-mock not running — `pnpm stripe:up`'
+	[SERVICES.stripeMock]: 'stripe-mock not running — `pnpm stripe:up`',
+	[SERVICES.fakeErp]:
+		'fake-erp not running — `pnpm erp:up` (backend must have started with the .env.development AP_ERP_*_API_BASE overrides)'
 };
 
 const _cache = new Map<string, boolean>();
