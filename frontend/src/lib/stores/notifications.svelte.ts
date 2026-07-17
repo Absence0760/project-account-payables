@@ -5,6 +5,7 @@ import type {
 	NotificationListResponse,
 	NotificationPrefs,
 } from '$lib/types/notification';
+import { appendUnique } from '$lib/utils/pagination';
 
 const PAGE_SIZE = 20;
 const POLL_INTERVAL_MS = 60_000;
@@ -29,7 +30,7 @@ function createNotificationStore() {
 			params.set('page_size', String(PAGE_SIZE));
 			if (opts.unreadOnly) params.set('unread_only', 'true');
 			const res = await api.get<NotificationListResponse>(`/api/notifications?${params}`);
-			items = opts.append ? [...items, ...res.items] : res.items;
+			items = opts.append ? appendUnique(items, res.items) : res.items;
 			total = res.total;
 			unread = res.unread;
 			page = nextPage;

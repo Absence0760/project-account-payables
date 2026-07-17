@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PositivePayFile } from '$lib/types/positivePay';
+	import { appendUnique } from '$lib/utils/pagination';
 	import {
 		POSITIVE_PAY_FILE_TYPE_LABELS,
 		POSITIVE_PAY_STATUS_LABELS
@@ -111,7 +112,7 @@
 				page: nextPage,
 				page_size: PAGE_SIZE
 			});
-			files = opts.append ? [...files, ...data.items] : data.items;
+			files = opts.append ? appendUnique(files, data.items) : data.items;
 			total = data.total;
 			pageNum = nextPage;
 		} catch (e) {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { appendUnique } from '$lib/utils/pagination';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import RowLink from '$lib/components/ui/RowLink.svelte';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
@@ -135,7 +136,7 @@
 			const data = await api.get<{ items: Vendor[]; total: number }>(
 				`/api/vendors?${params}`
 			);
-			vendors = opts.append ? [...vendors, ...data.items] : data.items;
+			vendors = opts.append ? appendUnique(vendors, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 			if (!opts.append) fetchCounts();

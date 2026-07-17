@@ -2,6 +2,7 @@
 	import type { RecurringTemplate, RecurringStatus } from '$lib/types/recurring';
 	import { RECURRING_STATUSES, STATUS_LABELS, CADENCE_LABELS } from '$lib/types/recurring';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
 	import { api } from '$lib/api';
@@ -98,7 +99,7 @@
 		else loading = true;
 		try {
 			const data = await listRecurring({ ...buildParams(), page: nextPage, page_size: PAGE_SIZE });
-			templates = opts.append ? [...templates, ...data.items] : data.items;
+			templates = opts.append ? appendUnique(templates, data.items) : data.items;
 			total = data.total;
 			pageNum = nextPage;
 		} catch (e) {

@@ -2,6 +2,7 @@
 	import { page as pageStore } from '$app/stores';
 	import { replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import BulkBar from '$lib/components/ui/BulkBar.svelte';
@@ -126,7 +127,7 @@
 			const data = await api.get<{ items: ExceptionItem[]; total: number }>(
 				`/api/exceptions?${params}`
 			);
-			exceptions = opts.append ? [...exceptions, ...data.items] : data.items;
+			exceptions = opts.append ? appendUnique(exceptions, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 			// Drop selections for ids that fell off the list.

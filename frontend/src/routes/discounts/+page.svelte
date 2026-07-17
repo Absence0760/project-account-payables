@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { formatMoney } from '$lib/utils/money';
@@ -131,7 +132,7 @@
 				page: nextPage,
 				pageSize: PAGE_SIZE
 			});
-			offers = opts.append ? [...offers, ...data.items] : data.items;
+			offers = opts.append ? appendUnique(offers, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 			error = null;

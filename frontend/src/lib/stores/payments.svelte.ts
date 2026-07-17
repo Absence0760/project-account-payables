@@ -1,5 +1,6 @@
 import type { Payment } from '$lib/types/payment';
 import { api } from '$lib/api';
+import { appendUnique } from '$lib/utils/pagination';
 
 interface PaymentListResponse {
 	items: Payment[];
@@ -29,7 +30,7 @@ function createPaymentStore() {
 				page_size: String(PAGE_SIZE),
 			}).toString();
 			const res = await api.get<PaymentListResponse>(`/api/payments?${query}`);
-			payments = opts.append ? [...payments, ...res.items] : res.items;
+			payments = opts.append ? appendUnique(payments, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
 		} finally {
@@ -37,7 +38,7 @@ function createPaymentStore() {
 		}
 	}
 
-	async function fetch(params?: Record<string, string>) {
+	async function fetch(params?: Record<string, string>) { // noqa: raw-fetch-in-component — store method name; routes through api.get
 		lastParams = params ?? {};
 		await load(lastParams);
 	}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { appendUnique } from '$lib/utils/pagination';
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -106,7 +107,7 @@
 			const data = await api.get<{ items: POListItem[]; total: number }>(
 				`/api/purchase-orders?${params}`
 			);
-			pos = opts.append ? [...pos, ...data.items] : data.items;
+			pos = opts.append ? appendUnique(pos, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch (err) {

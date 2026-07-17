@@ -415,8 +415,15 @@ items, then a centred Load More button below the table:
 {/if}
 ```
 
-- Append, don't replace. `loadMore` issues `page=N+1` and concatenates
-  the new items.
+- Append, don't replace. `loadMore` issues `page=N+1` and appends the new
+  items **via `appendUnique` (`$lib/utils/pagination.ts`)** — never a raw
+  `[...existing, ...res.items]` spread. Offset pagination can re-surface a
+  row when the underlying set shifts between fetches (a new row inserted, a
+  notification arriving), and a duplicated id crashes the keyed
+  `{#each ... (id)}` with Svelte 5's `each_key_duplicate`. `appendUnique`
+  drops incoming duplicates (existing row wins, order preserved); every
+  load-more site — the list stores and the inline route/component loaders —
+  uses it.
 - "Showing all N" is the empty-string-of-pagination state — confirms
   for the user that they've reached the end.
 - Stores expose `total`, `page`, `hasMore`, and any mutating actions

@@ -1,5 +1,6 @@
 import type { Invoice } from '$lib/types/invoice';
 import { api } from '$lib/api';
+import { appendUnique } from '$lib/utils/pagination';
 
 interface InvoiceListResponse {
 	items: Invoice[];
@@ -41,12 +42,7 @@ function createInvoiceStore() {
 			merged.page_size = String(20);
 			const query = '?' + new URLSearchParams(merged).toString();
 			const res = await api.get<InvoiceListResponse>(`/api/invoices${query}`);
-			// Append, skipping any id already present. Offset pagination can
-			// re-surface a row when the underlying set shifts between fetches
-			// (e.g. a new invoice inserted); a duplicate id would crash the
-			// keyed {#each} on the list page.
-			const seen = new Set(invoices.map((inv) => inv.id));
-			invoices = [...invoices, ...res.items.filter((inv) => !seen.has(inv.id))];
+			invoices = appendUnique(invoices, res.items);
 			total = res.total;
 			page = res.page;
 		} finally {

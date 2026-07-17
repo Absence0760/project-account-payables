@@ -9,6 +9,7 @@ import type {
 	WorkflowExport,
 } from '$lib/types/workflow';
 import { api } from '$lib/api';
+import { appendUnique } from '$lib/utils/pagination';
 
 export interface ApprovalConfig {
 	approver_strategy: 'manual' | 'specific' | 'auto';
@@ -52,7 +53,7 @@ function createWorkflowStore() {
 			const res = await api.get<WorkflowListResponse>(
 				`/api/workflows?page=${nextPage}&page_size=${PAGE_SIZE}`
 			);
-			workflows = opts.append ? [...workflows, ...res.items] : res.items;
+			workflows = opts.append ? appendUnique(workflows, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
 		} finally {
@@ -60,7 +61,7 @@ function createWorkflowStore() {
 		}
 	}
 
-	async function fetch() {
+	async function fetch() { // noqa: raw-fetch-in-component — store method name; routes through api.get
 		await load();
 	}
 
