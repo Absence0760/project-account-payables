@@ -343,3 +343,93 @@ async def test_policy_money_exact_numeric(realdb):
         ).scalar_one()
         assert p.category_limit == Decimal("123.45")
         assert p.mileage_rate == Decimal("0.6750")
+
+
+# ---------------------------------------------------------------------------
+# Post-draft composition/amount lock (issue #155)
+# ---------------------------------------------------------------------------
+
+
+async def _submit_and_approve(realdb, amount="100.00"):
+    """Clerk builds + submits a report; a different manager approves it.
+    Returns (rid, eid)."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid, eid = await _make_report_with_expense(c, amount=amount, receipt=True)
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post(f"/api/expense-reports/{rid}/approve")).status_code == 200
+    return rid, eid
+
+
+async def test_cannot_attach_to_approved_report(realdb):
+    rid, _ = await _submit_and_approve(realdb)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        new_eid = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-02", "amount": "50000.00"})
+        ).json()["id"]
+        resp = await c.post(f"/api/expense-reports/{rid}/expenses", json={"expense_ids": [new_eid]})
+        assert resp.status_code == 409, resp.text
+        # Total unchanged — the $50k line never landed.
+        report = (await c.get(f"/api/expense-reports/{rid}")).json()
+    assert report["status"] == "approved"
+    assert report["total_amount"] == 100.0
+
+
+async def test_cannot_edit_amount_of_expense_on_approved_report(realdb):
+    rid, eid = await _submit_and_approve(realdb)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.patch(f"/api/expenses/{eid}", json={"amount": "1.00"})
+        assert resp.status_code == 409, resp.text
+        report = (await c.get(f"/api/expense-reports/{rid}")).json()
+    assert report["total_amount"] == 100.0
+
+
+async def test_cannot_delete_expense_on_approved_report(realdb):
+    rid, eid = await _submit_and_approve(realdb)
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        resp = await c.delete(f"/api/expenses/{eid}")
+        assert resp.status_code == 409, resp.text
+        report = (await c.get(f"/api/expense-reports/{rid}")).json()
+    assert report["total_amount"] == 100.0
+
+
+async def test_cannot_detach_expense_from_submitted_report(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid, eid = await _make_report_with_expense(c, amount="100.00", receipt=True)
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+        # Detaching would shrink the submitted report's total below what approval
+        # will see.
+        resp = await c.post(
+            f"/api/expense-reports/{rid}/expenses",
+            json={"expense_ids": [eid], "detach": True},
+        )
+        assert resp.status_code == 409, resp.text
+
+
+async def test_cannot_update_submitted_report_fields(realdb):
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid, _ = await _make_report_with_expense(c, amount="100.00", receipt=True)
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+        resp = await c.patch(f"/api/expense-reports/{rid}", json={"currency": "EUR"})
+        assert resp.status_code == 409, resp.text
+
+
+async def test_rejected_report_expenses_can_be_re_reported(realdb):
+    """A rejected report is terminal but its expenses drop back to draft and must
+    remain movable onto a fresh draft report (the lock only bites locked states)."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        rid, eid = await _make_report_with_expense(c, amount="100.00", receipt=True)
+        assert (await c.post(f"/api/expense-reports/{rid}/submit")).status_code == 200
+    async with realdb.client(key="a", role="ap_manager") as c:
+        assert (await c.post(f"/api/expense-reports/{rid}/reject")).status_code == 200
+    # Re-report onto a new draft report — moving off the rejected source is OK.
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        new_rid = (
+            await c.post(
+                "/api/expense-reports", json={"report_number": f"R-{uuid.uuid4().hex[:8]}"}
+            )
+        ).json()["id"]
+        resp = await c.post(f"/api/expense-reports/{new_rid}/expenses", json={"expense_ids": [eid]})
+        assert resp.status_code == 200, resp.text
+        moved = (await c.get(f"/api/expense-reports/{new_rid}")).json()
+    assert moved["total_amount"] == 100.0
