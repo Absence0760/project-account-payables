@@ -12,6 +12,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from app.models.sanctions_check import SanctionsCheck
 from app.models.vendor import Vendor
 from app.models.vendor_change_request import VendorChangeRequest
 
@@ -389,3 +390,102 @@ async def test_bank_change_approval_flags_payable_invoices(realdb):
             .all()
         )
     assert review_flags == []
+
+
+@pytest.mark.asyncio
+async def test_bank_change_approval_rescreens_new_coordinates(realdb):
+    """BEC gate: approving a bank-detail change must RE-SCREEN the vendor against
+    the newly-applied coordinates (not just flag payable invoices). Here the
+    swap redirects payment to a bank in a high-risk jurisdiction — the classic
+    BEC redirect — so the re-screen must fire on the new country and surface it,
+    proving the screen reads the applied details, not the stale ones."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    # Clean start: US bank, screened clear, not blocked.
+    vendor_id = await _seed_vendor(
+        mk, org_id, name="Clean Vendor Inc", bank_details={"country": "US"}
+    )
+    req_id = await _stage(
+        mk,
+        org_id,
+        vendor_id,
+        "bank_details",
+        # Redirect to a Russian account (FATF high-risk → review_required).
+        {"bank_details": {"account_number": "99999999", "country": "RU"}},
+    )
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(f"/api/vendors/change-requests/{req_id}/approve")
+    assert resp.status_code == 200, resp.text
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        # The re-screen saw the NEW country and flagged the vendor for review.
+        assert v.screening_status == "review"
+        assert v.last_screened_at is not None
+        # A `bank_change` sanctions-check row records the re-screen on the trail.
+        rows = (
+            (
+                await s.execute(
+                    select(SanctionsCheck).where(
+                        SanctionsCheck.vendor_id == vendor_id,
+                        SanctionsCheck.check_type == "bank_change",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].result == "review_required"
+        assert "RU" in (rows[0].matched_list or "")
+
+
+@pytest.mark.asyncio
+async def test_bank_change_approval_rescreen_blocks_sanctioned_vendor(realdb):
+    """BEC gate: if the post-change re-screen returns a sanctions MATCH, the
+    vendor must be payment-blocked. A vendor sitting on the SDN blocklist that
+    was never blocked (e.g. added to the list after onboarding) gets caught the
+    next time its record is touched — approving a bank change re-screens it,
+    the name matches, and the hard payment block lands."""
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    # Name is on the mock SDN blocklist, but the row starts un-blocked (simulating
+    # a list addition after onboarding, or a never-screened import).
+    vendor_id = await _seed_vendor(
+        mk, org_id, name="Blocked Party LLC", bank_details={"bank_name": "Old Bank"}
+    )
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        assert not v.payments_blocked, "precondition: starts un-blocked"
+
+    req_id = await _stage(
+        mk,
+        org_id,
+        vendor_id,
+        "bank_details",
+        {"bank_details": {"account_number": "12345678", "bank_name": "New Bank"}},
+    )
+    async with realdb.client(key=TENANT, role="admin") as client:
+        resp = await client.post(f"/api/vendors/change-requests/{req_id}/approve")
+    assert resp.status_code == 200, resp.text
+
+    async with mk() as s:
+        v = (await s.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one()
+        # The re-screen matched the SDN name and hard-blocked payments.
+        assert v.screening_status == "match"
+        assert v.payments_blocked is True
+        assert v.payments_blocked_reason is not None
+        rows = (
+            (
+                await s.execute(
+                    select(SanctionsCheck).where(
+                        SanctionsCheck.vendor_id == vendor_id,
+                        SanctionsCheck.check_type == "bank_change",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].result == "match"

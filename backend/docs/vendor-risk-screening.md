@@ -61,6 +61,15 @@ Call sites:
   `bank_details.country`, beneficial owners). Best-effort: a screening failure
   never blocks the vendor write. Gated by `AP_VENDOR_SCREENING_ENABLED`.
 - **Manual re-screen** — `POST /api/vendors/{id}/screen` (`check_type="manual"`).
+- **Approved bank-detail change** (`api/vendors.py::approve_change_request`) —
+  `check_type="bank_change"`. The dual-control gate catches the *approval* of a
+  staged `bank_details` change (the BEC / bank-redirect fraud tail); once the new
+  coordinates are applied, the vendor is re-screened against them (so a redirect
+  to a high-risk jurisdiction surfaces as `review`, and a name that has since
+  landed on a list hard-blocks) **and** every in-queue payable invoice for the
+  vendor gets a de-duped `fraud_flag` payment hold. Best-effort — a screening
+  failure never blocks applying the approved change. Gated by
+  `AP_VENDOR_SCREENING_ENABLED`.
 - **Periodic sweep** — `services/vendor_rescreen.py` (`check_type="periodic"`).
 - **Pre-payment** — `check_payment_compliance` keeps its own
   `check_type="pre_payment"` screen (different verdict contract).
