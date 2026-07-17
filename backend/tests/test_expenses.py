@@ -75,6 +75,25 @@ async def test_create_expense(realdb):
         assert "expense.created" in actions
 
 
+async def test_create_expense_rejects_nonpositive_amount(realdb):
+    """A negative / zero expense is a 422 — it must never net a report under the
+    CFO approval threshold while hiding a genuinely large line (issue #156)."""
+    async with realdb.client(key="a", role="ap_clerk") as c:
+        for bad in ("-5001.00", "0", "0.00"):
+            resp = await c.post(
+                "/api/expenses",
+                json={"expense_date": "2026-06-01", "amount": bad},
+            )
+            assert resp.status_code == 422, f"{bad}: {resp.text}"
+
+        # And a PATCH cannot flip a valid expense negative afterwards.
+        eid = (
+            await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "10.00"})
+        ).json()["id"]
+        patched = await c.patch(f"/api/expenses/{eid}", json={"amount": "-1.00"})
+        assert patched.status_code == 422, patched.text
+
+
 async def test_list_filter_and_get(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         await c.post("/api/expenses", json={"expense_date": "2026-06-01", "amount": "10.00"})
