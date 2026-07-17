@@ -20,9 +20,10 @@ These tests pin:
   - retry_erp refuses to retry an invoice that was never approved
     (the `approved_by` guard) — money invariant: we don't push to
     ERP unless an actual human approved
-  - retry_erp resets erp_retries to 0 before re-driving the call
-    (otherwise the resumed attempt would burn the remaining slots
-    without honoring the user's "fresh start" intent)
+  - retry_erp resets erp_retries to 0 and parks the invoice at
+    sending_to_erp WITHOUT running the ERP call inline — the route's
+    dispatch_erp owns the call (org config + AP_ERP_MODE); an inline
+    call would double-post and always use the mock adapter
 
 Adapter calls and `asyncio.sleep` are stubbed — we never want real
 network latency or real backoff sleeps inside a unit test.
@@ -273,11 +274,17 @@ async def test_retry_erp_refuses_invoice_that_was_never_approved():
 
 
 @pytest.mark.asyncio
-async def test_retry_erp_resets_retry_counter_before_redriving():
+async def test_retry_erp_prepares_state_but_never_runs_the_erp_call_inline():
     """A human pressing "retry" should get a full fresh budget, not
     the leftover slots from the prior failure. Verify by setting
     `erp_retries=3` (exhausted) on the instance and confirming the
-    retry resets it to 0 before send_to_erp_internal runs."""
+    retry resets it to 0 and parks the invoice at sending_to_erp.
+
+    Regression: retry_erp used to ALSO run send_to_erp_internal inline
+    — without the org's erp_config (so the retry always posted via the
+    MOCK adapter), racing the route's own dispatch_erp (double-post),
+    and bypassing AP_ERP_MODE=lambda. The actual call is the
+    dispatcher's job; retry_erp must only prepare state."""
     inv = _invoice(status=InvoiceStatus.failed)
     inst = _instance(state_data={"erp_retries": 3, "last_error": "old"})
     db = AsyncMock()
@@ -291,13 +298,13 @@ async def test_retry_erp_resets_retry_counter_before_redriving():
     ):
         await retry_erp(db, inv)
 
-    # The retry counter was reset BEFORE driving the internal call.
+    # The retry counter was reset and the instance reactivated.
     assert inst.state_data["erp_retries"] == 0
     assert inst.state == "active"
-    # Invoice now sitting at sending_to_erp; the internal helper
-    # takes it from here.
+    # Invoice parked at sending_to_erp; dispatch_erp (the route's next
+    # call) performs the actual ERP post with the org's config.
     assert inv.status == InvoiceStatus.sending_to_erp
-    internal_mock.assert_awaited_once()
+    internal_mock.assert_not_awaited()
     # Audit row marks this as a retry, not a fresh submission.
     assert any(r["action"] == "invoice.erp_retried" for r in recorder.rows)
 

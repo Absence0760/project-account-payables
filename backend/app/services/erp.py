@@ -142,7 +142,15 @@ async def retry_erp(
     *,
     actor_id: uuid.UUID | None = None,
 ) -> None:
-    """Retry a failed ERP push. Only valid if the invoice was previously approved."""
+    """Prepare a failed ERP push for retry. Only valid if the invoice was
+    previously approved.
+
+    Resets the retry counter and transitions to sending_to_erp; the actual
+    ERP call is the caller's job via `dispatch_erp` (which resolves the
+    org's settings.erp and honours AP_ERP_MODE). Running it inline here
+    would double-post — the route already dispatches after this returns —
+    and would bypass both the org's adapter config and the lambda mode.
+    """
     if not invoice.approved_by:
         from fastapi import HTTPException
 
@@ -167,9 +175,6 @@ async def retry_erp(
         action_name="invoice.erp_retried",
     )
     await db.commit()
-
-    # Re-run the ERP call
-    await send_to_erp_internal(db, invoice, actor_id=actor_id)
 
 
 async def send_to_erp_internal(
