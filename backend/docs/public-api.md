@@ -252,6 +252,16 @@ gated on the `organizations` table existing — mirrors 0055).
 - **`webhook_subscriptions`** — `id`, `organization_id`, `name`, `target_url`
   (http(s)), `event_types` (JSONB subset of the catalog), `signing_secret`,
   `secret_prefix`, `active`, timestamps.
+  - **SSRF guard on `target_url`** (`services/webhooks/ssrf.py`): the URL is
+    resolved and rejected (400) if the host is an IP literal or resolves to a
+    non-public address — loopback, RFC1918, link-local (incl. the
+    `169.254.169.254` cloud-metadata endpoint), IPv6 unique-local, multicast,
+    reserved, or unspecified. Enforced at create **and** update, and re-checked
+    immediately before **every** dispatch (`delivery._post`) so a hostname whose
+    DNS later flips to an internal IP is caught at send time — a rejected dispatch
+    is a failed attempt, so the payload never leaves. Residual sub-second
+    DNS-rebind is narrowed but not fully closed; the durable control is
+    connection-level IP pinning or a locked-down egress proxy.
 - **`webhook_deliveries`** — `id`, `subscription_id` (FK, `ON DELETE CASCADE`),
   `organization_id`, `event_id`, `event_type`, `payload` (JSONB, frozen at emit),
   `status` (`pending`/`delivered`/`failed`/`dead`), `attempt_count`,

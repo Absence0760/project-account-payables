@@ -55,6 +55,14 @@ async def _post(target_url: str, body: bytes, signature: str, delivery: WebhookD
     """POST the signed body. Returns the HTTP status code; raises on transport
     error (timeout / connection refused) so the caller classifies it as a no-code
     failure."""
+    # Re-validate the destination immediately before sending (SSRF guard, #171):
+    # a hostname whose DNS has since flipped to an internal / metadata address is
+    # rejected here too, not just at config time. A rejection raises SsrfError,
+    # which the caller classifies as a failed attempt — the payload never leaves.
+    from app.services.webhooks.ssrf import assert_public_webhook_url_async
+
+    await assert_public_webhook_url_async(target_url)
+
     headers = {
         "Content-Type": "application/json",
         "X-Webhook-Signature": signature,
