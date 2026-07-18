@@ -658,11 +658,11 @@ async def test_approve_run_stamps_cfo_and_writes_audit():
 
 
 def _execute_db(run, payments, invoice_by_id, vendor_by_invoice=None):
-    """DB mock for `execute_payment_run`: run SELECT, payments SELECT,
-    then per-payment invoice SELECT — and, for any invoice carrying a
-    `vendor_id`, the compliance gate's follow-on Vendor SELECT. Mirrors
-    `_mock_db` in test_payment_run_flow.py but inline so this file stays
-    standalone."""
+    """DB mock for `execute_payment_run`: run SELECT, pending-payments
+    SELECT, then per-payment invoice SELECT — and, for any invoice carrying a
+    `vendor_id`, the compliance gate's follow-on Vendor SELECT — then the
+    final rollup SELECT over every payment on the run. Mirrors `_mock_db` in
+    test_payment_run_flow.py but inline so this file stays standalone."""
     vendor_by_invoice = vendor_by_invoice or {}
     run_result = MagicMock()
     run_result.scalar_one_or_none = MagicMock(return_value=run)
@@ -692,8 +692,15 @@ def _execute_db(run, payments, invoice_by_id, vendor_by_invoice=None):
             )
             per_pay_results.append(ven_res)
 
+    rollup_result = MagicMock()
+    rollup_scalars = MagicMock()
+    rollup_scalars.all = MagicMock(return_value=payments)
+    rollup_result.scalars = MagicMock(return_value=rollup_scalars)
+
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[run_result, payments_result, *per_pay_results])
+    db.execute = AsyncMock(
+        side_effect=[run_result, payments_result, *per_pay_results, rollup_result]
+    )
     db.commit = AsyncMock()
     db.add = MagicMock()
     return db

@@ -106,12 +106,14 @@ def _mock_db(*, run, payments, invoice_by_id):
     """Build a DB session whose execute() returns the right shape for
     each query the executor issues:
       1. `select(PaymentRun).where(PaymentRun.id == run_id)` → scalar
-      2. `select(Payment).where(Payment.payment_run_id == run_id)` →
-         scalars().all()
+      2. `select(Payment).where(payment_run_id == run_id, status == "pending")`
+         → scalars().all()
       3. Per payment: `select(Invoice).where(Invoice.id == ...)` →
          scalar. If the invoice has `vendor_id` set, the executor also
          runs `select(Vendor.bank_details).where(...)`; enqueue a None
          bank result only in that case.
+      4. Final rollup `select(Payment).where(payment_run_id == run_id)`
+         (no status filter) → scalars().all(), same rows.
     """
     run_result = MagicMock()
     run_result.scalar_one_or_none = MagicMock(return_value=run)
@@ -140,8 +142,15 @@ def _mock_db(*, run, payments, invoice_by_id):
             )
             per_pay_results.append(ven_res)
 
+    rollup_result = MagicMock()
+    rollup_scalars = MagicMock()
+    rollup_scalars.all = MagicMock(return_value=payments)
+    rollup_result.scalars = MagicMock(return_value=rollup_scalars)
+
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[run_result, payments_result, *per_pay_results])
+    db.execute = AsyncMock(
+        side_effect=[run_result, payments_result, *per_pay_results, rollup_result]
+    )
     db.commit = AsyncMock()
     db.add = MagicMock()
     return db
