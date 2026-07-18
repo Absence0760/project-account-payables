@@ -174,9 +174,7 @@ async def test_refresh_warnings_still_fully_recomputes_its_own_categories():
 
     inv = _invoice(
         vendor_name="Acme Corp",  # now valid — the stale warning no longer applies
-        warnings=[
-            {"type": "missing_field", "severity": "error", "message": "Missing vendor name"}
-        ],
+        warnings=[{"type": "missing_field", "severity": "error", "message": "Missing vendor name"}],
     )
     db = _make_db()
 
