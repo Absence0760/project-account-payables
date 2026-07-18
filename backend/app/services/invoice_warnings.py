@@ -64,6 +64,22 @@ DEFAULT_FRAUD_RULES: dict = {
 }
 
 
+# Warning categories appended directly onto `invoice.warnings` by callers
+# OTHER than this module — currently all in `services/extraction.py`, before
+# it calls `refresh_warnings` as the last step of `run_extraction`.
+# `refresh_warnings` rebuilds every category IT owns from scratch on every
+# call (that's the point — a fully fresh re-derivation), but it must not
+# blind-overwrite `invoice.warnings` and silently drop these, since it never
+# computes them itself and has no other way to reconstruct them.
+UPSTREAM_WARNING_TYPES = frozenset(
+    {
+        "extraction_self_correction",
+        "gl_account_invalid",
+        "duplicate_similar",
+    }
+)
+
+
 def _fraud_config(org_settings: dict | None) -> dict:
     """Merge org overrides over the defaults. Org settings.fraud_rules
     can omit keys to inherit; unknown keys are dropped silently."""
@@ -100,8 +116,19 @@ async def refresh_warnings(
     `org_settings` drives the configurable fraud rules. When omitted (the
     common case from existing call sites that haven't threaded it
     through), the defaults in `DEFAULT_FRAUD_RULES` are used.
+
+    Every category this function computes is rebuilt from scratch below —
+    but `invoice.warnings` can already carry entries this function doesn't
+    own (`UPSTREAM_WARNING_TYPES`, appended by `extraction.run_extraction`
+    before it calls this as its last step). Seed the list with those instead
+    of starting from `[]`, or the final `invoice.warnings = warnings or None`
+    assignment silently erases them — self-correction / hallucinated-GL /
+    semantic-duplicate flags would never reach the reviewer or an exception
+    row.
     """
-    warnings: list[dict] = []
+    warnings: list[dict] = [
+        w for w in (invoice.warnings or []) if w.get("type") in UPSTREAM_WARNING_TYPES
+    ]
     cfg = _fraud_config(org_settings)
 
     # Missing required fields
