@@ -340,6 +340,89 @@ async def test_aging_snapshot_separates_61_90_from_90_plus():
 
 
 # ---------------------------------------------------------------------------
+# Issue #120 — non-exhaustive dispatch silently fell through to aging_snapshot
+# for any report_type without its own branch. `expense_register` schedules
+# "succeeded" while emailing the aging bucket dict's string keys sliced
+# character-by-character into the expense columns; `cashflow_forecast`
+# schedules crashed every tick with an AttributeError and auto-disabled after
+# 5 failures.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expense_register_dispatches_to_the_expense_query_not_aging():
+    """A scheduled `expense_register` report must query Expense rows and hand
+    them to the expense exporter — not fall through to the aging bucket
+    dict."""
+    from app.services.scheduled_reports import _materialise_rows
+
+    fake_expense = SimpleNamespace(
+        expense_date=None, merchant="Staples", category="office", amount=None, currency="USD"
+    )
+    rows = [(fake_expense, "EXP-1", "6100")]
+    result = MagicMock()
+    result.all = MagicMock(return_value=rows)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    captured: list = []
+
+    def _exporter(materialised_rows):
+        captured.extend(materialised_rows)
+        return "csv"
+
+    sched = _schedule(report_type="expense_register")
+    out = await _materialise_rows(db, sched, _exporter)
+
+    assert out == "csv"
+    # The exporter received the real (Expense, report_number, gl_code) tuple —
+    # not the aging bucket dict's items.
+    assert captured == rows
+
+
+@pytest.mark.asyncio
+async def test_cashflow_forecast_dispatches_to_the_commitment_query_not_aging():
+    """A scheduled `cashflow_forecast` report must run the commitment-rows +
+    bucket_outflows pipeline — not the aging-snapshot query (which used to
+    feed a bucket dict into the cashflow exporter and crash)."""
+    from app.services.scheduled_reports import _materialise_rows
+
+    # Shape consumed by `_commitment_rows`:
+    # (amount, status, invoice due_date, sched_due, discount_date, discount_percent)
+    result = MagicMock()
+    result.all = MagicMock(return_value=[])
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    captured: list = []
+
+    def _exporter(periods):
+        captured.append(periods)
+        return "csv"
+
+    sched = _schedule(report_type="cashflow_forecast")
+    out = await _materialise_rows(db, sched, _exporter)
+
+    assert out == "csv"
+    # Got a (possibly empty) list of period dicts from bucket_outflows, not a
+    # bucket dict with "current"/"days_30"/... keys.
+    assert isinstance(captured[0], list)
+
+
+@pytest.mark.asyncio
+async def test_unrecognised_report_type_raises_instead_of_silently_defaulting():
+    """A report_type with no dispatch branch must raise loudly, never fall
+    through to the aging_snapshot path — the exact bug this replaces."""
+    from app.services.scheduled_reports import _materialise_rows
+
+    db = AsyncMock()
+    sched = _schedule(report_type="totally_unknown_type")
+
+    with pytest.raises(ValueError, match="totally_unknown_type"):
+        await _materialise_rows(db, sched, lambda rows: "csv")
+
+
+# ---------------------------------------------------------------------------
 # run_scheduled_reports_once — tenant fan-out + failure isolation
 # ---------------------------------------------------------------------------
 
