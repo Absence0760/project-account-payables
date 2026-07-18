@@ -224,9 +224,7 @@ async def approve_invoice(
         # The level index this approval is being recorded against — read BEFORE
         # advancing (advance_approval_chain bumps current_level once the level
         # is satisfied). Used for the partial-approval audit row below.
-        chain_levels = ((instance.state_data or {}).get("approval_levels") or {}).get(
-            "levels", []
-        )
+        chain_levels = ((instance.state_data or {}).get("approval_levels") or {}).get("levels", [])
         approved_level = ((instance.state_data or {}).get("approval_levels") or {}).get(
             "current_level", 0
         )
