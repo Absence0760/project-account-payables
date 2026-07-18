@@ -112,6 +112,7 @@ async def approve_invoice(
 ) -> Invoice:
     from app.services.approval_chain import (
         advance_approval_chain,
+        check_level_approver,
         check_segregation,
     )
 
@@ -123,6 +124,17 @@ async def approve_invoice(
 
     # Segregation of duties: uploader cannot approve
     check_segregation(invoice, actor_id, approval_config)
+
+    # Single-level named-approver gate. "specific" restricts this step to the
+    # listed approver_ids (or their active delegate) — the coarse
+    # require_permission(PERM_INVOICE_APPROVE) RBAC gate on the endpoint only
+    # confirms the actor holds an approving role, not that they are one of the
+    # named approvers.
+    if approval_config.get("approver_strategy") == "specific":
+        specific_ids = approval_config.get("approver_ids") or (
+            [approval_config["approver_id"]] if approval_config.get("approver_id") else []
+        )
+        await check_level_approver(specific_ids, actor_id)
 
     # Apply any field corrections FIRST, capturing a per-field before/after diff
     # for the audit trail (SOX change-history requirement). Money fields
@@ -212,9 +224,21 @@ async def approve_invoice(
         # The level index this approval is being recorded against — read BEFORE
         # advancing (advance_approval_chain bumps current_level once the level
         # is satisfied). Used for the partial-approval audit row below.
+        chain_levels = ((instance.state_data or {}).get("approval_levels") or {}).get(
+            "levels", []
+        )
         approved_level = ((instance.state_data or {}).get("approval_levels") or {}).get(
             "current_level", 0
         )
+
+        # Named-approver gate for this level. Without it, any actor holding
+        # the coarse role-based RBAC permission can clear a level meant for a
+        # specific person (e.g. the named CFO), collapsing the SoD control the
+        # chain exists to enforce.
+        if approved_level < len(chain_levels):
+            await check_level_approver(
+                chain_levels[approved_level].get("approver_ids", []), actor_id
+            )
 
         chain_complete = advance_approval_chain(instance, actor_id)
         if not chain_complete:

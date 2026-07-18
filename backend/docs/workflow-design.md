@@ -133,6 +133,10 @@ Each `ApprovalLevelConfig`:
 
 Chain state is tracked in `WorkflowInstance.state_data["approval_levels"]`. Levels are sequential: all approvals at level N must complete before level N+1 becomes active. The invoice stays in `ready_for_review` until all applicable levels are satisfied.
 
+**Named-approver enforcement**: a non-empty `approver_ids` on the current level is a hard allow-list, enforced by `approval_chain.check_level_approver` before the approval is recorded — the endpoint's role-based RBAC gate (`require_permission(PERM_INVOICE_APPROVE)`, held by any `ap_manager`/`cfo`/`admin`) only confirms the actor holds an approving role, not that they are one of the named approvers, so this is a separate, additional check. An empty `approver_ids` list is unrestricted (any actor who cleared RBAC may approve, matching legacy behaviour). A named approver's active delegate (`User.delegate_to_id` / `delegate_until`) is also authorized. A non-authorized actor gets a 403 and the approval is not recorded.
+
+The single-level strategy `"specific"` applies the same named-approver check (`approver_ids`, or the deprecated single `approver_id`) without the multi-level chain machinery — useful when a step needs exactly one or a small fixed set of eligible people but no sequential levels.
+
 ### Segregation of Duties
 
 `require_segregation: bool` on the approval step config. When enabled:

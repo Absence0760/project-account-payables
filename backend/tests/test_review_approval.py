@@ -389,3 +389,198 @@ async def test_no_corrections_does_not_rerun_refresh_warnings():
         )
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #118 — named-approver (SoD) enforcement wired into approve_invoice
+#
+# Before this fix, neither the single-level "specific" strategy nor the
+# multi-level "chain" strategy checked the actor against the configured
+# approver_ids anywhere in approve_invoice — the coarse role-based RBAC gate
+# on the endpoint (require_permission(PERM_INVOICE_APPROVE), held by any
+# ap_manager/cfo/admin) was the only check that ran, so a chain naming
+# specific people could be fully cleared by unrelated actors.
+# ---------------------------------------------------------------------------
+
+
+def _ctrl_session_factory_no_delegation():
+    """A control_session_factory mock whose user lookup finds nobody — i.e.
+    the named approver has no active delegate, so nothing but a direct id
+    match can authorize a different actor."""
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=None)
+    ctrl_db = AsyncMock()
+    ctrl_db.execute = AsyncMock(return_value=result)
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=ctrl_db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    return factory
+
+
+@pytest.mark.asyncio
+async def test_specific_strategy_rejects_non_named_approver():
+    """approver_strategy="specific" with a named approver_ids list must 403 an
+    actor who isn't on the list, even though they hold ap_manager."""
+    from app.services import review
+
+    named_approver = uuid.uuid4()
+    other_actor = uuid.uuid4()
+    invoice = _make_invoice(amount=1000)
+    instance = _instance(
+        _single_level_snapshot(
+            {"approver_strategy": "specific", "approver_ids": [str(named_approver)]}
+        )
+    )
+    db = AsyncMock()
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch("app.database.control_session_factory", _ctrl_session_factory_no_delegation()),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await review.approve_invoice(
+                db,
+                invoice,
+                actor_id=other_actor,
+                actor_name="Someone Else",
+                actor_roles={"ap_manager"},
+            )
+
+    assert exc_info.value.status_code == 403
+    assert invoice.approval_date is None
+
+
+@pytest.mark.asyncio
+async def test_specific_strategy_allows_named_approver():
+    """The actor named in approver_ids clears the step normally."""
+    from app.services import review
+
+    named_approver = uuid.uuid4()
+    invoice = _make_invoice(amount=1000)
+    instance = _instance(
+        _single_level_snapshot(
+            {"approver_strategy": "specific", "approver_ids": [str(named_approver)]}
+        )
+    )
+    db = AsyncMock()
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch.object(review, "transition_invoice", new=AsyncMock()) as mock_transition,
+        patch.object(review, "advance_workflow", new=AsyncMock()),
+    ):
+        await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=named_approver,
+            actor_name="Named Approver",
+            actor_roles={"ap_manager"},
+        )
+
+    mock_transition.assert_awaited_once()
+    assert invoice.approval_date is not None
+
+
+@pytest.mark.asyncio
+async def test_chain_level_rejects_non_named_approver():
+    """A chain level with a named approver_ids list must 403 an unrelated
+    actor — the regression the issue's own test proved: any actor used to
+    clear ANY level regardless of who was actually named."""
+    from app.services import review
+
+    named_approver = uuid.uuid4()
+    other_actor = uuid.uuid4()
+    invoice = _make_invoice(amount=1000)
+    snapshot = _single_level_snapshot(
+        {
+            "approver_strategy": "chain",
+            "approval_chain": [
+                {
+                    "name": "Named Level",
+                    "required_approvals": 1,
+                    "approver_ids": [str(named_approver)],
+                },
+                {"name": "L2", "required_approvals": 1, "approver_ids": []},
+            ],
+        }
+    )
+    instance = _instance(snapshot, state_data=None)
+
+    locked_result = MagicMock()
+    locked_result.scalar_one = MagicMock(return_value=instance)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=locked_result)
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch("app.database.control_session_factory", _ctrl_session_factory_no_delegation()),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await review.approve_invoice(
+                db,
+                invoice,
+                actor_id=other_actor,
+                actor_name="Someone Else",
+                actor_roles={"ap_manager"},
+            )
+
+    assert exc_info.value.status_code == 403
+    # No approval was recorded against the level — state stays uninitialized
+    # (or, if init ran first, current_level stays 0 with no approvals logged).
+    levels = ((instance.state_data or {}).get("approval_levels") or {}).get("levels", [])
+    if levels:
+        assert levels[0]["approvals"] == []
+
+
+@pytest.mark.asyncio
+async def test_chain_level_allows_named_approver_to_advance():
+    """The actor named on the current level's approver_ids clears it
+    normally and the chain advances."""
+    from app.services import review
+
+    named_approver = uuid.uuid4()
+    invoice = _make_invoice(amount=1000)
+    snapshot = _single_level_snapshot(
+        {
+            "approver_strategy": "chain",
+            "approval_chain": [
+                {
+                    "name": "Named Level",
+                    "required_approvals": 1,
+                    "approver_ids": [str(named_approver)],
+                },
+                {"name": "L2", "required_approvals": 1, "approver_ids": []},
+            ],
+        }
+    )
+    instance = _instance(snapshot, state_data=None)
+
+    locked_result = MagicMock()
+    locked_result.scalar_one = MagicMock(return_value=instance)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=locked_result)
+
+    with (
+        patch.object(review, "get_workflow_instance", new=AsyncMock(return_value=instance)),
+        patch.object(review, "record_corrections", new=AsyncMock()),
+        patch.object(review, "store_embedding", new=AsyncMock()),
+        patch.object(review, "_fetch_invoice_bytes", new=AsyncMock(return_value=None)),
+        patch("app.services.audit_dispatch.dispatch_audit", new=AsyncMock()),
+    ):
+        result = await review.approve_invoice(
+            db,
+            invoice,
+            actor_id=named_approver,
+            actor_name="Named Approver",
+            actor_roles={"ap_manager"},
+        )
+
+    assert result is invoice
+    assert invoice.approval_date is None  # chain not complete — L2 still pending
+    assert instance.state_data["approval_levels"]["current_level"] == 1

@@ -239,6 +239,48 @@ def init_chain_state(
     instance.state_data = state
 
 
+async def _resolve_authorized_approvers(approver_ids: list[str]) -> set[str]:
+    """Expand a level's named `approver_ids` to include each id's active
+    delegate, so a delegate can act in the delegator's place. Returns the
+    original ids plus every resolved delegate, all as strings."""
+    from app.database import control_session_factory
+
+    authorized = set(approver_ids)
+    async with control_session_factory() as ctrl_db:
+        for approver_id in approver_ids:
+            try:
+                approver_uuid = uuid.UUID(approver_id)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            effective_id, original_id = await resolve_assignee(approver_uuid, ctrl_db)
+            if original_id is not None:
+                authorized.add(str(effective_id))
+    return authorized
+
+
+async def check_level_approver(approver_ids: list[str], actor_id: uuid.UUID) -> None:
+    """Raise 403 unless `actor_id` is a named approver (or their active
+    delegate) for a step/level carrying a non-empty `approver_ids` allow-list.
+
+    A named-approver chain exists specifically to restrict a level to
+    particular people — holding a coarse role (ap_manager/cfo/admin) that
+    passes the endpoint's RBAC gate is not sufficient on its own. An empty
+    `approver_ids` list means unrestricted: any actor who cleared the RBAC gate
+    may approve, matching legacy behaviour.
+    """
+    if not approver_ids:
+        return
+    actor_str = str(actor_id)
+    if actor_str in approver_ids:
+        return
+    authorized = await _resolve_authorized_approvers(approver_ids)
+    if actor_str not in authorized:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not an authorized approver for this step.",
+        )
+
+
 def _level_satisfied(level: dict) -> bool:
     """`any` mode: distinct approver count >= required. `all` mode: every
     listed approver has approved at least once."""
