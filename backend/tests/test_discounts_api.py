@@ -139,6 +139,51 @@ async def test_accept_specific_tier(realdb):
     assert resp.json()["accepted_tier"]["days"] == 10
 
 
+async def test_accept_refuses_a_tier_whose_window_has_closed(realdb):
+    """Issue #124's exact repro on the AP side: an offer opened 20 days ago,
+    still within its own valid_until (+10 days out), but both sliding-scale
+    tiers' real deadlines (measured from when the offer was extended) are
+    long past. Before the fix, best_tier_for_date defaulted its reference to
+    "today", so every tier looked perpetually achievable."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    invoice_id = await _add_invoice(mk, org_id)
+
+    offer_id = uuid.uuid4()
+    async with mk() as s:
+        s.add(
+            DiscountOffer(
+                id=offer_id,
+                organization_id=org_id,
+                scope="invoice",
+                invoice_id=uuid.UUID(invoice_id),
+                source="ap",
+                status="offered",
+                tiers=_tiers(),
+                base_amount=Decimal("1000.00"),
+                currency="USD",
+                valid_from=date.today() - timedelta(days=20),
+                valid_until=date.today() + timedelta(days=10),
+            )
+        )
+        await s.commit()
+
+    async with realdb.client(key="a", role="ap_manager") as c:
+        best_resp = await c.post(f"/api/discounts/offers/{offer_id}/accept", json={})
+        assert best_resp.status_code == 409, best_resp.text
+
+        # Naming the (long-closed) 5-day tier explicitly must not bypass the
+        # window check either.
+        named_resp = await c.post(f"/api/discounts/offers/{offer_id}/accept", json={"tier_days": 5})
+        assert named_resp.status_code == 422, named_resp.text
+
+    async with mk() as s:
+        offer = (
+            await s.execute(select(DiscountOffer).where(DiscountOffer.id == offer_id))
+        ).scalar_one()
+        assert offer.status == "offered"  # untouched — never accepted
+
+
 async def test_decline_then_double_accept_conflicts(realdb):
     mk = realdb.sessionmaker("a")
     org_id = realdb.info("a").org_id

@@ -146,7 +146,9 @@ async def _build_opportunity(
     Returns ``None`` when no tier is still achievable. Reuses the sweep's
     deadline / due-date economics so router and background sweep agree.
     """
-    tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+    tier = offers_svc.best_tier_for_date(
+        offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+    )
     if tier is None:
         return None
     pay_by = _tier_deadline(offer, tier, today)
@@ -327,11 +329,22 @@ async def accept_offer(
     offer = await _get_offer_scoped(db, offer_id, entity_id)
     today = date.today()
     if body.tier_days is not None:
-        tier = offers_svc.select_tier(offer.tiers or [], body.tier_days)
+        tier = offers_svc.select_tier_for_date(
+            offer.tiers or [],
+            body.tier_days,
+            today,
+            offer.valid_until,
+            reference_date=offer.valid_from,
+        )
         if tier is None:
-            raise HTTPException(status_code=422, detail="No tier matches the requested days")
+            raise HTTPException(
+                status_code=422,
+                detail="No tier matches the requested days, or its window has closed",
+            )
     else:
-        tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        tier = offers_svc.best_tier_for_date(
+            offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+        )
         if tier is None:
             raise HTTPException(status_code=409, detail="Offer has no capturable tier today")
     try:
@@ -436,7 +449,9 @@ async def invoice_roi(
     ).scalar_one_or_none()
 
     if offer is not None:
-        tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        tier = offers_svc.best_tier_for_date(
+            offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+        )
         if tier is not None:
             pay_by = _tier_deadline(offer, tier, today)
             roi = compute_roi(

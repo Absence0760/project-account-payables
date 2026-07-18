@@ -1247,7 +1247,9 @@ def _portal_offer_response(
     # Best capturable tier today is only meaningful while the offer is still open.
     best_tier = None
     if offer.status == OFFER_STATUS_OFFERED:
-        best = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        best = offers_svc.best_tier_for_date(
+            offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+        )
         best_tier = _offer_tier(offer.base_amount, best)
     return PortalDiscountOfferResponse(
         id=str(offer.id),
@@ -1373,11 +1375,18 @@ async def accept_my_discount_offer(
 
     tier_days = body.tier_days if body else None
     if tier_days is not None:
-        tier = offers_svc.select_tier(offer.tiers or [], tier_days)
+        tier = offers_svc.select_tier_for_date(
+            offer.tiers or [], tier_days, today, offer.valid_until, reference_date=offer.valid_from
+        )
         if tier is None:
-            raise HTTPException(status_code=422, detail="No tier matches the requested days")
+            raise HTTPException(
+                status_code=422,
+                detail="No tier matches the requested days, or its window has closed",
+            )
     else:
-        tier = offers_svc.best_tier_for_date(offer.tiers or [], today, offer.valid_until)
+        tier = offers_svc.best_tier_for_date(
+            offer.tiers or [], today, offer.valid_until, reference_date=offer.valid_from
+        )
         if tier is None:
             raise HTTPException(status_code=409, detail="Offer has no capturable tier today")
 
