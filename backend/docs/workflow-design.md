@@ -132,6 +132,8 @@ gate. The malformed value is logged PII-free (a money threshold, not a secret)
 for an admin to correct. The payment-run CFO gate (`payments.cfo_approval_above`)
 enforces the same fail-closed discipline inline (see `payments.md`).
 
+**Structuring guard**: both gates above compare against `invoice.amount` **plus** the same vendor's other invoice amounts over a trailing window (`services/structuring.py`, called from `review._enforce_approval_thresholds`) — closing the "split one large payable into several under-threshold invoices with distinct invoice numbers" bypass (the exact-match duplicate check in `invoice_warnings.py` never fires on distinct numbers, and per-invoice thresholds never aggregated). Config lives alongside the other fraud-rule knobs on `Organization.settings.fraud_rules`: `structuring_enabled` (default `true`) and `structuring_window_days` (default `7`). Rejected/failed invoices don't count toward the aggregate; everything else does, including still-pending ones. The rejection/CFO-required message names the aggregate and the vendor's other recent spend when the single invoice alone would have passed.
+
 ### Multi-Level Approval Chains
 
 Strategy `"chain"` with `approval_chain: list[ApprovalLevelConfig]`.

@@ -227,6 +227,122 @@ async def test_string_cfo_threshold_blocks_non_cfo_without_500():
     assert "10,000.00" in exc_info.value.detail
 
 
+# ---------------------------------------------------------------------------
+# Issue #122 — structuring guard: a same-vendor rolling-window aggregate that
+# can escalate the max/CFO gate even when no single invoice crosses it alone.
+# ---------------------------------------------------------------------------
+
+
+def _make_invoice_with_vendor(amount: float, vendor_id=None):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        vendor_id=vendor_id or uuid.uuid4(),
+        amount=Decimal(str(amount)),
+    )
+
+
+def _spend_db_mock(recent_spend: float):
+    """AsyncMock session whose execute() returns `recent_spend` as the scalar
+    sum — matching `structuring.vendor_recent_spend`'s single query."""
+    db = AsyncMock()
+    result = AsyncMock()
+    result.scalar = lambda: Decimal(str(recent_spend))
+    db.execute = AsyncMock(return_value=result)
+    return db
+
+
+@pytest.mark.asyncio
+async def test_structuring_escalates_cfo_gate_when_aggregate_crosses():
+    """$6,000 alone is under a $15,000 CFO threshold, but this vendor has
+    $12,000 in other recent invoices — the $18,000 aggregate crosses it, so a
+    non-CFO approver is still refused. This is the structuring bypass: split
+    an $18k debt into under-threshold pieces with distinct invoice numbers."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _spend_db_mock(recent_spend=12000)
+    invoice = _make_invoice_with_vendor(amount=6000)
+    instance = _make_instance({"require_cfo_above": 15000})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
+
+    assert exc_info.value.status_code == 403
+    assert "18,000.00" in exc_info.value.detail
+    assert "12,000.00" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_structuring_allows_cfo_gate_when_aggregate_stays_under():
+    """A vendor with only modest recent spend doesn't trip the gate — the
+    aggregate must still clear the threshold, not just be nonzero."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _spend_db_mock(recent_spend=500)
+    invoice = _make_invoice_with_vendor(amount=6000)
+    instance = _make_instance({"require_cfo_above": 15000})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        # Must not raise — $6,500 aggregate stays under $15,000.
+        await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
+
+
+@pytest.mark.asyncio
+async def test_structuring_escalates_max_amount_reject():
+    """The same aggregate logic applies to the hard max_invoice_amount reject,
+    not just the CFO gate."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _spend_db_mock(recent_spend=9000)
+    invoice = _make_invoice_with_vendor(amount=4000)
+    instance = _make_instance({"max_invoice_amount": 10000})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_approval_thresholds(db, invoice, actor_roles=set())
+
+    assert exc_info.value.status_code == 422
+    assert "13,000.00" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_structuring_disabled_via_org_settings():
+    """An org can opt out of the aggregate check entirely — same override
+    pattern as every other fraud rule."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _spend_db_mock(recent_spend=12000)
+    invoice = _make_invoice_with_vendor(amount=6000)
+    instance = _make_instance({"require_cfo_above": 15000})
+    org_settings = {"fraud_rules": {"structuring_enabled": False}}
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        # Must not raise — structuring disabled, only the raw $6,000 is checked.
+        await _enforce_approval_thresholds(
+            db, invoice, actor_roles={"ap_manager"}, org_settings=org_settings
+        )
+    db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_structuring_skipped_when_invoice_has_no_vendor_id():
+    """An invoice with no vendor_id (never matched) can't be aggregated
+    against vendor history — the check is skipped, not a crash."""
+    from app.services.review import _enforce_approval_thresholds
+
+    invoice = _make_invoice_with_vendor(amount=6000, vendor_id=None)
+    invoice.vendor_id = None
+    instance = _make_instance({"require_cfo_above": 15000})
+    db = AsyncMock()
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        # Must not raise — $6,000 alone is under $15,000, and no aggregate
+        # query is attempted without a vendor to key off of.
+        await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
+    db.execute.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_string_max_amount_rejects_without_500():
     """A `max_invoice_amount` stored as a STRING must reject with a clean 422,
