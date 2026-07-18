@@ -598,11 +598,17 @@ async def test_execute_payment_run_holds_virtual_card_for_null_vendor_invoice():
     inv_res = MagicMock()
     inv_res.scalar_one_or_none = MagicMock(return_value=inv)
 
+    rollup_res = MagicMock()
+    rollup_scalars = MagicMock()
+    rollup_scalars.all = MagicMock(return_value=[pay])
+    rollup_res.scalars = MagicMock(return_value=rollup_scalars)
+
     db = AsyncMock()
     # Only three queries fire before the hold: run lookup, payments fan-out,
     # invoice lookup. The vendor.bank_details lookup is skipped (vendor_id
-    # NULL) and no compliance/card query runs.
-    db.execute = AsyncMock(side_effect=[run_res, pay_res, inv_res])
+    # NULL) and no compliance/card query runs. The final rollup query then
+    # re-reads every payment on the run to compute the run's final status.
+    db.execute = AsyncMock(side_effect=[run_res, pay_res, inv_res, rollup_res])
     db.commit = AsyncMock()
     db.add = MagicMock()
 

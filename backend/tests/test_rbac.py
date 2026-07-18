@@ -312,6 +312,7 @@ from app.api import permissions as perm_catalog  # noqa: E402
 _PERMISSION_GATED_ENDPOINTS = {
     ("POST", "/payments/runs"): perm_catalog.PERM_PAYMENT_RUN_APPROVE,
     ("POST", "/payments/runs/{run_id}/execute"): perm_catalog.PERM_PAYMENT_EXECUTE,
+    ("POST", "/payments/runs/{run_id}/resume"): perm_catalog.PERM_PAYMENT_EXECUTE,
     ("POST", "/payments/{payment_id}/void"): perm_catalog.PERM_PAYMENT_VOID,
     ("POST", "/vendors/change-requests/{request_id}/approve"): (
         perm_catalog.PERM_VENDOR_BANK_CHANGE_APPROVE

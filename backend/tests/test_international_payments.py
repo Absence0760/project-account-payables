@@ -432,7 +432,7 @@ def _user():
 def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None):
     """Build the execute-sequence the executor walks through:
     1. run lookup
-    2. payments fan-out
+    2. pending-payments fan-out
     3. per-payment invoice lookup
     4. per-payment vendor.bank_details lookup (because the invoice
        has a vendor_id)
@@ -440,6 +440,7 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None):
        the international branch — see `compliance_vendor`)
     6. compliance trailing-12m spend SUM (only on the international
        branch).
+    7. final rollup payments SELECT (same row).
 
     Pass `compliance_vendor` as the vendor SimpleNamespace the
     compliance step should see; default is a KYC-verified vendor
@@ -473,6 +474,12 @@ def _mock_db(*, run, payment, invoice, vendor_bank, compliance_vendor=None):
         spend_res = MagicMock()
         spend_res.scalar = MagicMock(return_value=Decimal("0"))
         queue.extend([vendor_lookup_res, spend_res])
+
+    rollup_res = MagicMock()
+    rollup_scalars = MagicMock()
+    rollup_scalars.all = MagicMock(return_value=[payment])
+    rollup_res.scalars = MagicMock(return_value=rollup_scalars)
+    queue.append(rollup_res)
 
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=queue)
@@ -602,7 +609,9 @@ async def test_execute_payment_run_fails_payment_when_orchestrator_rejects_bank_
     pay = _payment(method=None)
     inv = _eur_invoice()
     bank = {"iban": "INVALID-IBAN", "country": "DE"}  # malformed
-    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank)
+    # The bad IBAN raises InternationalPaymentError inside the FX/corridor
+    # leg, before the compliance gate ever runs — don't pre-queue its lookups.
+    db = _mock_db(run=run, payment=pay, invoice=inv, vendor_bank=bank, compliance_vendor=False)
 
     adapter = MagicMock()
     adapter.provider_name = "mock"

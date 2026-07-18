@@ -1098,6 +1098,455 @@ async def cancel_payment_run(
     }
 
 
+async def _execute_single_payment(
+    db: AsyncSession,
+    *,
+    payment: Payment,
+    org: Organization,
+    adapter,
+    user: User,
+    now: datetime,
+) -> None:
+    """Dispatch ONE payment to its processor (or the card adapter), mutating
+    it to a terminal or in-flight status in place.
+
+    Extracted out of the `execute_payment_run` loop so each payment can be
+    committed durably right after this call returns (see the caller) — a
+    problem with payment N (including this raising) must only ever affect
+    payment N, never roll back payments the loop already committed earlier.
+    """
+    # Resolve invoice + vendor for the payload
+    inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
+    invoice = inv_result.scalar_one_or_none()
+    vendor_bank: dict | None = None
+    if invoice and invoice.vendor_id:
+        v_result = await db.execute(
+            select(Vendor.bank_details).where(Vendor.id == invoice.vendor_id)
+        )
+        vendor_bank = v_result.scalar_one_or_none()
+
+    # Virtual-card method: skip the payment adapter and mint a card
+    # via the card adapter instead. The Payment row still settles
+    # locally — the rebate flow runs off VirtualCard webhooks, not
+    # the payment status.
+    if payment.method == "virtual_card" and invoice is not None:
+        from app.config import settings as app_settings
+        from app.services.card_issuance import (
+            issue_card_for_invoice,
+            notify_vendor_of_card,
+        )
+
+        # Issuing a virtual card moves money just like an ACH/wire, so the
+        # same compliance gate applies: a blocked / sanctioned vendor must
+        # not receive a card. Refuse outright; a review-hold leaves the
+        # payment in pending_compliance for AP (no card minted).
+        from app.services.compliance import check_payment_compliance
+
+        v_card = None
+        if invoice.vendor_id:
+            v_card = (
+                await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
+            ).scalar_one_or_none()
+        if v_card is None:
+            # No screenable vendor (invoice never matched a Vendor, or the
+            # row was deleted). We cannot run sanctions/KYC against a payee
+            # we don't have — and an AI-extracted / email-intake invoice can
+            # reach here with vendor_id NULL. Minting a card anyway would put
+            # funds on a card for an unscreened name, defeating the gate.
+            # Fail-safe: hold for AP to attach + verify a vendor (mirrors the
+            # ACH/wire leg); never mint a card unscreened.
+            payment.status = "pending_compliance"
+            payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
+            return
+        card_decision = await check_payment_compliance(
+            db,
+            vendor=v_card,
+            payment_amount=payment.amount,
+            payment_method=payment.method,
+            org_settings=org.settings or {},
+            organization_id=org.id,
+            correlation_id=payment.correlation_id,
+        )
+        if card_decision.verdict == "refuse":
+            payment.status = "failed"
+            payment.failure_reason = "compliance_refusal: " + "; ".join(card_decision.reasons)
+            payment.completed_at = now
+            return
+        if card_decision.verdict == "hold":
+            payment.status = "pending_compliance"
+            payment.failure_reason = "compliance_hold: " + "; ".join(card_decision.reasons)
+            return
+
+        issue = await issue_card_for_invoice(
+            invoice=invoice,
+            organization_id=org.id,
+            org_settings=org.settings or {},
+            app_settings=app_settings,
+            payment_id=payment.id,
+            amount=payment.amount,
+        )
+        if issue.success and issue.card is not None:
+            db.add(issue.card)
+            await db.flush()  # need card.id for the reveal-token row
+            payment.status = "completed"
+            payment.provider = issue.card.card_provider
+            payment.completed_at = now
+            payment.submitted_at = now
+            payment.reference = (
+                f"CARD-{issue.card.card_provider.upper()}-{issue.card.last_four or '????'}"
+            )
+            if invoice.status.value in (
+                "approved",
+                "sent_to_erp",
+                "posted_in_erp",
+            ):
+                await transition_invoice(
+                    db,
+                    invoice,
+                    InvoiceStatus.payment_scheduled,
+                    actor_id=user.id,
+                    action_name="invoice.card_payment_scheduled",
+                    details={"payment_id": str(payment.id)},
+                )
+
+            # Best-effort vendor notification — single-use reveal
+            # link emailed to the vendor's contact address.
+            try:
+                await notify_vendor_of_card(
+                    db,
+                    card=issue.card,
+                    invoice=invoice,
+                    org_name=org.name,
+                    org_slug=org.slug,
+                    public_url_template=app_settings.tenant_url_template,
+                )
+            except Exception:  # noqa: BLE001
+                # `notify_vendor_of_card` already swallows known
+                # failures; this catch is the safety net for the
+                # "the email path raised before the function could
+                # log" edge case. Card issuance itself is committed.
+                pass
+        else:
+            payment.status = "failed"
+            payment.failure_reason = issue.failure_reason or "card_issuance_failed"
+            payment.completed_at = now
+        return
+
+    # International leg: if the invoice's currency isn't the org's
+    # home currency (or the payment was already prepared via
+    # prepare_international_payment), lock an FX rate before the
+    # adapter call and persist the source-side outflow + rate on
+    # the row. The corridor lookup also decides whether the row
+    # needs to flip to `sepa` / `international_wire`.
+    invoice_currency = (invoice.currency if invoice else "USD").upper()
+    org_home_currency = (
+        ((org.settings or {}).get("payments") or {}).get("home_currency") or "USD"
+    ).upper()
+    has_intl_bank_fields = bool(
+        vendor_bank and (vendor_bank.get("iban") or vendor_bank.get("swift_bic"))
+    )
+    if (
+        invoice is not None
+        and (
+            invoice_currency != org_home_currency
+            or payment.method in {"sepa", "international_wire", "international_ach"}
+            or has_intl_bank_fields
+        )
+        and payment.fx_rate is None  # not already prepared
+    ):
+        from app.services.fx_adapters import get_fx_adapter
+        from app.services.international_payments import (
+            InternationalPaymentError,
+            prepare_international_payment,
+        )
+
+        v_for_corridor = SimpleNamespace(
+            bank_details=vendor_bank or {},
+            address_country=getattr(invoice, "vendor_country", None),
+        )
+        fx_cfg = (org.settings or {}).get("fx") or {}
+        fx_adapter = get_fx_adapter(fx_cfg)
+        try:
+            prepared = await prepare_international_payment(
+                invoice=invoice,
+                vendor=v_for_corridor,
+                org_home_currency=org_home_currency,
+                fx_adapter=fx_adapter,
+                requested_method=payment.method,
+            )
+        except InternationalPaymentError as exc:
+            payment.status = "failed"
+            payment.failure_reason = f"international_payment_error: {exc}"
+            payment.completed_at = now
+            return
+
+        payment.method = prepared.corridor.method
+        payment.source_currency = prepared.payment.source_currency
+        payment.source_amount = prepared.payment.source_amount
+        payment.fx_rate = prepared.payment.fx_rate
+        payment.fx_locked_at = prepared.payment.fx_locked_at
+        payment.corridor = prepared.payment.corridor
+        payment.target_country = prepared.payment.target_country
+
+    # Compliance gate: run sanctions / KYC / AML checks against the
+    # vendor + the resolved corridor BEFORE the adapter call. This runs
+    # for EVERY rail (domestic ACH / wire / check as well as the
+    # international leg above) — the sticky `payments_blocked` block and
+    # a sanctions `match` must refuse a payment no matter the corridor,
+    # so this gate must NOT be nested under the international-leg `if`
+    # (a blocked vendor paid via domestic ACH would otherwise slip
+    # through unscreened). A refusal fails the payment outright; a hold
+    # leaves it in pending_compliance for AP review.
+    if invoice is not None:
+        from app.services.compliance import check_payment_compliance
+
+        v_full = None
+        if invoice.vendor_id:
+            v_result = await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
+            v_full = v_result.scalar_one_or_none()
+        if v_full is None:
+            # No screenable vendor (invoice never matched a Vendor, or the
+            # row was deleted). We CANNOT run sanctions/KYC against a payee
+            # we don't have — and an AI-extracted / email-intake invoice can
+            # reach here with vendor_id NULL. Paying anyway would route money
+            # to an unscreened name, defeating the gate. Fail-safe: hold for
+            # AP to attach + verify a vendor, never pay unscreened.
+            payment.status = "pending_compliance"
+            payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
+            return
+        decision = await check_payment_compliance(
+            db,
+            vendor=v_full,
+            payment_amount=payment.amount,
+            payment_method=payment.method,
+            org_settings=org.settings or {},
+            organization_id=org.id,
+            correlation_id=payment.correlation_id,
+        )
+        if decision.verdict == "refuse":
+            payment.status = "failed"
+            payment.failure_reason = "compliance_refusal: " + "; ".join(decision.reasons)
+            payment.completed_at = now
+            return
+        if decision.verdict == "hold":
+            payment.status = "pending_compliance"
+            payment.failure_reason = "compliance_hold: " + "; ".join(decision.reasons)
+            # Hold doesn't flip the invoice — money hasn't moved.
+            return
+
+    payload = PaymentPayload(
+        correlation_id=str(payment.correlation_id or payment.id),
+        invoice_id=str(payment.invoice_id),
+        invoice_number=invoice.invoice_number if invoice else "",
+        vendor_name=invoice.vendor_name if invoice else "",
+        amount=payment.amount,
+        currency=invoice.currency if invoice else "USD",
+        method=payment.method or "ach",
+        description=invoice.description if invoice else None,
+        vendor_bank=vendor_bank,
+        metadata={"organization_id": str(org.id)},
+        source_currency=payment.source_currency,
+        source_amount=payment.source_amount,
+        fx_rate=payment.fx_rate,
+        target_country=payment.target_country,
+    )
+
+    result_obj = await adapter.create_payment(payload)
+    payment.provider = adapter.provider_name
+    payment.provider_payment_id = result_obj.provider_payment_id
+    payment.reference = result_obj.reference or payment.reference
+    payment.submitted_at = now
+
+    if result_obj.status == PaymentStatus.completed:
+        payment.status = "completed"
+        payment.completed_at = now
+        if invoice and invoice.status.value in (
+            "approved",
+            "sent_to_erp",
+            "posted_in_erp",
+        ):
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.payment_scheduled,
+                actor_id=user.id,
+                action_name="invoice.payment_scheduled",
+                details={"payment_id": str(payment.id), "result": "completed"},
+            )
+    elif result_obj.status in (PaymentStatus.submitted, PaymentStatus.processing):
+        # Real money in flight; webhook will finalize.
+        payment.status = result_obj.status.value
+        if invoice and invoice.status.value in (
+            "approved",
+            "sent_to_erp",
+            "posted_in_erp",
+        ):
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.payment_scheduled,
+                actor_id=user.id,
+                action_name="invoice.payment_scheduled",
+                details={"payment_id": str(payment.id), "result": result_obj.status.value},
+            )
+    else:
+        # failed or cancelled
+        payment.status = result_obj.status.value
+        payment.failure_reason = result_obj.failure_reason
+        payment.completed_at = now
+
+
+async def _dispatch_run_payments(
+    db: AsyncSession,
+    *,
+    run: PaymentRun,
+    run_id: uuid.UUID,
+    org: Organization,
+    user: User,
+) -> dict:
+    """Dispatch every still-`pending` payment on `run`, committing durably
+    after each one, then roll up the run's final status across ALL its
+    payments (not just the ones touched in this pass) and return the
+    response payload.
+
+    Shared by `execute_payment_run` (fresh `draft` claim) and
+    `resume_payment_run` (an `executing` run stuck after a crash) — both
+    already hold (and released) the row lock and have decided it's this
+    call's turn to run the loop.
+
+    Each payment is committed right after it's dispatched: a problem with
+    payment N — including an uncaught error from a live FX/sanctions/processor
+    adapter — can only roll back payment N's own (still-open) attempt, never
+    the payments already recorded before it. That durability is what makes an
+    `executing` run resumable instead of permanently stuck with real money
+    moved but no local record of it.
+    """
+    payment_config = (org.settings or {}).get("payments") or {}
+    adapter = get_payment_adapter(payment_config)
+    now = datetime.now(UTC)
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    # Only payments this run hasn't attempted yet. Every payment starts
+    # `pending`; on a resume, anything already `completed` / `failed` /
+    # `submitted` / `processing` / `pending_compliance` from an earlier
+    # (crashed) pass is left untouched — never re-dispatched to the processor.
+    pay_result = await db.execute(
+        select(Payment).where(Payment.payment_run_id == run_id, Payment.status == "pending")
+    )
+    pending_payments = pay_result.scalars().all()
+
+    for payment in pending_payments:
+        try:
+            await _execute_single_payment(
+                db, payment=payment, org=org, adapter=adapter, user=user, now=now
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A live FX / sanctions / processor adapter can raise anything on
+            # a network or API hiccup (bare RuntimeError, httpx errors, ...).
+            # Recording THIS payment as failed — instead of letting the
+            # exception unwind the whole request — is what keeps the other
+            # payments in this run from being lost to a rollback.
+            logger.exception(
+                "payment %s raised during payment-run dispatch; marking failed", payment.id
+            )
+            payment.status = "failed"
+            payment.failure_reason = f"unexpected_error: {exc}"
+            payment.completed_at = now
+
+        # Append-only audit trail for the money-movement event (project
+        # invariant: every payment status transition writes a log row, and a
+        # change that touches a regulated timestamp like `completed_at` is
+        # Critical without one). PII-free: only ids, status, and the Decimal
+        # amount as a string ever enter `details` — never bank/account values.
+        await dispatch_audit(
+            db,
+            correlation_id=payment.correlation_id or run.id,
+            organization_id=org.id,
+            actor_id=user.id,
+            action=f"payment.{payment.status}",
+            entity_type="payment",
+            entity_id=payment.id,
+            details={
+                "status": payment.status,
+                "method": payment.method,
+                "amount": str(payment.amount),
+                "reference": payment.reference,
+                "payment_run_id": str(run.id),
+            },
+        )
+
+        # Durable per-payment commit. A crash or exception on the NEXT
+        # payment can only roll back ITS OWN still-open transaction — this
+        # one is already safely on disk.
+        await db.commit()
+
+    # Roll up over EVERY payment on the run — not just this pass — so a
+    # resumed run's final status/counts reflect the whole run, not only the
+    # subset that was still pending when this call started.
+    all_result = await db.execute(select(Payment).where(Payment.payment_run_id == run_id))
+    all_payments = all_result.scalars().all()
+    completed = sum(1 for p in all_payments if p.status == "completed")
+    failed = sum(1 for p in all_payments if p.status in ("failed", "cancelled"))
+    in_flight = sum(
+        1 for p in all_payments if p.status in ("submitted", "processing", "pending_compliance")
+    )
+    cards_issued = sum(
+        1 for p in all_payments if p.method == "virtual_card" and p.status == "completed"
+    )
+
+    # Run status reflects the rollup of its payments.
+    if failed and not (completed or in_flight):
+        run.status = "failed"
+    elif failed:
+        run.status = "partial"
+    elif in_flight:
+        run.status = "submitted"
+    else:
+        run.status = "completed"
+    run.executed_at = now
+
+    await dispatch_audit(
+        db,
+        correlation_id=run.id,
+        organization_id=org.id,
+        actor_id=user.id,
+        action="payment_run.executed",
+        entity_type="payment_run",
+        entity_id=run.id,
+        details={
+            "status": run.status,
+            "provider": adapter.provider_name,
+            "payments_completed": completed,
+            "payments_in_flight": in_flight,
+            "payments_failed": failed,
+            "cards_issued": cards_issued,
+            "total_amount": str(run.total_amount or Decimal("0")),
+        },
+    )
+    await db.commit()
+
+    # ERP sync only fires for payments we believe settled — pending ones
+    # will sync when their webhook lands.
+    if completed:
+        from app.services.payment_erp_sync import dispatch_payment_sync
+
+        await dispatch_payment_sync(run_id, uuid.UUID(str(run.organization_id)))
+
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "provider": adapter.provider_name,
+        "payments_completed": completed,
+        "payments_in_flight": in_flight,
+        "payments_failed": failed,
+        "cards_issued": cards_issued,
+        "message": _execute_message(
+            adapter.provider_name, completed, in_flight, failed, cards_issued
+        ),
+    }
+
+
 @router.post("/runs/{run_id}/execute")
 async def execute_payment_run(
     run_id: uuid.UUID,
@@ -1112,7 +1561,11 @@ async def execute_payment_run(
     Each payment is dispatched to the org's configured processor (Modern
     Treasury for prod, mock for dev). The adapter returns either a
     `submitted`/`processing` status (real money in flight, terminal status
-    arrives via webhook) or `completed`/`failed` immediately (mock).
+    arrives via webhook) or `completed`/`failed` immediately (mock). See
+    `POST /runs/{run_id}/resume` if a run gets stuck in `executing` (e.g. a
+    worker crashed mid-run) — this endpoint stays `draft`-only so a plain
+    concurrent double-click can never race a still-genuinely-running
+    execution (see the row-lock comment below).
 
     Run status:
       - `completed` — every payment reached `completed`
@@ -1165,391 +1618,50 @@ async def execute_payment_run(
     run.status = "executing"
     await db.commit()
 
-    payment_config = (org.settings or {}).get("payments") or {}
-    adapter = get_payment_adapter(payment_config)
-    now = datetime.now(UTC)
+    return await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
 
-    pay_result = await db.execute(select(Payment).where(Payment.payment_run_id == run_id))
-    payments = pay_result.scalars().all()
 
-    completed = 0
-    failed = 0
-    in_flight = 0
-    cards_issued = 0
+@router.post("/runs/{run_id}/resume")
+async def resume_payment_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
+    # Resuming can dispatch real payments exactly like /execute — same gate.
+    user: User = Depends(require_permission(PERM_PAYMENT_EXECUTE)),
+):
+    """Resume a payment run stuck in `executing` — e.g. the worker process
+    crashed partway through `execute_payment_run`'s per-payment loop.
 
-    for payment in payments:
-        # Resolve invoice + vendor for the payload
-        inv_result = await db.execute(select(Invoice).where(Invoice.id == payment.invoice_id))
-        invoice = inv_result.scalar_one_or_none()
-        vendor_bank: dict | None = None
-        if invoice and invoice.vendor_id:
-            v_result = await db.execute(
-                select(Vendor.bank_details).where(Vendor.id == invoice.vendor_id)
-            )
-            vendor_bank = v_result.scalar_one_or_none()
+    Because that loop commits durably after every payment, a run left in
+    `executing` has every payment up to the crash point already safely
+    recorded with its real outcome; only the still-`pending` ones (never
+    attempted) get re-dispatched here — nothing already `completed` /
+    `failed` / `submitted` / `processing` / `pending_compliance` is touched
+    or re-sent to the processor.
 
-        # Virtual-card method: skip the payment adapter and mint a card
-        # via the card adapter instead. The Payment row still settles
-        # locally — the rebate flow runs off VirtualCard webhooks, not
-        # the payment status.
-        if payment.method == "virtual_card" and invoice is not None:
-            from app.config import settings as app_settings
-            from app.services.card_issuance import (
-                issue_card_for_invoice,
-                notify_vendor_of_card,
-            )
-
-            # Issuing a virtual card moves money just like an ACH/wire, so the
-            # same compliance gate applies: a blocked / sanctioned vendor must
-            # not receive a card. Refuse outright; a review-hold leaves the
-            # payment in pending_compliance for AP (no card minted).
-            from app.services.compliance import check_payment_compliance
-
-            v_card = None
-            if invoice.vendor_id:
-                v_card = (
-                    await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
-                ).scalar_one_or_none()
-            if v_card is None:
-                # No screenable vendor (invoice never matched a Vendor, or the
-                # row was deleted). We cannot run sanctions/KYC against a payee
-                # we don't have — and an AI-extracted / email-intake invoice can
-                # reach here with vendor_id NULL. Minting a card anyway would put
-                # funds on a card for an unscreened name, defeating the gate.
-                # Fail-safe: hold for AP to attach + verify a vendor (mirrors the
-                # ACH/wire leg); never mint a card unscreened.
-                payment.status = "pending_compliance"
-                payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
-                in_flight += 1
-                continue
-            card_decision = await check_payment_compliance(
-                db,
-                vendor=v_card,
-                payment_amount=payment.amount,
-                payment_method=payment.method,
-                org_settings=org.settings or {},
-                organization_id=org.id,
-                correlation_id=payment.correlation_id,
-            )
-            if card_decision.verdict == "refuse":
-                payment.status = "failed"
-                payment.failure_reason = "compliance_refusal: " + "; ".join(card_decision.reasons)
-                payment.completed_at = now
-                failed += 1
-                continue
-            if card_decision.verdict == "hold":
-                payment.status = "pending_compliance"
-                payment.failure_reason = "compliance_hold: " + "; ".join(card_decision.reasons)
-                in_flight += 1
-                continue
-
-            issue = await issue_card_for_invoice(
-                invoice=invoice,
-                organization_id=org.id,
-                org_settings=org.settings or {},
-                app_settings=app_settings,
-                payment_id=payment.id,
-                amount=payment.amount,
-            )
-            if issue.success and issue.card is not None:
-                db.add(issue.card)
-                await db.flush()  # need card.id for the reveal-token row
-                payment.status = "completed"
-                payment.provider = issue.card.card_provider
-                payment.completed_at = now
-                payment.submitted_at = now
-                payment.reference = (
-                    f"CARD-{issue.card.card_provider.upper()}-{issue.card.last_four or '????'}"
-                )
-                completed += 1
-                cards_issued += 1
-                if invoice.status.value in (
-                    "approved",
-                    "sent_to_erp",
-                    "posted_in_erp",
-                ):
-                    await transition_invoice(
-                        db,
-                        invoice,
-                        InvoiceStatus.payment_scheduled,
-                        actor_id=user.id,
-                        action_name="invoice.card_payment_scheduled",
-                        details={"payment_id": str(payment.id)},
-                    )
-
-                # Best-effort vendor notification — single-use reveal
-                # link emailed to the vendor's contact address.
-                try:
-                    await notify_vendor_of_card(
-                        db,
-                        card=issue.card,
-                        invoice=invoice,
-                        org_name=org.name,
-                        org_slug=org.slug,
-                        public_url_template=app_settings.tenant_url_template,
-                    )
-                except Exception:  # noqa: BLE001
-                    # `notify_vendor_of_card` already swallows known
-                    # failures; this catch is the safety net for the
-                    # "the email path raised before the function could
-                    # log" edge case. Card issuance itself is committed.
-                    pass
-            else:
-                payment.status = "failed"
-                payment.failure_reason = issue.failure_reason or "card_issuance_failed"
-                payment.completed_at = now
-                failed += 1
-            continue
-
-        # International leg: if the invoice's currency isn't the org's
-        # home currency (or the payment was already prepared via
-        # prepare_international_payment), lock an FX rate before the
-        # adapter call and persist the source-side outflow + rate on
-        # the row. The corridor lookup also decides whether the row
-        # needs to flip to `sepa` / `international_wire`.
-        invoice_currency = (invoice.currency if invoice else "USD").upper()
-        org_home_currency = (
-            ((org.settings or {}).get("payments") or {}).get("home_currency") or "USD"
-        ).upper()
-        has_intl_bank_fields = bool(
-            vendor_bank and (vendor_bank.get("iban") or vendor_bank.get("swift_bic"))
-        )
-        if (
-            invoice is not None
-            and (
-                invoice_currency != org_home_currency
-                or payment.method in {"sepa", "international_wire", "international_ach"}
-                or has_intl_bank_fields
-            )
-            and payment.fx_rate is None  # not already prepared
-        ):
-            from app.services.fx_adapters import get_fx_adapter
-            from app.services.international_payments import (
-                InternationalPaymentError,
-                prepare_international_payment,
-            )
-
-            v_for_corridor = SimpleNamespace(
-                bank_details=vendor_bank or {},
-                address_country=getattr(invoice, "vendor_country", None),
-            )
-            fx_cfg = (org.settings or {}).get("fx") or {}
-            fx_adapter = get_fx_adapter(fx_cfg)
-            try:
-                prepared = await prepare_international_payment(
-                    invoice=invoice,
-                    vendor=v_for_corridor,
-                    org_home_currency=org_home_currency,
-                    fx_adapter=fx_adapter,
-                    requested_method=payment.method,
-                )
-            except InternationalPaymentError as exc:
-                payment.status = "failed"
-                payment.failure_reason = f"international_payment_error: {exc}"
-                payment.completed_at = now
-                failed += 1
-                continue
-
-            payment.method = prepared.corridor.method
-            payment.source_currency = prepared.payment.source_currency
-            payment.source_amount = prepared.payment.source_amount
-            payment.fx_rate = prepared.payment.fx_rate
-            payment.fx_locked_at = prepared.payment.fx_locked_at
-            payment.corridor = prepared.payment.corridor
-            payment.target_country = prepared.payment.target_country
-
-        # Compliance gate: run sanctions / KYC / AML checks against the
-        # vendor + the resolved corridor BEFORE the adapter call. This runs
-        # for EVERY rail (domestic ACH / wire / check as well as the
-        # international leg above) — the sticky `payments_blocked` block and
-        # a sanctions `match` must refuse a payment no matter the corridor,
-        # so this gate must NOT be nested under the international-leg `if`
-        # (a blocked vendor paid via domestic ACH would otherwise slip
-        # through unscreened). A refusal fails the payment outright; a hold
-        # leaves it in pending_compliance for AP review.
-        if invoice is not None:
-            from app.services.compliance import check_payment_compliance
-
-            v_full = None
-            if invoice.vendor_id:
-                v_result = await db.execute(select(Vendor).where(Vendor.id == invoice.vendor_id))
-                v_full = v_result.scalar_one_or_none()
-            if v_full is None:
-                # No screenable vendor (invoice never matched a Vendor, or the
-                # row was deleted). We CANNOT run sanctions/KYC against a payee
-                # we don't have — and an AI-extracted / email-intake invoice can
-                # reach here with vendor_id NULL. Paying anyway would route money
-                # to an unscreened name, defeating the gate. Fail-safe: hold for
-                # AP to attach + verify a vendor, never pay unscreened.
-                payment.status = "pending_compliance"
-                payment.failure_reason = "compliance_hold: no screenable vendor on invoice"
-                in_flight += 1
-                continue
-            decision = await check_payment_compliance(
-                db,
-                vendor=v_full,
-                payment_amount=payment.amount,
-                payment_method=payment.method,
-                org_settings=org.settings or {},
-                organization_id=org.id,
-                correlation_id=payment.correlation_id,
-            )
-            if decision.verdict == "refuse":
-                payment.status = "failed"
-                payment.failure_reason = "compliance_refusal: " + "; ".join(decision.reasons)
-                payment.completed_at = now
-                failed += 1
-                continue
-            if decision.verdict == "hold":
-                payment.status = "pending_compliance"
-                payment.failure_reason = "compliance_hold: " + "; ".join(decision.reasons)
-                in_flight += 1
-                # Hold doesn't flip the invoice — money hasn't moved.
-                continue
-
-        payload = PaymentPayload(
-            correlation_id=str(payment.correlation_id or payment.id),
-            invoice_id=str(payment.invoice_id),
-            invoice_number=invoice.invoice_number if invoice else "",
-            vendor_name=invoice.vendor_name if invoice else "",
-            amount=payment.amount,
-            currency=invoice.currency if invoice else "USD",
-            method=payment.method or "ach",
-            description=invoice.description if invoice else None,
-            vendor_bank=vendor_bank,
-            metadata={"organization_id": str(org.id)},
-            source_currency=payment.source_currency,
-            source_amount=payment.source_amount,
-            fx_rate=payment.fx_rate,
-            target_country=payment.target_country,
+    Deliberately a SEPARATE endpoint from `/execute` (which stays
+    `draft`-only): a run that is still genuinely mid-execution is ALSO
+    `executing`, and a bare "accept `executing` too" guard on `/execute`
+    would let a concurrent call race an active run instead of only a
+    crashed one. An operator calls this endpoint only after confirming the
+    run is actually stuck (no progress for an implausible amount of time),
+    not as a matter of course.
+    """
+    result = await db.execute(select(PaymentRun).where(PaymentRun.id == run_id).with_for_update())
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Payment run not found")
+    if run.status != "executing":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Can only resume a run stuck 'executing', not '{run.status}'",
         )
 
-        result_obj = await adapter.create_payment(payload)
-        payment.provider = adapter.provider_name
-        payment.provider_payment_id = result_obj.provider_payment_id
-        payment.reference = result_obj.reference or payment.reference
-        payment.submitted_at = now
-
-        if result_obj.status == PaymentStatus.completed:
-            payment.status = "completed"
-            payment.completed_at = now
-            completed += 1
-            if invoice and invoice.status.value in (
-                "approved",
-                "sent_to_erp",
-                "posted_in_erp",
-            ):
-                await transition_invoice(
-                    db,
-                    invoice,
-                    InvoiceStatus.payment_scheduled,
-                    actor_id=user.id,
-                    action_name="invoice.payment_scheduled",
-                    details={"payment_id": str(payment.id), "result": "completed"},
-                )
-        elif result_obj.status in (PaymentStatus.submitted, PaymentStatus.processing):
-            # Real money in flight; webhook will finalize.
-            payment.status = result_obj.status.value
-            in_flight += 1
-            if invoice and invoice.status.value in (
-                "approved",
-                "sent_to_erp",
-                "posted_in_erp",
-            ):
-                await transition_invoice(
-                    db,
-                    invoice,
-                    InvoiceStatus.payment_scheduled,
-                    actor_id=user.id,
-                    action_name="invoice.payment_scheduled",
-                    details={"payment_id": str(payment.id), "result": result_obj.status.value},
-                )
-        else:
-            # failed or cancelled
-            payment.status = result_obj.status.value
-            payment.failure_reason = result_obj.failure_reason
-            payment.completed_at = now
-            failed += 1
-
-    # Run status reflects the rollup of its payments.
-    if failed and not (completed or in_flight):
-        run.status = "failed"
-    elif failed:
-        run.status = "partial"
-    elif in_flight:
-        run.status = "submitted"
-    else:
-        run.status = "completed"
-    run.executed_at = now
-
-    # Append-only audit trail for the money-movement event (project
-    # invariant: every payment status transition writes a log row, and a
-    # change that touches a regulated timestamp like `completed_at` is
-    # Critical without one). The execute loop above sets each payment's
-    # terminal status + `completed_at`/`submitted_at` and the run's
-    # `executed_at` — none of which produced an audit row until here.
-    # `transition_invoice` audits the *invoice* side; these rows audit the
-    # *payment* + *run* side. PII-free: only ids, status, and the Decimal
-    # amount as a string ever enter `details` — never bank/account values.
-    from app.services.audit_dispatch import dispatch_audit
-
-    await dispatch_audit(
-        db,
-        correlation_id=run.id,
-        organization_id=org.id,
-        actor_id=user.id,
-        action="payment_run.executed",
-        entity_type="payment_run",
-        entity_id=run.id,
-        details={
-            "status": run.status,
-            "provider": adapter.provider_name,
-            "payments_completed": completed,
-            "payments_in_flight": in_flight,
-            "payments_failed": failed,
-            "cards_issued": cards_issued,
-            "total_amount": str(run.total_amount or Decimal("0")),
-        },
-    )
-    for payment in payments:
-        await dispatch_audit(
-            db,
-            correlation_id=payment.correlation_id or run.id,
-            organization_id=org.id,
-            actor_id=user.id,
-            action=f"payment.{payment.status}",
-            entity_type="payment",
-            entity_id=payment.id,
-            details={
-                "status": payment.status,
-                "method": payment.method,
-                "amount": str(payment.amount),
-                "reference": payment.reference,
-                "payment_run_id": str(run.id),
-            },
-        )
-
+    # Release the row lock before the (potentially slow) per-payment loop —
+    # no status change needed here, the run is already `executing`.
     await db.commit()
 
-    # ERP sync only fires for payments we believe settled — pending ones
-    # will sync when their webhook lands.
-    if completed:
-        from app.services.payment_erp_sync import dispatch_payment_sync
-
-        await dispatch_payment_sync(run_id, uuid.UUID(str(run.organization_id)))
-
-    return {
-        "id": str(run.id),
-        "status": run.status,
-        "provider": adapter.provider_name,
-        "payments_completed": completed,
-        "payments_in_flight": in_flight,
-        "payments_failed": failed,
-        "cards_issued": cards_issued,
-        "message": _execute_message(
-            adapter.provider_name, completed, in_flight, failed, cards_issued
-        ),
-    }
+    return await _dispatch_run_payments(db, run=run, run_id=run_id, org=org, user=user)
 
 
 def _execute_message(

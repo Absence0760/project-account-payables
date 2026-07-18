@@ -198,6 +198,29 @@ lifecycle with no second human. The control mirrors the invoice-approval
 than an explicit `false` keeps the secure default). A legacy run with a NULL
 `initiated_by` is never blocked (nothing to compare against).
 
+### Execution atomicity + resuming a stuck run
+
+`execute_payment_run`'s per-payment loop is durable, not all-or-nothing: each
+payment is dispatched (via the internal `_execute_single_payment`) inside its
+own try/except catch-all, then committed immediately — a failure on payment N
+(including an uncaught error from a live FX/sanctions/processor adapter, not
+just the anticipated `InternationalPaymentError`) can only roll back payment
+N's own still-open attempt, never the payments already recorded before it.
+
+A worker crash mid-loop leaves the run at `status="executing"` with every
+payment up to the crash point already safely committed with its real
+outcome, and everything after it still `pending`. `POST
+/runs/{id}/resume` (same `payment.execute` permission gate) re-drives only
+those still-`pending` payments and re-rolls-up the run's final status across
+*every* payment on the run — nothing already settled is re-sent to the
+processor. `POST /runs/{id}/execute` deliberately stays `draft`-only rather
+than also accepting `executing`: a run that is still genuinely mid-execution
+is also `executing`, and letting `/execute` resume it too would let a
+concurrent call race an actively-running execution instead of only a
+confirmed-stuck one (see the row-lock double-execute guard above). An
+operator calls `/resume` only after confirming the run has made no progress
+for an implausible amount of time.
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:
@@ -347,7 +370,8 @@ Matching payments against bank statement entries:
 | `GET` | `/api/payments/runs/` | List payment runs |
 | `POST` | `/api/payments/runs` | Create a payment run (draft) |
 | `GET` | `/api/payments/runs/{id}` | Get payment run with its payments |
-| `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync |
+| `POST` | `/api/payments/runs/{id}/execute` | Execute the payment run + trigger ERP sync. `draft`-only — a run stuck `executing` (worker crash mid-run) is resumed via the endpoint below, not this one. |
+| `POST` | `/api/payments/runs/{id}/resume` | Resume a run stuck in `executing` — re-dispatches only its still-`pending` payments; anything already `completed`/`failed`/`submitted`/`processing`/`pending_compliance` from before the crash is left untouched. Same `payment.execute` permission gate as `/execute`. |
 | `GET` | `/api/payments/queue` | List invoices ready for payment |
 | `GET` | `/api/payments/summary` | KPIs: total paid, pending, queue count, rebates. Requires a `control_db` dependency because `CardRebate` is a control-plane model; the rebate query includes a try/except fallback returning `0.0` if the `card_rebates` table doesn't exist yet. |
 
