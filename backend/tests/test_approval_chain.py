@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -257,6 +257,108 @@ async def test_delegation_user_not_found():
 
     assert effective_id == user_id
     assert original_id is None
+
+
+# ---------------------------------------------------------------------------
+# check_level_approver — SoD bypass regression (issue #118)
+#
+# A named-approver chain/level exists to restrict who may clear it to
+# specific people. Before this fix, `advance_approval_chain` recorded any
+# actor's approval unconditionally — a broad role (ap_manager/cfo/admin) was
+# enough to clear a level meant for a named individual.
+# ---------------------------------------------------------------------------
+
+
+def _ctrl_session_factory(user):
+    """A `control_session_factory`-shaped mock whose lookup returns `user`
+    (or None) for any `SELECT ... WHERE User.id == ...`."""
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=user)
+    ctrl_db = AsyncMock()
+    ctrl_db.execute = AsyncMock(return_value=result)
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=ctrl_db)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    return factory
+
+
+@pytest.mark.asyncio
+async def test_check_level_approver_empty_list_allows_anyone():
+    """An empty approver_ids list means unrestricted — legacy behaviour."""
+    from app.services.approval_chain import check_level_approver
+
+    # No control_session_factory call should even happen — patch it to blow
+    # up if touched, to prove the empty-list path short-circuits.
+    with patch(
+        "app.database.control_session_factory", side_effect=AssertionError("should not run")
+    ):
+        await check_level_approver([], uuid.uuid4())  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_check_level_approver_direct_member_allowed():
+    """An actor whose id is directly in approver_ids is authorized."""
+    from app.services.approval_chain import check_level_approver
+
+    actor = uuid.uuid4()
+    with patch(
+        "app.database.control_session_factory", side_effect=AssertionError("should not run")
+    ):
+        await check_level_approver([str(actor)], actor)  # must not raise — no DB lookup needed
+
+
+@pytest.mark.asyncio
+async def test_check_level_approver_non_member_rejected():
+    """An actor who is not a named approver, and has no active delegation
+    from one, is refused with 403 — the core regression."""
+    from app.services.approval_chain import check_level_approver
+
+    named_approver_id = uuid.uuid4()
+    actor = uuid.uuid4()  # unrelated user, e.g. a different ap_manager
+
+    with patch("app.database.control_session_factory", _ctrl_session_factory(None)):
+        with pytest.raises(HTTPException) as exc:
+            await check_level_approver([str(named_approver_id)], actor)
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_check_level_approver_active_delegate_allowed():
+    """A user the named approver has actively delegated to may approve in
+    their place."""
+    from app.services.approval_chain import check_level_approver
+
+    named_approver_id = uuid.uuid4()
+    delegate = uuid.uuid4()
+    delegating_user = _make_user(
+        delegate_to_id=delegate,
+        delegate_until=datetime.now(UTC) + timedelta(days=1),
+    )
+    delegating_user.id = named_approver_id
+
+    with patch("app.database.control_session_factory", _ctrl_session_factory(delegating_user)):
+        await check_level_approver([str(named_approver_id)], delegate)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_check_level_approver_expired_delegate_rejected():
+    """A delegation that has expired does not authorize the ex-delegate."""
+    from app.services.approval_chain import check_level_approver
+
+    named_approver_id = uuid.uuid4()
+    ex_delegate = uuid.uuid4()
+    delegating_user = _make_user(
+        delegate_to_id=ex_delegate,
+        delegate_until=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    delegating_user.id = named_approver_id
+
+    with patch("app.database.control_session_factory", _ctrl_session_factory(delegating_user)):
+        with pytest.raises(HTTPException) as exc:
+            await check_level_approver([str(named_approver_id)], ex_delegate)
+
+    assert exc.value.status_code == 403
 
 
 # ---------------------------------------------------------------------------
