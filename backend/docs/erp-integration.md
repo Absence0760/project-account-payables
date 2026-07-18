@@ -203,10 +203,22 @@ After sending an invoice to the ERP, the system needs to know when the ERP has p
 
 The webhook handler:
 1. Validates the request (signature, API key, or IP whitelist)
-2. Looks up the invoice by `correlation_id` or `erp_document_id`
-3. Maps the ERP status to our internal status
-4. Transitions the invoice (e.g., `sent_to_erp` → `posted_in_erp`)
-5. Writes an audit log entry
+2. Dedupes by `event_id` (`services/webhook_security.is_event_already_processed`)
+3. Looks up the invoice by `correlation_id` or `erp_document_id`
+4. Maps the ERP status to our internal status
+5. Transitions the invoice (e.g., `sent_to_erp` → `posted_in_erp`)
+6. Writes an audit log entry
+
+**Dedup key is `event_id` only — no fallback to `erp_document_id` /
+`correlation_id`.** Both of those are constant for an invoice's entire
+lifecycle, so falling back to either would let the FIRST status delivery's
+dedup claim silently swallow every LATER, genuinely distinct status event
+for the same invoice (e.g. `posted_in_erp` claims the key, and the next
+day's real `paid` event never reaches `transition_invoice`). A direct
+integration that omits a per-delivery `event_id` instead hits
+`is_event_already_processed`'s own "missing event id → always process"
+path, which is the correct trade-off: no dedup at all beats false dedup on a
+different event.
 
 **Polling job:** Runs every 5 minutes for invoices in `sent_to_erp` status older than 1 minute:
 1. Calls `adapter.get_invoice_status(erp_document_id)`
