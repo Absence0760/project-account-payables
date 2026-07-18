@@ -29,7 +29,12 @@ Existing fields stay: `pipeline`, `vendor_spend`, `aging`,
 - `aging` — open-invoice exposure bucketed by **days past the due date**:
   `current` (not yet due), `days_30` (1-30), `days_60` (31-60), `days_90`
   (61-90), `days_90_plus` (90+). The same five buckets back the
-  `aging_snapshot` CSV export.
+  `aging_snapshot` CSV export and the emailed scheduled report. Covers the
+  SAME population as the CFO `accounts_payable_balance` (F-4) — which has no
+  `due_date` filter — so an open invoice with a null `due_date` buckets as
+  `current` (unknowable, so not overdue) rather than being silently dropped;
+  otherwise the bands stop summing to the balance the moment one open invoice
+  is missing a due date.
 - `touchless_rate` — straight-through-processing rate: invoices that cleared
   review without manual rework (reached `approved` or beyond) over every
   invoice that has finished review (those same states **plus** `rejected`).

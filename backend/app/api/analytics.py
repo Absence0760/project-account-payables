@@ -1340,12 +1340,14 @@ async def export_report(
         today = date.today()
         # Aging covers the same open-payable population as the AP balance so the
         # buckets sum to it (F-4): approved → payment_scheduled, not the
-        # pre-approval statuses that aren't a confirmed liability yet.
+        # pre-approval statuses that aren't a confirmed liability yet. The AP
+        # balance has no due_date filter, so this must not either — an open
+        # invoice missing a due date used to inflate the balance while
+        # vanishing from every bucket.
         aging_rows = await db.execute(
             apply_entity_scope(
                 select(Invoice.due_date, Invoice.amount).where(
                     Invoice.status.in_(OPEN_AP_STATUSES),
-                    Invoice.due_date.isnot(None),
                 ),
                 Invoice,
                 entity_id,
@@ -1359,8 +1361,13 @@ async def export_report(
             "days_90_plus": Decimal("0"),
         }
         for due, amt in aging_rows.all():
-            days_past = (today - due).days
             amount = Decimal(str(amt))
+            # A null due_date can't be judged overdue — bucket as "current"
+            # (the conservative read) rather than dropping it entirely.
+            if due is None:
+                buckets["current"] += amount
+                continue
+            days_past = (today - due).days
             if days_past <= 0:
                 buckets["current"] += amount
             elif days_past <= 30:

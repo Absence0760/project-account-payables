@@ -181,11 +181,13 @@ async def _materialise_rows(
         today = date.today()
         # Same open-payable population as the AP balance + the API aging export
         # so the emailed snapshot reconciles with them (F-4): approved →
-        # payment_scheduled, not the pre-approval statuses.
+        # payment_scheduled, not the pre-approval statuses. The AP balance has
+        # no due_date filter, so this must not either — an open invoice missing
+        # a due date used to inflate the balance while vanishing from every
+        # bucket.
         aging_rows = await db.execute(
             select(Invoice.due_date, Invoice.amount).where(
                 Invoice.status.in_(OPEN_AP_STATUSES),
-                Invoice.due_date.isnot(None),
             )
         )
         # Five buckets matching the exporter + the dashboard/analytics scheme
@@ -200,8 +202,13 @@ async def _materialise_rows(
             "days_90_plus": _D("0"),
         }
         for due, amt in aging_rows.all():
-            days_past = (today - due).days
             amount = _D(str(amt))
+            # A null due_date can't be judged overdue — bucket as "current" (the
+            # conservative read) rather than dropping it entirely.
+            if due is None:
+                buckets["current"] += amount
+                continue
+            days_past = (today - due).days
             if days_past <= 0:
                 buckets["current"] += amount
             elif days_past <= 30:

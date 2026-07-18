@@ -166,11 +166,17 @@ async def get_dashboard(
         "days_90_plus": Decimal("0"),
     }
     # Aging covers the same open-payable population as the AP balance so the
-    # bands reconcile with it (F-4): approved → payment_scheduled. Bucket + sum
-    # in SQL (Postgres `date - date` is integer days) rather than pulling every
-    # open row into Python; the band boundaries match the old loop exactly.
+    # bands reconcile with it (F-4): approved → payment_scheduled. The AP
+    # balance has no due_date filter, so aging must not either — an open
+    # invoice missing a due date used to inflate the balance while vanishing
+    # from every bucket. A null due_date can't be judged overdue, so it
+    # buckets as "current" (the conservative read) rather than being dropped.
+    # Bucket + sum in SQL (Postgres `date - date` is integer days) rather than
+    # pulling every open row into Python; the band boundaries match the old
+    # loop exactly.
     _days_past = today - Invoice.due_date
     _aging_bucket = case(
+        (Invoice.due_date.is_(None), "current"),
         (_days_past <= 0, "current"),
         (_days_past <= 30, "days_30"),
         (_days_past <= 60, "days_60"),
@@ -180,7 +186,7 @@ async def get_dashboard(
     aging_rows = await db.execute(
         _inv(
             select(_aging_bucket.label("bucket"), func.coalesce(func.sum(Invoice.amount), 0))
-            .where(Invoice.status.in_(OPEN_AP_STATUSES), Invoice.due_date.isnot(None))
+            .where(Invoice.status.in_(OPEN_AP_STATUSES))
             .group_by(_aging_bucket)
         )
     )
