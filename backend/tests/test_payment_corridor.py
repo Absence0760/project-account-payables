@@ -204,6 +204,85 @@ def test_requested_method_virtual_card_does_not_require_swift():
 
 
 # ---------------------------------------------------------------------------
+# Issue #123 — `create_payment_run` defaults EVERY line item's method to
+# "ach" regardless of the invoice's real currency/country, and the frontend
+# does the same. That blanket default used to be trusted as a real override,
+# so a genuinely cross-border/cross-currency payment was sent out on a
+# domestic rail and failed at the processor instead of routing correctly.
+# These pin the auto-selection now WINNING over a domestic-looking default
+# whenever the destination actually needs international routing.
+# ---------------------------------------------------------------------------
+
+
+def test_defaulted_ach_for_cross_currency_is_overridden_by_auto_selection():
+    """The `create_payment_run` default (`method="ach"`) for a cross-currency
+    payment must NOT be honored as a real override — auto-selection must win
+    and route to international_wire with the FX leg."""
+    c = pick_corridor(
+        source_currency="USD",
+        target_currency="EUR",
+        target_country="DE",
+        requested_method="ach",
+    )
+    assert c.method == "international_wire"
+    assert c.requires_fx is True
+    assert c.requires_swift is True
+
+
+def test_defaulted_wire_for_cross_currency_is_overridden_by_auto_selection():
+    """Same as the ach case — "wire" is also a plain domestic-looking default,
+    not an explicit international choice."""
+    c = pick_corridor(
+        source_currency="USD",
+        target_currency="EUR",
+        target_country="DE",
+        requested_method="wire",
+    )
+    assert c.method == "international_wire"
+    assert c.requires_fx is True
+
+
+def test_defaulted_ach_for_same_currency_foreign_country_is_overridden():
+    """Same-currency but foreign destination (UK, a NACHA Global ACH
+    corridor) — the defaulted "ach" must not be honored; auto-selection
+    routes to international_ach, not a plain domestic ACH."""
+    c = pick_corridor(
+        source_currency="USD",
+        target_currency="USD",
+        target_country="GB",
+        requested_method="ach",
+    )
+    assert c.method == "international_ach"
+    assert c.requires_fx is False
+
+
+def test_defaulted_ach_for_genuinely_domestic_destination_still_ach():
+    """The override-suppression must not break the common case: a US-domestic
+    payment defaulted to "ach" really is ACH."""
+    c = pick_corridor(
+        source_currency="USD",
+        target_currency="USD",
+        target_country="US",
+        requested_method="ach",
+    )
+    assert c.method == "ach"
+
+
+def test_explicit_international_method_honored_even_though_it_looks_like_an_override():
+    """Nothing defaults to `international_wire` / `sepa` / `international_ach`
+    — seeing one of those really is an explicit choice, and it must still be
+    honored even for a same-currency-US destination (the caller knows
+    something the currency/country tuple doesn't, e.g. a vendor preference)."""
+    c = pick_corridor(
+        source_currency="USD",
+        target_currency="USD",
+        target_country="US",
+        requested_method="international_wire",
+    )
+    assert c.method == "international_wire"
+
+
+# ---------------------------------------------------------------------------
 # CorridorChoice shape.
 # ---------------------------------------------------------------------------
 
