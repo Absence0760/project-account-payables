@@ -18,7 +18,7 @@ forecast variance). Both are computed by pure functions in
 | Drill-through | `/api/analytics/drill/*` | Per-metric "show me the rows" endpoints (spend_concentration, dpo) |
 | Cash-flow forecasting | `/api/analytics/{cashflow_forecast,cashflow_whatif,cash_position}` | Predictive AP outflow buckets, payment-timing what-if, running cash position with bank-balance auto-sync (admin + CFO only). Web dashboard at `/cfo`. |
 | Cash-position thresholds | `/api/analytics/cash-position-settings` (GET/PUT) | Persisted per-org low-balance alert threshold on `settings.cashflow` (no migration). |
-| CSV export | `app/services/report_export.py` + `/api/analytics/export/{report}` | invoice_register, vendor_spend, payment_register, aging_snapshot, cashflow_forecast |
+| CSV export | `app/services/report_export.py` + `/api/analytics/export/{report}` | invoice_register, vendor_spend, payment_register, aging_snapshot, cashflow_forecast, expense_register |
 | Scheduled delivery | `app/services/scheduled_reports.py` + migration 0020 | Per-tenant cron-like subscriptions; daily / weekly / monthly cadence; email via existing adapter |
 
 ## Operational metrics (dashboard)
@@ -219,6 +219,7 @@ returning "no threshold" rather than raising.
 | `payment_register` | payment_id, invoice_id, invoice_number, vendor_name, amount, currency, method, status, provider, reference, submitted_at, completed_at |
 | `aging_snapshot` | as_of_date, current, days_30, days_60, days_90, days_90_plus, total |
 | `cashflow_forecast` | period, period_start, period_end, scheduled_amount, committed_amount, pending_amount, discount_eligible_amount, count |
+| `expense_register` | date, merchant, category, amount, currency, gl_code, payment_method, status, report_number |
 
 `cashflow_forecast` is forward-looking — it takes `granularity` +
 `horizon_days` (not `period_days`) and runs the same forecast query as the
@@ -227,6 +228,17 @@ JSON endpoint.
 Column order is pinned by `tests/test_report_export.py` — finance
 imports rely on column position; a reorder breaks downstream
 pipelines.
+
+**Dispatch is exhaustive by construction**: `export_report`'s branch-per-report
+`if/elif` ends in an `else` that raises rather than falling through to any one
+report's query — every key in `EXPORTERS` must have its own branch above it.
+Before this was fixed (issue #120), `expense_register` had no branch and
+silently fell into the `aging_snapshot` query, feeding its bucket dict into
+`export_expense_register` and returning a 200 with a corrupted CSV (blank real
+columns, bucket-key characters landing in `report_number`/`gl_code`). The
+scheduled-report materializer (`services/scheduled_reports._materialise_rows`)
+had the identical bug and mirrors the same exhaustive-dispatch-with-raise
+shape.
 
 ## Scheduled report delivery
 

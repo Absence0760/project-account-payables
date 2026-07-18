@@ -140,46 +140,92 @@ async def _materialise_rows(
         )
         return exporter(rows.all())
 
-    # aging_snapshot doesn't paginate by period — always as-of-now.
-    from decimal import Decimal as _D
+    if schedule.report_type == "expense_register":
+        from app.models.expense import Expense, ExpenseReport
+        from app.models.gl_account import GLAccount
 
-    from app.services.analytics import OPEN_AP_STATUSES
-
-    today = date.today()
-    # Same open-payable population as the AP balance + the API aging export so
-    # the emailed snapshot reconciles with them (F-4): approved →
-    # payment_scheduled, not the pre-approval statuses.
-    aging_rows = await db.execute(
-        select(Invoice.due_date, Invoice.amount).where(
-            Invoice.status.in_(OPEN_AP_STATUSES),
-            Invoice.due_date.isnot(None),
+        # Same shape as `api/expenses.py::export_expenses` / the analytics
+        # export endpoint: outer-joined so an uncoded / unattached expense
+        # still emits a row.
+        rows = await db.execute(
+            select(Expense, ExpenseReport.report_number, GLAccount.code)
+            .outerjoin(GLAccount, GLAccount.id == Expense.gl_account_id)
+            .outerjoin(ExpenseReport, ExpenseReport.id == Expense.report_id)
+            .where(Expense.expense_date >= period_start)
         )
+        return exporter(rows.all())
+
+    if schedule.report_type == "cashflow_forecast":
+        from app.api.analytics import _commitment_rows
+        from app.config import settings
+        from app.services.analytics import bucket_outflows
+
+        # ScheduledReport has no per-schedule granularity/horizon — mirror the
+        # API export endpoint's own defaults (`granularity="week"`,
+        # `horizon_days` from the same platform default the copilot uses).
+        today = date.today()
+        commitment_rows = await _commitment_rows(
+            db,
+            today=today,
+            horizon_days=settings.cashflow_copilot_default_horizon_days,
+            include_pending=True,
+        )
+        periods = bucket_outflows(commitment_rows, granularity="week", today=today)
+        return exporter(periods)
+
+    if schedule.report_type == "aging_snapshot":
+        from decimal import Decimal as _D
+
+        from app.services.analytics import OPEN_AP_STATUSES
+
+        today = date.today()
+        # Same open-payable population as the AP balance + the API aging export
+        # so the emailed snapshot reconciles with them (F-4): approved →
+        # payment_scheduled, not the pre-approval statuses.
+        aging_rows = await db.execute(
+            select(Invoice.due_date, Invoice.amount).where(
+                Invoice.status.in_(OPEN_AP_STATUSES),
+                Invoice.due_date.isnot(None),
+            )
+        )
+        # Five buckets matching the exporter + the dashboard/analytics scheme
+        # (current / 1-30 / 31-60 / 61-90 / 90+). The 61-90 (`days_90`) bucket was
+        # missing here, so 61-90-day invoices collapsed into 90+ and the CSV's
+        # days_90 column was always 0 — disagreeing with the API export.
+        buckets = {
+            "current": _D("0"),
+            "days_30": _D("0"),
+            "days_60": _D("0"),
+            "days_90": _D("0"),
+            "days_90_plus": _D("0"),
+        }
+        for due, amt in aging_rows.all():
+            days_past = (today - due).days
+            amount = _D(str(amt))
+            if days_past <= 0:
+                buckets["current"] += amount
+            elif days_past <= 30:
+                buckets["days_30"] += amount
+            elif days_past <= 60:
+                buckets["days_60"] += amount
+            elif days_past <= 90:
+                buckets["days_90"] += amount
+            else:
+                buckets["days_90_plus"] += amount
+        return exporter(buckets)
+
+    # Unreachable in practice — every key registered in EXPORTERS (checked by
+    # `_generate_report_payload` above) has a branch here. A hard guard
+    # against exactly the bug this replaces: a report_type with no matching
+    # branch used to silently fall through to the aging_snapshot path instead
+    # of failing loudly (feeding aging's bucket dict to an exporter expecting
+    # a row list — e.g. iterating the dict's string keys character-by-character
+    # into `expense_register`'s columns, or an AttributeError crash loop for
+    # `cashflow_forecast`).
+    raise ValueError(
+        f"report_type {schedule.report_type!r} is registered in EXPORTERS but has no "
+        "dispatch branch in _materialise_rows"
     )
-    # Five buckets matching the exporter + the dashboard/analytics scheme
-    # (current / 1-30 / 31-60 / 61-90 / 90+). The 61-90 (`days_90`) bucket was
-    # missing here, so 61-90-day invoices collapsed into 90+ and the CSV's
-    # days_90 column was always 0 — disagreeing with the API export.
-    buckets = {
-        "current": _D("0"),
-        "days_30": _D("0"),
-        "days_60": _D("0"),
-        "days_90": _D("0"),
-        "days_90_plus": _D("0"),
-    }
-    for due, amt in aging_rows.all():
-        days_past = (today - due).days
-        amount = _D(str(amt))
-        if days_past <= 0:
-            buckets["current"] += amount
-        elif days_past <= 30:
-            buckets["days_30"] += amount
-        elif days_past <= 60:
-            buckets["days_60"] += amount
-        elif days_past <= 90:
-            buckets["days_90"] += amount
-        else:
-            buckets["days_90_plus"] += amount
-    return exporter(buckets)
 
 
 async def execute_schedule(

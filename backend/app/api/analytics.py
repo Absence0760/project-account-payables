@@ -27,6 +27,8 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_CFO, require_roles
 from app.database import get_control_db
+from app.models.expense import Expense, ExpenseReport
+from app.models.gl_account import GLAccount
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.organization import Organization
 from app.models.payment import Payment, PaymentSchedule
@@ -1246,6 +1248,7 @@ async def export_report(
       - `cashflow_forecast` — projected AP outflows per period
         (forward-looking; uses `granularity` + `horizon_days`, not
         `period_days`)
+      - `expense_register` — every expense in the period
 
     `format` selects `csv` (default) or `pdf`. Both carry the tenant's
     white-label brand: the CSV is prefixed with a `#`-comment provenance block
@@ -1317,7 +1320,23 @@ async def export_report(
             )
         )
         payload = EXPORTERS[report](rows.all())
-    else:  # aging_snapshot
+    elif report == "expense_register":
+        # Joins ExpenseReport (report number) + GLAccount (GL code) with
+        # outer joins so an uncoded / unattached expense still emits a row —
+        # mirrors `api/expenses.py::export_expenses`' query exactly, this
+        # surface just adds the branded provenance header.
+        rows = await db.execute(
+            apply_entity_scope(
+                select(Expense, ExpenseReport.report_number, GLAccount.code)
+                .outerjoin(GLAccount, GLAccount.id == Expense.gl_account_id)
+                .outerjoin(ExpenseReport, ExpenseReport.id == Expense.report_id)
+                .where(Expense.expense_date >= period_start),
+                Expense,
+                entity_id,
+            )
+        )
+        payload = EXPORTERS[report](rows.all())
+    elif report == "aging_snapshot":
         today = date.today()
         # Aging covers the same open-payable population as the AP balance so the
         # buckets sum to it (F-4): approved → payment_scheduled, not the
@@ -1353,6 +1372,17 @@ async def export_report(
             else:
                 buckets["days_90_plus"] += amount
         payload = EXPORTERS[report](buckets)
+    else:
+        # Unreachable in practice — every key in EXPORTERS has a branch above,
+        # and `report not in EXPORTERS` already 404'd earlier in this
+        # function. This is a hard guard against exactly the bug this
+        # replaces: a new EXPORTERS entry with no matching branch here used
+        # to silently fall through to the aging_snapshot path instead of
+        # failing loudly.
+        raise HTTPException(
+            status_code=500,
+            detail=f"report '{report}' is registered in EXPORTERS but has no dispatch branch",
+        )
 
     brand = get_brand_context(org.settings if org else None)
     generated_at = datetime.now(UTC)
