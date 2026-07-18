@@ -96,7 +96,16 @@ async def erp_webhook(
     correlation_id = body.get("correlation_id")
     erp_document_id = body.get("erp_document_id")
     erp_status = body.get("status", "")
-    event_id = body.get("event_id") or erp_document_id or correlation_id
+    # Deliberately NOT `body.get("event_id") or erp_document_id or
+    # correlation_id`. Both fallbacks are constant for an invoice's WHOLE
+    # lifecycle, so a direct integration that omits a per-delivery event_id
+    # would have the first status event's dedup claim on that id silently
+    # swallow every later distinct status event for the same invoice for the
+    # rest of the dedup TTL (e.g. `posted_in_erp` claims it, the next day's
+    # legitimate `paid` webhook never fires). `is_event_already_processed`
+    # already has a real "missing event id -> always process" path — let a
+    # genuinely absent event_id hit that instead of a fabricated one.
+    event_id = body.get("event_id")
 
     if not tenant_slug:
         return  # silent — body didn't name a tenant
