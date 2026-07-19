@@ -399,6 +399,7 @@ Full list in `backend/app/config.py`.
 | Architecture | `docs/architecture.md` — system overview |
 | Environment vars | `docs/environment.md` — frontend + backend config |
 | Deployment | `docs/production-deployment.md` — AWS, CloudFront, ALB, ECS |
+| Minimal-cost deployment | `docs/minimal-deployment.md` — one-VM compose + Caddy pilot footprint (~$20/mo) |
 | SOC 2 readiness | `docs/soc2-readiness.md` — vendor comparison, control mapping, kickoff plan |
 | Data privacy (GDPR/CCPA) | `backend/docs/privacy.md` (DSAR + erasure), `docs/data-residency.md` (region pinning), `docs/ropa.md` (Record of Processing Activities), `docs/sub-processors.md` (sub-processor register) |
 | Platform billing & metering (plans / subscriptions / entitlements) | `backend/docs/billing.md` |
