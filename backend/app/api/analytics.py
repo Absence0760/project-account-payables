@@ -62,6 +62,7 @@ from app.services.currency_conversion import (
     compute_unrealized_fx_gain_loss,
     resolve_reporting_currency,
     rollup_to_reporting_currency,
+    vendor_rollup_to_reporting_currency,
 )
 from app.services.fx_adapters import get_fx_adapter
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
@@ -656,13 +657,18 @@ async def get_cfo_analytics(
     )
 
     # ----- Supplier concentration (top-10 / top-50) -----
+    # Rolled into the org's reporting currency (not a naive SUM across
+    # currencies) — a vendor billing in more than one currency used to add
+    # e.g. USD + EUR as if they were one currency.
     vendor_rows = await db.execute(
         _inv(
             select(
                 Invoice.vendor_name,
-                func.sum(Invoice.amount).label("total"),
-            )
-            .where(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(
                 Invoice.invoice_date >= period_start,
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
@@ -670,12 +676,22 @@ async def get_cfo_analytics(
                 # headline total_spend — else vendor shares are understated.
                 Invoice.status != InvoiceStatus.rejected.value,
             )
-            .group_by(Invoice.vendor_name)
-            .order_by(func.sum(Invoice.amount).desc())
-            .limit(50)
         )
     )
-    vendor_spend = [{"vendor": v, "amount": Decimal(str(amt))} for v, amt in vendor_rows.all()]
+    vendor_entries = vendor_rollup_to_reporting_currency(
+        [
+            {
+                "vendor": vendor,
+                "amount": amount,
+                "currency": currency,
+                "reporting_amount": rep_amt,
+                "reporting_currency": rep_cur,
+            }
+            for vendor, amount, currency, rep_amt, rep_cur in vendor_rows.all()
+        ],
+        reporting_currency=reporting_currency,
+    )
+    vendor_spend = [{"vendor": e.vendor, "amount": e.amount} for e in vendor_entries[:50]]
     concentration = compute_supplier_concentration(vendor_spend)
 
     # ----- Fraud-rate trend (last 6 months) — proxy: exception -----
@@ -1106,6 +1122,7 @@ async def drill_spend_concentration(
     period_days: int = Query(365, ge=30, le=730),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_tenant_db),
+    org: Organization = Depends(get_tenant),
     user: User = Depends(require_roles(*_CFO_ROLES)),
     entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
@@ -1113,14 +1130,16 @@ async def drill_spend_concentration(
     the top-N vendors by spend with their share, invoice count,
     and a few representative invoice IDs the CFO can click into."""
     period_start = date.today() - timedelta(days=period_days)
+    reporting_currency = resolve_reporting_currency(org.settings)
     rows = await db.execute(
         apply_entity_scope(
             select(
                 Invoice.vendor_name,
-                func.sum(Invoice.amount).label("total"),
-                func.count(Invoice.id).label("invoice_count"),
-            )
-            .where(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(
                 Invoice.invoice_date >= period_start,
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
@@ -1129,30 +1148,40 @@ async def drill_spend_concentration(
                 # spend. Without this the drill-through total disagreed with
                 # the tile the CFO clicked from.
                 Invoice.status != InvoiceStatus.rejected.value,
-            )
-            .group_by(Invoice.vendor_name)
-            .order_by(func.sum(Invoice.amount).desc())
-            .limit(limit),
+            ),
             Invoice,
             entity_id,
         )
     )
-    rows_list = rows.all()
-    total = sum((Decimal(str(r[1])) for r in rows_list), Decimal("0"))
+    # Rolled into the org's reporting currency (not a naive SUM across
+    # currencies) — a vendor billing in more than one currency used to add
+    # e.g. USD + EUR as if they were one currency.
+    vendor_entries = vendor_rollup_to_reporting_currency(
+        [
+            {
+                "vendor": vendor,
+                "amount": amount,
+                "currency": currency,
+                "reporting_amount": rep_amt,
+                "reporting_currency": rep_cur,
+            }
+            for vendor, amount, currency, rep_amt, rep_cur in rows.all()
+        ],
+        reporting_currency=reporting_currency,
+    )[:limit]
+    total = sum((e.amount for e in vendor_entries), Decimal("0"))
     return {
         "period_days": period_days,
         "rows": [
             {
-                "vendor": r[0],
-                "amount": float(r[1]),
-                "share_pct": float(
-                    (Decimal(str(r[1])) / total * Decimal("100")).quantize(Decimal("0.1"))
-                )
+                "vendor": e.vendor,
+                "amount": float(e.amount),
+                "share_pct": float((e.amount / total * Decimal("100")).quantize(Decimal("0.1")))
                 if total > 0
                 else 0.0,
-                "invoice_count": int(r[2]),
+                "invoice_count": e.invoice_count,
             }
-            for r in rows_list
+            for e in vendor_entries
         ],
         "total_spend": float(total),
     }
@@ -1296,10 +1325,11 @@ async def export_report(
             apply_entity_scope(
                 select(
                     Invoice.vendor_name,
-                    func.count(Invoice.id).label("invoice_count"),
-                    func.coalesce(func.sum(Invoice.amount), 0).label("total"),
-                )
-                .where(
+                    Invoice.amount,
+                    Invoice.currency,
+                    Invoice.reporting_amount,
+                    Invoice.reporting_currency,
+                ).where(
                     Invoice.invoice_date >= period_start,
                     Invoice.vendor_name.isnot(None),
                     Invoice.vendor_name != "",
@@ -1308,14 +1338,28 @@ async def export_report(
                     # invoices were never real spend. Without this the export
                     # disagreed with both.
                     Invoice.status != InvoiceStatus.rejected.value,
-                )
-                .group_by(Invoice.vendor_name)
-                .order_by(func.sum(Invoice.amount).desc()),
+                ),
                 Invoice,
                 entity_id,
             )
         )
-        payload = EXPORTERS[report](rows.all())
+        # Rolled into the org's reporting currency (not a naive SUM across
+        # currencies) — a vendor billing in more than one currency used to
+        # add e.g. USD + EUR as if they were one currency.
+        vendor_entries = vendor_rollup_to_reporting_currency(
+            [
+                {
+                    "vendor": vendor,
+                    "amount": amount,
+                    "currency": currency,
+                    "reporting_amount": rep_amt,
+                    "reporting_currency": rep_cur,
+                }
+                for vendor, amount, currency, rep_amt, rep_cur in rows.all()
+            ],
+            reporting_currency=resolve_reporting_currency(org.settings if org else None),
+        )
+        payload = EXPORTERS[report](vendor_entries)
     elif report == "payment_register":
         rows = await db.execute(
             apply_entity_scope(

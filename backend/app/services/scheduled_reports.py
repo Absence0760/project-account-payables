@@ -102,8 +102,6 @@ async def _materialise_rows(
     from datetime import date
     from datetime import datetime as _dt
 
-    from sqlalchemy import func
-
     from app.models.invoice import Invoice, InvoiceStatus
     from app.models.payment import Payment
 
@@ -114,13 +112,29 @@ async def _materialise_rows(
         return exporter(rows.scalars().all())
 
     if schedule.report_type == "vendor_spend":
+        from app.database import control_session_factory
+        from app.models.organization import Organization
+        from app.services.currency_conversion import (
+            resolve_reporting_currency,
+            vendor_rollup_to_reporting_currency,
+        )
+
+        async with control_session_factory() as ctrl_db:
+            org = (
+                await ctrl_db.execute(
+                    select(Organization).where(Organization.id == schedule.organization_id)
+                )
+            ).scalar_one_or_none()
+        reporting_currency = resolve_reporting_currency(org.settings if org else None)
+
         rows = await db.execute(
             select(
                 Invoice.vendor_name,
-                func.count(Invoice.id).label("invoice_count"),
-                func.coalesce(func.sum(Invoice.amount), 0).label("total"),
-            )
-            .where(
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(
                 Invoice.invoice_date >= period_start,
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
@@ -129,10 +143,24 @@ async def _materialise_rows(
                 # were never real spend.
                 Invoice.status != InvoiceStatus.rejected.value,
             )
-            .group_by(Invoice.vendor_name)
-            .order_by(func.sum(Invoice.amount).desc())
         )
-        return exporter(rows.all())
+        # Rolled into the org's reporting currency (not a naive SUM across
+        # currencies) — a vendor billing in more than one currency used to
+        # add e.g. USD + EUR as if they were one currency.
+        vendor_entries = vendor_rollup_to_reporting_currency(
+            [
+                {
+                    "vendor": vendor,
+                    "amount": amount,
+                    "currency": currency,
+                    "reporting_amount": rep_amt,
+                    "reporting_currency": rep_cur,
+                }
+                for vendor, amount, currency, rep_amt, rep_cur in rows.all()
+            ],
+            reporting_currency=reporting_currency,
+        )
+        return exporter(vendor_entries)
 
     if schedule.report_type == "payment_register":
         rows = await db.execute(

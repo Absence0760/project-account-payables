@@ -20,6 +20,7 @@ from app.services.analytics import OPEN_AP_STATUSES
 from app.services.currency_conversion import (
     resolve_reporting_currency,
     rollup_from_grouped_rows,
+    vendor_rollup_to_reporting_currency,
 )
 from app.tenant import apply_entity_scope, get_entity_id, get_tenant, get_tenant_db
 
@@ -138,21 +139,39 @@ async def get_dashboard(
     }
 
     # Spend by vendor (top 10) — exclude rejected invoices (they were never
-    # real spend), matching the CFO analytics concentration figure.
-    vendor_spend_rows = await db.execute(
+    # real spend), matching the CFO analytics concentration figure. Rolled up
+    # into the org's reporting currency (not a naive SUM across currencies) —
+    # a vendor billing in more than one currency used to add e.g. USD + EUR
+    # as if they were one currency.
+    vendor_rows = await db.execute(
         _inv(
-            select(Invoice.vendor_name, func.sum(Invoice.amount).label("total"))
-            .where(
+            select(
+                Invoice.vendor_name,
+                Invoice.amount,
+                Invoice.currency,
+                Invoice.reporting_amount,
+                Invoice.reporting_currency,
+            ).where(
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
                 Invoice.status != "rejected",
             )
-            .group_by(Invoice.vendor_name)
-            .order_by(func.sum(Invoice.amount).desc())
-            .limit(10)
         )
     )
-    vendor_spend = [{"vendor": row[0], "amount": float(row[1])} for row in vendor_spend_rows.all()]
+    vendor_entries = vendor_rollup_to_reporting_currency(
+        [
+            {
+                "vendor": vendor,
+                "amount": amount,
+                "currency": currency,
+                "reporting_amount": rep_amt,
+                "reporting_currency": rep_cur,
+            }
+            for vendor, amount, currency, rep_amt, rep_cur in vendor_rows.all()
+        ],
+        reporting_currency=reporting_currency,
+    )
+    vendor_spend = [{"vendor": e.vendor, "amount": float(e.amount)} for e in vendor_entries[:10]]
 
     # Aging buckets — boundaries are days past the due date:
     # current (not yet due) / 1-30 / 31-60 / 61-90 / 90+.

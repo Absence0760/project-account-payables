@@ -122,11 +122,81 @@ async def test_scheduled_report_vendor_spend_excludes_rejected(realdb):
     from app.services.scheduled_reports import _generate_report_payload
 
     await _seed_vendor_invoices(realdb)
+    org_id = realdb.info(TENANT).org_id
     mk = realdb.sessionmaker(TENANT)
-    schedule = SimpleNamespace(report_type="vendor_spend", period_days=30)
+    schedule = SimpleNamespace(report_type="vendor_spend", period_days=30, organization_id=org_id)
     async with mk() as s:
         csv_text = await _generate_report_payload(s, schedule)
 
     rows = list(csv.DictReader(io.StringIO(csv_text)))
     row = next(r for r in rows if r["vendor_name"] == "ZZ Rejection Co")
     assert Decimal(row["total_amount"]) == Decimal("1000.00")
+
+
+# ---------------------------------------------------------------------------
+# Issue #127 — a vendor billing in more than one currency was summed with a
+# naive SQL SUM(amount), silently adding face values across currencies (e.g.
+# a $1000 USD invoice + a €1000 invoice reported as "2000" instead of the
+# correctly-converted USD total). This vendor has one USD invoice and one EUR
+# invoice with a pre-materialized (locked) USD reporting amount; the naive
+# bug would report 2000.00 on both the dashboard and the CFO concentration
+# tile — the fix must report the converted total instead.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_multi_currency_vendor(realdb):
+    org_id = realdb.info(TENANT).org_id
+    mk = realdb.sessionmaker(TENANT)
+    today = date.today()
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                entity_id=ent,
+                invoice_number="FX-USD-1",
+                vendor_name="Global Supply Co",
+                amount=Decimal("1000.00"),
+                currency="USD",
+                status=InvoiceStatus.approved,
+                invoice_date=today,
+            )
+        )
+        s.add(
+            Invoice(
+                organization_id=org_id,
+                entity_id=ent,
+                invoice_number="FX-EUR-1",
+                vendor_name="Global Supply Co",
+                amount=Decimal("1000.00"),
+                currency="EUR",
+                # Locked at extraction/materialization time — not the naive
+                # face value the old SUM(amount) bug would have added in.
+                reporting_currency="USD",
+                reporting_amount=Decimal("1086.96"),
+                status=InvoiceStatus.approved,
+                invoice_date=today,
+            )
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_vendor_spend_converts_mixed_currency_invoices(realdb):
+    await _seed_multi_currency_vendor(realdb)
+    async with realdb.client(key=TENANT, role="admin") as c:
+        body = (await c.get("/api/dashboard")).json()
+    by_vendor = {v["vendor"]: v["amount"] for v in body["vendor_spend"]}
+    # Correctly converted total (1000.00 + 1086.96), not the naive face-value
+    # sum of 2000.00 a SUM(amount) across currencies would produce.
+    assert by_vendor.get("Global Supply Co") == 2086.96
+
+
+@pytest.mark.asyncio
+async def test_cfo_concentration_converts_mixed_currency_invoices(realdb):
+    await _seed_multi_currency_vendor(realdb)
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        body = (await c.get("/api/analytics/cfo")).json()
+    conc = body["supplier_concentration"]
+    assert conc["largest_vendor"] == "Global Supply Co"
+    assert Decimal(str(conc["total_spend"])) == Decimal("2086.96")
