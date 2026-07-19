@@ -83,7 +83,9 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
    go in the private `Absence0760/infra-secrets` repo (per-project subdir +
    per-project KMS key), never committed here. The EC2 instance profile gets
    `kms:Decrypt` + scoped S3 access, so no static AWS keys live on the box;
-   the entrypoint decrypts to env at boot (`set -a; . <(sops -d …); set +a`).
+   `deploy/deploy.sh` decrypts the VM's copy (`deploy/.env.sops`) host-side to
+   the gitignored `deploy/.env` on every deploy — the compose file reads it
+   via `env_file` + interpolation. The contract is `deploy/env.example`.
 5. **Manual deploys.** SSH in: `git pull`, rebuild, migrate, restart (script
    below). `aws-deploy.yml` stays disarmed (`AWS_DEPLOY_ENABLED` unset) until
    the ECS build-out exists.
@@ -109,34 +111,40 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
   group: 80/443 from anywhere, 22 from your IP (or SSM Session Manager and no
   22 at all).
 - Instance profile: `kms:Decrypt` on the sops key; `s3:GetObject/PutObject/
-  ListBucket` on the invoice-files, audit-logs, and backups buckets.
-- Install docker + compose plugin; add 2 GB swap.
+  ListBucket` on the invoice-files, audit-logs, and backups buckets;
+  `ses:SendEmail` if using SES.
+- **IMDSv2 hop limit = 2**, or containers can't reach the instance-profile
+  credentials through Docker's NAT (`aws ec2 modify-instance-metadata-options
+  --http-tokens required --http-put-response-hop-limit 2`).
+- Install docker + compose plugin, git, Node 20 + pnpm, `sops`, AWS CLI v2;
+  add 2 GB swap.
 - DNS: `A` records for `app.<domain>`, `api.<domain>`, and each tenant
   subdomain (`acme.app.<domain>`) → the instance IP.
 
-### 2. Production compose file (to be added under `deploy/`)
+### 2. Production compose stack (`deploy/compose.prod.yml` — built)
 
-A `deploy/compose.prod.yml` with four services — this file does not exist yet
-and is the main implementation task of this plan:
+Four services (see [`deploy/README.md`](../deploy/README.md) for operations):
 
 - `postgres` — `pgvector/pgvector:pg16`, volume-backed, **no host port**
-  (compose-network only), real password.
+  (compose-network only); password from the sops env.
 - `redis` — `redis:7-alpine` with `--appendonly yes`, no host port.
 - `api` — built from `backend/Dockerfile` (works on arm64; the lock resolves
   universally — if an arm64 wheel gap ever bites, fall back to an x86
-  `t3a.small`, ~$14). Entrypoint: decrypt sops env → `alembic upgrade head` is
-  **not** run here (see deploy script) → `uvicorn app.main:app` (the production
-  entrypoint — not `main.py`).
+  `t3a.small`, ~$14). Runs the image CMD, `uvicorn app.main:app` (the
+  production entrypoint — not `main.py`). `AP_DATABASE_URL` / `AP_REDIS_URL`
+  are derived in the compose file from `POSTGRES_PASSWORD`, so the DB
+  password lives in exactly one sops entry.
 - `caddy` — ports 80/443, mounts the built `frontend/build` as the site root
-  and a `Caddyfile`:
-  - `app.<domain>`, `acme.app.<domain>`, … → `root` + `file_server` +
-    SPA fallback (`try_files {path} /index.html`)
+  plus `deploy/Caddyfile` (domains via env) and the per-VM, gitignored
+  `deploy/tenants.caddy` host list (one block per tenant subdomain —
+  per-host HTTP-01 certs, no DNS plugin):
+  - `app.<domain>` + each tenant host → SPA (`try_files {path} /index.html`)
   - `api.<domain>` → `reverse_proxy api:8000`
 
-Frontend build (on the VM or locally, artifact rsynced up):
-`PUBLIC_API_URL=https://api.<domain> pnpm -C frontend build`
+The frontend is built by the deploy script with
+`PUBLIC_API_URL=https://<API_DOMAIN>` baked in.
 
-### 3. Backend env (the sops-managed `.env`)
+### 3. Backend env (the sops-managed env — contract: `deploy/env.example`)
 
 Beyond the committed defaults, the deployed env sets at minimum:
 
@@ -144,9 +152,8 @@ Beyond the committed defaults, the deployed env sets at minimum:
 |---|---|
 | `AP_ENVIRONMENT` | `production` (arms hCaptcha enforcement on signup) |
 | `AP_SECRET_KEY` | `openssl rand -hex 32` |
-| `AP_DATABASE_URL` | `postgresql+asyncpg://…@postgres:5432/account_payables` |
-| `AP_REDIS_URL` | `redis://redis:6379` |
-| `AP_S3_BUCKET` | invoice-files bucket (no `AP_S3_ENDPOINT_URL`) |
+| `POSTGRES_PASSWORD` | `openssl rand -hex 24` (compose derives `AP_DATABASE_URL` / `AP_REDIS_URL` from it — don't set those) |
+| `AP_S3_BUCKET` | invoice-files bucket; set `AP_S3_ENDPOINT_URL` / `AP_S3_ACCESS_KEY` / `AP_S3_SECRET_KEY` **empty** → real S3 via the instance-profile credential chain |
 | `AP_MFA_ENABLED` / `AP_HSTS_ENABLED` | `true` / `true` |
 | `AP_PUBLIC_URL` / `AP_API_PUBLIC_URL` | `https://app.<domain>` / `https://api.<domain>` |
 | `AP_TENANT_URL_TEMPLATE` | `https://{slug}.app.<domain>` |
@@ -164,33 +171,28 @@ request production access, or skip self-service signup at first and provision
 tenants by CLI (`python scripts/create_tenant.py …`), leaving email on
 `console` until SES clears.
 
-### 4. First boot
+### 4. First boot + deploys (`deploy/deploy.sh` — built)
 
-```bash
-docker compose -f deploy/compose.prod.yml up -d postgres redis && docker compose -f deploy/compose.prod.yml run --rm api alembic upgrade head && docker compose -f deploy/compose.prod.yml up -d
-```
+Copy the sops env onto the VM as `deploy/.env.sops`, then run
+`deploy/deploy.sh`: it pulls main, decrypts secrets, builds the frontend
+(`PUBLIC_API_URL` baked from `API_DOMAIN`) and the backend image, runs
+`alembic upgrade head && python scripts/migrate_all_tenants.py` **before**
+the new API serves traffic (same ordering contract as the future ECS
+pipeline), then rolls the containers and reloads Caddy. Flags: `--no-pull`,
+`--backend-only`, `--frontend-only`.
 
-Then create the first tenant with `create_tenant.py`, add its subdomain to DNS
-+ the Caddyfile, `docker compose exec caddy caddy reload`. Do **not** run
-`scripts/seed.py` (demo data) in prod.
+Then create the first tenant with `create_tenant.py`, add its subdomain to
+DNS + `deploy/tenants.caddy`, and reload Caddy — exact commands in
+[`deploy/README.md`](../deploy/README.md). Do **not** run `scripts/seed.py`
+(demo data) in prod.
 
-### 5. Deploy script (`deploy/deploy.sh`, to be added)
+### 5. Backups (`deploy/backup.sh` — built; this is the whole DR story)
 
-One SSH-able script, run on the VM:
-
-```bash
-git pull && docker compose -f deploy/compose.prod.yml build api && docker compose -f deploy/compose.prod.yml run --rm api sh -c "alembic upgrade head && python scripts/migrate_all_tenants.py" && docker compose -f deploy/compose.prod.yml up -d api && PUBLIC_API_URL=https://api.<domain> pnpm -C frontend build
-```
-
-Migrations run **before** the new API serves traffic, and fan out to every
-tenant DB — same ordering contract as the (future) ECS pipeline.
-
-### 6. Backups (this is the whole DR story — do not skip)
-
-- Nightly cron: `pg_dumpall` (or per-DB `pg_dump` of `account_payables` + every
-  `ap_*`) → gzip → `aws s3 cp` to a versioned backups bucket with a lifecycle
-  rule (e.g. expire after 90 days). The instance profile already has the
-  access.
+- Nightly cron (line in `deploy/README.md`): dumps role globals + per-DB
+  `pg_dump -Fc` of `account_payables` and every `ap_*` tenant DB, streamed
+  straight to a versioned backups bucket (nothing persists on disk). Add an
+  S3 lifecycle rule (e.g. expire after 90 days). The instance profile already
+  has the access.
 - Weekly EBS snapshot (Data Lifecycle Manager, free to configure) as the
   coarse fallback.
 - **Test a restore once** before calling this done: new volume, restore dump,
@@ -208,12 +210,16 @@ tenant DB — same ordering contract as the (future) ECS pipeline.
 | Real payment volume | Enable `AP_PAYMENT_RECONCILE_ENABLED`, sanctions/audit-shipping sweeps, and revisit the full architecture doc |
 | >1 instance needed | The full `production-deployment.md` build-out — ECS/ALB/RDS/ElastiCache; the compose file retires |
 
-## Open implementation tasks
+## Implementation status
 
-The plan above needs these repo additions (none exist yet):
+The deploy files are **built** and live under [`deploy/`](../deploy/):
+`compose.prod.yml`, `Caddyfile` (+ `tenants.caddy.example`), `deploy.sh`,
+`backup.sh`, and `env.example` (the sops env contract). Also shipped: the S3
+client factory now falls back to real AWS + the instance-profile credential
+chain when `AP_S3_ENDPOINT_URL` and the static keys are set empty (previously
+it always passed the MinIO dev defaults, so the "omit the endpoint for real
+S3" story couldn't work).
 
-1. `deploy/compose.prod.yml` + `deploy/Caddyfile` + `deploy/deploy.sh`
-2. Backup cron script (`deploy/backup.sh`)
-3. Terraform for the VM + instance profile (optional — clicking it out in the
-   console is defensible at this scale; the S3/KMS module in `infra/` already
-   exists)
+Still optional / not built: Terraform for the VM + instance profile —
+clicking it out in the console is defensible at this scale; the S3/KMS module
+in `infra/` already exists.

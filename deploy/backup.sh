@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Nightly Postgres backup to S3 (docs/minimal-deployment.md § Backups).
+# Dumps role definitions plus the control plane and EVERY ap_* tenant DB
+# (pg_dump custom format, already compressed), streaming straight to S3 —
+# nothing persists on local disk. Credentials come from the EC2 instance
+# profile; the target bucket from BACKUP_S3_BUCKET (env, or deploy/.env).
+#
+# Cron (see deploy/README.md):
+#   17 3 * * * /path/to/repo/deploy/backup.sh >> /var/log/ap-backup.log 2>&1
+set -euo pipefail
+cd "$(dirname "$0")"
+
+COMPOSE=(docker compose -f compose.prod.yml)
+
+BUCKET="${BACKUP_S3_BUCKET:-}"
+if [ -z "$BUCKET" ] && [ -f .env ]; then
+	BUCKET=$(grep -E '^BACKUP_S3_BUCKET=' .env | tail -1 | cut -d= -f2- || true)
+fi
+if [ -z "$BUCKET" ]; then
+	echo "BACKUP_S3_BUCKET not set (env var or deploy/.env)." >&2
+	exit 1
+fi
+
+STAMP=$(date -u +%F)
+PREFIX="s3://${BUCKET}/pg/${STAMP}"
+
+# Roles / globals — tiny, plain SQL.
+"${COMPOSE[@]}" exec -T postgres pg_dumpall -U postgres --globals-only |
+	gzip | aws s3 cp - "${PREFIX}/globals.sql.gz"
+
+DBS=$("${COMPOSE[@]}" exec -T postgres psql -U postgres -Atc \
+	"SELECT datname FROM pg_database WHERE datname = 'account_payables' OR datname LIKE 'ap\\_%' ORDER BY datname")
+
+for db in $DBS; do
+	"${COMPOSE[@]}" exec -T postgres pg_dump -U postgres -Fc "$db" |
+		aws s3 cp - "${PREFIX}/${db}.dump"
+done
+
+echo "backup complete: ${PREFIX} ($(echo "$DBS" | wc -w) databases + globals)"

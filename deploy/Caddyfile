@@ -1,0 +1,34 @@
+# Caddy config for the minimal single-VM deployment (docs/minimal-deployment.md).
+# Domains come from deploy/.env via the compose service's environment.
+# TLS is automatic per-host HTTP-01 — every hostname listed here (and in
+# tenants.caddy) gets its own Let's Encrypt certificate, so each needs a DNS
+# record pointing at this VM before Caddy can issue for it.
+
+{
+	email {$ACME_EMAIL}
+}
+
+# The static SvelteKit SPA. try_files matches adapter-static's
+# fallback: "index.html" — deep links rehydrate client-side.
+(spa) {
+	root * /srv
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	try_files {path} /index.html
+	file_server
+}
+
+# Bare app host — login / signup / marketing surface.
+{$APP_DOMAIN} {
+	import spa
+}
+
+# Backend API. The frontend is built with PUBLIC_API_URL=https://{$API_DOMAIN};
+# CORS for the tenant subdomains is the backend's job (AP_CORS_PRODUCTION_DOMAIN).
+{$API_DOMAIN} {
+	reverse_proxy api:8000
+}
+
+# One site block per tenant subdomain lives in the per-VM tenants.caddy
+# (gitignored — seeded from tenants.caddy.example by deploy.sh).
+import tenants.caddy
