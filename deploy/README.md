@@ -2,63 +2,62 @@
 
 Operational files for the ~$20/month deployment described in
 [`docs/minimal-deployment.md`](../docs/minimal-deployment.md) (read that
-first — it holds the architecture, cost model, and upgrade triggers).
+first — it holds the architecture, cost model, and the how-to-add-it-later
+paths for everything this footprint leaves out).
+
+The whole flow is four commands on a fresh VM:
+
+```
+./bootstrap-vm.sh                     # once: docker, compose, sops, swap, cron, IMDS fix
+# copy the sops env in as deploy/.env.sops, log out/in (docker group), then:
+./deploy.sh                           # every deploy: build, migrate, roll, verify
+./add-tenant.sh acme --name "Acme" --admin-email admin@acme.com
+```
 
 | File | Purpose |
 |---|---|
-| `compose.prod.yml` | Postgres (pgvector) + Redis + API + Caddy. No DB host ports; S3 is real AWS. |
+| `bootstrap-vm.sh` | One-time, idempotent VM setup (Amazon Linux 2023): docker + compose plugin + sops + AWS CLI, 2 GB swap, nightly backup cron, IMDSv2 hop-limit fix. Other distros get the manual list. |
+| `compose.prod.yml` | Postgres (pgvector) + Redis (AOF) + API + Caddy. No DB host ports; S3 is real AWS. API healthcheck lets deploys verify themselves. `AP_DATABASE_URL`/`AP_REDIS_URL` are override seams for RDS/ElastiCache later. |
 | `Caddyfile` | TLS + static SPA + `api.<domain>` reverse proxy. Domains via env. |
-| `tenants.caddy.example` | Template for the per-VM tenant host list (`tenants.caddy`, gitignored). |
-| `deploy.sh` | Pull → decrypt secrets → build frontend + backend → migrate (all tenant DBs) → roll containers. |
-| `backup.sh` | Nightly pg dumps (control plane + every `ap_*` DB) streamed to S3. |
-| `env.example` | Contract for the sops-encrypted env. |
+| `tenants.caddy.example` | Template for the per-VM tenant host list (`tenants.caddy`, gitignored). `add-tenant.sh` maintains it — manual edits rarely needed. |
+| `deploy.sh` | Preflight → pull → decrypt secrets → dockerized frontend build (no Node/pnpm on the VM) → backend build → migrate (control plane + all tenants) **before** rolling → `up -d --wait` → Caddy reload. Flags: `--no-pull`, `--backend-only`, `--frontend-only`. |
+| `add-tenant.sh` | Tenant DB + org + admin user (same `provision_tenant` path as signup) + Caddy host block + reload, in one shot. Generates a temp password (first-login change forced) unless `--admin-password` given. |
+| `backup.sh` | Nightly pg dumps (globals + control plane + every `ap_*` DB) streamed to S3. Cron installed by bootstrap. |
+| `env.example` | Contract for the sops-encrypted env — `deploy.sh` validates the required keys against it. |
 
-## VM prerequisites (once)
+## Before the VM (once per project)
 
-- EC2 `t4g.small` (or similar), 30 GB gp3, ports 80/443 open; 2 GB swap.
-- Installed: docker + compose plugin, git, Node 20 + pnpm (Corepack), `sops`,
-  AWS CLI v2.
-- Instance profile: `kms:Decrypt` on the project sops key; S3 read/write on
-  the invoice-files, audit-logs, and backup buckets; `ses:SendEmail` if using
-  SES.
-- **IMDSv2 hop limit**: containers cannot reach instance-profile credentials
-  through Docker's NAT with the default hop limit of 1. Fix once:
-  `aws ec2 modify-instance-metadata-options --instance-id <id> --http-tokens required --http-put-response-hop-limit 2`
-- Clone this repo (e.g. `~/project-account-payables`).
-- DNS `A` records → this VM: `app.<domain>`, `api.<domain>`, and one per
-  tenant subdomain.
-
-## Secrets
-
-Author a real-valued copy of `env.example`, encrypt it with sops into the
-**private** `infra-secrets` repo (per-project subdir + KMS key — see
-`~/github/project-mgmt/docs/secrets-management.md`), then copy the encrypted
-file onto the VM as `deploy/.env.sops`. `deploy.sh` decrypts it to
-`deploy/.env` on every run; both are gitignored. Never commit either here —
-this repo is public.
-
-## First boot
-
-1. `./deploy.sh` — builds everything, runs migrations, starts the stack.
-2. Create the first tenant (no demo seed in prod — don't run `seed.py`):
-   `docker compose -f compose.prod.yml exec api python scripts/create_tenant.py --name "Acme" --slug acme --admin-email admin@acme.com --admin-password <temp>`
-3. Add the tenant's DNS record, append its block to `tenants.caddy` (see the
-   example file), then:
-   `docker compose -f compose.prod.yml exec caddy caddy reload --config /etc/caddy/Caddyfile`
+- AWS account + the `infra/` Terraform module applied (S3 buckets, KMS).
+- EC2 `t4g.small` (Amazon Linux 2023 arm64 recommended), 30 GB gp3, ports
+  80/443 open. Instance profile: `kms:Decrypt` on the sops key; S3 read/write
+  on the invoice-files, audit-logs, and backup buckets; `ses:SendEmail` if
+  using SES; ideally `ec2:ModifyInstanceMetadataOptions` so bootstrap can fix
+  the IMDS hop limit itself.
+- DNS: three records → this VM: `app.<domain>`, `api.<domain>`, and a
+  **wildcard** `*.app.<domain>` (the wildcard makes tenant onboarding
+  DNS-free; it needs no wildcard certificate — Caddy issues per-host certs).
+- Secrets: author a real-valued copy of `env.example`, encrypt with sops into
+  the **private** `infra-secrets` repo (per-project subdir + KMS key — see
+  `~/github/project-mgmt/docs/secrets-management.md`), copy the encrypted
+  file onto the VM as `deploy/.env.sops`. Never commit either file here —
+  this repo is public.
 
 ## Deploys
 
-`./deploy.sh` (flags: `--no-pull`, `--backend-only`, `--frontend-only`).
-Migrations always run before the new API serves traffic and fan out to every
-tenant DB.
+`./deploy.sh` — it preflights its own prerequisites and required env keys,
+runs migrations before the new API serves traffic, and fails loudly (via the
+compose healthcheck) if the API doesn't come up. If the build or migration
+step fails, the previously-running containers keep serving.
+
+## Tenants
+
+`./add-tenant.sh <slug> --name "Company" --admin-email admin@company.com` —
+provisions everything and prints the login URL + temp password. Don't run
+`scripts/seed.py` (demo data) in prod.
 
 ## Backups
 
-Cron it nightly (this is the DR story — do not skip):
-
-```
-17 3 * * * /home/ec2-user/project-account-payables/deploy/backup.sh >> /var/log/ap-backup.log 2>&1
-```
-
-Restore a single DB (test this once before calling backups done):
+Installed by bootstrap as `/etc/cron.d/ap-backup` (03:17 UTC nightly,
+logging to `/var/log/ap-backup.log`). Restore a single DB (test this once
+before calling backups done):
 `aws s3 cp s3://<bucket>/pg/<date>/<db>.dump - | docker compose -f compose.prod.yml exec -T postgres pg_restore -U postgres --create -d postgres`

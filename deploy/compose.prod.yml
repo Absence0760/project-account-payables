@@ -49,12 +49,13 @@ services:
     # All AP_* config + secrets come from the decrypted sops env.
     env_file: .env
     environment:
-      # Derived here so the DB password lives in exactly one sops entry.
-      # `environment` wins over env_file, so a stray AP_DATABASE_URL in the
-      # sops file can't point the app elsewhere. Keep POSTGRES_PASSWORD
-      # URL-safe (e.g. `openssl rand -hex 24`).
-      AP_DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/account_payables
-      AP_REDIS_URL: redis://redis:6379
+      # Defaults derive from the local containers so the DB password lives in
+      # exactly one sops entry (keep POSTGRES_PASSWORD URL-safe, e.g.
+      # `openssl rand -hex 24`). These are the UPGRADE SEAMS: setting
+      # AP_DATABASE_URL / AP_REDIS_URL in the sops env overrides them, which
+      # is the whole migration to RDS / ElastiCache later — no compose edit.
+      AP_DATABASE_URL: ${AP_DATABASE_URL:-postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/account_payables}
+      AP_REDIS_URL: ${AP_REDIS_URL:-redis://redis:6379}
       # boto3 (S3 / SES) resolves credentials from the EC2 instance profile;
       # the region must be explicit. NOTE: IMDSv2 needs hop limit 2 for
       # containers — see deploy/README.md.
@@ -64,6 +65,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Lets `deploy.sh` roll out with `up -d --wait`: the deploy fails loudly
+    # if the API never comes healthy instead of leaving a silently-broken box.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     # Entrypoint is the image CMD: uvicorn app.main:app (the production
     # entrypoint — main.py with dotenv is local-dev only).
 

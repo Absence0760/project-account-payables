@@ -107,19 +107,22 @@ resize is a stop → change-type → start. Add 2 GB of swap either way.
 
 ### 1. VM
 
-- EC2 `t4g.small`, Amazon Linux 2023 or Debian arm64, 30 GB gp3, security
-  group: 80/443 from anywhere, 22 from your IP (or SSM Session Manager and no
-  22 at all).
+- EC2 `t4g.small`, Amazon Linux 2023 arm64, 30 GB gp3, security group: 80/443
+  from anywhere, 22 from your IP (or SSM Session Manager and no 22 at all).
 - Instance profile: `kms:Decrypt` on the sops key; `s3:GetObject/PutObject/
   ListBucket` on the invoice-files, audit-logs, and backups buckets;
-  `ses:SendEmail` if using SES.
-- **IMDSv2 hop limit = 2**, or containers can't reach the instance-profile
-  credentials through Docker's NAT (`aws ec2 modify-instance-metadata-options
-  --http-tokens required --http-put-response-hop-limit 2`).
-- Install docker + compose plugin, git, Node 20 + pnpm, `sops`, AWS CLI v2;
-  add 2 GB swap.
-- DNS: `A` records for `app.<domain>`, `api.<domain>`, and each tenant
-  subdomain (`acme.app.<domain>`) → the instance IP.
+  `ses:SendEmail` if using SES; ideally `ec2:ModifyInstanceMetadataOptions`
+  so bootstrap can fix the IMDSv2 hop limit itself (containers can't reach
+  instance-profile credentials through Docker's NAT at the default limit
+  of 1).
+- Run **`deploy/bootstrap-vm.sh`** — one idempotent script: docker + compose
+  plugin + sops + AWS CLI, 2 GB swap, the nightly backup cron, and the IMDS
+  hop-limit fix. Node/pnpm are *not* needed on the VM — the frontend builds
+  inside a `node:20` container.
+- DNS: three records → the instance IP: `app.<domain>`, `api.<domain>`, and a
+  **wildcard `*.app.<domain>`** so tenant onboarding never touches DNS again.
+  (A DNS wildcard needs no wildcard *certificate* — Caddy still issues
+  ordinary per-host HTTP-01 certs.)
 
 ### 2. Production compose stack (`deploy/compose.prod.yml` — built)
 
@@ -137,7 +140,8 @@ Four services (see [`deploy/README.md`](../deploy/README.md) for operations):
 - `caddy` — ports 80/443, mounts the built `frontend/build` as the site root
   plus `deploy/Caddyfile` (domains via env) and the per-VM, gitignored
   `deploy/tenants.caddy` host list (one block per tenant subdomain —
-  per-host HTTP-01 certs, no DNS plugin):
+  per-host HTTP-01 certs, no DNS plugin; maintained by `add-tenant.sh`, not
+  by hand):
   - `app.<domain>` + each tenant host → SPA (`try_files {path} /index.html`)
   - `api.<domain>` → `reverse_proxy api:8000`
 
@@ -174,21 +178,27 @@ tenants by CLI (`python scripts/create_tenant.py …`), leaving email on
 ### 4. First boot + deploys (`deploy/deploy.sh` — built)
 
 Copy the sops env onto the VM as `deploy/.env.sops`, then run
-`deploy/deploy.sh`: it pulls main, decrypts secrets, builds the frontend
-(`PUBLIC_API_URL` baked from `API_DOMAIN`) and the backend image, runs
+`deploy/deploy.sh`: it preflights its own prerequisites and the required env
+keys (clear errors before any work happens), pulls main, decrypts secrets,
+builds the frontend in a `node:20` container (`PUBLIC_API_URL` baked from
+`API_DOMAIN`; pnpm store cached in a volume) and the backend image, runs
 `alembic upgrade head && python scripts/migrate_all_tenants.py` **before**
 the new API serves traffic (same ordering contract as the future ECS
-pipeline), then rolls the containers and reloads Caddy. Flags: `--no-pull`,
-`--backend-only`, `--frontend-only`.
+pipeline), then rolls the containers with `up -d --wait` — the deploy fails
+loudly if the API healthcheck never passes, and a failed build or migration
+leaves the previous containers serving. Flags: `--no-pull`, `--backend-only`,
+`--frontend-only`.
 
-Then create the first tenant with `create_tenant.py`, add its subdomain to
-DNS + `deploy/tenants.caddy`, and reload Caddy — exact commands in
-[`deploy/README.md`](../deploy/README.md). Do **not** run `scripts/seed.py`
-(demo data) in prod.
+Tenants are one command each: `deploy/add-tenant.sh <slug> --name "Company"
+--admin-email admin@company.com` provisions the tenant (the same
+`provision_tenant` path self-service signup uses), appends the Caddy host
+block, and reloads — no DNS step thanks to the wildcard record. Do **not**
+run `scripts/seed.py` (demo data) in prod.
 
 ### 5. Backups (`deploy/backup.sh` — built; this is the whole DR story)
 
-- Nightly cron (line in `deploy/README.md`): dumps role globals + per-DB
+- Nightly cron (installed by `bootstrap-vm.sh` as `/etc/cron.d/ap-backup`):
+  dumps role globals + per-DB
   `pg_dump -Fc` of `account_payables` and every `ap_*` tenant DB, streamed
   straight to a versioned backups bucket (nothing persists on disk). Add an
   S3 lifecycle rule (e.g. expire after 90 days). The instance profile already
@@ -200,25 +210,35 @@ DNS + `deploy/tenants.caddy`, and reload Caddy — exact commands in
 - RPO ≈ 24h, RTO ≈ hours (new VM + restore). If a customer needs better, that
   is the RDS trigger below.
 
-## Upgrade triggers
+## What's left out — and how to add it later
 
-| Signal | Move |
-|---|---|
-| A customer asks about uptime SLA / RPO < 24h | Postgres → RDS (single-AZ first, ~$15–30/mo) |
-| Extraction/OCR saturates the VM | `AP_EXTRACTION_MODE=lambda` + the SQS/Lambda pair (already implemented in code) |
-| Tenant churn makes the Caddy host list annoying | Wildcard DNS-01 cert (Caddy Route 53 plugin) or CloudFront + ACM |
-| Real payment volume | Enable `AP_PAYMENT_RECONCILE_ENABLED`, sanctions/audit-shipping sweeps, and revisit the full architecture doc |
-| >1 instance needed | The full `production-deployment.md` build-out — ECS/ALB/RDS/ElastiCache; the compose file retires |
+Every omission has a deliberate seam, so graduating one piece never means
+rebuilding the stack:
+
+| Left out | Trigger | How to add it |
+|---|---|---|
+| Managed Postgres (RDS) | Uptime SLA / RPO < 24h asks | Create RDS PG16 (pgvector supported), restore the latest `backup.sh` dumps, set `AP_DATABASE_URL` in the sops env — the compose default is an **override seam**, no compose edit — redeploy, then `docker compose stop postgres`. ~$15–30/mo. |
+| Managed Redis (ElastiCache) | Same HA push | Same seam: set `AP_REDIS_URL` in the sops env, redeploy. Redis holds only ephemeral state (blocklist / MFA / rate limits) — no data migration. |
+| SQS + Lambda async workers | Extraction/OCR saturates the VM | Already implemented and bundled in the same image (`awslambdaric`). Provision queues + functions (production-deployment.md § Lambda workers), flip `AP_EXTRACTION_MODE=lambda` + `AP_SQS_*_QUEUE_URL` in the sops env, redeploy. Same pattern for the ERP and audit modes. |
+| CloudFront + S3 frontend | Global latency / offloading the VM | The build artifact is identical. Arm the committed `aws-deploy.yml` pipeline (its § Arming checklist), then drop the SPA hosts from Caddy. |
+| Wildcard TLS certificate | Tenant count makes per-host certs noisy (Let's Encrypt ~50 certs/week limit) | DNS already wildcards; swap the Caddy image for an xcaddy build with the Route 53 DNS plugin and replace `tenants.caddy` with one `*.app.<domain>` site block. |
+| Real provider adapters (payments, cards, AI extraction, ERP, sanctions…) | Going live with real money / real data | Per-org `Organization.settings.*` flips + sops keys — zero infrastructure. |
+| Background sweeps (payment reconciler, audit shipping, renewals, dunning…) | First real payments / compliance needs | `AP_*_ENABLED=true` in the sops env, redeploy. |
+| SES production access | Emailing unverified recipients (self-service signup) | AWS console request; until it clears, `AP_EMAIL_PROVIDER=console` + CLI-provisioned tenants. |
+| Multi-instance / ECS / ALB | >1 instance needed | The full `production-deployment.md` build-out; the compose file retires. Nothing here changes shape — the same image, env contract, DB schema, and S3 layout move onto ECS. |
 
 ## Implementation status
 
 The deploy files are **built** and live under [`deploy/`](../deploy/):
-`compose.prod.yml`, `Caddyfile` (+ `tenants.caddy.example`), `deploy.sh`,
-`backup.sh`, and `env.example` (the sops env contract). Also shipped: the S3
-client factory now falls back to real AWS + the instance-profile credential
-chain when `AP_S3_ENDPOINT_URL` and the static keys are set empty (previously
-it always passed the MinIO dev defaults, so the "omit the endpoint for real
-S3" story couldn't work).
+`bootstrap-vm.sh` (one-shot VM setup), `compose.prod.yml` (with API
+healthcheck + the RDS/ElastiCache override seams), `Caddyfile`
+(+ `tenants.caddy.example`), `deploy.sh` (preflight → build → migrate → roll
+→ verify), `add-tenant.sh` (tenant + Caddy + reload in one command),
+`backup.sh`, and `env.example` (the sops env contract, validated by
+deploy.sh). Also shipped: the S3 client factory now falls back to real AWS +
+the instance-profile credential chain when `AP_S3_ENDPOINT_URL` and the
+static keys are set empty (previously it always passed the MinIO dev
+defaults, so the "omit the endpoint for real S3" story couldn't work).
 
 Still optional / not built: Terraform for the VM + instance profile —
 clicking it out in the console is defensible at this scale; the S3/KMS module
