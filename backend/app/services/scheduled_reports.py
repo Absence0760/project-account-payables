@@ -104,7 +104,7 @@ async def _materialise_rows(
 
     from sqlalchemy import func
 
-    from app.models.invoice import Invoice
+    from app.models.invoice import Invoice, InvoiceStatus
     from app.models.payment import Payment
 
     period_start = date.today() - timedelta(days=schedule.period_days)
@@ -124,6 +124,10 @@ async def _materialise_rows(
                 Invoice.invoice_date >= period_start,
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
+                # Same population as the CFO concentration tile
+                # (get_cfo_analytics) and its API export — rejected invoices
+                # were never real spend.
+                Invoice.status != InvoiceStatus.rejected.value,
             )
             .group_by(Invoice.vendor_name)
             .order_by(func.sum(Invoice.amount).desc())

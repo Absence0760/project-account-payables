@@ -195,12 +195,23 @@ def export_invoice_register(invoices: Iterable) -> str:
 def export_vendor_spend(rows: Iterable) -> str:
     """Per-vendor rollup: name, invoice_count, total. The caller is
     responsible for the SQL aggregation; this function only knows
-    how to serialise the resulting rows. Each row is a 3-tuple
-    `(vendor_name, invoice_count, total)` OR an object with the
-    same attributes."""
+    how to serialise the resulting rows. Each row is a 3-item positional
+    sequence `(vendor_name, invoice_count, total)` — a plain tuple/list OR a
+    SQLAlchemy `Row` — OR an object exposing the same three as attributes.
+
+    A `Row` is NOT an `isinstance(tuple)` in SQLAlchemy 2.x (it implements
+    `Sequence`, not `tuple`), so branching on `isinstance(r, (tuple, list))`
+    silently missed every REAL caller (all three SQL call sites return
+    `Row`s) and fell into the attribute branch, whose `total_amount`/`amount`
+    attribute names don't match any of those queries' column labels either —
+    `total_amount` exported blank in production on every run. Duck-type on
+    `__getitem__` instead so `Row` and `tuple`/`list` share the positional
+    path; only an attribute-only object (e.g. a `SimpleNamespace` test
+    double) falls to the attribute branch.
+    """
     buf, w = _writer(["vendor_name", "invoice_count", "total_amount"])
     for r in rows:
-        if isinstance(r, (tuple, list)) and len(r) >= 3:
+        if hasattr(r, "__getitem__"):
             vendor, count, total = r[0], r[1], r[2]
         else:
             vendor = getattr(r, "vendor_name", None) or getattr(r, "vendor", None)

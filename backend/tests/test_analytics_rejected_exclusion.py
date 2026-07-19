@@ -9,8 +9,11 @@ consistent exclusion across both surfaces.
 
 from __future__ import annotations
 
+import csv
+import io
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -80,3 +83,50 @@ async def test_cfo_concentration_excludes_rejected(realdb):
     # The concentration denominator counts only the approved spend.
     assert conc["largest_vendor"] == "ZZ Rejection Co"
     assert Decimal(str(conc["total_spend"])) == Decimal("1000")
+
+
+# ---------------------------------------------------------------------------
+# Issue #126 — the CFO concentration tile (above) excluded rejected invoices,
+# but its own drill-through and the vendor_spend export/scheduled report did
+# NOT — so clicking from the tile into its drill-through, or exporting the
+# same figure, disagreed with the number the CFO started from.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concentration_drill_through_excludes_rejected(realdb):
+    await _seed_vendor_invoices(realdb)
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        body = (await c.get("/api/analytics/drill/spend_concentration")).json()
+    row = next(r for r in body["rows"] if r["vendor"] == "ZZ Rejection Co")
+    # Only the approved $1000 counts — matches the tile, not 10000 (1000+9000).
+    assert Decimal(str(row["amount"])) == Decimal("1000")
+    assert row["invoice_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_vendor_spend_export_excludes_rejected(realdb):
+    await _seed_vendor_invoices(realdb)
+    async with realdb.client(key=TENANT, role="cfo") as c:
+        resp = await c.get("/api/analytics/export/vendor_spend")
+    assert resp.status_code == 200
+    lines = resp.text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("vendor_name"))
+    rows = list(csv.DictReader(io.StringIO("\n".join(lines[start:]))))
+    row = next(r for r in rows if r["vendor_name"] == "ZZ Rejection Co")
+    assert Decimal(row["total_amount"]) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_scheduled_report_vendor_spend_excludes_rejected(realdb):
+    from app.services.scheduled_reports import _generate_report_payload
+
+    await _seed_vendor_invoices(realdb)
+    mk = realdb.sessionmaker(TENANT)
+    schedule = SimpleNamespace(report_type="vendor_spend", period_days=30)
+    async with mk() as s:
+        csv_text = await _generate_report_payload(s, schedule)
+
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    row = next(r for r in rows if r["vendor_name"] == "ZZ Rejection Co")
+    assert Decimal(row["total_amount"]) == Decimal("1000.00")

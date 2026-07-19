@@ -1124,6 +1124,11 @@ async def drill_spend_concentration(
                 Invoice.invoice_date >= period_start,
                 Invoice.vendor_name.isnot(None),
                 Invoice.vendor_name != "",
+                # Same population as the concentration tile this drills into
+                # (get_cfo_analytics) — rejected invoices were never real
+                # spend. Without this the drill-through total disagreed with
+                # the tile the CFO clicked from.
+                Invoice.status != InvoiceStatus.rejected.value,
             )
             .group_by(Invoice.vendor_name)
             .order_by(func.sum(Invoice.amount).desc())
@@ -1298,6 +1303,11 @@ async def export_report(
                     Invoice.invoice_date >= period_start,
                     Invoice.vendor_name.isnot(None),
                     Invoice.vendor_name != "",
+                    # Same population as the CFO concentration tile
+                    # (get_cfo_analytics) and its drill-through — rejected
+                    # invoices were never real spend. Without this the export
+                    # disagreed with both.
+                    Invoice.status != InvoiceStatus.rejected.value,
                 )
                 .group_by(Invoice.vendor_name)
                 .order_by(func.sum(Invoice.amount).desc()),
