@@ -143,16 +143,10 @@ async def run_extraction(
         logger.info("[extraction] Using adapter: %s", adapter.provider_name)
 
         # Fetch file bytes from S3/MinIO directly (authenticated)
-        import boto3 as _boto3
-
         from app.config import settings as app_settings
+        from app.services.storage import _get_client
 
-        s3 = _boto3.client(
-            "s3",
-            endpoint_url=app_settings.s3_endpoint_url,
-            aws_access_key_id=app_settings.s3_access_key,
-            aws_secret_access_key=app_settings.s3_secret_key,
-        )
+        s3 = _get_client()
         file_key = invoice.file_key or ""
         logger.info(
             "[extraction] Fetching file from S3: bucket=%s, key=%s",
