@@ -28,6 +28,12 @@ from app.services.positive_pay_adapters.dispatcher import register_positive_pay_
 _CHECK_ISSUE_HEADER = ["check_number", "payee", "amount", "issue_date", "account_number"]
 _ACH_HEADER = ["vendor_name", "routing_number", "account_number", "status"]
 
+# NOTE: this formatter deliberately does NOT apply the report_export.csv_safe_cell
+# formula-injection guard (CWE-1236). Positive Pay files are fixed-format bank
+# uploads consumed by the bank's machine matching — never opened as a
+# spreadsheet workflow — and a `'` prefix on the payee/vendor name would break
+# the bank's exact-match comparison and raise false fraud flags on every check.
+
 
 @register_positive_pay_formatter("csv")
 class CsvPositivePayFormatter(PositivePayFormatter):
