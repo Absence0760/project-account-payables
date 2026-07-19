@@ -131,7 +131,12 @@ AP_MFA_ENABLED=true
 
 # S3 (use real S3, not MinIO)
 AP_S3_BUCKET=your-invoice-bucket
-# Omit AP_S3_ENDPOINT_URL to use real AWS S3
+# Set the endpoint + static keys EMPTY to use real AWS S3 via the ambient
+# credential chain (task/instance role). The committed defaults point at
+# local MinIO, so merely omitting the vars keeps the localhost endpoint.
+AP_S3_ENDPOINT_URL=
+AP_S3_ACCESS_KEY=
+AP_S3_SECRET_KEY=
 
 # Dispatch — async via SQS in production
 AP_EXTRACTION_MODE=lambda
