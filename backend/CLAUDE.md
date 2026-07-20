@@ -52,6 +52,7 @@ Deep-dive docs live in `backend/docs/`:
 | Privacy — GDPR/CCPA DSAR export + right-to-erasure | `docs/privacy.md` |
 | Public Developer API (API keys + `/api/v1`) | `docs/public-api.md` |
 | Platform billing & metering (plans / subscriptions / entitlements) | `docs/billing.md` |
+| 1099 tracking + the card-rail (1099-K) exclusion | `docs/tax-1099.md` |
 
 Cross-cutting topics (auth, multi-tenancy, deployment) live at the repo root `../docs/`.
 
