@@ -265,6 +265,66 @@ def compute_experiment_results(
             notes=notes,
         )
 
+    zero_approvals = a.approved_count == 0 or b.approved_count == 0
+    if primary_metric == "time_to_approval_days" and zero_approvals:
+        # `median_time_to_approval_days` / `avg_time_to_approval_days` are averaged
+        # only over APPROVED invoices (see `_variant_metrics`); a variant with zero
+        # approvals has no real time-to-approval sample and `_variant_metrics`
+        # defaults it to Decimal("0.0"). Since this metric is lower-is-better, that
+        # fabricated 0.0 would otherwise beat a variant that genuinely approved
+        # things quickly — crowning a variant that approved nothing. Handle it
+        # explicitly instead of falling into the generic numeric comparison below.
+        if a.approved_count == 0 and b.approved_count == 0:
+            # Neither side has a real sample to compare on this metric — there's
+            # nothing to measure on either arm. We report `enough_data=False`
+            # (even though the completed-count sample-size gate above DID pass)
+            # rather than `winner="tie"`, because "tie" implies "equally good",
+            # which would misrepresent "we can't tell". This also keeps the
+            # existing `winner is None` <=> "not enough / not callable" contract
+            # (see the `ExperimentResults` docstring/comment) that the frontend
+            # (`routes/experiments/+page.svelte`) relies on: it renders any
+            # non-"tie" winner string as "Variant {winner} wins", so a bare
+            # `None` with `enough_data=True` would render as "Variant  wins"
+            # with no variant name. The real explanation is still surfaced via
+            # `rationale`, which the UI always shows regardless of `enough_data`.
+            return ExperimentResults(
+                variant_a=a,
+                variant_b=b,
+                primary_metric=primary_metric,
+                min_sample_per_variant=min_sample_per_variant,
+                enough_data=False,
+                winner=None,
+                rationale=(
+                    "Neither variant approved any invoices — time-to-approval "
+                    "isn't comparable when there's nothing to measure."
+                ),
+                notes=notes,
+            )
+
+        # Exactly one variant approved zero invoices. Its 0.0 median is a
+        # fabricated "no data" default, not a real measurement, so the variant
+        # that actually approved invoices wins outright regardless of the raw
+        # numeric comparison.
+        zero_variant, real_variant = (a, b) if a.approved_count == 0 else (b, a)
+        winner = real_variant.variant
+        rationale = (
+            f"Variant {winner} wins by default: variant {zero_variant.variant} "
+            f"approved 0 invoices, so its time-to-approval isn't a real "
+            f"measurement. Variant {winner} approved {real_variant.approved_count} "
+            f"invoice(s) with a median of {real_variant.median_time_to_approval_days} "
+            "days."
+        )
+        return ExperimentResults(
+            variant_a=a,
+            variant_b=b,
+            primary_metric=primary_metric,
+            min_sample_per_variant=min_sample_per_variant,
+            enough_data=True,
+            winner=winner,
+            rationale=rationale,
+            notes=notes,
+        )
+
     a_val = a.metric(primary_metric)
     b_val = b.metric(primary_metric)
     lower_is_better = primary_metric in _LOWER_IS_BETTER

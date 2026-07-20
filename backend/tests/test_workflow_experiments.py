@@ -148,6 +148,58 @@ def test_metrics_tie():
     assert res.winner == "tie"
 
 
+def test_metrics_zero_approvals_does_not_win_on_fabricated_zero_time():
+    # Issue #146: B rejects all 10 assigned invoices (0 approvals, so its
+    # median_time_to_approval_days defaults to a fabricated 0.0). A approves
+    # all 10 in 3.0 days. Time-to-approval is lower-is-better, so a naive
+    # comparison would crown B despite it approving nothing. A must win.
+    rows_a = [_row("approved", ttd=Decimal("3")) for _ in range(10)]
+    rows_b = [_row("rejected") for _ in range(10)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="time_to_approval_days", min_sample_per_variant=10
+    )
+    assert res.variant_b.approved_count == 0
+    assert res.variant_b.median_time_to_approval_days == Decimal("0.0")
+    assert res.enough_data is True
+    assert res.winner == VARIANT_A
+    assert "0 invoices" in res.rationale
+
+
+def test_metrics_both_zero_approvals_no_winner_called():
+    # Both variants reject 100% of their assigned invoices — each clears the
+    # completed-count sample threshold via rejections alone, but neither has a
+    # real time-to-approval sample. No winner should be fabricated.
+    rows_a = [_row("rejected") for _ in range(10)]
+    rows_b = [_row("rejected") for _ in range(10)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="time_to_approval_days", min_sample_per_variant=10
+    )
+    assert res.variant_a.approved_count == 0
+    assert res.variant_b.approved_count == 0
+    assert res.winner is None
+    assert res.rationale
+    assert "approved" in res.rationale.lower()
+
+
+def test_metrics_zero_approvals_special_case_does_not_affect_other_metrics():
+    # A non-default primary_metric (touchless_rate_pct) must be completely
+    # unaffected by the time-to-approval zero-approval special case, even when
+    # one variant has 0 approved invoices.
+    rows_a = [_row("rejected") for _ in range(10)]
+    rows_b = [_row("approved", auto=True, unmodified=True, ttd=Decimal("2")) for _ in range(10)]
+    res = compute_experiment_results(
+        rows_a, rows_b, primary_metric="touchless_rate_pct", min_sample_per_variant=10
+    )
+    assert res.variant_a.approved_count == 0
+    # touchless_rate_pct is over completed invoices; A's rejections give it a
+    # real (zero) rate here — not a fabricated one — so the plain comparison
+    # applies and B (100% touchless) wins normally.
+    assert res.enough_data is True
+    assert res.winner == VARIANT_B
+    assert res.variant_a.touchless_rate_pct == Decimal("0.0")
+    assert res.variant_b.touchless_rate_pct == Decimal("100.0")
+
+
 # ---------------------------------------------------------------------------
 # Variant-config shape validation (pure schema — no DB)
 # ---------------------------------------------------------------------------
