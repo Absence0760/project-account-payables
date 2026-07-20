@@ -8,6 +8,7 @@
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
+	import Money from '$lib/components/ui/Money.svelte';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { MessageKey } from '$lib/i18n/messages';
 	import type { ActiveSteps } from '$lib/stores/workflows.svelte';
@@ -585,6 +586,25 @@
 	let lineItemsDirty = $state(false);
 	let savingLines = $state(false);
 
+	/**
+	 * Outcome of `PUT /api/invoices/{id}/line-items`. The backend reconciles
+	 * the re-summed lines against the header and reports the verdict here —
+	 * money as exact decimal strings, never floats.
+	 */
+	interface LineItemsSaveResult {
+		saved: number;
+		line_items_total: string;
+		header_amount: string;
+		reconciles_with_header: boolean;
+	}
+
+	// Set when the last save came back NOT reconciling. The `invoice` prop is
+	// a snapshot taken when the row was clicked, so the `line_total_mismatch`
+	// warning the backend just raised is not visible on it until the modal is
+	// reopened — this response-driven banner is what makes the divergence
+	// visible to the person who caused it, immediately.
+	let lineTotalMismatch = $state<LineItemsSaveResult | null>(null);
+
 	// --- Contract link ---
 	interface ContractOption {
 		id: string;
@@ -668,7 +688,7 @@
 	async function saveLineItems() {
 		savingLines = true;
 		try {
-			await api.put(`/api/invoices/${invoice.id}/line-items`, lineItems.map((li, idx) => ({
+			const res = await api.put<LineItemsSaveResult>(`/api/invoices/${invoice.id}/line-items`, lineItems.map((li, idx) => ({
 				line_number: idx + 1,
 				item_code: li.item_code,
 				description: li.description,
@@ -679,7 +699,18 @@
 				gl_account: li.gl_account,
 			})));
 			lineItemsDirty = false;
-			toast(m('invoices.modal.toast.lineItemsSaved'), 'success');
+			// Surface the backend's reconciliation verdict inline instead of
+			// letting it stay invisible until the modal is reopened. A
+			// mismatch is a blocking condition downstream (the invoice can't
+			// enter a payment run), so it gets the persistent panel below the
+			// table, not just a transient toast.
+			lineTotalMismatch = res.reconciles_with_header ? null : res;
+			toast(
+				res.reconciles_with_header
+					? m('invoices.modal.toast.lineItemsSaved')
+					: m('invoices.modal.toast.lineItemsMismatch'),
+				res.reconciles_with_header ? 'success' : 'warning'
+			);
 			await loadLineItems();
 		} catch (err) {
 			toast(err instanceof Error ? err.message : m('invoices.modal.toast.saveFailed'), 'error');
@@ -1252,6 +1283,31 @@
 								<button type="button" class="btn-save-lines" disabled={savingLines} onclick={saveLineItems}>
 									{savingLines ? m('invoices.modal.lineItems.saving') : m('invoices.modal.lineItems.save')}
 								</button>
+							</div>
+						{/if}
+						{#if lineTotalMismatch}
+							<!-- role="alert" so the divergence is announced the moment the
+							     save returns; the heading + the "cannot enter a payment run"
+							     line carry the meaning in text, never by colour alone. -->
+							<div class="line-total-mismatch" role="alert" data-testid="line-total-mismatch">
+								<div class="ltm-head">
+									<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+										<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+									</svg>
+									<span class="ltm-title">{m('invoices.modal.lineItems.mismatchTitle')}</span>
+								</div>
+								<dl class="ltm-figures">
+									<div>
+										<dt>{m('invoices.modal.lineItems.mismatchLinesLabel')}</dt>
+										<dd><Money amount={lineTotalMismatch.line_items_total} currency={invoice.currency} mono /></dd>
+									</div>
+									<div>
+										<dt>{m('invoices.modal.lineItems.mismatchHeaderLabel')}</dt>
+										<dd><Money amount={lineTotalMismatch.header_amount} currency={invoice.currency} mono /></dd>
+									</div>
+								</dl>
+								<p class="ltm-blocking">{m('invoices.modal.lineItems.mismatchBlocking')}</p>
+								<p class="ltm-hint">{m('invoices.modal.lineItems.mismatchHint')}</p>
 							</div>
 						{/if}
 					</div>
@@ -2227,6 +2283,73 @@
 		display: flex;
 		justify-content: flex-start;
 		margin-top: 8px;
+	}
+
+	/* Line-total reconciliation failure. Styled like the `error`-severity
+	   warning item, but persistent + structured: it names both figures and
+	   states the money consequence (no payment run) in text — the red tone is
+	   reinforcement, never the sole signal (WCAG 1.4.1). */
+	.line-total-mismatch {
+		margin-top: 10px;
+		padding: 10px 12px;
+		border: 1px solid rgba(240, 70, 70, 0.45);
+		border-left-width: 3px;
+		border-radius: 6px;
+		background: rgba(240, 70, 70, 0.07);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.ltm-head {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		color: #f06464;
+	}
+
+	.ltm-title {
+		font-size: 0.82rem;
+		font-weight: 600;
+	}
+
+	.ltm-figures {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px 28px;
+		margin: 0;
+	}
+
+	.ltm-figures div {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.ltm-figures dt {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.ltm-figures dd {
+		margin: 0;
+		font-size: 0.9rem;
+		font-weight: 600;
+	}
+
+	.ltm-blocking {
+		margin: 0;
+		font-size: 0.78rem;
+		font-weight: 600;
+	}
+
+	.ltm-hint {
+		margin: 0;
+		font-size: 0.76rem;
+		color: var(--text-muted);
+		line-height: 1.45;
 	}
 
 	.btn-save-lines {

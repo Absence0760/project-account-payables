@@ -173,7 +173,7 @@ Grouped into subfolders by role. Import with the full path, e.g.
 The visual styling for all of the above lives **globally in `src/app.css`** (class-scoped: `.workspace`, `.grid-container td`, `.filter-chip`, `.modal`, `.kpi`, …) so route pages carry no duplicated `<style>`. Feature components below keep their own scoped CSS (Svelte's `.svelte-<hash>` outranks the bare-class globals).
 
 **`modals/` — feature dialogs:**
-- `InvoiceModal.svelte` — invoice detail/edit modal
+- `InvoiceModal.svelte` — invoice detail/edit modal. **Line-total reconciliation:** `saveLineItems` reads `PUT /api/invoices/{id}/line-items`'s `{saved, line_items_total, header_amount, reconciles_with_header}` and, on a divergence, renders a persistent `role="alert"` panel (`[data-testid="line-total-mismatch"]`) naming both figures via `<Money>` plus the money consequence ("cannot enter a payment run" — `line_total_mismatch` is payment-blocking). Response-driven **by necessity**: the `invoice` prop is a snapshot the store's refetch doesn't refresh, so the warning the save just raised isn't on it. Never computes a delta client-side (that would be float money math). See `backend/docs/line-total-reconciliation.md` § What the editor sees.
 - `AdvancedSearchModal.svelte` — invoice search filters
 - `BulkRecodeGLModal.svelte` — admin bulk GL re-code preview/apply
 - `ApprovalMatrixEditor.svelte` — approval-chain matrix builder

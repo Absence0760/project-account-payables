@@ -119,6 +119,38 @@ other rules).
 
 Money is an exact decimal string on the wire, never a float.
 
+## What the editor sees
+
+`InvoiceModal.saveLineItems` reads that response and renders the verdict
+**inline, immediately** — it does not re-fetch the invoice. It can't usefully:
+the modal's `invoice` prop is a snapshot taken when the row was clicked (the
+list store hands out fresh objects on refetch, so the open modal keeps the old
+one), which means the `line_total_mismatch` warning the save just raised is
+invisible on it until the modal is reopened. The response IS the signal.
+
+On `reconciles_with_header: false` the modal:
+
+- shows a persistent `role="alert"` panel under the line-items table naming
+  **both** figures — the summed lines and the header amount, each through
+  `<Money>` in the invoice's currency. It deliberately does **not** compute a
+  delta: that would be client-side money arithmetic on two exact decimal
+  strings, and the backend doesn't return one. Two labelled figures say the same
+  thing without a float ever existing.
+- states the money consequence in text — *"This invoice cannot enter a payment
+  run until the mismatch is resolved."* — because that, not the warning icon, is
+  what the divergence actually costs (see the blocking section above), and
+  points at resolving/dismissing the exception as the sign-off that clears it.
+- swaps the success toast for a warning one.
+
+The panel retires on the next save that reconciles. Colour is reinforcement
+only — the heading, the figures and the consequence line all carry the meaning
+as text (WCAG 1.4.1).
+
+Guard: `frontend/tests-e2e/invoices/line-total-reconciliation.spec.ts` — drives
+the real endpoint (a hand-keyed invoice, a deliberately wrong line, then a
+corrected one) and asserts both the appearance and the retirement of the panel
+against the actual `reconciles_with_header` the backend returned.
+
 ## Tests
 
 `backend/tests/test_invoice_line_items_save.py`:
