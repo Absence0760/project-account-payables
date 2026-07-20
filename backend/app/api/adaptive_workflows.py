@@ -676,14 +676,22 @@ async def suggestions(
         await db.execute(stmt)
 
     # Open rows whose condition no longer holds → stale (keep history; don't
-    # delete). Dismissed / applied rows are untouched. Scope to this org to
-    # match the insert + dismiss gates (the table carries organization_id).
+    # delete). Dismissed / applied rows are untouched. Scope to this org AND
+    # entity — `fresh_keys` above was derived from decisions scoped to THIS
+    # entity_id, so an unscoped query here would mark another entity's still-
+    # valid open suggestions stale too (a cross-entity write), corrupting
+    # that entity's state (issue #144). `apply_entity_scope` is a no-op when
+    # entity_id is None (the intentional cross-entity consolidated view).
     open_rows = (
         (
             await db.execute(
-                select(WorkflowSuggestion).where(
-                    WorkflowSuggestion.organization_id == org.id,
-                    WorkflowSuggestion.status == "open",
+                apply_entity_scope(
+                    select(WorkflowSuggestion).where(
+                        WorkflowSuggestion.organization_id == org.id,
+                        WorkflowSuggestion.status == "open",
+                    ),
+                    WorkflowSuggestion,
+                    entity_id,
                 )
             )
         )
@@ -696,10 +704,12 @@ async def suggestions(
             row.updated_at = datetime.now(UTC)
     await db.flush()
 
-    q = (
+    q = apply_entity_scope(
         select(WorkflowSuggestion)
         .where(WorkflowSuggestion.organization_id == org.id)
-        .order_by(WorkflowSuggestion.created_at.desc())
+        .order_by(WorkflowSuggestion.created_at.desc()),
+        WorkflowSuggestion,
+        entity_id,
     )
     if status != "all":
         q = q.where(WorkflowSuggestion.status == status)
