@@ -199,20 +199,6 @@ async def clear_pending_vendor_totp_secret(vendor_user_id: uuid.UUID) -> None:
 # ---------------------------------------------------------------------------
 
 
-def step_up_available(*, hashed_password: str | None, mfa_secret: str | None) -> bool:
-    """Does the account hold a credential a step-up can actually challenge?
-
-    False only for an account with neither a password nor a TOTP secret — an
-    SSO-only user whose sole factor is a passkey. Demanding a step-up there
-    would permanently lock them out of managing their own factors (they have
-    nothing to type), so the caller lets those through. The durable answer for
-    that case is a WebAuthn assertion as the step-up; until then the IdP is
-    that account's authentication authority anyway. Every password-backed
-    account — the overwhelming majority — is fully covered.
-    """
-    return bool(hashed_password) or bool(mfa_secret)
-
-
 def step_up_verified(
     *,
     hashed_password: str | None,
@@ -222,12 +208,24 @@ def step_up_verified(
 ) -> bool:
     """Did the caller re-prove control of the account?
 
-    Used before an account's *existing* second factor can be replaced (TOTP
-    re-enrollment, adding a passkey). Either credential satisfies it: the
-    account password — the same check `/mfa/disable` makes — or a code from
-    the authenticator currently enrolled. Both are things a bearer token alone
-    does not grant, which is the point: an attacker holding a stolen session
-    must not be able to swap the second factor out from under the owner.
+    Used before an account's *existing* second factor can be added to, replaced
+    or removed (TOTP re-enrollment, registering a passkey, deleting a passkey).
+    Either credential satisfies it: the account password — the same check
+    `/mfa/disable` makes — or a code from the authenticator currently enrolled.
+    Both are things a bearer token alone does not grant, which is the point: an
+    attacker holding a stolen session must not be able to swap the second
+    factor out from under the owner.
+
+    There is deliberately **no "nothing to challenge" escape hatch**. An
+    account with neither a password nor a TOTP secret (an SSO-only user whose
+    sole factor is a passkey) simply can't satisfy this, and that is the safe
+    answer: exempting it would let a stolen JWT plant an attacker-controlled
+    passkey on an account the attacker never proved control of — a latent auth
+    bypass that goes live the moment such a user is given a password. Those
+    users recover by having an admin set a password (`POST
+    /api/admin/users/{id}/password`), after which the normal step-up works. The
+    durable answer is a WebAuthn assertion as a third accepted credential;
+    until then this fails closed.
 
     Shared by the employee and supplier-portal surfaces so the two can't drift.
     Returns a plain bool; the caller decides the status code. Password

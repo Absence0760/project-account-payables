@@ -346,28 +346,65 @@ async def verify_mfa(
 # ---------------------------------------------------------------------------
 
 
-def _require_mfa_step_up(
+# A credential-management endpoint that checks a password is a password oracle
+# unless it is throttled, and a silent one unless it is audited. These two
+# helpers are shared by every MFA-mutating route in this file (`/mfa/enroll`,
+# `/mfa/passkey/register`, `/mfa/passkey/{id}` DELETE, `/mfa/disable`) so no
+# future one can forget either half. Keyed on the *account*, not the client IP:
+# the attacker here already holds the victim's token and can rotate IPs freely,
+# so per-IP throttling would miss them entirely.
+STEP_UP_RATE_LIMIT_PER_MINUTE = 5
+
+
+async def _throttle_step_up(user_id) -> None:
+    await check_rate_limit(
+        "auth_mfa_step_up",
+        limit=STEP_UP_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        subject=str(user_id),
+    )
+
+
+async def _audit_step_up_failure(user: User, *, operation: str) -> None:
+    """Record a failed re-authentication against a second-factor change.
+
+    PII-free by construction — `operation` is one of a fixed set of literals;
+    the submitted password / code never enters the trail.
+    """
+    await dispatch_auth_audit(
+        organization_id=user.organization_id,
+        actor_id=user.id,
+        action="auth.mfa.step_up.failure",
+        entity_id=user.id,
+        details={"operation": operation},
+    )
+
+
+async def _require_mfa_step_up(
     user: User,
     body: MFAStepUpRequest | None,
     *,
+    operation: str,
     has_passkey: bool = False,
 ) -> None:
     """Gate any change to an account's *existing* second factor.
 
     First-time enrollment is deliberately frictionless — an account with no
     factor has nothing to protect and onboarding shouldn't demand a password
-    the user just typed. The moment a factor IS in force, replacing it (a
-    fresh TOTP secret, an added passkey) demands the password or a code from
-    the current authenticator, exactly like `/mfa/disable`: a leaked access
-    token must not be enough to downgrade or hijack the second factor.
+    the user just typed. The moment a factor IS in force — a live TOTP secret
+    OR at least one registered passkey — adding to it, replacing it, or
+    removing it demands the password or a code from the current authenticator,
+    exactly like `/mfa/disable`: a leaked access token must not be enough to
+    downgrade or hijack the second factor.
+
+    An account whose only factor is a passkey and which has no password and no
+    TOTP secret cannot satisfy this and is refused rather than exempted — see
+    `mfa.step_up_verified` for why the exemption would be a latent bypass.
     """
     has_live_factor = bool(user.mfa_enabled and user.mfa_secret) or has_passkey
     if not has_live_factor:
         return
-    if not mfa.step_up_available(hashed_password=user.hashed_password, mfa_secret=user.mfa_secret):
-        # Passkey-only / SSO-only account: nothing to challenge. See
-        # `mfa.step_up_available`.
-        return
+    await _throttle_step_up(user.id)
     if mfa.step_up_verified(
         hashed_password=user.hashed_password,
         mfa_secret=user.mfa_secret,
@@ -375,6 +412,7 @@ def _require_mfa_step_up(
         code=body.code if body else None,
     ):
         return
+    await _audit_step_up_failure(user, operation=operation)
     raise HTTPException(
         status_code=400,
         detail=(
@@ -388,6 +426,7 @@ def _require_mfa_step_up(
 async def enroll_mfa_start(
     body: MFAStepUpRequest | None = None,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
 ):
     """Start TOTP enrollment — mint a candidate secret + QR.
 
@@ -395,12 +434,15 @@ async def enroll_mfa_start(
     account: whatever second factor is already in force stays in force until
     `/mfa/enroll/verify` proves the user holds the new one. Re-enrolling over
     a live factor additionally requires a step-up (password or a code from the
-    current authenticator) — see `_require_mfa_step_up`.
+    current authenticator) — see `_require_mfa_step_up`. A registered passkey
+    counts as a live factor here too: adding TOTP to a passkey-protected
+    account is just as much a factor change as the reverse.
     """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
 
-    _require_mfa_step_up(user, body)
+    existing = await _user_passkeys(db, user.id)
+    await _require_mfa_step_up(user, body, operation="totp_enroll", has_passkey=bool(existing))
 
     secret = mfa.generate_totp_secret()
     await mfa.stash_pending_totp_secret(user.id, secret)
@@ -450,8 +492,11 @@ async def disable_mfa(
     db: AsyncSession = Depends(get_control_db),
 ):
     """Turn off TOTP for this account. Requires password re-entry — a stolen
-    session shouldn't be able to silently strip MFA off."""
+    session shouldn't be able to silently strip MFA off. Throttled + audited
+    on failure like every other step-up in this file."""
+    await _throttle_step_up(user.id)
     if not user.hashed_password or not pwd_context.verify(body.password, user.hashed_password):
+        await _audit_step_up_failure(user, operation="totp_disable")
         raise HTTPException(status_code=400, detail="Password is incorrect")
 
     org = await _load_user_org(db, user.organization_id)
@@ -503,7 +548,7 @@ async def passkey_register_start(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
     existing = await _user_passkeys(db, user.id)
-    _require_mfa_step_up(user, body, has_passkey=bool(existing))
+    await _require_mfa_step_up(user, body, operation="passkey_register", has_passkey=bool(existing))
     options_json = await webauthn.begin_registration(
         user_id=user.id,
         user_name=user.email,
@@ -564,11 +609,22 @@ async def passkey_list(
 @router.delete("/mfa/passkey/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def passkey_delete(
     credential_id: str,
+    body: MFAStepUpRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
 ):
-    """Remove one passkey. If the org enforces MFA, the last surviving second
-    factor (passkey or TOTP) can't be stripped off."""
+    """Remove one passkey.
+
+    Deleting a factor is a step-up operation for exactly the same reason
+    adding one is — a stolen access token must not be able to strip the
+    account's second factor. The passkey being deleted IS a live factor, so
+    the step-up always applies here; the credentials go in the request BODY
+    (never a query string — a password must not land in access logs or
+    `Referer` headers).
+
+    On top of that: if the org enforces MFA, the last surviving second factor
+    (passkey or TOTP) can't be stripped off at all.
+    """
     try:
         cred_uuid = uuid.UUID(credential_id)
     except ValueError as exc:
@@ -582,6 +638,12 @@ async def passkey_delete(
     cred = result.scalar_one_or_none()
     if not cred:
         raise HTTPException(status_code=404, detail="Passkey not found")
+
+    # Gated after the ownership lookup so an unknown id stays an opaque 404 and
+    # doesn't burn the account's step-up throttle. The credential is the
+    # caller's own either way — `GET /mfa/passkey` already lists it — so this
+    # ordering leaks nothing new.
+    await _require_mfa_step_up(user, body, operation="passkey_delete", has_passkey=True)
 
     org = await _load_user_org(db, user.organization_id)
     if mfa.org_requires_mfa(org.settings if org else None):

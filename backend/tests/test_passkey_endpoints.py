@@ -328,11 +328,15 @@ async def test_passkey_register_start_allowed_with_a_correct_password_step_up():
 
 
 @pytest.mark.asyncio
-async def test_passkey_register_start_allowed_for_a_passwordless_sso_account():
+async def test_passkey_register_start_refused_for_a_passwordless_sso_account_with_a_passkey():
     """An SSO-only account whose sole factor is a passkey has neither a
-    password nor a TOTP secret to challenge. Demanding a step-up there would
-    lock the user out of managing their own factors forever, so it is allowed
-    — see `services/mfa.step_up_available`."""
+    password nor a TOTP secret to challenge — and is refused, NOT exempted.
+
+    Exempting it (an earlier draft did) is a latent auth bypass: a stolen JWT
+    could plant an attacker-controlled passkey on an account the attacker
+    never proved control of, and it goes live the moment such a user is given
+    a password via the admin password-set. The recovery path is exactly that
+    admin password-set, after which the normal step-up works."""
     from app.api import auth as auth_mod
 
     user = _fake_user()
@@ -340,5 +344,141 @@ async def test_passkey_register_start_allowed_for_a_passwordless_sso_account():
     db = _RegDB(existing=[SimpleNamespace(credential_id=b"abc")])
 
     with patch("app.api.auth.settings.mfa_enabled", True):
-        start = await auth_mod.passkey_register_start(user=user, db=db)
-    assert start.options["challenge"]
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.passkey_register_start(user=user, db=db)
+    assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Step-up on DELETE — removing a factor is as sensitive as adding one. Before
+# this gate, `DELETE /api/auth/mfa/passkey/{id}` stripped the account's sole
+# passkey on a bare bearer token, with no password and no current code.
+# ---------------------------------------------------------------------------
+
+
+class _DeleteDB:
+    """Control session for passkey_delete: the credential lookup, the org
+    lookup, and the remaining-passkeys lookup, in the order the handler runs
+    them. `deleted` records whether the row was actually removed."""
+
+    def __init__(self, cred, org, remaining=None):
+        self._cred = cred
+        self._org = org
+        self._remaining = remaining if remaining is not None else [cred]
+        self.deleted = []
+        self._calls = 0
+
+    async def execute(self, *_a, **_k):
+        self._calls += 1
+        result = MagicMock()
+        if self._calls == 1:
+            result.scalar_one_or_none.return_value = self._cred
+        else:
+            result.scalar_one_or_none.return_value = self._org
+        result.scalars.return_value.all.return_value = self._remaining
+        return result
+
+    async def delete(self, obj):
+        self.deleted.append(obj)
+
+    async def commit(self):
+        pass
+
+
+def _fake_cred(name: str = "My Key"):
+    return SimpleNamespace(id=uuid.uuid4(), name=name, credential_id=b"abc", user_id=None)
+
+
+@pytest.mark.asyncio
+async def test_passkey_delete_refused_on_a_bare_jwt():
+    """THE regression. A stolen access token, no step-up credential — the
+    passkey must survive."""
+    from app.api import auth as auth_mod
+
+    user = _fake_user()
+    cred = _fake_cred()
+    cred.user_id = user.id
+    org = SimpleNamespace(id=user.organization_id, settings={})
+    db = _DeleteDB(cred, org)
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.dispatch_auth_audit", new=AsyncMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.passkey_delete(credential_id=str(cred.id), user=user, db=db)
+
+    assert exc.value.status_code == 400
+    assert db.deleted == [], "a session-only caller must not strip the factor"
+
+
+@pytest.mark.asyncio
+async def test_passkey_delete_refused_with_a_wrong_password():
+    from app.api import auth as auth_mod
+    from app.schemas.auth import MFAStepUpRequest
+
+    user = _fake_user()
+    cred = _fake_cred()
+    cred.user_id = user.id
+    org = SimpleNamespace(id=user.organization_id, settings={})
+    db = _DeleteDB(cred, org)
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.pwd_context.verify", return_value=False),
+        patch("app.api.auth.dispatch_auth_audit", new=AsyncMock()),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.passkey_delete(
+                credential_id=str(cred.id),
+                body=MFAStepUpRequest(password="guess"),
+                user=user,
+                db=db,
+            )
+
+    assert exc.value.status_code == 400
+    assert db.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_passkey_delete_allowed_with_a_correct_password():
+    """Positive control — the gate is a gate, not a wall."""
+    from app.api import auth as auth_mod
+    from app.schemas.auth import MFAStepUpRequest
+
+    user = _fake_user()
+    cred = _fake_cred()
+    cred.user_id = user.id
+    org = SimpleNamespace(id=user.organization_id, settings={})
+    db = _DeleteDB(cred, org)
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.pwd_context.verify", return_value=True),
+        patch("app.api.auth.dispatch_auth_audit", new=AsyncMock()),
+    ):
+        await auth_mod.passkey_delete(
+            credential_id=str(cred.id),
+            body=MFAStepUpRequest(password="correct"),
+            user=user,
+            db=db,
+        )
+
+    assert db.deleted == [cred]
+
+
+@pytest.mark.asyncio
+async def test_passkey_delete_unknown_id_is_404_before_the_step_up():
+    """An id that isn't this user's stays an opaque 404 — the step-up refusal
+    must not become an existence oracle, and a garbage id must not burn the
+    account's step-up throttle."""
+    from app.api import auth as auth_mod
+
+    user = _fake_user()
+    org = SimpleNamespace(id=user.organization_id, settings={})
+    db = _DeleteDB(None, org, remaining=[])
+
+    with patch("app.api.auth.settings.mfa_enabled", True):
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.passkey_delete(credential_id=str(uuid.uuid4()), user=user, db=db)
+    assert exc.value.status_code == 404

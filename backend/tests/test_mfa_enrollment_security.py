@@ -67,6 +67,25 @@ def _db_returning_org(org):
     return db
 
 
+def _passkey_db(existing=None):
+    """Mock the control session for the `_user_passkeys` lookup enroll-start
+    now makes (a registered passkey is a live factor for step-up purposes)."""
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = existing or []
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+    db.commit = AsyncMock()
+    return db
+
+
+@pytest.fixture(autouse=True)
+def _no_audit_dispatch(monkeypatch):
+    """Failed step-ups now write a PII-free audit row. These are unit tests
+    against mocked sessions, so stub the dispatcher — `test_step_up_failure_is_audited`
+    asserts on it explicitly instead."""
+    monkeypatch.setattr("app.api.auth.dispatch_auth_audit", AsyncMock())
+
+
 # ---------------------------------------------------------------------------
 # Master switch — enroll / verify / disable refused when MFA disabled
 # ---------------------------------------------------------------------------
@@ -79,7 +98,7 @@ async def test_enroll_mfa_start_refused_when_master_switch_off():
     user = _fake_user()
     with patch("app.api.auth.settings.mfa_enabled", False):
         with pytest.raises(HTTPException) as exc:
-            await enroll_mfa_start(user=user)
+            await enroll_mfa_start(user=user, db=_passkey_db())
     assert exc.value.status_code == 400
 
 
@@ -112,7 +131,7 @@ async def test_first_time_enroll_start_is_frictionless_and_writes_nothing_to_the
     user = _fake_user(mfa_secret=None, mfa_enabled=False)
 
     with patch("app.api.auth.settings.mfa_enabled", True):
-        resp = await enroll_mfa_start(user=user)
+        resp = await enroll_mfa_start(user=user, db=_passkey_db())
 
     assert resp.secret
     assert user.mfa_secret is None, "candidate secret must not be written to the account"
@@ -135,7 +154,7 @@ async def test_enroll_start_over_a_live_factor_without_step_up_is_refused():
 
     with patch("app.api.auth.settings.mfa_enabled", True):
         with pytest.raises(HTTPException) as exc:
-            await enroll_mfa_start(user=user)
+            await enroll_mfa_start(user=user, db=_passkey_db())
 
     assert exc.value.status_code == 400
     assert user.mfa_enabled is True, "a session-only caller must not strip the live factor"
@@ -156,7 +175,9 @@ async def test_enroll_start_over_a_live_factor_with_a_wrong_password_is_refused(
         patch("app.api.auth.pwd_context.verify", return_value=False),
     ):
         with pytest.raises(HTTPException) as exc:
-            await enroll_mfa_start(body=MFAStepUpRequest(password="guess"), user=user)
+            await enroll_mfa_start(
+                body=MFAStepUpRequest(password="guess"), user=user, db=_passkey_db()
+            )
 
     assert exc.value.status_code == 400
     assert user.mfa_enabled is True
@@ -178,7 +199,9 @@ async def test_enroll_start_with_password_step_up_keeps_the_live_factor_until_ve
         patch("app.api.auth.settings.mfa_enabled", True),
         patch("app.api.auth.pwd_context.verify", return_value=True),
     ):
-        resp = await enroll_mfa_start(body=MFAStepUpRequest(password="correct"), user=user)
+        resp = await enroll_mfa_start(
+            body=MFAStepUpRequest(password="correct"), user=user, db=_passkey_db()
+        )
 
     assert resp.secret != "JBSWY3DPEHPK3PXP"
     assert user.mfa_secret == "JBSWY3DPEHPK3PXP", "live factor must survive enroll-start"
@@ -200,7 +223,7 @@ async def test_enroll_start_accepts_a_current_authenticator_code_as_step_up():
 
     with patch("app.api.auth.settings.mfa_enabled", True):
         resp = await enroll_mfa_start(
-            body=MFAStepUpRequest(code=pyotp.TOTP(secret).now()), user=user
+            body=MFAStepUpRequest(code=pyotp.TOTP(secret).now()), user=user, db=_passkey_db()
         )
 
     assert resp.secret != secret
@@ -440,3 +463,82 @@ def test_user_response_carries_mfa_enabled_flag_not_secret():
     from app.schemas.auth import UserResponse
 
     assert "mfa_enabled" in UserResponse.model_fields
+
+
+# ---------------------------------------------------------------------------
+# A registered passkey counts as a live factor for the TOTP enroll step-up too
+# (otherwise the passkey door stays open while the TOTP door is shut), and a
+# failed step-up is throttled + audited rather than being a silent, unlimited
+# password oracle on a credential-management endpoint.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enroll_start_requires_step_up_when_only_a_passkey_is_registered():
+    """No TOTP yet, but a registered passkey — still a live second factor, so
+    adding TOTP to the account must re-prove control. Without this the
+    attacker just walks through the TOTP door instead of the passkey one."""
+    from app.api.auth import enroll_mfa_start
+
+    user = _fake_user(mfa_secret=None, mfa_enabled=False)
+    db = _passkey_db([SimpleNamespace(credential_id=b"abc")])
+
+    with patch("app.api.auth.settings.mfa_enabled", True):
+        with pytest.raises(HTTPException) as exc:
+            await enroll_mfa_start(user=user, db=db)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_step_up_failure_is_audited(monkeypatch):
+    """A wrong password against a second-factor change must leave a trail —
+    it's the signal that someone is working a stolen session. PII-free: the
+    submitted credential never enters the row."""
+    from app.api.auth import enroll_mfa_start
+    from app.schemas.auth import MFAStepUpRequest
+
+    audit = AsyncMock()
+    monkeypatch.setattr("app.api.auth.dispatch_auth_audit", audit)
+    user = _fake_user(mfa_secret="JBSWY3DPEHPK3PXP", mfa_enabled=True)
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.pwd_context.verify", return_value=False),
+    ):
+        with pytest.raises(HTTPException):
+            await enroll_mfa_start(
+                body=MFAStepUpRequest(password="guess"), user=user, db=_passkey_db()
+            )
+
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] == "auth.mfa.step_up.failure"
+    assert kwargs["details"] == {"operation": "totp_enroll"}
+    assert "guess" not in repr(kwargs), "the submitted credential must never be audited"
+
+
+@pytest.mark.asyncio
+async def test_step_up_is_rate_limited_per_account():
+    """The step-up check is a password oracle unless it's throttled — and
+    per-ACCOUNT, because the attacker already holds the victim's token and can
+    rotate source IPs at will."""
+    from app.api.auth import STEP_UP_RATE_LIMIT_PER_MINUTE, enroll_mfa_start
+    from app.schemas.auth import MFAStepUpRequest
+
+    user = _fake_user(mfa_secret="JBSWY3DPEHPK3PXP", mfa_enabled=True)
+    statuses = []
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.pwd_context.verify", return_value=False),
+    ):
+        for _ in range(STEP_UP_RATE_LIMIT_PER_MINUTE + 2):
+            try:
+                await enroll_mfa_start(
+                    body=MFAStepUpRequest(password="guess"), user=user, db=_passkey_db()
+                )
+            except HTTPException as exc:
+                statuses.append(exc.status_code)
+
+    assert 429 in statuses, f"expected a 429 once over the cap, got {statuses}"
+    assert user.mfa_enabled is True

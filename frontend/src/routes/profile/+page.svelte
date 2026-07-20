@@ -216,7 +216,10 @@
 
 	async function removePasskey(id: string) {
 		try {
-			await auth.deletePasskey(id);
+			// Removing a passkey always needs the step-up — the passkey itself is
+			// a live factor, so the backend refuses a bare-session delete.
+			await auth.deletePasskey(id, { password: passkeyPassword });
+			passkeyPassword = '';
 			await loadPasskeys();
 			toast('Passkey removed', 'success');
 		} catch (err) {
@@ -440,6 +443,20 @@
 			{#if !webAuthnOk}
 				<div class="status disabled">This browser doesn't support passkeys.</div>
 			{:else}
+				{#if needsPasskeyStepUp}
+					<!-- One field for both operations: the backend requires a step-up
+					     to add a factor to an account that already has one, and always
+					     requires one to remove a passkey. -->
+					<label>
+						<span>Confirm your password to add or remove a passkey</span>
+						<input
+							type="password"
+							bind:value={passkeyPassword}
+							autocomplete="current-password"
+						/>
+					</label>
+				{/if}
+
 				{#if passkeys && passkeys.length > 0}
 					<ul class="passkey-list">
 						{#each passkeys as pk (pk.id)}
@@ -457,6 +474,7 @@
 								<button
 									type="button"
 									class="danger small"
+									disabled={!passkeyPassword}
 									onclick={() => removePasskey(pk.id)}
 								>
 									Remove
@@ -483,17 +501,6 @@
 							placeholder="e.g. MacBook Touch ID"
 						/>
 					</label>
-					{#if needsPasskeyStepUp}
-						<label>
-							<span>Confirm your password to add another factor</span>
-							<input
-								type="password"
-								bind:value={passkeyPassword}
-								required
-								autocomplete="current-password"
-							/>
-						</label>
-					{/if}
 					<div class="actions">
 						<button
 							type="submit"

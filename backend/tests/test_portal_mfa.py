@@ -50,6 +50,14 @@ def mfa_on(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_audit_dispatch(monkeypatch):
+    """A failed portal step-up now writes a PII-free audit row. These are unit
+    tests against a mocked tenant session, so stub the dispatcher —
+    `test_portal_step_up_failure_is_audited` asserts on it explicitly."""
+    monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", AsyncMock())
+
+
 def _mock_db(*, vendor_user=None, vendor=None):
     """A MagicMock tenant session whose `execute(...).scalar_one_or_none()`
     returns `vendor_user` first then `vendor` (the order the endpoints query)."""
@@ -79,6 +87,7 @@ def _vendor_user(**overrides):
     base = dict(
         id=uuid.uuid4(),
         vendor_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
         email="supplier@vendor.com",
         full_name="Supplier Rep",
         hashed_password=None,
@@ -554,3 +563,48 @@ async def test_challenge_endpoint_rejects_employee_challenge_token(mfa_on, monke
             db=db,
         )
     assert exc.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Step-up hardening — a credential check on a credential-management endpoint
+# is a password oracle unless throttled, and a silent one unless audited.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_portal_step_up_failure_is_audited(mfa_on, monkeypatch):
+    """A wrong credential against a factor change leaves a PII-free trail."""
+    audit = AsyncMock()
+    monkeypatch.setattr("app.api.portal_auth.dispatch_auth_audit", audit)
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True, hashed_password="hash")
+    monkeypatch.setattr("app.services.mfa.pwd_context.verify", lambda *_a, **_k: False)
+
+    with pytest.raises(HTTPException):
+        await portal_mfa_enroll(body=PortalMFAStepUpRequest(password="guess"), vu=vu)
+
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] == "portal.mfa.step_up.failure"
+    assert kwargs["details"] == {"operation": "totp_enroll"}
+    assert "guess" not in repr(kwargs), "the submitted credential must never be audited"
+
+
+@pytest.mark.asyncio
+async def test_portal_step_up_is_rate_limited_per_account(mfa_on):
+    """Per-VENDOR-USER, not per-IP: the attacker already holds their token."""
+    from app.api.portal_auth import STEP_UP_RATE_LIMIT_PER_MINUTE
+
+    secret = pyotp.random_base32()
+    vu = _vendor_user(mfa_secret=secret, mfa_enabled=True)
+    statuses = []
+
+    for _ in range(STEP_UP_RATE_LIMIT_PER_MINUTE + 2):
+        try:
+            await portal_mfa_enroll(body=PortalMFAStepUpRequest(code="000000"), vu=vu)
+        except HTTPException as exc:
+            statuses.append(exc.status_code)
+
+    assert 429 in statuses, f"expected a 429 once over the cap, got {statuses}"
+    assert vu.mfa_enabled is True
+    assert vu.mfa_secret == secret

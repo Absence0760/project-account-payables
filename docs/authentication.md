@@ -99,6 +99,7 @@ Action names:
 | MFA challenge issued during login | `auth.mfa.challenge_issued` |
 | Successful MFA verify | `auth.mfa.verify.success` |
 | Failed MFA verify | `auth.mfa.verify.failure` |
+| Failed step-up against a second-factor change (enroll / passkey register / passkey delete / disable) | `auth.mfa.step_up.failure` (employee) · `portal.mfa.step_up.failure` (supplier portal) — PII-free, records only the operation name |
 | Successful SSO login | `auth.sso.login.success` |
 | Failed SSO login (code exchange / ID token / domain blocked) | `auth.sso.login.failure` |
 | Successful SAML login | `auth.saml.login.success` |
@@ -444,7 +445,7 @@ POST /api/auth/mfa/passkey/register {password?|code?}   # mints PublicKeyCredent
   (browser runs navigator.credentials.create())
 POST /api/auth/mfa/passkey/register/verify   # verifies + persists a WebAuthnCredential row
 GET  /api/auth/mfa/passkey                    # list this account's passkeys (metadata only)
-DELETE /api/auth/mfa/passkey/{id}             # remove one (blocked if it's the last factor under org enforcement)
+DELETE /api/auth/mfa/passkey/{id} {password?|code?}   # remove one — step-up ALWAYS required
 ```
 
 **Authentication (passkey LOGIN — the passkey method of the MFA step):**
@@ -461,7 +462,11 @@ The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:{reg
 
 Stored material — the credential id, COSE public key, and counter — is not secret in the password sense (the private key never leaves the authenticator) and is never logged. The login challenge offers `passkey` as a method whenever the user has at least one registered credential.
 
-Registering a passkey on an account that **already** has a factor (TOTP enabled, or at least one passkey) is a step-up operation with the same optional `{password?, code?}` body as `/mfa/enroll` — otherwise a stolen session could quietly bind an attacker-controlled authenticator to the account. The *first* factor on a bare account needs no step-up. The `/profile` passkey form asks for the password only when the step-up actually applies.
+Registering a passkey on an account that **already** has a factor (TOTP enabled, or at least one passkey) is a step-up operation with the same optional `{password?, code?}` body as `/mfa/enroll` — otherwise a stolen session could quietly bind an attacker-controlled authenticator to the account. The *first* factor on a bare account needs no step-up.
+
+**Deleting** a passkey is a step-up operation too, and unconditionally: the passkey being deleted is itself a live factor, so `DELETE /api/auth/mfa/passkey/{id}` always requires the password or a current authenticator code. Removing a factor with a stolen token is the same attack as replacing one. The credentials travel in the request **body**, never a query string — a password must not land in access logs or a `Referer` header. An id that isn't the caller's own is still an opaque `404`, checked *before* the step-up so an unknown id can't be used to burn the account's throttle or probe for existence. On top of that, under org-enforced MFA the last surviving factor can't be removed at all.
+
+The `/profile` passkey panel renders one "Confirm your password" field that serves both add and remove, shown only when a step-up actually applies.
 
 ### Login flow
 
@@ -509,7 +514,13 @@ The QR code is returned inline as a `data:image/png;base64,...` URL so the front
 - `password` — the account password, verified through the shared `pwd_context`, exactly like `/mfa/disable`; or
 - `code` — a code from the **currently enrolled** authenticator (for the user who has their phone but not their password manager).
 
-Neither field is required for a **first** enrollment: an account with no factor has nothing to protect, so onboarding stays frictionless. A missing or wrong step-up is a `400` with a generic message that reveals nothing about the account. The one exception is an account with neither a password nor a TOTP secret (an SSO-only user whose sole factor is a passkey) — there is no credential to challenge, and demanding one would lock them out of managing their own factors, so it is allowed; see `services/mfa.step_up_available`.
+A "live factor" here means an enabled TOTP secret **or** at least one registered passkey — adding TOTP to a passkey-protected account is as much a factor change as the reverse, so both doors are gated the same way.
+
+Neither field is required for a **first** enrollment: an account with no factor has nothing to protect, so onboarding stays frictionless. A missing or wrong step-up is a `400` with a generic message that reveals nothing about the account.
+
+An account with neither a password nor a TOTP secret — an SSO-only user whose sole factor is a passkey — cannot satisfy the step-up and is **refused, not exempted**. Exempting it would let a stolen JWT plant an attacker-controlled passkey on an account the attacker never proved control of, and that bypass goes live the moment such a user is given a password (e.g. via the admin password-set at `POST /api/admin/users/{id}/password`). Recovery is exactly that admin password-set, after which the normal step-up works. The durable answer is a WebAuthn assertion as a third accepted credential; until then this fails closed. See `services/mfa.step_up_verified`.
+
+Every step-up check is **throttled and audited**: 5 attempts per minute keyed on the *account* (not the client IP — the attacker already holds the victim's token and can rotate IPs), and a failure writes a PII-free `auth.mfa.step_up.failure` / `portal.mfa.step_up.failure` audit row carrying only the operation name. Without that, a credential-management endpoint that checks a password is an unlimited, silent password oracle. The same throttle + audit covers `/mfa/disable` on both surfaces.
 
 Disable requires password re-entry — a stolen session shouldn't be able to silently strip MFA off. If the org enforces MFA, disable is blocked outright.
 

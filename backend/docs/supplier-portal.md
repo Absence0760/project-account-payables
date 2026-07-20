@@ -88,6 +88,11 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
   vendor session could silently strip or swap the supplier's second factor. A
   **first** enrollment needs no step-up, so onboarding stays frictionless.
   Missing / wrong credential ⇒ 400 with a generic, account-agnostic message.
+  The check is throttled 5/min keyed on the vendor USER (not the client IP —
+  an attacker holding a stolen portal token can rotate IPs freely) and a
+  failure writes a PII-free `portal.mfa.step_up.failure` audit row carrying
+  only the operation name. `POST /mfa/disable` rides the same throttle +
+  audit. Without both, the credential check is a silent, unlimited oracle.
 - **Login challenge.** When `AP_MFA_ENABLED` is on and the vendor is enrolled,
   `POST /login` returns `PortalMFAChallengeResponse` (`{mfa_required, mfa_challenge_token,
   methods: ["totp", "email"]}`) instead of the access token. The browser submits the code

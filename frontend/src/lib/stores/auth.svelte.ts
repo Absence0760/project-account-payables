@@ -124,8 +124,18 @@ function createAuthStore() {
 		return saved;
 	}
 
-	async function deletePasskey(id: string): Promise<void> {
-		await api.delete(`/api/auth/mfa/passkey/${id}`);
+	/**
+	 * Remove a passkey. Deleting a factor is a step-up operation for the same
+	 * reason adding one is — a stolen session must not be able to strip the
+	 * account's second factor — so the backend always requires `stepUp` here
+	 * (the passkey being deleted is itself a live factor). Credentials go in
+	 * the request BODY, never the URL.
+	 */
+	async function deletePasskey(
+		id: string,
+		stepUp: { password?: string; code?: string } = {},
+	): Promise<void> {
+		await api.delete(`/api/auth/mfa/passkey/${id}`, stepUp);
 		await fetchUser();
 	}
 

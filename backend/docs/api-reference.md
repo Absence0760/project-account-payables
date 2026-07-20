@@ -85,6 +85,8 @@ TOTP-based two-factor with email-OTP backup. Master switch `AP_MFA_ENABLED` (def
 | `POST` | `/api/auth/mfa/enroll`            | * | Optional body `{password?, code?}`. Mints a CANDIDATE TOTP secret + QR (parked in Redis, not on the account). Returns `{secret, provisioning_uri, qr_code_data_url}`. 400 without a valid step-up when the account already has a live factor. |
 | `POST` | `/api/auth/mfa/enroll/verify`     | * | Body `{code}`. Promotes the pending candidate onto the account and flips `mfa_enabled` true — the only writer of `mfa_secret`. |
 | `POST` | `/api/auth/mfa/disable`           | * | Body `{password}`. Re-confirms password, turns MFA off. Blocked when org enforces MFA. |
+| `POST` | `/api/auth/mfa/passkey/register`  | * | Optional body `{password?, code?}`. Mints WebAuthn registration options. 400 without a valid step-up when a factor is already live (TOTP or an existing passkey). |
+| `DELETE` | `/api/auth/mfa/passkey/{id}`    | * | Body `{password?, code?}` — step-up ALWAYS required (the passkey is itself a live factor). Opaque 404 for an id that isn't the caller's. Blocked when it's the last factor under org enforcement. |
 
 The challenge endpoints don't take a JWT — they're authenticated by the short-lived challenge token returned from `/api/auth/login`.
 
