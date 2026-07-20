@@ -1,0 +1,65 @@
+# Build context filter for backend/Dockerfile's `COPY . .`.
+#
+# Without this file the whole backend/ tree is baked into the shipped
+# image, which is a real problem on three counts:
+#
+#   1. Secrets. A developer's gitignored `backend/.env` (per the root
+#      CLAUDE.md, the local override that wins over .env.development)
+#      would be copied into a layer and shipped to ECS / the pilot VM.
+#      Layers are not secrets storage — anyone who can pull the image
+#      can read it.
+#   2. A second, unmanaged Python install. `backend/.venv` is the dev's
+#      local venv; it lands at /app/.venv with its own pip/setuptools on
+#      whatever versions that laptop happened to have. Trivy scans it and
+#      reports CVEs for packages the image doesn't actually run, and the
+#      hash-pinned requirements.lock install stops being the whole story.
+#   3. Size. The venv plus the tool caches are hundreds of MB of layer
+#      for files nothing at runtime opens.
+#
+# Everything the running container needs stays: app/, alembic/,
+# alembic.ini, main.py, pyproject.toml, requirements.lock, and scripts/
+# (deploy/deploy.sh runs migrate_all_tenants.py and deploy/add-tenant.sh
+# runs create_tenant.py inside this image).
+
+# --- secrets: never in a layer ---
+.env
+.env.*
+!.env.development
+*.sops
+
+# --- local virtualenvs / installed-package metadata ---
+.venv
+venv
+*.egg-info
+
+# --- tool + build caches ---
+.pytest_cache
+.ruff_cache
+.mypy_cache
+__pycache__
+*.py[cod]
+.coverage
+htmlcov
+
+# --- not needed at runtime ---
+tests
+docs
+.github
+CLAUDE.md
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+requirements-dev.in
+requirements-dev.lock
+
+# --- service fixtures for the local compose stack only ---
+authentik
+keycloak
+localstack
+init-tenants.sql
+
+# --- vcs / editor noise ---
+.git
+.gitignore
+.DS_Store
