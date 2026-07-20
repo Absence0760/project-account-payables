@@ -387,6 +387,16 @@ If the supplier portal is implemented, vendors can:
 
 - Full card numbers are only shown on explicit request (with audit log entry)
 - Card details are never stored in our database — retrieved from provider on demand
+- **The vendor-facing PAN reveal is single-use under concurrency.**
+  `GET /portal/cards/{token}` (public-by-design — the emailed token is the
+  credential) claims the `card_reveal_tokens` row with one atomic
+  `UPDATE … SET used_at = now() WHERE token_hash = … AND used_at IS NULL …
+  RETURNING card_id`, so simultaneous requests carrying the same token cannot
+  both pass the single-use check, and the claim is **committed before** the
+  outbound provider call — a slow, failing, or crashing provider round-trip can
+  never leave an already-revealed link re-usable. Fail-closed: a degraded reveal
+  still spends the link. Full semantics in
+  [supplier-portal.md](supplier-portal.md) § Single-use virtual-card reveal.
 - Cards have strict spending limits matching invoice amounts
 - Cards auto-expire after configurable period (default: 30 days)
 - Declined charges trigger alerts
@@ -423,6 +433,7 @@ float.
 | Action | When | `details` |
 |---|---|---|
 | `card.details_viewed` | PAN reveal (`GET /{id}/details`) | `last_four` |
+| `card.revealed_via_token` | vendor-facing single-use PAN reveal (`GET /portal/cards/{token}`) — written when the token is **claimed**, committed before the provider is called, `actor_id=None` (no internal user) | `last_four` |
 | `card.cancelled` | manual cancel (`POST /{id}/cancel`) | `last_four`, `from`, `to` |
 | `card.charged` | authorization webhook applies a charge | `last_four`, `from`, `to`, `amount_charged` (string Decimal) |
 | `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals), `rebate_created` (bool — `false` if the one-per-card unique index skipped a duplicate) |

@@ -208,6 +208,60 @@ and writes a PII-free `vendor_user.notification_prefs_updated` audit row (field
 names only). Actual email dispatch is wired into the `transition_invoice`
 chokepoint; see [notifications.md](notifications.md) § Vendor recipients.
 
+### Single-use virtual-card reveal (`portal.py`)
+
+| Method | Path                    | Notes                                                            |
+|--------|-------------------------|------------------------------------------------------------------|
+| GET    | `/portal/cards/{token}` | **Public-by-design** — the emailed token IS the credential. Returns the live PAN/CVV/expiry exactly once |
+
+When a virtual card is issued, `services/card_reveal.mint_reveal_token` persists
+a `card_reveal_tokens` row holding only the **sha256** of a 32-byte URL-safe
+token; the plaintext goes into the vendor's email link and is never stored. The
+row expires after 7 days regardless of use.
+
+**Claim semantics — atomic, then committed before the provider call.**
+`consume_reveal_token` claims the token with a single statement:
+
+```sql
+UPDATE card_reveal_tokens SET used_at = now()
+ WHERE token_hash = :h AND used_at IS NULL AND expires_at > now()
+   AND organization_id = :org
+   AND EXISTS (SELECT 1 FROM virtual_cards
+                WHERE id = card_reveal_tokens.card_id AND organization_id = :org)
+RETURNING card_id
+```
+
+Postgres evaluates that predicate under the row lock, so of N simultaneous
+requests carrying the same token **exactly one** updates a row and receives the
+card; the rest match zero rows and are classified (`used` / `expired` /
+`invalid`) by a follow-up read. The previous read-then-write pair (plain
+`SELECT`, `used_at is None` checked in Python) let every concurrent request
+through — all of them read before any of them wrote, and all of them got the
+live PAN/CVV.
+
+`api/portal.py::reveal_card` then **commits the claim, and its audit row, before
+calling the card provider** — the row lock is never held across network I/O, and
+once committed nothing downstream can revive the link: not a provider outage,
+not a commit that fails after the PAN is already on the wire, not a crash.
+
+This is deliberately **fail-closed**: a degraded reveal (org disabled cards after
+issuance, or a provider outage) still spends the link, and the response is the
+PII-free fallback body (`last_four` + limit, `pan`/`cvv` = `null`, a `warning`)
+with no retry. A link that survives a failed reveal is observationally
+indistinguishable from a link that can be revealed twice, and this is live card
+data — so the vendor asks AP to re-issue instead.
+
+Tenant binding is belt-and-braces: the tenant is resolved through the usual
+`get_tenant` chokepoint, and both the token row *and* the card it points at must
+carry that tenant's org id. A mismatch is refused as the same opaque `invalid`
+an unknown token gets — and because the card check lives inside the claim's own
+`WHERE`, a rejected reveal never stamps `used_at` (nothing burns).
+
+Errors: `404 invalid` · `410 expired` · `410 used`. Every consumption writes a
+PII-free `card.revealed_via_token` audit row (`last_four` only — never the PAN
+or CVV). Tests: `tests/test_card_reveal.py` (service + real-Postgres
+concurrency) and `tests/test_card_reveal_endpoint.py` (handler ordering).
+
 ### Admin invite + change-request approval (`vendors.py`)
 
 | Method | Path                                                 | Notes                                 |
@@ -309,7 +363,7 @@ show a "pending AP approval" banner (read from `GET /portal/company`'s
   (ties into the dynamic-discounting engine; accept never moves money)
 - [x] In-app per-invoice chat between vendor and AP team
 - [x] Notification preferences (email-on-paid, email-on-rejected) — per-portal-user, vendor-controlled; wired into the `transition_invoice` dispatch chokepoint
-- [x] Virtual card viewing (secure, single-use reveal token) — `GET /portal/cards/{token}` consumes a one-time `CardRevealToken`
+- [x] Virtual card viewing (secure, single-use reveal token) — `GET /portal/cards/{token}` consumes a one-time `CardRevealToken` atomically (`UPDATE … WHERE used_at IS NULL … RETURNING`), committed before the provider call; see *Single-use virtual-card reveal* above
 - [x] MFA (TOTP) for portal users (migration 0053; opt-in per vendor user, gated by `AP_MFA_ENABLED`)
 - [x] MFA email-OTP backup factor for portal users (Redis-only, no migration; on-demand via `POST /portal/auth/mfa/challenge/email`, sent through the email adapter, gated by `AP_MFA_ENABLED`)
 

@@ -1521,6 +1521,22 @@ async def reveal_card(
     `gone`. The token itself is the credential — no portal-auth dep
     here. Tokens expire after 7 days regardless of use.
 
+    **Consume-then-fetch, fail-closed.** `consume_reveal_token` claims the token
+    atomically (`UPDATE … WHERE used_at IS NULL … RETURNING`), and we COMMIT that
+    claim — and the audit row for it — *before* calling the card provider. Two
+    consequences, both deliberate:
+
+    * Concurrency: of N simultaneous requests carrying the same token, exactly
+      one can claim it, so the live PAN/CVV is retrievable at most once. The
+      row lock is never held across the outbound provider call.
+    * Durability: once the claim is committed, nothing downstream can un-burn
+      the link — not a provider outage, not a failing commit after the PAN has
+      already gone out on the wire, not a process crash. The cost is that a
+      degraded reveal (cards disabled, provider down) still spends the link and
+      the vendor must ask AP for a new one. That is the right trade: a link
+      that survives a failed reveal is indistinguishable from a link that can
+      be revealed twice, and this is live card data.
+
     The tenant is resolved by the `get_tenant` chokepoint (public-by-design,
     same as `/portal/branding`) and its `Organization` id is passed to
     `consume_reveal_token` as a defense-in-depth binding: the token AND the card
@@ -1550,6 +1566,21 @@ async def reveal_card(
         raise HTTPException(status_code=410, detail="This link has already been used")
     assert card is not None  # narrowing for mypy
 
+    # The claim is the irreversible, security-relevant event, so it is what the
+    # append-only trail records — and it is committed HERE, before any outbound
+    # call. PII-free (`last_four` only, never PAN/CVV).
+    await dispatch_audit(
+        db,
+        correlation_id=card.correlation_id or uuid.uuid4(),
+        organization_id=card.organization_id,
+        actor_id=None,  # vendor reveal — no internal user
+        action="card.revealed_via_token",
+        entity_type="virtual_card",
+        entity_id=card.id,
+        details={"last_four": card.last_four},
+    )
+    await db.commit()
+
     # Resolve the card program config from the tenant's own settings. `tenant`
     # is the resolved `Organization` (loaded by `get_tenant` on the control
     # session) — its `settings` are already loaded, so we read them directly and
@@ -1576,12 +1607,10 @@ async def reveal_card(
     config = _resolve_card_config(tenant.settings or {}, app_settings)
     if config is None:
         # Cards were disabled after issuance — no live PAN retrieval possible.
-        # Do NOT burn the single-use token: leave `used_at` NULL (roll back the
-        # consume mutation) so the vendor can retry if the org re-enables cards.
-        # `get_tenant_db` would otherwise commit the session on a clean return.
-        body = _fallback("Card details are no longer available for retrieval.")
-        await db.rollback()
-        return body
+        # The token is already spent (committed above): we never un-burn a
+        # claimed link, because "re-usable after a failed reveal" is the same
+        # observable behaviour as "revealable twice". The vendor contacts AP.
+        return _fallback("Card details are no longer available for retrieval.")
 
     import app.services.card_adapters.lithic  # noqa: F401
     import app.services.card_adapters.mock_adapter  # noqa: F401
@@ -1591,26 +1620,11 @@ async def reveal_card(
     try:
         details = await adapter.get_card_details(card.provider_card_id)
     except Exception:  # noqa: BLE001
-        # Provider outage — a TRANSIENT failure. The single-use token must NOT be
-        # consumed, or the vendor's link is permanently dead once the provider
-        # recovers. Capture the fallback body, then roll back so `used_at` stays
-        # NULL and the link is re-usable. (`get_tenant_db` commits on a clean
-        # return, so an explicit rollback is required to un-burn the token.)
-        body = _fallback("Card details are temporarily unavailable. Please contact AP.")
-        await db.rollback()
-        return body
-
-    await dispatch_audit(
-        db,
-        correlation_id=card.correlation_id or uuid.uuid4(),
-        organization_id=card.organization_id,
-        actor_id=None,  # vendor reveal — no internal user
-        action="card.revealed_via_token",
-        entity_type="virtual_card",
-        entity_id=card.id,
-        details={"last_four": card.last_four},
-    )
-    await db.commit()
+        # Provider outage. The token stays spent: we cannot tell from here
+        # whether the provider had already emitted the PAN, and reviving the
+        # link would reopen the double-reveal window this endpoint exists to
+        # close. Degrade to the PII-free body and let the vendor re-request.
+        return _fallback("Card details are temporarily unavailable. Please contact AP.")
 
     return {
         "last_four": card.last_four,
