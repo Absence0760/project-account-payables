@@ -175,10 +175,20 @@ def current_due_run_on(
     how far the cursor has since advanced.
 
     Before ``start_date`` the schedule hasn't begun, so the first occurrence
-    (``start_date``'s ``day_of_period``) is returned as the floor.
+    (``start_date``'s ``day_of_period``, or the FOLLOWING period's if
+    ``day_of_period`` falls earlier in the month than ``start_date`` itself)
+    is returned as the floor.
     """
     months = _months_per_period(cadence)
     first = date(start_date.year, start_date.month, day_of_period)
+    if first < start_date:
+        # day_of_period lands earlier in the month than start_date, so this
+        # period's occurrence is actually BEFORE the schedule begins — advance
+        # to the next period, matching compute_next_run_on's walk-forward
+        # anchor (issue #179). Without this, generate-now could target a
+        # pre-start-dated period the background sweep would never reach.
+        first = _add_months(first, months)
+        first = date(first.year, first.month, day_of_period)
     ceiling = max(today, start_date)
     candidate = first
     if candidate > ceiling:

@@ -110,6 +110,55 @@ def test_next_run_on_past_end_date_is_none():
 
 
 # --------------------------------------------------------------------------- #
+# Pure — current_due_run_on (the generate-now target period)
+# --------------------------------------------------------------------------- #
+
+
+def test_current_due_run_on_never_precedes_start_date_issue_179():
+    """Issue #179: day_of_period=5 on a template started 2024-01-15 must not
+    target 2024-01-05 (before the schedule even began) — the first real
+    occurrence is 2024-02-05, matching what the background sweep's
+    compute_next_run_on would pick as the template's first period."""
+    result = svc.current_due_run_on(
+        CADENCE_MONTHLY, 5, today=date(2024, 1, 20), start_date=date(2024, 1, 15)
+    )
+    assert result == date(2024, 2, 5)
+    assert result >= date(2024, 1, 15)
+
+    # Cross-check against the sweep's own scheduler for the same template —
+    # generate-now and the sweep must agree on the first period.
+    swept_first = svc.compute_next_run_on(
+        CADENCE_MONTHLY, 5, after=date(2024, 1, 15), start_date=date(2024, 1, 15)
+    )
+    assert swept_first == date(2024, 2, 5) == result
+
+
+def test_current_due_run_on_normal_case_unaffected():
+    """day_of_period >= start_date.day: the first occurrence IS the start
+    month's day_of_period, unchanged by the fix."""
+    assert svc.current_due_run_on(
+        CADENCE_MONTHLY, 20, today=date(2024, 1, 25), start_date=date(2024, 1, 15)
+    ) == date(2024, 1, 20)
+
+
+def test_current_due_run_on_before_schedule_starts_returns_first_occurrence():
+    """today before start_date: the floor is start_date, so the (possibly
+    advanced) first occurrence is returned regardless of today."""
+    assert svc.current_due_run_on(
+        CADENCE_MONTHLY, 5, today=date(2023, 6, 1), start_date=date(2024, 1, 15)
+    ) == date(2024, 2, 5)
+
+
+def test_current_due_run_on_advances_multiple_periods():
+    """A day_of_period earlier than start_date.day, with `today` well past
+    several periods — the latest due occurrence on/before today, never one
+    before start_date."""
+    assert svc.current_due_run_on(
+        CADENCE_MONTHLY, 5, today=date(2024, 5, 10), start_date=date(2024, 1, 15)
+    ) == date(2024, 5, 5)
+
+
+# --------------------------------------------------------------------------- #
 # Pure — variance flag
 # --------------------------------------------------------------------------- #
 
