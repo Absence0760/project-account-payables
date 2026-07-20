@@ -206,7 +206,7 @@ def step_up_verified(
     password: str | None,
     code: str | None,
 ) -> bool:
-    """Did the caller re-prove control of the account?
+    """Did the caller re-prove control of the account with a *stateless* proof?
 
     Used before an account's *existing* second factor can be added to, replaced
     or removed (TOTP re-enrollment, registering a passkey, deleting a passkey).
@@ -216,16 +216,24 @@ def step_up_verified(
     attacker holding a stolen session must not be able to swap the second
     factor out from under the owner.
 
-    There is deliberately **no "nothing to challenge" escape hatch**. An
-    account with neither a password nor a TOTP secret (an SSO-only user whose
-    sole factor is a passkey) simply can't satisfy this, and that is the safe
-    answer: exempting it would let a stolen JWT plant an attacker-controlled
-    passkey on an account the attacker never proved control of — a latent auth
-    bypass that goes live the moment such a user is given a password. Those
-    users recover by having an admin set a password (`POST
-    /api/admin/users/{id}/password`), after which the normal step-up works. The
-    durable answer is a WebAuthn assertion as a third accepted credential;
-    until then this fails closed.
+    There is deliberately **no "nothing to challenge" escape hatch** here: an
+    account with neither a password nor a TOTP secret fails this, and that is
+    the safe answer — exempting it would let a stolen JWT plant an
+    attacker-controlled passkey on an account the attacker never proved control
+    of.
+
+    A third proof exists on the employee surface and is NOT checked here: a
+    **WebAuthn assertion** from an already-registered passkey
+    (`api/auth._step_up_satisfied` -> `services/webauthn.finish_authentication`
+    with `purpose=step_up`). It lives at the route layer because verifying it
+    needs the DB (to resolve the credential row) and Redis (the single-use,
+    purpose-bound challenge), which this pure helper deliberately doesn't
+    touch. That third proof is what lets a passwordless SSO-only account whose
+    sole factor is a passkey manage its own factors; before it existed, such an
+    account was refused outright and recovered only via an admin password-set.
+    The supplier portal has no passkey support (`WebAuthnCredential` is keyed to
+    a control-plane `users.id`, and `VendorUser` is tenant-scoped), so there this
+    function is still the whole story.
 
     Shared by the employee and supplier-portal surfaces so the two can't drift.
     Returns a plain bool; the caller decides the status code. Password

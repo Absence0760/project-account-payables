@@ -39,6 +39,7 @@ from app.schemas.auth import (
     WebAuthnCredentialResponse,
     WebAuthnRegisterFinishRequest,
     WebAuthnRegisterStartResponse,
+    WebAuthnStepUpStartRequest,
 )
 from app.services import mfa, webauthn
 from app.services.audit_dispatch import dispatch_auth_audit
@@ -76,6 +77,53 @@ async def _user_passkeys(db: AsyncSession, user_id) -> list[WebAuthnCredential]:
         select(WebAuthnCredential).where(WebAuthnCredential.user_id == user_id)
     )
     return list(result.scalars().all())
+
+
+async def _verify_presented_assertion(
+    db: AsyncSession,
+    user_id,
+    credential_json: str,
+    *,
+    purpose: str,
+    operation: str | None = None,
+) -> WebAuthnCredential:
+    """Resolve the presented passkey and verify its assertion.
+
+    The single place a ``navigator.credentials.get()`` response is checked —
+    shared by passkey LOGIN and passkey STEP-UP so the two can't drift on
+    credential-ownership scoping, counter bumping or clone detection. The
+    lookup is scoped to ``user_id``, so a caller can never present somebody
+    else's passkey.
+
+    Raises ``webauthn.WebAuthnError`` on every failure — unknown credential id,
+    bad signature, wrong / expired / already-consumed challenge, counter
+    regression — and the caller turns that into its own opaque response, so the
+    reason never leaks. On success the credential's signature counter and
+    ``last_used_at`` are updated on the session; the caller persists them.
+    """
+    presented_id = webauthn.extract_credential_id(credential_json)
+    cred = None
+    if presented_id:
+        result = await db.execute(
+            select(WebAuthnCredential).where(
+                WebAuthnCredential.user_id == user_id,
+                WebAuthnCredential.credential_id == presented_id,
+            )
+        )
+        cred = result.scalar_one_or_none()
+    if not cred:
+        raise webauthn.WebAuthnError("Unknown credential")
+
+    cred.sign_count = await webauthn.finish_authentication(
+        user_id=user_id,
+        credential_json=credential_json,
+        stored_public_key=cred.public_key,
+        stored_sign_count=cred.sign_count,
+        purpose=purpose,
+        operation=operation,
+    )
+    cred.last_used_at = datetime.now(UTC)
+    return cred
 
 
 def _user_response(user: User, org: Organization | None = None) -> UserResponse:
@@ -380,10 +428,72 @@ async def _audit_step_up_failure(user: User, *, operation: str) -> None:
     )
 
 
+STEP_UP_FAILURE_DETAIL = (
+    "Confirm your password, a current authenticator code, or a registered "
+    "passkey to change your two-factor settings."
+)
+
+
+async def _step_up_satisfied(
+    db: AsyncSession,
+    user: User,
+    body: MFAStepUpRequest | None,
+    *,
+    operation: str,
+) -> bool:
+    """Did the caller re-prove control of the account for `operation`?
+
+    Three proofs, any one of which is enough: the account password, a code from
+    the currently enrolled authenticator (both via the pure, shared
+    `mfa.step_up_verified`), or a **WebAuthn assertion** from an
+    already-registered passkey.
+
+    The assertion path is what makes factor management possible at all for a
+    passwordless SSO-only account whose sole factor is a passkey — before it,
+    such an account had nothing to challenge and was refused outright. It is
+    checked here rather than inside `mfa.step_up_verified` because it needs the
+    DB (to resolve the credential) and Redis (the single-use challenge), which
+    that pure helper deliberately doesn't touch.
+
+    The assertion is bound to `operation`: it only verifies against the
+    challenge `POST /mfa/step-up/passkey` minted for that same operation, so an
+    assertion obtained to authorize e.g. `passkey_register` cannot be turned
+    around and used to authorize `passkey_delete` — nor can a LOGIN assertion
+    satisfy any step-up (different Redis namespace entirely). See
+    `services/webauthn._assertion_challenge_key`.
+    """
+    if mfa.step_up_verified(
+        hashed_password=user.hashed_password,
+        mfa_secret=user.mfa_secret,
+        password=body.password if body else None,
+        code=body.code if body else None,
+    ):
+        return True
+    if body is None or not body.assertion:
+        return False
+    try:
+        await _verify_presented_assertion(
+            db,
+            user.id,
+            json.dumps(body.assertion),
+            purpose=webauthn.ASSERTION_PURPOSE_STEP_UP,
+            operation=operation,
+        )
+    except webauthn.WebAuthnError:
+        return False
+    # Persist the bumped signature counter now. Clone detection is only worth
+    # anything if the counter actually moves forward in the database; leaving it
+    # to whatever the caller happens to commit later would silently regress it
+    # on the routes that write nothing (enroll-start, register-start).
+    await db.commit()
+    return True
+
+
 async def _require_mfa_step_up(
     user: User,
     body: MFAStepUpRequest | None,
     *,
+    db: AsyncSession,
     operation: str,
     has_passkey: bool = False,
 ) -> None:
@@ -393,33 +503,23 @@ async def _require_mfa_step_up(
     factor has nothing to protect and onboarding shouldn't demand a password
     the user just typed. The moment a factor IS in force — a live TOTP secret
     OR at least one registered passkey — adding to it, replacing it, or
-    removing it demands the password or a code from the current authenticator,
-    exactly like `/mfa/disable`: a leaked access token must not be enough to
-    downgrade or hijack the second factor.
+    removing it demands one of the three proofs in `_step_up_satisfied`: a
+    leaked access token must not be enough to downgrade or hijack the second
+    factor.
 
-    An account whose only factor is a passkey and which has no password and no
-    TOTP secret cannot satisfy this and is refused rather than exempted — see
-    `mfa.step_up_verified` for why the exemption would be a latent bypass.
+    An account with no password and no TOTP secret whose only factor is a
+    passkey is no longer stuck: it satisfies this with an assertion from that
+    passkey. An account with genuinely nothing to challenge still can't, and is
+    refused rather than exempted — see `mfa.step_up_verified`.
     """
     has_live_factor = bool(user.mfa_enabled and user.mfa_secret) or has_passkey
     if not has_live_factor:
         return
     await _throttle_step_up(user.id)
-    if mfa.step_up_verified(
-        hashed_password=user.hashed_password,
-        mfa_secret=user.mfa_secret,
-        password=body.password if body else None,
-        code=body.code if body else None,
-    ):
+    if await _step_up_satisfied(db, user, body, operation=operation):
         return
     await _audit_step_up_failure(user, operation=operation)
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "Confirm your password or a current authenticator code to change "
-            "your two-factor settings."
-        ),
-    )
+    raise HTTPException(status_code=400, detail=STEP_UP_FAILURE_DETAIL)
 
 
 @router.post("/mfa/enroll", response_model=MFAEnrollStartResponse)
@@ -442,7 +542,9 @@ async def enroll_mfa_start(
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
 
     existing = await _user_passkeys(db, user.id)
-    await _require_mfa_step_up(user, body, operation="totp_enroll", has_passkey=bool(existing))
+    await _require_mfa_step_up(
+        user, body, db=db, operation="totp_enroll", has_passkey=bool(existing)
+    )
 
     secret = mfa.generate_totp_secret()
     await mfa.stash_pending_totp_secret(user.id, secret)
@@ -491,13 +593,19 @@ async def disable_mfa(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
 ):
-    """Turn off TOTP for this account. Requires password re-entry — a stolen
-    session shouldn't be able to silently strip MFA off. Throttled + audited
-    on failure like every other step-up in this file."""
+    """Turn off TOTP for this account.
+
+    Stripping a factor is the most sensitive factor change there is, so it takes
+    the same step-up as every other one in this file — the account password, a
+    code from the authenticator being turned off, or an assertion from a
+    registered passkey. (An SSO-only account has no password to re-enter; the
+    passkey assertion is how it disables its own TOTP.) Throttled + audited on
+    failure like the rest.
+    """
     await _throttle_step_up(user.id)
-    if not user.hashed_password or not pwd_context.verify(body.password, user.hashed_password):
+    if not await _step_up_satisfied(db, user, body, operation="totp_disable"):
         await _audit_step_up_failure(user, operation="totp_disable")
-        raise HTTPException(status_code=400, detail="Password is incorrect")
+        raise HTTPException(status_code=400, detail=STEP_UP_FAILURE_DETAIL)
 
     org = await _load_user_org(db, user.organization_id)
     if mfa.org_requires_mfa(org.settings if org else None):
@@ -548,7 +656,9 @@ async def passkey_register_start(
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
     existing = await _user_passkeys(db, user.id)
-    await _require_mfa_step_up(user, body, operation="passkey_register", has_passkey=bool(existing))
+    await _require_mfa_step_up(
+        user, body, db=db, operation="passkey_register", has_passkey=bool(existing)
+    )
     options_json = await webauthn.begin_registration(
         user_id=user.id,
         user_name=user.email,
@@ -643,7 +753,7 @@ async def passkey_delete(
     # doesn't burn the account's step-up throttle. The credential is the
     # caller's own either way — `GET /mfa/passkey` already lists it — so this
     # ordering leaks nothing new.
-    await _require_mfa_step_up(user, body, operation="passkey_delete", has_passkey=True)
+    await _require_mfa_step_up(user, body, db=db, operation="passkey_delete", has_passkey=True)
 
     org = await _load_user_org(db, user.organization_id)
     if mfa.org_requires_mfa(org.settings if org else None):
@@ -691,6 +801,56 @@ async def passkey_authenticate_start(
     options_json = await webauthn.begin_authentication(
         user_id=user_id,
         credentials=[{"credential_id": c.credential_id, "transports": c.transports} for c in creds],
+        purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
+    )
+    return WebAuthnAuthStartResponse(options=json.loads(options_json))
+
+
+@router.post("/mfa/step-up/passkey", response_model=WebAuthnAuthStartResponse)
+async def passkey_step_up_start(
+    body: WebAuthnStepUpStartRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_control_db),
+):
+    """Begin a passkey STEP-UP challenge for one factor-management operation.
+
+    The counterpart of `/mfa/passkey/authenticate`, but for an *already
+    authenticated* caller who now has to re-prove they still hold the
+    authenticator before changing the account's factors. The signed assertion
+    goes back in the `assertion` field of the mutating call's step-up body
+    (`/mfa/enroll`, `/mfa/passkey/register`, `DELETE /mfa/passkey/{id}`,
+    `/mfa/disable`) — there is no separate "step-up token" to leak or replay.
+
+    This is the proof a passwordless SSO-only account uses: with no password and
+    no TOTP secret, its registered passkey is the only thing it can be
+    challenged on.
+
+    The challenge is minted into a Redis slot keyed by (user, step_up,
+    `operation`) and consumed single-use by the mutating endpoint, which looks it
+    up under its OWN operation — so an assertion collected here for one operation
+    can't authorize a different one, and neither can a login assertion authorize
+    any of them.
+    """
+    if not settings.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
+    # Minting a challenge proves nothing and reveals nothing, so this is a
+    # cheap-abuse brake rather than the security control (that is
+    # `_throttle_step_up` on the verifying call). Keyed on the account for the
+    # same reason: the attacker in this threat model already holds the token.
+    await check_rate_limit(
+        "auth_mfa_step_up_passkey",
+        limit=10,
+        window_seconds=60,
+        subject=str(user.id),
+    )
+    creds = await _user_passkeys(db, user.id)
+    if not creds:
+        raise HTTPException(status_code=400, detail="No passkey registered")
+    options_json = await webauthn.begin_authentication(
+        user_id=user.id,
+        credentials=[{"credential_id": c.credential_id, "transports": c.transports} for c in creds],
+        purpose=webauthn.ASSERTION_PURPOSE_STEP_UP,
+        operation=body.operation,
     )
     return WebAuthnAuthStartResponse(options=json.loads(options_json))
 
@@ -716,33 +876,15 @@ async def passkey_authenticate_finish(
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid challenge")
 
-    credential_json = json.dumps(body.credential)
-    presented_id = webauthn.extract_credential_id(credential_json)
-    cred = None
-    if presented_id:
-        result = await db.execute(
-            select(WebAuthnCredential).where(
-                WebAuthnCredential.user_id == user_id,
-                WebAuthnCredential.credential_id == presented_id,
-            )
-        )
-        cred = result.scalar_one_or_none()
-    if not cred:
-        await dispatch_auth_audit(
-            organization_id=user.organization_id,
-            actor_id=user.id,
-            action="auth.mfa.verify.failure",
-            entity_id=user.id,
-            details={"method": "passkey", "ip": ip},
-        )
-        raise HTTPException(status_code=401, detail="Invalid passkey")
-
     try:
-        new_sign_count = await webauthn.finish_authentication(
-            user_id=user_id,
-            credential_json=credential_json,
-            stored_public_key=cred.public_key,
-            stored_sign_count=cred.sign_count,
+        # `purpose=login` pins which Redis challenge slot this assertion must
+        # match — a step-up assertion signs a challenge from a different slot and
+        # therefore cannot mint an access token here.
+        await _verify_presented_assertion(
+            db,
+            user_id,
+            json.dumps(body.credential),
+            purpose=webauthn.ASSERTION_PURPOSE_LOGIN,
         )
     except webauthn.WebAuthnError as exc:
         await dispatch_auth_audit(
@@ -754,8 +896,6 @@ async def passkey_authenticate_finish(
         )
         raise HTTPException(status_code=401, detail="Invalid passkey") from exc
 
-    cred.sign_count = new_sign_count
-    cred.last_used_at = datetime.now(UTC)
     await db.commit()
 
     token, jti = create_access_token_with_jti(user.id, user.organization_id)
