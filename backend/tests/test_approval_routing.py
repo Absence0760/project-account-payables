@@ -345,3 +345,113 @@ def test_apply_escalation_skips_levels_without_config():
     levels[0]["entered_at"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     inst.state_data = inst.state_data
     assert apply_escalation(inst) is False
+
+
+# ---------------------------------------------------------------------------
+# 'all' mode escalation must SUBSTITUTE the stuck approver(s), not append on
+# top of the requirement (issue #128) — appending makes an 'all' level need
+# {A, B, C} where it used to need {A, B}, the opposite of "unblock".
+# ---------------------------------------------------------------------------
+
+
+def test_apply_escalation_all_mode_substitutes_unapproved_approver():
+    """A level needing {A, B} (parallel_mode='all') with NEITHER having
+    approved yet must become {C} after escalating to C — not {A, B, C}."""
+    from app.services.approval_chain import apply_escalation, init_chain_state
+
+    inst = _instance()
+    init_chain_state(
+        inst,
+        [
+            {
+                "name": "L",
+                "approver_ids": ["a", "b"],
+                "parallel_mode": "all",
+                "escalation_hours": 4,
+                "escalation_to_user_ids": ["esc-1"],
+            }
+        ],
+    )
+    levels = inst.state_data["approval_levels"]["levels"]
+    levels[0]["entered_at"] = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    inst.state_data = inst.state_data
+
+    changed = apply_escalation(inst)
+    assert changed is True
+    after = inst.state_data["approval_levels"]["levels"][0]
+    # Neither original stuck approver survives — the level no longer needs them.
+    assert after["approver_ids"] == ["esc-1"]
+
+
+def test_apply_escalation_all_mode_keeps_already_approved_approver():
+    """{A, B} where A already approved: escalating to C must shrink the
+    requirement to {A, C} — A's prior approval still counts, only the
+    UNAVAILABLE approver (B) is substituted. The level clears once C
+    approves, without needing a fresh sign-off from A."""
+    from app.services.approval_chain import _level_satisfied, apply_escalation, init_chain_state
+
+    inst = _instance()
+    init_chain_state(
+        inst,
+        [
+            {
+                "name": "L",
+                "approver_ids": ["a", "b"],
+                "parallel_mode": "all",
+                "escalation_hours": 4,
+                "escalation_to_user_ids": ["esc-1"],
+            }
+        ],
+    )
+    levels = inst.state_data["approval_levels"]["levels"]
+    # A approves (direct state mutation — approver_ids/approvals are plain
+    # strings in this pure layer, no real UUID actor round-trip needed); B
+    # never does.
+    levels[0]["approvals"].append({"user_id": "a", "at": datetime.now(UTC).isoformat()})
+    levels[0]["entered_at"] = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    inst.state_data = inst.state_data
+
+    changed = apply_escalation(inst)
+    assert changed is True
+    after = inst.state_data["approval_levels"]["levels"][0]
+    assert set(after["approver_ids"]) == {"a", "esc-1"}
+    assert "b" not in after["approver_ids"]  # the stuck approver is gone
+    assert _level_satisfied(after) is False  # esc-1 hasn't approved yet
+
+    # esc-1 approving now clears the level — A's prior approval still counts.
+    after["approvals"].append({"user_id": "esc-1", "at": datetime.now(UTC).isoformat()})
+    assert _level_satisfied(after) is True
+
+
+def test_apply_escalation_all_mode_never_makes_level_harder_to_satisfy():
+    """Regression for the exact issue #128 scenario: escalating an 'all'
+    level must never leave MORE outstanding (unapproved) approvers than
+    before — appending grew {A, B} to {A, B, C} (3 outstanding instead of
+    2); substitution must keep or shrink the outstanding count."""
+    from app.services.approval_chain import apply_escalation, init_chain_state
+
+    inst = _instance()
+    init_chain_state(
+        inst,
+        [
+            {
+                "name": "L",
+                "approver_ids": ["a", "b"],
+                "parallel_mode": "all",
+                "escalation_hours": 4,
+                "escalation_to_user_ids": ["esc-1"],
+            }
+        ],
+    )
+    levels = inst.state_data["approval_levels"]["levels"]
+    before_outstanding = set(levels[0]["approver_ids"])
+    levels[0]["entered_at"] = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    inst.state_data = inst.state_data
+
+    apply_escalation(inst)
+    after = inst.state_data["approval_levels"]["levels"][0]
+    after_outstanding = set(after["approver_ids"])
+
+    assert len(after_outstanding) <= len(before_outstanding)
+    assert "a" not in after_outstanding
+    assert "b" not in after_outstanding
