@@ -22,6 +22,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { PERM_PAYMENT_VOID } from '$lib/types/admin';
 	import { m } from '$lib/i18n/store.svelte';
+	import { untrack } from 'svelte';
 
 	let HISTORY_COLUMNS = $derived([
 		{ label: m('payments.col.invoiceNumber') },
@@ -271,7 +272,16 @@
 		// the filter params belong here.
 		const params: Record<string, string> = {};
 		if (activeStatus !== 'all') params.status = activeStatus;
-		if (search.trim()) params.search = search.trim();
+		// `untrack`: `buildParams()` is also called from the tab-change `$effect`
+		// below. A plain read of `search` here would make THAT effect depend on
+		// `search` too (Svelte tracks reads transitively through called
+		// functions), so every keystroke would re-fire it — an immediate,
+		// un-debounced fetch racing the dedicated debounce timer further down.
+		// `untrack` still reads the current value (the request still carries the
+		// live search term); it just stops that read from registering as a
+		// dependency of whichever effect happens to be calling this.
+		const currentSearch = untrack(() => search);
+		if (currentSearch.trim()) params.search = currentSearch.trim();
 		return params;
 	}
 

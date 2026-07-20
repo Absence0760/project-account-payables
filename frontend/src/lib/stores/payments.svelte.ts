@@ -1,6 +1,7 @@
 import type { Payment } from '$lib/types/payment';
 import { api } from '$lib/api';
 import { appendUnique } from '$lib/utils/pagination';
+import { createRequestSequencer } from '$lib/utils/requestSequence';
 
 interface PaymentListResponse {
 	items: Payment[];
@@ -20,8 +21,14 @@ function createPaymentStore() {
 	// remembered so loadMore() requests the next page with the same filters.
 	let lastParams: Record<string, string> = {};
 
+	// Sequences every `load()` call (fetch and loadMore alike — one shared
+	// counter, latest-issued wins) so a slow response for an earlier
+	// search/filter can't land after a faster later one and clobber the list.
+	const fetchSequence = createRequestSequencer();
+
 	async function load(params: Record<string, string>, opts: { append?: boolean; nextPage?: number } = {}) {
 		const nextPage = opts.nextPage ?? 1;
+		const token = fetchSequence.start();
 		loading = true;
 		try {
 			const query = new URLSearchParams({
@@ -30,11 +37,12 @@ function createPaymentStore() {
 				page_size: String(PAGE_SIZE),
 			}).toString();
 			const res = await api.get<PaymentListResponse>(`/api/payments?${query}`);
+			if (!fetchSequence.isLatest(token)) return; // superseded by a newer load
 			payments = opts.append ? appendUnique(payments, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
 		} finally {
-			loading = false;
+			if (fetchSequence.isLatest(token)) loading = false;
 		}
 	}
 
