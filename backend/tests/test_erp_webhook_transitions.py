@@ -317,3 +317,100 @@ async def test_permitted_transition_scheduled_to_paid_applies(fake_redis):
     assert transition_calls[0]["target"] is InvoiceStatus.paid
     assert invoice.status is InvoiceStatus.paid
     db.commit.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Body size cap (memory-exhaustion DoS guard, GitHub issue #142)
+#
+# `erp_webhook` used to `await request.body()` before any signature/auth
+# check, with no size cap — an unauthenticated attacker could POST a
+# multi-gigabyte body and have it buffered fully into memory before the HMAC
+# check ever ran. The guard bounds the body in two phases, mirroring
+# `peppol_inbound_webhook`: reject on a declared Content-Length over the cap
+# BEFORE reading the body at all, then re-check the actual read length in
+# case the header lied or was absent (e.g. chunked transfer).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_content_length_over_cap_rejects_before_body_read(monkeypatch):
+    """A declared Content-Length over the cap must reject WITHOUT ever
+    awaiting `request.body()` — the whole point is bounding memory before
+    anything is buffered."""
+    from app.api.erp_webhook import erp_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "erp_webhook_max_bytes", 1024)
+    request = _fake_request(b"", {"content-length": "999999"})
+
+    result = await erp_webhook(erp_type="generic", request=request)
+
+    assert result is None  # silent 204, not a raised exception
+    request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_content_length_malformed_rejects_before_body_read(monkeypatch):
+    """A non-integer Content-Length header must also reject before reading —
+    a malformed header shouldn't fall through to an unbounded read."""
+    from app.api.erp_webhook import erp_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "erp_webhook_max_bytes", 1024)
+    request = _fake_request(b"", {"content-length": "not-a-number"})
+
+    result = await erp_webhook(erp_type="generic", request=request)
+
+    assert result is None
+    request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oversized_body_without_content_length_rejects_after_read(monkeypatch):
+    """Simulates chunked transfer (no Content-Length header): the body is read
+    once, then rejected by the post-read length check."""
+    from app.api.erp_webhook import erp_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "erp_webhook_max_bytes", 1024)
+    big_body = b"x" * 2048
+    request = _fake_request(big_body, {})
+
+    result = await erp_webhook(erp_type="generic", request=request)
+
+    assert result is None
+    request.body.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_content_length_understates_actual_size_still_rejects(monkeypatch):
+    """A Content-Length header that lies (understates the real body) must
+    still be caught by the post-read re-check, not trusted blindly."""
+    from app.api.erp_webhook import erp_webhook
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "erp_webhook_max_bytes", 1024)
+    big_body = b"x" * 2048
+    request = _fake_request(big_body, {"content-length": "10"})
+
+    result = await erp_webhook(erp_type="generic", request=request)
+
+    assert result is None
+    request.body.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_normal_signed_request_under_cap_still_succeeds(fake_redis):
+    """Regression guard: the new size-cap check must not break a legitimate,
+    normal-sized signed request (default cap is a few MB; this body is tiny)."""
+    org = _org_with_erp_secret("erp-secret")
+    invoice = SimpleNamespace(status=InvoiceStatus.sent_to_erp)
+
+    result, db, transition_calls = await _post(
+        org=org, invoice=invoice, status_value="Open", event_id="ev_size_ok"
+    )
+
+    assert result is None
+    assert len(transition_calls) == 1
+    assert transition_calls[0]["target"] is InvoiceStatus.posted_in_erp
+    db.commit.assert_awaited()

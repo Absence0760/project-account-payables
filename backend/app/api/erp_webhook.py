@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.database import control_session_factory, get_tenant_engine
 from app.models.exception import Exception as APException
 from app.models.invoice import Invoice, InvoiceStatus
@@ -74,7 +75,28 @@ async def erp_webhook(
 
     For Merge.dev webhooks, the body structure may differ — we normalize it.
     """
+    # Bound the body BEFORE buffering it. A POST would otherwise be read fully
+    # into memory before the signature check ever runs (memory-exhaustion DoS
+    # on a public, unauthenticated route). Reject on the declared
+    # Content-Length when present, and re-check the actual read in case the
+    # header lied / was absent (chunked). ERP status payloads are small JSON;
+    # cap defaults to a few MB.
+    max_bytes = settings.erp_webhook_max_bytes
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                logger.warning("ERP webhook rejected: body exceeds size cap")
+                return
+        except ValueError:
+            logger.warning("ERP webhook rejected: invalid content-length")
+            return
+
     raw_body = await request.body()
+    if len(raw_body) > max_bytes:
+        logger.warning("ERP webhook rejected: body exceeds size cap")
+        return
+
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
