@@ -553,6 +553,12 @@ Worktree notes:
 - `backend/.venv` and `node_modules` do **not** carry over (venv paths are
   absolute; node_modules is heavy) — run `pnpm install` / recreate the venv in
   the worktree before building or testing there.
+- A worktree isolates **files, not the database** — every session still shares
+  the one local Postgres. Backend `pytest` handles that itself: the `realdb`
+  harness claims a per-process slot and gets its own tenant databases, so
+  concurrent runs no longer truncate and disconnect each other (backend
+  `CLAUDE.md` § Test databases). Sharing the DB with a *running dev backend* is
+  still unsafe — see `docs/known-issues.md`.
 - **All work must end up on `main`.** A worktree commits on its own branch, and
   git won't let a worktree check out `main`, so that work only reaches `main`
   via an explicit merge from the **primary checkout**. Before retiring a

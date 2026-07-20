@@ -147,6 +147,54 @@ Commit the updated `.test_durations` alongside the test changes. Bumping the
 shard count means editing the `matrix.shard` list, the `--splits N` flag, and the
 `name:` (`shard N/4`) together in `ci.yml`.
 
+## Test databases (the `realdb` harness)
+
+Most of the suite is mock-based. Tests that request the `realdb` fixture
+(`tests/conftest.py`) run against a live Postgres and a **pair of real tenant
+databases** — the only way to prove cross-tenant isolation, the SQL filters, and
+commit durability. Before each such test the harness truncates the tenant
+business tables, restores the Default entity, resets the shared control-plane
+`Organization` row, and reaps every other backend on those databases.
+
+**The tenant pair is exclusive to one pytest process.** Because the reset both
+TRUNCATEs and `pg_terminate_backend`s, two pytest runs sharing a pair delete each
+other's rows and kill each other's connections — which surfaces as
+`asyncpg.ConnectionDoesNotExistError` / `ConnectionResetError` in whatever
+unrelated file happened to be mid-query, i.e. as flakiness rather than as the
+collision it is.
+
+Exclusivity is therefore claimed, not assumed. On first use each process takes a
+**slot** — a Postgres session-level advisory lock — and uses the tenant pair
+named for it:
+
+| Slot | Tenants |
+|------|---------|
+| 0 (first / only process) | `ap_pytesta`, `ap_pytestb` |
+| 1, 2, … (each further concurrent process) | `ap_pytesta1`, `ap_pytestb1`, … |
+
+Consequences worth knowing:
+
+- **Nothing changes for the common path.** A lone `pytest` run — and every CI
+  shard, each with its own Postgres — takes slot 0 and uses exactly the
+  historical databases. No extra databases, no measurable extra time.
+- **A second concurrent run just works.** It provisions its own pair on first use
+  (one-off, per session) and cannot disturb the first. Run several agents or
+  terminals at once without coordinating.
+- **Crash-safe, nothing to clean up.** Postgres releases the lock when the
+  holding connection dies, so a killed run frees its slot; the databases are
+  reused by the next process to claim it.
+- **Never hardcode a test tenant's slug or a seeded login** — they carry the slot
+  number. Use `realdb.info("a").slug` / `realdb.email("a", "admin")`.
+- Any control-plane row a test creates needs a unique value per slot (derive it
+  from the slug or a uuid), or two concurrent runs collide on the shared
+  `account_payables` unique constraints.
+
+The harness resets tenant tables plus `Organization.settings` / `parent_org_id`.
+It does **not** delete extra control-plane `users` rows a test creates — those
+accumulate, so a test must not assume a fixed user count for a test org.
+
+`tests/test_realdb_harness.py` guards both properties.
+
 ## Project structure
 
 ```
