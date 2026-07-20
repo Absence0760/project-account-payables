@@ -64,6 +64,18 @@ GL accounts (`GET /merge/api/accounting/v1/accounts`):
   (e.g. merge `PAID`, netsuite `paidInFull`, d365 `Paid`) to drive
   `get_invoice_status()` transitions.
 
+## Dependencies
+
+Direct deps live in `requirements.in`; the image installs from the generated
+`requirements.lock` with `pip install --require-hashes`, so every package —
+transitive ones included — is pinned by hash. Same posture as the backend
+image, and the base image is digest-pinned too. After editing
+`requirements.in`:
+
+```bash
+uv pip compile requirements.in --universal --python-version 3.14 --generate-hashes -o requirements.lock
+```
+
 ## Running
 
 Standalone (any venv with fastapi + uvicorn):

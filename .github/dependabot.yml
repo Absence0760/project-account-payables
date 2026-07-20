@@ -42,6 +42,18 @@ updates:
       day: monday
     open-pull-requests-limit: 5
 
+  # Both Dockerfiles pin their base image by digest so Scorecard's
+  # PinnedDependencies check passes and a re-tagged python:3.14-slim can't
+  # change what we build. A digest pin only stays safe if something bumps
+  # it — without this entry the fixture image would silently rot on an
+  # ever-older, ever-more-CVE-laden base.
+  - package-ecosystem: docker
+    directory: /tools/fake-erp
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+
   - package-ecosystem: terraform
     directory: /infra
     schedule:

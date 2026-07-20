@@ -1,0 +1,11 @@
+# Direct dependencies of the fake-erp test fixture. The image installs from
+# the generated `requirements.lock` (hash-pinned), never from this file —
+# regenerate the lock after editing:
+#
+#   uv pip compile requirements.in --universal --python-version 3.14 \
+#       --generate-hashes -o requirements.lock
+#
+# Keep this list minimal: fake-erp is a deterministic in-memory fixture and
+# every dependency it grows is one more thing to pin and scan.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
