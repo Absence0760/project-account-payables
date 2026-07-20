@@ -3,7 +3,15 @@ limits, receipt + pre-approval thresholds) the WF3 policy engine evaluates.
 
 Reads are open to all four roles; mutations are admin / ap_manager only. Every
 mutation writes a ``dispatch_audit`` row and is entity-scoped, mirroring
-``api/expenses.py``. See ``backend/docs/expense-management.md``.
+``api/expenses.py``.
+
+``threshold_currency`` is the unit for every money threshold on the row — it is
+what stops the engine comparing a €200 expense to a "100" limit as bare numbers.
+Leaving it unset means "the org's reporting currency", resolved at evaluation
+time rather than frozen here. The older ``per_diem_currency`` is descriptive
+only; it is kept in step with ``threshold_currency`` on write.
+
+See ``backend/docs/expense-management.md``.
 """
 
 import uuid
@@ -44,6 +52,7 @@ _UPDATABLE_FIELDS = (
     "name",
     "active",
     "category",
+    "threshold_currency",
     "per_diem_amount",
     "per_diem_currency",
     "mileage_rate",
@@ -60,6 +69,7 @@ def _to_response(p: ExpensePolicy) -> ExpensePolicyResponse:
         name=p.name,
         active=p.active,
         category=p.category,
+        threshold_currency=p.threshold_currency,
         per_diem_amount=float(p.per_diem_amount) if p.per_diem_amount is not None else None,
         per_diem_currency=p.per_diem_currency,
         mileage_rate=float(p.mileage_rate) if p.mileage_rate is not None else None,
@@ -129,8 +139,15 @@ async def create_policy(
         name=body.name,
         active=body.active,
         category=body.category,
+        threshold_currency=body.threshold_currency,
         per_diem_amount=body.per_diem_amount,
-        per_diem_currency=body.per_diem_currency,
+        # Keep the legacy per-diem-only field in step with the authoritative
+        # one unless the caller named it explicitly (see the model comment).
+        per_diem_currency=(
+            body.per_diem_currency
+            if "per_diem_currency" in body.model_fields_set or body.threshold_currency is None
+            else body.threshold_currency
+        ),
         mileage_rate=body.mileage_rate,
         category_limit=body.category_limit,
         requires_preapproval_above=body.requires_preapproval_above,
@@ -175,6 +192,10 @@ async def update_policy(
 ):
     policy = await _get_policy_or_404(db, policy_id)
     payload = body.model_dump(exclude_unset=True)
+    # A threshold-currency change re-denominates every threshold on the row, so
+    # the legacy per-diem field follows it unless the caller set that too.
+    if payload.get("threshold_currency") and "per_diem_currency" not in payload:
+        payload["per_diem_currency"] = payload["threshold_currency"]
     changed: list[str] = []
     for field in _UPDATABLE_FIELDS:
         if field in payload and getattr(policy, field) != payload[field]:

@@ -32,7 +32,7 @@ mapped to `varchar` columns (`native_enum=False`). All five live in
 |-------|-------|---------|
 | `expense_reports` | `ExpenseReport` | A grouping of expenses an employee submits for approval + reimbursement. `report_number`, `title`, `employee_user_id` (control-plane User id, no cross-DB FK), `status` (draft → submitted → pending_approval → approved/rejected → reimbursed/cancelled), `submitted_at`/`approved_at`/`approved_by`, `total_amount` (recomputed from attached expenses, denominated in `currency`), `currency`, `reporting_currency`/`reporting_amount`/`reporting_fx_rate`/`reporting_fx_locked_at` (the total re-expressed in the org reporting currency, rate locked at submit — what the CFO gate compares), `notes`. |
 | `expenses` | `Expense` | A single expense line. `report_id` (nullable — an expense can exist before being grouped), `expense_date`, `merchant`, `category`, `description`, `amount`, `currency`, `converted_currency`/`converted_amount`/`converted_fx_rate`/`converted_fx_locked_at` (the line re-expressed in the owning report's currency, rate locked on attach/edit), `gl_account_id` (FK → `gl_accounts`), `receipt_file_key`, `payment_method` (out_of_pocket / corporate_card / virtual_card), `card_transaction_id`, `policy_violations` (JSONB list), `status`, `reimbursable`, `mileage_miles`. |
-| `expense_policies` | `ExpensePolicy` | A reimbursement policy. `name`, `active`, `category` (NULL = all), `per_diem_amount`/`per_diem_currency`, `mileage_rate` (per mile), `category_limit`, `requires_preapproval_above`, `requires_receipt_above`, `rules` (JSONB). *Defined in WF1; enforced in WF3.* |
+| `expense_policies` | `ExpensePolicy` | A reimbursement policy. `name`, `active`, `category` (NULL = all), `threshold_currency` (the unit **every** money threshold below is denominated in; NULL = the org's reporting currency — migration `0077`), `per_diem_amount`/`per_diem_currency` (the latter descriptive only, kept in step with `threshold_currency`), `mileage_rate` (per mile), `category_limit`, `requires_preapproval_above`, `requires_receipt_above`, `rules` (JSONB). *Defined in WF1; enforced in WF3.* |
 | `corporate_card_transactions` | `CorporateCardTransaction` | A card transaction feed row reconciled to an expense. `card_ref`, `card_last_four`, `virtual_card_id` (FK → `virtual_cards`), `txn_date`/`posted_date`, `merchant`, `amount`, `currency`, `external_txn_id` (provider id, drives import idempotency), `matched_expense_id`, `reconciliation_status` (unmatched/matched/ignored), `import_batch`, `raw` (JSONB). *Model in WF1; import/reconcile in WF4.* |
 | `expense_preapprovals` | `ExpensePreapproval` | A spend pre-approval raised before an expense is incurred. `requester_user_id`, `title`, `estimated_amount`, `currency`, `category`, `justification`, `status` (pending/approved/rejected), `decided_by`/`decided_at`, `expense_report_id`. *Model in WF1; gating in WF3.* |
 
@@ -143,35 +143,91 @@ Virtual-card sync (`sync_virtual_cards`) carries charged virtual-card spend into
 caller (`api/expenses.py`) loads the active `ExpensePolicy` rows (and any
 approved `ExpensePreapproval` coverage) from the tenant DB and hands them in:
 
-- `evaluate_expense(expense, policies, approved_preapproval_amount=None)` →
-  `list[dict]`. A policy applies when it is `active` and its `category` is NULL
-  (all) or matches the expense category. Rules: `category_limit` exceeded;
-  `receipt_required` (amount > `requires_receipt_above` and no
-  `receipt_file_key` — **blocking**); `preapproval_required` (amount >
-  `requires_preapproval_above` with no approved pre-approval covering it —
-  **blocking**); `per_diem_exceeded`. All comparisons are `Decimal`. The
-  engine compares bare numbers, so the caller only ever hands it a pre-approval
-  **in the same currency as the expense** (`_approved_preapproval_amount`
-  filters on `ExpensePreapproval.currency`) — a €500 EUR pre-approval must not
-  satisfy a $500 USD expense. "Not covered" is the fail-closed answer.
+- `evaluate_expense(expense, policies, approved_preapproval_amount=None,
+  default_threshold_currency="USD")` → `list[dict]`. A policy applies when it is
+  `active` and its `category` is NULL (all) or matches the expense category.
+  Rules: `category_limit` exceeded; `receipt_required` (over
+  `requires_receipt_above` and no `receipt_file_key` — **blocking**);
+  `preapproval_required` (over `requires_preapproval_above` with no approved
+  pre-approval covering it — **blocking**); `per_diem_exceeded`. All comparisons
+  are `Decimal`, and all of them are **currency-aware** — see below.
+- `threshold_currency_for(policy, default_currency)` → the unit a policy's money
+  thresholds are read in.
 - `mileage_reimbursement(expense, policies)` → `Decimal`
-  (`mileage_miles * mileage_rate` from the first applicable policy with a rate).
-- `evaluate_report(report, expenses, policies, preapproval_amount_by_expense=…)`
-  → aggregate violations, each tagged with its source `expense_id`.
+  (`mileage_miles * mileage_rate` from the first applicable policy with a rate;
+  denominated in that policy's threshold currency).
+- `evaluate_report(report, expenses, policies, preapproval_amount_by_expense=…,
+  default_threshold_currency=…)` → aggregate violations, each tagged with its
+  source `expense_id`.
 - `blocking_violations(violations)` filters to the `BLOCKING_CODES` subset
   (`receipt_required`, `preapproval_required`) — the ones that block submission.
 
-Each violation dict is `{code, message, policy_id?, limit?, actual?,
-expense_id?}` (advisory, PII-free). `evaluate_expense` is wired into expense
-**create**, **PATCH**, and **receipt upload** as a best-effort refresh of
-`Expense.policy_violations` (a policy-engine error never breaks the write).
+Each violation dict is `{code, message, policy_id?, limit?, actual?, currency?,
+comparison?, expense_currency?, expense_id?}` (advisory, PII-free — amounts and
+ISO codes only). `evaluate_expense` is wired into expense **create**, **PATCH**,
+and **receipt upload** as a best-effort refresh of `Expense.policy_violations`
+(a policy-engine error never breaks the write).
+
+#### Threshold currency — what a policy's numbers mean
+
+A policy's money thresholds (`category_limit`, `per_diem_amount`,
+`requires_receipt_above`, `requires_preapproval_above`) are denominated in
+`ExpensePolicy.threshold_currency` (migration `0077`). Before the column existed
+the engine compared them to `expense.amount` as bare numbers, so a €200 EUR
+expense was judged against a USD 100 limit as "200 > 100" — and
+`receipt_required` is a **blocking** code, so a policy could block a compliant
+expense (¥10 000 ≈ $65 read as "10000 > 5000") or fail to block a
+non-compliant one.
+
+**Where the rate comes from.** Nowhere new — the engine performs no FX call and
+stays pure. A policy threshold is a *standing rule*, not a transaction, so there
+is no moment at which a rate could honestly be locked onto the policy row (and a
+rate locked when the rule was written would be stale for every expense it ever
+judges). Instead the engine reuses the rate a **write path already locked onto
+the expense** (`expenses.converted_*`, § Multi-currency reports) via
+`expense_currency.expense_amount_in_currency`, which resolves in this order:
+
+1. a locked conversion **into the threshold currency** → that figure;
+2. the expense already denominated in the threshold currency → its face amount;
+3. otherwise `None` — the comparison cannot be made.
+
+A lock into some *other* currency (the line's report currency, say GBP) is never
+reused for a EUR threshold — it says nothing about it.
+
+**Unresolvable (case 3) is fail-closed, per threshold:**
+
+| Threshold | Blocking? | Behaviour when the comparison can't be made |
+|---|---|---|
+| `requires_receipt_above` | yes | **Requires the receipt.** The violation is raised unless a `receipt_file_key` is present — a receipt is evidence that doesn't depend on the rate, so the rule stays satisfiable. |
+| `requires_preapproval_above` | yes | **Requires the pre-approval.** Raised unless an approved pre-approval covers the expense *in the expense's own currency* (`_approved_preapproval_amount` filters on `ExpensePreapproval.currency`, so that check stands on its own — a €500 pre-approval never satisfies a $500 expense). |
+| `category_limit` | no | Flagged for review (advisory badge). |
+| `per_diem_amount` | no | Flagged for review (advisory badge). |
+
+Every such violation carries `comparison: "unresolved"` plus `currency` (the
+threshold's unit) and `expense_currency` (the unit of the `actual` figure), so
+the UI can say *why* it flagged instead of asserting a comparison that never
+happened. Attaching the line to a report locks a rate and the next evaluation
+compares for real.
+
+**Existing rows have `threshold_currency = NULL`, and it was not backfilled.**
+NULL is a defined state — *"the org's reporting currency"*
+(`currency_conversion.resolve_reporting_currency`), resolved at evaluation time
+and passed in as `default_threshold_currency` by `api/expenses.py`. That is the
+unit a bare threshold number already implicitly had everywhere else (the CFO
+expense threshold, the policy table in the UI). It was not written into the rows
+because the reporting currency lives in the **control-plane**
+`organizations.settings`, which a **tenant**-DB migration cannot read; and the
+only in-table candidate, `per_diem_currency`, is server-defaulted `'USD'` on
+every row and was never read, so copying it would have frozen the exact
+silent-USD guess being removed. `per_diem_currency` is now descriptive only —
+the API keeps it in step with `threshold_currency` on write.
 
 ### Policy + pre-approval CRUD (WF3)
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/expense-policies` | List policies; `?active=&category=` filters. Read RBAC (all four roles). |
-| POST | `/api/expense-policies` | Create a policy. Mutation RBAC (`admin`/`ap_manager`). Audited `expense_policy.created`. |
+| POST | `/api/expense-policies` | Create a policy. `threshold_currency` is optional (uppercased + shape-checked as a 3-letter ISO 4217 code; omitted / blank → NULL = the org's reporting currency) and, when given, also sets `per_diem_currency` unless that was named explicitly. Mutation RBAC (`admin`/`ap_manager`). Audited `expense_policy.created`. |
 | GET/PATCH/DELETE | `/api/expense-policies/{id}` | Get / update / delete. Mutations `admin`/`ap_manager`, audited. |
 | GET | `/api/expense-preapprovals` | List requests; `?status=&requester_user_id=` filters. Read RBAC (all four). |
 | POST | `/api/expense-preapprovals` | Raise a request — `requester_user_id` is always the authenticated user (the body field is ignored so SoD on the decision side stays meaningful); status `pending`. RBAC `admin`/`ap_manager`/`ap_clerk`. Audited. |
@@ -279,6 +335,18 @@ inventing a rate for a historical foreign line inside a migration would
 fabricate history — it is counted as unconverted and blocks submission until
 re-attached (which locks a real rate).
 
+### Migration 0077
+
+`backend/alembic/versions/0077_expense_policy_currency.py` adds
+`expense_policies.threshold_currency` (`varchar(3)`, nullable). Tenant-DB only
+(gated on the table existing, so it no-ops on the control plane), idempotent
+`ADD COLUMN IF NOT EXISTS` / `DROP COLUMN IF EXISTS`, fanned out by
+`scripts/migrate_all_tenants.py`. **No backfill** — NULL means "the org's
+reporting currency", resolved at evaluation time; see § Threshold currency for
+why writing a value here would be both impossible (the reporting currency is
+control-plane state) and wrong (the only in-table candidate is a defaulted
+`'USD'`).
+
 ## Tests
 
 `backend/tests/test_expenses.py` (pytest, async, `realdb` fixture) — expense
@@ -315,7 +383,13 @@ the currency-matched pre-approval cover check. All deterministic against the
 `backend/tests/test_expense_policy.py` (WF3, pure/DB-free) — the policy engine:
 category limits, receipt-required, pre-approval-required (+ coverage), per-diem,
 category matching (NULL = all), the active flag, mileage reimbursement (Decimal),
-report aggregation, and the blocking-subset filter.
+report aggregation, the blocking-subset filter, and the **currency dimension**:
+`threshold_currency_for` resolution, a €200 EUR expense NOT judged against a USD
+100 limit as bare numbers, a locked ¥10 000 → $64.94 conversion clearing a USD
+100 limit that bare numbers would have flagged, a lock into a third currency not
+reused, the per-threshold fail-closed table above (receipt demanded, receipt
+still clears it, pre-approval cover in the expense currency still satisfies,
+advisory limits flagged not blocking), and a PII-free violation payload.
 
 `backend/tests/test_expense_preapprovals.py` (WF3, `realdb`) — pre-approval
 create (requester stamped from the caller), list + status filter, manager
@@ -328,7 +402,11 @@ report submit blocked on a missing required receipt (422 + violation list, no
 transition); submit success (child statuses + `submitted_at`); approve
 self-blocked by segregation; a different manager approving; the CFO threshold
 (default 5000 + a custom org override); the reject path returning children to
-`draft`; invalid-state 422 guards; and exact `Numeric` policy money round-trips.
+`draft`; invalid-state 422 guards; exact `Numeric` policy money round-trips;
+`threshold_currency` round-trip + normalization (`eur` → `EUR`, `per_diem_currency`
+following, `EUROS` → 422, omitted → NULL); and the defect end-to-end on the real
+write path — a ¥10 000 JPY expense flagged `unresolved` against USD thresholds
+while unattached, then clean once attaching it to a USD report locks a rate.
 
 `backend/tests/test_expense_cards.py` (WF4, `realdb`) — CSV import (rows land,
 exact `Numeric` round-trip, shared `import_batch`) + dedupe-skip (re-import and

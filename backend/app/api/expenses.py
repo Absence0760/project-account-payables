@@ -361,15 +361,24 @@ async def _approved_preapproval_amount(db: AsyncSession, expense: Expense) -> De
     return max(Decimal(r) for r in rows)
 
 
-async def _refresh_policy_violations(db: AsyncSession, expense: Expense) -> None:
+async def _refresh_policy_violations(db: AsyncSession, expense: Expense, org: Organization) -> None:
     """Recompute ``expense.policy_violations`` from the active policies.
+
+    ``org`` supplies the reporting currency, which is the unit a policy's
+    thresholds are read in when the policy itself names none — without it the
+    engine would compare a foreign-currency expense to a bare threshold number.
 
     Best-effort: any failure leaves the stored value untouched and never breaks
     the surrounding write (the violations are advisory)."""
     try:
         policies = await _active_policies(db)
         covered = await _approved_preapproval_amount(db, expense)
-        violations = evaluate_expense(expense, policies, approved_preapproval_amount=covered)
+        violations = evaluate_expense(
+            expense,
+            policies,
+            approved_preapproval_amount=covered,
+            default_threshold_currency=resolve_reporting_currency(org.settings),
+        )
         expense.policy_violations = violations or None
     except Exception:  # pragma: no cover — advisory, never break the write
         pass
@@ -459,7 +468,7 @@ async def create_expense(
         await db.flush()
         await _recompute_report_total(db, report)
 
-    await _refresh_policy_violations(db, expense)
+    await _refresh_policy_violations(db, expense, org)
 
     await dispatch_audit(
         db,
@@ -511,6 +520,7 @@ async def upload_receipt(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER, ROLE_AP_CLERK)),
     org_id: uuid.UUID = Depends(get_org_id),
+    org: Organization = Depends(get_tenant),
 ):
     expense = await _get_expense_or_404(db, expense_id)
     try:
@@ -519,7 +529,7 @@ async def upload_receipt(
         raise HTTPException(status_code=400, detail=str(exc))
     expense.receipt_file_key = file_key
     # A newly-attached receipt can clear a receipt_required violation.
-    await _refresh_policy_violations(db, expense)
+    await _refresh_policy_violations(db, expense, org)
     await dispatch_audit(
         db,
         correlation_id=uuid.uuid4(),
@@ -741,7 +751,7 @@ async def update_expense(
         await _recompute_report_total(db, report)
 
     # Amount / category / receipt may have changed — recompute violations.
-    await _refresh_policy_violations(db, expense)
+    await _refresh_policy_violations(db, expense, org)
 
     if changed or affected_reports:
         await dispatch_audit(
@@ -1159,7 +1169,11 @@ async def submit_report(
         if amount is not None:
             cover[str(child.id)] = amount
     violations = evaluate_report(
-        report, list(report.expenses), policies, preapproval_amount_by_expense=cover
+        report,
+        list(report.expenses),
+        policies,
+        preapproval_amount_by_expense=cover,
+        default_threshold_currency=resolve_reporting_currency(org.settings),
     )
     blocking = blocking_violations(violations)
     if blocking:

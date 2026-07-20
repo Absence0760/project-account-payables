@@ -464,6 +464,13 @@
 	}
 
 	// ========================== Policies tab ==========================
+	// A policy's thresholds are denominated in its own threshold_currency; an
+	// unset one means the org's reporting currency (what the backend engine
+	// falls back to), so the table must never render them in a different unit.
+	function policyCurrency(p: ExpensePolicy): string {
+		return p.threshold_currency ?? orgCurrency.currency;
+	}
+
 	let policies = $state<ExpensePolicy[]>([]);
 	let policiesLoading = $state(false);
 	let showPolicyCreate = $state(false);
@@ -1057,6 +1064,7 @@
 			columns={[
 				{ label: m('expenses.policies.col.name') },
 				{ label: m('expenses.policies.col.category') },
+				{ label: m('expenses.policies.col.currency') },
 				{ label: m('expenses.policies.col.limit'), class: 'right' },
 				{ label: m('expenses.policies.col.receiptAbove'), class: 'right' },
 				{ label: m('expenses.policies.col.preapprAbove'), class: 'right' },
@@ -1075,9 +1083,10 @@
 							</RowLink>
 						</td>
 						<td>{p.category ?? m('expenses.policies.categoryAll')}</td>
-						<td class="right mono">{p.category_limit != null ? formatMoney(p.category_limit, { currency: orgCurrency.currency }) : '—'}</td>
-						<td class="right mono">{p.requires_receipt_above != null ? formatMoney(p.requires_receipt_above, { currency: orgCurrency.currency }) : '—'}</td>
-						<td class="right mono">{p.requires_preapproval_above != null ? formatMoney(p.requires_preapproval_above, { currency: orgCurrency.currency }) : '—'}</td>
+						<td>{policyCurrency(p)}</td>
+						<td class="right mono">{p.category_limit != null ? formatMoney(p.category_limit, { currency: policyCurrency(p) }) : '—'}</td>
+						<td class="right mono">{p.requires_receipt_above != null ? formatMoney(p.requires_receipt_above, { currency: policyCurrency(p) }) : '—'}</td>
+						<td class="right mono">{p.requires_preapproval_above != null ? formatMoney(p.requires_preapproval_above, { currency: policyCurrency(p) }) : '—'}</td>
 						<td><span class="badge {p.active ? 'approved' : 'cancelled'}">{p.active ? m('expenses.policies.active') : m('expenses.policies.inactive')}</span></td>
 						<td class="actions">
 							{#if canManagePolicies}

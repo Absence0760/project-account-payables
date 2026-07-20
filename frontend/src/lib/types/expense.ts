@@ -72,8 +72,18 @@ export interface PolicyViolation {
 	code: string;
 	message: string;
 	policy_id?: string;
-	limit?: number;
-	actual?: number;
+	/** Exact decimal strings — money never round-trips as a JS number. */
+	limit?: string;
+	actual?: string;
+	/** Currency `limit` (and, when the comparison resolved, `actual`) is in. */
+	currency?: string;
+	/**
+	 * Present only when the expense could not be expressed in `currency`, so the
+	 * rule fell closed and was flagged without a comparison. `actual` is then the
+	 * expense's face amount, in `expense_currency`.
+	 */
+	comparison?: 'unresolved';
+	expense_currency?: string;
 }
 
 export interface Expense {
@@ -213,6 +223,12 @@ export interface ExpensePolicy {
 	name: string;
 	active: boolean;
 	category: string | null;
+	/**
+	 * Currency every money threshold on this policy is denominated in.
+	 * null = "the org's reporting currency" (resolved server-side at evaluation
+	 * time) — the unit a bare threshold number has always implicitly had.
+	 */
+	threshold_currency: string | null;
 	per_diem_amount: number | null;
 	per_diem_currency: string | null;
 	mileage_rate: number | null;
@@ -228,6 +244,7 @@ export interface ExpensePolicyCreate {
 	name: string;
 	active: boolean;
 	category: string | null;
+	threshold_currency: string | null;
 	category_limit: number | null;
 	requires_receipt_above: number | null;
 	requires_preapproval_above: number | null;

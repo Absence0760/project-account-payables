@@ -34,6 +34,10 @@ Fail-closed, both ways:
   (that was the bug — issue #157).
 * A report whose reporting-currency figure is unavailable is treated by the gate
   as *over* the threshold (CFO sign-off required), never under it.
+* A policy threshold that cannot be compared against the expense's amount (the
+  two are in different currencies and nothing on the row bridges them) is
+  treated by ``services/expense_policy`` as *breached* — a required receipt is
+  demanded rather than waived. See ``expense_amount_in_currency`` below.
 
 Money is ``Decimal`` end to end, quantized to 2 dp ``ROUND_HALF_UP``; rates to
 8 dp. Never ``float``.
@@ -146,6 +150,31 @@ def line_amount_in_report_currency(
     if normalize_currency(currency, default=tgt) == tgt:
         return _quantize_money(Decimal(str(amount or 0)))
     return None
+
+
+def expense_amount_in_currency(expense, *, target_currency: str) -> Decimal | None:
+    """The expense's ``amount`` expressed in ``target_currency``, or ``None``.
+
+    An ORM-row-shaped wrapper over ``line_amount_in_report_currency`` for
+    callers that hold an ``Expense`` rather than a row dict — same precedence
+    (locked conversion into the target → face amount when already denominated
+    in the target → ``None``), and the same rule that ``None`` means *unknown*,
+    never *zero* and never *face value*.
+
+    It performs **no** FX call, deliberately: the only figures it will use are
+    ones a write path already locked. Its second consumer is the policy engine
+    (``services/expense_policy``), where a threshold is a standing rule rather
+    than a transaction and so has no moment at which a rate could honestly be
+    locked; ``None`` there means "this comparison cannot be made", which the
+    engine resolves conservatively rather than by inventing a rate.
+    """
+    return line_amount_in_report_currency(
+        amount=getattr(expense, "amount", None),
+        currency=getattr(expense, "currency", None),
+        converted_amount=getattr(expense, "converted_amount", None),
+        converted_currency=getattr(expense, "converted_currency", None),
+        report_currency=target_currency,
+    )
 
 
 @dataclass(frozen=True)

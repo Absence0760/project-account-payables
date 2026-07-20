@@ -252,7 +252,20 @@ class ExpensePolicy(Base, EntityMixin, TimestampMixin):
     category: Mapped[str | None] = mapped_column(String(100))
 
     # --- Money / rates (Numeric, never float) -----------------------------
+    # The currency EVERY money threshold below is denominated in — the unit that
+    # makes the numbers mean something. Without it the engine compared a €200
+    # expense to a "100" limit as bare numbers, and ``receipt_required`` is a
+    # BLOCKING code, so a policy could block or fail to block on a meaningless
+    # comparison. NULL (every row predating the column) resolves at evaluation
+    # time to the org's REPORTING currency — a tenant-DB migration cannot read
+    # control-plane org settings, so this is deferred rather than guessed at
+    # upgrade time. See ``services/expense_policy.threshold_currency_for``.
+    threshold_currency: Mapped[str | None] = mapped_column(String(3))
     per_diem_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))
+    # Legacy/descriptive: predates ``threshold_currency`` and was never read by
+    # the engine (it is server-defaulted "USD", so treating it as authoritative
+    # would re-introduce the silent-USD bug). Kept for API back-compat and kept
+    # in step with ``threshold_currency`` on write.
     per_diem_currency: Mapped[str] = mapped_column(String(3), default="USD")
     mileage_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     category_limit: Mapped[Decimal | None] = mapped_column(Numeric(15, 2))

@@ -13,7 +13,7 @@ endpoints are wired in WF1.
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.pagination import PageMeta
 from app.models.expense import (
@@ -203,6 +203,9 @@ class ExpensePolicyBase(BaseModel):
     name: str = Field(..., max_length=255)
     active: bool = True
     category: str | None = Field(default=None, max_length=100)
+    # The currency every money threshold on this policy is denominated in.
+    # None = "the org's reporting currency", resolved at evaluation time.
+    threshold_currency: str | None = None
     per_diem_amount: Decimal | None = None
     per_diem_currency: str = Field(default="USD", max_length=3)
     mileage_rate: Decimal | None = None
@@ -210,6 +213,20 @@ class ExpensePolicyBase(BaseModel):
     requires_preapproval_above: Decimal | None = None
     requires_receipt_above: Decimal | None = None
     rules: dict | None = None
+
+    @field_validator("threshold_currency")
+    @classmethod
+    def _normalize_threshold_currency(cls, v: str | None) -> str | None:
+        """Uppercase + shape-check the ISO 4217 code (3 letters). Blank → None
+        ("unset" = fall back to the org's reporting currency)."""
+        if v is None:
+            return None
+        code = v.strip().upper()
+        if not code:
+            return None
+        if not code.isalpha() or len(code) != 3:
+            raise ValueError("threshold_currency must be a 3-letter ISO 4217 code")
+        return code
 
 
 class ExpensePolicyCreate(ExpensePolicyBase):
@@ -222,6 +239,7 @@ class ExpensePolicyUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
     active: bool | None = None
     category: str | None = Field(default=None, max_length=100)
+    threshold_currency: str | None = None
     per_diem_amount: Decimal | None = None
     per_diem_currency: str | None = Field(default=None, max_length=3)
     mileage_rate: Decimal | None = None
@@ -230,12 +248,27 @@ class ExpensePolicyUpdate(BaseModel):
     requires_receipt_above: Decimal | None = None
     rules: dict | None = None
 
+    @field_validator("threshold_currency")
+    @classmethod
+    def _normalize_threshold_currency(cls, v: str | None) -> str | None:
+        """Uppercase + shape-check the ISO 4217 code (3 letters). Blank → None
+        ("unset" = fall back to the org's reporting currency)."""
+        if v is None:
+            return None
+        code = v.strip().upper()
+        if not code:
+            return None
+        if not code.isalpha() or len(code) != 3:
+            raise ValueError("threshold_currency must be a 3-letter ISO 4217 code")
+        return code
+
 
 class ExpensePolicyResponse(BaseModel):
     id: str
     name: str
     active: bool
     category: str | None
+    threshold_currency: str | None
     per_diem_amount: float | None
     per_diem_currency: str
     mileage_rate: float | None
