@@ -4,9 +4,15 @@ import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
 from app.models.invoice import Invoice
 from app.models.vendor import Vendor
+from app.tenant import apply_entity_scope
+
+# A vendor in one of these states is a legitimate match target. `inactive` /
+# `rejected` rows are deliberately dead and must never absorb an invoice.
+_MATCHABLE_STATUSES = ("active", "unverified")
 
 
 def _normalize(name: str) -> str:
@@ -54,14 +60,54 @@ def _similarity(a: str, b: str) -> float:
     return len(intersection) / len(union)
 
 
+def _candidate_query(entity_id: uuid.UUID | None) -> Select:
+    """Base vendor-candidate query for one subsidiary.
+
+    **Entity scoping.** ``vendors`` carries a nullable ``entity_id``
+    (``EntityMixin``), so in a multi-entity tenant an unscoped lookup can hand
+    an invoice a vendor belonging to a *different* subsidiary. When the caller
+    supplies the invoice's entity, candidates are narrowed to that entity **∪
+    rows whose ``entity_id`` is NULL**.
+
+    A NULL means something different here than it does on ``gl_accounts``,
+    where it is a deliberate "shared chart" marker. On ``vendors`` it means the
+    row was never stamped with a subsidiary: a pre-multi-entity row that
+    migration ``0029``'s backfill didn't reach, or one auto-created from an
+    invoice that itself carried no entity. It must nonetheless stay matchable
+    from every entity — a supplier is a real-world counterparty, not
+    subsidiary-private data, and dropping unstamped rows from the candidate set
+    would not fail loudly: it would silently mint a *duplicate* vendor,
+    splitting the supplier's spend rollup and giving it a second, independently
+    editable bank-detail record. Under-matching here is the more dangerous
+    failure, so NULL is admitted.
+
+    ``entity_id is None`` (an unstamped invoice, or a caller with no entity in
+    hand) is a passthrough — exactly the pre-multi-entity behaviour, which is
+    also what every single-entity tenant sees, since there all vendors are
+    either under the one default entity or NULL.
+
+    The ordering makes the pick deterministic and prefers the caller's own
+    subsidiary over an unstamped row when both could match.
+    """
+    query = select(Vendor).where(Vendor.status.in_(_MATCHABLE_STATUSES))
+    query = apply_entity_scope(query, Vendor, entity_id, include_shared=True)
+    return query.order_by(Vendor.entity_id.is_(None), Vendor.created_at, Vendor.id)
+
+
 async def match_vendor(
     db: AsyncSession,
     vendor_name: str,
     vendor_tax_id: str | None = None,
     vendor_address: str | None = None,
     organization_id: uuid.UUID | None = None,
+    entity_id: uuid.UUID | None = None,
 ) -> tuple[Vendor | None, float]:
     """Find the best matching vendor for a given name.
+
+    ``entity_id`` is the subsidiary the match is being made *for* — normally
+    the invoice's own ``entity_id``. It confines every candidate lookup to that
+    entity (plus unstamped rows); see ``_candidate_query``. Passing ``None``
+    searches the whole tenant.
 
     Returns (vendor, confidence) where confidence is 0-1.
     Returns (None, 0) if no reasonable match found.
@@ -69,31 +115,30 @@ async def match_vendor(
     if not vendor_name or not vendor_name.strip():
         return None, 0.0
 
-    # First: try exact tax_id match (highest confidence)
+    # First: try exact tax_id match (highest confidence). `first()` over an
+    # ordered, limited query rather than `scalar_one_or_none()`: the same
+    # supplier legitimately exists once per subsidiary, and a duplicated
+    # tax_id must not turn invoice creation into a 500.
     if vendor_tax_id:
         result = await db.execute(
-            select(Vendor).where(
-                Vendor.tax_id == vendor_tax_id,
-                Vendor.status.in_(["active", "unverified"]),
-            )
+            _candidate_query(entity_id).where(Vendor.tax_id == vendor_tax_id).limit(1)
         )
-        tax_match = result.scalar_one_or_none()
+        tax_match = result.scalars().first()
         if tax_match:
             return tax_match, 1.0
 
     # Second: try exact name match (case-insensitive)
     result = await db.execute(
-        select(Vendor).where(
-            func.lower(Vendor.name) == vendor_name.lower().strip(),
-            Vendor.status.in_(["active", "unverified"]),
-        )
+        _candidate_query(entity_id)
+        .where(func.lower(Vendor.name) == vendor_name.lower().strip())
+        .limit(1)
     )
-    exact_match = result.scalar_one_or_none()
+    exact_match = result.scalars().first()
     if exact_match:
         return exact_match, 0.98
 
-    # Third: fuzzy match against all active vendors
-    result = await db.execute(select(Vendor).where(Vendor.status.in_(["active", "unverified"])))
+    # Third: fuzzy match across the in-scope candidates
+    result = await db.execute(_candidate_query(entity_id))
     vendors = result.scalars().all()
 
     normalized_input = _normalize(vendor_name)
@@ -114,6 +159,9 @@ async def match_vendor(
             )
             score = max(score, score * 0.8 + addr_score * 0.2)
 
+        # Strict `>` keeps the first row seen on a tie, and `_candidate_query`
+        # orders the invoice's own entity ahead of unstamped rows — so an
+        # equally-good shared candidate never displaces the entity's own.
         if score > best_score:
             best_score = score
             best_vendor = v
@@ -138,6 +186,13 @@ async def match_and_link_vendor(
     ``manual`` when a human keyed the invoice in by hand. It does not affect
     matching — only the row written when nothing matches.
 
+    Matching is confined to the invoice's own subsidiary (``invoice.entity_id``)
+    plus unstamped vendors — see ``_candidate_query``. Every caller passes the
+    invoice, so the entity is derived here rather than threaded through each
+    call site; that also means an inter-company *mirror* payable, which sits
+    under the counterparty entity, matches against the counterparty's vendors
+    without any call-site knowledge of inter-company routing.
+
     Returns (vendor, action) where action is:
     - "linked" — matched to existing vendor
     - "created" — new unverified vendor created
@@ -151,6 +206,7 @@ async def match_and_link_vendor(
         vendor_name=invoice.vendor_name,
         vendor_tax_id=invoice.vendor_tax_id,
         vendor_address=invoice.vendor_address,
+        entity_id=invoice.entity_id,
     )
 
     if vendor and confidence >= 0.8:

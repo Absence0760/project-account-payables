@@ -60,6 +60,32 @@ behavior), and a set `entity_id` makes it entity-specific. So an entity's
 effective chart is `shared (NULL) ∪ its own`. Phase 3 wires this into the
 extraction catalog and bulk-recode validation.
 
+### Vendor matching: entity ∪ NULL, for a different reason
+
+`services/vendor_matching.match_vendor` is the second consumer of
+`apply_entity_scope(..., include_shared=True)`. All three of its lookups (exact
+tax_id, exact name, fuzzy) are confined to the invoice's own `entity_id` ∪
+vendors carrying a NULL one — otherwise a multi-entity tenant could link
+subsidiary A's invoice to subsidiary B's vendor, and since `Invoice.vendor_id`
+is what the fail-closed credit-memo guard compares, that mislink lets one
+subsidiary's credit reduce another's payable.
+
+The NULL here is **not** a "shared vendor" marker the way it is on
+`gl_accounts` — it means *unstamped*: a pre-multi-entity row migration `0029`'s
+backfill didn't reach, or one auto-created from an invoice that itself carried
+no entity. It is admitted anyway because excluding it would not fail loudly —
+it would silently create a duplicate vendor (splitting spend rollups, and giving
+the supplier a second independently-editable bank-detail record). An entity's
+own row outranks an unstamped one when both match.
+
+`entity_id=None` is a passthrough (whole-tenant search), which is exactly what a
+single-entity tenant gets in practice: with one default entity, `entity ∪ NULL`
+is the whole vendor table, so matching behaves precisely as it did before.
+`match_and_link_vendor` derives the entity from `invoice.entity_id`, so an
+inter-company mirror — which sits under the *counterparty* entity — matches
+against the counterparty's vendors with no call-site change. Details:
+`backend/docs/vendor-management.md` § Matching is scoped to the invoice's entity.
+
 ## How every tenant gets a Default entity
 
 - **Existing tenants** — migration `0029_entities` (tenant-only, gated on the
@@ -109,7 +135,7 @@ Three primitives back this (all in `app/tenant.py`):
 | Area | List / aggregate scoped | New-row `entity_id` |
 |------|-------------------------|----------------------|
 | Invoices | `GET /invoices`, `/invoices/counts` | create + upload + CSV import → write-entity; portal submit → vendor's; PO-flip → PO's; email intake → default |
-| Vendors | `GET /vendors` | create + ERP sync + CSV import → write-entity; AI-extraction match-miss → invoice's |
+| Vendors | `GET /vendors`; **vendor matching** — `services/vendor_matching.match_vendor`'s three lookups run against the invoice's entity **∪ NULL** (see below) | create + ERP sync + CSV import → write-entity; AI-extraction match-miss → invoice's |
 | Payments | `GET /payments`, `/payments/queue`, `/payments/summary`, `/payments/runs/` | payment → its invoice's; payment run → write-entity (each payment still follows its own invoice) |
 | Purchase orders | `GET /purchase-orders` | ERP sync → write-entity |
 | Goods receipts | `GET /goods-receipts` | (no API create path) |

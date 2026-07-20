@@ -57,14 +57,18 @@ def _mk_db(*, expects_tax_query=False, tax_match=None, name_match=None, fuzzy_po
     supplies a tax_id so the side_effect order matches."""
     queue: list = []
 
-    if expects_tax_query:
-        tax_res = MagicMock()
-        tax_res.scalar_one_or_none = MagicMock(return_value=tax_match)
-        queue.append(tax_res)
+    def _one(row):
+        """A result whose `.scalars().first()` yields `row`."""
+        res = MagicMock()
+        scalars = MagicMock()
+        scalars.first = MagicMock(return_value=row)
+        res.scalars = MagicMock(return_value=scalars)
+        return res
 
-    name_res = MagicMock()
-    name_res.scalar_one_or_none = MagicMock(return_value=name_match)
-    queue.append(name_res)
+    if expects_tax_query:
+        queue.append(_one(tax_match))
+
+    queue.append(_one(name_match))
 
     fuzzy_res = MagicMock()
     fuzzy_scalars = MagicMock()
@@ -234,6 +238,7 @@ async def test_high_confidence_match_links_invoice_without_creating_vendor():
         vendor_tax_id="12-3456789",
         vendor_address=None,
         vendor_id=None,
+        entity_id=None,
     )
     db = _mk_db(expects_tax_query=True, tax_match=existing)
     org_id = uuid.uuid4()

@@ -76,6 +76,47 @@ is identical.
 2. **Exact name match** — case-insensitive match on `vendor.name`. Confidence: 0.98.
 3. **Fuzzy name match** — normalize both names (strip suffixes like Inc/LLC/Ltd, remove punctuation, collapse whitespace) and compute Jaccard token similarity. Address overlap boosts the score. Threshold: 0.6.
 
+### Matching is scoped to the invoice's entity (subsidiary)
+
+All three lookups run against **the invoice's own `entity_id` ∪ vendors whose
+`entity_id` is NULL** — `vendor_matching._candidate_query`, built on the shared
+`tenant.apply_entity_scope(..., include_shared=True)`. Without that scope, a
+multi-entity tenant could link subsidiary A's invoice to subsidiary B's vendor
+row; because `Invoice.vendor_id` is what the fail-closed credit-memo guard
+compares, such a mislink has a money consequence (one subsidiary's credit
+applying against another's payable).
+
+What a NULL `entity_id` means differs from `gl_accounts`, where NULL is a
+deliberate "shared chart" marker. On `vendors` it means the row was never
+stamped with a subsidiary — a pre-multi-entity row that migration `0029`'s
+backfill didn't reach, or one auto-created from an invoice that itself carried
+no entity. Those rows stay matchable from **every** entity: a supplier is a
+real-world counterparty, not subsidiary-private data, and excluding them would
+not fail loudly — it would silently mint a duplicate vendor, splitting the
+supplier's spend rollup and giving it a second, independently editable
+bank-detail record. When the same supplier exists both unstamped and under the
+invoice's own entity, the entity's own row wins (the candidate query orders it
+first).
+
+`match_and_link_vendor` derives the entity from `invoice.entity_id`, so no
+caller passes it explicitly — including an inter-company **mirror** payable,
+which sits under the counterparty entity and therefore matches against the
+counterparty's vendors automatically. The two exception-agent resolvers that
+call `match_vendor` directly (`missing_po_v1`, `multi_po_split_v1`) pass
+`entity_id=invoice.entity_id` so an agent can't reach a same-named vendor in
+another entity and then PO-match across subsidiaries.
+
+`entity_id=None` (an unstamped invoice, or a caller with no entity in hand) is a
+passthrough that searches the whole tenant — the pre-multi-entity behaviour.
+That is also why **single-entity tenants see no change at all**: with one default
+entity every vendor is either under it or NULL, so `entity ∪ NULL` admits the
+whole table.
+
+Ordering also makes the pick deterministic: the tax_id and exact-name lookups
+take the first ordered row rather than `scalar_one_or_none()`, so the same
+supplier legitimately registered under two subsidiaries (duplicate `tax_id`)
+resolves to one row instead of raising and turning invoice creation into a 500.
+
 ### Match Outcomes
 
 | Confidence | Action |

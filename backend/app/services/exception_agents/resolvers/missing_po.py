@@ -137,6 +137,10 @@ async def _candidate_pos(
             vendor_name=invoice.vendor_name,
             vendor_tax_id=invoice.vendor_tax_id,
             vendor_address=invoice.vendor_address,
+            # Confine the name resolution to the invoice's own subsidiary, so
+            # the agent can't reach a same-named vendor in another entity and
+            # then match this invoice against that entity's POs.
+            entity_id=invoice.entity_id,
         )
         if vendor is None or confidence < Decimal("0.8"):
             return []
