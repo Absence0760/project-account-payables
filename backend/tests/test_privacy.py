@@ -120,12 +120,12 @@ async def test_dsar_user_bundle(realdb):
     async with realdb.client(key="a", role="admin") as c:
         resp = await c.post(
             "/api/privacy/dsar",
-            json={"subject_type": "user", "identifier": "admin@pytesta.test"},
+            json={"subject_type": "user", "identifier": realdb.email("a")},
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["subject_type"] == "user"
-    assert body["data"]["profile"]["email"] == "admin@pytesta.test"
+    assert body["data"]["profile"]["email"] == realdb.email("a")
     assert "admin" in body["data"]["roles"]
     assert body["data"]["activity"]["audit_actions_authored"] >= 1
 
@@ -228,7 +228,7 @@ async def test_dsar_non_admin_forbidden(realdb):
     async with realdb.client(key="a", role="ap_clerk") as c:
         resp = await c.post(
             "/api/privacy/dsar",
-            json={"subject_type": "user", "identifier": "admin@pytesta.test"},
+            json={"subject_type": "user", "identifier": realdb.email("a")},
         )
     assert resp.status_code == 403
 
@@ -320,11 +320,14 @@ async def test_erasure_user_redacts_pii(realdb):
     from app.models.user import User
 
     target_id = uuid.uuid4()
+    # Slug-derived so two concurrent pytest processes (each on its own realdb
+    # slot) can't collide on the control-plane unique email.
+    target_email = f"erase-me-{target_id}@{realdb.info('a').slug}.test"
     async with ctrl_mk() as s:
         s.add(
             User(
                 id=target_id,
-                email="erase-me@pytesta.test",
+                email=target_email,
                 full_name="Erase Me",
                 hashed_password="x",
                 sso_provider="okta",
@@ -342,7 +345,7 @@ async def test_erasure_user_redacts_pii(realdb):
                 "/api/privacy/erasure",
                 json={
                     "subject_type": "user",
-                    "identifier": "erase-me@pytesta.test",
+                    "identifier": target_email,
                     "confirm": True,
                 },
             )
@@ -515,6 +518,6 @@ async def test_dsar_user_cross_org_not_resolved(realdb):
     async with realdb.client(key="b", role="admin") as c:
         resp = await c.post(
             "/api/privacy/dsar",
-            json={"subject_type": "user", "identifier": "admin@pytesta.test"},
+            json={"subject_type": "user", "identifier": realdb.email("a")},
         )
     assert resp.status_code == 404

@@ -14,8 +14,8 @@ Covers the path shared by ``scripts/create_tenant.py`` and the
   tables created, and re-running for the same slug being idempotent.
 
 The realdb tests create + drop their own throwaway tenant DB (the realdb
-fixture only manages the two fixed ``pytesta``/``pytestb`` tenants), so they
-clean up the control-plane org/user rows and the Postgres database they make.
+fixture only manages this process's own slotted tenant pair), so they clean up
+the control-plane org/user rows and the Postgres database they make.
 """
 
 from __future__ import annotations

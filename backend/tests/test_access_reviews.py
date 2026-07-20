@@ -245,7 +245,7 @@ async def test_inactive_elevated_user_excluded(realdb):
         s.add(
             User(
                 id=inactive_id,
-                email=f"inactive-{inactive_id}@pytesta.test",
+                email=f"inactive-{inactive_id}@{realdb.info('a').slug}.test",
                 full_name="Inactive Admin",
                 hashed_password="x",
                 is_active=False,

@@ -11,7 +11,7 @@ Two layers:
     row per chat turn, auth on every endpoint, and `(tenant, user)`-scoped
     history.
 
-The realdb harness (see ``conftest.py``) seeds ``ap_pytesta`` / ``ap_pytestb``
+The realdb harness (see ``conftest.py``) seeds this process's tenant pair
 and truncates business tables per test; it skips locally when Postgres is down.
 """
 
