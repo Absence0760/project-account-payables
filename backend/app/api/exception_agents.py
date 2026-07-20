@@ -49,7 +49,7 @@ async def list_agent_decisions(
     user: User = Depends(require_roles(ROLE_ADMIN, ROLE_AP_MANAGER)),
 ):
     q = select(AgentDecision)
-    # TEMP-REVERT-FOR-TEST: q = apply_entity_scope(q, AgentDecision, entity_id)
+    q = apply_entity_scope(q, AgentDecision, entity_id)
     if exception_type:
         q = q.where(AgentDecision.exception_type == exception_type)
     if action_taken:
@@ -73,7 +73,7 @@ async def agent_stats(
     q = select(AgentDecision.action_taken, func.count(AgentDecision.id)).group_by(
         AgentDecision.action_taken
     )
-    # TEMP-REVERT-FOR-TEST: q = apply_entity_scope(q, AgentDecision, entity_id)
+    q = apply_entity_scope(q, AgentDecision, entity_id)
     rows = (await db.execute(q)).all()
     counts = {a: c for a, c in rows}
     total = sum(counts.values())
