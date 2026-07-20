@@ -49,6 +49,27 @@ AI from Invoice ──> Unverified (draft) ──> Review ──> Active or Reje
 
 When an invoice is extracted (via AI/OCR), the system attempts to match the extracted vendor name to an existing vendor. This avoids duplicate vendor creation and links invoices to the correct vendor record.
 
+`services/vendor_matching.match_and_link_vendor` is the single matcher, and it
+runs on **every** path that can set an invoice's vendor — not just extraction:
+
+| Caller | When |
+|---|---|
+| `services/extraction` | After an AI/OCR extraction resolves a vendor name |
+| `POST /api/invoices` (manual, no-OCR entry) | On create, so a hand-keyed invoice is linked too |
+| `PATCH /api/invoices/{id}` | When the vendor name is (re)saved **and** the link is stale (name changed) or missing. Clearing the name to blank clears `vendor_id` instead — the matcher no-ops on an empty name, and a nameless invoice must not keep an uncorroborated link |
+
+That matters beyond tidy data: `Invoice.vendor_id` — not the free-text
+`vendor_name` — is what the credit-memo vendor guard compares, and that guard is
+fail-closed (an invoice with no resolved vendor cannot be credited at all). A
+rename that left the old link in place, or a manual entry that never got one,
+would respectively mis-attribute or block a credit. Re-saving an invoice's
+vendor name is also the supported way to resolve an invoice that predates
+create-time resolution. See `docs/api-reference.md` § Credit Memos.
+
+Vendors created by the manual-entry path are stamped `source = manual` rather
+than `ai_extracted` (`match_and_link_vendor(..., source=...)`); matching itself
+is identical.
+
 ### Matching Logic (priority order)
 
 1. **Tax ID match** — if the extracted invoice has a vendor tax ID, exact-match against `vendor.tax_id`. Confidence: 1.0.

@@ -2557,6 +2557,7 @@ export const messages = {
 	'creditMemos.applyModal.aria': 'Appliquer l\'avoir',
 	'creditMemos.applyModal.hint': 'Choisissez une facture sur laquelle appliquer cet avoir.',
 	'creditMemos.applyModal.invoice': 'Facture',
+	'creditMemos.applyModal.noEligible': 'Aucune facture disponible pour ce fournisseur. Une facture ne peut être créditée qu\'une fois son fournisseur résolu — ouvrez la facture et enregistrez à nouveau son fournisseur.',
 	'creditMemos.applyModal.selectInvoice': 'Sélectionner une facture…',
 	'creditMemos.applyModal.title': 'Appliquer l\'avoir',
 	'creditMemos.col.amount': 'Montant',

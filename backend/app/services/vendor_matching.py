@@ -129,8 +129,14 @@ async def match_and_link_vendor(
     db: AsyncSession,
     invoice: Invoice,
     organization_id: uuid.UUID,
+    source: str = "ai_extracted",
 ) -> tuple[Vendor | None, str]:
     """Match an invoice's vendor_name to an existing vendor and link them.
+
+    ``source`` stamps the provenance of a vendor this call has to create
+    (``Vendor.source``): ``ai_extracted`` for the extraction pipeline,
+    ``manual`` when a human keyed the invoice in by hand. It does not affect
+    matching — only the row written when nothing matches.
 
     Returns (vendor, action) where action is:
     - "linked" — matched to existing vendor
@@ -165,7 +171,7 @@ async def match_and_link_vendor(
         address=invoice.vendor_address,
         tax_id=invoice.vendor_tax_id,
         status="unverified",
-        source="ai_extracted",
+        source=source,
         organization_id=organization_id,
         entity_id=invoice.entity_id,
     )

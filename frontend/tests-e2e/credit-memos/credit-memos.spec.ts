@@ -20,10 +20,13 @@ const _FIXTURE_VENDOR_PREFIX = 'ENRICH-TEST-';
  * Return a seed vendor (not an ENRICH-TEST fixture vendor) that has at
  * least one invoice, together with the id of that invoice.
  *
- * Strategy: list all invoices (which carry the denormalized vendor name
- * string as `vendor`, but NOT vendor_id in the API response), then
- * look up each invoice's vendor by searching the vendor list for an
- * exact name match that is not a fixture vendor.
+ * Resolution is by the invoice's own `vendor_id` — the link the backend's
+ * credit-memo guard compares and the apply picker filters on. (It used to
+ * re-derive the vendor from the free-text `vendor` name because the API
+ * didn't expose `vendor_id`; a name that had drifted, e.g. the enrichment
+ * spec's "(MOCK)" suffix, then produced a vendor whose id didn't actually
+ * own the invoice.) An invoice with a null `vendor_id` is skipped: it can't
+ * be credited at all.
  */
 async function getVendorWithInvoice(
 	page: import('@playwright/test').Page
@@ -32,34 +35,22 @@ async function getVendorWithInvoice(
 
 	const invResp = await page.request.get(`${API_BASE}/api/invoices`, { headers });
 	const invBody = (await invResp.json()) as {
-		items: Array<{ id: string; vendor: string }>;
+		items: Array<{ id: string; vendor: string; vendor_id: string | null }>;
 	};
 	if (!invBody.items.length) throw new Error('No invoices found in the tenant');
 
-	// For each invoice, search the vendor list for an exact name match that
-	// is a real (non-fixture) vendor. The vendor's name may have been mutated
-	// by the enrichment spec (e.g. suffixed with "(MOCK)"), so we try both the
-	// exact invoice vendor-name and also a prefix-search fallback.
-	for (const inv of invBody.items.slice(0, 20)) {
-		if (!inv.vendor || inv.vendor.startsWith(_FIXTURE_VENDOR_PREFIX)) continue;
+	const vResp = await page.request.get(`${API_BASE}/api/vendors?page_size=100`, { headers });
+	const vendorsById = new Map(
+		((await vResp.json()) as { items: Vendor[] }).items.map((v) => [v.id, v])
+	);
 
-		// Exact-match search.
-		const vResp = await page.request.get(
-			`${API_BASE}/api/vendors?search=${encodeURIComponent(inv.vendor)}`,
-			{ headers }
-		);
-		const vBody = (await vResp.json()) as { items: Vendor[] };
-		// The vendor record's current name may carry extra suffixes from
-		// enrichment tests. Accept any vendor whose name starts with the
-		// invoice's vendor-name string (covers original name + enriched variants).
-		const vendor = vBody.items.find(
-			(v) =>
-				!v.name.startsWith(_FIXTURE_VENDOR_PREFIX) &&
-				(v.name === inv.vendor || v.name.startsWith(inv.vendor))
-		);
-		if (vendor) return { ...vendor, invoiceId: inv.id };
+	for (const inv of invBody.items) {
+		if (!inv.vendor_id) continue;
+		const vendor = vendorsById.get(inv.vendor_id);
+		if (!vendor || vendor.name.startsWith(_FIXTURE_VENDOR_PREFIX)) continue;
+		return { ...vendor, invoiceId: inv.id };
 	}
-	throw new Error('Could not find a non-fixture vendor with an invoice in the tenant');
+	throw new Error('Could not find a non-fixture vendor with a linked invoice in the tenant');
 }
 
 async function createMemo(

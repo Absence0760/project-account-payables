@@ -2588,6 +2588,7 @@ export const messages = {
 	'creditMemos.applyModal.aria': 'Aplicar nota de crédito',
 	'creditMemos.applyModal.hint': 'Elija una factura a la que aplicar este crédito.',
 	'creditMemos.applyModal.invoice': 'Factura',
+	'creditMemos.applyModal.noEligible': 'No hay ninguna factura disponible para este proveedor. Una factura solo puede acreditarse una vez resuelto su proveedor: abra la factura y vuelva a guardar su proveedor.',
 	'creditMemos.applyModal.selectInvoice': 'Seleccionar factura…',
 	'creditMemos.applyModal.title': 'Aplicar nota de crédito',
 	'creditMemos.col.amount': 'Importe',

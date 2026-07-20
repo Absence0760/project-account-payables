@@ -2558,6 +2558,7 @@ export const messages = {
 	'creditMemos.applyModal.aria': 'Gutschrift anwenden',
 	'creditMemos.applyModal.hint': 'Wählen Sie eine Rechnung, auf die diese Gutschrift angewendet werden soll.',
 	'creditMemos.applyModal.invoice': 'Rechnung',
+	'creditMemos.applyModal.noEligible': 'Für diesen Lieferanten ist keine Rechnung verfügbar. Eine Rechnung kann erst gutgeschrieben werden, wenn ihr Lieferant zugeordnet ist — öffnen Sie die Rechnung und speichern Sie den Lieferanten erneut.',
 	'creditMemos.applyModal.selectInvoice': 'Rechnung auswählen…',
 	'creditMemos.applyModal.title': 'Gutschrift anwenden',
 	'creditMemos.col.amount': 'Betrag',

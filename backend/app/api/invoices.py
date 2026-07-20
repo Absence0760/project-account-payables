@@ -76,6 +76,7 @@ from app.services.supplier_chat import (
     notify_ap_mentions,
     notify_supplier_of_ap_message,
 )
+from app.services.vendor_matching import match_and_link_vendor
 from app.services.workflow_engine import (
     create_workflow_instance,
     get_invoice_for_update,
@@ -846,6 +847,15 @@ async def create_invoice(
     )
     db.add(invoice)
     await db.flush()
+    # Resolve the vendor LINK, not just the typed-in name. Manual entry runs no
+    # extraction, so nothing else would ever populate `vendor_id` — and an
+    # invoice with a NULL `vendor_id` is an invoice whose vendor cannot be
+    # proven, which is exactly what the credit-memo vendor guard needs to
+    # compare against (see app/api/credit_memos.py). Same matcher the extraction
+    # pipeline uses, so a manual entry and an extracted one land on the same
+    # vendor row; an unmatched name creates an `unverified` vendor stamped
+    # `source="manual"` for an AP steward to confirm.
+    await match_and_link_vendor(db, invoice, org_id, source="manual")
     # Snapshot the active workflow definition onto this invoice so any
     # later config edits don't retroactively change its routing.
     await create_workflow_instance(db, invoice)
@@ -1073,9 +1083,35 @@ async def update_invoice(
     before = {field: getattr(invoice, field, None) for field in update_data}
     for field, value in update_data.items():
         setattr(invoice, field, value)
-    after = {field: getattr(invoice, field, None) for field in update_data}
 
-    field_diff = build_field_diff(before, after, list(update_data.keys()))
+    # Re-resolve the vendor LINK whenever the vendor name is (re)saved and the
+    # link is stale or absent. `vendor_id` — not `vendor_name` — is what the
+    # credit-memo vendor guard compares against, so a rename that left the old
+    # link in place would let vendor A's credit apply to what is now vendor B's
+    # invoice, and an invoice that never got a link at all (manual entry keyed
+    # in before create_invoice resolved one) could never be credited. Re-saving
+    # the vendor name is therefore also the supported, audited way to resolve a
+    # legacy unlinked invoice — no backfill migration guesses at it.
+    #
+    # Clearing the name clears the LINK too. `match_and_link_vendor` no-ops on a
+    # blank name, which would otherwise leave a nameless invoice still pointing
+    # at the previous vendor — a link nothing visible corroborates, yet one the
+    # credit guard would happily accept. Blank name → no provable vendor → NULL,
+    # i.e. un-creditable until someone names the vendor again.
+    diff_fields = list(update_data.keys())
+    if "vendor_name" in update_data and (
+        before.get("vendor_name") != invoice.vendor_name or invoice.vendor_id is None
+    ):
+        before["vendor_id"] = invoice.vendor_id
+        if (invoice.vendor_name or "").strip():
+            await match_and_link_vendor(db, invoice, org.id, source="manual")
+        else:
+            invoice.vendor_id = None
+        diff_fields.append("vendor_id")
+
+    after = {field: getattr(invoice, field, None) for field in diff_fields}
+
+    field_diff = build_field_diff(before, after, diff_fields)
     if field_diff:
         await dispatch_audit(
             db,

@@ -382,10 +382,43 @@ Used by 3-way matching. `admin` / `ap_manager` / `ap_clerk`.
 
 | Method | Path                              | Roles | Description |
 |--------|-----------------------------------|-------|-------------|
-| `GET`  | `/api/credit-memos`                | *     | List credit memos (paginated) |
-| `POST` | `/api/credit-memos`                | admin, ap_manager, ap_clerk | Create a credit memo against a vendor / original invoice |
-| `PATCH`| `/api/credit-memos/{id}`           | admin, ap_manager, ap_clerk | Update memo (amount, status) |
-| `POST` | `/api/credit-memos/{id}/apply`     | admin, ap_manager, ap_clerk | Apply an open credit memo against a payable |
+| `GET`  | `/api/credit-memos`                | admin, ap_manager, ap_clerk, cfo | List credit memos (paginated, entity-scoped, `?status=`) |
+| `POST` | `/api/credit-memos`                | admin, ap_manager | Create a credit memo. With no `invoice_id` it lands `open`; with one it is applied on the spot and runs the same guards as `/apply` |
+| `POST` | `/api/credit-memos/{id}/apply`     | admin, ap_manager | Apply an `open` credit memo against a payable |
+| `POST` | `/api/credit-memos/{id}/void`      | admin, ap_manager | Void an `open` memo (409 once `applied` — applied memos are immutable for audit) |
+
+### Applying a credit — the guards
+
+Both application paths (`POST /api/credit-memos` with an `invoice_id`, and
+`POST /api/credit-memos/{id}/apply`) row-lock the target invoice and then
+enforce, in order, three 409s:
+
+1. **Vendor must match, and must be PROVEN to match** — the memo's `vendor_id`
+   has to equal the invoice's `vendor_id`. A NULL `Invoice.vendor_id` is
+   **refused**, not waved through: an unlinked invoice is one whose vendor
+   cannot be established, and crediting it would reduce a balance nobody can
+   attribute. (This is fail-closed by design. The guard used to skip entirely
+   on NULL, which let one vendor's memo be applied to another vendor's invoice
+   for any invoice created without extraction — see
+   `_assert_vendor_matches` in `app/api/credit_memos.py`.)
+2. **Currency must match** — the remaining-balance math subtracts the amounts
+   directly, so a EUR memo on a USD invoice would corrupt it.
+3. **No over-application** — the sum of `applied` memos on an invoice may never
+   exceed the invoice amount (a credit past the balance would mint a negative
+   payable).
+
+**Where the vendor link comes from.** `Invoice.vendor_id` is resolved by
+`services/vendor_matching.match_and_link_vendor` — on the AI-extraction path, on
+manual entry (`POST /api/invoices`), and again on `PATCH /api/invoices/{id}`
+whenever the vendor name is (re)saved and the link is stale or missing.
+Re-saving an invoice's vendor is therefore the supported way to resolve an
+invoice that predates create-time resolution and so still carries a NULL link;
+there is deliberately **no** backfill migration, because guessing a historical
+invoice's vendor is exactly the mis-attribution the guard exists to prevent.
+Clearing the vendor name on a `PATCH` clears the link too — a nameless invoice
+must not keep pointing at a vendor nothing visible corroborates.
+`GET /api/invoices` and `GET /api/invoices/{id}` expose the resolved
+`vendor_id` so the UI can offer only eligible targets.
 
 ## Tax / 1099
 

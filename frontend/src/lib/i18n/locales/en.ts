@@ -2615,6 +2615,7 @@ export const en = {
 	'creditMemos.applyModal.aria': 'Apply credit memo',
 	'creditMemos.applyModal.hint': 'Pick an invoice to apply this credit to.',
 	'creditMemos.applyModal.invoice': 'Invoice',
+	'creditMemos.applyModal.noEligible': 'No invoice is available for this vendor. An invoice can only be credited once its vendor is resolved — open the invoice and re-save its vendor.',
 	'creditMemos.applyModal.selectInvoice': 'Select invoice…',
 	'creditMemos.applyModal.title': 'Apply Credit Memo',
 	'creditMemos.col.amount': 'Amount',

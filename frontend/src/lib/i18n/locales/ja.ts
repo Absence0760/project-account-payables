@@ -2579,6 +2579,7 @@ export const messages = {
 	'creditMemos.applyModal.aria': 'クレジットメモを適用',
 	'creditMemos.applyModal.hint': 'このクレジットを適用する請求書を選択してください。',
 	'creditMemos.applyModal.invoice': '請求書',
+	'creditMemos.applyModal.noEligible': 'このベンダーに利用可能な請求書はありません。請求書にクレジットを適用するには、まずベンダーの紐付けが必要です。請求書を開いてベンダーを保存し直してください。',
 	'creditMemos.applyModal.selectInvoice': '請求書を選択…',
 	'creditMemos.applyModal.title': 'クレジットメモを適用',
 	'creditMemos.col.amount': '金額',
