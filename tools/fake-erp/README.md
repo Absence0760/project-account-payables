@@ -67,13 +67,17 @@ GL accounts (`GET /merge/api/accounting/v1/accounts`):
 ## Dependencies
 
 Direct deps live in `requirements.in`; the image installs from the generated
-`requirements.lock` with `pip install --require-hashes`, so every package —
+`requirements.txt` with `pip install --require-hashes`, so every package —
 transitive ones included — is pinned by hash. Same posture as the backend
-image, and the base image is digest-pinned too. After editing
-`requirements.in`:
+image, and the base image is digest-pinned too.
+
+Dependabot maintains both files: it recognises a pip-compile lockfile only
+when the name ends in `.txt` and matches the `.in` basename, which is why
+this directory uses `requirements.txt` rather than the backend's
+`requirements.lock`. To regenerate by hand after editing `requirements.in`:
 
 ```bash
-uv pip compile requirements.in --universal --python-version 3.14 --generate-hashes -o requirements.lock
+uv pip compile requirements.in --universal --python-version 3.14 --generate-hashes -o requirements.txt
 ```
 
 ## Running

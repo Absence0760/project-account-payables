@@ -13,8 +13,13 @@ WORKDIR /srv
 # a republished PyPI artifact can't slip in. Regenerate the lock from
 # requirements.in with `uv pip compile … --generate-hashes`; the exact
 # invocation is in requirements.in.
-COPY requirements.lock .
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+#
+# The `requirements.in` + `requirements.txt` pair is deliberate, not a
+# break from the backend's `.lock` naming: Dependabot only recognises a
+# pip-compile lockfile when it ends in `.txt` and shares the `.in` file's
+# basename, so this is what lets it open bump PRs here at all.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY app.py .
 

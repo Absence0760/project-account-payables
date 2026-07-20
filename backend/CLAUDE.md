@@ -115,8 +115,28 @@ uv pip compile pyproject.toml \
 ```
 
 `uv` not installed? `pipx run uv pip compile …` works ephemerally. Commit
-the regenerated locks in the same change as the `pyproject.toml` edit, or
-the `--require-hashes` installs (CI + image build) fail.
+the regenerated locks in the same change as the `pyproject.toml` edit.
+
+**A stale lock does not fail the install** — that's the trap. The lock is
+internally consistent, so `--require-hashes` succeeds and CI stays green
+while the image installs whatever the lock says, ignoring the floor you
+just raised in `pyproject.toml`. This is not hypothetical: five merged
+Dependabot PRs (#111, #113, #114, #115, #117) raised `uvicorn`, `boto3`,
+`pgvector`, `joserfc` and `ruff` in `pyproject.toml`, and the image kept
+shipping every pre-bump version — including the security-motivated ones —
+until it was caught.
+
+Dependabot cannot close this itself. Its pip-compile support only pairs an
+`.in` file with a lockfile ending in `.txt`; these locks are compiled from
+`pyproject.toml` under a `.lock` name, so Dependabot updates the manifest
+and never touches them. (`tools/fake-erp` uses the `.in`/`.txt` pair
+precisely so Dependabot *can* maintain it there.)
+
+`tests/test_dependency_lock_sync.py` is the guard: it checks each declared
+requirement against the version its lock pins, so a manifest bump without a
+regenerated lock fails loudly. It compares constraints to pins — it never
+re-resolves and never hits the network, so it can't go red just because a
+new release appeared on PyPI overnight.
 
 ### `.dockerignore` — what does NOT enter the image
 
