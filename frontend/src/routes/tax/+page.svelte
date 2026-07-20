@@ -5,7 +5,7 @@
 	import SearchBox from '$lib/components/ui/SearchBox.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
 	import Money from '$lib/components/ui/Money.svelte';
-	import { formatMoney } from '$lib/utils/money';
+	import { formatMoney, isPositiveAmount } from '$lib/utils/money';
 	import { get1099Report } from '$lib/api/tax';
 	import { m } from '$lib/i18n/store.svelte';
 	import type { Report1099, Vendor1099Row } from '$lib/types/tax';
@@ -55,6 +55,13 @@
 		return r.is_1099_eligible && r.over_threshold;
 	}
 
+	// Did this vendor take any card-rail money? That leg is deliberately kept
+	// OUT of `ytd_paid` (the card settlement entity files it on a 1099-K), and
+	// is surfaced so the operator can tie our figures to the processor's.
+	function hasCardExcluded(r: Vendor1099Row): boolean {
+		return isPositiveAmount(r.card_paid);
+	}
+
 	let filteredRows = $derived.by(() => {
 		const rows = report?.rows ?? [];
 		const q = search.trim().toLowerCase();
@@ -67,6 +74,8 @@
 					return isReportable(r) && !r.w9_on_file;
 				case 'over_threshold':
 					return r.over_threshold;
+				case 'card_excluded':
+					return hasCardExcluded(r);
 				default:
 					return true;
 			}
@@ -81,7 +90,8 @@
 		{ label: m('tax.col.w9'), class: 'center' },
 		{ label: m('tax.col.tin'), class: 'center' },
 		{ label: m('tax.col.payments'), class: 'right' },
-		{ label: m('tax.col.ytdPaid'), class: 'right' }
+		{ label: m('tax.col.ytdPaid'), class: 'right' },
+		{ label: m('tax.col.cardExcluded'), class: 'right' }
 	]);
 
 	function fmtDate(s: string | null): string {
@@ -136,6 +146,11 @@
 			<KpiCard
 				value={formatMoney(report.total_reportable, { currency: report.currency })}
 				label={m('tax.kpi.totalReportable')}
+				sub={isPositiveAmount(report.total_card_excluded)
+					? m('tax.kpi.cardExcludedSub', {
+							amount: formatMoney(report.total_card_excluded, { currency: report.currency })
+						})
+					: null}
 			/>
 		</div>
 
@@ -158,6 +173,11 @@
 						key: 'over_threshold',
 						label: m('tax.filter.overThreshold', { threshold: report.threshold_usd }),
 						count: report.rows.filter((r) => r.over_threshold).length
+					},
+					{
+						key: 'card_excluded',
+						label: m('tax.filter.cardExcluded'),
+						count: report.rows.filter(hasCardExcluded).length
 					}
 				]}
 				bind:active={rowFilter}
@@ -199,7 +219,7 @@
 							{/if}
 						</td>
 						<td class="right mono">{r.payment_count}</td>
-						<td class="right mono">
+						<td class="right mono ytd-reportable">
 							<span class:over={r.over_threshold}>
 								<Money amount={r.ytd_paid} currency={reportCurrency} />
 							</span>
@@ -208,6 +228,16 @@
 									class="threshold-flag"
 									title={m('tax.thresholdFlag', { threshold: thresholdLabel })}>▲</span
 								>
+							{/if}
+						</td>
+						<td class="right mono card-excluded">
+							{#if hasCardExcluded(r)}
+								<Money amount={r.card_paid} currency={reportCurrency} />
+								<span class="card-count"
+									>{m('tax.cardPaymentCount', { n: r.card_payment_count })}</span
+								>
+							{:else}
+								<span class="muted">—</span>
 							{/if}
 						</td>
 					</tr>
@@ -221,6 +251,7 @@
 				threshold: report.threshold_usd,
 				year
 			})}
+			{m('tax.reportMetaCard')}
 		</p>
 	{/if}
 </PageHeader>
@@ -311,6 +342,23 @@
 
 	.over {
 		font-weight: 600;
+	}
+
+	/* Card-rail money EXCLUDED from the filed 1099 figure. Deliberately
+	   quieter than the reportable YTD column beside it — the reportable
+	   number is what gets filed and must read as primary. The column header
+	   ("Card excluded (1099-K)") is what identifies it, not the styling, so
+	   the distinction survives without colour (WCAG 1.4.1). */
+	.card-excluded {
+		color: var(--text-muted);
+		font-weight: 400;
+	}
+
+	.card-count {
+		display: block;
+		font-size: 0.68rem;
+		color: var(--text-muted);
+		opacity: 0.85;
 	}
 
 	.threshold-flag {
