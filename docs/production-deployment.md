@@ -53,7 +53,7 @@ The main API should run as a container behind an Application Load Balancer.
 - Minimum 2 tasks across 2 AZs for availability
 - ALB health check on `GET /api/health`
 - Auto-scaling based on CPU/request count
-- Uses the existing `Dockerfile` (`python:3.12-slim` + `uvicorn`)
+- Uses the existing `Dockerfile` (`python:3.14-slim`, pinned by digest, + `uvicorn`)
 
 ## Lambda: Invoice Extraction
 
