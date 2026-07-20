@@ -25,10 +25,19 @@ import {
  *      operator can verify the new account before approving; the queue
  *      list masks it.
  *
- * Setup uses direct DB inserts to simulate a supplier-portal submission
- * (the portal-user auth handshake is heavyweight and covered by backend
- * pytest); every mutation we assert (approve / reject) is driven through
- * the real AP API so the staged-approval contract is exercised end-to-end.
+ * `POST /api/vendors` (create) is itself dual-control-gated: submitting
+ * `bank_details` on a brand-new vendor stages it exactly like `PATCH`/the
+ * dedicated bank-change endpoint does, rather than applying it inline
+ * (closes the fake-new-payee BEC bypass a single-call create used to
+ * allow). So the "already-onboarded vendor with an original account on
+ * file" baseline these tests need is itself setup, not the mutation under
+ * test — it's created via the API with no `bank_details` (so create has
+ * nothing to stage), then given its original account with a direct DB
+ * write. Setup uses direct DB inserts throughout to simulate a
+ * supplier-portal submission (the portal-user auth handshake is heavyweight
+ * and covered by backend pytest); every mutation we assert (approve /
+ * reject) is driven through the real AP API so the staged-approval
+ * contract is exercised end-to-end.
  */
 
 interface VendorResp {
@@ -67,6 +76,12 @@ function slugFromPage(page: import('@playwright/test').Page): string {
 	return host.split('.')[0];
 }
 
+/** Create an already-onboarded vendor with an original account on file.
+ *  `POST /api/vendors` stages any submitted `bank_details` for approval
+ *  rather than applying them (the same dual-control gate as `PATCH`), so
+ *  this baseline is set up in two steps: create with no `bank_details` (a
+ *  create with nothing to stage), then write the "original" account
+ *  straight into the row via DB — setup, not the mutation under test. */
 async function createVendor(
 	page: import('@playwright/test').Page,
 	name: string,
@@ -74,10 +89,13 @@ async function createVendor(
 ): Promise<VendorResp> {
 	const resp = await page.request.post(`${API_BASE}/api/vendors`, {
 		headers: H,
-		data: { name, bank_details: bank }
+		data: { name }
 	});
 	expect(resp.status(), `create vendor ${name}`).toBe(201);
-	return (await resp.json()) as VendorResp;
+	const vendor = (await resp.json()) as VendorResp;
+	const json = JSON.stringify(bank).replace(/'/g, "''");
+	tenantPsql(`UPDATE vendors SET bank_details='${json}'::jsonb WHERE id='${vendor.id}'`, SLUG);
+	return getVendor(page, vendor.id);
 }
 
 async function getVendor(
