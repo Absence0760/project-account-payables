@@ -36,7 +36,11 @@ Refusals (raised as ``VendorMergeError`` → mapped to 4xx by the API layer):
   * an empty duplicate set,
   * a vendor id that doesn't resolve in the tenant (unknown → opaque to the
     caller via the API's 404),
-  * canonical and a duplicate live in different entities (cross-entity).
+  * canonical and a duplicate live in different entities (cross-entity),
+  * a ``payments_blocked`` (sanctioned) duplicate merging into an unblocked
+    canonical — would silently make its held invoices payable once
+    reassigned. Merging a clean vendor into an already-blocked canonical is
+    fine (tightens, never bypasses, the block).
 """
 
 from __future__ import annotations
@@ -197,6 +201,28 @@ async def merge_vendors(
                 "Cannot merge vendors that belong to different entities.",
                 status_code=422,
             )
+
+    # Compliance guard: refuse to merge a payments-blocked (sanctioned) vendor
+    # into an unblocked canonical (issue #177). The canonical inherits the
+    # FULL set of a duplicate's reassigned invoices — including whichever ones
+    # the block exists to hold — so folding a blocked vendor's history into a
+    # clean one would silently make those invoices payable, a sanctions-block
+    # bypass. Refusing (rather than propagating the block onto the canonical)
+    # avoids the opposite surprise: auto-freezing the canonical's own
+    # unrelated invoices as a side effect of an ordinary consolidation. The
+    # steward must resolve the block first (verify + unblock via the existing
+    # screening review flow) or exclude that vendor from the merge. The
+    # reverse — merging a clean vendor INTO an already-blocked canonical — is
+    # fine and needs no guard: that only tightens the block, never bypasses it.
+    if not canonical.payments_blocked:
+        for d in duplicates:
+            if by_id[d].payments_blocked:
+                raise VendorMergeError(
+                    "Cannot merge a payments-blocked vendor into an unblocked "
+                    "canonical — resolve the block first (see the vendor's "
+                    "screening review) or exclude it from this merge.",
+                    status_code=422,
+                )
 
     result = VendorMergeResult(
         canonical_vendor_id=canonical_vendor_id,

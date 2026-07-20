@@ -25,9 +25,18 @@ from app.models.vendor import Vendor
 from app.models.workflow import AuditLog
 
 
-async def _seed_vendor(mk, org_id, *, name="Acme", status="active", entity_id=None):
+async def _seed_vendor(
+    mk, org_id, *, name="Acme", status="active", entity_id=None, payments_blocked=False
+):
     async with mk() as s:
-        v = Vendor(organization_id=org_id, name=name, status=status, entity_id=entity_id)
+        v = Vendor(
+            organization_id=org_id,
+            name=name,
+            status=status,
+            entity_id=entity_id,
+            payments_blocked=payments_blocked,
+            payments_blocked_reason="sanctions hit" if payments_blocked else None,
+        )
         s.add(v)
         await s.commit()
         await s.refresh(v)
@@ -242,6 +251,56 @@ async def test_merge_refuses_cross_entity(realdb):
     # Nothing changed — the duplicate stays active.
     async with mk() as s:
         assert (await s.get(Vendor, dup)).status == "active"
+
+
+async def test_merge_refuses_blocked_duplicate_into_unblocked_canonical(realdb):
+    """Issue #177: folding a payments-blocked (sanctioned) duplicate into an
+    unblocked canonical would silently make its held invoices payable once
+    reassigned — a sanctions-block bypass. Must refuse, not merge."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    canonical = await _seed_vendor(mk, org_id, name="CleanCo")
+    dup = await _seed_vendor(mk, org_id, name="SanctionedCo", payments_blocked=True)
+    held_invoice = await _seed_invoice(
+        mk, org_id, dup, number="HELD-1", entity_id=await _default_entity_id(mk)
+    )
+
+    body = {"canonical_vendor_id": str(canonical), "duplicate_vendor_ids": [str(dup)]}
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post("/api/enrichment/vendors/consolidation/merge", json=body)
+    assert r.status_code == 422
+    assert "block" in r.json()["detail"].lower()
+
+    # Nothing changed: the duplicate is still blocked/active, the canonical
+    # is still unblocked, and the held invoice was NOT reassigned to the
+    # (unblocked) canonical.
+    async with mk() as s:
+        dup_row = await s.get(Vendor, dup)
+        assert dup_row.status == "active"
+        assert dup_row.payments_blocked is True
+        canonical_row = await s.get(Vendor, canonical)
+        assert canonical_row.payments_blocked is False
+        inv = await s.get(Invoice, held_invoice)
+        assert inv.vendor_id == dup
+
+
+async def test_merge_allows_clean_vendor_into_blocked_canonical(realdb):
+    """The reverse direction is fine and needs no refusal: merging a clean
+    vendor INTO an already-blocked canonical only tightens the block (the
+    duplicate's invoices join an already-blocked vendor), never bypasses it."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    canonical = await _seed_vendor(mk, org_id, name="SanctionedCanonical", payments_blocked=True)
+    dup = await _seed_vendor(mk, org_id, name="CleanDup")
+
+    body = {"canonical_vendor_id": str(canonical), "duplicate_vendor_ids": [str(dup)]}
+    async with realdb.client(key="a", role="ap_manager") as client:
+        r = await client.post("/api/enrichment/vendors/consolidation/merge", json=body)
+    assert r.status_code == 200, r.text
+
+    async with mk() as s:
+        assert (await s.get(Vendor, dup)).status == "inactive"
+        assert (await s.get(Vendor, canonical)).payments_blocked is True
 
 
 async def test_merge_unknown_vendor_404(realdb):
