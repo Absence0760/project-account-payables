@@ -621,6 +621,48 @@ async def create_payment(
             detail="Payment amount must equal the approved invoice amount",
         )
 
+    # CFO sign-off gate — the same `payments.cfo_approval_above` threshold the
+    # run-based path enforces (issue #129). A standalone payment has no
+    # separate /execute step to gate the way a run does (requires_cfo_approval
+    # lives on PaymentRun, not Payment), so an above-threshold amount must
+    # clear CFO sign-off at CREATION time instead: only a CFO may book one
+    # directly here; anyone else routes an above-threshold payment through a
+    # payment run, which carries the full requires_cfo_approval / /approve
+    # workflow. This is a structural close of the gap, not a reaction to a
+    # live exploit — see the issue's severity note. Mirrors
+    # create_payment_run's `requires_cfo` computation exactly (same threshold
+    # setting, same fail-closed handling of a corrupted/unparseable value).
+    pmt_cfg = (org.settings or {}).get("payments") or {}
+    cfo_threshold_raw = pmt_cfg.get("cfo_approval_above")
+    requires_cfo = False
+    if cfo_threshold_raw is not None:
+        try:
+            cfo_threshold = Decimal(str(cfo_threshold_raw))
+        except (ValueError, ArithmeticError):
+            logger.error(
+                "payments.cfo_approval_above is unparseable (%r) for org %s; "
+                "requiring CFO sign-off on this standalone payment (fail-closed)",
+                cfo_threshold_raw,
+                org.id,
+            )
+            requires_cfo = True
+        else:
+            # Strict `>` matches the setting name; a threshold of 0/negative
+            # means "no gate" — same semantics as create_payment_run.
+            if cfo_threshold > 0 and invoice.amount > cfo_threshold:
+                requires_cfo = True
+
+    if requires_cfo:
+        has_cfo = any(r.name == ROLE_CFO for r in (user.roles or ()))
+        if not has_cfo:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This payment requires CFO sign-off — book it through a payment "
+                    "run for CFO approval, or have a CFO create it directly"
+                ),
+            )
+
     # Idempotency guard: at most one LIVE payment per invoice. A retried or
     # double-clicked POST must not book a second payment — return the existing
     # live one instead of creating a duplicate. Terminal states don't count as
