@@ -3,10 +3,11 @@ import 'package:flutter/foundation.dart';
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/vendor.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/stores/sequenced_fetch.dart';
 
 /// Vendor list + verify/reject/ERP-sync actions. Mirrors [ContractStore]:
 /// in-memory singleton, offline-cached list, action methods refetch on success.
-class VendorStore extends ChangeNotifier {
+class VendorStore extends ChangeNotifier with SequencedFetch {
   static final VendorStore instance = VendorStore._();
   VendorStore._();
 
@@ -32,6 +33,7 @@ class VendorStore extends ChangeNotifier {
     _statusFilter = null;
     _searchQuery = null;
     _fromCache = false;
+    debugResetSequence();
   }
 
   void setStatusFilter(String? status) {
@@ -45,6 +47,9 @@ class VendorStore extends ChangeNotifier {
   }
 
   Future<void> fetch() async {
+    // See SequencedFetch — discards a response superseded by a newer fetch()
+    // (e.g. a stale search result resolving after a later keystroke's).
+    final token = nextRequestToken();
     _loading = true;
     _error = null;
     notifyListeners();
@@ -52,10 +57,12 @@ class VendorStore extends ChangeNotifier {
     final cacheKey = 'vendors_${_statusFilter ?? 'all'}_${_searchQuery ?? ''}';
 
     try {
-      _vendors = await VendorApi.list(
+      final result = await VendorApi.list(
         status: _statusFilter,
         search: _searchQuery,
       );
+      if (!isCurrentRequest(token)) return;
+      _vendors = result;
       _fromCache = false;
       _loading = false;
 
@@ -66,9 +73,11 @@ class VendorStore extends ChangeNotifier {
 
       notifyListeners();
     } catch (e) {
+      if (!isCurrentRequest(token)) return;
       try {
         final cached = await OfflineStore.instance.get(cacheKey);
         if (cached != null) {
+          if (!isCurrentRequest(token)) return;
           _vendors = (cached as List)
               .map((j) => Vendor.fromJson(j as Map<String, dynamic>))
               .toList();
@@ -78,6 +87,7 @@ class VendorStore extends ChangeNotifier {
           return;
         }
       } catch (_) {}
+      if (!isCurrentRequest(token)) return;
       _fromCache = false;
       _loading = false;
       _error = e.toString();

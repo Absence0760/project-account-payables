@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/cash_flow.dart';
+import 'package:ap_mobile/stores/sequenced_fetch.dart';
 
 /// CFO / admin predictive cash-flow store over [CashFlowApi]. Holds the
 /// forecast + cash-position payload for the currently selected horizon and
@@ -10,7 +11,7 @@ import 'package:ap_mobile/models/cash_flow.dart';
 /// Not offline-cached: the cash position is a privileged, fast-moving CFO read
 /// (opening balance + breach alerts), so a stale on-device copy would be more
 /// misleading than useful — we refetch live and surface a Retry on failure.
-class CashFlowStore extends ChangeNotifier {
+class CashFlowStore extends ChangeNotifier with SequencedFetch {
   static final CashFlowStore instance = CashFlowStore._();
   CashFlowStore._();
 
@@ -35,6 +36,7 @@ class CashFlowStore extends ChangeNotifier {
     _loading = false;
     _error = null;
     _horizonDays = 90;
+    debugResetSequence();
   }
 
   /// Switch the forecast horizon (30 / 60 / 90 days) and refetch. No-ops if the
@@ -46,15 +48,21 @@ class CashFlowStore extends ChangeNotifier {
   }
 
   Future<void> fetch() async {
+    // See SequencedFetch — discards a response superseded by a newer fetch()
+    // (e.g. rapid 30/60/90-day horizon chip taps racing each other).
+    final token = nextRequestToken();
     _loading = true;
     _error = null;
     notifyListeners();
 
     try {
-      _data = await CashFlowApi.get(horizonDays: _horizonDays);
+      final result = await CashFlowApi.get(horizonDays: _horizonDays);
+      if (!isCurrentRequest(token)) return;
+      _data = result;
       _loading = false;
       notifyListeners();
     } catch (e) {
+      if (!isCurrentRequest(token)) return;
       _data = null;
       _loading = false;
       _error = e.toString();

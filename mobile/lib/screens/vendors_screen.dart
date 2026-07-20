@@ -6,6 +6,7 @@ import 'package:ap_mobile/models/vendor.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/stores/vendor_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
+import 'package:ap_mobile/utils/debouncer.dart';
 import 'package:ap_mobile/widgets/vendor_list_tile.dart';
 
 /// Vendor management — list with status filters + search, verify / reject an
@@ -21,6 +22,7 @@ class VendorsScreen extends StatefulWidget {
 
 class _VendorsScreenState extends State<VendorsScreen> {
   final _searchController = TextEditingController();
+  final _searchDebouncer = Debouncer();
   bool _syncing = false;
 
   bool get _canManage => AuthStore.instance.canManageVendors;
@@ -35,6 +37,7 @@ class _VendorsScreenState extends State<VendorsScreen> {
 
   @override
   void dispose() {
+    _searchDebouncer.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -71,8 +74,9 @@ class _VendorsScreenState extends State<VendorsScreen> {
               controller: _searchController,
               hintText: l.vendorsSearchHint,
               leading: const Icon(Icons.search, size: 20),
-              onChanged: (q) =>
-                  VendorStore.instance.setSearch(q.isEmpty ? null : q),
+              onChanged: (q) => _searchDebouncer.run(
+                () => VendorStore.instance.setSearch(q.isEmpty ? null : q),
+              ),
               elevation: WidgetStateProperty.all(0),
             ),
           ),

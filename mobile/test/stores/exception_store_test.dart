@@ -115,6 +115,45 @@ void main() {
       expect(store.statusFilter, 'open');
       expect(await sentStatus.future, 'open');
     });
+
+    test(
+        'a slow stale filter response landing after a faster later one is '
+        'discarded (issue #182 request-sequencing guard)', () async {
+      // Same race as InvoiceStore/VendorStore's regression test, but driven by
+      // rapid status-filter chip taps rather than a search box — the guard is
+      // general to any fetch() re-triggered before its predecessor resolves.
+      final firstRequestStarted = Completer<void>();
+      final releaseFirstResponse = Completer<void>();
+
+      ApiClient().debugConfigure(
+        client: MockClient((req) async {
+          final status = req.url.queryParameters['status'];
+          if (status == 'open') {
+            firstRequestStarted.complete();
+            await releaseFirstResponse.future;
+            return _list([_exceptionJson('stale')]);
+          }
+          return _list([_exceptionJson('fresh')]);
+        }),
+      );
+
+      store.setStatusFilter('open');
+      await firstRequestStarted.future;
+
+      store.setStatusFilter('escalated');
+      await _waitUntil(() => store.exceptions.any((e) => e.id == 'fresh'));
+
+      expect(store.exceptions, hasLength(1));
+      expect(store.exceptions.first.id, 'fresh');
+
+      releaseFirstResponse.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(store.exceptions, hasLength(1));
+      expect(store.exceptions.first.id, 'fresh',
+          reason: 'the earlier, slower response must not clobber the later, '
+              'faster one that already landed');
+    });
   });
 
   group('actions', () {
@@ -395,4 +434,13 @@ void main() {
       expect(store.selectionMode, isTrue);
     });
   });
+}
+
+/// Polls [cond] until it's true (or a bounded number of iterations elapse) —
+/// used where a fire-and-forget store call (mirroring the real screen's
+/// unawaited filter setter) needs a deterministic point to assert from.
+Future<void> _waitUntil(bool Function() cond, {int maxIterations = 100}) async {
+  for (var i = 0; i < maxIterations && !cond(); i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }

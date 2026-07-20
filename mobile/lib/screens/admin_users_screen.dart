@@ -6,6 +6,7 @@ import 'package:ap_mobile/models/admin_user.dart';
 import 'package:ap_mobile/stores/admin_user_store.dart';
 import 'package:ap_mobile/stores/auth_store.dart';
 import 'package:ap_mobile/utils/a11y.dart';
+import 'package:ap_mobile/utils/debouncer.dart';
 
 /// Admin — user management. Lists the org's users (search by name/email) and
 /// lets an admin change a user's roles or activate / deactivate them over
@@ -21,6 +22,7 @@ class AdminUsersScreen extends StatefulWidget {
 
 class _AdminUsersScreenState extends State<AdminUsersScreen> {
   final _searchController = TextEditingController();
+  final _searchDebouncer = Debouncer();
 
   @override
   void initState() {
@@ -32,6 +34,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
   @override
   void dispose() {
+    _searchDebouncer.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -55,7 +58,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               controller: _searchController,
               hintText: l.adminUsersSearchHint,
               leading: const Icon(Icons.search, size: 20),
-              onChanged: (q) => AdminUserStore.instance.setSearch(q),
+              onChanged: (q) => _searchDebouncer.run(
+                () => AdminUserStore.instance.setSearch(q),
+              ),
               elevation: WidgetStateProperty.all(0),
             ),
           ),

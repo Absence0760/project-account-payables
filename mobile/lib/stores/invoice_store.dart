@@ -4,6 +4,7 @@ import 'package:ap_mobile/api/endpoints.dart';
 import 'package:ap_mobile/models/audit_entry.dart';
 import 'package:ap_mobile/models/invoice.dart';
 import 'package:ap_mobile/services/offline_store.dart';
+import 'package:ap_mobile/stores/sequenced_fetch.dart';
 
 /// Immutable bundle of the advanced-search filters (vendor, PO, amount range,
 /// due-date range). Held alongside the quick status-chip filter + search box.
@@ -45,7 +46,7 @@ class InvoiceSearchFilters {
       ].where((e) => e).length;
 }
 
-class InvoiceStore extends ChangeNotifier {
+class InvoiceStore extends ChangeNotifier with SequencedFetch {
   static final InvoiceStore instance = InvoiceStore._();
   InvoiceStore._();
 
@@ -92,6 +93,7 @@ class InvoiceStore extends ChangeNotifier {
     _fromCache = false;
     _selectionMode = false;
     _selectedIds.clear();
+    debugResetSequence();
   }
 
   // ----- Selection mutators -----
@@ -147,6 +149,10 @@ class InvoiceStore extends ChangeNotifier {
   }
 
   Future<void> fetch() async {
+    // Captured before the first await — if a newer fetch() starts before this
+    // one's response lands, that response is stale and gets discarded instead
+    // of clobbering state a later request has already written (issue #182).
+    final token = nextRequestToken();
     _loading = true;
     _error = null;
     notifyListeners();
@@ -158,7 +164,7 @@ class InvoiceStore extends ChangeNotifier {
         '_${f.dueDateTo?.toIso8601String() ?? ''}';
 
     try {
-      _invoices = await InvoiceApi.list(
+      final result = await InvoiceApi.list(
         status: _statusFilter,
         search: _searchQuery,
         vendor: f.vendor,
@@ -168,6 +174,8 @@ class InvoiceStore extends ChangeNotifier {
         dueDateFrom: f.dueDateFrom,
         dueDateTo: f.dueDateTo,
       );
+      if (!isCurrentRequest(token)) return; // superseded — discard silently
+      _invoices = result;
       _fromCache = false;
       _loading = false;
 
@@ -179,10 +187,12 @@ class InvoiceStore extends ChangeNotifier {
 
       notifyListeners();
     } catch (e) {
+      if (!isCurrentRequest(token)) return; // superseded — discard silently
       // Try cache on failure
       try {
         final cached = await OfflineStore.instance.get(cacheKey);
         if (cached != null) {
+          if (!isCurrentRequest(token)) return;
           _invoices = (cached as List)
               .map((j) => Invoice.fromJson(j as Map<String, dynamic>))
               .toList();
@@ -192,6 +202,7 @@ class InvoiceStore extends ChangeNotifier {
           return;
         }
       } catch (_) {}
+      if (!isCurrentRequest(token)) return;
       // No cache to fall back on — make sure we don't keep claiming the
       // (now absent) data came from cache.
       _fromCache = false;

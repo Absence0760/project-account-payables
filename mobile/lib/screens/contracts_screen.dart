@@ -5,6 +5,7 @@ import 'package:ap_mobile/l10n/gen/app_localizations.dart';
 import 'package:ap_mobile/models/contract.dart';
 import 'package:ap_mobile/screens/contract_detail_screen.dart';
 import 'package:ap_mobile/stores/contract_store.dart';
+import 'package:ap_mobile/utils/debouncer.dart';
 import 'package:ap_mobile/widgets/contract_list_tile.dart';
 
 class ContractsScreen extends StatefulWidget {
@@ -16,6 +17,7 @@ class ContractsScreen extends StatefulWidget {
 
 class _ContractsScreenState extends State<ContractsScreen> {
   final _searchController = TextEditingController();
+  final _searchDebouncer = Debouncer();
 
   @override
   void initState() {
@@ -27,6 +29,7 @@ class _ContractsScreenState extends State<ContractsScreen> {
 
   @override
   void dispose() {
+    _searchDebouncer.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -45,8 +48,8 @@ class _ContractsScreenState extends State<ContractsScreen> {
               controller: _searchController,
               hintText: l.contractsSearchHint,
               leading: const Icon(Icons.search, size: 20),
-              onChanged: (q) => ContractStore.instance.setSearch(
-                q.isEmpty ? null : q,
+              onChanged: (q) => _searchDebouncer.run(
+                () => ContractStore.instance.setSearch(q.isEmpty ? null : q),
               ),
               elevation: WidgetStateProperty.all(0),
             ),
