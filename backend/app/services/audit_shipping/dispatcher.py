@@ -24,18 +24,22 @@ def register_audit_shipping_adapter(provider: str):
 def get_audit_shipping_adapter(config: dict) -> AuditShippingAdapter:
     """Build a single adapter by `config["provider"]`.
 
-    Falls back to the `mock` adapter if the named provider isn't
-    registered — intentional so a bad env var on a running server
-    degrades to an in-memory sink (which logs a loud warning) rather
-    than crashing the shipper loop on boot.
+    Raises on an unregistered name — a typo'd `AP_AUDIT_SHIPPING_PROVIDERS`
+    entry (e.g. "cloudwath") must fail loud, not silently substitute the
+    no-op `mock` adapter. `mock` "succeeding" on every ship() would let
+    `audit_log_shipper` stamp every row `shipped_at` while nothing ever
+    reaches the real sink — defeating the SOC 2 WORM/tamper-evidence control
+    with no signal (issue #164). `mock` is still available, but only when
+    named explicitly.
     """
     provider = config.get("provider", "mock")
 
     adapter_cls = _ADAPTER_REGISTRY.get(provider)
     if adapter_cls is None:
-        adapter_cls = _ADAPTER_REGISTRY.get("mock")
-        if adapter_cls is None:
-            raise ValueError(f"No audit-shipping adapter registered for '{provider}'")
+        raise ValueError(
+            f"No audit-shipping adapter registered for '{provider}' — "
+            f"registered providers: {', '.join(list_available_providers())}"
+        )
 
     return adapter_cls(config)
 

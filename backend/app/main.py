@@ -106,6 +106,19 @@ async def lifespan(app: FastAPI):
                 "it disables the outbound-webhook SSRF guard, letting a tenant admin point "
                 "signed webhook deliveries at loopback/private/metadata addresses"
             )
+        if settings.audit_shipping_enabled:
+            from app.services.audit_log_shipper import _parse_providers
+            from app.services.audit_shipping.dispatcher import list_available_providers
+
+            configured = _parse_providers(settings.audit_shipping_providers)
+            unknown = sorted(set(configured) - set(list_available_providers()))
+            if unknown:
+                raise RuntimeError(
+                    f"AP_AUDIT_SHIPPING_PROVIDERS names unregistered adapter(s) {unknown} — "
+                    f"registered providers: {list_available_providers()}. A typo'd name "
+                    "would otherwise silently fall back to the no-op mock adapter and mark "
+                    "rows shipped while nothing reaches the real sink."
+                )
 
     # Background reaper for invoices stuck in `pending` extraction. Started
     # on app boot, cancelled cleanly on shutdown. Toggleable via

@@ -80,8 +80,16 @@ def test_registry_lists_all_builtin_providers():
     assert {"mock", "cloudwatch", "s3_objectlock"}.issubset(providers)
 
 
-def test_dispatcher_falls_back_to_mock_for_unknown_provider():
-    adapter = get_audit_shipping_adapter({"provider": "nonsense"})
+def test_dispatcher_raises_on_unknown_provider():
+    """A typo'd provider name must fail loud, not silently substitute the
+    no-op `mock` adapter — otherwise audit_log_shipper would ship nothing
+    and still stamp every row `shipped_at` (issue #164)."""
+    with pytest.raises(ValueError, match="nonsense"):
+        get_audit_shipping_adapter({"provider": "nonsense"})
+
+
+def test_dispatcher_still_allows_mock_when_named_explicitly():
+    adapter = get_audit_shipping_adapter({"provider": "mock"})
     assert adapter.provider_name == "mock"
 
 
@@ -150,6 +158,19 @@ async def test_ship_once_continues_after_one_tenant_fails():
     assert result.tenants_scanned == 3
     assert result.rows_shipped == 6  # 4 + (skipped) + 2
     assert result.failures == 1
+
+
+@pytest.mark.asyncio
+async def test_ship_once_propagates_unknown_provider_instead_of_shipping_nothing():
+    """A typo'd `AP_AUDIT_SHIPPING_PROVIDERS` entry must blow up the sweep
+    loudly (logged at ERROR each tick, rows stay unshipped) — not silently
+    resolve to the mock adapter and mark rows shipped while nothing reaches
+    the real sink (issue #164)."""
+    from app.services import audit_log_shipper
+
+    with patch.object(audit_log_shipper.settings, "audit_shipping_providers", "cloudwath"):
+        with pytest.raises(ValueError, match="cloudwath"):
+            await audit_log_shipper.ship_once()
 
 
 @pytest.mark.asyncio
@@ -320,6 +341,31 @@ async def test_lifespan_does_not_start_shipper_when_disabled(monkeypatch):
 
     assert "audit-log-shipper" not in created_tasks
     assert "extraction-reaper" not in created_tasks
+
+
+@pytest.mark.asyncio
+async def test_lifespan_refuses_boot_with_unregistered_shipping_provider(monkeypatch):
+    """A deployed env (AP_DEBUG=false) with AP_AUDIT_SHIPPING_ENABLED=true and
+    a typo'd AP_AUDIT_SHIPPING_PROVIDERS entry must refuse to boot rather than
+    silently degrade every tick to the no-op mock adapter (issue #164)."""
+    import app.main as main_mod
+
+    # Clear every OTHER boot guard so only the audit-shipping one is under
+    # test — the committed .env.development enables several of them
+    # (AP_PEPPOL_INBOUND_ENABLED, AP_WEBHOOKS_ALLOW_PRIVATE_TARGETS) for local
+    # dev convenience, which would otherwise fire first under AP_DEBUG=false.
+    monkeypatch.setattr(main_mod.settings, "debug", False)
+    monkeypatch.setattr(main_mod.settings, "secret_key", "a-real-non-default-secret-key")
+    monkeypatch.setattr(main_mod.settings, "email_intake_domain", "")
+    monkeypatch.setattr(main_mod.settings, "peppol_inbound_enabled", False)
+    monkeypatch.setattr(main_mod.settings, "billing_webhook_enabled", False)
+    monkeypatch.setattr(main_mod.settings, "webhooks_allow_private_targets", False)
+    monkeypatch.setattr(main_mod.settings, "audit_shipping_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "audit_shipping_providers", "cloudwath")
+
+    with pytest.raises(RuntimeError, match="cloudwath"):
+        async with main_mod.lifespan(main_mod.app):
+            pass
 
 
 # ---------------------------------------------------------------------------
