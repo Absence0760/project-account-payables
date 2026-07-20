@@ -34,7 +34,7 @@ from app.schemas.workflow import (
 )
 from app.services.audit_dispatch import dispatch_audit
 from app.services.workflow_engine import DEFAULT_STEPS_CONFIG
-from app.tenant import get_entity_id, get_tenant_db
+from app.tenant import apply_entity_scope, get_entity_id, get_tenant_db
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -185,13 +185,30 @@ async def list_workflows(
     db: AsyncSession = Depends(get_tenant_db),
     user: User = Depends(get_current_user),
     org_id: uuid.UUID = Depends(get_org_id),
+    # Definitions are a genuine per-entity concept here (uq_workflow_definitions_one_default
+    # enforces one default per (org, entity)), so the list follows the same per-entity
+    # resolution as get_active_steps above rather than staying org-wide like GLAccount.
+    entity_id: uuid.UUID | None = Depends(get_entity_id),
 ):
     base = select(WorkflowDefinition).where(WorkflowDefinition.organization_id == org_id)
+    # include_shared=True: an org-wide definition (entity_id IS NULL) is the
+    # documented fallback `get_or_create_workflow_definition` resolves for an
+    # entity with no definition of its own (see that function's docstring —
+    # WorkflowDefinition uses NULL-as-shared the same way GLAccount does, not
+    # the "backfilled, never meaningfully NULL" case apply_entity_scope's
+    # general docstring describes for most other tables). Scoping this list
+    # with a strict equality check instead would both (a) hide the effective
+    # org-wide default from an entity that's actually governed by it, and (b)
+    # make the zero-row auto-create below fire again for every entity's first
+    # visit, minting a second entity_id=NULL row and violating
+    # uq_workflow_definitions_one_default.
+    base = apply_entity_scope(base, WorkflowDefinition, entity_id, include_shared=True)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
 
-    # Auto-create the default workflow if the org has none at all — independent
-    # of which page was requested, so a stray `?page=2` can't trigger a second
-    # default. After creation the first page holds exactly that row.
+    # Auto-create the default workflow if the org has none at all (own-entity
+    # or shared) — independent of which page was requested, so a stray
+    # `?page=2` can't trigger a second default. After creation the first page
+    # holds exactly that row.
     if total == 0:
         default = WorkflowDefinition(
             name="Default Workflow",

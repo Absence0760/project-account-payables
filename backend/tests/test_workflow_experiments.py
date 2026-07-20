@@ -500,3 +500,54 @@ async def test_scoped_to_organization(realdb):
         assert eid not in {
             e["id"] for e in (await other.get("/api/experiments")).json()["experiments"]
         }
+
+
+# ---------------------------------------------------------------------------
+# Multi-entity scoping (issue #145) — GET /experiments
+# ---------------------------------------------------------------------------
+
+
+async def test_list_experiments_scopes_by_entity(realdb):
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    defn_id, _ = await _seed_definition(mk, org_id)
+
+    async with realdb.client(key="a", role="admin") as c:
+        r = await c.post("/api/entities", json={"name": "US Inc", "slug": "us"})
+        assert r.status_code == 201, r.text
+        us = r.json()["id"]
+        default_id = next(e["id"] for e in (await c.get("/api/entities")).json() if e["is_default"])
+
+        # One experiment explicitly created under US, one explicitly under the
+        # default entity (create_experiment stores the RAW X-Entity-ID header
+        # value — an absent header persists entity_id=NULL, the consolidated
+        # sentinel, not the default entity's id — so both rows here pass an
+        # explicit header to land under a concrete entity_id).
+        r_us = await c.post(
+            "/api/experiments",
+            json=_payload(defn_id) | {"name": "US experiment"},
+            headers={"X-Entity-ID": us},
+        )
+        assert r_us.status_code == 201, r_us.text
+        r_def = await c.post(
+            "/api/experiments",
+            json=_payload(defn_id) | {"name": "Default experiment"},
+            headers={"X-Entity-ID": default_id},
+        )
+        assert r_def.status_code == 201, r_def.text
+
+        # Scoped to US -> only the US experiment.
+        scoped_us = await c.get("/api/experiments", headers={"X-Entity-ID": us})
+        names_us = {e["name"] for e in scoped_us.json()["experiments"]}
+        assert names_us == {"US experiment"}
+
+        # Scoped to the default entity -> only the default experiment.
+        scoped_def = await c.get("/api/experiments", headers={"X-Entity-ID": default_id})
+        assert {e["name"] for e in scoped_def.json()["experiments"]} == {"Default experiment"}
+
+        # No header -> consolidated (both).
+        allv = await c.get("/api/experiments")
+        assert {e["name"] for e in allv.json()["experiments"]} == {
+            "US experiment",
+            "Default experiment",
+        }
