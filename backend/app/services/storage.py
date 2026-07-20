@@ -47,12 +47,17 @@ def _safe_filename(name: str | None) -> str:
 
 
 def _get_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.s3_endpoint_url,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
-    )
+    # Empty AP_S3_ENDPOINT_URL targets real AWS S3; empty access keys defer
+    # to boto3's default credential chain (instance profile / env vars) —
+    # how deployed environments authenticate. The committed dev defaults
+    # (localhost MinIO + minioadmin) keep the local-first behaviour.
+    kwargs: dict = {}
+    if settings.s3_endpoint_url:
+        kwargs["endpoint_url"] = settings.s3_endpoint_url
+    if settings.s3_access_key and settings.s3_secret_key:
+        kwargs["aws_access_key_id"] = settings.s3_access_key
+        kwargs["aws_secret_access_key"] = settings.s3_secret_key
+    return boto3.client("s3", **kwargs)
 
 
 def _ensure_bucket(client):

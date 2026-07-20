@@ -1,0 +1,108 @@
+# Production compose stack for the minimal single-VM deployment.
+# See docs/minimal-deployment.md for the full plan and deploy/README.md for
+# day-to-day operations. Interpolation values (${...}) come from deploy/.env,
+# which deploy.sh decrypts from the sops-encrypted deploy/.env.sops — never
+# create deploy/.env by hand and never commit it.
+#
+# Postgres and Redis publish NO host ports: they are reachable only on the
+# compose network. S3 is real AWS S3 (no MinIO here — AP_S3_ENDPOINT_URL and
+# the static keys are set empty in the sops env, so boto3 uses the instance
+# profile).
+
+name: ap-prod
+
+services:
+  postgres:
+    # Same image as dev: Postgres 16 + pgvector (RAG extraction priors).
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env (via sops)}
+      POSTGRES_DB: account_payables
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF persistence: losing the blocklist would resurrect logged-out JWTs
+    # until natural expiry, and rate-limit / MFA state would reset.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    # All AP_* config + secrets come from the decrypted sops env.
+    env_file: .env
+    environment:
+      # Defaults derive from the local containers so the DB password lives in
+      # exactly one sops entry (keep POSTGRES_PASSWORD URL-safe, e.g.
+      # `openssl rand -hex 24`). These are the UPGRADE SEAMS: setting
+      # AP_DATABASE_URL / AP_REDIS_URL in the sops env overrides them, which
+      # is the whole migration to RDS / ElastiCache later — no compose edit.
+      AP_DATABASE_URL: ${AP_DATABASE_URL:-postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/account_payables}
+      AP_REDIS_URL: ${AP_REDIS_URL:-redis://redis:6379}
+      # boto3 (S3 / SES) resolves credentials from the EC2 instance profile;
+      # the region must be explicit. NOTE: IMDSv2 needs hop limit 2 for
+      # containers — see deploy/README.md.
+      AWS_DEFAULT_REGION: ${AWS_REGION:?set in deploy/.env (via sops)}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Lets `deploy.sh` roll out with `up -d --wait`: the deploy fails loudly
+    # if the API never comes healthy instead of leaving a silently-broken box.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # Entrypoint is the image CMD: uvicorn app.main:app (the production
+    # entrypoint — main.py with dotenv is local-dev only).
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set in deploy/.env (via sops)}
+      API_DOMAIN: ${API_DOMAIN:?set in deploy/.env (via sops)}
+      ACME_EMAIL: ${ACME_EMAIL:?set in deploy/.env (via sops)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Per-VM tenant host list (gitignored; deploy.sh seeds it from the
+      # committed .example). Add a block per tenant subdomain + reload.
+      - ./tenants.caddy:/etc/caddy/tenants.caddy:ro
+      # Static SPA built by deploy.sh (pnpm -C frontend build).
+      - ../frontend/build:/srv:ro
+      # Certificates + ACME account state — must persist across restarts or
+      # Let's Encrypt rate limits will bite.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

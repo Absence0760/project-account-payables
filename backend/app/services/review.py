@@ -34,14 +34,9 @@ async def _fetch_invoice_bytes(invoice: Invoice) -> bytes | None:
     if not file_key:
         return None
     try:
-        import boto3
+        from app.services.storage import _get_client
 
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=settings.s3_endpoint_url,
-            aws_access_key_id=settings.s3_access_key,
-            aws_secret_access_key=settings.s3_secret_key,
-        )
+        s3 = _get_client()
         obj = s3.get_object(Bucket=settings.s3_bucket, Key=file_key)
         return obj["Body"].read()
     except Exception as exc:

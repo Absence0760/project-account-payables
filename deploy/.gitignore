@@ -1,0 +1,7 @@
+# Decrypted secrets — recreated by deploy.sh on every run.
+.env
+# The VM's copy of the sops-encrypted env. The canonical encrypted file lives
+# in the private infra-secrets repo, never in this (public) repo.
+.env.sops
+# Per-VM tenant host list — seeded from tenants.caddy.example.
+tenants.caddy

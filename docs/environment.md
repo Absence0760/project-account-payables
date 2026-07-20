@@ -30,9 +30,9 @@ Note: The frontend also reads the tenant slug from the browser subdomain at runt
 | `AP_DATABASE_URL`     | `postgresql+asyncpg://postgres:postgres@localhost:5432/account_payables` | Control-plane DB connection      |
 | `AP_TENANT_DB_PREFIX` | `ap_`                                                                    | Prefix for tenant database names |
 | `AP_SECRET_KEY`       | `change-me-in-production`                                                | JWT signing key                  |
-| `AP_S3_ENDPOINT_URL`  | `http://localhost:9000`                                                  | MinIO/S3 endpoint                |
-| `AP_S3_ACCESS_KEY`    | `minioadmin`                                                             | MinIO/S3 access key              |
-| `AP_S3_SECRET_KEY`    | `minioadmin`                                                             | MinIO/S3 secret key              |
+| `AP_S3_ENDPOINT_URL`  | `http://localhost:9000`                                                  | MinIO/S3 endpoint. Set **empty** in deployed envs → real AWS S3 |
+| `AP_S3_ACCESS_KEY`    | `minioadmin`                                                             | MinIO/S3 access key. Set **empty** (with the secret key) → boto3 default credential chain (instance/task role) |
+| `AP_S3_SECRET_KEY`    | `minioadmin`                                                             | MinIO/S3 secret key. Set **empty** with the access key |
 | `AP_S3_BUCKET`        | `invoices`                                                               | S3 bucket for invoice files      |
 | `AP_DEBUG`            | `false`                                                                  | Enable debug logging + SQLAlchemy echo. Default `false` so a forgotten deploy doesn't ship Python tracebacks to clients; `backend/.env.development` sets it to `true` for local dev. The boot guard also relaxes the AP_SECRET_KEY / AP_EMAIL_INTAKE_SIGNING_SECRET defaults when this is `true`. |
 | `AP_SSO_REDIRECT_PATH` | `/login/sso-callback`                                                   | Path the IdP redirects back to after OIDC auth (per tenant subdomain) |
