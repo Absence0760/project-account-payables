@@ -115,3 +115,56 @@ def test_admin_set_password_rejects_weak(weak: str):
 
 def test_admin_set_password_accepts_complex():
     _validate_admin_set_password("Str0ngEnoughPass")  # ≥12, upper+lower+digit
+
+
+# --------------------------------------------------------------------------
+# Issue #160 — admin password reset must revoke the target's active sessions,
+# matching the existing role-change/deactivation forced-logout guarantee.
+# Exercised end-to-end against the real `/api/admin/users/{id}` endpoint
+# (realdb), not just the pure helpers above.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_admin_password_reset_revokes_target_sessions(realdb, monkeypatch):
+    """A `body.password` PATCH must call revoke_user_sessions for the target —
+    without it, a token an attacker already holds survives the reset, which
+    defeats the whole point of resetting credentials believed compromised."""
+    calls: list = []
+
+    async def _fake_revoke(user_id):
+        calls.append(user_id)
+        return []
+
+    monkeypatch.setattr("app.api.admin.revoke_user_sessions", _fake_revoke)
+
+    target_id = realdb.info("a").users["ap_clerk"]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(
+            f"/api/admin/users/{target_id}",
+            json={"password": "Str0ngEnoughPass"},
+        )
+    assert resp.status_code == 200
+    assert calls == [target_id]
+
+
+@pytest.mark.asyncio
+async def test_admin_update_user_other_field_change_does_not_revoke(realdb, monkeypatch):
+    """A plain field edit (no role change, no deactivation, no password reset)
+    must not force-logout the target — only the sensitive branches should."""
+    calls: list = []
+
+    async def _fake_revoke(user_id):
+        calls.append(user_id)
+        return []
+
+    monkeypatch.setattr("app.api.admin.revoke_user_sessions", _fake_revoke)
+
+    target_id = realdb.info("a").users["ap_clerk"]
+    async with realdb.client(key="a", role="admin") as c:
+        resp = await c.patch(
+            f"/api/admin/users/{target_id}",
+            json={"full_name": "Renamed Clerk"},
+        )
+    assert resp.status_code == 200
+    assert calls == []

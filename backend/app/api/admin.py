@@ -387,7 +387,8 @@ async def update_user(
         target.email = body.email
     if body.is_active is not None:
         target.is_active = body.is_active
-    if body.password is not None:
+    password_changed = body.password is not None
+    if password_changed:
         _validate_admin_set_password(body.password)
         target.hashed_password = pwd_context.hash(body.password)
 
@@ -416,12 +417,14 @@ async def update_user(
     target = result.scalar_one()
     await db.commit()
 
-    # SOC 2: a role change (elevation or demotion) and account deactivation
-    # must both drop the user's existing sessions. The previous JWT was signed
-    # before the permission change and would otherwise keep the old role set
-    # alive until it expired (up to 30 min).
+    # SOC 2: a role change (elevation or demotion), account deactivation, and
+    # an admin-initiated password reset must all drop the user's existing
+    # sessions. The previous JWT was signed before the change and would
+    # otherwise keep the old (or compromised) session alive until it expired
+    # (up to 30 min) — for a password reset that's the exact window the reset
+    # is meant to close (issue #160).
     deactivated = was_active and body.is_active is False
-    if roles_changed or deactivated:
+    if roles_changed or deactivated or password_changed:
         await revoke_user_sessions(user_id)
 
     return _user_to_response(target)
