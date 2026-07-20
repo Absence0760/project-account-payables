@@ -200,20 +200,28 @@ async def build_check_issue_items(
     run: PaymentRun,
     entity_id: uuid.UUID | None,
     account_number: str = "",
-) -> tuple[list[CheckIssueItem], Decimal, list[tuple[str, uuid.UUID]]]:
+) -> tuple[list[CheckIssueItem], Decimal, list[tuple[str, uuid.UUID, Decimal]]]:
     """Build the check-issue items for a payment run.
 
     Selects the run's cheque payments (``method == "check"``, excluding
-    ``failed`` / ``cancelled`` / ``voided``), joins ``Invoice`` for the payee
-    name, and projects each into a :class:`CheckIssueItem`. ``check_number`` is
-    the Payment's ``reference``; ``issue_date`` is the run's ``executed_at``
-    date (or today if it hasn't executed). ``account_number`` (the org's
-    originating cheque account) is stamped onto every item by the caller.
+    ``failed`` / ``cancelled`` / ``voided`` AT THE TIME THIS RUNS), joins
+    ``Invoice`` for the payee name, and projects each into a
+    :class:`CheckIssueItem`. ``check_number`` is the Payment's ``reference``;
+    ``issue_date`` is the run's ``executed_at`` date (or today if it hasn't
+    executed). ``account_number`` (the org's originating cheque account) is
+    stamped onto every item by the caller.
 
     Returns ``(items, total_amount, mapping)`` where ``mapping`` is a list of
-    ``(normalized_check_number, invoice_id)`` pairs so the return processor can
-    map a presented cheque back to its invoice (to raise a fraud Exception). No
-    account number is ever logged here.
+    ``(normalized_check_number, invoice_id, amount)`` triples so the CALLER can
+    persist a point-in-time snapshot (see the check-issue file's
+    ``meta["issued_map"]``). Because this is a LIVE query, calling it again
+    later (e.g. at return-processing time) reflects payments' CURRENT status,
+    not what was actually on the file already sent to the bank — a cheque
+    voided after the file was sent would silently drop out. Callers that need
+    "what did we tell the bank" must persist this call's result once, at
+    generation time, and read that snapshot back rather than re-calling this
+    function (see ``docs/positive-pay.md`` § Return processing). No account
+    number is ever logged here.
     """
     query = (
         select(Payment, Invoice.vendor_name)
@@ -232,7 +240,7 @@ async def build_check_issue_items(
 
     items: list[CheckIssueItem] = []
     total = Decimal("0")
-    mapping: list[tuple[str, uuid.UUID]] = []
+    mapping: list[tuple[str, uuid.UUID, Decimal]] = []
 
     for payment, vendor_name in rows:
         check_number = payment.reference or ""
@@ -249,7 +257,7 @@ async def build_check_issue_items(
         total += amount
         key = normalize_check_number(check_number)
         if key:
-            mapping.append((key, payment.invoice_id))
+            mapping.append((key, payment.invoice_id, amount))
 
     return items, total, mapping
 

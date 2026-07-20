@@ -234,10 +234,20 @@ async def generate_check_issue(
         file_key=file_key,
         account_last4=_last4(account_number),
         generated_by=user.id,
-        # Persist the issued check_number → invoice_id mapping so return
-        # processing can map a presented cheque back to its invoice without
-        # re-querying the run. PII-free (check numbers + invoice ids only).
-        meta={"issued_map": {key: str(invoice_id) for key, invoice_id in mapping}},
+        # Persist the POINT-IN-TIME issued check_number → {invoice_id, amount}
+        # snapshot — what was actually on the file we sent to the bank — so
+        # return processing (`process_return`) classifies against this,
+        # never a live re-query of the run's payments. A live re-query would
+        # reflect a payment's CURRENT status (e.g. voided after the file was
+        # sent), silently dropping a legitimately-issued cheque out of the
+        # comparison set and mislabeling its bank presentment `not_on_file`
+        # (issue #178). PII-free (check numbers, invoice ids, amounts only).
+        meta={
+            "issued_map": {
+                key: {"invoice_id": str(invoice_id), "amount": str(amount)}
+                for key, invoice_id, amount in mapping
+            }
+        },
     )
     db.add(row)
     try:
@@ -448,10 +458,14 @@ async def process_return(
 ):
     """Process the bank's return against a check-issue file.
 
-    Rebuilds the issued cheque list from the file's payment run, classifies each
-    presented item (``matched_ok`` / ``amount_mismatch`` — altered / ``not_on_file``
-    — never issued), and raises a deduped ``fraud_flag`` Exception for every fraud
-    signal: ``amount_mismatch`` rows map to their invoice; ``not_on_file`` rows
+    Classifies each presented item (``matched_ok`` / ``amount_mismatch`` —
+    altered / ``not_on_file`` — never issued) against the POINT-IN-TIME
+    ``meta["issued_map"]`` snapshot persisted on the file at generation —
+    what was actually sent to the bank — never a live re-query of the run's
+    payments (a cheque issued-then-voided must still classify against what
+    the bank was told, not the payment's current status; issue #178).
+    Raises a deduped ``fraud_flag`` Exception for every fraud signal:
+    ``amount_mismatch`` rows map to their invoice; ``not_on_file`` rows
     (a cheque we never wrote) have no invoice and become a standalone
     ``invoice_id=None`` fraud_flag in the queue. The file flips to
     ``returned_processed`` with a PII-free summary in ``meta``.
@@ -462,19 +476,14 @@ async def process_return(
             status_code=422, detail="Return processing is only valid for check-issue files"
         )
 
-    # The issued cheque amounts come from the run's payments; the
-    # check_number → invoice_id map was persisted on the row at generation.
-    run = (
-        await db.execute(select(PaymentRun).where(PaymentRun.id == row.payment_run_id))
-    ).scalar_one_or_none()
+    # Classify against the persisted point-in-time snapshot, not a live
+    # re-derivation from the run's CURRENT payment statuses.
+    issued_map_snapshot: dict = (row.meta or {}).get("issued_map") or {}
     issued_items: list[IssuedItem] = []
     issued_map: dict[str, uuid.UUID] = {}
-    if run is not None:
-        _items, _total, mapping = await service.build_check_issue_items(
-            db, run=run, entity_id=entity_id
-        )
-        issued_items = [IssuedItem(check_number=it.check_number, amount=it.amount) for it in _items]
-        issued_map = {key: invoice_id for key, invoice_id in mapping}
+    for key, entry in issued_map_snapshot.items():
+        issued_items.append(IssuedItem(check_number=key, amount=Decimal(str(entry["amount"]))))
+        issued_map[key] = uuid.UUID(entry["invoice_id"])
 
     classification = classify_presented_items(
         [PresentedItem(check_number=p.check_number, amount=p.amount) for p in body.presented_items],
