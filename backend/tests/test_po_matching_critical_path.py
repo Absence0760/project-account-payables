@@ -486,6 +486,32 @@ async def test_realdb_multiple_goods_receipts_partial_sum_downgrades(realdb):
 
 
 @pytest.mark.asyncio
+async def test_realdb_fractional_quantities_sum_exactly_not_float(realdb):
+    """A PO ordering 30.3 units, fully received via 3 shipments of 10.1 each,
+    must be `matched` — not `partial` (issue #140). Summing via `float(...)`
+    produces the classic binary-float artefact (10.1 * 3 == 30.299999999999997
+    < 30.3), flipping a fully-received match to `partial` and emitting the
+    self-contradictory 'Partial receipt: 100% of ordered quantity received'."""
+    org_id = realdb.info("a").org_id
+    mk = realdb.sessionmaker("a")
+    async with mk() as s:
+        ent = await _default_entity_id(s)
+        po = await _add_po(
+            s, org_id, ent, po_number="PO-FRACTIONAL", total="1000.00", lines=["30.3000"]
+        )
+        for _ in range(3):
+            await _add_gr(s, org_id, ent, po.id, received=["10.1000"])
+        inv = await _add_invoice(s, org_id, ent, po_number="PO-FRACTIONAL", amount="1000.00")
+        await s.commit()
+
+        match = await match_invoice_to_po(s, inv)
+
+    assert match.match_type == "3-way"
+    assert match.status == "matched"
+    assert not any("Partial receipt" in i for i in match.issues)
+
+
+@pytest.mark.asyncio
 async def test_realdb_duplicate_po_number_no_vendor_does_not_crash(realdb):
     """An invoice with NO vendor_id citing a po_number shared by two POs (e.g.
     two entities / a re-used number) must not crash. The unscoped PO lookup used
