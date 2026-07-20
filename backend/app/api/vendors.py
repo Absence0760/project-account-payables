@@ -59,7 +59,7 @@ from app.schemas.vendor import (
 )
 from app.services.audit_access import build_field_diff, log_access
 from app.services.audit_dispatch import dispatch_audit
-from app.services.csv_import import import_vendors_csv
+from app.services.csv_import import MAX_CSV_IMPORT_SIZE, import_vendors_csv
 from app.services.email_adapters import EmailMessage, get_email_adapter
 from app.services.vendor_screening import screen_vendor_record
 from app.services.vendor_sync import sync_vendors_from_erp
@@ -1042,6 +1042,11 @@ async def import_vendors_from_csv(
     case-insensitive ``name``. See ``backend/docs/csv-import.md``.
     """
     raw = await file.read()
+    if len(raw) > MAX_CSV_IMPORT_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV exceeds maximum size of {MAX_CSV_IMPORT_SIZE // (1024 * 1024)} MB",
+        )
     try:
         csv_text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:

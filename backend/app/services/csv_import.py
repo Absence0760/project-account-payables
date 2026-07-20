@@ -30,6 +30,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.vendor import Vendor
 
+# CSV imports are always small structured text (vendor lists, invoice batches,
+# card-transaction feeds) — well under the general 25 MB file-upload cap in
+# ``app/services/storage.py``. A tighter 10 MB limit still comfortably covers
+# any realistic export while bounding memory use before ``file.read()``
+# buffers the whole upload (the read happens in the API layer, ahead of the
+# parsing this module does; see backend/docs/csv-import.md).
+MAX_CSV_IMPORT_SIZE = 10 * 1024 * 1024  # 10 MB
+
 # Supported headers. Column order does not matter; unknown columns are ignored
 # so customers can hand us the raw export from their existing tool.
 _VENDOR_COLUMNS = {
