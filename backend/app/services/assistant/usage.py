@@ -61,14 +61,13 @@ async def _get_usage(
 async def _lock_meter_row(
     control_db: AsyncSession, org_id: uuid.UUID, period: str
 ) -> AssistantUsage | None:
-    """``SELECT … FOR UPDATE`` the ``(org, period)`` meter so concurrent turns
-    for the same org serialize on it. Returns ``None`` when no row exists yet
-    (first turn of the period) — the upsert in :func:`record` then creates it.
+    """``SELECT … FOR UPDATE`` the ``(org, period)`` meter row. Returns
+    ``None`` when no row exists yet (first turn of the period) — the upsert
+    in :func:`record` then creates it.
 
-    The lock is held until the control-plane transaction commits at request
-    end (``get_control_db``'s exit), which is the same boundary that now
-    commits ``record``'s increment — so two simultaneous ``/chat`` requests
-    can't both read ``used < budget`` and both overshoot the cap.
+    The caller (:func:`assert_within_budget`) commits right after reading
+    this, releasing the lock immediately rather than holding it across the
+    model call — see that function's docstring for why.
     """
     return (
         await control_db.execute(
@@ -85,10 +84,21 @@ async def _lock_meter_row(
 async def assert_within_budget(control_db: AsyncSession, org: Organization) -> None:
     """Raise :class:`AssistantBudgetExceeded` if the org is at/over its cap.
 
-    Takes a row-level lock on the meter so concurrent turns serialize — without
-    it two simultaneous requests both read ``used < budget`` and both run,
-    overshooting the cap (check-then-act race). The lock is released when the
-    control transaction commits (or rolls back) at request end.
+    Takes a row-level lock on the meter to make the check atomic, but commits
+    immediately after reading it — the lock is held only for this one quick
+    round-trip, NOT across the model call / SSE stream that follows. Holding
+    it for the whole turn (the previous behavior) serialized an org to one
+    in-flight ``/chat`` request at a time, since every other turn for that org
+    blocked on the same ``FOR UPDATE`` row until the first turn's response
+    finished streaming and the control transaction committed at request end.
+
+    This trades perfect serialization for a bounded race: two turns that both
+    start within the same short check window can both read ``used < budget``
+    and both proceed, so the cap can be overshot by at most a handful of
+    concurrent turns' worth of tokens before the next turn's check catches it.
+    That's an acceptable trade for a soft usage-shaping guardrail (not a money
+    invariant) — an indefinitely long lock is a worse bug than a small,
+    self-correcting overshoot.
 
     Budget ``0`` disables the cap (matches ``AP_MAX_CONCURRENT_SESSIONS=0``).
     """
@@ -98,7 +108,10 @@ async def assert_within_budget(control_db: AsyncSession, org: Organization) -> N
     period = _current_period()
     row = await _lock_meter_row(control_db, org.id, period)
     used = (row.input_tokens + row.output_tokens) if row else 0
-    if used >= budget:
+    over_budget = used >= budget
+    # Release the row lock right away — don't hold it across the model call.
+    await control_db.commit()
+    if over_budget:
         raise AssistantBudgetExceeded(used=used, budget=budget, period=period)
 
 
