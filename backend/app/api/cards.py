@@ -397,6 +397,7 @@ async def generate_cards(
             continue  # blocked/held vendor — skip, don't block the batch
 
         issue = await issue_card_for_invoice(
+            db=db,
             invoice=inv,
             organization_id=org_id,
             org_settings=org.settings or {},

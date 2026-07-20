@@ -324,6 +324,21 @@ the admin-config SSRF guard; an admin-supplied `base_url` stays guarded).
 
 Registered: `lithic`, `nium`, `mock`. Both have sandbox modes.
 
+Card creation is **idempotent at the provider**, not only in our DB. The partial
+unique index `uq_virtual_cards_one_live_per_invoice` only catches duplicates
+that reached our database — an `httpx` timeout *after* the provider provisioned
+the card writes no row, so an unkeyed retry mints a second live card while the
+first is orphaned. `services/card_issuance.build_card_idempotency_key` mints a
+pure, deterministic UUID5 (`correlation_id or invoice_id` + a re-issue sequence
+read from the invoice's existing card rows — never a fresh `uuid4`), carried on
+`VirtualCardPayload.idempotency_key` and sent by each adapter on its provider's
+own channel: **Lithic** `Idempotency-Key` header (must be a UUID, 30-day
+retention), **Nium** `x-request-id` header (24-hour retention), **mock** derives
+the card id from it so the retry path is exercisable locally. The re-issue
+sequence is what keeps a deliberate cancel-then-reissue from replaying the
+original closed card. `issue_card_for_invoice` therefore takes `db`. See
+`docs/virtual-cards.md` § Issue.
+
 ### Payment adapters (`services/payment_adapters/`)
 
 ```python

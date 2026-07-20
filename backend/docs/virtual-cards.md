@@ -438,6 +438,55 @@ float.
 | `card.charged` | authorization webhook applies a charge | `last_four`, `from`, `to`, `amount_charged` (string Decimal) |
 | `card.settled` | settlement webhook completes + accrues the rebate | `last_four`, `from`, `to`, `rebate_amount`, `rebate_rate` (string Decimals), `rebate_created` (bool — `false` if the one-per-card unique index skipped a duplicate) |
 
+### Issue — idempotent at the provider, not just in our DB
+
+A virtual card is spendable money, so issuance carries the money invariant
+*idempotency on writes that move money* — and it needs **two** layers, because
+they cover different failures:
+
+| Layer | Mechanism | Catches |
+|---|---|---|
+| Ours | partial unique index `uq_virtual_cards_one_live_per_invoice` (migration `0067`) + the pre-check in `POST /api/cards/generate` | a duplicate that reached our database |
+| Provider's | a stable idempotency key on the create call | a card the provider made that **never** reached our database |
+
+The provider layer is the one that matters for the nastiest case: `httpx` times
+out *after* Lithic/Nium already provisioned the card. We hold no
+`provider_card_id`, so the live card is orphaned and ungoverned — and the DB
+index can't see it, because no row was ever written. An unkeyed retry then mints
+a **second** live card. With a key, the provider replays the original response
+and the retry converges on the card that already exists.
+
+The two providers do **not** share a convention, so each adapter sends the key
+on its own channel:
+
+| Provider | Channel | Constraints |
+|---|---|---|
+| Lithic | `Idempotency-Key` header on `POST /v1/cards` | must be a valid **UUID**; keys retained 30 days |
+| Nium | `x-request-id` header on the card-create POST | ≤255 chars; keys purged after 24 hours |
+| mock | honours the key by deriving the card id from it (and echoes it on `raw_response`) | local-first: the retry path is exercisable with no provider account |
+
+The key itself is minted by `services/card_issuance.py::build_card_idempotency_key`
+— pure, deterministic, **never** a fresh `uuid4`:
+
+```
+uuid5(CARD_IDEMPOTENCY_NAMESPACE, f"virtual_card:{correlation_id or invoice_id}:{reissue_seq}")
+```
+
+- `correlation_id` (falling back to `invoice_id` for rows that predate it)
+  anchors the key to the *payable*, so every attempt at the same issuance
+  computes the same value.
+- `reissue_seq` is how many `VirtualCard` rows the invoice already has — read
+  from the tenant DB, which is why `issue_card_for_invoice` now takes `db`. A
+  timed-out attempt persists nothing, so a retry recomputes the same sequence
+  and therefore the same key. A deliberate **cancel-then-reissue** does leave a
+  row behind, so it advances the sequence and gets a fresh key — without that,
+  the provider would replay the original (now closed) card inside its retention
+  window and the vendor would receive a dead card.
+
+`VirtualCardPayload.idempotency_key` is `None`-able; an adapter given `None`
+sends no key at all rather than inventing an unstable one (a per-attempt key
+would give false confidence while still double-issuing).
+
 ### Cancel (`POST /{id}/cancel`) — provider-first + idempotent
 
 The handler cancels at the **provider first**, then reflects it in the DB — never

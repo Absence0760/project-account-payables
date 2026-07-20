@@ -12,11 +12,12 @@ raises. Callers are responsible for awaiting `db.flush` / `db.commit`.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
@@ -24,6 +25,64 @@ from app.models.vendor import Vendor
 from app.models.virtual_card import VirtualCard
 
 logger = logging.getLogger(__name__)
+
+# Fixed namespace for card-issuance idempotency keys. Constant by design: the
+# key must reproduce byte-for-byte across retries, processes and deploys, so it
+# can never be a fresh uuid4 nor derive from anything transient.
+CARD_IDEMPOTENCY_NAMESPACE = uuid.UUID("2b0a6d5e-1f43-4a7c-9d1e-6c4b8f2a3d90")
+
+
+def build_card_idempotency_key(
+    *,
+    invoice_id,
+    correlation_id=None,
+    reissue_seq: int = 0,
+) -> str:
+    """Deterministic provider idempotency key for ONE logical card issuance.
+
+    Card issuance mints a real, spendable card, so it needs the same
+    idempotency discipline as a payment (project invariant: *idempotency on
+    writes that move money*). The DB index
+    ``uq_virtual_cards_one_live_per_invoice`` only catches duplicates that made
+    it into OUR database — if httpx times out *after* Lithic/Nium provisioned
+    the card, no row is written, and an unkeyed retry mints a SECOND live card
+    while the first is orphaned and ungoverned. A stable key closes that hole:
+    the provider replays the original response instead of issuing again.
+
+    Stability inputs, all durable:
+
+    - ``correlation_id`` (falling back to ``invoice_id`` when an invoice
+      predates correlation ids) — anchors the key to the payable, not to the
+      attempt. Never a fresh uuid4.
+    - ``reissue_seq`` — how many ``VirtualCard`` rows the invoice already has.
+      A timed-out attempt persists nothing, so a retry recomputes the SAME
+      sequence and therefore the same key. A deliberate cancel-then-reissue
+      *does* leave a row behind, so it advances the sequence and gets a fresh
+      key — without this, the provider would replay the original (now closed)
+      card inside its key-retention window and the vendor would receive a dead
+      card.
+
+    Returned as a UUID string because that is the strictest provider
+    requirement (Lithic rejects a non-UUID ``Idempotency-Key``); Nium's
+    ``x-request-id`` accepts it happily.
+    """
+    anchor = str(correlation_id) if correlation_id else str(invoice_id)
+    return str(uuid.uuid5(CARD_IDEMPOTENCY_NAMESPACE, f"virtual_card:{anchor}:{reissue_seq}"))
+
+
+async def _reissue_sequence(db: AsyncSession, invoice_id) -> int:
+    """Count of cards already persisted for this invoice (incl. cancelled).
+
+    See ``build_card_idempotency_key`` for why this is the right
+    discriminator. Deliberately NOT wrapped in a swallow-and-continue: if this
+    read fails the session is already broken, and minting a provider card on a
+    transaction that cannot persist the resulting row is precisely the orphan
+    this whole change exists to prevent. Fail before the money moves.
+    """
+    result = await db.execute(
+        select(func.count()).select_from(VirtualCard).where(VirtualCard.invoice_id == invoice_id)
+    )
+    return int(result.scalar_one() or 0)
 
 
 @dataclass
@@ -112,6 +171,7 @@ def _resolve_card_config(org_settings: dict, app_settings) -> dict | None:
 
 async def issue_card_for_invoice(
     *,
+    db: AsyncSession,
     invoice: Invoice,
     organization_id,
     org_settings: dict,
@@ -121,6 +181,13 @@ async def issue_card_for_invoice(
 ) -> CardIssueResult:
     """Mint one card via the org's configured adapter and persist the
     VirtualCard row. Returns the row (uncommitted — caller flushes).
+
+    Every provider call carries a deterministic idempotency key
+    (`build_card_idempotency_key`), so a retry of the same logical issuance —
+    after a client-side timeout, a double-click, a re-run of a payment run —
+    resolves to the card the provider already made rather than minting a second
+    live one. `db` is required for that: the key's re-issue discriminator is
+    read from the invoice's existing card rows.
 
     Returns success=False with a populated failure_reason when:
       - The org hasn't enabled cards (`cards.enabled` falsy)
@@ -151,6 +218,11 @@ async def issue_card_for_invoice(
         currency=invoice.currency or "USD",
         description=invoice.description,
         expiry_days=expiry_days,
+        idempotency_key=build_card_idempotency_key(
+            invoice_id=invoice.id,
+            correlation_id=invoice.correlation_id,
+            reissue_seq=await _reissue_sequence(db, invoice.id),
+        ),
     )
 
     try:

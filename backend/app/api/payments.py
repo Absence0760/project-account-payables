@@ -1178,6 +1178,7 @@ async def _execute_single_payment(
             return
 
         issue = await issue_card_for_invoice(
+            db=db,
             invoice=invoice,
             organization_id=org.id,
             org_settings=org.settings or {},
