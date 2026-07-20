@@ -529,8 +529,11 @@ except IntegrityError:
     ...
 ```
 
-The loser's row is expunged so a later `flush`/`commit` can't re-attempt the
-insert that just failed. Regression coverage:
+No explicit `expunge` of the loser's row is needed: rolling back to the savepoint
+runs `SessionTransaction._restore_snapshot`, which expunges `session._new` to
+transient, so a later `flush`/`commit` cannot re-attempt the failed insert.
+(`recurring_invoices.generate_one` relies on the same behaviour — the two
+savepoints are deliberately identical in shape.) Regression coverage:
 `tests/test_payment_card_duplicate_recovery.py` (both entry points, against a
 real Postgres so the partial index actually fires).
 
@@ -552,6 +555,41 @@ otherwise stay `False` (fail-safe). This cleanly resolves the retry case where a
 first cancel closed the card at the provider but the DB write failed and AP
 retries — the second attempt confirms and marks the row cancelled instead of
 erroring.
+
+A **charged / completed** card cannot be cancelled (`409`) — the funds have
+moved and no provider can un-spend them. That is the single most important
+consequence of this endpoint's contract, because it means a spent card occupies
+its invoice's live-card slot *permanently* (the partial index counts every
+non-`cancelled` row). See "Settling against an existing card" below.
+
+**Voiding a card payment cancels the card too.** `POST /api/payments/{id}/void`
+calls the shared provider-side primitive `card_issuance.cancel_card_at_provider`
+(same provider-first ordering) so a void actually stops the money instead of
+only moving our books — a live card left behind is still bearer-spendable with
+no payment naming it. Unlike this endpoint it is *best-effort*: a card-provider
+outage is recorded as the `card_outcome` on the `payment.voided` audit row
+rather than raised, because a provider outage must not block the accounting
+void. See `payments.md` § Voiding a card payment cancels the card.
+
+#### Settling against an existing card
+
+`card_settlement_block(card, amount)` decides whether a payment may converge
+onto a card it did **not** mint, and is deliberately separate from
+`find_live_card_for_invoice`:
+
+- `find_live_card_for_invoice` answers *"what occupies the slot?"* and must use
+  exactly the index's predicate (`status <> 'cancelled'`). Narrowing it would
+  make the pre-check miss a row the index still counts, so the caller would mint
+  a provider card the index then refuses to persist — an orphaned spendable card.
+- `card_settlement_block` answers *"can that card be what settles this
+  payment?"* — `None` if yes, else a `Payment.failure_reason`. It rejects a
+  card in `CARD_SPENT_STATUSES` (`charged`/`completed`) and one whose
+  `amount_limit` cannot cover the payable.
+
+The spend check is the load-bearing one: `amount_limit` is the authorization
+ceiling and is **not** reduced by spend (a charge only sets `amount_charged`),
+so a limit-only guard would mark a payment `completed` against a card whose
+money already moved under a different, voided payment.
 
 ### Webhook handler (`POST /cards/webhook/{provider}`)
 

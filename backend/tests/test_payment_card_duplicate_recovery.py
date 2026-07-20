@@ -382,3 +382,285 @@ async def test_batch_generate_survives_a_racing_card_insert(realdb):
                 .all()
             )
             assert [c.provider_card_id for c in cards] == [provider_card_id]
+
+
+# ---------------------------------------------------------------------------
+# 4. Convergence must never settle against a card whose funds already moved
+# ---------------------------------------------------------------------------
+
+
+async def test_spent_card_is_never_converged_onto(realdb):
+    """The reachable operator flow: mint a card → the vendor redeems it (webhook
+    flips it to `charged`) → AP voids that payment → the invoice returns to the
+    payable pool → a new run creates a fresh `virtual_card` Payment.
+
+    `amount_limit` is the authorization ceiling and is NOT reduced by spend
+    (only `amount_charged` is set), so a limit-only guard happily marks the new
+    payment `completed` against a card whose money already moved under the
+    voided payment. It must fail instead — no second payment, no false
+    settlement.
+    """
+    from app.api.payments import execute_payment_run
+
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    mk = realdb.sessionmaker(TENANT)
+    amount = Decimal("100.00")
+
+    inv = await _seed(mk, org_id, amount=amount)
+    async with mk() as s:
+        spent = _card(inv, org_id, provider_card_id="card_spent", amount=amount)
+        spent.status = "charged"  # vendor redeemed it; funds moved
+        spent.amount_charged = amount
+        s.add(spent)
+        await s.commit()
+
+    run_id, pay_id = await _seed_run(
+        mk, org_id, inv, amount=amount, creator_id=info.users["ap_manager"]
+    )
+
+    with _ambient_patches():
+        async with realdb.sessionmaker(TENANT)() as db:
+            res = await execute_payment_run(
+                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+            )
+            await db.commit()
+
+    async with mk() as s:
+        pay = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        cards = (
+            (await s.execute(select(VirtualCard).where(VirtualCard.invoice_id == inv.id)))
+            .scalars()
+            .all()
+        )
+
+    assert pay.status == "failed"
+    assert pay.failure_reason == "card_already_charged"
+    assert pay.completed_at is not None
+    # No second card was minted behind the spent one.
+    assert [c.provider_card_id for c in cards] == ["card_spent"]
+    # The run rolls up honestly rather than reporting a payment that never moved.
+    assert res["status"] == "failed"
+
+
+async def test_converged_payment_is_linked_to_the_card_it_settled_against(realdb):
+    """`list_payments` outer-joins the card via `VirtualCard.payment_id ==
+    Payment.id`. A payment that converges onto a card minted by
+    `POST /api/cards/generate` (which sets no payment_id) must claim that link,
+    or the UI shows no card on a payment whose reference says `CARD-…`."""
+    from app.api.payments import execute_payment_run
+
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    mk = realdb.sessionmaker(TENANT)
+    amount = Decimal("100.00")
+
+    inv = await _seed(mk, org_id, amount=amount)
+    async with mk() as s:
+        s.add(_card(inv, org_id, provider_card_id="card_from_generate", amount=amount))
+        await s.commit()
+
+    run_id, pay_id = await _seed_run(
+        mk, org_id, inv, amount=amount, creator_id=info.users["ap_manager"]
+    )
+
+    with _ambient_patches():
+        async with realdb.sessionmaker(TENANT)() as db:
+            await execute_payment_run(
+                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+            )
+            await db.commit()
+
+    async with mk() as s:
+        card = (
+            await s.execute(select(VirtualCard).where(VirtualCard.invoice_id == inv.id))
+        ).scalar_one()
+        pay = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        audits = (
+            (await s.execute(select(AuditLog).where(AuditLog.entity_id == card.id))).scalars().all()
+        )
+
+    assert pay.status == "completed"
+    assert card.payment_id == pay.id
+    # The reuse is explicit in the SOX trail, and PII-free.
+    reuse = [a for a in audits if a.action == "card.reused"]
+    assert len(reuse) == 1
+    assert reuse[0].details["payment_id"] == str(pay.id)
+    assert reuse[0].details["amount"] == "100.00"
+
+
+async def test_payment_run_mint_writes_a_card_generated_audit_row(realdb):
+    """A card-lifecycle query (entity_type=virtual_card, entity_id=card.id) must
+    show a creation event for a payment-run-minted card, exactly as it does for
+    one minted by the batch endpoint."""
+    from app.api.payments import execute_payment_run
+
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    mk = realdb.sessionmaker(TENANT)
+    amount = Decimal("100.00")
+
+    inv = await _seed(mk, org_id, amount=amount)
+    run_id, pay_id = await _seed_run(
+        mk, org_id, inv, amount=amount, creator_id=info.users["ap_manager"]
+    )
+
+    with _ambient_patches():
+        async with realdb.sessionmaker(TENANT)() as db:
+            await execute_payment_run(
+                run_id=run_id, db=db, org=_org(org_id), user=_user(info.users["admin"])
+            )
+            await db.commit()
+
+    async with mk() as s:
+        card = (
+            await s.execute(select(VirtualCard).where(VirtualCard.invoice_id == inv.id))
+        ).scalar_one()
+        audits = (
+            (await s.execute(select(AuditLog).where(AuditLog.entity_id == card.id))).scalars().all()
+        )
+
+    assert card.payment_id == pay_id  # minted for this payment
+    generated = [a for a in audits if a.action == "card.generated"]
+    assert len(generated) == 1
+    assert generated[0].details["invoice_id"] == str(inv.id)
+    assert generated[0].entity_type == "virtual_card"
+    # PII guard: the trail carries the last four, never a PAN.
+    assert generated[0].details["last_four"] == "4242"
+
+
+# ---------------------------------------------------------------------------
+# 5. Voiding a card payment must kill the card, not just our books
+# ---------------------------------------------------------------------------
+
+
+async def test_void_cancels_an_unspent_card_so_it_cannot_be_rediscovered(realdb):
+    """A voided card payment left the card live and spendable at the provider
+    with no payment behind it — and still occupying the invoice's live-card
+    slot, so the next run rediscovered it. The void now closes it at the
+    provider first, then marks the row cancelled + audits."""
+    from app.api.payments import VoidPaymentRequest, void_payment
+
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    mk = realdb.sessionmaker(TENANT)
+    amount = Decimal("100.00")
+
+    inv = await _seed(mk, org_id, amount=amount)
+    run_id, pay_id = await _seed_run(
+        mk, org_id, inv, amount=amount, creator_id=info.users["ap_manager"]
+    )
+    async with mk() as s:
+        card = _card(inv, org_id, provider_card_id="card_to_void", amount=amount)
+        card.payment_id = pay_id
+        s.add(card)
+        pay = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        pay.status = "completed"
+        await s.commit()
+        card_id = card.id
+
+    with _ambient_patches():
+        async with realdb.sessionmaker(TENANT)() as db:
+            await void_payment(
+                payment_id=pay_id,
+                body=VoidPaymentRequest(reason="duplicate run"),
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+            )
+
+    async with mk() as s:
+        card = (await s.execute(select(VirtualCard).where(VirtualCard.id == card_id))).scalar_one()
+        pay = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        void_audit = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_id == pay_id, AuditLog.action == "payment.voided"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        card_audit = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_id == card_id, AuditLog.action == "card.cancelled"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert pay.status == "voided"
+    assert card.status == "cancelled"
+    assert len(card_audit) == 1
+    assert card_audit[0].details["via"] == "payment_void"
+    assert void_audit[0].details["card_outcome"] == "card_cancelled"
+
+    # And because the slot is now free, a fresh run mints a NEW card rather
+    # than converging onto the dead one.
+    async with mk() as s:
+        from app.services.card_issuance import find_live_card_for_invoice
+
+        assert await find_live_card_for_invoice(s, inv.id) is None
+
+
+async def test_void_records_that_an_already_spent_card_could_not_be_cancelled(realdb):
+    """A charged card cannot be un-spent — the provider refuses, and so does
+    `POST /api/cards/{id}/cancel`. The void must still succeed (the accounting
+    intent stands) and record `card_already_charged` for AP to chase, which is
+    exactly the state `card_settlement_block` then refuses to settle against."""
+    from app.api.payments import VoidPaymentRequest, void_payment
+
+    info = realdb.info(TENANT)
+    org_id = info.org_id
+    mk = realdb.sessionmaker(TENANT)
+    amount = Decimal("100.00")
+
+    inv = await _seed(mk, org_id, amount=amount)
+    run_id, pay_id = await _seed_run(
+        mk, org_id, inv, amount=amount, creator_id=info.users["ap_manager"]
+    )
+    async with mk() as s:
+        card = _card(inv, org_id, provider_card_id="card_spent_void", amount=amount)
+        card.payment_id = pay_id
+        card.status = "charged"
+        card.amount_charged = amount
+        s.add(card)
+        pay = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        pay.status = "completed"
+        await s.commit()
+        card_id = card.id
+
+    with _ambient_patches():
+        async with realdb.sessionmaker(TENANT)() as db:
+            await void_payment(
+                payment_id=pay_id,
+                body=VoidPaymentRequest(reason="vendor returned goods"),
+                db=db,
+                org=_org(org_id),
+                user=_user(info.users["admin"]),
+            )
+
+    async with mk() as s:
+        card = (await s.execute(select(VirtualCard).where(VirtualCard.id == card_id))).scalar_one()
+        pay = (await s.execute(select(Payment).where(Payment.id == pay_id))).scalar_one()
+        void_audit = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_id == pay_id, AuditLog.action == "payment.voided"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert pay.status == "voided"
+    assert card.status == "charged"  # untouched — we cannot un-spend it
+    assert void_audit[0].details["card_outcome"] == "card_already_charged"

@@ -472,6 +472,80 @@ class VoidPaymentRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+async def _cancel_card_for_void(
+    db: AsyncSession,
+    *,
+    payment: Payment,
+    org: Organization,
+    user: User,
+) -> str | None:
+    """Kill the virtual card a voided payment issued. Returns an outcome tag
+    for the void's audit row (``None`` when the payment isn't a card payment).
+
+    Voiding a card payment has to reach the provider, not just our books. The
+    card is bearer-spendable: left live, the vendor can still redeem it while
+    the only payment naming it says ``voided``, and — because it still occupies
+    the invoice's live-card slot (``uq_virtual_cards_one_live_per_invoice``
+    counts every non-``cancelled`` row) — the next payment run rediscovers it.
+
+    Only an **unspent** card can be cancelled. Once it is ``charged`` /
+    ``completed`` the funds have moved and the provider cannot un-spend it, so
+    the honest outcome is to record ``card_already_charged`` for AP to chase;
+    `card_settlement_block` is what then stops a later run from quietly
+    "settling" a new payment against that spent card.
+
+    Provider-FIRST, mirroring ``POST /api/cards/{id}/cancel``: the row is only
+    marked cancelled once the provider confirms the close. The fail-safe
+    direction is "dead at the provider, maybe stale in the DB" — never the
+    reverse. A provider failure is recorded, not raised: an outage must not
+    block the accounting void (same posture as the payment rail above).
+    """
+    if payment.method != "virtual_card":
+        return None
+
+    from app.config import settings as app_settings
+    from app.services.card_issuance import CARD_SPENT_STATUSES, cancel_card_at_provider
+
+    card = (
+        await db.execute(select(VirtualCard).where(VirtualCard.payment_id == payment.id).limit(1))
+    ).scalar_one_or_none()
+    if card is None:
+        return "no_card_linked"
+    if card.status == "cancelled":
+        return "card_already_cancelled"
+    if card.status in CARD_SPENT_STATUSES:
+        return "card_already_charged"
+
+    outcome = await cancel_card_at_provider(
+        card=card, org_settings=org.settings or {}, app_settings=app_settings
+    )
+    if outcome != "cancelled":
+        return outcome
+
+    prior_status = card.status
+    card.status = "cancelled"
+
+    from app.services.audit_dispatch import dispatch_audit
+
+    await dispatch_audit(
+        db,
+        correlation_id=card.correlation_id or payment.correlation_id or uuid.uuid4(),
+        organization_id=org.id,
+        actor_id=user.id,
+        action="card.cancelled",
+        entity_type="virtual_card",
+        entity_id=card.id,
+        details={
+            "last_four": card.last_four,
+            "from": prior_status,
+            "to": "cancelled",
+            "via": "payment_void",
+            "payment_id": str(payment.id),
+        },
+    )
+    return "card_cancelled"
+
+
 @router.post("/{payment_id}/void")
 async def void_payment(
     payment_id: uuid.UUID,
@@ -536,6 +610,14 @@ async def void_payment(
         except Exception as exc:  # noqa: BLE001
             adapter_outcome = f"adapter_error:{exc.__class__.__name__}"
 
+    # Card side: a voided virtual-card payment must also kill the card, or the
+    # void doesn't stop the money — the card stays live and spendable at the
+    # provider with no payment behind it, and the next run rediscovers it in the
+    # invoice's live-card slot. Best-effort like the payment rail above: a card
+    # provider outage records the outcome rather than blocking the accounting
+    # void. Only an UNSPENT card can be cancelled (see `_cancel_card_for_void`).
+    card_outcome = await _cancel_card_for_void(db, payment=payment, org=org, user=user)
+
     now = datetime.now(UTC)
     payment.status = "voided"
     payment.failure_reason = f"Voided by {user.full_name}: {body.reason}"
@@ -568,6 +650,7 @@ async def void_payment(
         details={
             "reason": body.reason,
             "adapter_outcome": adapter_outcome,
+            "card_outcome": card_outcome,
             "amount": str(payment.amount),
             "previous_status": previous_status or "unknown",
         },
@@ -1132,6 +1215,7 @@ async def _execute_single_payment(
     if payment.method == "virtual_card" and invoice is not None:
         from app.config import settings as app_settings
         from app.services.card_issuance import (
+            card_settlement_block,
             find_live_card_for_invoice,
             issue_card_for_invoice,
             notify_vendor_of_card,
@@ -1226,14 +1310,25 @@ async def _execute_single_payment(
             payment.completed_at = now
             return
 
-        if not minted and card.amount_limit < payment.amount:
-            # A pre-existing card that can't cover this payable is NOT this
-            # payment settled. Fail honestly instead of reporting money moved
-            # against a limit that won't clear.
-            payment.status = "failed"
-            payment.failure_reason = "card_already_issued_insufficient_limit"
-            payment.completed_at = now
-            return
+        if not minted:
+            # Converging marks this payment `completed` — money moved. Only do
+            # that against a card that can actually be what moved it (unspent,
+            # and big enough). See `card_settlement_block`.
+            block = card_settlement_block(card, payment.amount)
+            if block is not None:
+                payment.status = "failed"
+                payment.failure_reason = block
+                payment.completed_at = now
+                return
+            # Link the card to THIS payment when nothing else owns it (a card
+            # from `POST /api/cards/generate` carries no payment_id). The
+            # payments list resolves a row's card via
+            # `VirtualCard.payment_id == Payment.id`, so without this the UI
+            # shows no card on a converged payment whose reference says
+            # `CARD-…`. Never re-point a card that already names another
+            # payment — that payment is live and the link is its badge.
+            if card.payment_id is None:
+                card.payment_id = payment.id
 
         payment.status = "completed"
         payment.provider = card.card_provider
@@ -1254,28 +1349,32 @@ async def _execute_single_payment(
                 details={"payment_id": str(payment.id)},
             )
 
-        if not minted:
-            # SOX trail: this payment settled against a card it did not mint.
-            # An auditor reconciling the run needs that to be explicit rather
-            # than inferred from a card row with an older timestamp. PII-free —
-            # ids, last four, and the exact amount as a string.
-            from app.services.audit_dispatch import dispatch_audit
+        # SOX trail for the card itself. `card.generated` matches the batch
+        # endpoint so a card-lifecycle query (entity_type=virtual_card,
+        # entity_id=card.id) shows a creation event on BOTH mint paths, not just
+        # later webhook rows; `card.reused` records that this payment settled
+        # against a card it did not mint, which an auditor reconciling the run
+        # would otherwise have to infer from timestamps. Both PII-free — ids,
+        # last four, and the exact amount as a string; never the PAN.
+        from app.services.audit_dispatch import dispatch_audit
 
-            await dispatch_audit(
-                db,
-                correlation_id=payment.correlation_id or invoice.correlation_id or uuid.uuid4(),
-                organization_id=org.id,
-                actor_id=user.id,
-                action="card.reused",
-                entity_type="virtual_card",
-                entity_id=card.id,
-                details={
-                    "invoice_id": str(invoice.id),
-                    "payment_id": str(payment.id),
-                    "last_four": card.last_four,
-                    "amount": str(payment.amount),
-                },
-            )
+        await dispatch_audit(
+            db,
+            correlation_id=payment.correlation_id or invoice.correlation_id or uuid.uuid4(),
+            organization_id=org.id,
+            actor_id=user.id,
+            action="card.generated" if minted else "card.reused",
+            entity_type="virtual_card",
+            entity_id=card.id,
+            details={
+                "invoice_id": str(invoice.id),
+                "payment_id": str(payment.id),
+                "last_four": card.last_four,
+                "amount": str(payment.amount),
+            },
+        )
+
+        if not minted:
             # The vendor was already emailed a reveal link when this card was
             # minted; a second one would mint a second single-use token for the
             # same card and confuse the supplier. Notify on a fresh mint only.

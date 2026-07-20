@@ -243,20 +243,59 @@ the leg mirrors the batch endpoint's two-layer handling:
    rolled up, and it stayed `executing` — with `/resume` re-driving the same
    payment into the same crash.
 
-The payment then settles against whichever card is live, which is the
-idempotent outcome: both racers derive the *same* provider idempotency key from
-the invoice, so the winner's row is the same provider card the loser would have
-persisted. A payment that settles against a card it did not mint writes a
-PII-free `card.reused` audit row (ids, last four, exact amount as a string) so
-the reuse is explicit in the SOX trail rather than inferred, and it does **not**
-re-email the vendor — the reveal link was already sent when the card was minted.
-
-Two honest failure states rather than a misleading `completed`:
+The payment then settles against whichever card is live — but **only if that
+card can actually be what settled it** (`card_issuance.card_settlement_block`).
+Converging marks the payment `completed`, i.e. asserts money moved, so the
+assertion has to be true. Two honest failure states rather than a misleading
+`completed`:
 
 | `failure_reason` | When |
 |---|---|
-| `card_already_issued_insufficient_limit` | the pre-existing card's `amount_limit` is below this payment's amount, so it cannot be what settles it |
+| `card_already_charged` | the occupying card is `charged`/`completed` — its funds already moved, under a *different* payment |
+| `card_already_issued_insufficient_limit` | the card is live and unspent but its `amount_limit` is below this payment's amount |
 | `card_issuance_conflict` | the contended live-card slot was empty on re-read (the winner cancelled its card in between) — surfaced for AP rather than silently re-calling the provider |
+
+The spent-card case is **not** a race. `amount_limit` is the authorization
+ceiling and is never reduced by spend (a charge only sets `amount_charged`), so
+a limit-only check would happily settle against a redeemed card. The reachable
+flow is: mint → the vendor redeems it (webhook → `charged`) → AP voids that
+payment → the invoice returns to the payable pool (`approved` is in
+`PAYABLE_INVOICE_STATUSES`) → the next run finds the same spent card.
+
+When convergence *is* valid, the payment claims the card's `payment_id` if
+nothing else owns it (a card from `POST /api/cards/generate` carries none) —
+`list_payments` resolves a row's card via `VirtualCard.payment_id ==
+Payment.id`, so without that link the UI shows no card on a payment whose
+reference reads `CARD-…`. A card already naming another payment is never
+re-pointed; that payment is live and the link is its badge.
+
+Both outcomes write a PII-free audit row against the card (ids, last four,
+exact amount as a string — never a PAN): `card.generated` on a fresh mint
+(matching the batch endpoint, so a card-lifecycle query shows a creation event
+on both mint paths) and `card.reused` when the payment settled against a card
+it did not mint. A converged payment does **not** re-email the vendor — the
+reveal link was already sent when the card was minted.
+
+### Voiding a card payment cancels the card
+
+`POST /payments/{id}/void` on a `virtual_card` payment also closes the card at
+the provider (`_cancel_card_for_void` → `card_issuance.cancel_card_at_provider`).
+Without that, the void only moved our books: the card stayed live and
+bearer-spendable with no payment behind it, and — still occupying the invoice's
+live-card slot — it was rediscovered by the next payment run.
+
+Provider-**first**, mirroring `POST /api/cards/{id}/cancel`: the row flips to
+`cancelled` (plus a `card.cancelled` audit row tagged `via: payment_void`) only
+once the provider confirms the close. Best-effort like the payment rail — a
+card-provider outage records the outcome instead of blocking the accounting
+void. The outcome lands on the `payment.voided` audit row as `card_outcome`:
+
+| `card_outcome` | Meaning |
+|---|---|
+| `card_cancelled` | closed at the provider and in our DB |
+| `card_already_charged` | already spent — the provider cannot un-spend it; AP must chase the refund. `card_settlement_block` is what then stops a later run settling against it |
+| `card_already_cancelled` / `no_card_linked` | nothing to do |
+| `cards_not_configured` / `card_cancel_rejected` / `card_cancel_error:<Type>` | the provider could not confirm; the card is left live (unverified cancels are never recorded) |
 
 ### Payment processor adapters
 

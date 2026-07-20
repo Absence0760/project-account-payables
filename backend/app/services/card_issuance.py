@@ -86,14 +86,27 @@ async def _reissue_sequence(db: AsyncSession, invoice_id) -> int:
     return int(result.scalar_one() or 0)
 
 
-async def find_live_card_for_invoice(db: AsyncSession, invoice_id) -> VirtualCard | None:
-    """The invoice's current LIVE (non-cancelled) card, if it has one.
+# Statuses meaning the card has been presented to the network — funds are
+# committed or already moved. `POST /api/cards/{id}/cancel` refuses these (you
+# cannot un-spend a card), so a spent card occupies its invoice's live-card slot
+# permanently. Mirrors the spend split in `api/cards.py`'s dashboard queries.
+CARD_SPENT_STATUSES = frozenset({"charged", "completed"})
 
-    The partial unique index ``uq_virtual_cards_one_live_per_invoice`` makes
-    this at most one row. Used as the cheap pre-check *before* calling the
-    provider — an invoice that already holds a live card must not be issued a
-    second, separately-spendable one — and again after a lost insert race to
-    find the card the winner persisted.
+
+async def find_live_card_for_invoice(db: AsyncSession, invoice_id) -> VirtualCard | None:
+    """The card currently occupying this invoice's live-card slot, if any.
+
+    The predicate is deliberately IDENTICAL to
+    ``uq_virtual_cards_one_live_per_invoice`` (``status <> 'cancelled'``),
+    because this is the pre-check FOR that index. Narrowing it — e.g. to exclude
+    spent cards — would make the pre-check miss a row the index still counts, so
+    the caller would go on to mint a real provider card that the index then
+    refuses to persist: an orphaned, spendable card. Whether the occupying card
+    is a valid settlement target is a SEPARATE question — see
+    ``card_settlement_block``.
+
+    Used as the cheap pre-check before the provider call, and again after a lost
+    insert race to find the card the winner persisted.
     """
     result = await db.execute(
         select(VirtualCard)
@@ -101,6 +114,32 @@ async def find_live_card_for_invoice(db: AsyncSession, invoice_id) -> VirtualCar
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+def card_settlement_block(card: VirtualCard, amount) -> str | None:
+    """Why ``card`` cannot settle a payment of ``amount`` — ``None`` if it can.
+
+    Only asked of a card this payment did NOT mint. Converging a payment onto a
+    pre-existing card marks it ``completed``, i.e. asserts the money moved, so
+    the assertion has to be true:
+
+    - **Already spent.** ``amount_limit`` is the card's authorization ceiling and
+      is NOT reduced by spend (a charge only sets ``amount_charged``), so a limit
+      check alone happily "settles" a payment against a card whose funds already
+      moved under a *different* payment. That is reachable without any race:
+      mint → vendor redeems → AP voids that payment → the invoice returns to the
+      payable pool → the next run rediscovers the same spent card.
+    - **Limit too small.** A live, unspent card that cannot cover this payable is
+      not what settles it.
+
+    Returned strings are ``Payment.failure_reason`` values — operator-facing,
+    PII-free (no PAN, no last four).
+    """
+    if card.status in CARD_SPENT_STATUSES:
+        return "card_already_charged"
+    if card.amount_limit is None or card.amount_limit < amount:
+        return "card_already_issued_insufficient_limit"
+    return None
 
 
 async def persist_card(db: AsyncSession, card: VirtualCard) -> bool:
@@ -128,16 +167,19 @@ async def persist_card(db: AsyncSession, card: VirtualCard) -> bool:
     trap is the reason this lives in one helper instead of being inlined at
     each call site.
 
-    The losing row is expunged so a later ``flush``/``commit`` on the same
-    session can't re-attempt the insert that just failed.
+    No explicit ``expunge`` is needed on the losing row: rolling back to the
+    savepoint runs ``SessionTransaction._restore_snapshot``, which expunges
+    ``session._new`` to transient — so a later ``flush``/``commit`` on this
+    session cannot re-attempt the insert that just failed. (Asserted by the
+    regression tests, which commit after a lost race and check exactly one row
+    survives.) ``recurring_invoices.generate_one`` relies on the same behaviour;
+    the two savepoints are deliberately identical in shape.
     """
     try:
         async with db.begin_nested():
             db.add(card)
             await db.flush()
     except IntegrityError:
-        if card in db:
-            db.expunge(card)
         return False
     return True
 
@@ -326,6 +368,45 @@ async def issue_card_for_invoice(
         entity_id=getattr(invoice, "entity_id", None),
     )
     return CardIssueResult(card=card, success=True)
+
+
+async def cancel_card_at_provider(
+    *,
+    card: VirtualCard,
+    org_settings: dict,
+    app_settings,
+) -> str:
+    """Close ``card`` at its provider. Returns an outcome tag; never raises.
+
+    Provider-side only — the caller owns the DB row and the audit trail, and
+    must only mark the row cancelled on ``"cancelled"``. That ordering is the
+    fail-safe one: "dead at the provider, maybe stale in the DB" is recoverable,
+    "cancelled in our DB but still chargeable at the provider" is not.
+
+    Outcomes: ``cancelled`` | ``cards_not_configured`` | ``card_cancel_rejected``
+    | ``card_cancel_error:<ExceptionType>``.
+    """
+    config = _resolve_card_config(org_settings, app_settings)
+    if config is None:
+        return "cards_not_configured"
+
+    import app.services.card_adapters.lithic  # noqa: F401
+    import app.services.card_adapters.mock_adapter  # noqa: F401
+    import app.services.card_adapters.nium  # noqa: F401
+    from app.services.card_adapters import get_card_adapter
+
+    try:
+        confirmed = await get_card_adapter(config).cancel_card(card.provider_card_id)
+    except Exception as exc:  # noqa: BLE001
+        # PII guard: the exception TYPE only — a card-provider error string can
+        # embed a partial PAN or a merchant token.
+        logger.warning(
+            "[card_issuance] provider cancel raised for card %s: %s",
+            card.id,
+            exc.__class__.__name__,
+        )
+        return f"card_cancel_error:{exc.__class__.__name__}"
+    return "cancelled" if confirmed else "card_cancel_rejected"
 
 
 async def notify_vendor_of_card(
