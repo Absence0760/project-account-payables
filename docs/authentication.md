@@ -441,11 +441,21 @@ Passkeys are an additional second factor, gated by the same `AP_MFA_ENABLED` mas
 **Registration (enroll a passkey — authenticated, on `/profile`):**
 
 ```
-POST /api/auth/mfa/passkey/register {password?|code?}   # mints PublicKeyCredentialCreationOptions
+POST /api/auth/mfa/passkey/register {password?|code?|assertion?}   # mints PublicKeyCredentialCreationOptions
   (browser runs navigator.credentials.create())
 POST /api/auth/mfa/passkey/register/verify   # verifies + persists a WebAuthnCredential row
 GET  /api/auth/mfa/passkey                    # list this account's passkeys (metadata only)
-DELETE /api/auth/mfa/passkey/{id} {password?|code?}   # remove one — step-up ALWAYS required
+DELETE /api/auth/mfa/passkey/{id} {password?|code?|assertion?}   # remove one — step-up ALWAYS required
+```
+
+**Step-up (re-prove account control before a factor change — authenticated):**
+
+```
+POST /api/auth/mfa/step-up/passkey {operation}   # → PublicKeyCredentialRequestOptions
+  (browser runs navigator.credentials.get())
+  → send the signed response as `assertion` in the step-up body of the
+    matching call (/mfa/enroll, /mfa/passkey/register, DELETE /mfa/passkey/{id},
+    /mfa/disable)
 ```
 
 **Authentication (passkey LOGIN — the passkey method of the MFA step):**
@@ -458,15 +468,32 @@ POST /api/auth/mfa/passkey/authenticate/verify  {challenge_token, credential}  #
 
 Both authenticate endpoints are **pre-access-token, public-by-design**: the login-issued MFA challenge token (`typ: mfa_challenge`, the same credential the `/mfa/verify` path uses) IS the gate; there is no JWT yet. The register / list / delete endpoints require the normal JWT.
 
-The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:{reg,auth}_challenge:<user_id>`, `AP_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins are configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`); the dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account.
+The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:reg_challenge:<user_id>` for registration, `webauthn:auth_challenge:<user_id>` for login, `webauthn:stepup_challenge:<operation>:<user_id>` for a step-up — `AP_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. **Those namespaces are a security boundary, not bookkeeping** — see "Purpose binding" below. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins are configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`); the dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account.
 
 Stored material — the credential id, COSE public key, and counter — is not secret in the password sense (the private key never leaves the authenticator) and is never logged. The login challenge offers `passkey` as a method whenever the user has at least one registered credential.
 
-Registering a passkey on an account that **already** has a factor (TOTP enabled, or at least one passkey) is a step-up operation with the same optional `{password?, code?}` body as `/mfa/enroll` — otherwise a stolen session could quietly bind an attacker-controlled authenticator to the account. The *first* factor on a bare account needs no step-up.
+Registering a passkey on an account that **already** has a factor (TOTP enabled, or at least one passkey) is a step-up operation with the same optional `{password?, code?, assertion?}` body as `/mfa/enroll` — otherwise a stolen session could quietly bind an attacker-controlled authenticator to the account. The *first* factor on a bare account needs no step-up.
 
-**Deleting** a passkey is a step-up operation too, and unconditionally: the passkey being deleted is itself a live factor, so `DELETE /api/auth/mfa/passkey/{id}` always requires the password or a current authenticator code. Removing a factor with a stolen token is the same attack as replacing one. The credentials travel in the request **body**, never a query string — a password must not land in access logs or a `Referer` header. An id that isn't the caller's own is still an opaque `404`, checked *before* the step-up so an unknown id can't be used to burn the account's throttle or probe for existence. On top of that, under org-enforced MFA the last surviving factor can't be removed at all.
+**Deleting** a passkey is a step-up operation too, and unconditionally: the passkey being deleted is itself a live factor, so `DELETE /api/auth/mfa/passkey/{id}` always requires the password, a current authenticator code, or a passkey assertion. Removing a factor with a stolen token is the same attack as replacing one. The credentials travel in the request **body**, never a query string — a password must not land in access logs or a `Referer` header. An id that isn't the caller's own is still an opaque `404`, checked *before* the step-up so an unknown id can't be used to burn the account's throttle or probe for existence. On top of that, under org-enforced MFA the last surviving factor can't be removed at all.
 
-The `/profile` passkey panel renders one "Confirm your password" field that serves both add and remove, shown only when a step-up actually applies.
+The `/profile` passkey panel renders one "Confirm your password" field that serves both add and remove, shown only when a step-up actually applies. Leaving it blank on an account that holds a passkey runs the passkey step-up ceremony instead — the only route open to an SSO-only account.
+
+#### Purpose binding — why a step-up assertion is not a login
+
+`clientDataJSON.type` is `"webauthn.get"` for a login assertion and a step-up assertion alike; the authenticator has no idea what the relying party intends to do with the signature. The **challenge is therefore the only thing that can tell the two apart**, which makes the Redis namespace the binding mechanism:
+
+| Ceremony | Redis slot |
+|---|---|
+| Passkey login | `webauthn:auth_challenge:<user_id>` |
+| Step-up | `webauthn:stepup_challenge:<operation>:<user_id>` |
+
+Each verify path reads only its own slot and consumes it single-use, so:
+
+- a **step-up assertion cannot be replayed as a login** — `/mfa/passkey/authenticate/verify` looks in the login slot and finds a different (or no) challenge, and returns the same opaque `401` as any bad signature;
+- a **login assertion cannot satisfy a step-up** — an attacker who observed a legitimate sign-in still can't change the victim's factors with it;
+- an assertion collected to authorize `passkey_register` **cannot authorize `passkey_delete`** — one consented biometric prompt grants exactly the action it was requested for, not the whole factor-management surface.
+
+`operation` is a closed set (`totp_enroll`, `totp_disable`, `passkey_register`, `passkey_delete`), rejected at the schema, so the challenge namespace can't be widened by the client. `services/webauthn._assertion_challenge_key` owns the mapping and `purpose` is a required argument on `begin_authentication` / `finish_authentication` — a caller cannot forget to say which ceremony it means. Regression tests: `backend/tests/test_webauthn_step_up.py`.
 
 ### Login flow
 
@@ -500,9 +527,10 @@ The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`,
 ### Per-user enrollment
 
 ```
-POST /api/auth/mfa/enroll     {password?|code?}  # mints a CANDIDATE secret + provisioning URI + QR
-POST /api/auth/mfa/enroll/verify {code}          # promotes the candidate, flips mfa_enabled true
-POST /api/auth/mfa/disable    {password}         # turns it off (re-confirms password first)
+POST /api/auth/mfa/enroll     {password?|code?|assertion?}  # mints a CANDIDATE secret + URI + QR
+POST /api/auth/mfa/enroll/verify {code}                     # promotes it, flips mfa_enabled true
+POST /api/auth/mfa/disable    {password?|code?|assertion?}  # turns it off (step-up first)
+POST /api/auth/mfa/step-up/passkey {operation}              # mint a step-up assertion challenge
 ```
 
 The QR code is returned inline as a `data:image/png;base64,...` URL so the frontend doesn't need a separate authed image endpoint. The plaintext base32 secret is also returned so users without a camera-equipped scanner can paste it manually.
@@ -512,17 +540,20 @@ The QR code is returned inline as a `data:image/png;base64,...` URL so the front
 **Changing an existing factor is a step-up operation.** When the account already has a live factor, `/mfa/enroll` (and `/mfa/passkey/register` — see below) requires one of:
 
 - `password` — the account password, verified through the shared `pwd_context`, exactly like `/mfa/disable`; or
-- `code` — a code from the **currently enrolled** authenticator (for the user who has their phone but not their password manager).
+- `code` — a code from the **currently enrolled** authenticator (for the user who has their phone but not their password manager); or
+- `assertion` — a **WebAuthn assertion from an already-registered passkey**, obtained from `POST /api/auth/mfa/step-up/passkey` for that same operation.
 
 A "live factor" here means an enabled TOTP secret **or** at least one registered passkey — adding TOTP to a passkey-protected account is as much a factor change as the reverse, so both doors are gated the same way.
 
 Neither field is required for a **first** enrollment: an account with no factor has nothing to protect, so onboarding stays frictionless. A missing or wrong step-up is a `400` with a generic message that reveals nothing about the account.
 
-An account with neither a password nor a TOTP secret — an SSO-only user whose sole factor is a passkey — cannot satisfy the step-up and is **refused, not exempted**. Exempting it would let a stolen JWT plant an attacker-controlled passkey on an account the attacker never proved control of, and that bypass goes live the moment such a user is given a password (e.g. via the admin password-set at `POST /api/admin/users/{id}/password`). Recovery is exactly that admin password-set, after which the normal step-up works. The durable answer is a WebAuthn assertion as a third accepted credential; until then this fails closed. See `services/mfa.step_up_verified`.
+An SSO-only account — no password, no TOTP secret — has no *stateless* credential to be challenged on, and is still never **exempted**: exempting it would let a stolen JWT plant an attacker-controlled passkey on an account the attacker never proved control of. Instead, if it holds a registered passkey, that passkey **is** the challenge: `POST /api/auth/mfa/step-up/passkey` mints an assertion challenge bound to the operation, and the signed response goes back as `assertion`. That is what makes a passwordless SSO deployment able to enroll, rotate and remove its own factors at all; before it, such an account was locked out of factor management and recovered only via an admin password-set at `POST /api/admin/users/{id}/password` (still the fallback for an account with *no* factor of any kind, which genuinely has nothing to prove). The password / TOTP checks stay pure in `services/mfa.step_up_verified`; the assertion path is `api/auth._step_up_satisfied` because it needs the DB and Redis.
 
 Every step-up check is **throttled and audited**: 5 attempts per minute keyed on the *account* (not the client IP — the attacker already holds the victim's token and can rotate IPs), and a failure writes a PII-free `auth.mfa.step_up.failure` / `portal.mfa.step_up.failure` audit row carrying only the operation name. Without that, a credential-management endpoint that checks a password is an unlimited, silent password oracle. The same throttle + audit covers `/mfa/disable` on both surfaces.
 
-Disable requires password re-entry — a stolen session shouldn't be able to silently strip MFA off. If the org enforces MFA, disable is blocked outright.
+`/mfa/disable` rides the same three-proof gate: password, a code from the authenticator being turned off, or a passkey assertion (`operation=totp_disable`). It used to be password-only, which left an SSO-only account unable to disable its own TOTP. A stolen session still can't silently strip MFA off, and if the org enforces MFA, disable is blocked outright.
+
+**The supplier portal has no passkey step-up.** `WebAuthnCredential` hangs off a control-plane `users.id` and `VendorUser` is tenant-scoped, so a portal user has no passkey to assert with; `/portal/auth/mfa/*` remains password-or-TOTP-code only. Adding portal passkeys would need a tenant-scoped credential table and is not part of this change.
 
 ### Org enforcement
 

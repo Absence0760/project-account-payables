@@ -82,11 +82,12 @@ TOTP-based two-factor with email-OTP backup. Master switch `AP_MFA_ENABLED` (def
 |--------|-----------------------------------|-------|-------------|
 | `POST` | `/api/auth/mfa/challenge/email`   | (challenge token) | Body `{challenge_token}`. Generates + emails a 6-digit OTP. Returns 204. |
 | `POST` | `/api/auth/mfa/verify`            | (challenge token) | Body `{challenge_token, code, method}` (`method` ∈ `totp`/`email`). Returns `TokenResponse`. |
-| `POST` | `/api/auth/mfa/enroll`            | * | Optional body `{password?, code?}`. Mints a CANDIDATE TOTP secret + QR (parked in Redis, not on the account). Returns `{secret, provisioning_uri, qr_code_data_url}`. 400 without a valid step-up when the account already has a live factor. |
+| `POST` | `/api/auth/mfa/enroll`            | * | Optional body `{password?, code?, assertion?}`. Mints a CANDIDATE TOTP secret + QR (parked in Redis, not on the account). Returns `{secret, provisioning_uri, qr_code_data_url}`. 400 without a valid step-up when the account already has a live factor. |
 | `POST` | `/api/auth/mfa/enroll/verify`     | * | Body `{code}`. Promotes the pending candidate onto the account and flips `mfa_enabled` true — the only writer of `mfa_secret`. |
-| `POST` | `/api/auth/mfa/disable`           | * | Body `{password}`. Re-confirms password, turns MFA off. Blocked when org enforces MFA. |
-| `POST` | `/api/auth/mfa/passkey/register`  | * | Optional body `{password?, code?}`. Mints WebAuthn registration options. 400 without a valid step-up when a factor is already live (TOTP or an existing passkey). |
-| `DELETE` | `/api/auth/mfa/passkey/{id}`    | * | Body `{password?, code?}` — step-up ALWAYS required (the passkey is itself a live factor). Opaque 404 for an id that isn't the caller's. Blocked when it's the last factor under org enforcement. |
+| `POST` | `/api/auth/mfa/disable`           | * | Optional body `{password?, code?, assertion?}` — the same three-proof step-up as every other factor change (an SSO-only account has no password, so its passkey assertion is the proof). Turns MFA off. Blocked when org enforces MFA. |
+| `POST` | `/api/auth/mfa/passkey/register`  | * | Optional body `{password?, code?, assertion?}`. Mints WebAuthn registration options. 400 without a valid step-up when a factor is already live (TOTP or an existing passkey). |
+| `DELETE` | `/api/auth/mfa/passkey/{id}`    | * | Body `{password?, code?, assertion?}` — step-up ALWAYS required (the passkey is itself a live factor). Opaque 404 for an id that isn't the caller's. Blocked when it's the last factor under org enforcement. |
+| `POST` | `/api/auth/mfa/step-up/passkey`   | * | Body `{operation}` (`totp_enroll`\|`totp_disable`\|`passkey_register`\|`passkey_delete`). Mints WebAuthn assertion options for a factor-management step-up; the signed response goes back as `assertion` on the matching call. Challenge is single-use and bound to (user, step-up, operation), so it can't be replayed as a login or against a different operation. 400 when the account has no registered passkey. |
 
 The challenge endpoints don't take a JWT — they're authenticated by the short-lived challenge token returned from `/api/auth/login`.
 
