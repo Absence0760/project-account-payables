@@ -349,9 +349,28 @@ What the merge does, in one tenant transaction (`app/services/vendor_merge.py`):
   embeddings, workflow suggestions, catalogs / catalog items, purchase
   requisitions, intake requests — **the single source of truth for "what points
   at a vendor"**; a new table with a `vendor_id` FK MUST be added there or its
-  rows orphan on a merge. `VendorExtractionPrior` is handled specially (unique
-  `(vendor_id, field_name)`): the canonical's own priors win, so a colliding
-  duplicate prior is dropped rather than violating the constraint.
+  rows orphan on a merge. `VendorExtractionPrior` is handled specially — see
+  **Extraction priors** below.
+- **Collapses the extraction priors** — `vendor_extraction_priors` is uniquely
+  keyed on `(vendor_id, field_name)`, so a blind reassign would violate the
+  constraint two different ways: where the *canonical* already holds a prior for
+  the same field, **and** where two *duplicates* each hold one for a field the
+  canonical lacks (the second row reassigned collides with the first). The merge
+  therefore collapses the whole canonical ∪ duplicates prior set first, so at
+  most ONE prior per `field_name` survives onto the canonical:
+  - the **canonical's own prior wins its field outright** — it is the surviving
+    vendor and its value is the one already biasing extractions;
+  - where the canonical has none, the duplicates compete and the
+    **most-evidenced** prior wins: highest `correction_count`, then applied
+    before never-applied / most recent `last_applied_at`, then most recent
+    `updated_at`, then lowest id. That last key makes the order *total*, so the
+    winner is deterministic — merging the same vendors twice always keeps the
+    same prior, and a re-run of a completed merge is a clean no-op.
+
+  Losers are **deleted**, not merged: a prior is a derived extraction-bias cache
+  rebuilt from future reviewer corrections — no money, no history. The dropped
+  count surfaces on the result (and the audit row) as
+  `vendor_extraction_priors:dropped`.
 - **Soft-retires each duplicate** (`status="inactive"`) — never hard-deleted, so
   the historical vendor row + its audit trail survive. (A retired duplicate is
   also already excluded from future consolidation scans, which only see

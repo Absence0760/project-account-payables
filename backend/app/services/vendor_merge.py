@@ -15,7 +15,12 @@ What a merge does, in one tenant transaction:
      The full child-table set is ``VENDOR_FK_CHILDREN`` below — if a new table
      gains a ``vendor_id`` FK, it MUST be added there or its rows orphan on a
      merge.
-  3. Mark each merged duplicate ``status="inactive"`` (a soft retire — we never
+  3. Collapse the ``vendor_extraction_priors`` of the canonical + every
+     duplicate so at most ONE prior per ``field_name`` reaches the canonical
+     (the table is uniquely keyed on ``(vendor_id, field_name)``, so both a
+     canonical/duplicate and a duplicate/duplicate clash would otherwise blow
+     up the merge with an ``IntegrityError``). See ``_prior_precedence``.
+  4. Mark each merged duplicate ``status="inactive"`` (a soft retire — we never
      hard-delete a vendor, so the historical row + its audit trail survive).
 
 The operation is:
@@ -132,6 +137,30 @@ class VendorMergeResult:
         return sum(self.reassigned.values())
 
 
+def _prior_precedence(row) -> tuple:
+    """Sort key deciding which of several duplicates' ``VendorExtractionPrior``
+    rows for the SAME ``field_name`` survives the merge. Lowest key wins.
+
+    Deterministic by construction, so merging the same vendors twice always
+    keeps the same prior (and a re-run of a completed merge is a no-op):
+
+      1. most corrections behind it (``correction_count`` desc) — the value the
+         reviewers confirmed most often is the best bias for the next extraction;
+      2. actually applied before an unapplied one, most recent first;
+      3. most recently updated;
+      4. lowest id — a total order, so ties can never be resolved arbitrarily.
+    """
+    applied = row.last_applied_at
+    updated = row.updated_at
+    return (
+        -(row.correction_count or 0),
+        0 if applied is not None else 1,
+        -applied.timestamp() if applied is not None else 0.0,
+        -updated.timestamp() if updated is not None else 0.0,
+        row.id.bytes,
+    )
+
+
 async def merge_vendors(
     db: AsyncSession,
     *,
@@ -214,30 +243,50 @@ async def merge_vendors(
             result.reassigned[model.__tablename__] = res.rowcount
 
     # 2. VendorExtractionPrior — unique (vendor_id, field_name). A blind reassign
-    #    would violate the constraint where the canonical already holds a prior
-    #    for the same field. The canonical's own priors win (it's the surviving
-    #    vendor); drop any duplicate prior whose (canonical, field_name) already
-    #    exists, then reassign the rest.
-    canon_fields = set(
-        (
-            await db.execute(
-                select(VendorExtractionPrior.field_name).where(
-                    VendorExtractionPrior.vendor_id == canonical_vendor_id
-                )
-            )
+    #    would violate that constraint two different ways: where the CANONICAL
+    #    already holds a prior for the same field, and — just as real — where two
+    #    DUPLICATES each hold a prior for a field the canonical lacks (the second
+    #    row reassigned collides with the first). So the whole (canonical ∪
+    #    duplicates) prior set is collapsed FIRST: at most one prior per
+    #    field_name may survive onto the canonical. See
+    #    ``backend/docs/data-enrichment.md`` § Extraction priors.
+    prior_rows = (
+        await db.execute(
+            select(
+                VendorExtractionPrior.id,
+                VendorExtractionPrior.vendor_id,
+                VendorExtractionPrior.field_name,
+                VendorExtractionPrior.correction_count,
+                VendorExtractionPrior.last_applied_at,
+                VendorExtractionPrior.updated_at,
+            ).where(VendorExtractionPrior.vendor_id.in_([canonical_vendor_id, *duplicates]))
         )
-        .scalars()
-        .all()
-    )
-    if canon_fields:
+    ).all()
+
+    by_field: dict[str, list] = {}
+    for row in prior_rows:
+        by_field.setdefault(row.field_name, []).append(row)
+
+    losing_prior_ids: list[uuid.UUID] = []
+    for field_rows in by_field.values():
+        canonical_row = next((r for r in field_rows if r.vendor_id == canonical_vendor_id), None)
+        # The canonical's own prior wins its field outright — it is the surviving
+        # vendor and its value is the one already biasing extractions. Only where
+        # the canonical has none do the duplicates compete, resolved by
+        # ``_prior_precedence`` (most-evidenced wins, ties broken deterministically).
+        winner = canonical_row or min(field_rows, key=_prior_precedence)
+        losing_prior_ids.extend(r.id for r in field_rows if r.id != winner.id)
+
+    # Losers are deleted, never merged: a prior is a derived extraction-bias
+    # cache rebuilt from future reviewer corrections — no money, no history.
+    if losing_prior_ids:
         del_res = await db.execute(
-            sa_delete(VendorExtractionPrior).where(
-                VendorExtractionPrior.vendor_id.in_(duplicates),
-                VendorExtractionPrior.field_name.in_(canon_fields),
-            )
+            sa_delete(VendorExtractionPrior).where(VendorExtractionPrior.id.in_(losing_prior_ids))
         )
         if del_res.rowcount:
             result.reassigned[f"{VendorExtractionPrior.__tablename__}:dropped"] = del_res.rowcount
+
+    # Whatever survives on a duplicate is now collision-free — reassign it.
     prior_res = await db.execute(
         update(VendorExtractionPrior)
         .where(VendorExtractionPrior.vendor_id.in_(duplicates))
