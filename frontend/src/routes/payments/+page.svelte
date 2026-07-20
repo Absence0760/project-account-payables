@@ -2,6 +2,7 @@
 	import type { Payment, PaymentStatus, PaymentMethod } from '$lib/types/payment';
 	import { PAYMENT_STATUSES, PAYMENT_STATUS_LABELS, PAYMENT_METHOD_LABELS } from '$lib/types/payment';
 	import { paymentStore } from '$lib/stores/payments.svelte';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { api } from '$lib/api';
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import RunDetailModal from '$lib/components/modals/RunDetailModal.svelte';
@@ -186,7 +187,7 @@
 		await loadQueue();
 		await loadRuns();
 		if (activeTab === 'history') {
-			await paymentStore.fetch(buildParams());
+			await paymentStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method; routes through api.get
 			await fetchPaymentCounts();
 		}
 	}
@@ -217,7 +218,7 @@
 			await Promise.all([
 				loadSummary(),
 				loadQueue(),
-				paymentStore.fetch(buildParams()),
+				paymentStore.fetch(buildParams()), // noqa: raw-fetch-in-component — store method; routes through api.get
 				fetchPaymentCounts(),
 			]);
 		} catch (err) {
@@ -278,7 +279,7 @@
 	function debouncedFetch() {
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
-			if (activeTab === 'history') paymentStore.fetch(buildParams());
+			if (activeTab === 'history') paymentStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method; routes through api.get
 		}, 300);
 	}
 
@@ -291,7 +292,7 @@
 	$effect(() => {
 		if (activeTab === 'history') {
 			activeStatus;
-			paymentStore.fetch(buildParams());
+			paymentStore.fetch(buildParams()); // noqa: raw-fetch-in-component — store method; routes through api.get
 			fetchPaymentCounts();
 		} else if (activeTab === 'queue') {
 			loadQueue();
@@ -374,7 +375,7 @@
 				? Promise.resolve(cardDashboard)
 				: api.get<CardDashboard>('/api/cards/dashboard').catch(() => null);
 			const [list, dash] = await Promise.all([listReq, dashReq]);
-			cards = opts.append ? [...cards, ...list.items] : list.items;
+			cards = opts.append ? appendUnique(cards, list.items) : list.items;
 			cardsTotal = list.total;
 			cardsPage = nextPage;
 			cardDashboard = dash;

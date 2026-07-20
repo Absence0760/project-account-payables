@@ -8,6 +8,7 @@
 	import { toast } from '$lib/components/ui/Toast.svelte';
 	import { getAgentStats, getAgentDecisions } from '$lib/api/exceptionAgents';
 	import { ACTION_LABELS, type AgentStats, type AgentDecision } from '$lib/types/exceptionAgents';
+	import { appendUnique } from '$lib/utils/pagination';
 
 	const PAGE_SIZE = 20;
 
@@ -55,7 +56,7 @@
 				page: nextPage,
 				pageSize: PAGE_SIZE
 			});
-			decisions = opts.append ? [...decisions, ...data.items] : data.items;
+			decisions = opts.append ? appendUnique(decisions, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch {

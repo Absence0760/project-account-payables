@@ -1,5 +1,6 @@
 import type { Expense } from '$lib/types/expense';
 import { listExpenses, type ExpenseListParams } from '$lib/api/expenses';
+import { appendUnique } from '$lib/utils/pagination';
 
 function createExpenseStore() {
 	let expenses = $state<Expense[]>([]);
@@ -25,7 +26,7 @@ function createExpenseStore() {
 		loading = true;
 		try {
 			const res = await listExpenses({ ...lastParams, page: page + 1, page_size: 20 });
-			expenses = [...expenses, ...res.items];
+			expenses = appendUnique(expenses, res.items);
 			total = res.total;
 			page = res.page;
 		} finally {

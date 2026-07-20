@@ -1,5 +1,6 @@
 import type { AdminUser, PermissionCatalogEntry, Role } from '$lib/types/admin';
 import { api } from '$lib/api';
+import { appendUnique } from '$lib/utils/pagination';
 
 interface AdminUserListResponse {
 	items: AdminUser[];
@@ -35,7 +36,7 @@ function createAdminStore() {
 			params.set('page', String(nextPage));
 			params.set('page_size', String(opts.pageSize ?? pageSize));
 			const res = await api.get<AdminUserListResponse>(`/api/admin/users?${params}`);
-			users = opts.append ? [...users, ...res.items] : res.items;
+			users = opts.append ? appendUnique(users, res.items) : res.items;
 			total = res.total;
 			page = nextPage;
 			if (opts.pageSize) pageSize = opts.pageSize;

@@ -1,5 +1,6 @@
 import type { Contract } from '$lib/types/contract';
 import { listContracts, type ContractListParams } from '$lib/api/contracts';
+import { appendUnique } from '$lib/utils/pagination';
 
 function createContractStore() {
 	let contracts = $state<Contract[]>([]);
@@ -25,7 +26,7 @@ function createContractStore() {
 		loading = true;
 		try {
 			const res = await listContracts({ ...lastParams, page: page + 1, page_size: 20 });
-			contracts = [...contracts, ...res.items];
+			contracts = appendUnique(contracts, res.items);
 			total = res.total;
 			page = res.page;
 		} finally {

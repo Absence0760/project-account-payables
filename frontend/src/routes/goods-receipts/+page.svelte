@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { appendUnique } from '$lib/utils/pagination';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DataTable from '$lib/components/ui/DataTable.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
@@ -73,7 +74,7 @@
 			const data = await api.get<{ items: GRListItem[]; total: number }>(
 				`/api/goods-receipts?${params}`
 			);
-			grs = opts.append ? [...grs, ...data.items] : data.items;
+			grs = opts.append ? appendUnique(grs, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch (err) {

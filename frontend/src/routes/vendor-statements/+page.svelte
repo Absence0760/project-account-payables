@@ -2,6 +2,7 @@
 	import type { Reconciliation, ReconStatus } from '$lib/types/vendorStatementRecon';
 	import { RECON_STATUSES, RECON_STATUS_LABELS } from '$lib/types/vendorStatementRecon';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { appendUnique } from '$lib/utils/pagination';
 	import { orgCurrency } from '$lib/stores/orgSettings.svelte';
 	import { api } from '$lib/api';
 	import {
@@ -113,7 +114,7 @@
 				page: nextPage,
 				page_size: PAGE_SIZE
 			});
-			recons = opts.append ? [...recons, ...data.items] : data.items;
+			recons = opts.append ? appendUnique(recons, data.items) : data.items;
 			total = data.total;
 			pageNum = nextPage;
 		} catch (e) {

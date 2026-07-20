@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { appendUnique } from '$lib/utils/pagination';
 	import RowAction from '$lib/components/ui/RowAction.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import FilterChips from '$lib/components/ui/FilterChips.svelte';
@@ -103,7 +104,7 @@
 			const data = await api.get<{ items: CreditMemo[]; total: number }>(
 				`/api/credit-memos?${params}`
 			);
-			memos = opts.append ? [...memos, ...data.items] : data.items;
+			memos = opts.append ? appendUnique(memos, data.items) : data.items;
 			total = data.total;
 			page = nextPage;
 		} catch {
