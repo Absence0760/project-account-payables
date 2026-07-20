@@ -64,8 +64,10 @@ def _ctrl_session_for_org(org):
 
 
 def _fake_tenant_session_factory(invoice, *, existing_recon_count: int = 0):
-    """Fake tenant session. The handler's FIRST ``execute`` is the invoice
-    lookup; the reconciliation path issues a SECOND ``execute`` — the
+    """Fake tenant session. The handler's first TWO ``execute`` calls resolve
+    the invoice — an id lookup by ``correlation_id``, then the row-locked
+    re-fetch via ``get_invoice_for_update`` (issue #141) — both returning the
+    same invoice; the reconciliation path issues a THIRD ``execute`` — the
     open-``erp_reconciliation``-exception dedup count — which returns
     ``existing_recon_count``."""
     invoice_result = MagicMock()
@@ -75,7 +77,7 @@ def _fake_tenant_session_factory(invoice, *, existing_recon_count: int = 0):
 
     db = AsyncMock()
     db.add = MagicMock()
-    db.execute = AsyncMock(side_effect=[invoice_result, count_result])
+    db.execute = AsyncMock(side_effect=[invoice_result, invoice_result, count_result])
     db.flush = AsyncMock()
     db.commit = AsyncMock()
     db.rollback = AsyncMock()
@@ -108,6 +110,9 @@ class _FakeRedis:
 
     async def get(self, key):
         return self._store.get(key)
+
+    async def delete(self, key):
+        self._store.pop(key, None)
 
 
 @pytest.fixture
@@ -414,3 +419,112 @@ async def test_normal_signed_request_under_cap_still_succeeds(fake_redis):
     assert len(transition_calls) == 1
     assert transition_calls[0]["target"] is InvoiceStatus.posted_in_erp
     db.commit.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Dedup claim release on rollback + row-locked invoice fetch (GitHub issue #141)
+#
+# Bug A: the dedup claim from `is_event_already_processed` was never released
+# on either exception path, unlike cards.py / billing_webhook.py /
+# email_intake.py — a transient failure (bad correlation_id, DB hiccup)
+# permanently dropped the ERP's retry for the full dedup TTL.
+# Bug B: the invoice was fetched via a plain `select(Invoice)` instead of
+# `get_invoice_for_update()`, so a concurrent human approval racing the
+# webhook could silently overwrite the other.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dedup_claim_released_when_transition_raises(fake_redis):
+    """A failure after the dedup claim (e.g. transition_invoice raising) must
+    release the claim so the ERP's retry with the SAME event_id can
+    reprocess — otherwise the status update is silently dropped for the
+    full TTL window."""
+    from app.services.webhook_security import is_event_already_processed
+
+    org = _org_with_erp_secret("erp-secret")
+    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.sent_to_erp)
+
+    tenant_factory, db = _fake_tenant_session_factory(invoice)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("db hiccup mid-transition")
+
+    body = {
+        "tenant_slug": "acme",
+        "correlation_id": str(uuid.uuid4()),
+        "erp_document_id": "doc_1",
+        "status": "Open",
+        "event_id": "ev_claim_release",
+    }
+    body_bytes = json.dumps(body).encode("utf-8")
+    sig = _sign("erp-secret", body_bytes)
+
+    from app.api.erp_webhook import erp_webhook
+
+    with (
+        patch("app.api.erp_webhook.control_session_factory", _ctrl_session_for_org(org)),
+        patch("app.api.erp_webhook.get_tenant_engine", return_value=MagicMock()),
+        patch("app.api.erp_webhook.async_sessionmaker", return_value=tenant_factory),
+        patch("app.api.erp_webhook.transition_invoice", _boom),
+    ):
+        result = await erp_webhook(
+            erp_type="generic",
+            request=_fake_request(body_bytes, {"X-Webhook-Signature": sig}),
+        )
+
+    assert result is None  # silent 204, not a raised 500
+    db.rollback.assert_awaited()
+
+    # The claim must be gone — a retry with the SAME event_id must NOT be
+    # deduped away.
+    still_claimed = await is_event_already_processed("erp:generic", "ev_claim_release")
+    assert still_claimed is False
+
+
+@pytest.mark.asyncio
+async def test_invoice_fetch_uses_row_lock(fake_redis):
+    """The invoice must be resolved via `get_invoice_for_update` (row lock),
+    not a bare unlocked `select(Invoice)` — the documented convention for
+    any status transition, preventing a concurrent human approval racing
+    the webhook from silently overwriting the other."""
+    from app.api.erp_webhook import erp_webhook
+
+    org = _org_with_erp_secret("erp-secret")
+    invoice = SimpleNamespace(id=uuid.uuid4(), status=InvoiceStatus.sent_to_erp)
+    tenant_factory, db = _fake_tenant_session_factory(invoice)
+
+    async def _capture(_db, inv, target, *, action_name, details):
+        inv.status = target
+        return inv
+
+    body = {
+        "tenant_slug": "acme",
+        "correlation_id": str(uuid.uuid4()),
+        "erp_document_id": "doc_1",
+        "status": "Open",
+        "event_id": "ev_row_lock",
+    }
+    body_bytes = json.dumps(body).encode("utf-8")
+    sig = _sign("erp-secret", body_bytes)
+
+    with (
+        patch("app.api.erp_webhook.control_session_factory", _ctrl_session_for_org(org)),
+        patch("app.api.erp_webhook.get_tenant_engine", return_value=MagicMock()),
+        patch("app.api.erp_webhook.async_sessionmaker", return_value=tenant_factory),
+        patch("app.api.erp_webhook.transition_invoice", _capture),
+        patch(
+            "app.api.erp_webhook.get_invoice_for_update", AsyncMock(return_value=invoice)
+        ) as locked_fetch,
+    ):
+        result = await erp_webhook(
+            erp_type="generic",
+            request=_fake_request(body_bytes, {"X-Webhook-Signature": sig}),
+        )
+
+    assert result is None
+    # The handler must route the invoice fetch through the shared row-locked
+    # helper — not build its own unlocked `select(Invoice)` — regardless of
+    # exactly what id value this flat mock's id-lookup query resolves to.
+    locked_fetch.assert_awaited_once()
+    assert locked_fetch.await_args.args[0] is db

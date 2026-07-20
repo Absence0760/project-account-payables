@@ -16,9 +16,14 @@ from app.services.exception_service import create_exception
 from app.services.webhook_security import (
     extract_signature_header,
     is_event_already_processed,
+    release_event_claim,
     verify_hmac_sha256,
 )
-from app.services.workflow_engine import VALID_TRANSITIONS, transition_invoice
+from app.services.workflow_engine import (
+    VALID_TRANSITIONS,
+    get_invoice_for_update,
+    transition_invoice,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +174,13 @@ async def erp_webhook(
     # replay regardless of tenant.
     if await is_event_already_processed(f"erp:{erp_type}", str(event_id or "")):
         return
+    # Track the claim so it can be released if the transition below rolls
+    # back — the Redis claim is durable the instant it's written, but the
+    # side effect it guards isn't durable until the DB commit. Without this,
+    # a transient failure (bad correlation_id, DB hiccup) permanently drops
+    # the ERP's retry for the full dedup TTL window (mirrors cards.py /
+    # billing_webhook.py / email_intake.py, which all release on failure).
+    claimed_event = str(event_id) if event_id else None
 
     # Map ERP status to our internal status
     target_status = ERP_STATUS_MAP.get(erp_status)
@@ -181,17 +193,23 @@ async def erp_webhook(
 
     async with factory() as db:
         try:
-            query = select(Invoice)
-            if correlation_id:
-                query = query.where(Invoice.correlation_id == uuid.UUID(correlation_id))
-            else:
+            if not correlation_id:
                 return  # erp_document_id-only path not supported yet
 
-            result = await db.execute(query)
-            invoice = result.scalar_one_or_none()
-
-            if not invoice:
+            # Resolve the invoice id by correlation_id first (not unique
+            # enough to lock on directly), then re-fetch WITH a row lock
+            # before evaluating/applying the transition — the documented
+            # convention for any status transition (get_invoice_for_update()).
+            # Without the lock, a concurrent human approval racing this
+            # webhook can silently overwrite the other, corrupting the audit
+            # trail's from/to narrative.
+            id_result = await db.execute(
+                select(Invoice.id).where(Invoice.correlation_id == uuid.UUID(correlation_id))
+            )
+            invoice_id = id_result.scalar_one_or_none()
+            if not invoice_id:
                 return  # no matching invoice → silent ack
+            invoice = await get_invoice_for_update(db, invoice_id)
 
             # Only transition if the AUTHORITATIVE state machine permits it.
             # We deliberately do NOT keep a second local transition map here: a
@@ -257,9 +275,16 @@ async def erp_webhook(
             # webhook contract anyway — a 409 must NOT escape and break the
             # silent-204 ack (which would also enumerate invoice state).
             await db.rollback()
+            if claimed_event is not None:
+                await release_event_claim(f"erp:{erp_type}", claimed_event)
             return
         except Exception:
             await db.rollback()
+            # The dedup claim guards a side effect that just rolled back —
+            # release it so the ERP's retry can reprocess (otherwise the
+            # status transition is dropped for the full TTL window).
+            if claimed_event is not None:
+                await release_event_claim(f"erp:{erp_type}", claimed_event)
             return  # avoid leaking diagnostic detail in 500 body
 
 
