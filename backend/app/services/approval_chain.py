@@ -9,6 +9,7 @@ Handles:
 from __future__ import annotations
 
 import copy
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -20,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invoice import Invoice
 from app.models.user import User
 from app.models.workflow import WorkflowInstance
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
 # Segregation of duties
@@ -140,6 +143,41 @@ def _to_decimal(value) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return None
+
+
+def cfo_gate_applies(threshold_raw, amount: Decimal) -> bool:
+    """Does the CFO-approval money gate apply to an invoice/report of ``amount``?
+
+    Returns ``True`` when the amount must carry CFO sign-off. This is the single
+    fail-CLOSED decision shared by every CFO-threshold site (human approval, the
+    expense-report approval gate, and the auto-approve revoke check):
+
+    - threshold explicitly unset (``None``)  → ``False`` (no gate configured).
+    - threshold parses and ``amount > threshold`` → ``True``.
+    - threshold is present but **unparseable** (a settings typo, or a value an
+      insider tampered to defeat the control) → ``True``. A configured-but-
+      malformed CFO gate must DEMAND sign-off, never silently skip itself — the
+      only safe direction for a fraud control. The malformed value is logged
+      PII-free (it is a money threshold, not a secret / PII) so an admin can fix
+      it; we never raise, so one bad settings write can't brick the whole
+      approval queue with a 500.
+
+    Amount comparison is exact-Decimal (money is never float).
+    """
+    if threshold_raw is None:
+        return False
+    threshold = _to_decimal(threshold_raw)
+    # A non-finite threshold (`NaN` raises on comparison → a 500; `Infinity`
+    # would silently make `amount > threshold` always False → a SKIPPED gate) is
+    # as malformed as an unparseable string — treat it the same, fail-closed.
+    if threshold is None or not threshold.is_finite():
+        logger.error(
+            "auto-approval money threshold is unparseable (%r); requiring human "
+            "(CFO) approval (fail-closed)",
+            threshold_raw,
+        )
+        return True
+    return amount > threshold
 
 
 def resolve_applicable_levels(

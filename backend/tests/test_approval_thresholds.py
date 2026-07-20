@@ -243,3 +243,88 @@ async def test_string_max_amount_rejects_without_500():
 
     assert exc_info.value.status_code == 422
     assert "10,000.00" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Malformed CFO threshold — the gate must FAIL CLOSED (require CFO), never skip.
+# A garbage `require_cfo_above` (settings typo, or a value tampered to defeat
+# the control) must not silently disable the gate, and must not 500 the whole
+# approval — even a legitimate CFO's — bricking the queue.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_threshold",
+    ["abc", "10,000", "", "5000 USD", {"nope": 1}, [1, 2], "NaN"],
+)
+@pytest.mark.asyncio
+async def test_malformed_cfo_threshold_blocks_non_cfo(bad_threshold):
+    """An unparseable `require_cfo_above` must DEMAND CFO sign-off from a
+    non-CFO (403), never skip the gate and let the approval through."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=50000)
+    instance = _make_instance({"require_cfo_above": bad_threshold})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_approval_thresholds(db, invoice, actor_roles={"ap_manager"})
+
+    assert exc_info.value.status_code == 403
+    assert "CFO approval required" in exc_info.value.detail
+
+
+@pytest.mark.parametrize("bad_threshold", ["abc", "10,000", "", {"nope": 1}])
+@pytest.mark.asyncio
+async def test_malformed_cfo_threshold_still_lets_cfo_approve(bad_threshold):
+    """The fail-closed default must NOT brick approval outright: a CFO can still
+    approve past a malformed threshold (the gate demands a CFO, and here we have
+    one). This is the crucial difference from an InvalidOperation 500, which
+    would block the CFO too."""
+    from app.services.review import _enforce_approval_thresholds
+
+    db = _db_mock()
+    invoice = _make_invoice(amount=50000)
+    instance = _make_instance({"require_cfo_above": bad_threshold})
+
+    with patch("app.services.review.get_workflow_instance", new=AsyncMock(return_value=instance)):
+        # Must not raise — the CFO clears the (fail-closed) gate.
+        await _enforce_approval_thresholds(db, invoice, actor_roles={"cfo"})
+
+
+# ---------------------------------------------------------------------------
+# cfo_gate_applies — the pure, shared fail-closed threshold decision.
+# ---------------------------------------------------------------------------
+
+
+def test_cfo_gate_applies_unset_threshold_is_no_gate():
+    from app.services.approval_chain import cfo_gate_applies
+
+    assert cfo_gate_applies(None, Decimal("999999")) is False
+
+
+def test_cfo_gate_applies_over_threshold():
+    from app.services.approval_chain import cfo_gate_applies
+
+    assert cfo_gate_applies(10000, Decimal("50000")) is True
+    assert cfo_gate_applies("10000", Decimal("50000")) is True
+
+
+def test_cfo_gate_applies_at_or_below_threshold():
+    from app.services.approval_chain import cfo_gate_applies
+
+    assert cfo_gate_applies(10000, Decimal("10000")) is False
+    assert cfo_gate_applies(10000, Decimal("5000")) is False
+
+
+@pytest.mark.parametrize(
+    "bad", ["abc", "10,000", "", "5000 USD", {"x": 1}, [1], "NaN", "Infinity", "-Infinity"]
+)
+def test_cfo_gate_applies_malformed_fails_closed(bad):
+    """Any unparseable threshold → the gate APPLIES (require CFO), whatever the
+    amount — the only safe direction for a fraud control."""
+    from app.services.approval_chain import cfo_gate_applies
+
+    # Even a tiny amount trips the gate when the threshold can't be parsed.
+    assert cfo_gate_applies(bad, Decimal("1")) is True

@@ -159,10 +159,30 @@ approve.
 ### CFO gate (not bypassed)
 
 `approve_invoice` enforces the workflow snapshot's `require_cfo_above` /
-`max_invoice_amount`. The agent approves as `ap_manager`, so rather than
-bypassing the gate it reads the snapshot in `evaluate` and **escalates** when the
-reconciled amount would require CFO sign-off (or exceeds the hard max). The
-money-path invariant stays intact — the agent never grants itself a `cfo` role.
+`max_invoice_amount`. The agent acts on behalf of the **triggering user** and
+approves with **that user's real roles** (`coordinator.run_agent(actor_roles=…)`,
+threaded straight into `approve_invoice` — never a fabricated `{"ap_manager"}`
+set), so rather than bypassing the gate it reads the snapshot in `evaluate` and
+**escalates** when the reconciled amount would require CFO sign-off (or exceeds
+the hard max). The money-path invariant stays intact — the agent never grants
+itself a role the actor doesn't hold.
+
+Both threshold reads in `evaluate` go through the shared
+`approval_chain.cfo_gate_applies` helper, so a **malformed / non-finite**
+`require_cfo_above` or `max_invoice_amount` in the snapshot (a settings typo, or
+a stringified `Infinity`/`NaN` an insider tampered in to defeat the control)
+**fails closed** — it escalates to a human rather than silently skipping the gate
+(`amount > Decimal("Infinity")` is always False, which previously let a tampered
+threshold auto-approve). The same fail-closed helper backs the human-approval and
+expense-report CFO gates.
+
+**Fail-closed authority.** An auto-resolution approves an invoice with the
+actor's authority, so `run_agent` refuses to self-approve when it can't name the
+acting user's roles: if `actor_roles` is empty/`None` on a would-be auto-resolve,
+the coordinator **escalates to a human** instead of fabricating an elevated set.
+The only caller today (`POST /api/exceptions/{id}/agent-resolve`) always passes
+the JWT user's real roles (`{r.name for r in user.roles}`); a hypothetical
+background trigger with no user therefore escalates rather than auto-approving.
 
 ### Two audit rows
 
@@ -215,7 +235,7 @@ rather than escalating a blank.
   vanished / is no longer `open`), re-points `po_number`, calls
   `invoice_warnings.refresh_warnings` to refresh `po_match`, and requires the
   post-link match to be a clean `matched` before approving through
-  `review.approve_invoice` (`actor_roles={"ap_manager"}`). It **never adjusts the
+  `review.approve_invoice` (with the triggering user's real `actor_roles`). It **never adjusts the
   amount** — it only links. The CFO/maximum gate is honoured (escalate, never
   self-approve past a threshold) and — because the link does **not** change the
   invoice amount — the gate is measured against the **invoice's own amount**, not
@@ -277,7 +297,7 @@ or three POs. This is the deferred *"Multi-PO split matching"* follow-up to
   modal. The single-PO matcher can't produce a `matched` for a split, so the
   snapshot is written **directly** — `refresh_warnings` is deliberately **not**
   called (it would re-run the single-PO matcher and re-raise a `no_po` exception).
-  It then approves through `review.approve_invoice` (`actor_roles={"ap_manager"}`).
+  It then approves through `review.approve_invoice` (with the triggering user's real `actor_roles`).
   **It NEVER adjusts the invoice amount** — the sum only *selects* the set; the
   amount is left exactly as-is, so the invoice is approved at its own face value.
   Idempotent: a re-run finds the live match no longer `no_po` (or not

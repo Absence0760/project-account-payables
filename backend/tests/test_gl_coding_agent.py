@@ -160,7 +160,13 @@ async def test_blank_gl_strong_dominance_auto_codes(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_AUTO_RESOLVED
 
     async with mk() as s:
@@ -219,7 +225,13 @@ async def test_inconsistent_gl_is_corrected(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_AUTO_RESOLVED
 
     async with mk() as s:
@@ -251,7 +263,13 @@ async def test_ambiguous_history_escalates(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -292,6 +310,7 @@ async def test_weak_dominance_escalates_under_balanced_resolves_under_aggressive
             exception=exc,
             actor_id=actor_id,
             org_settings={"exception_agents": {"autonomy_level": "balanced"}},
+            actor_roles={"ap_manager"},
         )
         assert result.decision.action_taken == ACTION_ESCALATED
         assert result.decision.confidence == Decimal("0.8000")
@@ -315,6 +334,7 @@ async def test_weak_dominance_escalates_under_balanced_resolves_under_aggressive
             exception=exc,
             actor_id=actor_id,
             org_settings={"exception_agents": {"autonomy_level": "aggressive"}},
+            actor_roles={"ap_manager"},
         )
         assert result.decision.action_taken == ACTION_AUTO_RESOLVED
     async with mk() as s:
@@ -347,13 +367,61 @@ async def test_other_required_field_missing_escalates(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "aggressive"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
         inv = await s.get(Invoice, inv_id)
         assert inv.status == InvoiceStatus.ready_for_review
         assert inv.gl_account is None
+
+
+async def test_malformed_cfo_threshold_fails_closed_to_escalation(realdb):
+    """A confident GL fix must ESCALATE — never auto-approve — when the snapshot's
+    ``require_cfo_above`` is malformed. A stringified ``Infinity`` used to slip
+    through (`amount > Decimal("Infinity")` is always False → the CFO gate was
+    silently skipped → fail-OPEN). Routing the gate through
+    ``approval_chain.cfo_gate_applies`` makes a non-finite / unparseable threshold
+    demand human sign-off (fail-closed)."""
+    mk = realdb.sessionmaker("a")
+    org_id = realdb.info("a").org_id
+    actor_id = realdb.info("a").users["ap_manager"]
+
+    inv_id, _corr, exc_id = await _seed_gl_case(
+        mk,
+        org_id,
+        history_gls=["6000"] * 5,
+        draft_gl=None,
+        draft_amount=Decimal("100.00"),  # tiny — only the malformed gate can stop it
+        number="INV-GL-BADCFO",
+        approval_config={"require_cfo_above": "Infinity"},
+    )
+
+    org_settings = {"exception_agents": {"autonomy_level": "aggressive"}}
+    async with mk() as s:
+        exc = await s.get(APException, exc_id)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
+        assert result.decision.action_taken == ACTION_ESCALATED
+
+    async with mk() as s:
+        inv = await s.get(Invoice, inv_id)
+        # Fail-closed: not coded, not approved — the malformed gate stopped it.
+        assert inv.status == InvoiceStatus.ready_for_review
+        assert inv.gl_account is None
+        exc = await s.get(APException, exc_id)
+        assert exc.status == "escalated"
 
 
 async def test_cfo_gate_escalates_never_self_approves(realdb):
@@ -377,7 +445,13 @@ async def test_cfo_gate_escalates_never_self_approves(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "aggressive"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -410,14 +484,26 @@ async def test_rerun_on_resolved_exception_is_noop(realdb):
 
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        first = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        first = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert first.decision.action_taken == ACTION_AUTO_RESOLVED
 
     raised = False
     async with mk() as s:
         exc = await s.get(APException, exc_id)
         try:
-            await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+            await run_agent(
+                s,
+                exception=exc,
+                actor_id=actor_id,
+                org_settings=org_settings,
+                actor_roles={"ap_manager"},
+            )
         except ExceptionNotActionable:
             raised = True
     assert raised is True

@@ -44,6 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceStatus
+from app.services.approval_chain import cfo_gate_applies
 from app.services.exception_agents.base import (
     ACTION_AUTO_RESOLVED,
     ACTION_ESCALATED,
@@ -336,9 +337,9 @@ class GLCodingResolver(ExceptionResolver):
         amount = Decimal(str(locked.amount)).quantize(_CENTS)
         max_amount = approval_config.get("max_invoice_amount")
         cfo_threshold = approval_config.get("require_cfo_above")
-        if (max_amount is not None and amount > Decimal(str(max_amount))) or (
-            cfo_threshold is not None and amount > Decimal(str(cfo_threshold))
-        ):
+        # Both money gates fail CLOSED on a malformed/non-finite threshold — a
+        # bad settings value must escalate to a human, never skip the gate.
+        if cfo_gate_applies(max_amount, amount) or cfo_gate_applies(cfo_threshold, amount):
             raise _NotApprovable(locked.status)
 
         corrections: dict = {_GL_FIELD: gl.value}
@@ -351,9 +352,10 @@ class GLCodingResolver(ExceptionResolver):
             locked,
             actor_id=actor_id,
             actor_name="AP Agent",
-            # Real triggering-user roles when provided; ap_manager fallback for
-            # a non-user-triggered (background) run so behaviour is unchanged.
-            actor_roles=actor_roles or {"ap_manager"},
+            # The triggering user's REAL roles — never a fabricated elevated set.
+            # The coordinator fails closed (escalates) when they're unknown, so
+            # this is always populated on the auto-resolve path that reaches here.
+            actor_roles=actor_roles,
             corrections=corrections,
         )
         # Re-point the caller's reference (coordinator commits).

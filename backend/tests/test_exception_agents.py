@@ -228,7 +228,13 @@ async def test_in_tolerance_mismatch_auto_resolves(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_AUTO_RESOLVED
 
     # Invoice amount snapped to the PO total + transitioned to approved.
@@ -297,7 +303,13 @@ async def test_out_of_tolerance_variance_escalates(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -346,7 +358,13 @@ async def test_conservative_autonomy_escalates_in_band_variance(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "conservative"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -395,7 +413,13 @@ async def test_partial_3way_receipt_escalates_not_auto_resolved(realdb):
     org_settings = {"exception_agents": {"autonomy_level": "balanced"}}
     async with mk() as s:
         exc = await s.get(APException, exc_id)
-        result = await run_agent(s, exception=exc, actor_id=actor_id, org_settings=org_settings)
+        result = await run_agent(
+            s,
+            exception=exc,
+            actor_id=actor_id,
+            org_settings=org_settings,
+            actor_roles={"ap_manager"},
+        )
         assert result.decision.action_taken == ACTION_ESCALATED
 
     async with mk() as s:
@@ -445,7 +469,11 @@ async def test_concurrent_agent_runs_serialize_on_exception_lock(realdb):
             exc = await s.get(APException, exc_id)
             try:
                 res = await run_agent(
-                    s, exception=exc, actor_id=actor_id, org_settings=org_settings
+                    s,
+                    exception=exc,
+                    actor_id=actor_id,
+                    org_settings=org_settings,
+                    actor_roles={"ap_manager"},
                 )
                 return res.decision.action_taken
             except ExceptionNotActionable:

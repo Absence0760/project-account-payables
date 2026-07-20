@@ -290,6 +290,49 @@ async def test_cfo_threshold_custom_override(realdb):
             await s.commit()
 
 
+async def test_cfo_threshold_malformed_fails_closed(realdb):
+    # A garbage `cfo_threshold` (settings typo / tampered value) must FAIL CLOSED:
+    # the gate demands CFO/admin sign-off rather than silently skipping (which
+    # would let a manager approve any report) or 500-ing the endpoint.
+    org_id = realdb.info("a").org_id
+    ctrl = realdb.control_sessionmaker()
+    from sqlalchemy.orm.attributes import flag_modified
+
+    async with ctrl() as s:
+        org = (await s.execute(select(Organization).where(Organization.id == org_id))).scalar_one()
+        settings_dict = dict(org.settings or {})
+        settings_dict["expense_approval"] = {"cfo_threshold": "5,000"}  # comma → unparseable
+        org.settings = settings_dict
+        flag_modified(org, "settings")
+        await s.commit()
+
+    try:
+        async with realdb.client(key="a", role="ap_clerk") as c:
+            rid, _ = await _make_report_with_expense(c, amount="200.00", receipt=True)
+            await c.post(f"/api/expense-reports/{rid}/submit")
+        async with realdb.client(key="a", role="ap_manager") as c:
+            denied = await c.post(f"/api/expense-reports/{rid}/approve")
+        # Not a 500 — a clean 403 demanding CFO sign-off.
+        assert denied.status_code == 403, denied.text
+        assert "cfo" in denied.json()["detail"].lower()
+
+        # A CFO can still approve past the fail-closed gate (not bricked).
+        async with realdb.client(key="a", role="cfo") as c:
+            ok = await c.post(f"/api/expense-reports/{rid}/approve")
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["status"] == "approved"
+    finally:
+        async with ctrl() as s:
+            org = (
+                await s.execute(select(Organization).where(Organization.id == org_id))
+            ).scalar_one()
+            settings_dict = dict(org.settings or {})
+            settings_dict.pop("expense_approval", None)
+            org.settings = settings_dict
+            flag_modified(org, "settings")
+            await s.commit()
+
+
 # ---------------------------------------------------------------------------
 # Report reject
 # ---------------------------------------------------------------------------

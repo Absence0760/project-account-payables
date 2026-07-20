@@ -89,3 +89,100 @@ async def test_actor_roles_threaded_into_resolver_apply():
 
     assert captured["actor_roles"] == {"cfo"}
     assert captured["actor_id"] == actor
+
+
+@pytest.mark.asyncio
+async def test_missing_actor_roles_fails_closed_to_escalation():
+    """A run whose actor roles are unknown must NOT self-approve on a fabricated
+    set — it escalates. The resolver's ``apply`` is never reached."""
+    exc = _exception()
+    invoice = SimpleNamespace(id=exc.invoice_id, entity_id=None)
+    db = _mock_db(exc, invoice)
+
+    apply_called = False
+
+    class _FakeResolver:
+        agent_type = "fake_v1"
+
+        async def evaluate(self, _db, *, exception, invoice, org_settings):
+            return AgentEvaluation(
+                recommended_action=ACTION_AUTO_RESOLVED,
+                confidence=Decimal("1"),
+                rationale="ok",
+                changes={},
+            )
+
+        async def apply(self, *args, **kwargs):
+            nonlocal apply_called
+            apply_called = True
+
+    with patch(
+        "app.services.exception_agents.coordinator.get_resolver",
+        return_value=_FakeResolver(),
+    ):
+        result = await run_agent(
+            db,
+            exception=exc,
+            actor_id=uuid.uuid4(),
+            org_settings={"exception_agents": {"autonomy_level": "aggressive"}},
+            actor_roles=None,  # unknown actor → must fail closed
+        )
+
+    assert apply_called is False
+    assert exc.status == "escalated"
+    assert result.decision.action_taken == "escalated"
+
+
+@pytest.mark.asyncio
+async def test_amount_mismatch_apply_forwards_real_roles_not_fabricated():
+    """The amount-mismatch resolver must pass the caller's REAL roles into
+    ``approve_invoice`` — not a hardcoded ``{"ap_manager"}`` fallback."""
+    from app.models.invoice import InvoiceStatus
+    from app.services.exception_agents.resolvers.amount_mismatch import AmountMismatchResolver
+
+    resolver = AmountMismatchResolver()
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(), amount=Decimal("100.00"), status=InvoiceStatus.ready_for_review
+    )
+    locked = SimpleNamespace(
+        id=invoice.id, amount=Decimal("100.00"), status=InvoiceStatus.ready_for_review
+    )
+    evaluation = AgentEvaluation(
+        recommended_action=ACTION_AUTO_RESOLVED,
+        confidence=Decimal("0.95"),
+        rationale="ok",
+        changes={"amount": {"old": "95.00", "new": "100.00"}},
+    )
+    match = SimpleNamespace(status="matched", po_total=Decimal("100.00"))
+
+    captured: dict = {}
+
+    async def _fake_approve(
+        _db, inv, *, actor_id, actor_name, actor_roles=None, corrections=None, org_settings=None
+    ):
+        captured["actor_roles"] = actor_roles
+        inv.status = InvoiceStatus.approved
+        return inv
+
+    db = AsyncMock()
+    with (
+        patch(
+            "app.services.workflow_engine.get_invoice_for_update",
+            AsyncMock(return_value=locked),
+        ),
+        patch(
+            "app.services.po_matching.match_invoice_to_po",
+            AsyncMock(return_value=match),
+        ),
+        patch("app.services.review.approve_invoice", _fake_approve),
+    ):
+        await resolver.apply(
+            db,
+            exception=None,
+            invoice=invoice,
+            evaluation=evaluation,
+            actor_id=uuid.uuid4(),
+            actor_roles={"cfo"},
+        )
+
+    assert captured["actor_roles"] == {"cfo"}

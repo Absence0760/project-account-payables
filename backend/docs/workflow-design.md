@@ -117,6 +117,21 @@ All thresholds are read from `steps_config_snapshot` (frozen per invoice at crea
 | `require_cfo_above` | Non-CFO users receive 403 when attempting to approve invoices above this amount. |
 | `max_invoice_amount` | Invoices above this amount are rejected outright (422). |
 
+**`require_cfo_above` fails CLOSED on a malformed value.** The threshold is
+parsed through the single shared helper `approval_chain.cfo_gate_applies`, which
+is reused by the human-approval gate (`review._enforce_approval_thresholds`), the
+expense-report gate (`api/expenses`, key `expense_approval.cfo_threshold`), and
+the auto-approve revoke check (`extraction.decide_auto_approve`). An explicitly-
+configured but **unparseable** threshold — a settings typo like `"5,000"`, an
+empty string, a non-numeric/non-finite value (`NaN`/`Infinity`), or a value an
+insider tampered to defeat the control — is treated as **"CFO approval
+required"**, never silently skipping the gate. It does not raise: one bad
+settings write can neither disable the fraud control nor 500 (brick) the whole
+approval queue — even a legitimate CFO can still approve past the fail-closed
+gate. The malformed value is logged PII-free (a money threshold, not a secret)
+for an admin to correct. The payment-run CFO gate (`payments.cfo_approval_above`)
+enforces the same fail-closed discipline inline (see `payments.md`).
+
 ### Multi-Level Approval Chains
 
 Strategy `"chain"` with `approval_chain: list[ApprovalLevelConfig]`.
