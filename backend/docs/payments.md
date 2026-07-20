@@ -221,6 +221,43 @@ confirmed-stuck one (see the row-lock double-execute guard above). An
 operator calls `/resume` only after confirming the run has made no progress
 for an implausible amount of time.
 
+### The `virtual_card` leg — converging on an invoice's existing card
+
+A `virtual_card` payment skips the payment adapter and mints a card instead
+(`_execute_single_payment` → `services/card_issuance`). Because an invoice can
+hold at most one LIVE card (`uq_virtual_cards_one_live_per_invoice`), the leg
+has to cope with that card already existing — it may have been minted by `POST
+/api/cards/generate`, or by a concurrent payment run. Both are reachable, so
+the leg mirrors the batch endpoint's two-layer handling:
+
+1. **Pre-check** — `find_live_card_for_invoice` before the provider call. An
+   invoice that already holds a live card never reaches the adapter, so no
+   second spendable card is minted and then orphaned by the index rejecting its
+   row.
+2. **Savepoint** — the insert goes through `persist_card`, which flushes inside
+   a `begin_nested()` block. A racer that claimed the slot between the
+   pre-check and the flush trips the index; the savepoint contains it so the
+   dispatch loop's audit row and per-payment commit still succeed. Without it
+   the `IntegrityError` left the whole session needing a rollback, so the
+   loop's very next statement raised `PendingRollbackError`, the run never
+   rolled up, and it stayed `executing` — with `/resume` re-driving the same
+   payment into the same crash.
+
+The payment then settles against whichever card is live, which is the
+idempotent outcome: both racers derive the *same* provider idempotency key from
+the invoice, so the winner's row is the same provider card the loser would have
+persisted. A payment that settles against a card it did not mint writes a
+PII-free `card.reused` audit row (ids, last four, exact amount as a string) so
+the reuse is explicit in the SOX trail rather than inferred, and it does **not**
+re-email the vendor — the reveal link was already sent when the card was minted.
+
+Two honest failure states rather than a misleading `completed`:
+
+| `failure_reason` | When |
+|---|---|
+| `card_already_issued_insufficient_limit` | the pre-existing card's `amount_limit` is below this payment's amount, so it cannot be what settles it |
+| `card_issuance_conflict` | the contended live-card slot was empty on re-read (the winner cancelled its card in between) — surfaced for AP rather than silently re-calling the provider |
+
 ### Payment processor adapters
 
 The actual money movement is handled by an adapter pattern in `backend/app/services/payment_adapters/` — same shape as ERP, extraction, and card adapters. Each adapter implements:

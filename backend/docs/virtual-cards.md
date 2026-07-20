@@ -446,8 +446,15 @@ they cover different failures:
 
 | Layer | Mechanism | Catches |
 |---|---|---|
-| Ours | partial unique index `uq_virtual_cards_one_live_per_invoice` (migration `0067`) + the pre-check in `POST /api/cards/generate` | a duplicate that reached our database |
+| Ours | partial unique index `uq_virtual_cards_one_live_per_invoice` (migration `0067`) + a pre-check on **both** issuance entry points | a duplicate that reached our database |
 | Provider's | a stable idempotency key on the create call | a card the provider made that **never** reached our database |
+
+Both entry points — `POST /api/cards/generate` and the `virtual_card` leg of
+`execute_payment_run` — pre-check for an existing live card
+(`card_issuance.find_live_card_for_invoice`) before calling the provider, and
+insert through `card_issuance.persist_card`, which flushes inside a SAVEPOINT so
+a racer that claims the slot in between is a recoverable `False` rather than a
+poisoned transaction. See *Persisting the row* below.
 
 The provider layer is the one that matters for the nastiest case: `httpx` times
 out *after* Lithic/Nium already provisioned the card. We hold no
@@ -486,6 +493,46 @@ uuid5(CARD_IDEMPOTENCY_NAMESPACE, f"virtual_card:{correlation_id or invoice_id}:
 `VirtualCardPayload.idempotency_key` is `None`-able; an adapter given `None`
 sends no key at all rather than inventing an unstable one (a per-attempt key
 would give false confidence while still double-issuing).
+
+#### Persisting the row — `persist_card`, and the `begin_nested` ordering trap
+
+Every card insert goes through `card_issuance.persist_card(db, card)`, which
+returns `True` when the row landed and `False` when a concurrent writer already
+claimed the invoice's live-card slot. Both issuance entry points share it, so
+the recovery semantics can't drift apart.
+
+The reason it is a helper and not five inlined lines is a genuine SQLAlchemy
+trap. `SessionTransaction._take_snapshot` **flushes the session** when a
+`begin_nested()` boundary opens. So this:
+
+```python
+db.add(card)                 # WRONG — pending
+try:
+    async with db.begin_nested():   # ← flushes `card` HERE, before the SAVEPOINT
+        await db.flush()
+except IntegrityError:
+    ...
+```
+
+issues the INSERT *before* the SAVEPOINT exists. The `IntegrityError` escapes
+the block that was supposed to contain it, and — worse than an obvious crash —
+it leaves the enclosing transaction in a needs-rollback state, so the *next*
+statement on that session raises `PendingRollbackError` somewhere unrelated. The
+`add` must be **inside** the block:
+
+```python
+try:
+    async with db.begin_nested():
+        db.add(card)
+        await db.flush()
+except IntegrityError:
+    ...
+```
+
+The loser's row is expunged so a later `flush`/`commit` can't re-attempt the
+insert that just failed. Regression coverage:
+`tests/test_payment_card_duplicate_recovery.py` (both entry points, against a
+real Postgres so the partial index actually fires).
 
 ### Cancel (`POST /{id}/cancel`) — provider-first + idempotent
 

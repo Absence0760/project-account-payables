@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
@@ -83,6 +84,62 @@ async def _reissue_sequence(db: AsyncSession, invoice_id) -> int:
         select(func.count()).select_from(VirtualCard).where(VirtualCard.invoice_id == invoice_id)
     )
     return int(result.scalar_one() or 0)
+
+
+async def find_live_card_for_invoice(db: AsyncSession, invoice_id) -> VirtualCard | None:
+    """The invoice's current LIVE (non-cancelled) card, if it has one.
+
+    The partial unique index ``uq_virtual_cards_one_live_per_invoice`` makes
+    this at most one row. Used as the cheap pre-check *before* calling the
+    provider — an invoice that already holds a live card must not be issued a
+    second, separately-spendable one — and again after a lost insert race to
+    find the card the winner persisted.
+    """
+    result = await db.execute(
+        select(VirtualCard)
+        .where(VirtualCard.invoice_id == invoice_id, VirtualCard.status != "cancelled")
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def persist_card(db: AsyncSession, card: VirtualCard) -> bool:
+    """Add + flush ONE freshly-minted card inside a SAVEPOINT.
+
+    Returns True when the row landed, False when the invoice's live-card slot
+    was claimed by a concurrent writer between the caller's pre-check and this
+    flush (``uq_virtual_cards_one_live_per_invoice``).
+
+    The savepoint is what makes the loser recoverable. A bare ``db.flush()``
+    that trips the index leaves the *enclosing* transaction in a needs-rollback
+    state, so every subsequent statement on that session — the caller's audit
+    row, its ``commit()`` — raises ``PendingRollbackError`` instead. On the
+    payment-run path that unwound the whole dispatch loop and stranded the run
+    in ``executing``; on the batch path it discarded the sibling cards already
+    minted at the provider. Rolling back to the savepoint keeps the outer
+    transaction healthy and turns a benign duplicate into a value the caller
+    can branch on.
+
+    ``db.add`` MUST happen INSIDE the savepoint block, never before it.
+    ``SessionTransaction._take_snapshot`` flushes the session when a
+    ``begin_nested()`` boundary opens, so a row added first is written by
+    ``begin_nested()`` itself — *before* the SAVEPOINT exists — and its
+    IntegrityError escapes the very block meant to contain it. That ordering
+    trap is the reason this lives in one helper instead of being inlined at
+    each call site.
+
+    The losing row is expunged so a later ``flush``/``commit`` on the same
+    session can't re-attempt the insert that just failed.
+    """
+    try:
+        async with db.begin_nested():
+            db.add(card)
+            await db.flush()
+    except IntegrityError:
+        if card in db:
+            db.expunge(card)
+        return False
+    return True
 
 
 @dataclass

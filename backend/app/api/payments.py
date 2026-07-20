@@ -1132,8 +1132,10 @@ async def _execute_single_payment(
     if payment.method == "virtual_card" and invoice is not None:
         from app.config import settings as app_settings
         from app.services.card_issuance import (
+            find_live_card_for_invoice,
             issue_card_for_invoice,
             notify_vendor_of_card,
+            persist_card,
         )
 
         # Issuing a virtual card moves money just like an ACH/wire, so the
@@ -1177,60 +1179,125 @@ async def _execute_single_payment(
             payment.failure_reason = "compliance_hold: " + "; ".join(card_decision.reasons)
             return
 
-        issue = await issue_card_for_invoice(
-            db=db,
-            invoice=invoice,
-            organization_id=org.id,
-            org_settings=org.settings or {},
-            app_settings=app_settings,
-            payment_id=payment.id,
-            amount=payment.amount,
-        )
-        if issue.success and issue.card is not None:
-            db.add(issue.card)
-            await db.flush()  # need card.id for the reveal-token row
-            payment.status = "completed"
-            payment.provider = issue.card.card_provider
-            payment.completed_at = now
-            payment.submitted_at = now
-            payment.reference = (
-                f"CARD-{issue.card.card_provider.upper()}-{issue.card.last_four or '????'}"
+        # Idempotency pre-check, mirroring the batch `/api/cards/generate` leg:
+        # an invoice can already hold a LIVE card (minted there, or by a
+        # concurrent payment run). `uq_virtual_cards_one_live_per_invoice`
+        # would reject a second one anyway — but only AFTER the provider had
+        # already minted a real, separately-spendable card, orphaning it. Skip
+        # the provider entirely and converge on the card that already pays this
+        # invoice.
+        card = await find_live_card_for_invoice(db, invoice.id)
+        minted = False
+        if card is None:
+            issue = await issue_card_for_invoice(
+                db=db,
+                invoice=invoice,
+                organization_id=org.id,
+                org_settings=org.settings or {},
+                app_settings=app_settings,
+                payment_id=payment.id,
+                amount=payment.amount,
             )
-            if invoice.status.value in (
-                "approved",
-                "sent_to_erp",
-                "posted_in_erp",
-            ):
-                await transition_invoice(
-                    db,
-                    invoice,
-                    InvoiceStatus.payment_scheduled,
-                    actor_id=user.id,
-                    action_name="invoice.card_payment_scheduled",
-                    details={"payment_id": str(payment.id)},
-                )
+            if not issue.success or issue.card is None:
+                payment.status = "failed"
+                payment.failure_reason = issue.failure_reason or "card_issuance_failed"
+                payment.completed_at = now
+                return
+            # Savepoint-guarded flush (we need card.id for the reveal-token
+            # row). A racer that committed the invoice's live card between the
+            # pre-check and here trips the unique index; containing that in a
+            # savepoint keeps THIS transaction usable, so the dispatch loop can
+            # still write its audit row and commit the payment.
+            if await persist_card(db, issue.card):
+                card = issue.card
+                minted = True
+            else:
+                # Lost the race. Both racers derive the SAME provider
+                # idempotency key from the invoice, so the winner's row is the
+                # same provider card ours would have been — adopt it.
+                card = await find_live_card_for_invoice(db, invoice.id)
 
-            # Best-effort vendor notification — single-use reveal
-            # link emailed to the vendor's contact address.
-            try:
-                await notify_vendor_of_card(
-                    db,
-                    card=issue.card,
-                    invoice=invoice,
-                    org_name=org.name,
-                    org_slug=org.slug,
-                    public_url_template=app_settings.tenant_url_template,
-                )
-            except Exception:  # noqa: BLE001
-                # `notify_vendor_of_card` already swallows known
-                # failures; this catch is the safety net for the
-                # "the email path raised before the function could
-                # log" edge case. Card issuance itself is committed.
-                pass
-        else:
+        if card is None:
+            # The live-card slot was contended and is now empty (the winner
+            # cancelled its card between our flush and this re-read). Don't
+            # guess — surface it for AP rather than silently retry the provider.
             payment.status = "failed"
-            payment.failure_reason = issue.failure_reason or "card_issuance_failed"
+            payment.failure_reason = "card_issuance_conflict"
             payment.completed_at = now
+            return
+
+        if not minted and card.amount_limit < payment.amount:
+            # A pre-existing card that can't cover this payable is NOT this
+            # payment settled. Fail honestly instead of reporting money moved
+            # against a limit that won't clear.
+            payment.status = "failed"
+            payment.failure_reason = "card_already_issued_insufficient_limit"
+            payment.completed_at = now
+            return
+
+        payment.status = "completed"
+        payment.provider = card.card_provider
+        payment.completed_at = now
+        payment.submitted_at = now
+        payment.reference = f"CARD-{card.card_provider.upper()}-{card.last_four or '????'}"
+        if invoice.status.value in (
+            "approved",
+            "sent_to_erp",
+            "posted_in_erp",
+        ):
+            await transition_invoice(
+                db,
+                invoice,
+                InvoiceStatus.payment_scheduled,
+                actor_id=user.id,
+                action_name="invoice.card_payment_scheduled",
+                details={"payment_id": str(payment.id)},
+            )
+
+        if not minted:
+            # SOX trail: this payment settled against a card it did not mint.
+            # An auditor reconciling the run needs that to be explicit rather
+            # than inferred from a card row with an older timestamp. PII-free —
+            # ids, last four, and the exact amount as a string.
+            from app.services.audit_dispatch import dispatch_audit
+
+            await dispatch_audit(
+                db,
+                correlation_id=payment.correlation_id or invoice.correlation_id or uuid.uuid4(),
+                organization_id=org.id,
+                actor_id=user.id,
+                action="card.reused",
+                entity_type="virtual_card",
+                entity_id=card.id,
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment.id),
+                    "last_four": card.last_four,
+                    "amount": str(payment.amount),
+                },
+            )
+            # The vendor was already emailed a reveal link when this card was
+            # minted; a second one would mint a second single-use token for the
+            # same card and confuse the supplier. Notify on a fresh mint only.
+            return
+
+        # Best-effort vendor notification — single-use reveal
+        # link emailed to the vendor's contact address.
+        try:
+            await notify_vendor_of_card(
+                db,
+                card=card,
+                invoice=invoice,
+                org_name=org.name,
+                org_slug=org.slug,
+                public_url_template=app_settings.tenant_url_template,
+            )
+        except Exception:  # noqa: BLE001
+            # `notify_vendor_of_card` already swallows known
+            # failures; this catch is the safety net for the
+            # "the email path raised before the function could
+            # log" edge case. Card issuance itself is committed.
+            pass
         return
 
     # International leg: if the invoice's currency isn't the org's
