@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -75,7 +76,11 @@ from app.services.supplier_chat import (
     notify_ap_mentions,
     notify_supplier_of_ap_message,
 )
-from app.services.workflow_engine import create_workflow_instance, transition_invoice
+from app.services.workflow_engine import (
+    create_workflow_instance,
+    get_invoice_for_update,
+    transition_invoice,
+)
 from app.tenant import (
     apply_entity_scope,
     get_entity_id,
@@ -1063,19 +1068,26 @@ async def route_intercompany(
     Sets the named counterparty entity on this invoice, then routes it: a mirror
     payable Invoice is created under the counterparty entity, linked back to this
     one. Idempotent at the boundary — calling twice returns the same mirror and
-    never creates a second (the routing service dedupes on
-    ``intercompany_mirror_id``). Returns the mirror invoice.
+    never creates a second. Idempotency is enforced at *three* layers, because a
+    duplicate live payable is a double liability:
+
+      1. the origin row is taken ``FOR UPDATE`` here, so two concurrent callers
+         serialize and the loser re-reads the (now-set) ``intercompany_mirror_id``;
+      2. the routing service short-circuits on that column;
+      3. the partial unique index ``uq_invoice_intercompany_mirror`` makes a
+         second mirror impossible to persist even if a future caller bypasses
+         the lock — the losing INSERT surfaces here as a clean 409.
+
+    Returns the mirror invoice.
     """
     from app.services.intercompany import route_intercompany_invoice
 
-    result = await db.execute(
-        select(Invoice)
-        .options(selectinload(Invoice.extraction_results))
-        .where(Invoice.id == invoice_id)
-    )
-    invoice = result.scalar_one_or_none()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    # Row-lock the origin BEFORE the dedupe check. Without the lock two
+    # concurrent calls both observed `intercompany_mirror_id IS NULL` and each
+    # created a live mirror payable under the counterparty entity — the orphan
+    # could then be approved and paid on its own. `get_invoice_for_update`
+    # eager-loads extraction_results, same as the plain select did.
+    invoice = await get_invoice_for_update(db, invoice_id)
 
     try:
         counterparty_uuid = uuid.UUID(body.counterparty_entity_id)
@@ -1091,12 +1103,27 @@ async def route_intercompany(
     if exists is None:
         raise HTTPException(status_code=404, detail="Unknown counterparty entity for this tenant")
 
-    invoice.counterparty_entity_id = counterparty_uuid
+    # Only stamp the counterparty when this invoice has NOT been routed yet.
+    # Once the mirror exists the pairing is settled: re-pointing the origin at a
+    # different entity here would leave it claiming a counterparty its mirror
+    # doesn't sit under, with no second mirror ever generated. Re-routing is a
+    # reject-and-re-route operation, not a silent field edit.
+    if invoice.intercompany_mirror_id is None:
+        invoice.counterparty_entity_id = counterparty_uuid
     try:
         mirror = await route_intercompany_invoice(db, invoice, actor_id=user.id)
     except ValueError as exc:
         # Self-billing or a missing counterparty — a client error, PII-free.
         raise HTTPException(status_code=400, detail=str(exc))
+    except IntegrityError:
+        # The uq_invoice_intercompany_mirror backstop fired: another writer
+        # already generated this origin's mirror. Nothing was persisted — roll
+        # back and report the conflict. PII-free.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This invoice has already been routed inter-company",
+        )
     await db.flush()
 
     # Re-fetch the mirror with extraction_results eager-loaded so
