@@ -416,7 +416,16 @@ async def test_login_assertion_cannot_satisfy_a_step_up():
             await auth_mod.passkey_register_start(
                 body=MFAStepUpRequest(assertion=login_assertion), user=user, db=db
             )
-    assert exc.value.status_code == 400
+        assert exc.value.status_code == 400
+
+        # Positive control, so the rejection above can't be passed off as "this
+        # authenticator / account just never satisfies a step-up": the SAME
+        # authenticator, given a challenge minted for THIS operation, does.
+        step_up_assertion = await _step_up_assertion(user, db, soft, "passkey_register")
+        start = await auth_mod.passkey_register_start(
+            body=MFAStepUpRequest(assertion=step_up_assertion), user=user, db=db
+        )
+    assert start.options["challenge"]
 
 
 @pytest.mark.asyncio
