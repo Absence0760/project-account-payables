@@ -255,20 +255,28 @@ void main() {
     });
   });
 
-  test('every account-scoped store is wired into SessionManager.resetStores',
+  test('every account-scoped store is reset by SessionManager.resetStores',
       () {
     // A store singleton that nobody resets keeps one account's data in memory
-    // for the next one — so adding a store must mean adding it here.
+    // for the next one — so adding a store must mean wiring it in here.
+    // Asserts the actual `X.instance.reset();` CALL, not merely an import: a
+    // store imported for some other reason must not satisfy this guard.
     const deviceScoped = {'locale_store.dart'};
     final session = File('lib/services/session.dart').readAsStringSync();
+    final body = session.substring(session.indexOf('static void resetStores()'));
+
+    String className(String fileName) => fileName
+        .replaceAll('.dart', '')
+        .split('_')
+        .map((part) => part[0].toUpperCase() + part.substring(1))
+        .join();
 
     final missing = Directory('lib/stores')
         .listSync()
         .whereType<File>()
         .map((f) => f.uri.pathSegments.last)
         .where((name) => name.endsWith('.dart') && !deviceScoped.contains(name))
-        .map((name) => name.replaceAll('.dart', ''))
-        .where((name) => !session.contains('/stores/$name.dart'))
+        .where((name) => !body.contains('${className(name)}.instance.reset();'))
         .toList();
 
     expect(missing, isEmpty, reason: 'not reset on logout: $missing');

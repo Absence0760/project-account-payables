@@ -145,6 +145,12 @@ to the session that produced them. `services/session.dart` is the chokepoint;
   the single place a session ends: explicit logout, a 401 on any request, and a
   failed session restore all funnel through it. Drops the scope, clears the
   cache, and resets **every** account-scoped store singleton.
+- **Session restore is failure-aware.** `AuthStore.init()` tears the session
+  down only when the stored token is actually **rejected** (`ApiException` 401).
+  A transport failure (offline, DNS, timeout) says nothing about the token, and
+  tearing down on one would wipe the cache at exactly the moment offline mode
+  exists to serve it — so credentials and cache are left intact and the same
+  scope is re-installed over the same rows on the next successful load.
 - **Adding a store?** Add it to `SessionManager.resetStores()`. A store that
   isn't reset keeps one account's data in memory for the next one;
   `test/services/session_test.dart` fails if a new file under `lib/stores/`
@@ -155,6 +161,13 @@ to the session that produced them. `services/session.dart` is the chokepoint;
   global keys (`dashboard`, `invoices_all_`, …) with no owner to attribute them
   to. An install carrying an old cache therefore starts empty rather than
   serving un-namespaced rows to whoever signs in next.
+- **Tests.** `test/services/session_test.dart` covers the scoping + teardown
+  behaviour through the in-memory seam;
+  `test/services/offline_store_sqlite_test.dart` runs the same production code
+  against a **real** SQLite database via the `sqflite_common_ffi` dev dependency
+  (`sqfliteFfiInit()` + `databaseFactory = databaseFactoryFfi`), which is what
+  proves the key prefix round-trips through a TEXT column and that the v1 → v2
+  upgrade really deletes a legacy device's rows.
 
 ## API integration
 
@@ -174,9 +187,10 @@ The mobile app talks to the same FastAPI backend as the web frontend:
   web-only (an org-enforced un-enrolled user can still verify by email, with a
   banner pointing them to the web app). Mirrors the web `/login/mfa` flow.
 - Tenant: entered on login screen → sent as `X-Tenant-Slug` header
-- 401 responses auto-clear session and return to login — the teardown is
-  **awaited before the error is thrown**, so an offline-fallback `catch` can't
-  read the cache of the session being torn down
+- 401 responses auto-clear session and return to login — on **every** verb
+  (`get`/`getList`/`post`/`patch`/`delete`/`getBytes`/`postBytes`), and the
+  teardown is **awaited before the error is thrown**, so an offline-fallback
+  `catch` can't read the cache of the session being torn down
 
 ## Screens → API mappings
 

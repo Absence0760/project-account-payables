@@ -91,6 +91,16 @@ class AuthStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Restore a persisted session on app start. Returns whether the stored
+  /// token still resolves to a usable profile.
+  ///
+  /// Only an actual auth **rejection** tears the session down. A transport
+  /// failure (offline, DNS, timeout) says nothing about the token's validity,
+  /// and tearing down on one would clear the credentials AND wipe the offline
+  /// cache — destroying exactly the data offline mode exists to serve, at
+  /// precisely the moment it's needed. So on a transport failure the token and
+  /// the cache are left intact; the user re-authenticates when connectivity is
+  /// back and `_loadUser` re-installs the same scope over the same rows.
   Future<bool> init() async {
     await ApiClient().init();
     if (!ApiClient().hasToken) return false;
@@ -98,8 +108,15 @@ class AuthStore extends ChangeNotifier {
       await _loadUser();
       notifyListeners();
       return true;
+    } on ApiException catch (e) {
+      if (e.statusCode == 401) {
+        // The 401 handler in ApiClient already ran clearSession(); this is
+        // belt-and-braces for any other path that surfaces a 401.
+        await ApiClient().clearSession();
+      }
+      return false;
     } catch (_) {
-      await ApiClient().clearSession();
+      // Transport failure — keep credentials and cache.
       return false;
     }
   }

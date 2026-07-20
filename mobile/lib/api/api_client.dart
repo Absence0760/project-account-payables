@@ -236,6 +236,12 @@ class ApiClient {
 
   Future<void> delete(String path) async {
     final response = await _http.delete(_uri(path), headers: _headers);
+    // Same forced-logout treatment as every other verb — clearSession()'s
+    // "a 401 on any request lands here" is only true if this path honours it.
+    if (response.statusCode == 401) {
+      await clearSession();
+      throw ApiException(401, 'Unauthorized');
+    }
     if (response.statusCode >= 400) {
       throw ApiException(response.statusCode, response.body);
     }
