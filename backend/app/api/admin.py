@@ -40,6 +40,7 @@ from app.schemas.admin import (
     UpdateRoleRequest,
     UpdateUserRequest,
 )
+from app.services.audit_dispatch import dispatch_auth_audit
 from app.services.session_management import revoke_user_sessions
 from app.utils.passwords import PasswordError, pwd_context, validate_password_complexity
 
@@ -180,6 +181,15 @@ async def create_role(
     db.add(role)
     await db.commit()
     await db.refresh(role)
+
+    await dispatch_auth_audit(
+        organization_id=org_id,
+        actor_id=user.id,
+        action="role.created",
+        entity_id=role.id,
+        details={"name": role.name, "permissions": role.permissions},
+    )
+
     return _role_to_response(role)
 
 
@@ -204,14 +214,30 @@ async def update_role(
     if role.organization_id != org_id:
         raise HTTPException(status_code=404, detail="Role not found")
 
+    changed_fields = []
     if body.description is not None:
         role.description = body.description
+        changed_fields.append("description")
     # A provided list (even empty) replaces the grants; omitting it (None)
     # leaves them untouched. Sanitized to the known catalog.
     if body.permissions is not None:
         role.permissions = sanitize_permissions(body.permissions)
+        changed_fields.append("permissions")
     await db.commit()
     await db.refresh(role)
+
+    if changed_fields:
+        await dispatch_auth_audit(
+            organization_id=org_id,
+            actor_id=user.id,
+            action="role.updated",
+            entity_id=role.id,
+            details={
+                "changed_fields": changed_fields,
+                "permissions": role.permissions if "permissions" in changed_fields else None,
+            },
+        )
+
     return _role_to_response(role)
 
 
@@ -244,8 +270,18 @@ async def delete_role(
             detail=f"Role is assigned to {in_use} user(s); detach it first",
         )
 
+    role_name = role.name
     await db.delete(role)
     await db.commit()
+
+    await dispatch_auth_audit(
+        organization_id=org_id,
+        actor_id=user.id,
+        action="role.deleted",
+        entity_id=role_id,
+        details={"name": role_name},
+    )
+
     return None
 
 
@@ -351,6 +387,14 @@ async def create_user(
     new_user = result.scalar_one()
     await db.commit()
 
+    await dispatch_auth_audit(
+        organization_id=org_id,
+        actor_id=user.id,
+        action="user.created",
+        entity_id=new_user.id,
+        details={"role_names": sorted(r.name for r in new_user.roles)},
+    )
+
     resp = _user_to_response(new_user)
     return CreateUserResponse(**resp.model_dump(), temporary_password=temp_password)
 
@@ -376,8 +420,10 @@ async def update_user(
     previous_role_names = sorted(r.name for r in target.roles)
     was_active = target.is_active
 
+    changed_fields = []
     if body.full_name is not None:
         target.full_name = body.full_name
+        changed_fields.append("full_name")
     if body.email is not None:
         existing = await db.execute(
             select(User).where(User.email == body.email, User.id != user_id)
@@ -385,12 +431,15 @@ async def update_user(
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Email already in use")
         target.email = body.email
+        changed_fields.append("email")
     if body.is_active is not None:
         target.is_active = body.is_active
+        changed_fields.append("is_active")
     password_changed = body.password is not None
     if password_changed:
         _validate_admin_set_password(body.password)
         target.hashed_password = pwd_context.hash(body.password)
+        changed_fields.append("password")
 
     roles_changed = False
     if body.role_names is not None:
@@ -408,6 +457,8 @@ async def update_user(
             _authorize_role_grant(current_user, list(roles))
             for role in roles:
                 db.add(UserRole(user_id=user_id, role_id=role.id))
+    if roles_changed:
+        changed_fields.append("role_names")
 
     await db.flush()
 
@@ -426,6 +477,19 @@ async def update_user(
     deactivated = was_active and body.is_active is False
     if roles_changed or deactivated or password_changed:
         await revoke_user_sessions(user_id)
+
+    if changed_fields:
+        await dispatch_auth_audit(
+            organization_id=org_id,
+            actor_id=current_user.id,
+            action="user.updated",
+            entity_id=user_id,
+            details={
+                "changed_fields": changed_fields,
+                "role_names": sorted(r.name for r in target.roles) if roles_changed else None,
+                "is_active": target.is_active if "is_active" in changed_fields else None,
+            },
+        )
 
     return _user_to_response(target)
 
@@ -541,6 +605,13 @@ async def delete_user(
     # hitting the API until their token expires.
     await revoke_user_sessions(user_id)
 
+    await dispatch_auth_audit(
+        organization_id=org_id,
+        actor_id=current_user.id,
+        action="user.deleted",
+        entity_id=user_id,
+    )
+
 
 class BulkDeleteRequest(BaseModel):
     user_ids: list[str]
@@ -613,5 +684,11 @@ async def bulk_delete_users(
 
     for raw_id in deleted:
         await revoke_user_sessions(uuid.UUID(raw_id))
+        await dispatch_auth_audit(
+            organization_id=org_id,
+            actor_id=current_user.id,
+            action="user.deleted",
+            entity_id=uuid.UUID(raw_id),
+        )
 
     return BulkDeleteResponse(deleted=deleted, failed=failed)
