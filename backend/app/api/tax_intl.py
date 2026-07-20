@@ -148,12 +148,21 @@ async def compute_vat_endpoint(
         rate_result = await adapter.get_rate(
             body.supplier_country, rate_category=body.rate_category
         )
+        buyer_rate = None
+        if body.buyer_country:
+            # Reverse charge (when it applies) is self-accounted at the
+            # BUYER's own domestic rate, not the supplier's — resolve it too.
+            buyer_rate_result = await adapter.get_rate(
+                body.buyer_country, rate_category=body.rate_category
+            )
+            buyer_rate = buyer_rate_result.rate
         result = compute_vat(
             net_amount=body.net_amount,
             rate=rate_result.rate,
             supplier_country=body.supplier_country,
             buyer_country=body.buyer_country,
             buyer_vat_registered=body.buyer_vat_registered,
+            buyer_rate=buyer_rate,
         )
     except UnknownCountry as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

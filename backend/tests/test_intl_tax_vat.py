@@ -46,13 +46,78 @@ def test_intra_eu_b2b_reverse_charge():
         supplier_country="DE",
         buyer_country="FR",
         buyer_vat_registered=True,
+        buyer_rate=Decimal("20"),
     )
     assert r.reverse_charge is True
     # No cash VAT to the supplier...
     assert r.vat_payable == Decimal("0.00")
     assert r.gross_amount == Decimal("1000.00")
-    # ...but the VAT is still reportable (buyer self-accounts).
-    assert r.reportable_vat == Decimal("190.00")
+    # ...but the VAT is still reportable (buyer self-accounts) — at the
+    # BUYER's own domestic rate (20%), not the supplier's (19%).
+    assert r.reportable_vat == Decimal("200.00")
+    # The supplier-rate reference figure is untouched by buyer_rate.
+    assert r.vat_amount == Decimal("190.00")
+
+
+def test_reverse_charge_reportable_vat_uses_buyer_rate_issue_165():
+    # Regression for GH #165: reverse-charge reportable VAT must be the
+    # BUYER's domestic rate (FR 20%), never the supplier's (DE 19%).
+    r = compute_vat(
+        net_amount=Decimal("1000"),
+        rate=Decimal("19"),
+        supplier_country="DE",
+        buyer_country="FR",
+        buyer_vat_registered=True,
+        buyer_rate=Decimal("20"),
+    )
+    assert r.reverse_charge is True
+    assert r.reportable_vat == Decimal("200.00")
+    assert r.reportable_vat != Decimal("190.00")
+    assert r.vat_payable == Decimal("0.00")
+
+
+def test_reverse_charge_without_buyer_rate_falls_back_safely():
+    # A caller that hasn't resolved a buyer rate (compute_vat is pure and
+    # may be invoked from contexts without one) must not crash — the
+    # documented fallback is used instead.
+    r = compute_vat(
+        net_amount=Decimal("1000"),
+        rate=Decimal("19"),
+        supplier_country="DE",
+        buyer_country="FR",
+        buyer_vat_registered=True,
+    )
+    assert r.reverse_charge is True
+    assert r.reportable_vat is not None
+    assert isinstance(r.reportable_vat, Decimal)
+
+
+def test_buyer_rate_does_not_affect_non_reverse_charge_path():
+    # Non-reverse-charge (buyer not VAT-registered): reportable_vat must
+    # still equal vat_amount at the supplier's rate, regardless of
+    # buyer_rate being passed.
+    r = compute_vat(
+        net_amount=Decimal("1000"),
+        rate=Decimal("19"),
+        supplier_country="DE",
+        buyer_country="FR",
+        buyer_vat_registered=False,
+        buyer_rate=Decimal("20"),
+    )
+    assert r.reverse_charge is False
+    assert r.reportable_vat == r.vat_amount == Decimal("190.00")
+
+    # Same-country supply (domestic, not reverse charge either).
+    r2 = compute_vat(
+        net_amount=Decimal("500"),
+        rate=Decimal("19"),
+        supplier_country="DE",
+        buyer_country="DE",
+        buyer_vat_registered=True,
+        buyer_rate=Decimal("19"),
+    )
+    assert r2.reverse_charge is False
+    assert r2.reportable_vat == r2.vat_amount == Decimal("95.00")
 
 
 def test_reverse_charge_needs_vat_registered_buyer():
