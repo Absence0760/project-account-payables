@@ -56,8 +56,8 @@ uses `get_current_vendor_user` (except `/portal/auth/login`,
 | POST   | `/portal/auth/change-password`   | Used by the forced first-login rotation and voluntary rotations               |
 | POST   | `/portal/auth/mfa/challenge`     | **Public** — trade the login-issued challenge token + a code (`method` totp\|email) for an access token |
 | POST   | `/portal/auth/mfa/challenge/email` | **Public** — email the on-demand OTP backup code to the enrolled vendor; 204-silent (no enumeration) |
-| POST   | `/portal/auth/mfa/enroll`        | Mint a TOTP secret + QR (pending until verified)                              |
-| POST   | `/portal/auth/mfa/verify`        | Verify a code to activate MFA (`mfa_enabled=true`)                            |
+| POST   | `/portal/auth/mfa/enroll`        | Mint a CANDIDATE TOTP secret + QR (parked in Redis until verified). Optional `{password?, code?}` step-up — required once a factor is already live |
+| POST   | `/portal/auth/mfa/verify`        | Verify a code to promote the candidate + activate MFA (`mfa_enabled=true`)     |
 | POST   | `/portal/auth/mfa/disable`       | Turn MFA off — re-verifies a current code first                              |
 
 ### MFA (two-factor) — `portal_auth.py`
@@ -71,11 +71,23 @@ secret generation, provisioning URI, QR, and `verify_totp` (±1 step skew).
   whole feature, exactly like employee MFA. With it off, an enrolled vendor
   still logs in with just a password (no challenge). MFA is **opt-in per vendor
   user**; there is no org-wide enforcement for vendors yet.
-- **Enrollment.** `POST /mfa/enroll` mints (or re-issues) a secret + QR data URL
-  and returns the secret in plaintext (manual entry); it's held pending until
-  `POST /mfa/verify` confirms a valid code and flips `mfa_enabled=true`. The
-  secret is never echoed back after activation. `POST /mfa/disable` re-verifies
-  a current code before clearing the columns.
+- **Enrollment.** `POST /mfa/enroll` mints a *candidate* secret + QR data URL and
+  returns the secret in plaintext (manual entry). The candidate is parked in
+  Redis (`mfa:vendor_pending_enroll:<vendor_user_id>`,
+  `AP_MFA_ENROLL_PENDING_TTL_SECONDS`) — **nothing is written to
+  `vendor_users`** until `POST /mfa/verify` confirms a valid code, which is the
+  only place `mfa_secret`/`mfa_enabled`/`mfa_enrolled_at` are set. That way an
+  abandoned enrollment can never leave the supplier without the factor they
+  already had. The secret is never echoed back after activation.
+  `POST /mfa/disable` re-verifies a current code before clearing the columns.
+- **Re-enrollment is a step-up.** Once a factor is live, `POST /mfa/enroll`
+  requires an optional-body credential — `{password}` (the portal password, via
+  the shared `pwd_context`) or `{code}` (a code from the CURRENTLY enrolled
+  authenticator) — mirroring `api/auth._require_mfa_step_up` on the employee
+  surface via the shared `services/mfa.step_up_verified`. Without it a stolen
+  vendor session could silently strip or swap the supplier's second factor. A
+  **first** enrollment needs no step-up, so onboarding stays frictionless.
+  Missing / wrong credential ⇒ 400 with a generic, account-agnostic message.
 - **Login challenge.** When `AP_MFA_ENABLED` is on and the vendor is enrolled,
   `POST /login` returns `PortalMFAChallengeResponse` (`{mfa_required, mfa_challenge_token,
   methods: ["totp", "email"]}`) instead of the access token. The browser submits the code

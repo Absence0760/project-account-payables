@@ -254,3 +254,91 @@ async def test_authenticate_verify_unknown_credential_is_401(_pin_settings_and_r
                 db=db,
             )
     assert exc.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Step-up on register-start — adding a factor to an account that already has
+# one must re-prove control of the account (issue #159). Without it, a stolen
+# access token is enough to bind an attacker-controlled authenticator to the
+# victim's account.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_passkey_register_start_on_a_bare_account_needs_no_step_up():
+    """First factor on an account with none — nothing to protect yet, so
+    enrollment stays frictionless."""
+    from app.api import auth as auth_mod
+
+    user = _fake_user()
+    db = _RegDB(existing=[])
+
+    with patch("app.api.auth.settings.mfa_enabled", True):
+        start = await auth_mod.passkey_register_start(user=user, db=db)
+
+    assert start.options["challenge"]
+
+
+@pytest.mark.asyncio
+async def test_passkey_register_start_refused_without_step_up_when_totp_is_live():
+    """A TOTP-protected account gains a passkey only with a step-up."""
+    from app.api import auth as auth_mod
+
+    user = _fake_user(mfa_enabled=True)
+    user.mfa_secret = "JBSWY3DPEHPK3PXP"
+    db = _RegDB(existing=[])
+
+    with patch("app.api.auth.settings.mfa_enabled", True):
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.passkey_register_start(user=user, db=db)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_passkey_register_start_refused_without_step_up_when_a_passkey_exists():
+    """Second passkey on an account whose only factor IS a passkey."""
+    from app.api import auth as auth_mod
+
+    user = _fake_user()
+    db = _RegDB(existing=[SimpleNamespace(credential_id=b"abc")])
+
+    with patch("app.api.auth.settings.mfa_enabled", True):
+        with pytest.raises(HTTPException) as exc:
+            await auth_mod.passkey_register_start(user=user, db=db)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_passkey_register_start_allowed_with_a_correct_password_step_up():
+    """Positive control — the step-up is a gate, not a wall."""
+    from app.api import auth as auth_mod
+    from app.schemas.auth import MFAStepUpRequest
+
+    user = _fake_user()
+    db = _RegDB(existing=[SimpleNamespace(credential_id=b"abc")])
+
+    with (
+        patch("app.api.auth.settings.mfa_enabled", True),
+        patch("app.api.auth.pwd_context.verify", return_value=True),
+    ):
+        start = await auth_mod.passkey_register_start(
+            body=MFAStepUpRequest(password="correct"), user=user, db=db
+        )
+    assert start.options["challenge"]
+
+
+@pytest.mark.asyncio
+async def test_passkey_register_start_allowed_for_a_passwordless_sso_account():
+    """An SSO-only account whose sole factor is a passkey has neither a
+    password nor a TOTP secret to challenge. Demanding a step-up there would
+    lock the user out of managing their own factors forever, so it is allowed
+    — see `services/mfa.step_up_available`."""
+    from app.api import auth as auth_mod
+
+    user = _fake_user()
+    user.hashed_password = None
+    db = _RegDB(existing=[SimpleNamespace(credential_id=b"abc")])
+
+    with patch("app.api.auth.settings.mfa_enabled", True):
+        start = await auth_mod.passkey_register_start(user=user, db=db)
+    assert start.options["challenge"]

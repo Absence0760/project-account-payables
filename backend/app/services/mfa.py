@@ -3,7 +3,11 @@
 Two factors are supported:
 
 - **TOTP** (primary). Per-user shared secret stored on `User.mfa_secret`. Apps
-  like Google Authenticator / 1Password / Authy scan the provisioning URI.
+  like Google Authenticator / 1Password / Authy scan the provisioning URI. A
+  *candidate* secret from an in-flight enrollment is NOT written to the
+  account — it waits in Redis (`stash_pending_totp_secret`) until the user
+  proves they hold it, so starting an enrollment never disturbs the factor
+  already in force.
 - **Email OTP** (backup). Sent on demand to the account email when the user
   can't access their authenticator. The 6-digit code lives in Redis with a
   short TTL — no DB column needed.
@@ -34,10 +38,16 @@ from jose import JWTError, jwt
 
 from app.config import settings
 from app.redis import get_redis
+from app.utils.passwords import pwd_context
 
 ALGORITHM = "HS256"
 
 EMAIL_OTP_PREFIX = "mfa:email_otp:"
+# Pending (started-but-not-yet-verified) TOTP enrollment secrets. Separate
+# keyspaces per surface, same reason as the email-OTP prefixes below: an
+# employee user id and a vendor user id must never share a slot.
+PENDING_ENROLL_PREFIX = "mfa:pending_enroll:"
+VENDOR_PENDING_ENROLL_PREFIX = "mfa:vendor_pending_enroll:"
 # Supplier-portal email-OTP backup. A DISTINCT Redis keyspace from the employee
 # one (`mfa:email_otp:`) so a vendor user id can never collide with an employee
 # user id of the same UUID value — the same isolation principle as the distinct
@@ -106,6 +116,129 @@ def verify_totp(secret: str, code: str) -> bool:
         return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Pending enrollment secret — the live factor is never disturbed
+#
+# TOTP enrollment is a two-step ceremony (mint a secret + QR, then prove you
+# scanned it). Writing the candidate secret onto the account at step one meant
+# merely *starting* an enrollment stripped whatever second factor was already
+# in force — a leaked access token was enough to silently downgrade an account
+# to single-factor. The candidate now waits here instead, under a short TTL,
+# next to the WebAuthn ceremony challenge; only `/mfa/enroll/verify` promotes
+# it onto the account.
+#
+# The value is the raw base32 seed (it has to be, to verify a code against it)
+# — the same material `users.mfa_secret` already holds, just for minutes
+# rather than years. It is never logged and never returned outside the
+# enrollment-start response.
+# ---------------------------------------------------------------------------
+
+
+def _pending_enroll_key(prefix: str, subject_id: uuid.UUID) -> str:
+    return f"{prefix}{subject_id}"
+
+
+async def _stash_pending_secret(prefix: str, subject_id: uuid.UUID, secret: str) -> None:
+    r = await get_redis()
+    await r.setex(
+        _pending_enroll_key(prefix, subject_id),
+        settings.mfa_enroll_pending_ttl_seconds,
+        secret,
+    )
+
+
+async def _read_pending_secret(prefix: str, subject_id: uuid.UUID) -> str | None:
+    r = await get_redis()
+    stored = await r.get(_pending_enroll_key(prefix, subject_id))
+    if not stored:
+        return None
+    return stored.decode("utf-8") if isinstance(stored, bytes) else stored
+
+
+async def _clear_pending_secret(prefix: str, subject_id: uuid.UUID) -> None:
+    r = await get_redis()
+    await r.delete(_pending_enroll_key(prefix, subject_id))
+
+
+async def stash_pending_totp_secret(user_id: uuid.UUID, secret: str) -> None:
+    """Hold a candidate enrollment secret for an employee user. Replaces any
+    previous outstanding candidate — one enrollment in flight per user."""
+    await _stash_pending_secret(PENDING_ENROLL_PREFIX, user_id, secret)
+
+
+async def read_pending_totp_secret(user_id: uuid.UUID) -> str | None:
+    """The employee user's in-flight candidate secret, or None if enrollment
+    was never started (or has expired)."""
+    return await _read_pending_secret(PENDING_ENROLL_PREFIX, user_id)
+
+
+async def clear_pending_totp_secret(user_id: uuid.UUID) -> None:
+    """Drop the employee candidate — called once it's promoted onto the account."""
+    await _clear_pending_secret(PENDING_ENROLL_PREFIX, user_id)
+
+
+async def stash_pending_vendor_totp_secret(vendor_user_id: uuid.UUID, secret: str) -> None:
+    """Supplier-portal counterpart of `stash_pending_totp_secret`."""
+    await _stash_pending_secret(VENDOR_PENDING_ENROLL_PREFIX, vendor_user_id, secret)
+
+
+async def read_pending_vendor_totp_secret(vendor_user_id: uuid.UUID) -> str | None:
+    """Supplier-portal counterpart of `read_pending_totp_secret`."""
+    return await _read_pending_secret(VENDOR_PENDING_ENROLL_PREFIX, vendor_user_id)
+
+
+async def clear_pending_vendor_totp_secret(vendor_user_id: uuid.UUID) -> None:
+    """Supplier-portal counterpart of `clear_pending_totp_secret`."""
+    await _clear_pending_secret(VENDOR_PENDING_ENROLL_PREFIX, vendor_user_id)
+
+
+# ---------------------------------------------------------------------------
+# Step-up re-authentication
+# ---------------------------------------------------------------------------
+
+
+def step_up_available(*, hashed_password: str | None, mfa_secret: str | None) -> bool:
+    """Does the account hold a credential a step-up can actually challenge?
+
+    False only for an account with neither a password nor a TOTP secret — an
+    SSO-only user whose sole factor is a passkey. Demanding a step-up there
+    would permanently lock them out of managing their own factors (they have
+    nothing to type), so the caller lets those through. The durable answer for
+    that case is a WebAuthn assertion as the step-up; until then the IdP is
+    that account's authentication authority anyway. Every password-backed
+    account — the overwhelming majority — is fully covered.
+    """
+    return bool(hashed_password) or bool(mfa_secret)
+
+
+def step_up_verified(
+    *,
+    hashed_password: str | None,
+    mfa_secret: str | None,
+    password: str | None,
+    code: str | None,
+) -> bool:
+    """Did the caller re-prove control of the account?
+
+    Used before an account's *existing* second factor can be replaced (TOTP
+    re-enrollment, adding a passkey). Either credential satisfies it: the
+    account password — the same check `/mfa/disable` makes — or a code from
+    the authenticator currently enrolled. Both are things a bearer token alone
+    does not grant, which is the point: an attacker holding a stolen session
+    must not be able to swap the second factor out from under the owner.
+
+    Shared by the employee and supplier-portal surfaces so the two can't drift.
+    Returns a plain bool; the caller decides the status code. Password
+    comparison goes through the shared `pwd_context` (bcrypt_sha256), TOTP
+    through `verify_totp` — both constant-time internally.
+    """
+    if password and hashed_password and pwd_context.verify(password, hashed_password):
+        return True
+    if code and mfa_secret and verify_totp(mfa_secret, code):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

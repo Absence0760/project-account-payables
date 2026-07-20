@@ -102,8 +102,18 @@ function createAuthStore() {
 		return api.get<Passkey[]>('/api/auth/mfa/passkey');
 	}
 
-	async function registerPasskey(name: string): Promise<Passkey> {
-		const start = await api.post<{ options: any }>('/api/auth/mfa/passkey/register', {});
+	/**
+	 * Register a passkey. `stepUp` re-proves control of the account — the
+	 * backend requires it whenever a second factor is ALREADY in force, so a
+	 * stolen session can't quietly bind an attacker's authenticator. Either
+	 * the account password or a code from the current authenticator works;
+	 * omit it for the first factor on an account that has none.
+	 */
+	async function registerPasskey(
+		name: string,
+		stepUp: { password?: string; code?: string } = {},
+	): Promise<Passkey> {
+		const start = await api.post<{ options: any }>('/api/auth/mfa/passkey/register', stepUp);
 		const credential = await performRegistration(start.options);
 		const saved = await api.post<Passkey>('/api/auth/mfa/passkey/register/verify', {
 			credential,

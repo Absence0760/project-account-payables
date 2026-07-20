@@ -56,6 +56,22 @@ class MFAEnrollStartResponse(BaseModel):
     qr_code_data_url: str
 
 
+class MFAStepUpRequest(BaseModel):
+    """Optional re-authentication sent when *changing* an account's second
+    factor (starting a fresh TOTP enrollment, registering a passkey).
+
+    Both fields are optional because first-time enrollment stays frictionless:
+    an account with no factor yet has nothing to protect. Once a factor IS in
+    force, one of the two must be supplied and check out — the account
+    password (same check `/mfa/disable` makes) or a code from the currently
+    enrolled authenticator. Otherwise a stolen access token alone would be
+    enough to swap the second factor.
+    """
+
+    password: str | None = Field(default=None, min_length=1)
+    code: str | None = Field(default=None, min_length=6, max_length=8)
+
+
 class MFAEnrollVerifyRequest(BaseModel):
     code: str = Field(..., min_length=6, max_length=8)
 

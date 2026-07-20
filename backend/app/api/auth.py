@@ -28,6 +28,7 @@ from app.schemas.auth import (
     MFAEmailChallengeRequest,
     MFAEnrollStartResponse,
     MFAEnrollVerifyRequest,
+    MFAStepUpRequest,
     MFAVerifyRequest,
     TokenResponse,
     UpdateProfileRequest,
@@ -345,21 +346,64 @@ async def verify_mfa(
 # ---------------------------------------------------------------------------
 
 
+def _require_mfa_step_up(
+    user: User,
+    body: MFAStepUpRequest | None,
+    *,
+    has_passkey: bool = False,
+) -> None:
+    """Gate any change to an account's *existing* second factor.
+
+    First-time enrollment is deliberately frictionless — an account with no
+    factor has nothing to protect and onboarding shouldn't demand a password
+    the user just typed. The moment a factor IS in force, replacing it (a
+    fresh TOTP secret, an added passkey) demands the password or a code from
+    the current authenticator, exactly like `/mfa/disable`: a leaked access
+    token must not be enough to downgrade or hijack the second factor.
+    """
+    has_live_factor = bool(user.mfa_enabled and user.mfa_secret) or has_passkey
+    if not has_live_factor:
+        return
+    if not mfa.step_up_available(hashed_password=user.hashed_password, mfa_secret=user.mfa_secret):
+        # Passkey-only / SSO-only account: nothing to challenge. See
+        # `mfa.step_up_available`.
+        return
+    if mfa.step_up_verified(
+        hashed_password=user.hashed_password,
+        mfa_secret=user.mfa_secret,
+        password=body.password if body else None,
+        code=body.code if body else None,
+    ):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Confirm your password or a current authenticator code to change "
+            "your two-factor settings."
+        ),
+    )
+
+
 @router.post("/mfa/enroll", response_model=MFAEnrollStartResponse)
 async def enroll_mfa_start(
+    body: MFAStepUpRequest | None = None,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_control_db),
 ):
-    """Start TOTP enrollment — mint (or re-issue) the secret + QR. The secret
-    is held in pending state until /mfa/enroll/verify completes."""
+    """Start TOTP enrollment — mint a candidate secret + QR.
+
+    The candidate is held in Redis (`services/mfa`), NOT written to the
+    account: whatever second factor is already in force stays in force until
+    `/mfa/enroll/verify` proves the user holds the new one. Re-enrolling over
+    a live factor additionally requires a step-up (password or a code from the
+    current authenticator) — see `_require_mfa_step_up`.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
 
+    _require_mfa_step_up(user, body)
+
     secret = mfa.generate_totp_secret()
-    user.mfa_secret = secret
-    user.mfa_enabled = False  # not active until verified
-    user.mfa_enrolled_at = None
-    await db.commit()
+    await mfa.stash_pending_totp_secret(user.id, secret)
 
     uri = mfa.provisioning_uri(secret, account_label=user.email)
     return MFAEnrollStartResponse(
@@ -375,17 +419,26 @@ async def enroll_mfa_verify(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
 ):
-    """Confirm the user can produce a valid code, then flip MFA on."""
+    """Confirm the user can produce a code for the *pending* secret, then make
+    it the account's factor.
+
+    This is the only place a TOTP secret is written to the account row. Until
+    it succeeds the previous factor (if any) remains live, so a half-finished
+    enrollment can never leave the account with no second factor.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
-    if not user.mfa_secret:
+    pending = await mfa.read_pending_totp_secret(user.id)
+    if not pending:
         raise HTTPException(status_code=400, detail="Start enrollment first")
-    if not mfa.verify_totp(user.mfa_secret, body.code):
+    if not mfa.verify_totp(pending, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
+    user.mfa_secret = pending
     user.mfa_enabled = True
     user.mfa_enrolled_at = datetime.now(UTC)
     await db.commit()
+    await mfa.clear_pending_totp_secret(user.id)
     org = await _load_user_org(db, user.organization_id)
     return _user_response(user, org)
 
@@ -412,6 +465,9 @@ async def disable_mfa(
     user.mfa_enabled = False
     user.mfa_enrolled_at = None
     await db.commit()
+    # Drop any half-finished enrollment too, so a candidate minted before the
+    # disable can't be promoted afterwards by a later verify call.
+    await mfa.clear_pending_totp_secret(user.id)
     return _user_response(user, org)
 
 
@@ -432,14 +488,22 @@ def _credential_to_response(c: WebAuthnCredential) -> WebAuthnCredentialResponse
 
 @router.post("/mfa/passkey/register", response_model=WebAuthnRegisterStartResponse)
 async def passkey_register_start(
+    body: MFAStepUpRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_control_db),
 ):
     """Begin passkey enrollment — mint WebAuthn registration options. The
-    browser feeds ``options`` to ``navigator.credentials.create()``."""
+    browser feeds ``options`` to ``navigator.credentials.create()``.
+
+    Adding a factor to an account that already has one is a step-up operation
+    for the same reason re-enrolling TOTP is: otherwise a stolen session could
+    quietly bind an attacker-controlled authenticator to the account. The
+    first factor on a bare account needs no step-up.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
     existing = await _user_passkeys(db, user.id)
+    _require_mfa_step_up(user, body, has_passkey=bool(existing))
     options_json = await webauthn.begin_registration(
         user_id=user.id,
         user_name=user.email,

@@ -71,6 +71,21 @@ class PortalMFAEnrollStartResponse(BaseModel):
     qr_code_data_url: str
 
 
+class PortalMFAStepUpRequest(BaseModel):
+    """Optional re-authentication sent when *changing* a vendor user's second
+    factor (starting a fresh TOTP enrollment). Mirrors the employee
+    `MFAStepUpRequest` exactly so the two surfaces can't drift.
+
+    Both fields are optional — a vendor with no factor enrolled yet has
+    nothing to protect, so first-time enrollment stays frictionless. Once a
+    factor IS in force, one of the two must check out: the portal password or
+    a code from the currently enrolled authenticator.
+    """
+
+    password: str | None = Field(default=None, min_length=1)
+    code: str | None = Field(default=None, min_length=6, max_length=8)
+
+
 class PortalMFAVerifyRequest(BaseModel):
     """Activate enrollment by proving the vendor can produce a valid code."""
 

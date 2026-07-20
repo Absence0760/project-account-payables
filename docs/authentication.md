@@ -440,7 +440,7 @@ Passkeys are an additional second factor, gated by the same `AP_MFA_ENABLED` mas
 **Registration (enroll a passkey — authenticated, on `/profile`):**
 
 ```
-POST /api/auth/mfa/passkey/register          # mints PublicKeyCredentialCreationOptions
+POST /api/auth/mfa/passkey/register {password?|code?}   # mints PublicKeyCredentialCreationOptions
   (browser runs navigator.credentials.create())
 POST /api/auth/mfa/passkey/register/verify   # verifies + persists a WebAuthnCredential row
 GET  /api/auth/mfa/passkey                    # list this account's passkeys (metadata only)
@@ -460,6 +460,8 @@ Both authenticate endpoints are **pre-access-token, public-by-design**: the logi
 The per-ceremony challenge is server-minted and stashed in Redis (`webauthn:{reg,auth}_challenge:<user_id>`, `AP_WEBAUTHN_CHALLENGE_TTL_SECONDS` TTL, single-use) so the verify call can't be fed an attacker-chosen challenge. On every successful assertion the credential's monotonic signature counter is verified and bumped — a regression (a cloned authenticator) is rejected per the WebAuthn spec. RP ID and allowed origins are configurable (`AP_WEBAUTHN_RP_ID` / `AP_WEBAUTHN_ORIGINS`); the dev defaults (`localhost` / `http://localhost:7777`) work across every tenant subdomain with no cloud account.
 
 Stored material — the credential id, COSE public key, and counter — is not secret in the password sense (the private key never leaves the authenticator) and is never logged. The login challenge offers `passkey` as a method whenever the user has at least one registered credential.
+
+Registering a passkey on an account that **already** has a factor (TOTP enabled, or at least one passkey) is a step-up operation with the same optional `{password?, code?}` body as `/mfa/enroll` — otherwise a stolen session could quietly bind an attacker-controlled authenticator to the account. The *first* factor on a bare account needs no step-up. The `/profile` passkey form asks for the password only when the step-up actually applies.
 
 ### Login flow
 
@@ -493,12 +495,21 @@ The challenge token is itself a short-lived JWT (`AP_MFA_CHALLENGE_TTL_SECONDS`,
 ### Per-user enrollment
 
 ```
-POST /api/auth/mfa/enroll                # mints secret + provisioning URI + QR (data URL)
-POST /api/auth/mfa/enroll/verify {code}  # confirms scan worked, flips mfa_enabled true
-POST /api/auth/mfa/disable    {password} # turns it off (re-confirms password first)
+POST /api/auth/mfa/enroll     {password?|code?}  # mints a CANDIDATE secret + provisioning URI + QR
+POST /api/auth/mfa/enroll/verify {code}          # promotes the candidate, flips mfa_enabled true
+POST /api/auth/mfa/disable    {password}         # turns it off (re-confirms password first)
 ```
 
 The QR code is returned inline as a `data:image/png;base64,...` URL so the frontend doesn't need a separate authed image endpoint. The plaintext base32 secret is also returned so users without a camera-equipped scanner can paste it manually.
+
+**Enrollment never disturbs the factor already in force.** `/mfa/enroll` mints a *candidate* secret and parks it in Redis (`mfa:pending_enroll:<user_id>`, `AP_MFA_ENROLL_PENDING_TTL_SECONDS`, default 15 min). `User.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` are written by `/mfa/enroll/verify` and nowhere else, so an abandoned or half-finished enrollment leaves the account exactly as it was. Previously enroll-start wrote the new secret straight onto the row and cleared `mfa_enabled`, which made *starting* an enrollment a silent second-factor strip.
+
+**Changing an existing factor is a step-up operation.** When the account already has a live factor, `/mfa/enroll` (and `/mfa/passkey/register` — see below) requires one of:
+
+- `password` — the account password, verified through the shared `pwd_context`, exactly like `/mfa/disable`; or
+- `code` — a code from the **currently enrolled** authenticator (for the user who has their phone but not their password manager).
+
+Neither field is required for a **first** enrollment: an account with no factor has nothing to protect, so onboarding stays frictionless. A missing or wrong step-up is a `400` with a generic message that reveals nothing about the account. The one exception is an account with neither a password nor a TOTP secret (an SSO-only user whose sole factor is a passkey) — there is no credential to challenge, and demanding one would lock them out of managing their own factors, so it is allowed; see `services/mfa.step_up_available`.
 
 Disable requires password re-entry — a stolen session shouldn't be able to silently strip MFA off. If the org enforces MFA, disable is blocked outright.
 
@@ -514,7 +525,8 @@ Disable requires password re-entry — a stolen session shouldn't be able to sil
 
 | Data | Lives in | Why |
 |---|---|---|
-| `User.mfa_secret` (base32) | control-plane DB | Per-user, durable, written once at enrollment. |
+| `User.mfa_secret` (base32) | control-plane DB | Per-user, durable, written ONLY by a successful `/mfa/enroll/verify`. |
+| Pending (unverified) enrollment secret | Redis (`mfa:pending_enroll:<user_id>`, `mfa:vendor_pending_enroll:<id>`) | The candidate from an in-flight enrollment. Kept off the account row so starting an enrollment can't disturb the factor already in force; TTL `AP_MFA_ENROLL_PENDING_TTL_SECONDS`, consumed on verify. |
 | `User.mfa_enabled`, `mfa_enrolled_at` | control-plane DB | Drives login-flow decisions. |
 | `WebAuthnCredential` rows (credential id, COSE public key, sign counter) | control-plane DB (`webauthn_credentials`, migration 0063) | One row per registered passkey, keyed by `user_id` (control-plane, never tenant-fanned). Not secret in the password sense; never logged. |
 | `Organization.settings.mfa.required` | control-plane DB (JSONB) | Org-wide policy; lives next to other settings. |
@@ -533,6 +545,7 @@ The supplier portal has its own TOTP MFA (with an email-OTP backup) for `VendorU
 - **Columns:** `vendor_users.mfa_secret` / `mfa_enabled` / `mfa_enrolled_at` (migration `0053_vendor_mfa`, tenant DB) — the exact shape of the `User` MFA columns. The email-OTP backup needs no column (Redis-only, like the employee one).
 - **Opt-in per vendor user.** There's no org-wide enforcement for vendors (unlike employee `Organization.settings.mfa.required`). With `AP_MFA_ENABLED=false` (local-dev default), an enrolled vendor still logs in with just a password.
 - **Login challenge** returns `PortalMFAChallengeResponse` (`methods: ["totp", "email"]`); the vendor completes `POST /api/portal/auth/mfa/challenge` (with `method` totp|email) to mint the access token. Enroll / verify / disable live at `/api/portal/auth/mfa/{enroll,verify,disable}`.
+- **Same enrollment safety as the employee surface.** `/portal/auth/mfa/enroll` parks a *candidate* secret in Redis (`mfa:vendor_pending_enroll:<id>`) and writes nothing to `vendor_users`; only `/mfa/verify` promotes it. Re-enrolling over a live factor requires the same `{password?, code?}` step-up (portal password or a code from the current authenticator), so a stolen vendor session can't strip or swap the supplier's second factor. First-time enrollment needs no step-up.
 - **Email-OTP backup.** When the vendor has lost their authenticator, `POST /api/portal/auth/mfa/challenge/email` (public, gated by the `vendor_mfa_challenge` token) emails a single-use 6-digit code via the configured email adapter (`console` in dev). Its SHA-256 lives in Redis under a distinct keyspace (`mfa:vendor_email_otp:<id>`, separate from the employee `mfa:email_otp:`) with the `AP_MFA_EMAIL_OTP_TTL_SECONDS` TTL. Gated on the vendor having enrolled TOTP — a backup to the authenticator, not a standalone enrollment path. 204-silent for unenrolled / unknown accounts (no enumeration); OTP + email never logged.
 - **Token-type isolation.** The portal challenge token carries `typ=vendor_mfa_challenge` — distinct from the employee challenge (`mfa_challenge`) and the vendor access token (`vendor`) — so the three token types can never be substituted for one another across surfaces. Full reference: `backend/docs/supplier-portal.md` § MFA.
 
@@ -543,8 +556,8 @@ The supplier portal has its own TOTP MFA (with an email-OTP backup) for `VendorU
 | `POST` | `/api/auth/login` | Returns either a token or an MFA challenge. |
 | `POST` | `/api/auth/mfa/challenge/email` | Sends a 6-digit code to the user's email. |
 | `POST` | `/api/auth/mfa/verify` | Trades a challenge token + code for an access token. |
-| `POST` | `/api/auth/mfa/enroll` | Starts TOTP enrollment — returns secret + QR. |
-| `POST` | `/api/auth/mfa/enroll/verify` | Confirms enrollment with a valid code. |
+| `POST` | `/api/auth/mfa/enroll` | Starts TOTP enrollment — returns a CANDIDATE secret + QR. Step-up (`password` or current `code`) required when a factor is already live. |
+| `POST` | `/api/auth/mfa/enroll/verify` | Confirms enrollment with a valid code — the only writer of `mfa_secret`/`mfa_enabled`. |
 | `POST` | `/api/auth/mfa/disable` | Turns MFA off (requires password). |
 
 ### Not in this pass

@@ -146,6 +146,13 @@ def _autouse_fake_redis(monkeypatch):
 
     monkeypatch.setattr("app.services.rate_limit.get_redis", _get_redis)
     monkeypatch.setattr("app.services.webhook_security.get_redis", _get_redis)
+    # MFA holds a *pending* (started-but-unverified) TOTP enrollment secret in
+    # Redis so an in-flight enrollment can't disturb the factor already in
+    # force. Stubbing it here means every enroll/verify test gets the ceremony
+    # store for free; files that assert on the raw keyspace (test_mfa.py,
+    # test_mfa_security.py) install their own fake, which wins because
+    # test-requested fixtures run after autouse ones.
+    monkeypatch.setattr("app.services.mfa.get_redis", _get_redis)
     # Also stub the JWT-blocklist client so authenticated requests in tests
     # don't bind a module-level real-Redis connection to one test's event loop
     # (reused on the next test's loop → "Event loop is closed"). Tests that

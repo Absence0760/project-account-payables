@@ -166,6 +166,7 @@
 
 	let passkeys = $state<Passkey[] | null>(null);
 	let passkeyName = $state('');
+	let passkeyPassword = $state('');
 	let registeringPasskey = $state(false);
 	let passkeysLoaded = $state(false);
 	const webAuthnOk = isWebAuthnSupported();
@@ -186,11 +187,23 @@
 		}
 	}
 
+	// Adding a factor to an account that ALREADY has one is a step-up
+	// operation server-side — otherwise a stolen session could bind an
+	// attacker's authenticator. Mirror that here so the form asks for the
+	// password only when it's actually required.
+	const needsPasskeyStepUp = $derived(
+		Boolean(auth.user?.mfa_enabled) || (passkeys?.length ?? 0) > 0,
+	);
+
 	async function addPasskey() {
 		registeringPasskey = true;
 		try {
-			await auth.registerPasskey(passkeyName.trim() || 'Passkey');
+			await auth.registerPasskey(
+				passkeyName.trim() || 'Passkey',
+				needsPasskeyStepUp ? { password: passkeyPassword } : {},
+			);
 			passkeyName = '';
+			passkeyPassword = '';
 			await loadPasskeys();
 			toast('Passkey added', 'success');
 		} catch (err) {
@@ -470,8 +483,22 @@
 							placeholder="e.g. MacBook Touch ID"
 						/>
 					</label>
+					{#if needsPasskeyStepUp}
+						<label>
+							<span>Confirm your password to add another factor</span>
+							<input
+								type="password"
+								bind:value={passkeyPassword}
+								required
+								autocomplete="current-password"
+							/>
+						</label>
+					{/if}
 					<div class="actions">
-						<button type="submit" disabled={registeringPasskey}>
+						<button
+							type="submit"
+							disabled={registeringPasskey || (needsPasskeyStepUp && !passkeyPassword)}
+						>
 							{registeringPasskey ? 'Waiting for passkey…' : 'Add a passkey'}
 						</button>
 					</div>

@@ -82,8 +82,8 @@ TOTP-based two-factor with email-OTP backup. Master switch `AP_MFA_ENABLED` (def
 |--------|-----------------------------------|-------|-------------|
 | `POST` | `/api/auth/mfa/challenge/email`   | (challenge token) | Body `{challenge_token}`. Generates + emails a 6-digit OTP. Returns 204. |
 | `POST` | `/api/auth/mfa/verify`            | (challenge token) | Body `{challenge_token, code, method}` (`method` ∈ `totp`/`email`). Returns `TokenResponse`. |
-| `POST` | `/api/auth/mfa/enroll`            | * | Mints a TOTP secret + QR. Returns `{secret, provisioning_uri, qr_code_data_url}`. |
-| `POST` | `/api/auth/mfa/enroll/verify`     | * | Body `{code}`. Confirms enrollment, flips `mfa_enabled` true. |
+| `POST` | `/api/auth/mfa/enroll`            | * | Optional body `{password?, code?}`. Mints a CANDIDATE TOTP secret + QR (parked in Redis, not on the account). Returns `{secret, provisioning_uri, qr_code_data_url}`. 400 without a valid step-up when the account already has a live factor. |
+| `POST` | `/api/auth/mfa/enroll/verify`     | * | Body `{code}`. Promotes the pending candidate onto the account and flips `mfa_enabled` true — the only writer of `mfa_secret`. |
 | `POST` | `/api/auth/mfa/disable`           | * | Body `{password}`. Re-confirms password, turns MFA off. Blocked when org enforces MFA. |
 
 The challenge endpoints don't take a JWT — they're authenticated by the short-lived challenge token returned from `/api/auth/login`.

@@ -27,6 +27,7 @@ from app.schemas.portal import (
     PortalMFADisableRequest,
     PortalMFAEmailChallengeRequest,
     PortalMFAEnrollStartResponse,
+    PortalMFAStepUpRequest,
     PortalMFAVerifyRequest,
     PortalTokenResponse,
     PortalUpdateProfileRequest,
@@ -304,21 +305,51 @@ async def portal_mfa_challenge(
     )
 
 
+def _require_portal_mfa_step_up(vu: VendorUser, body: PortalMFAStepUpRequest | None) -> None:
+    """Gate any change to a vendor user's *existing* second factor.
+
+    Same rule as the employee surface (`api/auth._require_mfa_step_up`): a
+    first enrollment is frictionless, but once a factor is live, replacing it
+    needs the portal password or a code from the current authenticator. A
+    stolen portal session must not be able to strip or hijack MFA.
+    """
+    if not (vu.mfa_enabled and vu.mfa_secret):
+        return
+    if mfa.step_up_verified(
+        hashed_password=vu.hashed_password,
+        mfa_secret=vu.mfa_secret,
+        password=body.password if body else None,
+        code=body.code if body else None,
+    ):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Confirm your password or a current authenticator code to change "
+            "your two-factor settings."
+        ),
+    )
+
+
 @router.post("/mfa/enroll", response_model=PortalMFAEnrollStartResponse)
 async def portal_mfa_enroll(
+    body: PortalMFAStepUpRequest | None = None,
     vu: VendorUser = Depends(get_current_vendor_user),
-    db: AsyncSession = Depends(get_tenant_db),
 ):
-    """Start TOTP enrollment — mint (or re-issue) the secret + QR. The secret is
-    held pending until `/mfa/verify` confirms the vendor can produce a code."""
+    """Start TOTP enrollment — mint a candidate secret + QR.
+
+    The candidate waits in Redis (`services/mfa`), NOT on the vendor-user row:
+    a factor already in force survives the whole ceremony and is only replaced
+    once `/mfa/verify` proves the vendor holds the new one. Re-enrolling over a
+    live factor also requires a step-up.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
 
+    _require_portal_mfa_step_up(vu, body)
+
     secret = mfa.generate_totp_secret()
-    vu.mfa_secret = secret
-    vu.mfa_enabled = False  # not active until verified
-    vu.mfa_enrolled_at = None
-    await db.commit()
+    await mfa.stash_pending_vendor_totp_secret(vu.id, secret)
 
     uri = mfa.provisioning_uri(secret, account_label=vu.email)
     return PortalMFAEnrollStartResponse(
@@ -334,17 +365,26 @@ async def portal_mfa_verify(
     vu: VendorUser = Depends(get_current_vendor_user),
     db: AsyncSession = Depends(get_tenant_db),
 ):
-    """Confirm the vendor can produce a valid code, then flip MFA on."""
+    """Confirm the vendor can produce a code for the *pending* secret, then
+    make it the account's factor.
+
+    The only place a TOTP secret is written to `vendor_users`. Until it
+    succeeds the previous factor stays live, so an abandoned enrollment can't
+    leave the portal account single-factor.
+    """
     if not settings.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is disabled on this deployment")
-    if not vu.mfa_secret:
+    pending = await mfa.read_pending_vendor_totp_secret(vu.id)
+    if not pending:
         raise HTTPException(status_code=400, detail="Start enrollment first")
-    if not mfa.verify_totp(vu.mfa_secret, body.code):
+    if not mfa.verify_totp(pending, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
+    vu.mfa_secret = pending
     vu.mfa_enabled = True
     vu.mfa_enrolled_at = datetime.now(UTC)
     await db.commit()
+    await mfa.clear_pending_vendor_totp_secret(vu.id)
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
@@ -378,6 +418,9 @@ async def portal_mfa_disable(
     vu.mfa_enabled = False
     vu.mfa_enrolled_at = None
     await db.commit()
+    # Drop any half-finished enrollment so a candidate minted before the
+    # disable can't be promoted by a later verify call.
+    await mfa.clear_pending_vendor_totp_secret(vu.id)
 
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == vu.vendor_id))
